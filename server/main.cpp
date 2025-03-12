@@ -50,7 +50,6 @@ using namespace toolkit;
 using namespace mediakit;
 
 namespace mediakit {
-// //////////HTTP配置///////////  [AUTO-TRANSLATED:a281d694]
 // //////////HTTP configuration///////////
 namespace Http {
 #define HTTP_FIELD "http."
@@ -62,7 +61,6 @@ onceToken token1([](){
 },nullptr);
 }//namespace Http
 
-// //////////SHELL配置///////////  [AUTO-TRANSLATED:f023ec45]
 // //////////SHELL configuration///////////
 namespace Shell {
 #define SHELL_FIELD "shell."
@@ -72,7 +70,6 @@ onceToken token1([](){
 },nullptr);
 } //namespace Shell
 
-// //////////RTSP服务器配置///////////  [AUTO-TRANSLATED:950e1981]
 // //////////RTSP server configuration///////////
 namespace Rtsp {
 #define RTSP_FIELD "rtsp."
@@ -85,7 +82,6 @@ onceToken token1([](){
 
 } //namespace Rtsp
 
-// //////////RTMP服务器配置///////////  [AUTO-TRANSLATED:8de6f41f]
 // //////////RTMP server configuration///////////
 namespace Rtmp {
 #define RTMP_FIELD "rtmp."
@@ -97,7 +93,6 @@ onceToken token1([](){
 },nullptr);
 } //namespace RTMP
 
-// //////////Rtp代理相关配置///////////  [AUTO-TRANSLATED:7b285587]
 // //////////Rtp proxy related configuration///////////
 namespace RtpProxy {
 #define RTP_PROXY_FIELD "rtp_proxy."
@@ -116,106 +111,104 @@ public:
         _parser = std::make_shared<OptionParser>(nullptr);
 
 #if !defined(_WIN32)
-        (*_parser) << Option('d',/*该选项简称，如果是\x00则说明无简称*/
-                             "daemon",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgNone,/*该选项后面必须跟值*/
-                             nullptr,/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "是否以Daemon方式启动",/*该选项说明文字*/
+        (*_parser) << Option('d',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "daemon",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgNone,/*This option must be followed by a value*/
+                             nullptr,/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Whether to start in Daemon mode",/*This option description */
                              nullptr);
 #endif//!defined(_WIN32)
 
-        (*_parser) << Option('l',/*该选项简称，如果是\x00则说明无简称*/
-                             "level",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(LDebug).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "日志等级,LTrace~LError(0~4)",/*该选项说明文字*/
+        (*_parser) << Option('l',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "level",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(LDebug).data(),/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Log Level,LTrace~LError(0~4)",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option('m',/*该选项简称，如果是\x00则说明无简称*/
-                             "max_day",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "7",/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "日志最多保存天数",/*该选项说明文字*/
+        (*_parser) << Option('m',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "max_day",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "7",/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Maximum number of days to save logs",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option('c',/*该选项简称，如果是\x00则说明无简称*/
-                             "config",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             (exeDir() + "config.ini").data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "配置文件路径",/*该选项说明文字*/
+        (*_parser) << Option('c',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "config",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             (exeDir() + "config.ini").data(),/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Configuration file path",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option('s',/*该选项简称，如果是\x00则说明无简称*/
-                             "ssl",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             (exeDir() + "default.pem").data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "ssl证书文件或文件夹,支持p12/pem类型",/*该选项说明文字*/
+        (*_parser) << Option('s',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "ssl",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             (exeDir() + "default.pem").data(),/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "SSL certificate file or folder, support p12/pem type",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option('t',/*该选项简称，如果是\x00则说明无简称*/
-                             "threads",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(thread::hardware_concurrency()).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "启动事件触发线程数",/*该选项说明文字*/
+        (*_parser) << Option('t',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "threads",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(thread::hardware_concurrency()).data(),/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Number of threads triggered by startup event",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
-                             "affinity",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(1).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "是否启动cpu亲和性设置",/*该选项说明文字*/
+        (*_parser) << Option(0,/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "affinity",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(1).data(),/*This option must be followed by a value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Whether to enable CPU affinity settings",/*This option description*/
                              nullptr);
 
 #if defined(ENABLE_VERSION)
-        (*_parser) << Option('v', "version", Option::ArgNone, nullptr, false, "显示版本号",
+        (*_parser) << Option('v', "version", Option::ArgNone, nullptr, false, "Show version number",
                              [](const std::shared_ptr<ostream> &stream, const string &arg) -> bool {
-                                 // 版本信息  [AUTO-TRANSLATED:d4cc59b2]
                                  // Version information
-                                 *stream << "编译日期: " << BUILD_TIME << std::endl;
-                                 *stream << "代码日期: " << COMMIT_TIME << std::endl;
-                                 *stream << "当前git分支: " << BRANCH_NAME << std::endl;
-                                 *stream << "当前git hash值: " << COMMIT_HASH << std::endl;
+                                 *stream << "Compilation date: " << BUILD_TIME << std::endl;
+                                 *stream << "Code date: " << COMMIT_TIME << std::endl;
+                                 *stream << "Current git branch: " << BRANCH_NAME << std::endl;
+                                 *stream << "Current git hash value: " << COMMIT_HASH << std::endl;
                                  throw ExitException();
                              });
 #endif
-        (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
-                             "log-slice",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "100",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "最大保存日志切片个数",/*该选项说明文字*/
+        (*_parser) << Option(0,/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "log-slice",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "100",/*This option must be followed by a value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Maximum number of saved log slices",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
-                             "log-size",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "256",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "单个日志切片最大容量,单位MB",/*该选项说明文字*/
+        (*_parser) << Option(0,/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "log-size",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "256",/*This option must be followed by a value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Maximum capacity of a single log slice, unit MB",/*This option description*/
                              nullptr);
 
-        (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
-                             "log-dir",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             (exeDir() + "log/").data(),/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "日志保存文件夹路径",/*该选项说明文字*/
+        (*_parser) << Option(0,/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "log-dir",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             (exeDir() + "log/").data(),/*This option must be followed by a value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Log save folder path",/*This option description*/
                              nullptr);
     }
 };
 
-// 全局变量，在WebApi中用于保存配置文件用  [AUTO-TRANSLATED:6d5585ca]
 // Global variable, used in WebApi to save configuration files
 string g_ini_file;
 
-// 加载ssl证书函数对象
+// Loading the ssl certificate function object
 std::function<void()> g_reload_certificates;
 
 int start_main(int argc,char *argv[]) {
@@ -238,12 +231,10 @@ int start_main(int argc,char *argv[]) {
         int threads = cmd_main["threads"];
         bool affinity = cmd_main["affinity"];
 
-        // 设置日志  [AUTO-TRANSLATED:50372045]
         // Set log
         Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel", logLevel));
 #if !defined(ANDROID)
         auto fileChannel = std::make_shared<FileChannel>("FileChannel", cmd_main["log-dir"], logLevel);
-        // 日志最多保存天数  [AUTO-TRANSLATED:9bfa8a9a]
         // Maximum number of days to save logs
         fileChannel->setMaxDay(cmd_main["max_day"]);
         fileChannel->setFileMaxCount(cmd_main["log-slice"]);
@@ -255,28 +246,23 @@ int start_main(int argc,char *argv[]) {
         pid_t pid = getpid();
         bool kill_parent_if_failed = true;
         if (bDaemon) {
-            // 启动守护进程  [AUTO-TRANSLATED:33b2c5be]
             // Start daemon process
             System::startDaemon(kill_parent_if_failed);
         }
-        // 开启崩溃捕获等  [AUTO-TRANSLATED:9c7c759c]
         // Enable crash capture, etc.
         System::systemSetup();
 #endif//!defined(_WIN32)
 
-        // 启动异步日志线程  [AUTO-TRANSLATED:c93cc6f4]
         // Start asynchronous log thread
         Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
         InfoL << kServerName;
 
-        // 加载配置文件，如果配置文件不存在就创建一个  [AUTO-TRANSLATED:761e7479]
         // Load configuration file, create one if it doesn't exist
         loadIniConfig(g_ini_file.data());
 
         auto &secret = mINI::Instance()[API::kSecret];
         if (secret == "035c73f7-bb6b-4889-a715-d9eb2d1925cc" || secret.empty()) {
-            // 使用默认secret被禁止启动  [AUTO-TRANSLATED:6295164b]
             // Starting with the default secret is prohibited
             secret = makeRandStr(32, true);
             mINI::Instance().dumpFile(g_ini_file);
@@ -285,18 +271,15 @@ int start_main(int argc,char *argv[]) {
         }
 
         if (!File::is_dir(ssl_file)) {
-            // 不是文件夹，加载证书，证书包含公钥和私钥  [AUTO-TRANSLATED:5d3a5e49]
             // Not a folder, load certificate, certificate contains public key and private key
             g_reload_certificates = [ssl_file] () {
                 SSL_Initor::Instance().loadCertificate(ssl_file.data());
             };
         } else {
-            // 加载文件夹下的所有证书  [AUTO-TRANSLATED:0e1f9b20]
             // Load all certificates under the folder
             g_reload_certificates = [ssl_file]() {
                 File::scanDir(ssl_file, [](const string &path, bool isDir) {
                     if (!isDir) {
-                        // 最后的一个证书会当做默认证书(客户端ssl握手时未指定主机)  [AUTO-TRANSLATED:b242685c]
                         // The last certificate will be used as the default certificate (client ssl handshake does not specify the host)
                         SSL_Initor::Instance().loadCertificate(path.data());
                     }
@@ -316,45 +299,36 @@ int start_main(int argc,char *argv[]) {
         uint16_t httpsPort = mINI::Instance()[Http::kSSLPort];
         uint16_t rtpPort = mINI::Instance()[RtpProxy::kPort];
 
-        // 设置poller线程数和cpu亲和性,该函数必须在使用ZLToolKit网络相关对象之前调用才能生效  [AUTO-TRANSLATED:7f03a1e5]
         // Set the number of poller threads and CPU affinity. This function must be called before using ZLToolKit network related objects to take effect.
-        // 如果需要调用getSnap和addFFmpegSource接口，可以关闭cpu亲和性  [AUTO-TRANSLATED:7629f7bc]
         // If you need to call the getSnap and addFFmpegSource interfaces, you can turn off CPU affinity
 
         EventPollerPool::setPoolSize(threads);
         WorkThreadPool::setPoolSize(threads);
         EventPollerPool::enableCpuAffinity(affinity);
 
-        // 简单的telnet服务器，可用于服务器调试，但是不能使用23端口，否则telnet上了莫名其妙的现象  [AUTO-TRANSLATED:f9324c6e]
         // Simple telnet server, can be used for server debugging, but cannot use port 23, otherwise telnet will have inexplicable phenomena
-        // 测试方法:telnet 127.0.0.1 9000  [AUTO-TRANSLATED:de0ac883]
         // Test method: telnet 127.0.0.1 9000
         auto shellSrv = std::make_shared<TcpServer>();
 
-        // rtsp[s]服务器, 可用于诸如亚马逊echo show这样的设备访问  [AUTO-TRANSLATED:f28e54f7]
         // rtsp[s] server, can be used for devices such as Amazon Echo Show to access
         auto rtspSrv = std::make_shared<TcpServer>();
         auto rtspSSLSrv = std::make_shared<TcpServer>();
 
-        // rtmp[s]服务器  [AUTO-TRANSLATED:3ac98bf5]
         // rtmp[s] server
         auto rtmpSrv = std::make_shared<TcpServer>();
         auto rtmpsSrv = std::make_shared<TcpServer>();
 
-        // http[s]服务器  [AUTO-TRANSLATED:5bbc8735]
         // http[s] server
         auto httpSrv = std::make_shared<TcpServer>();
         auto httpsSrv = std::make_shared<TcpServer>();
 
 #if defined(ENABLE_RTPPROXY)
-        // GB28181 rtp推流端口，支持UDP/TCP  [AUTO-TRANSLATED:8a9b2872]
         // GB28181 rtp push stream port, supports UDP/TCP
         auto rtpServer = std::make_shared<RtpServer>();
 #endif//defined(ENABLE_RTPPROXY)
 
 #if defined(ENABLE_WEBRTC)
         auto rtcSrv_tcp = std::make_shared<TcpServer>();
-        // webrtc udp服务器  [AUTO-TRANSLATED:157a64e5]
         // webrtc udp server
         auto rtcSrv_udp = std::make_shared<UdpServer>();
         rtcSrv_udp->setOnCreateSocket([](const EventPoller::Ptr &poller, const Buffer::Ptr &buf, struct sockaddr *, int) {
@@ -363,7 +337,6 @@ int start_main(int argc,char *argv[]) {
             }
             auto new_poller = WebRtcSession::queryPoller(buf);
             if (!new_poller) {
-                // 该数据对应的webrtc对象未找到，丢弃之  [AUTO-TRANSLATED:d401f8cb]
                 // The webrtc object corresponding to this data is not found, discard it
                 return Socket::Ptr();
             }
@@ -382,7 +355,6 @@ int start_main(int argc,char *argv[]) {
             }
             auto new_poller = SRT::SrtSession::queryPoller(buf);
             if (!new_poller) {
-                // 握手第一阶段  [AUTO-TRANSLATED:6b3abcd4]
                 // Handshake phase one
                 return Socket::createSocket(poller, false);
             }
@@ -393,44 +365,35 @@ int start_main(int argc,char *argv[]) {
 #endif //defined(ENABLE_SRT)
 
         installWebApi();
-        InfoL << "已启动http api 接口";
+        InfoL << "The http API interface has been started";
         installWebHook();
-        InfoL << "已启动http hook 接口";
+        InfoL << "The http hook interface has been started";
 
         try {
-            // rtsp服务器，端口默认554  [AUTO-TRANSLATED:07937d81]
             // rtsp server, default port 554
             if (rtspPort) { rtspSrv->start<RtspSession>(rtspPort, listen_ip); }
-            // rtsps服务器，端口默认322  [AUTO-TRANSLATED:e8a9fd71]
             // rtsps server, default port 322
             if (rtspsPort) { rtspSSLSrv->start<RtspSessionWithSSL>(rtspsPort, listen_ip); }
 
-            // rtmp服务器，端口默认1935  [AUTO-TRANSLATED:58324c74]
             // rtmp server, default port 1935
             if (rtmpPort) { rtmpSrv->start<RtmpSession>(rtmpPort, listen_ip); }
-            // rtmps服务器，端口默认19350  [AUTO-TRANSLATED:c565ff4e]
             // rtmps server, default port 19350
             if (rtmpsPort) { rtmpsSrv->start<RtmpSessionWithSSL>(rtmpsPort, listen_ip); }
 
-            // http服务器，端口默认80  [AUTO-TRANSLATED:8899e852]
             // http server, default port 80
             if (httpPort) { httpSrv->start<HttpSession>(httpPort, listen_ip); }
-            // https服务器，端口默认443  [AUTO-TRANSLATED:24999616]
             // https server, default port 443
             if (httpsPort) { httpsSrv->start<HttpsSession>(httpsPort, listen_ip); }
 
-            // telnet远程调试服务器  [AUTO-TRANSLATED:577cb7cf]
             // telnet remote debug server
             if (shellPort) { shellSrv->start<ShellSession>(shellPort, listen_ip); }
 
 #if defined(ENABLE_RTPPROXY)
-            // 创建rtp服务器  [AUTO-TRANSLATED:873f7f52]
             // create rtp server
             if (rtpPort) { rtpServer->start(rtpPort, listen_ip.c_str()); }
 #endif//defined(ENABLE_RTPPROXY)
 
 #if defined(ENABLE_WEBRTC)
-            // webrtc udp服务器  [AUTO-TRANSLATED:157a64e5]
             // webrtc udp server
             if (rtcPort) { rtcSrv_udp->start<WebRtcSession>(rtcPort, listen_ip);}
 
@@ -439,7 +402,6 @@ int start_main(int argc,char *argv[]) {
 #endif//defined(ENABLE_WEBRTC)
 
 #if defined(ENABLE_SRT)
-            // srt udp服务器  [AUTO-TRANSLATED:06911727]
             // srt udp server
             if (srtPort) { srtSrv->start<SRT::SrtSession>(srtPort, listen_ip); }
 #endif//defined(ENABLE_SRT)
@@ -449,7 +411,6 @@ int start_main(int argc,char *argv[]) {
             sleep(1);
 #if !defined(_WIN32)
             if (pid != getpid() && kill_parent_if_failed) {
-                // 杀掉守护进程  [AUTO-TRANSLATED:bee035e9]
                 // kill the daemon process
                 kill(pid, SIGINT);
             }
@@ -457,14 +418,13 @@ int start_main(int argc,char *argv[]) {
             return -1;
         }
 
-        // 设置退出信号处理函数  [AUTO-TRANSLATED:4f047770]
         // set exit signal handler
         static semaphore sem;
         signal(SIGINT, [](int) {
             InfoL << "SIGINT:exit";
-            signal(SIGINT, SIG_IGN); // 设置退出信号
+            signal(SIGINT, SIG_IGN); // Set the exit signal
             sem.post();
-        }); // 设置退出信号
+        }); // Set the exit signal
 
         signal(SIGTERM,[](int) {
             WarnL << "SIGTERM:exit";
@@ -484,11 +444,10 @@ int start_main(int argc,char *argv[]) {
     unInstallWebHook();
     onProcessExited();
 
-    // 休眠1秒再退出，防止资源释放顺序错误  [AUTO-TRANSLATED:1b11a74f]
     // sleep for 1 second before exiting, to prevent resource release order errors
-    InfoL << "程序退出中,请等待...";
+    InfoL << "The program is exiting, please wait...";
     sleep(1);
-    InfoL << "程序退出完毕!";
+    InfoL << "The program exit is completed!";
     return 0;
 }
 
