@@ -46,6 +46,7 @@ option(ENABLE_MEM_DEBUG "Enable Memory Debug" OFF)
 option(ENABLE_MP4 "Enable MP4" ON)
 option(ENABLE_MSVC_MT "Enable MSVC Mt/Mtd lib" ON)
 option(ENABLE_MYSQL "Enable MySQL" OFF)
+option(ENABLE_SQLITE "Enable Sqlite" ON)
 option(ENABLE_OPENSSL "Enable OpenSSL" ON)
 option(ENABLE_PLAYER "Enable Player" ON)
 option(ENABLE_RTPPROXY "Enable RTPPROXY" ON)
@@ -70,7 +71,7 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "")
   set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
-message(STATUS "编译类型: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Compilation type: ${CMAKE_BUILD_TYPE}")
 
 # 方便排查编译问题, 需要 FORCE CACHE, 否则需要命令行设置才生效
 # To facilitate the troubleshooting of compilation problems, you need to FORCE CACHE, otherwise you need to set it on the command line to take effect
@@ -92,7 +93,7 @@ if(NOT CMAKE_INSTALL_PREFIX)
     set(INSTALL_PATH_LIB     $ENV{HOME}/${CMAKE_PROJECT_NAME}/lib)
     set(INSTALL_PATH_INCLUDE $ENV{HOME}/${CMAKE_PROJECT_NAME}/include)
   else()
-    message(WARNING "该平台(${CMAKE_SYSTEM_NAME})下暂未设置安装路径")
+    message(WARNING "The installation path is not yet set under this platform (${CMAKE_SYSTEM_NAME})")
   endif()
 else()
   set(INSTALL_PATH_LIB     ${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX})
@@ -409,7 +410,7 @@ if(OPENSSL_FOUND AND ENABLE_OPENSSL)
 else()
   set(ENABLE_OPENSSL OFF)
   set(ENABLE_WEBRTC OFF)
-  message(WARNING "openssl 未找到, rtmp 将不支持 flash 播放器, https/wss/rtsps/rtmps/webrtc 也将失效")
+  message(WARNING "openssl not found, rtmp will not support flash player, https/wss/rtsps/rtmps/webrtc will also be invalid")
 endif()
 
 # 查找 mysql 是否安装
@@ -423,6 +424,16 @@ if(MYSQL_FOUND AND ENABLE_MYSQL)
 
   update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_MYSQL)
   update_cached_list(MK_LINK_LIBRARIES ${MYSQL_LIBRARIES})
+endif()
+
+# find sqlite installed
+find_package(SQLite3 QUIET)
+if(SQLite3_FOUND AND ENABLE_SQLITE)
+  message(STATUS "Found SQLite3: ${SQLite3_LIBRARIES}, ENABLE_SQLITE defined")
+  include_directories(SYSTEM ${SQLite3_INCLUDE_DIRS})
+
+  update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_SQLITE)
+  update_cached_list(MK_LINK_LIBRARIES ${SQLite3_LIBRARIES})
 endif()
 
 # 查找 x264 是否安装

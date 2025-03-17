@@ -36,6 +36,10 @@
 #include "Util/SqlPool.h"
 #endif //ENABLE_MYSQL
 
+#ifdef ENABLE_SQLITE
+#include "Util/SqlitePool.h"
+#endif //ENABLE_SQLITE
+
 #include "WebApi.h"
 #include "WebHook.h"
 #include "FFmpegSource.h"
@@ -143,7 +147,7 @@ static HttpApi toApi(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
         val["code"] = API::Success;
 
         if (parser["Content-Type"].find("application/json") == string::npos) {
-            throw InvalidArgsException("该接口只支持json格式的请求");
+            throw InvalidArgsException("This interface only supports requests in json format");
         }
         // 参数解析成json对象然后处理  [AUTO-TRANSLATED:6f23397b]
         // Parse parameters into a JSON object and then process
@@ -304,9 +308,14 @@ static inline void addHttpListener(){
             }
 #ifdef ENABLE_MYSQL
             catch (SqlException &ex) {
-                responseApi(API::SqlFailed, StrPrinter << "操作数据库失败:" << ex.what() << ":" << ex.getSql(), invoker);
+                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), invoker);
             }
 #endif // ENABLE_MYSQL
+#ifdef ENABLE_SQLITE
+            catch (SqliteException &ex) {
+                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), invoker);
+            }
+#endif // ENABLE_SQLITE
             catch (std::exception &ex) {
                 responseApi(API::Exception, ex.what(), invoker);
             }

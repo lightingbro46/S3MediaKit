@@ -25,7 +25,7 @@
 find_package(SRTP QUIET)
 if(NOT SRTP_FOUND OR NOT ENABLE_OPENSSL)
   set(ENABLE_WEBRTC OFF)
-  message(WARNING "srtp 未找到, WebRTC 相关功能打开失败")
+  message(WARNING "srtp not found, WebRTC related functions failed to open")
   return()
 endif()
 
@@ -44,10 +44,11 @@ if(SCTP_FOUND)
   message(STATUS "found library: ${SCTP_INCLUDE_DIRS} ${SCTP_LIBRARIES}")
   include_directories(SYSTEM ${SCTP_INCLUDE_DIRS})
   # TODO: 避免暴露 SCTP 到 WebRTC 模块外
+  # TODO: Avoid exposing SCTP outside of WebRTC modules
   list(APPEND COMPILE_DEFINITIONS ENABLE_SCTP)
   list(APPEND INCLUDE_DIRECTORIES ${SCTP_INCLUDE_DIRS})
   list(APPEND LINK_LIBRARIES ${SCTP_LIBRARIES})
-  message(STATUS "WebRTC datachannel 功能已打开")
+  message(STATUS "WebRTC datachannel function is turned on")
 endif()
 endif()
 
@@ -59,6 +60,7 @@ add_library(webrtc STATIC ${WEBRTC_SRC_LIST})
 add_library(ZLMediaKit::WebRTC ALIAS webrtc)
 target_compile_definitions(webrtc
   # ENABLE_SCTP 暂时需要暴露
+  # ENABLE_SCTP temporarily needs to be exposed
   PUBLIC ${COMPILE_DEFINITIONS})
 target_compile_options(webrtc
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
@@ -74,7 +76,7 @@ target_include_directories(webrtc
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
     ${INCLUDE_DIRECTORIES})
 
-message(STATUS "WebRTC 功能已开启")
+message(STATUS "WebRTC function is enabled")
 
 update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_WEBRTC)
 update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::WebRTC ${LINK_LIBRARIES})

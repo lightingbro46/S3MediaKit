@@ -41,4 +41,4 @@ target_include_directories(srt
 update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_SRT)
 update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::SRT)
 
-message(STATUS "srt 功能已开启")
+message(STATUS "srt function is enabled")
