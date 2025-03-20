@@ -253,24 +253,20 @@ static void *web_api_tag = nullptr;
 
 static inline void addHttpListener(){
     GET_CONFIG(bool, api_debug, API::kApiDebug);
-    // 注册监听kBroadcastHttpRequest事件  [AUTO-TRANSLATED:4af22c90]
     // Register to listen for the kBroadcastHttpRequest event
     NoticeCenter::Instance().addListener(&web_api_tag, Broadcast::kBroadcastHttpRequest, [](BroadcastHttpRequestArgs) {
         auto it = s_map_api.find(parser.url());
         if (it == s_map_api.end()) {
             return;
         }
-        // 该api已被消费  [AUTO-TRANSLATED:db0872fc]
         // This API has been consumed
         consumed = true;
 
         if(api_debug){
             auto newInvoker = [invoker, parser](int code, const HttpSession::KeyValue &headerOut, const HttpBody::Ptr &body) {
-                // body默认为空  [AUTO-TRANSLATED:4fd4ecc8]
                 // The body is empty by default
                 ssize_t size = 0;
                 if (body && body->remainSize()) {
-                    // 有body，获取body大小  [AUTO-TRANSLATED:ab1c417d]
                     // If there is a body, get the body size
                     size = body->remainSize();
                 }
@@ -298,7 +294,7 @@ static inline void addHttpListener(){
             ((HttpSession::HttpResponseInvoker &) invoker) = newInvoker;
         }
         auto helper = static_cast<SocketHelper &>(sender).shared_from_this();
-        // 在本poller线程下一次事件循环时执行http api，防止占用NoticeCenter的锁
+        // The next event loop of this poller thread, executes the http API to prevent the locks that occupy the NoticeCenter
         helper->getPoller()->async([it, parser, invoker, helper]() {
             try {
                 it->second(parser, invoker, *helper);
@@ -390,20 +386,16 @@ public:
     }
 };
 
-// 拉流代理器列表  [AUTO-TRANSLATED:6dcfb11f]
 // Pull stream proxy list
 static ServiceController<PlayerProxy> s_player_proxy;
 
-// 推流代理器列表  [AUTO-TRANSLATED:539a1bcf]
 // Push stream proxy list
 static ServiceController<PusherProxy> s_pusher_proxy;
 
-// FFmpeg拉流代理器列表  [AUTO-TRANSLATED:4bdedf10]
 // FFmpeg pull stream proxy list
 static ServiceController<FFmpegSource> s_ffmpeg_src;
 
 #if defined(ENABLE_RTPPROXY)
-// rtp服务器列表  [AUTO-TRANSLATED:2e362a8c]
 // RTP server list
 static ServiceController<RtpServer> s_rtp_server;
 #endif
@@ -473,7 +465,6 @@ Value makeMediaSourceJson(MediaSource &media){
         item["originSock"] = Json::nullValue;
     }
 
-    // getLossRate有线程安全问题；使用getMediaInfo接口才能获取丢包率；getMediaList接口将忽略丢包率  [AUTO-TRANSLATED:b2e927c6]
     // getLossRate has thread safety issues; use the getMediaInfo interface to get the packet loss rate; the getMediaList interface will ignore the packet loss rate
     auto current_thread = false;
     try { current_thread = media.getOwnerPoller()->isCurrentThread();} catch (...) {}
@@ -486,7 +477,6 @@ Value makeMediaSourceJson(MediaSource &media){
         obj["ready"] = track->ready();
         obj["codec_type"] = codec_type;
         if (current_thread) {
-            // rtp推流只有一个统计器，但是可能有多个track，如果短时间多次获取间隔丢包率，第二次会获取为-1  [AUTO-TRANSLATED:5bfbc951]
             // RTP push stream has only one statistics, but may have multiple tracks. If you get the interval packet loss rate multiple times in a short time, the second time will get -1
             auto loss = media.getLossRate(codec_type);
             if (loss == -1) {
@@ -534,7 +524,6 @@ Value makeMediaSourceJson(MediaSource &media){
 uint16_t openRtpServer(uint16_t local_port, const mediakit::MediaTuple &tuple, int tcp_mode, const string &local_ip, bool re_use_port, uint32_t ssrc, int only_track, bool multiplex) {
     auto key = tuple.shortUrl();
     if (s_rtp_server.find(key)) {
-        // 为了防止RtpProcess所有权限混乱的问题，不允许重复添加相同的key  [AUTO-TRANSLATED:06c7b14c]
         // To prevent the problem of all permissions being messed up in RtpProcess, duplicate keys are not allowed to be added
         return 0;
     }
@@ -543,12 +532,10 @@ uint16_t openRtpServer(uint16_t local_port, const mediakit::MediaTuple &tuple, i
         server->start(local_port, local_ip.c_str(), tuple, (RtpServer::TcpMode)tcp_mode, re_use_port, ssrc, only_track, multiplex);
     });
     server->setOnDetach([key](const SockException &ex) {
-        // 设置rtp超时移除事件  [AUTO-TRANSLATED:98d42cf3]
         // Set RTP timeout removal event
         s_rtp_server.erase(key);
     });
 
-    // 回复json  [AUTO-TRANSLATED:0c443c6a]
     // Reply JSON
     return server->getPort();
 }
@@ -603,7 +590,6 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
         for (auto &val : *thread_mem_info) {
             (*obj)["threadMem"].append(val);
         }
-        // 触发回调  [AUTO-TRANSLATED:08ea452d]
         // Trigger callback
         cb(*obj);
     });
@@ -645,32 +631,26 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
                     const function<void(const SockException &ex, const string &key)> &cb) {
     auto key = tuple.shortUrl();
     if (s_player_proxy.find(key)) {
-        // 已经在拉流了  [AUTO-TRANSLATED:e06c57d7]
         // Already pulling stream
         cb(SockException(Err_other, "This stream already exists"), key);
         return;
     }
-    // 添加拉流代理  [AUTO-TRANSLATED:aa516f44]
     // Add pull stream proxy
     auto player = s_player_proxy.make(key, tuple, option, retry_count);
 
-    // 先透传拷贝参数  [AUTO-TRANSLATED:22b5605e]
     // First pass-through copy parameters
     for (auto &pr : args) {
         (*player)[pr.first] = pr.second;
     }
 
-    // 指定RTP over TCP(播放rtsp时有效)  [AUTO-TRANSLATED:1a062656]
     // Specify RTP over TCP (effective when playing RTSP)
     (*player)[Client::kRtpType] = rtp_type;
 
     if (timeout_sec > 0.1f) {
-        // 播放握手超时时间  [AUTO-TRANSLATED:5a29ae1f]
         // Play handshake timeout
         (*player)[Client::kTimeoutMS] = timeout_sec * 1000;
     }
 
-    // 开始播放，如果播放失败或者播放中止，将会自动重试若干次，默认一直重试  [AUTO-TRANSLATED:ac8499e5]
     // Start playing. If playback fails or is stopped, it will automatically retry several times, by default it will retry indefinitely
     player->setPlayCallbackOnce([cb, key](const SockException &ex) {
         if (ex) {
@@ -679,7 +659,6 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
         cb(ex, key);
     });
 
-    // 被主动关闭拉流  [AUTO-TRANSLATED:41a19476]
     // The pull stream was actively closed
     player->setOnClose([key](const SockException &ex) {
         s_player_proxy.erase(key);
@@ -705,33 +684,27 @@ void addStreamPusherProxy(const string &schema,
         return;
     }
     if (s_pusher_proxy.find(key)) {
-        // 已经在推流了  [AUTO-TRANSLATED:81fcd202]
         // Already pushing stream
         cb(SockException(Err_success), key);
         return;
     }
 
-    // 添加推流代理  [AUTO-TRANSLATED:f9dbc76d]
     // Add push stream proxy
     auto pusher = s_pusher_proxy.make(key, src, retry_count);
 
-    // 先透传拷贝参数  [AUTO-TRANSLATED:22b5605e]
     // First pass-through copy parameters
     for (auto &pr : args) {
         (*pusher)[pr.first] = pr.second;
     }
 
-    // 指定RTP over TCP(播放rtsp时有效)  [AUTO-TRANSLATED:1a062656]
     // Specify RTP over TCP (effective when playing RTSP)
     (*pusher)[Client::kRtpType] = rtp_type;
 
     if (timeout_sec > 0.1f) {
-        // 推流握手超时时间  [AUTO-TRANSLATED:00762fc1]
         // Push stream handshake timeout
         (*pusher)[Client::kTimeoutMS] = timeout_sec * 1000;
     }
 
-    // 开始推流，如果推流失败或者推流中止，将会自动重试若干次，默认一直重试  [AUTO-TRANSLATED:c8b95088]
     // Start pushing stream. If the push stream fails or is stopped, it will automatically retry several times, by default it will retry indefinitely
     pusher->setPushCallbackOnce([cb, key, url](const SockException &ex) {
         if (ex) {
@@ -741,7 +714,6 @@ void addStreamPusherProxy(const string &schema,
         cb(ex, key);
     });
 
-    // 被主动关闭推流  [AUTO-TRANSLATED:bf216f82]
     // Stream closed actively
     pusher->setOnClose([key, url](const SockException &ex) {
         WarnL << "Push " << url << " failed, key: " << key << ", err: " << ex;
@@ -752,22 +724,15 @@ void addStreamPusherProxy(const string &schema,
 
 
 /**
- * 安装api接口
- * 所有api都支持GET和POST两种方式
- * POST方式参数支持application/json和application/x-www-form-urlencoded方式
  * Install api interface
  * All apis support GET and POST methods
  * POST method parameters support application/json and application/x-www-form-urlencoded methods
- 
- * [AUTO-TRANSLATED:62e68c43]
  */
 void installWebApi() {
     addHttpListener();
     GET_CONFIG(string,api_secret,API::kSecret);
 
-    // 获取线程负载  [AUTO-TRANSLATED:3b0ece5c]
     // Get thread load
-    // 测试url http://127.0.0.1/index/api/getThreadsLoad  [AUTO-TRANSLATED:de1c93e7]
     // Test url http://127.0.0.1/index/api/getThreadsLoad
     api_regist("/index/api/getThreadsLoad", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
@@ -786,9 +751,7 @@ void installWebApi() {
         });
     });
 
-    // 获取后台工作线程负载  [AUTO-TRANSLATED:6166e265]
     // Get background worker thread load
-    // 测试url http://127.0.0.1/index/api/getWorkThreadsLoad  [AUTO-TRANSLATED:209a8bc1]
     // Test url http://127.0.0.1/index/api/getWorkThreadsLoad
     api_regist("/index/api/getWorkThreadsLoad", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
@@ -807,9 +770,7 @@ void installWebApi() {
         });
     });
 
-    // 获取服务器配置  [AUTO-TRANSLATED:7dd2f3da]
     // Get server configuration
-    // 测试url http://127.0.0.1/index/api/getServerConfig  [AUTO-TRANSLATED:59cd0d71]
     // Test url http://127.0.0.1/index/api/getServerConfig
     api_regist("/index/api/getServerConfig",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -820,11 +781,8 @@ void installWebApi() {
         val["data"].append(obj);
     });
 
-    // 设置服务器配置  [AUTO-TRANSLATED:3de7bd37]
     // Set server configuration
-    // 测试url(比如关闭http api调试) http://127.0.0.1/index/api/setServerConfig?api.apiDebug=0  [AUTO-TRANSLATED:9471d218]
     // Test url (e.g. disable http api debugging) http://127.0.0.1/index/api/setServerConfig?api.apiDebug=0
-    // 你也可以通过http post方式传参，可以通过application/x-www-form-urlencoded或application/json方式传参  [AUTO-TRANSLATED:d493a7c0]
     // You can also pass parameters through http post method, you can pass parameters through application/x-www-form-urlencoded or application/json methods
     api_regist("/index/api/setServerConfig",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -833,14 +791,11 @@ void installWebApi() {
         for (auto &pr : allArgs.args) {
             if (ini.find(pr.first) == ini.end()) {
 #if 1
-                // 没有这个key  [AUTO-TRANSLATED:d6855e02]
                 // This key does not exist
                 continue;
 #else
-                // 新增配置选项,为了动态添加多个ffmpeg cmd 模板  [AUTO-TRANSLATED:0f977fcd]
                 // Add configuration options to dynamically add multiple ffmpeg cmd templates
                 ini[pr.first] = pr.second;
-                // 防止changed变化  [AUTO-TRANSLATED:f8ad7e59]
                 // Prevent changed changes
                 continue;
 #endif
@@ -853,7 +808,6 @@ void installWebApi() {
                 continue;
             }
             ini[pr.first] = pr.second;
-            // 替换成功  [AUTO-TRANSLATED:b5d4fec1]
             // Replacement successful
             ++changed;
         }
@@ -872,35 +826,27 @@ void installWebApi() {
         }
     };
 
-    // 获取服务器api列表  [AUTO-TRANSLATED:e4c0dd9d]
     // Get server api list
-    // 测试url http://127.0.0.1/index/api/getApiList  [AUTO-TRANSLATED:df09e368]
     // Test url http://127.0.0.1/index/api/getApiList
     api_regist("/index/api/getApiList",[](API_ARGS_MAP){
         s_get_api_list(API_ARGS_VALUE);
     });
 
-    // 获取服务器api列表  [AUTO-TRANSLATED:e4c0dd9d]
     // Get server api list
-    // 测试url http://127.0.0.1/index/  [AUTO-TRANSLATED:76934dd3]
     // Test url http://127.0.0.1/index/
     api_regist("/index/",[](API_ARGS_MAP){
         s_get_api_list(API_ARGS_VALUE);
     });
 
 #if !defined(_WIN32)
-    // 重启服务器,只有Daemon方式才能重启，否则是直接关闭！  [AUTO-TRANSLATED:9d8a1c32]
     // Restart server, only Daemon mode can restart, otherwise it will be closed directly!
-    // 测试url http://127.0.0.1/index/api/restartServer  [AUTO-TRANSLATED:8beaaa8a]
     // Test url http://127.0.0.1/index/api/restartServer
     api_regist("/index/api/restartServer",[](API_ARGS_MAP){
         CHECK_SECRET();
         EventPollerPool::Instance().getPoller()->doDelayTask(1000,[](){
-            // 尝试正常退出  [AUTO-TRANSLATED:93828d0f]
             // Try to exit normally
             ::kill(getpid(), SIGINT);
 
-            // 3秒后强制退出  [AUTO-TRANSLATED:fdc82920]
             // Force exit after 3 seconds
             EventPollerPool::Instance().getPoller()->doDelayTask(3000,[](){
                 exit(0);
@@ -912,14 +858,12 @@ void installWebApi() {
         val["msg"] = "MediaServer will reboot in on 1 second";
     });
 #else
-    // 增加Windows下的重启代码  [AUTO-TRANSLATED:dcba12d5]
     // Add restart code for Windows
     api_regist("/index/api/restartServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        // 创建重启批处理脚本文件  [AUTO-TRANSLATED:cc18c259]
         // Create a restart batch script file
         FILE *pf;
-        errno_t err = ::_wfopen_s(&pf, L"RestartServer.cmd", L"w"); //“w”如果该文件存在，其内容将被覆盖
+        errno_t err = ::_wfopen_s(&pf, L"RestartServer.cmd", L"w"); //"w" If the file exists, its contents will be overwritten
         if (err == 0) {
             char szExeName[1024];
             char drive[_MAX_DRIVE] = { 0 };
@@ -927,13 +871,12 @@ void installWebApi() {
             char fname[_MAX_FNAME] = { 0 };
             char ext[_MAX_EXT] = { 0 };
             char exeName[_MAX_FNAME] = { 0 };
-            GetModuleFileNameA(NULL, szExeName, 1024); //获取进程的全路径
+            GetModuleFileNameA(NULL, szExeName, 1024); //Get the full path of the process
             _splitpath(szExeName, drive, dir, fname, ext);
             strcpy(exeName, fname);
             strcat(exeName, ext);
             fprintf(pf, "@echo off\ntaskkill /f /im %s\nstart \"\" \"%s\"\ndel %%0", exeName, szExeName);
             fclose(pf);
-            // 1秒后执行创建的批处理脚本  [AUTO-TRANSLATED:596dbca9]
             // Execute the created batch script after 1 second
             EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
                 STARTUPINFO si;
@@ -954,39 +897,33 @@ void installWebApi() {
 
                 if (bRet == FALSE) {
                     int err = GetLastError();
-                    cout << endl << "无法执行重启操作，错误代码：" << err << endl;
+                    cout << endl << "Unable to perform restart operation, error code：" << err << endl;
                 }
                 WaitForSingleObject(pi.hProcess, INFINITE);
                 CloseHandle(pi.hProcess);
                 CloseHandle(pi.hThread);
                 return 0;
             });
-            val["msg"] = "服务器将在一秒后自动重启";
+            val["msg"] = "The server will automatically restart after one second";
         } else {
-            val["msg"] = "创建重启脚本文件失败";
+            val["msg"] = "Failed to create a restart script file";
             val["code"] = API::OtherFailed;
         }
     });
 #endif//#if !defined(_WIN32)
 
-    // 获取流列表，可选筛选参数  [AUTO-TRANSLATED:68ffc6b6]
     // Get stream list, optional filtering parameters
-    // 测试url0(获取所有流) http://127.0.0.1/index/api/getMediaList  [AUTO-TRANSLATED:434652ea]
     // Test url0 (get all streams) http://127.0.0.1/index/api/getMediaList
-    // 测试url1(获取虚拟主机为"__defaultVost__"的流) http://127.0.0.1/index/api/getMediaList?vhost=__defaultVost__  [AUTO-TRANSLATED:5d9bd1ee]
     // Test url1 (get streams with virtual host "__defaultVost__") http://127.0.0.1/index/api/getMediaList?vhost=__defaultVost__
-    // 测试url2(获取rtsp类型的流) http://127.0.0.1/index/api/getMediaList?schema=rtsp  [AUTO-TRANSLATED:21c2c15d]
     // Test url2 (get rtsp type streams) http://127.0.0.1/index/api/getMediaList?schema=rtsp
     api_regist("/index/api/getMediaList",[](API_ARGS_MAP){
         CHECK_SECRET();
-        // 获取所有MediaSource列表  [AUTO-TRANSLATED:7bf16dc2]
         // Get all MediaSource lists
         MediaSource::for_each_media([&](const MediaSource::Ptr &media) {
             val["data"].append(makeMediaSourceJson(*media));
         }, allArgs["schema"], allArgs["vhost"], allArgs["app"], allArgs["stream"]);
     });
 
-    // 测试url http://127.0.0.1/index/api/isMediaOnline?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs  [AUTO-TRANSLATED:126a75e8]
     // Test url http://127.0.0.1/index/api/isMediaOnline?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
     api_regist("/index/api/isMediaOnline",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -994,9 +931,7 @@ void installWebApi() {
         val["online"] = (bool) (MediaSource::find(allArgs["schema"],allArgs["vhost"],allArgs["app"],allArgs["stream"]));
     });
 
-    // 获取媒体流播放器列表  [AUTO-TRANSLATED:bcadf31c]
     // Get media stream player list
-    // 测试url http://127.0.0.1/index/api/getMediaPlayerList?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs  [AUTO-TRANSLATED:2aab7522]
     // Test url http://127.0.0.1/index/api/getMediaPlayerList?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
     api_regist("/index/api/getMediaPlayerList",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1040,7 +975,6 @@ void installWebApi() {
         src->broadcastMessage(any);
     });
 
-    // 测试url http://127.0.0.1/index/api/getMediaInfo?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs  [AUTO-TRANSLATED:9402e811]
     // Test url http://127.0.0.1/index/api/getMediaInfo?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
     api_regist("/index/api/getMediaInfo",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1056,14 +990,11 @@ void installWebApi() {
         });
     });
 
-    // 主动关断流，包括关断拉流、推流  [AUTO-TRANSLATED:80506955]
     // Actively close the stream, including closing the pull stream and push stream
-    // 测试url http://127.0.0.1/index/api/close_stream?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1  [AUTO-TRANSLATED:c3831592]
     // Test url http://127.0.0.1/index/api/close_stream?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1
     api_regist("/index/api/close_stream",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
         CHECK_ARGS("schema","vhost","app","stream");
-        // 踢掉推流器  [AUTO-TRANSLATED:61e39b14]
         // Kick out the pusher
         auto src = MediaSource::find(allArgs["schema"],
                                      allArgs["vhost"],
@@ -1083,13 +1014,10 @@ void installWebApi() {
         });
     });
 
-    // 批量主动关断流，包括关断拉流、推流  [AUTO-TRANSLATED:5d180cd8]
     // Batch actively close the stream, including closing the pull stream and push stream
-    // 测试url http://127.0.0.1/index/api/close_streams?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1  [AUTO-TRANSLATED:786933db]
     // Test url http://127.0.0.1/index/api/close_streams?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1
     api_regist("/index/api/close_streams",[](API_ARGS_MAP){
         CHECK_SECRET();
-        // 筛选命中个数  [AUTO-TRANSLATED:6db1e8c7]
         // Filter hit count
         int count_hit = 0;
         int count_closed = 0;
@@ -1109,11 +1037,8 @@ void installWebApi() {
         val["count_closed"] = count_closed;
     });
 
-    // 获取所有Session列表信息  [AUTO-TRANSLATED:e785052d]
     // Get all Session list information
-    // 可以根据本地端口和远端ip来筛选  [AUTO-TRANSLATED:4d4c9d61]
     // You can filter by local port and remote ip
-    // 测试url(筛选某端口下的tcp会话) http://127.0.0.1/index/api/getAllSession?local_port=1935  [AUTO-TRANSLATED:ef845193]
     // Test url (filter tcp session under a certain port) http://127.0.0.1/index/api/getAllSession?local_port=1935
     api_regist("/index/api/getAllSession",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -1135,14 +1060,11 @@ void installWebApi() {
         });
     });
 
-    // 断开tcp连接，比如说可以断开rtsp、rtmp播放器等  [AUTO-TRANSLATED:9147ffec]
     // Disconnect the tcp connection, for example, you can disconnect the rtsp, rtmp player, etc.
-    // 测试url http://127.0.0.1/index/api/kick_session?id=123456  [AUTO-TRANSLATED:c2880cb5]
     // Test url http://127.0.0.1/index/api/kick_session?id=123456
     api_regist("/index/api/kick_session",[](API_ARGS_MAP){
         CHECK_SECRET();
         CHECK_ARGS("id");
-        // 踢掉tcp会话  [AUTO-TRANSLATED:f6f318bd]
         // Kick out the tcp session
         auto session = SessionMap::Instance().get(allArgs["id"]);
         if(!session){
@@ -1152,9 +1074,7 @@ void installWebApi() {
     });
 
 
-    // 批量断开tcp连接，比如说可以断开rtsp、rtmp播放器等  [AUTO-TRANSLATED:fef59eb8]
     // Batch disconnect tcp connections, for example, you can disconnect rtsp, rtmp players, etc.
-    // 测试url http://127.0.0.1/index/api/kick_sessions?local_port=1935  [AUTO-TRANSLATED:5891b482]
     // Test url http://127.0.0.1/index/api/kick_sessions?local_port=1935
     api_regist("/index/api/kick_sessions", [](API_ARGS_MAP) {
         CHECK_SECRET();
@@ -1171,7 +1091,6 @@ void installWebApi() {
                 return;
             }
             if (session->getIdentifier() == sender.getIdentifier()) {
-                // 忽略本http链接  [AUTO-TRANSLATED:9fb4bf76]
                 // Ignore this http link
                 return;
             }
@@ -1185,9 +1104,7 @@ void installWebApi() {
         val["count_hit"] = (Json::UInt64)count_hit;
     });
 
-    // 动态添加rtsp/rtmp推流代理  [AUTO-TRANSLATED:2eb09bc9]
     // Dynamically add rtsp/rtmp push stream proxy
-    // 测试url http://127.0.0.1/index/api/addStreamPusherProxy?schema=rtmp&vhost=__defaultVhost__&app=proxy&stream=0&dst_url=rtmp://127.0.0.1/live/obs  [AUTO-TRANSLATED:25d7d4b0]
     // Test url http://127.0.0.1/index/api/addStreamPusherProxy?schema=rtmp&vhost=__defaultVhost__&app=proxy&stream=0&dst_url=rtmp://127.0.0.1/live/obs
     api_regist("/index/api/addStreamPusherProxy", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
@@ -1221,9 +1138,7 @@ void installWebApi() {
                              });
     });
 
-    // 关闭推流代理  [AUTO-TRANSLATED:91602b75]
     // Close the push stream proxy
-    // 测试url http://127.0.0.1/index/api/delStreamPusherProxy?key=__defaultVhost__/proxy/0  [AUTO-TRANSLATED:2671206c]
     // Test url http://127.0.0.1/index/api/delStreamPusherProxy?key=__defaultVhost__/proxy/0
     api_regist("/index/api/delStreamPusherProxy", [](API_ARGS_MAP) {
         CHECK_SECRET();
@@ -1246,9 +1161,7 @@ void installWebApi() {
             val["data"].append(item);
         });
     });
-    // 动态添加rtsp/rtmp拉流代理  [AUTO-TRANSLATED:2616537c]
     // Dynamically add rtsp/rtmp pull stream proxy
-    // 测试url http://127.0.0.1/index/api/addStreamProxy?vhost=__defaultVhost__&app=proxy&enable_rtsp=1&enable_rtmp=1&stream=0&url=rtmp://127.0.0.1/live/obs  [AUTO-TRANSLATED:71ddce15]
     // Test url http://127.0.0.1/index/api/addStreamProxy?vhost=__defaultVhost__&app=proxy&enable_rtsp=1&enable_rtmp=1&stream=0&url=rtmp://127.0.0.1/live/obs
     api_regist("/index/api/addStreamProxy",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1285,9 +1198,7 @@ void installWebApi() {
                        });
     });
 
-    // 关闭拉流代理  [AUTO-TRANSLATED:5204f128]
     // Close the pull stream proxy
-    // 测试url http://127.0.0.1/index/api/delStreamProxy?key=__defaultVhost__/proxy/0  [AUTO-TRANSLATED:2b0903ef]
     // Test url http://127.0.0.1/index/api/delStreamProxy?key=__defaultVhost__/proxy/0
     api_regist("/index/api/delStreamProxy",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -1304,7 +1215,6 @@ void installWebApi() {
                                      const function<void(const SockException &ex, const string &key)> &cb) {
         auto key = MD5(dst_url).hexdigest();
         if (s_ffmpeg_src.find(key)) {
-            // 已经在拉流了  [AUTO-TRANSLATED:e06c57d7]
             // Already pulling
             cb(SockException(Err_success), key);
             return;
@@ -1324,9 +1234,7 @@ void installWebApi() {
         });
     };
 
-    // 动态添加rtsp/rtmp拉流代理  [AUTO-TRANSLATED:2616537c]
     // Dynamically add rtsp/rtmp pull stream proxy
-    // 测试url http://127.0.0.1/index/api/addFFmpegSource?src_url=http://live.hkstv.hk.lxdns.com/live/hks2/playlist.m3u8&dst_url=rtmp://127.0.0.1/live/hks2&timeout_ms=10000  [AUTO-TRANSLATED:501cdd89]
     // // Test url http://127.0.0.1/index/api/addFFmpegSource?src_url=http://live.hkstv.hk.lxdns.com/live/hks2/playlist.m3u8&dst_url=rtmp://127.0.0.1/live/hks2&timeout_ms=10000
     api_regist("/index/api/addFFmpegSource",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1349,9 +1257,7 @@ void installWebApi() {
         });
     });
 
-    // 关闭拉流代理  [AUTO-TRANSLATED:5204f128]
     // Close the pull stream proxy
-    // 测试url http://127.0.0.1/index/api/delFFmepgSource?key=key  [AUTO-TRANSLATED:ed6fa147]
     // Test url http://127.0.0.1/index/api/delFFmepgSource?key=key
     api_regist("/index/api/delFFmpegSource",[](API_ARGS_MAP){
         CHECK_SECRET();
@@ -1370,9 +1276,7 @@ void installWebApi() {
             val["data"].append(item);
         });
     });
-    // 新增http api下载可执行程序文件接口  [AUTO-TRANSLATED:d6e44e84]
     // Add a new http api to download executable files
-    // 测试url http://127.0.0.1/index/api/downloadBin  [AUTO-TRANSLATED:9525e834]
     // Test url http://127.0.0.1/index/api/downloadBin
     api_regist("/index/api/downloadBin",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1416,13 +1320,11 @@ void installWebApi() {
         auto tuple = MediaTuple { vhost, app, stream_id, "" };
         auto tcp_mode = allArgs["tcp_mode"].as<int>();
         if (allArgs["enable_tcp"].as<int>() && !tcp_mode) {
-            // 兼容老版本请求，新版本去除enable_tcp参数并新增tcp_mode参数  [AUTO-TRANSLATED:3b6a5ab5]
             // Compatible with old version requests, the new version removes the enable_tcp parameter and adds the tcp_mode parameter
             tcp_mode = 1;
         }
         auto only_track = allArgs["only_track"].as<int>();
         if (allArgs["only_audio"].as<bool>()) {
-            // 兼容老版本请求，新版本去除only_audio参数并新增only_track参数  [AUTO-TRANSLATED:a7a40942]
             // Compatible with old version requests, the new version removes the only_audio parameter and adds the only_track parameter
             only_track = 1;
         }
@@ -1435,7 +1337,6 @@ void installWebApi() {
         if (port == 0) {
             throw InvalidArgsException("This stream already exists");
         }
-        // 回复json  [AUTO-TRANSLATED:0c443c6a]
         // Reply json
         val["port"] = port;
     });
@@ -1455,13 +1356,11 @@ void installWebApi() {
         auto tuple = MediaTuple { vhost, app, stream_id, "" };
         auto tcp_mode = allArgs["tcp_mode"].as<int>();
         if (allArgs["enable_tcp"].as<int>() && !tcp_mode) {
-            // 兼容老版本请求，新版本去除enable_tcp参数并新增tcp_mode参数  [AUTO-TRANSLATED:b5f8f5df]
             // Compatible with old version requests, the new version removes the enable_tcp parameter and adds the tcp_mode parameter
             tcp_mode = 1;
         }
         auto only_track = allArgs["only_track"].as<int>();
         if (allArgs["only_audio"].as<bool>()) {
-            // 兼容老版本请求，新版本去除only_audio参数并新增only_track参数  [AUTO-TRANSLATED:a7a40942]
             // Compatible with old version requests, the new version removes the only_audio parameter and adds the only_track parameter
             only_track = 1;
         }
@@ -1474,7 +1373,6 @@ void installWebApi() {
         if (port == 0) {
             throw InvalidArgsException("This stream already exists");
         }
-        // 回复json  [AUTO-TRANSLATED:e80815cd]
         // Reply json
         val["port"] = port;
     });
@@ -1576,7 +1474,6 @@ void installWebApi() {
         }
         auto type = allArgs["type"].empty() ? (int)MediaSourceEvent::SendRtpArgs::kRtpPS : allArgs["type"].as<int>();
         if (!allArgs["use_ps"].empty()) {
-            // 兼容之前的use_ps参数  [AUTO-TRANSLATED:0193f489]
             // Compatible with the previous use_ps parameter
             type = allArgs["use_ps"].as<int>();
         }
@@ -1597,7 +1494,6 @@ void installWebApi() {
         args.udp_rtcp_timeout = allArgs["udp_rtcp_timeout"];
         args.recv_stream_id = allArgs["recv_stream_id"];
         args.close_delay_ms = allArgs["close_delay_ms"];
-        // 记录发送流的app和vhost  [AUTO-TRANSLATED:ee1b41d5]
         // Record the app and vhost of the sending stream
         args.recv_stream_app = allArgs["app"];
         args.recv_stream_vhost = allArgs["vhost"];
@@ -1696,7 +1592,6 @@ void installWebApi() {
         }
 
         src->getOwnerPoller()->async([=]() mutable {
-            // ssrc如果为空，关闭全部  [AUTO-TRANSLATED:e0955dab]
             // If ssrc is empty, close all
             if (!src->stopSendRtp(allArgs["ssrc"])) {
                 val["code"] = API::OtherFailed;
@@ -1719,7 +1614,6 @@ void installWebApi() {
         if (!allArgs["app"].empty()) {
             app = allArgs["app"];
         }
-        // 只是暂停流的检查，流媒体服务器做为流负载服务，收流就转发，RTSP/RTMP有自己暂停协议  [AUTO-TRANSLATED:dda6ee31]
         // Only pause the stream check, the media server acts as a stream load balancing service, receiving the stream and forwarding it, RTSP/RTMP has its own pause protocol
         auto src = MediaSource::find(vhost, app, allArgs["stream_id"]);
         auto process = src ? src->getRtpProcess() : nullptr;
@@ -1752,7 +1646,6 @@ void installWebApi() {
 
 #endif//ENABLE_RTPPROXY
 
-    // 开始录制hls或MP4  [AUTO-TRANSLATED:0818775e]
     // Start recording hls or MP4
     api_regist("/index/api/startRecord",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1772,7 +1665,6 @@ void installWebApi() {
         });
     });
 
-    // 设置录像流播放速度  [AUTO-TRANSLATED:a8d82298]
     // Set the playback speed of the recording stream
     api_regist("/index/api/setRecordSpeed", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
@@ -1816,7 +1708,6 @@ void installWebApi() {
         });
     });
 
-    // 停止录制hls或MP4  [AUTO-TRANSLATED:24d11a0c]
     // Stop recording hls or MP4
     api_regist("/index/api/stopRecord",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1837,7 +1728,6 @@ void installWebApi() {
         });
     });
 
-    // 获取hls或MP4录制状态  [AUTO-TRANSLATED:a08a2f1a]
     // Get the recording status of hls or MP4
     api_regist("/index/api/isRecording",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
@@ -1879,7 +1769,6 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    // 删除录像文件夹  [AUTO-TRANSLATED:821aed07]
     // Delete the recording folder
     // http://127.0.0.1/index/api/deleteRecordDirectroy?vhost=__defaultVhost__&app=live&stream=ss&period=2020-01-01
     api_regist("/index/api/deleteRecordDirectory", [](API_ARGS_MAP) {
@@ -1893,11 +1782,9 @@ void installWebApi() {
         bool recording = false;
         auto name = allArgs["name"];
         if (!name.empty()) {
-            // 删除指定文件  [AUTO-TRANSLATED:e8ee7bfa]
             // Delete the specified file
             record_path += name;
         } else {
-            // 删除文件夹，先判断该流是否正在录制中  [AUTO-TRANSLATED:9f124786]
             // Delete the folder, first check if the stream is being recorded
             auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
             if (src && src->isRecording(Recorder::type_mp4)) {
@@ -1923,7 +1810,6 @@ void installWebApi() {
         File::deleteEmptyDir(record_path);
     });
 
-    // 获取录像文件夹列表或mp4文件列表  [AUTO-TRANSLATED:f7e299bc]
     // Get the list of recording folders or mp4 files
     //http://127.0.0.1/index/api/getMP4RecordFile?vhost=__defaultVhost__&app=live&stream=ss&period=2020-01
     api_regist("/index/api/getMP4RecordFile", [](API_ARGS_MAP){
@@ -1933,7 +1819,6 @@ void installWebApi() {
         auto record_path = Recorder::getRecordPath(Recorder::type_mp4, tuple, allArgs["customized_path"]);
         auto period = allArgs["period"];
 
-        // 判断是获取mp4文件列表还是获取文件夹列表  [AUTO-TRANSLATED:b9c86d2f]
         // Determine whether to get the mp4 file list or the folder list
         bool search_mp4 = period.size() == sizeof("2020-02-01") - 1;
         if (search_mp4) {
@@ -1941,7 +1826,6 @@ void installWebApi() {
         }
 
         Json::Value paths(arrayValue);
-        // 这是筛选日期，获取文件夹列表  [AUTO-TRANSLATED:786fa49d]
         // This is to filter the date and get the folder list
         File::scanDir(record_path, [&](const string &path, bool isDir) {
             auto pos = path.rfind('/');
@@ -1949,12 +1833,10 @@ void installWebApi() {
                 string relative_path = path.substr(pos + 1);
                 if (search_mp4) {
                     if (!isDir) {
-                        // 我们只收集mp4文件，对文件夹不感兴趣  [AUTO-TRANSLATED:254d9f25]
                         // We only collect mp4 files, we are not interested in folders
                         paths.append(relative_path);
                     }
                 } else if (isDir && relative_path.find(period) == 0) {
-                    // 匹配到对应日期的文件夹  [AUTO-TRANSLATED:cd3d10b9]
                     // Match the folder for the corresponding date
                     paths.append(relative_path);
                 }
@@ -1975,28 +1857,23 @@ void installWebApi() {
         GET_CONFIG(string, defaultSnap, API::kDefaultSnap);
         if (!File::fileSize(snap_path)) {
             if (!err_msg.empty() && (!s_snap_success_once || defaultSnap.empty())) {
-                // 重来没截图成功过或者默认截图图片为空，那么直接返回FFmpeg错误日志  [AUTO-TRANSLATED:5bde510f]
                 // If the screenshot has never been successful or the default screenshot image is empty, then directly return the FFmpeg error log
                 headerOut["Content-Type"] = HttpFileManager::getContentType(".txt");
                 invoker.responseFile(headerIn, headerOut, err_msg, false, false);
                 return;
             }
-            // 截图成功过一次，那么认为配置无错误，截图失败时，返回预设默认图片  [AUTO-TRANSLATED:ffe4d807]
             // If the screenshot has been successful once, then it is considered that the configuration is error-free, and when the screenshot fails, the preset default image is returned
             const_cast<string &>(snap_path) = File::absolutePath("", defaultSnap);
             headerOut["Content-Type"] = HttpFileManager::getContentType(snap_path.data());
         } else {
             s_snap_success_once = true;
-            // 之前生成的截图文件，我们默认为jpeg格式  [AUTO-TRANSLATED:5cc5c1ff]
             // The previously generated screenshot file, we default to jpeg format
             headerOut["Content-Type"] = HttpFileManager::getContentType(".jpeg");
         }
-        // 返回图片给http客户端  [AUTO-TRANSLATED:58a1f64e]
         // Return image to http client
         invoker.responseFile(headerIn, headerOut, snap_path);
     };
 
-    // 获取截图缓存或者实时截图  [AUTO-TRANSLATED:78e2fe1e]
     // Get screenshot cache or real-time screenshot
     //http://127.0.0.1/index/api/getSnap?url=rtmp://127.0.0.1/record/robot.mp4&timeout_sec=10&expire_sec=3
     api_regist("/index/api/getSnap", [](API_ARGS_MAP_ASYNC){
@@ -2011,43 +1888,34 @@ void installWebApi() {
 
         File::scanDir(scan_path, [&](const string &path, bool isDir) {
             if (isDir || !end_with(path, ".jpeg")) {
-                // 忽略文件夹或其他类型的文件  [AUTO-TRANSLATED:3ecffcae]
                 // Ignore folders or other types of files
                 return true;
             }
 
-            // 找到截图  [AUTO-TRANSLATED:b784cfec]
             // Find screenshot
             auto tm = findSubString(path.data() + scan_path.size(), nullptr, ".jpeg");
             if (atoll(tm.data()) + expire_sec < time(NULL)) {
-                // 截图已经过期，改名，以便再次请求时，可以返回老截图  [AUTO-TRANSLATED:94fac79b]
                 // Screenshot has expired, rename it so that it can be returned when requested again
                 rename(path.data(), new_snap.data());
                 have_old_snap = true;
                 return true;
             }
 
-            // 截图存在，且未过期，那么返回之  [AUTO-TRANSLATED:6f53d3d1]
             // Screenshot exists and has not expired, so return it
             res_old_snap = true;
             responseSnap(path, allArgs.parser.getHeader(), invoker);
-            // 中断遍历  [AUTO-TRANSLATED:7893aab3]
             // Interrupt traversal
             return false;
         });
 
         if (res_old_snap) {
-            // 已经回复了旧的截图  [AUTO-TRANSLATED:9051a3e6]
             // Old screenshot has been replied
             return;
         }
 
-        // 无截图或者截图已经过期  [AUTO-TRANSLATED:89c46415]
         // No screenshot or screenshot has expired
         if (!have_old_snap) {
-            // 无过期截图，生成一个空文件，目的是顺便创建文件夹路径  [AUTO-TRANSLATED:bdbfdbcb]
             // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
-            // 同时防止在FFmpeg生成截图途中不停的尝试调用该api多次启动FFmpeg进程  [AUTO-TRANSLATED:a04e1ee2]
             // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
             auto file = File::create_file(new_snap, "wb");
             if (file) {
@@ -2055,16 +1923,13 @@ void installWebApi() {
             }
         }
 
-        // 启动FFmpeg进程，开始截图，生成临时文件，截图成功后替换为正式文件  [AUTO-TRANSLATED:7d589e3f]
         // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
         auto new_snap_tmp = new_snap + ".tmp";
         FFmpegSnap::makeSnap(allArgs["async"], allArgs["url"], new_snap_tmp, allArgs["timeout_sec"], [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
             if (!success) {
-                // 生成截图失败，可能残留空文件  [AUTO-TRANSLATED:c96a4468]
                 // Screenshot generation failed, there may be residual empty files
                 File::delete_file(new_snap_tmp);
             } else {
-                // 临时文件改成正式文件  [AUTO-TRANSLATED:eca24dfd]
                 // Temporary file changed to formal file
                 File::delete_file(new_snap);
                 rename(new_snap_tmp.data(), new_snap.data());
@@ -2145,7 +2010,6 @@ void installWebApi() {
         WebRtcPluginManager::Instance().negotiateSdp(session, type, *args, [invoker, offer, headerOut, location](const WebRtcInterface &exchanger) mutable {
             auto &handler = const_cast<WebRtcInterface &>(exchanger);
             try {
-                // 设置返回类型  [AUTO-TRANSLATED:ffc2a31a]
                 // Set return type
                 headerOut["Content-Type"] = "application/sdp";
                 headerOut["Location"] = location + "?id=" + exchanger.getIdentifier() + "&token=" + exchanger.deleteRandStr();
@@ -2195,21 +2059,16 @@ void installWebApi() {
         CHECK_ARGS("vhost", "app", "stream", "file_path");
 
         ProtocolOption option;
-        // mp4支持多track  [AUTO-TRANSLATED:b9688762]
         // mp4 supports multiple tracks
         option.max_track = 16;
-        // 默认解复用mp4不生成mp4  [AUTO-TRANSLATED:11f2dcee]
         // By default, demultiplexing mp4 does not generate mp4
         option.enable_mp4 = false;
-        // 但是如果参数明确指定开启mp4, 那么也允许之  [AUTO-TRANSLATED:b143a9e3]
         // But if the parameter explicitly specifies to enable mp4, then it is also allowed
         option.load(allArgs);
-        // 强制无人观看时自动关闭  [AUTO-TRANSLATED:f7c85948]
         // Force automatic shutdown when no one is watching
         option.auto_close = true;
         auto tuple = MediaTuple{allArgs["vhost"], allArgs["app"], allArgs["stream"], ""};
         auto reader = std::make_shared<MP4Reader>(tuple, allArgs["file_path"], option);
-        // sample_ms设置为0，从配置文件加载；file_repeat可以指定，如果配置文件也指定循环解复用，那么强制开启  [AUTO-TRANSLATED:23e826b4]
         // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing, then force it to be enabled
         reader->startReadMP4(0, true, allArgs["file_repeat"]);
     });
@@ -2245,7 +2104,6 @@ void installWebApi() {
             return;
         }
 
-        // 通过on_http_access完成文件下载鉴权，请务必确认访问鉴权url参数以及访问文件路径是否合法  [AUTO-TRANSLATED:73507988]
         // File download authentication is completed through on_http_access. Please make sure that the access authentication URL parameters and the access file path are legal
         HttpSession::HttpAccessPathInvoker file_invoker = [allArgs, invoker](const string &err_msg, const string &cookie_path_in, int life_second) mutable {
             if (!err_msg.empty()) {
@@ -2262,7 +2120,6 @@ void installWebApi() {
 
         bool flag = NOTICE_EMIT(BroadcastHttpAccessArgs, Broadcast::kBroadcastHttpAccess, allArgs.parser, file_path, false, file_invoker, sender);
         if (!flag) {
-            // 文件下载鉴权事件无人监听，不允许下载  [AUTO-TRANSLATED:5e02f0ce]
             // No one is listening to the file download authentication event, download is not allowed
             invoker(401, StrCaseMap {}, "None http access event listener");
         }

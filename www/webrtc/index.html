@@ -12,7 +12,7 @@
       video {
         width: 40vw;
         max-height: 50vh;
-        height: 22.5vw; /* 默认和宽:高为 16:9 */
+        height: 22.5vw; /* Default width:height is 16:9 */
         object-fit: contain;
         background-color: grey;
       }
@@ -32,10 +32,10 @@
         </div>
 
         <div style="float: left; width:30%;">
-          <span>已存在的流列表，点击自动播放:</span>
+          <span>Already existing stream list, click to play automatically:</span>
           <ol id="olstreamlist">
-            <li>初始演示</li>
-            <li>每秒自动刷新</li>
+            <li>Initial Demo</li>
+            <li>Automatic refresh every second</li>
           </ol>
         </div>
 
@@ -80,8 +80,8 @@
               <label for="datachannel">datachannel:</label>
               <input id='datachannel' name="datachannel" type="checkbox" value="0">
             </p>
-            <button onclick="start()">开始(start)</button>
-            <button onclick="stop()">停止(stop)</button>
+            <button onclick="start()">Start</button>
+            <button onclick="stop()">Stop</button>
 
             <p>
               <label for="msgsend">msgsend:</label>
@@ -91,8 +91,8 @@
               <label for="msgrecv">msgrecv:</label>
               <input type="text" id='msgrecv' disabled>
             </p>
-            <button onclick="send()">发送(send by datachannel)</button>
-            <button onclick="close()">关闭(close datachannel)</button>
+            <button onclick="send()">Send by datachannel</button>
+            <button onclick="close()">Close datachannel</button>
 
             <p>
               <label for="videoDevice">videodevice:</label>
@@ -110,8 +110,8 @@
               <label for="switchDevice">switchDevice:</label>
               <input type="checkbox" id='switchDevice' checked="checked">
             </p>
-            <button onclick="switchVideo()">切换视频(switch video)</button>
-            <button onclick="switchAudio()">切换音频(switch  audio)</button>
+            <button onclick="switchVideo()">Switch video</button>
+            <button onclick="switchAudio()">Switch audio</button>
         </div>
     </div>
 
@@ -132,7 +132,7 @@
       const apiPath = `/index/api/webrtc?app=${searchParams.get('app') ?? 'live'}&stream=${searchParams.get('stream') ?? 'test'}&type=${type}`;
 
       if(!ishttps && !isLocal){
-        alert('本demo需要在https的网站访问, 如果你要推流的话(this demo must access in site of https if you want to push stream)');
+        alert('This demo must access in site of https if you want to push stream');
       }
       
       const apiHost = isLocal ? "http://127.0.0.1" : `${document.location.protocol}//${window.location.host}`;
@@ -219,9 +219,9 @@
 
         player = new ZLMRTCClient.Endpoint(
                 {
-                    element: document.getElementById('video'),// video 标签
-                    debug: true,// 是否打印日志
-                    zlmsdpUrl:document.getElementById('streamUrl').value,//流地址
+                    element: document.getElementById('video'),// video tag
+                    debug: true,// Whether to print a log
+                    zlmsdpUrl:document.getElementById('streamUrl').value,//Stream address
                     simulcast:document.getElementById('simulcast').checked,
                     useCamera:document.getElementById('useCamera').checked,
                     audioEnable:document.getElementById('audioEnable').checked,
@@ -229,70 +229,70 @@
                     recvOnly:recvOnly,
                     resolution:{w,h},
                     usedatachannel:document.getElementById('datachannel').checked,
-                    videoId:vdevid, // 不填选择默认的
-                    audioId:adevid, // 不填选择默认的
+                    videoId:vdevid, // Don't fill in the default one
+                    audioId:adevid, // Don't fill in the default one
                 }
             );
     
             player.on(ZLMRTCClient.Events.WEBRTC_ICE_CANDIDATE_ERROR,function(e)
             {
-              // ICE 协商出错
-              console.log('ICE 协商出错');
+              // ICE negotiation error
+              console.log('ICE negotiation error');
             });
     
             player.on(ZLMRTCClient.Events.WEBRTC_ON_REMOTE_STREAMS,function(s)
             {
-              //获取到了远端流，可以播放,如果element 为null 或者不传,可以在这里播放(如下注释代码)
+              //The remote stream has been obtained and can be played. If the element is null or not transmitted, it can be played here (the following comment code)
               /*
                 document.getElementById('video').srcObject=s;
               */
-              console.log('播放成功',s);
+              console.log('Play successfully',s);
             });
     
             player.on(ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED,function(e)
             {
-              // offer anwser 交换失败
-              console.log('offer anwser 交换失败',e);
+              // Offer anwser exchange failed
+              console.log('Offer anwser exchange failed',e);
               stop();
             });
     
             player.on(ZLMRTCClient.Events.WEBRTC_ON_LOCAL_STREAM,function(s)
             {
-              // 获取到了本地流 
+              // Get local stream 
               document.getElementById('selfVideo').srcObject=s;
               document.getElementById('selfVideo').muted = true;
-              //console.log('offer anwser 交换失败',e)
+              //console.log('Offer anwser exchange failed',e)
             });
 
             player.on(ZLMRTCClient.Events.CAPTURE_STREAM_FAILED,function(s)
             {
-              // 获取本地流失败
-              console.log('获取本地流失败');
+              // Failed to get local churn
+              console.log('Failed to get local churn');
             });
 
             player.on(ZLMRTCClient.Events.WEBRTC_ON_CONNECTION_STATE_CHANGE,function(state)
             {
-              // RTC 状态变化 ,详情参考 https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/connectionState
-              console.log('当前状态==>',state);
+              // RTC status changes, please refer to the details https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection/connectionState
+              console.log('Current status==>',state);
             });
 
             player.on(ZLMRTCClient.Events.WEBRTC_ON_DATA_CHANNEL_OPEN,function(event)
             {
-              console.log('rtc datachannel 打开 :',event);
+              console.log('rtc datachannel open :',event);
             });
 
             player.on(ZLMRTCClient.Events.WEBRTC_ON_DATA_CHANNEL_MSG,function(event)
             {
-              console.log('rtc datachannel 消息 :',event.data);
+              console.log('rtc datachannel message :',event.data);
               document.getElementById('msgrecv').value = event.data;
             });
             player.on(ZLMRTCClient.Events.WEBRTC_ON_DATA_CHANNEL_ERR,function(event)
             {
-              console.log('rtc datachannel 错误 :',event);
+              console.log('rtc datachannel error :',event);
             });
             player.on(ZLMRTCClient.Events.WEBRTC_ON_DATA_CHANNEL_CLOSE,function(event)
             {
-              console.log('rtc datachannel 关闭 :',event);
+              console.log('rtc datachannel close :',event);
             });
       }
 

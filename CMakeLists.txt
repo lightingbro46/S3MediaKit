@@ -1,35 +1,10 @@
-# MIT License
-#
-# Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
 cmake_minimum_required(VERSION 3.1.3)
 
-# 加载自定义模块
 # Load custom modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 project(ZLMediaKit LANGUAGES C CXX)
 
-# 使能 C++11
 # Enable C++11
 set(CMAKE_CXX_STANDARD 11)
 
@@ -62,7 +37,6 @@ option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
 option(DISABLE_REPORT "Disable report to report.zlmediakit.com" OFF)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
 ##############################################################################
-# 设置socket默认缓冲区大小为256k.如果设置为0则不设置socket的默认缓冲区大小,使用系统内核默认值(设置为0仅对linux有效)
 # Set the default buffer size of the socket to 256k. If set to 0, the default buffer size of the socket will not be set,
 # and the system kernel default value will be used (setting to 0 is only valid for linux)
 set(SOCKET_DEFAULT_BUF_SIZE 262144 CACHE STRING "Default buffer size for socket" FORCE)
@@ -73,14 +47,12 @@ endif()
 
 message(STATUS "Compilation type: ${CMAKE_BUILD_TYPE}")
 
-# 方便排查编译问题, 需要 FORCE CACHE, 否则需要命令行设置才生效
 # To facilitate the troubleshooting of compilation problems, you need to FORCE CACHE, otherwise you need to set it on the command line to take effect
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE INTERNAL "" FORCE)
 
-# TODO: include 当前目录会导致 server 编译出错, 待排除
+# TODO: include the current directory will cause server compilation errors, and will be excluded
 set(CMAKE_INCLUDE_CURRENT_DIR OFF)
 
-# 安装路径
 # Install path
 if(NOT CMAKE_INSTALL_PREFIX)
   if(UNIX)
@@ -88,7 +60,6 @@ if(NOT CMAKE_INSTALL_PREFIX)
     set(INSTALL_PATH_INCLUDE include)
     set(INSTALL_PATH_RUNTIME bin)
   elseif(WIN32)
-    # Windows 下安装到了用户主目录下?
     # Install to the user's home directory under Windows?
     set(INSTALL_PATH_LIB     $ENV{HOME}/${CMAKE_PROJECT_NAME}/lib)
     set(INSTALL_PATH_INCLUDE $ENV{HOME}/${CMAKE_PROJECT_NAME}/include)
@@ -102,15 +73,12 @@ else()
 endif()
 
 string(TOLOWER ${CMAKE_SYSTEM_NAME} SYSTEM_NAME_LOWER)
-# 设置输出目录, 包括 bin, lib 以及其他文件
-# Windows 也不再区分 32/64
 # Set the output directory, including bin, lib and other files
 # Windows no longer distinguishes 32/64
 set(OUTPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/release/${SYSTEM_NAME_LOWER}/${CMAKE_BUILD_TYPE})
 set(LIBRARY_OUTPUT_PATH    ${OUTPUT_DIR})
 set(EXECUTABLE_OUTPUT_PATH ${OUTPUT_DIR})
 
-# 添加 git 版本信息
 # Add git version information
 set(COMMIT_HASH "Git_Unkown_commit")
 set(COMMIT_TIME "Git_Unkown_time")
@@ -151,7 +119,6 @@ message(STATUS "Git version is ${BRANCH_NAME} ${COMMIT_HASH}/${COMMIT_TIME} ${BU
 
 ##############################################################################
 
-# 方便修改全局变量
 # Convenient to modify global variables
 function(update_cached name value)
   set("${name}" "${value}" CACHE INTERNAL "*** Internal ***" FORCE)
@@ -204,7 +171,7 @@ if(UNIX)
 elseif(WIN32)
   if (MSVC)
     set(COMPILE_OPTIONS_DEFAULT
-            # TODO: /wd4819 应该是不会生效
+            # TODO: /wd4819 should not take effect
             "/wd4566;/wd4819;/utf-8"
             # warning C4530: C++ exception handler used, but unwind semantics are not enabled.
             "/EHsc")
@@ -220,7 +187,6 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
   endif()
 endif()
 
-# mediakit 以及各个 runtime 依赖
 # mediakit and various runtime dependencies
 update_cached(MK_LINK_LIBRARIES "")
 update_cached(MK_COMPILE_DEFINITIONS ENABLE_VERSION)
@@ -245,11 +211,9 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
   endif()
 endif()
 
-# 多个模块依赖 ffmpeg 相关库, 统一查找
 # Multiple modules depend on ffmpeg related libraries, unified search
 if(ENABLE_FFMPEG)
   find_package(PkgConfig QUIET)
-  # 查找 ffmpeg/libutil 是否安装
   # find ffmpeg/libutil installed
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(AVUTIL QUIET IMPORTED_TARGET libavutil)
@@ -259,7 +223,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libavcodec 是否安装
   # find ffmpeg/libavcodec installed
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(AVCODEC QUIET IMPORTED_TARGET libavcodec)
@@ -269,7 +232,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libswscale 是否安装
   # find ffmpeg/libswscale installed
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(SWSCALE QUIET IMPORTED_TARGET libswscale)
@@ -279,7 +241,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libswresample 是否安装
   # find ffmpeg/libswresample installed
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(SWRESAMPLE QUIET IMPORTED_TARGET libswresample)
@@ -289,7 +250,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libutil 是否安装
   # find ffmpeg/libutil installed
   if(NOT AVUTIL_FOUND)
     find_package(AVUTIL QUIET)
@@ -300,7 +260,6 @@ if(ENABLE_FFMPEG)
     endif ()
   endif ()
 
-  # 查找 ffmpeg/libavcodec 是否安装
   # find ffmpeg/libavcodec installed
   if(NOT AVCODEC_FOUND)
     find_package(AVCODEC QUIET)
@@ -311,7 +270,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libswscale 是否安装
   # find ffmpeg/libswscale installed
   if(NOT SWSCALE_FOUND)
     find_package(SWSCALE QUIET)
@@ -322,7 +280,6 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # 查找 ffmpeg/libswresample 是否安装
   # find ffmpeg/libswresample installed
   if(NOT SWRESAMPLE_FOUND)
     find_package(SWRESAMPLE QUIET)
@@ -359,7 +316,6 @@ if(ENABLE_ASAN)
   message(STATUS "Address Sanitize enabled")
 endif()
 
-# 下载jemalloc后静态编译
 # Static compilation after downloading jemalloc
 set(DEP_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdpart/external-${CMAKE_SYSTEM_NAME})
 if(ENABLE_JEMALLOC_STATIC)
@@ -374,12 +330,10 @@ if(ENABLE_JEMALLOC_STATIC)
   include(Jemalloc)
   include_directories(SYSTEM ${DEP_ROOT_DIR}/${JEMALLOC_NAME}/include)
   link_directories(${DEP_ROOT_DIR}/${JEMALLOC_NAME}/lib)
-  # 用于影响后续查找过程
   # Used to affect subsequent lookup process
   set(JEMALLOC_ROOT_DIR "${DEP_ROOT_DIR}/${JEMALLOC_NAME}")
 endif()
 
-# 默认链接 jemalloc 库避免内存碎片
 # Link the jemalloc library by default to avoid memory fragmentation
 find_package(JEMALLOC QUIET)
 if(JEMALLOC_FOUND)
@@ -394,7 +348,6 @@ if(JEMALLOC_FOUND)
   endif ()
 endif()
 
-# 查找 openssl 是否安装
 # find openssl installed
 find_package(OpenSSL QUIET)
 if(OPENSSL_FOUND AND ENABLE_OPENSSL)
@@ -413,7 +366,6 @@ else()
   message(WARNING "openssl not found, rtmp will not support flash player, https/wss/rtsps/rtmps/webrtc will also be invalid")
 endif()
 
-# 查找 mysql 是否安装
 # find mysql installed
 find_package(MYSQL QUIET)
 if(MYSQL_FOUND AND ENABLE_MYSQL)
@@ -436,7 +388,6 @@ if(SQLite3_FOUND AND ENABLE_SQLITE)
   update_cached_list(MK_LINK_LIBRARIES ${SQLite3_LIBRARIES})
 endif()
 
-# 查找 x264 是否安装
 # find x264 installed
 find_package(X264 QUIET)
 if(X264_FOUND AND ENABLE_X264)
@@ -447,7 +398,6 @@ if(X264_FOUND AND ENABLE_X264)
   update_cached_list(MK_LINK_LIBRARIES ${X264_LIBRARIES})
 endif()
 
-# 查找 faac 是否安装
 # find faac installed
 find_package(FAAC QUIET)
 if(FAAC_FOUND AND ENABLE_FAAC)
@@ -494,7 +444,7 @@ if(MSVC AND ENABLE_MSVC_MT)
     CMAKE_C_FLAGS
     CMAKE_C_FLAGS_DEBUG
     CMAKE_C_FLAGS_RELEASE)
-  # TODO: 通常应该不需要替换
+  # TODO: Usually no replacement is required
   foreach(CompilerFlag ${CompilerFlags})
     string(REPLACE "/MD" "/MT" ${CompilerFlag} "${${CompilerFlag}}")
   endforeach()
@@ -532,37 +482,31 @@ if(ENABLE_PLAYER AND ENABLE_FFMPEG)
   add_subdirectory(player)
 endif()
 
-#MediaServer主程序
 #MediaServer main program
 if(ENABLE_SERVER)
   add_subdirectory(server)
 endif()
 
-# Android 会 add_subdirectory 并依赖该变量
 # Android will add_subdirectory and depend on this variable
 if(ENABLE_SERVER_LIB AND NOT CMAKE_PARENT_LIST_FILE STREQUAL CMAKE_CURRENT_LIST_FILE)
   set(MK_LINK_LIBRARIES ${MK_LINK_LIBRARIES} PARENT_SCOPE)
 endif()
 
-# IOS 不编译可执行程序
 # IOS does not compile executable programs
 if(IOS)
   return()
 endif()
 
-#cpp测试demo程序
 #cpp test demo program
 if (ENABLE_TESTS)
   add_subdirectory(tests)
 endif ()
 
-# 拷贝www文件夹、配置文件、默认证书
 # Copy www folder, configuration file, default certificate
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/www" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/config.ini" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/default.pem" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 
-# 拷贝VideoStack 无视频流时默认填充的背景图片
 # Copy the default background image used by VideoStack when there is no video stream
 if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/novideo.yuv" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
