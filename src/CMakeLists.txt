@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -42,10 +42,10 @@ endif()
 
 # 添加库
 add_library(zlmediakit STATIC ${MediaKit_SRC_LIST})
-add_library(ZLMediaKit::MediaKit ALIAS zlmediakit)
+add_library(S3MediaKit::MediaKit ALIAS zlmediakit)
 
 set(LINK_LIBRARIES ${MK_LINK_LIBRARIES})
-list(REMOVE_ITEM LINK_LIBRARIES ZLMediaKit::MediaKit)
+list(REMOVE_ITEM LINK_LIBRARIES S3MediaKit::MediaKit)
 set(COMPILE_DEFINITIONS ${MK_COMPILE_DEFINITIONS})
 
 target_compile_definitions(zlmediakit
@@ -61,19 +61,19 @@ target_include_directories(zlmediakit
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
 
-update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::MediaKit)
+update_cached_list(MK_LINK_LIBRARIES S3MediaKit::MediaKit)
 
 # 未在使用
 if(ENABLE_CXX_API)
   # 保留目录结构
   if(ENABLE_SRT)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
-      DESTINATION ${INSTALL_PATH_INCLUDE}/ZLMediaKit
+      DESTINATION ${INSTALL_PATH_INCLUDE}/S3MediaKit
       FILES_MATCHING
         PATTERN "*.h")
   else()
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
-      DESTINATION ${INSTALL_PATH_INCLUDE}/ZLMediaKit
+      DESTINATION ${INSTALL_PATH_INCLUDE}/S3MediaKit
       FILES_MATCHING 
         REGEX ".*/Srt.*" EXCLUDE
         PATTERN "*.h")

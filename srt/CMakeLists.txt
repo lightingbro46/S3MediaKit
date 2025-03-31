@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +24,11 @@
 file(GLOB SRT_SRC_LIST *.cpp *.h *.hpp)
 
 add_library(srt STATIC ${SRT_SRC_LIST})
-add_library(ZLMediaKit::SRT ALIAS srt)
+add_library(S3MediaKit::SRT ALIAS srt)
 target_link_libraries(srt
   PUBLIC
-    ZLMediaKit::MediaKit
-    ZLMediaKit::ToolKit)
+    S3MediaKit::MediaKit
+    S3MediaKit::ToolKit)
 target_compile_options(srt
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 target_include_directories(srt
@@ -39,6 +39,6 @@ target_include_directories(srt
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>")
 
 update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_SRT)
-update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::SRT)
+update_cached_list(MK_LINK_LIBRARIES S3MediaKit::SRT)
 
 message(STATUS "srt function is enabled")

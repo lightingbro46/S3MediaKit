@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,8 @@ SOFTWARE.
 
 ----------------------------------------------------------------------------------------
 
-补充协议:
+Supplementary Agreement:
 
-本项目采用类MIT协议，用户在履行MIT协议义务的同时，应当同时遵循保留ZLMediaKit软件版权信息的义务。
-用户不得去除ZLMediaKit提供的各种服务中包括但不限于 "title"、"Server"、"User-Agent" 等字段中 "ZLMediaKit" 的信息。
-否则本项目主要权利人(项目发起人、主要作者)保留声索起诉的权利。
+This project adopts a MIT-like protocol. While fulfilling the MIT protocol obligations, users should also follow the obligation to retain the copyright information of the S3MediaKit software.
+Users shall not remove the information "S3MediaKit" in various services provided by S3MediaKit, including but not limited to "title", "Server", "User-Agent" and other fields.
+Otherwise, the main right holder of this project (project sponsor, main author) reserves the right to claim sue.

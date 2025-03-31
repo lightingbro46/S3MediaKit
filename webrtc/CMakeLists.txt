@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2016-2022 The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2025-2022 The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -57,7 +57,7 @@ file(GLOB WEBRTC_SRC_LIST
   ${CMAKE_CURRENT_SOURCE_DIR}/*.h
   ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp)
 add_library(webrtc STATIC ${WEBRTC_SRC_LIST})
-add_library(ZLMediaKit::WebRTC ALIAS webrtc)
+add_library(S3MediaKit::WebRTC ALIAS webrtc)
 target_compile_definitions(webrtc
   # ENABLE_SCTP 暂时需要暴露
   # ENABLE_SCTP temporarily needs to be exposed
@@ -66,8 +66,8 @@ target_compile_options(webrtc
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 target_link_libraries(webrtc
   PRIVATE
-    ZLMediaKit::MediaKit
-    ZLMediaKit::ToolKit
+    S3MediaKit::MediaKit
+    S3MediaKit::ToolKit
     ${LINK_LIBRARIES})
 target_include_directories(webrtc
   PRIVATE
@@ -79,4 +79,4 @@ target_include_directories(webrtc
 message(STATUS "WebRTC function is enabled")
 
 update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_WEBRTC)
-update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::WebRTC ${LINK_LIBRARIES})
+update_cached_list(MK_LINK_LIBRARIES S3MediaKit::WebRTC ${LINK_LIBRARIES})

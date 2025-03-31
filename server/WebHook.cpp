@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -686,14 +686,14 @@ void installWebHook() {
      */
     // 开发者应该通过该事件判定http客户端是否有权限访问http服务器上的特定文件  [AUTO-TRANSLATED:938b8bc5]
     // Developers should use this event to determine whether the http client has permission to access specific files on the http server
-    // ZLMediaKit会记录本次鉴权的结果至cookie  [AUTO-TRANSLATED:b051ea2e]
-    // ZLMediaKit will record the result of this authentication to the cookie
-    // 如果鉴权成功，在cookie有效期内，那么下次客户端再访问授权目录时，ZLMediaKit会直接返回文件  [AUTO-TRANSLATED:be12a468]
-    // If the authentication is successful, within the validity period of the cookie, the next time the client accesses the authorized directory, ZLMediaKit will return the file directly
-    // 如果鉴权失败，在cookie有效期内，如果http url参数不变(否则会立即再次触发鉴权事件)，ZLMediaKit会直接返回错误码  [AUTO-TRANSLATED:6396137d]
-    // If the authentication fails, within the validity period of the cookie, if the http url parameter remains unchanged (otherwise the authentication event will be triggered immediately), ZLMediaKit will return the error code directly
-    // 如果用户客户端不支持cookie，那么ZLMediaKit会根据url参数查找cookie并追踪用户，  [AUTO-TRANSLATED:6fd2e366]
-    // If the user client does not support cookies, then ZLMediaKit will find the cookie according to the url parameter and track the user,
+    // S3MediaKit会记录本次鉴权的结果至cookie  [AUTO-TRANSLATED:b051ea2e]
+    // S3MediaKit will record the result of this authentication to the cookie
+    // 如果鉴权成功，在cookie有效期内，那么下次客户端再访问授权目录时，S3MediaKit会直接返回文件  [AUTO-TRANSLATED:be12a468]
+    // If the authentication is successful, within the validity period of the cookie, the next time the client accesses the authorized directory, S3MediaKit will return the file directly
+    // 如果鉴权失败，在cookie有效期内，如果http url参数不变(否则会立即再次触发鉴权事件)，S3MediaKit会直接返回错误码  [AUTO-TRANSLATED:6396137d]
+    // If the authentication fails, within the validity period of the cookie, if the http url parameter remains unchanged (otherwise the authentication event will be triggered immediately), S3MediaKit will return the error code directly
+    // 如果用户客户端不支持cookie，那么S3MediaKit会根据url参数查找cookie并追踪用户，  [AUTO-TRANSLATED:6fd2e366]
+    // If the user client does not support cookies, then S3MediaKit will find the cookie according to the url parameter and track the user,
     // 如果没有url参数，客户端又不支持cookie，那么会根据ip和端口追踪用户  [AUTO-TRANSLATED:85a780ea]
     // If there is no url parameter and the client does not support cookies, then the user will be tracked according to the ip and port
     // 追踪用户的目的是为了缓存上次鉴权结果，减少鉴权次数，提高性能  [AUTO-TRANSLATED:22827145]

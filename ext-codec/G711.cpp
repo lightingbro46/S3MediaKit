@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -91,8 +91,8 @@ RtpCodec::Ptr getRtpDecoderByCodecIdU() {
 RtmpCodec::Ptr getRtmpEncoderByTrack(const Track::Ptr &track) {
     auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
     if (audio_track->getAudioSampleRate() != 8000 || audio_track->getAudioChannel() != 1 || audio_track->getAudioSampleBit() != 16) {
-        // rtmp对g711只支持8000/1/16规格，但是ZLMediaKit可以解析其他规格的G711  [AUTO-TRANSLATED:0ddeaafe]
-        // rtmp only supports 8000/1/16 specifications for g711, but ZLMediaKit can parse other specifications of G711
+        // rtmp对g711只支持8000/1/16规格，但是S3MediaKit可以解析其他规格的G711  [AUTO-TRANSLATED:0ddeaafe]
+        // rtmp only supports 8000/1/16 specifications for g711, but S3MediaKit can parse other specifications of G711
         WarnL << "RTMP only support G711 with 8000/1/16, now is"
               << audio_track->getAudioSampleRate() << "/"
               << audio_track->getAudioChannel() << "/"

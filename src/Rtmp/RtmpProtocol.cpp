@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -816,8 +816,8 @@ void RtmpProtocol::handle_chunk(RtmpPacket::Ptr packet) {
         }
 
         case MSG_WIN_SIZE: {
-            // 如果窗口太小，会导致发送sendAcknowledgement时无限递归：https://github.com/ZLMediaKit/ZLMediaKit/issues/1839  [AUTO-TRANSLATED:05267962]
-            // If the window is too small, it will cause infinite recursion when sending sendAcknowledgement: https://github.com/ZLMediaKit/ZLMediaKit/issues/1839
+            // 如果窗口太小，会导致发送sendAcknowledgement时无限递归：https://github.com/S3MediaKit/S3MediaKit/issues/1839  [AUTO-TRANSLATED:05267962]
+            // If the window is too small, it will cause infinite recursion when sending sendAcknowledgement: https://github.com/S3MediaKit/S3MediaKit/issues/1839
             // 窗口太大，也可能导致fms服务器认为播放器心跳超时  [AUTO-TRANSLATED:30147e88]
             // If the window is too large, it may also cause the fms server to consider the player heartbeat timeout
             _windows_size = min(max(load_be32(&chunk_data.buffer[0]), 32 * 1024U), 1280 * 1024U);

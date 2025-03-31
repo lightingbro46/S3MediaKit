@@ -33,11 +33,11 @@ RUN apt-get update && \
          rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/media
-COPY . /opt/media/ZLMediaKit
-WORKDIR /opt/media/ZLMediaKit
+COPY . /opt/media/S3MediaKit
+WORKDIR /opt/media/S3MediaKit
 
 # 3rdpart init
-WORKDIR /opt/media/ZLMediaKit/3rdpart
+WORKDIR /opt/media/S3MediaKit/3rdpart
 RUN wget https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0.tar.gz && \
     tar xfv libsrtp-2.3.0.tar.gz && \
     mv libsrtp-2.3.0 libsrtp && \
@@ -46,7 +46,7 @@ RUN wget https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0
 
 RUN mkdir -p build release/linux/${MODEL}/
 
-WORKDIR /opt/media/ZLMediaKit/build
+WORKDIR /opt/media/S3MediaKit/build
 RUN cmake -DCMAKE_BUILD_TYPE=${MODEL} -DENABLE_WEBRTC=true -DENABLE_FFMPEG=true -DENABLE_TESTS=false -DENABLE_API=false .. && \
     make -j $(nproc)
 
@@ -78,8 +78,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
         mkdir -p /opt/media/bin/www
 
 WORKDIR /opt/media/bin/
-COPY --from=build /opt/media/ZLMediaKit/release/linux/${MODEL}/MediaServer /opt/media/ZLMediaKit/default.pem /opt/media/bin/
-COPY --from=build /opt/media/ZLMediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
-COPY --from=build /opt/media/ZLMediaKit/www/ /opt/media/bin/www/
+COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/media/S3MediaKit/default.pem /opt/media/bin/
+COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
+COPY --from=build /opt/media/S3MediaKit/www/ /opt/media/bin/www/
 ENV PATH /opt/media/bin:$PATH
 CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l","0"]

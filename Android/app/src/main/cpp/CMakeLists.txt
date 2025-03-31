@@ -1,4 +1,4 @@
-project(ZLMediaKit)
+project(S3MediaKit)
 cmake_minimum_required(VERSION 3.1.3)
 #使能c++11
 set(CMAKE_CXX_STANDARD 11)
@@ -16,20 +16,20 @@ set(OPENSSL_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${ANDROID_ABI}")
 
 #设置工程源码根目录
 set(JNI_Root ${CMAKE_CURRENT_SOURCE_DIR})
-set(ZLMediaKit_Root ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../)
+set(S3MediaKit_Root ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../)
 
 #添加主工程cmake
-add_subdirectory(${ZLMediaKit_Root} ${EXECUTABLE_OUTPUT_PATH})
+add_subdirectory(${S3MediaKit_Root} ${EXECUTABLE_OUTPUT_PATH})
 
 #设置include
 include_directories(${JNI_Root})
-include_directories(${ZLMediaKit_Root}/src)
-include_directories(${ZLMediaKit_Root}/srt)
-include_directories(${ZLMediaKit_Root}/webrtc)
-include_directories(${ZLMediaKit_Root}/server)
-include_directories(${ZLMediaKit_Root}/3rdpart)
-include_directories(${ZLMediaKit_Root}/3rdpart/media-server)
-include_directories(${ZLMediaKit_Root}/3rdpart/ZLToolKit/src)
+include_directories(${S3MediaKit_Root}/src)
+include_directories(${S3MediaKit_Root}/srt)
+include_directories(${S3MediaKit_Root}/webrtc)
+include_directories(${S3MediaKit_Root}/server)
+include_directories(${S3MediaKit_Root}/3rdpart)
+include_directories(${S3MediaKit_Root}/3rdpart/media-server)
+include_directories(${S3MediaKit_Root}/3rdpart/ZLToolKit/src)
 
 #收集源代码添加动态库
 file(GLOB JNI_src_list ${JNI_Root}/*.cpp ${JNI_Root}/*.h)

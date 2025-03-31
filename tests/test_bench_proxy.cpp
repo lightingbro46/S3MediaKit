@@ -1,4 +1,14 @@
-﻿#include <map>
+﻿/*	
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
+ *	
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
+ *	
+ * Use of this source code is governed by MIT-like license that can be found in the
+ * LICENSE file in the root of the source tree. All contributing project authors	
+ * may be found in the AUTHORS file in the root of the source tree.	
+ */
+
+#include <map>
 #include <signal.h>
 #include <iostream>
 #include "Util/CMD.h"
@@ -16,69 +26,69 @@ public:
     CMD_main() {
         _parser.reset(new OptionParser(nullptr));
 
-        (*_parser) << Option('l',/*该选项简称，如果是\x00则说明无简称*/
-                             "level",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(LTrace).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "日志等级,LTrace~LError(0~4)",/*该选项说明文字*/
+        (*_parser) << Option('l',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "level",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(LTrace).data(),/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Log Level,LTrace~LError(0~4)",/*This option specifies text*/
                              nullptr);
 
 
-        (*_parser) << Option('t',/*该选项简称，如果是\x00则说明无简称*/
-                             "threads",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(thread::hardware_concurrency()).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "启动事件触发线程数",/*该选项说明文字*/
+        (*_parser) << Option('t',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "threads",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(thread::hardware_concurrency()).data(),/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Number of threads triggered by startup event",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('i',/*该选项简称，如果是\x00则说明无简称*/
-                             "in",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             nullptr,/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "拉流url,支持rtsp/rtmp/hls",/*该选项说明文字*/
+        (*_parser) << Option('i',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "in",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             nullptr,/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Pull the stream url, support rtsp/rtmp/hls",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('c',/*该选项简称，如果是\x00则说明无简称*/
-                             "count",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "1000",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "拉流拉流代理个数",/*该选项说明文字*/
+        (*_parser) << Option('c',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "count",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "1000",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Number of stream pull agents",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('d',/*该选项简称，如果是\x00则说明无简称*/
-                             "delay",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "50",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "启动拉流代理间隔,单位毫秒",/*该选项说明文字*/
+        (*_parser) << Option('d',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "delay",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "50",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Start stream pull proxy interval, in milliseconds",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('m',/*该选项简称，如果是\x00则说明无简称*/
-                             "merge",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "300",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "合并写毫秒,合并写能提高性能",/*该选项说明文字*/
+        (*_parser) << Option('m',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "merge",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "300",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Merge write milliseconds, merge write can improve performance",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('T',/*该选项简称，如果是\x00则说明无简称*/
-                             "rtp",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string((int) (Rtsp::RTP_TCP)).data(),/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "rtsp拉流方式,支持tcp/udp/multicast:0/1/2",/*该选项说明文字*/
+        (*_parser) << Option('T',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "rtp",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string((int) (Rtsp::RTP_TCP)).data(),/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "rtsp stream pulling method, supports tcp/udp/multicast:0/1/2",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('D',/*该选项简称，如果是\x00则说明无简称*/
-                             "demand",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "1",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "是否按需转协议，设置为1提高性能",/*该选项说明文字*/
+        (*_parser) << Option('D',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "demand",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "1",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Whether to transfer the protocol on demand, set to 1 to improve performance",/*This option specifies text*/
                              nullptr);
 
 
@@ -87,12 +97,11 @@ public:
     ~CMD_main() override {}
 
     const char *description() const override {
-        return "主程序命令参数";
+        return "Main program command parameters";
     }
 };
 
-// 此程序为zlm的拉流代理性能测试工具，用于测试拉流代理性能  [AUTO-TRANSLATED:365ee033]
-// This program is a pull stream proxy performance test tool for zlm, used to test the pull stream proxy performance
+// This program is a pull stream proxy performance test tool for s3m, used to test the pull stream proxy performance
 int main(int argc, char *argv[]) {
     {
         CMD_main cmd_main;
@@ -115,19 +124,15 @@ int main(int argc, char *argv[]) {
         auto merge_ms = cmd_main["merge"].as<int>();
         auto demand = cmd_main["demand"].as<int>();
 
-        // 设置日志  [AUTO-TRANSLATED:50372045]
         // Set log
         Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel", logLevel));
-        // 启动异步日志线程  [AUTO-TRANSLATED:c93cc6f4]
         // Start asynchronous log thread
         Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-        // 设置线程数  [AUTO-TRANSLATED:22ec5cc9]
         // Set the number of threads
         EventPollerPool::setPoolSize(threads);
         WorkThreadPool::setPoolSize(threads);
 
-        // 设置合并写  [AUTO-TRANSLATED:7bf3456d]
         // Set merge write
         mINI::Instance()[General::kMergeWriteMS] = merge_ms;
         mINI::Instance()[Protocol::kRtspDemand] = demand;
@@ -147,7 +152,6 @@ int main(int argc, char *argv[]) {
             (*player)[Client::kRtpType] = rtp_type;
             player->play(in_url);
             proxyMap.emplace(stream, player);
-            // 休眠后再启动下一个拉流代理，防止短时间海量链接  [AUTO-TRANSLATED:20fc6ab9]
             // Sleep before starting the next pull stream proxy to prevent a large number of connections in a short time
             if (delay_ms > 0) {
                 usleep(1000 * delay_ms);
@@ -155,7 +159,7 @@ int main(int argc, char *argv[]) {
         }
 
         static semaphore sem;
-        signal(SIGINT, [](int) { sem.post(); });// 设置退出信号
+        signal(SIGINT, [](int) { sem.post(); });// Set the exit signal
         sem.wait();
     }
     return 0;

@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -332,9 +332,9 @@ typedef struct {
 
 
 /**
- * 监听ZLMediaKit里面的事件
+ * 监听S3MediaKit里面的事件
  * @param events 各个事件的结构体,这个对象在内部会再拷贝一次，可以设置为null以便取消监听
- * Listen to events in ZLMediaKit
+ * Listen to events in S3MediaKit
  * @param events The structure of each event, this object will be copied again internally, it can be set to null to cancel listening
  
  * [AUTO-TRANSLATED:d3418bc6]

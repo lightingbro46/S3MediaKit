@@ -1,1 +1,1 @@
-把这两个json文件导入postman就可以愉快的测试ZLMediaKit的restful接口了
+把这两个json文件导入postman就可以愉快的测试S3MediaKit的restful接口了

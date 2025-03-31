@@ -17,14 +17,14 @@
 %bcond_with api
 %bcond_with cxx_api
 
-Name:		ZLMediaKit
+Name:		S3MediaKit
 Version:	8.0.0
 Release:	1%{?dist}
 Summary:	A lightweight, high performance and stable stream server and client framework based on C++11.
 
 Group:		development
 License:	MIT
-URL:		https://github.com/ZLMediaKit/ZLMediaKit
+URL:		https://github.com/S3MediaKit/S3MediaKit
 Source0:	%{name}-%{version}.tar.xz
 
 %if %{with openssl}
@@ -155,7 +155,7 @@ rm -rf $RPM_BUILD_ROOT
 
 %if %{with cxx_api}
 %files cxx-devel
-%{_includedir}/ZLMediaKit/*
+%{_includedir}/S3MediaKit/*
 %{_includedir}/ZLToolKit/*
 %{_libdir}/libzlmediakit.a
 %{_libdir}/libzltoolkit.a

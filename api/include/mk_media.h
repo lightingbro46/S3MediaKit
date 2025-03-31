@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -139,11 +139,11 @@ API_EXPORT int API_CALL mk_media_init_audio(mk_media ctx, int codec_id, int samp
 
 /**
  * 初始化h264/h265/aac完毕后调用此函数，
- * 在单track(只有音频或视频)时，因为ZLMediaKit不知道后续是否还要添加track，所以会多等待3秒钟
+ * 在单track(只有音频或视频)时，因为S3MediaKit不知道后续是否还要添加track，所以会多等待3秒钟
  * 如果产生的流是单Track类型，请调用此函数以便加快流生成速度，当然不调用该函数，影响也不大(会多等待3秒)
  * @param ctx 对象指针
  * Call this function after h264/h265/aac initialization,
- * In single track (only audio or video), because ZLMediaKit does not know whether to add more tracks later, it will wait for 3 seconds.
+ * In single track (only audio or video), because S3MediaKit does not know whether to add more tracks later, it will wait for 3 seconds.
  * If the generated stream is a single Track type, please call this function to speed up the stream generation speed. Of course, if you do not call this function, the impact is not big (it will wait for 3 seconds).
  * @param ctx Object pointer
  

@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -20,9 +20,9 @@ using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
-#define JNI_API(retType, funName, ...) extern "C"  JNIEXPORT retType Java_com_zlmediakit_jni_ZLMediaKit_##funName(JNIEnv* env, jclass cls,##__VA_ARGS__)
-#define MediaPlayerCallBackSign "com/zlmediakit/jni/ZLMediaKit$MediaPlayerCallBack"
-#define MediaFrameSign "com/zlmediakit/jni/ZLMediaKit$MediaFrame"
+#define JNI_API(retType, funName, ...) extern "C"  JNIEXPORT retType Java_com_zlmediakit_jni_S3MediaKit_##funName(JNIEnv* env, jclass cls,##__VA_ARGS__)
+#define MediaPlayerCallBackSign "com/zlmediakit/jni/S3MediaKit$MediaPlayerCallBack"
+#define MediaFrameSign "com/zlmediakit/jni/S3MediaKit$MediaFrame"
 
 string stringFromJstring(JNIEnv *env, jstring jstr) {
     if (!env || !jstr) {

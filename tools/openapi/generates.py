@@ -94,7 +94,7 @@ def get_version() -> str:
         commit_time = re.search(r'define COMMIT_TIME (.*)', content).group(1)
         branch_name = re.search(r'define BRANCH_NAME (.*)', content).group(1)
         build_time = re.search(r'define BUILD_TIME (.*)', content).group(1)
-        version = f"ZLMediaKit(git hash:{commit_hash}/{commit_time},branch:{branch_name},build time:{build_time})"
+        version = f"S3MediaKit(git hash:{commit_hash}/{commit_time},branch:{branch_name},build time:{build_time})"
     print(f"version: {version}")
     return version
 
@@ -107,7 +107,7 @@ def get_secret() -> str:
     default_postman = json.load(open("../../postman/127.0.0.1.postman_environment.json", 'r'))
     secret = "035c73f7-bb6b-4889-a715-d9eb2d1925cc"
     for item in default_postman["values"]:
-        if item["key"] == "ZLMediaKit_secret":
+        if item["key"] == "S3MediaKit_secret":
             secret = item["value"]
             break
     for root, dirs, files in os.walk("../../release/"):
@@ -130,7 +130,7 @@ def update_options(version: str, secret: str) -> None:
     print("update options")
     options = json.load(open("./options.json", 'r'))
     options["info"]["version"] = version
-    options["additionalVars"]["ZLMediaKit_secret"] = secret
+    options["additionalVars"]["S3MediaKit_secret"] = secret
     json.dump(options, open("./options.json", 'w'), indent=4)
 
 
@@ -140,7 +140,7 @@ def generate() -> None:
     :return:
     """
     print("generate")
-    run_cmd("p2o ../../postman/ZLMediaKit.postman_collection.json -f ../../www/swagger/openapi.json -o ./options.json",
+    run_cmd("p2o ../../postman/S3MediaKit.postman_collection.json -f ../../www/swagger/openapi.json -o ./options.json",
             True, True)
     openapi = json.load(open("../../www/swagger/openapi.json", 'r'))
     for path in openapi["paths"]:

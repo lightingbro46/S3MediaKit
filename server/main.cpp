@@ -28,7 +28,7 @@
 #endif
 
 #if defined(ENABLE_VERSION)
-#include "ZLMVersion.h"
+#include "S3MVersion.h"
 #endif
 
 #if !defined(_WIN32)
@@ -94,6 +94,22 @@ onceToken token1([](){
 
 }  // namespace mediakit
 
+// todo: sqlite pool configuration
+// 
+// todo: dbstructureupdator configuration
+
+// todo: plugin configuration
+
+// todo: resource monitor configuration
+
+// todo: manager configuration
+namespace Manager {
+#define MANAGER_FIELD "manager."
+const string kDevice = MANAGER_FIELD"device";
+onceToken token1([](){
+    mINI::Instance()[kDevice] = 256;
+},nullptr);    
+}
 
 class CMD_main : public CMD {
 public:

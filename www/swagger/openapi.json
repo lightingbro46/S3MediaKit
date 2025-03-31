@@ -1,13 +1,13 @@
 {
     "openapi": "3.0.0",
     "info": {
-        "title": "ZLMediaKit HTTP API",
+        "title": "S3MediaKit HTTP API",
         "description": "You can test the HTTP API provided by ZlMediaKit here. For usage documentation, please refer to [here](https://docs.zlmediakit.com/guide/media_server/restful_api.html)",
-        "version": "ZLMediaKit(git hash:\"5028151\"/\"2023-12-01T14:43:35+08:00\",branch:\"master\",build time:\"2023-12-01T07:54:14\")",
+        "version": "S3MediaKit(git hash:\"5028151\"/\"2023-12-01T14:43:35+08:00\",branch:\"master\",build time:\"2023-12-01T07:54:14\")",
         "x-logo": {
             "url": "/logo.png",
             "backgroundColor": "#FFFFFF",
-            "altText": "ZLMediaKit"
+            "altText": "S3MediaKit"
         },
         "termsOfService": "https://docs.zlmediakit.com",
         "contact": {
@@ -22,7 +22,7 @@
     },
     "externalDocs": {
         "url": "https://docs.zlmediakit.com",
-        "description": "ZLMediaKit Documentation"
+        "description": "S3MediaKit Documentation"
     },
     "servers": [
         {

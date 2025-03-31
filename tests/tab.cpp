@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -23,20 +23,20 @@ class CMD_main : public CMD {
 public:
     CMD_main() {
         _parser.reset(new OptionParser(nullptr));
-        (*_parser) << Option('f',/*该选项简称，如果是\x00则说明无简称*/
-                             "filter",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "c,cpp,cxx,c,h,hpp",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "文件后缀过滤器",/*该选项说明文字*/
+        (*_parser) << Option('f',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "filter",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "c,cpp,cxx,c,h,hpp",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "File suffix filter",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('i',/*该选项简称，如果是\x00则说明无简称*/
-                             "in",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             nullptr,/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "文件夹或文件",/*该选项说明文字*/
+        (*_parser) << Option('i',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "in",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             nullptr,/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Folders or files",/*This option specifies text*/
                              nullptr);
     }
 
@@ -107,7 +107,6 @@ void process_file(const char *file) {
     File::saveFile(str, file);
 }
 
-// / 这个程序是为了统一替换tab为4个空格  [AUTO-TRANSLATED:ecb3b523]
 // / This program is for unified replacement of tabs with 4 spaces
 int main(int argc, char *argv[]) {
     CMD_main cmd_main;
@@ -128,7 +127,6 @@ int main(int argc, char *argv[]) {
     }
 
     bool no_filter = filter_set.find("*") != filter_set.end();
-    // 设置日志  [AUTO-TRANSLATED:50372045]
     // Set log
     Logger::Instance().add(std::make_shared<ConsoleChannel>());
     File::scanDir(path, [&](const string &path, bool isDir) {
@@ -136,22 +134,18 @@ int main(int argc, char *argv[]) {
             return true;
         }
         if (!no_filter) {
-            // 开启了过滤器  [AUTO-TRANSLATED:331a77dd]
             // Filter enabled
             auto pos = strstr(path.data(), ".");
             if (pos == nullptr) {
-                // 没有后缀  [AUTO-TRANSLATED:2273522f]
                 // No suffix
                 return true;
             }
             auto ext = pos + 1;
             if (filter_set.find(ext) == filter_set.end()) {
-                // 后缀不匹配  [AUTO-TRANSLATED:7e30f0b4]
                 // Suffix does not match
                 return true;
             }
         }
-        // 该文件匹配  [AUTO-TRANSLATED:9dce5098]
         // File matches
         process_file(path.data());
         return true;

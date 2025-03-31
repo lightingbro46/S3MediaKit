@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -31,12 +31,12 @@ file(GLOB EXT_SRC_LIST
         ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp)
 
 add_library(ext-codec STATIC ${EXT_SRC_LIST})
-add_library(ZLMediaKit::ext-codec ALIAS ext-codec)
+add_library(S3MediaKit::ext-codec ALIAS ext-codec)
 
 target_compile_options(ext-codec PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 target_compile_definitions(ext-codec PUBLIC ${COMPILE_DEFINITIONS})
 
-target_link_libraries(ext-codec PRIVATE ZLMediaKit::MediaKit ZLMediaKit::ToolKit ${LINK_LIBRARIES})
+target_link_libraries(ext-codec PRIVATE S3MediaKit::MediaKit S3MediaKit::ToolKit ${LINK_LIBRARIES})
 
 target_include_directories(ext-codec
         PRIVATE
@@ -45,4 +45,4 @@ target_include_directories(ext-codec
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
         ${INCLUDE_DIRECTORIES})
 
-update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::ext-codec ${LINK_LIBRARIES})
+update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ext-codec ${LINK_LIBRARIES})

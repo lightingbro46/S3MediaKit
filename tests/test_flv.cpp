@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -90,19 +90,17 @@ static bool loadFile(const char *path){
 }
 
 int main(int argc,char *argv[]) {
-    // 设置日志  [AUTO-TRANSLATED:50372045]
     // Set log
     Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel"));
-    // 启动异步日志线程  [AUTO-TRANSLATED:c93cc6f4]
     // Start asynchronous log thread
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
     loadIniConfig((exeDir() + "config.ini").data());
     TcpServer::Ptr rtspSrv(new TcpServer());
     TcpServer::Ptr rtmpSrv(new TcpServer());
     TcpServer::Ptr httpSrv(new TcpServer());
-    rtspSrv->start<RtspSession>(554);//默认554
-    rtmpSrv->start<RtmpSession>(1935);//默认1935
-    httpSrv->start<HttpSession>(80);//默认80
+    rtspSrv->start<RtspSession>(554);//Default 554
+    rtmpSrv->start<RtmpSession>(1935);//Default 1935
+    httpSrv->start<HttpSession>(80);//Default 80
 
     if (argc == 2)
       loadFile(argv[1]);

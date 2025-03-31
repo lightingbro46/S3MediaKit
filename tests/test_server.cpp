@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -205,9 +205,9 @@ void initEventListener() {
         NoticeCenter::Instance().addListener(nullptr, Broadcast::kBroadcastNotFoundStream, [](BroadcastNotFoundStreamArgs) {
             /**
              * 你可以在这个事件触发时再去拉流，这样就可以实现按需拉流
-             * 拉流成功后，ZLMediaKit会把其立即转发给播放器(最大等待时间约为5秒，如果5秒都未拉流成功，播放器会播放失败)
+             * 拉流成功后，S3MediaKit会把其立即转发给播放器(最大等待时间约为5秒，如果5秒都未拉流成功，播放器会播放失败)
              * You can pull the stream again when this event is triggered, which can implement on-demand pulling
-             * After pulling the stream successfully, ZLMediaKit will immediately forward it to the player (the maximum waiting time is about 5 seconds, if it still fails to pull the stream within 5 seconds, the player will play failure)
+             * After pulling the stream successfully, S3MediaKit will immediately forward it to the player (the maximum waiting time is about 5 seconds, if it still fails to pull the stream within 5 seconds, the player will play failure)
              
              * [AUTO-TRANSLATED:5a01351c]
              */

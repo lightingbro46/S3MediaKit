@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLToolKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The ZLToolKit project authors. All Rights Reserved.
  *
  * This file is part of ZLToolKit(https://github.com/xia-chu/ZLToolKit).
  *

@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -64,7 +64,7 @@
 #endif
 
 #if defined(ENABLE_VERSION)
-#include "ZLMVersion.h"
+#include "S3MVersion.h"
 #endif
 
 #if defined(ENABLE_VIDEOSTACK) && defined(ENABLE_X264) && defined (ENABLE_FFMPEG)
@@ -94,7 +94,6 @@ static onceToken token([]() {
 }//namespace API
 
 using HttpApi = function<void(const Parser &parser, const HttpSession::HttpResponseInvoker &invoker, SockInfo &sender)>;
-// http api列表  [AUTO-TRANSLATED:a05e9d9d]
 // http api list
 static map<string, HttpApi, StrCaseCompare> s_map_api;
 
@@ -123,7 +122,6 @@ static HttpApi toApi(const function<void(API_ARGS_MAP_ASYNC)> &cb) {
         Json::Value val;
         val["code"] = API::Success;
 
-        // 参数解析成map  [AUTO-TRANSLATED:20e11ff3]
         // Parse parameters into a map
         auto args = getAllArgs(parser);
         cb(sender, headerOut, ArgsMap(parser, args), val, invoker);
@@ -149,7 +147,6 @@ static HttpApi toApi(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
         if (parser["Content-Type"].find("application/json") == string::npos) {
             throw InvalidArgsException("This interface only supports requests in json format");
         }
-        // 参数解析成json对象然后处理  [AUTO-TRANSLATED:6f23397b]
         // Parse parameters into a JSON object and then process
         Json::Value args;
         Json::Reader reader;
@@ -210,7 +207,6 @@ void api_regist(const string &api_path, const function<void(API_ARGS_STRING_ASYN
     s_map_api.emplace(api_path, toApi(func));
 }
 
-// 获取HTTP请求中url参数、content参数  [AUTO-TRANSLATED:d161a1e1]
 // Get URL parameters and content parameters from the HTTP request
 static ApiArgsType getAllArgs(const Parser &parser) {
     ApiArgsType allArgs;

@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2016-2022 The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2016-2022 The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -203,7 +203,7 @@ endif()
 
 # 添加库
 add_library(zltoolkit STATIC ${ToolKit_SRC_LIST})
-add_library(ZLMediaKit::ToolKit ALIAS zltoolkit)
+add_library(S3MediaKit::ToolKit ALIAS zltoolkit)
 target_compile_definitions(zltoolkit
   PUBLIC ${COMPILE_DEFINITIONS})
 target_compile_options(zltoolkit
@@ -214,7 +214,7 @@ target_include_directories(zltoolkit
   PUBLIC
     "$<BUILD_INTERFACE:${ToolKit_ROOT}>/src")
 
-update_cached_list(MK_LINK_LIBRARIES ZLMediaKit::ToolKit)
+update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ToolKit)
 
 if(USE_SOLUTION_FOLDERS AND (NOT GROUP_BY_EXPLORER))
   # 在 IDE 中对文件进行分组, 源文件和头文件分开

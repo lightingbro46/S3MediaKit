@@ -1,4 +1,13 @@
-﻿#include "Common/config.h"
+﻿/*
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
+ *
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
+ *
+ * Use of this source code is governed by MIT-like license that can be found in the
+ * LICENSE file in the root of the source tree. All contributing project authors
+ * may be found in the AUTHORS file in the root of the source tree.
+ */
+#include "Common/config.h"
 #include "Http/HttpSession.h"
 #include "Network/TcpServer.h"
 #include "Rtmp/RtmpSession.h"
@@ -91,19 +100,19 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
 }
 
 int main(int argc, char *argv[]) {
-    // 设置日志
+    // Setting up logs
     Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel"));
 
-    // 启动异步日志线程
+    // Start an asynchronous log thread
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
     loadIniConfig((exeDir() + "config.ini").data());
 
     TcpServer::Ptr rtspSrv(new TcpServer());
     TcpServer::Ptr rtmpSrv(new TcpServer());
     TcpServer::Ptr httpSrv(new TcpServer());
-    rtspSrv->start<RtspSession>(554);  // 默认554
-    rtmpSrv->start<RtmpSession>(1935); // 默认1935
-    httpSrv->start<HttpSession>(81);   // 默认80
+    rtspSrv->start<RtspSession>(554);  // Default 554
+    rtmpSrv->start<RtmpSession>(1935); // Default 1935
+    httpSrv->start<HttpSession>(81);   // Default 80
 
     if (argc == 2) {
         auto poller = EventPollerPool::Instance().getPoller();

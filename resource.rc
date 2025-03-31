@@ -5,19 +5,19 @@
 #include "winres.h"
 
 #if defined(ENABLE_VERSION)
-#include "ZLMVersion.h"
+#include "S3MVersion.h"
 #endif
 
-#define ZLM_VERSION 8,0,0,1
+#define S3M_VERSION 8,0,0,1
 
-// 拼接 BRANCH_NAME 和 COMMIT_HASH ，例如 master - 1c8ed1c
+// Splicing BRANCH_NAME and COMMIT_HASH, for example master -1c8ed1c
 #define COMMIT_HASH_BRANCH_STR BRANCH_NAME " - " COMMIT_HASH 
 
 IDI_ICON1 ICON DISCARDABLE "www//logo.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION ZLM_VERSION
- PRODUCTVERSION ZLM_VERSION
+ FILEVERSION S3M_VERSION
+ PRODUCTVERSION S3M_VERSION
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -32,12 +32,12 @@ BEGIN
     BEGIN
         BLOCK "000004b0"
         BEGIN
-            VALUE "CompanyName", "Applied ZLMediaKit Informatics Software"
-            VALUE "FileDescription", "This file is part of the C++ ZLM"
+            VALUE "CompanyName", "Applied Viettel Solutions Software"
+            VALUE "FileDescription", "This file is part of the C++ S3M"
             VALUE "FileVersion", COMMIT_HASH_BRANCH_STR
             VALUE "InternalName", COMMIT_HASH_BRANCH_STR
-            VALUE "LegalCopyright", "Copyright (c) 2016-present The ZLMediaKit project authors"
-            VALUE "ProductName", "https://github.com/ZLMediaKit"
+            VALUE "LegalCopyright", "Copyright (c) 2025-present The S3MediaKit project authors"
+            VALUE "ProductName", "https://github.com/S3MediaKit"
             VALUE "ProductVersion", COMMIT_HASH_BRANCH_STR
         END
     END

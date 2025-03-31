@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -408,11 +408,11 @@ protected:
 
 /**
  * 一个Frame类中可以有多个帧(AAC)，时间戳会变化
- * ZLMediaKit会先把这种复合帧split成单个帧然后再处理
+ * S3MediaKit会先把这种复合帧split成单个帧然后再处理
  * 一个复合帧可以通过无内存拷贝的方式切割成多个子Frame
  * 提供该类的目的是切割复合帧时防止内存拷贝，提高性能
  * A Frame class can have multiple frames (AAC), and the timestamp will change
- * ZLMediaKit will first split this composite frame into single frames and then process it
+ * S3MediaKit will first split this composite frame into single frames and then process it
  * A composite frame can be split into multiple sub-Frames without memory copy
  * The purpose of providing this class is to prevent memory copy when splitting composite frames, improving performance
  
@@ -436,11 +436,11 @@ private:
 
 /**
  * 一个Frame类中可以有多个帧，他们通过 0x 00 00 01 分隔
- * ZLMediaKit会先把这种复合帧split成单个帧然后再处理
+ * S3MediaKit会先把这种复合帧split成单个帧然后再处理
  * 一个复合帧可以通过无内存拷贝的方式切割成多个子Frame
  * 提供该类的目的是切割复合帧时防止内存拷贝，提高性能
  * A Frame class can have multiple frames, they are separated by 0x 00 00 01
- * ZLMediaKit will first split this composite frame into single frames and then process it
+ * S3MediaKit will first split this composite frame into single frames and then process it
  * A composite frame can be split into multiple sub-Frames without memory copy
  * The purpose of providing this class is to prevent memory copy when splitting composite frames, improving performance
  

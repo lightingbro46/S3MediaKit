@@ -94,8 +94,8 @@ RUN cd /opt \
     && make install
 
 RUN cd /opt \
-    && git clone --depth 1 https://github.com/ZLMediaKit/ZLMediaKit.git \
-    && cd ZLMediaKit \
+    && git clone --depth 1 https://github.com/S3MediaKit/S3MediaKit.git \
+    && cd S3MediaKit \
     && git submodule update --init \
     && mkdir -p build release/linux/Release/ \
     && cd build \
@@ -106,13 +106,13 @@ RUN mkdir -p /opt/build/opt/zlm/ /opt/build/usr/local/bin/ /opt/build/usr/bin/  
     && cd /opt/build \
     && /usr/bin/cp -ip /usr/local/lib/libx26* ./usr/local/lib \
     && /usr/bin/cp -ip /usr/local/bin/ffmpeg ./usr/local/bin \
-    && /usr/bin/cp -ip /opt/ZLMediaKit/release/linux/Release/MediaServer ./opt/zlm/ \
-    && /usr/bin/cp -irp /opt/ZLMediaKit/release/linux/Release/www ./opt/zlm/ \
-    && /usr/bin/cp -ip /opt/ZLMediaKit/tests/ssl.p12 ./opt/zlm/ \
+    && /usr/bin/cp -ip /opt/S3MediaKit/release/linux/Release/MediaServer ./opt/zlm/ \
+    && /usr/bin/cp -irp /opt/S3MediaKit/release/linux/Release/www ./opt/zlm/ \
+    && /usr/bin/cp -ip /opt/S3MediaKit/tests/ssl.p12 ./opt/zlm/ \
     && /usr/bin/cp -ip /usr/bin/which ./usr/bin/
 
 FROM centos:${Version}
-LABEL maintainer="chengxiaosheng <kevin__cheng@outlook.com>" project-url="https://github.com/ZLMediaKit/ZLMediaKit" description="一个基于C++11的高性能运营级流媒体服务框架"
+LABEL maintainer="chengxiaosheng <kevin__cheng@outlook.com>" project-url="https://github.com/S3MediaKit/S3MediaKit" description="一个基于C++11的高性能运营级流媒体服务框架"
 
 EXPOSE 9000/tcp \
  1935/tcp \

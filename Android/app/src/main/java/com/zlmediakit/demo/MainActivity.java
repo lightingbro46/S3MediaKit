@@ -9,10 +9,10 @@ import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
 
-import com.zlmediakit.jni.ZLMediaKit;
+import com.zlmediakit.jni.S3MediaKit;
 
 public class MainActivity extends AppCompatActivity {
-    public static final String TAG = "ZLMediaKit";
+    public static final String TAG = "S3MediaKit";
     private static String[] PERMISSIONS_STORAGE = {
             "android.permission.READ_EXTERNAL_STORAGE",
             "android.permission.WRITE_EXTERNAL_STORAGE",
@@ -41,12 +41,12 @@ public class MainActivity extends AppCompatActivity {
         }else{
             Toast.makeText(this,"请给予我权限，否则无法启动测试！" ,Toast.LENGTH_LONG).show();
         }
-        ZLMediaKit.startDemo(sd_dir);
+        S3MediaKit.startDemo(sd_dir);
     }
 
-    private ZLMediaKit.MediaPlayer _player;
+    private S3MediaKit.MediaPlayer _player;
     private void test_player(){
-        _player = new ZLMediaKit.MediaPlayer("rtmp://live.hkstv.hk.lxdns.com/live/hks1", new ZLMediaKit.MediaPlayerCallBack() {
+        _player = new S3MediaKit.MediaPlayer("rtmp://live.hkstv.hk.lxdns.com/live/hks1", new S3MediaKit.MediaPlayerCallBack() {
             @Override
             public void onPlayResult(int code, String msg) {
                 Log.d(TAG,"onPlayResult:" + code + "," + msg);
@@ -58,7 +58,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
-            public void onData(ZLMediaKit.MediaFrame frame) {
+            public void onData(S3MediaKit.MediaFrame frame) {
                 Log.d(TAG,"onData:"
                         + frame.trackType + ","
                         + frame.codecId + ","

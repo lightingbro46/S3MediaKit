@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -64,11 +64,11 @@ API_EXPORT mk_thread API_CALL mk_thread_from_pool();
 /**
  * 根据负载均衡算法，从后台线程池中随机获取一个线程
  * 后台线程本质与事件线程相同，只是优先级更低，同时可以执行短时间的阻塞任务
- * ZLMediaKit中后台线程用于dns解析、mp4点播时的文件解复用
+ * S3MediaKit中后台线程用于dns解析、mp4点播时的文件解复用
  * @return 后台线程
  * Get a thread randomly from the background thread pool according to the load balancing algorithm
  * Background threads are essentially the same as event threads, but they have lower priority and can execute short-term blocking tasks
- * Background threads in ZLMediaKit are used for dns resolution, file demultiplexing during mp4 on-demand
+ * Background threads in S3MediaKit are used for dns resolution, file demultiplexing during mp4 on-demand
  * @return Background thread
  
  * [AUTO-TRANSLATED:3b552537]

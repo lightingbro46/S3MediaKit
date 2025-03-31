@@ -1,6 +1,6 @@
 ﻿# MIT License
 #
-# Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+# Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,7 @@ foreach(TEST_SRC ${TEST_SRC_LIST})
     endif()
   endif()
   
-  if(NOT TARGET ZLMediaKit::WebRTC)
+  if(NOT TARGET S3MediaKit::WebRTC)
     # 暂时过滤掉依赖 WebRTC 的测试模块
     if("${TEST_EXE_NAME}" MATCHES "test_rtcp_nack")
       continue()

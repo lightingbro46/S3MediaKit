@@ -1,7 +1,7 @@
 ﻿/*	
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *	
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *	
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors	
@@ -32,61 +32,61 @@ public:
     CMD_main() {
         _parser.reset(new OptionParser(nullptr));
 
-        (*_parser) << Option('l',/*该选项简称，如果是\x00则说明无简称*/
-                             "level",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(LTrace).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "日志等级,LTrace~LError(0~4)",/*该选项说明文字*/
+        (*_parser) << Option('l',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "level",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(LTrace).data(),/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Log Level,LTrace~LError(0~4)",/*This option specifies text*/
                              nullptr);
 
 
-        (*_parser) << Option('t',/*该选项简称，如果是\x00则说明无简称*/
-                             "threads",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string(thread::hardware_concurrency()).data(),/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "启动事件触发线程数",/*该选项说明文字*/
+        (*_parser) << Option('t',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "threads",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string(thread::hardware_concurrency()).data(),/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Number of threads triggered by startup event",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('i',/*该选项简称，如果是\x00则说明无简称*/
-                             "inputs",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "/tmp/inputs.txt",/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "拉流地址配置文件，支持rtmp、rtsp, hls，多个地址以 \"换行符\" 分割",/*该选项说明文字*/
+        (*_parser) << Option('i',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "inputs",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "/tmp/inputs.txt",/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Pulling the stream address configuration file, supporting rtmp, rtsp, hls, multiple addresses are divided by \"line breaks\"",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('o',/*该选项简称，如果是\x00则说明无简称*/
-                             "outputs",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "/tmp/outputs.txt",/*该选项默认值*/
-                             false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "推流地址配置文件，支持rtmp、rtsp，多个地址以 \"换行符\" 分割",/*该选项说明文字*/
+        (*_parser) << Option('o',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "outputs",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "/tmp/outputs.txt",/*This option default value*/
+                             false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Pushing address configuration file, supports rtmp and rtsp, and multiple addresses are divided by \"line breaks\"",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('d',/*该选项简称，如果是\x00则说明无简称*/
-                             "delay",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "50",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "启动拉流代理间隔,单位毫秒",/*该选项说明文字*/
+        (*_parser) << Option('d',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "delay",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "50",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Start stream pull proxy interval, in milliseconds",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('m',/*该选项简称，如果是\x00则说明无简称*/
-                             "merge",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             "300",/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "合并写毫秒,合并写能提高性能",/*该选项说明文字*/
+        (*_parser) << Option('m',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "merge",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             "300",/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "Merge write milliseconds, merge write can improve performance",/*This option specifies text*/
                              nullptr);
 
-        (*_parser) << Option('T',/*该选项简称，如果是\x00则说明无简称*/
-                             "rtp",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
-                             Option::ArgRequired,/*该选项后面必须跟值*/
-                             to_string((int) (Rtsp::RTP_TCP)).data(),/*该选项默认值*/
-                             true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
-                             "rtsp拉流方式,支持tcp/udp/multicast:0/1/2",/*该选项说明文字*/
+        (*_parser) << Option('T',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
+                             "rtp",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
+                             Option::ArgRequired,/*This option must be followed by a value*/
+                             to_string((int) (Rtsp::RTP_TCP)).data(),/*This option default value*/
+                             true,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
+                             "rtsp stream pulling method, supports tcp/udp/multicast:0/1/2",/*This option specifies text*/
                              nullptr);
 
     }
@@ -94,13 +94,12 @@ public:
     ~CMD_main() override {}
 
     const char *description() const override {
-        return "主程序命令参数";
+        return "Main program command parameters";
     }
 };
 
 
-// 此程序为zlm的转推性能测试工具，用于测试拉流代理转推性能	  [AUTO-TRANSLATED:3d384f4f]
-// This program is a performance testing tool for zlm's relay push, used to test the relay push performance of the pull stream agent
+// This program is a performance testing tool for s3m's relay push, used to test the relay push performance of the pull stream agent
 int main(int argc, char *argv[]) {
     CMD_main cmd_main;
     try {
@@ -121,19 +120,15 @@ int main(int argc, char *argv[]) {
     auto delay_ms = cmd_main["delay"].as<int>();
     auto merge_ms = cmd_main["merge"].as<int>();
 
-    // 设置日志	  [AUTO-TRANSLATED:b1bbb978]
     // Set log
     Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel", logLevel));
-    // 启动异步日志线程	  [AUTO-TRANSLATED:a3514cc7]
     // Start asynchronous log thread
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-    // 设置线程数	  [AUTO-TRANSLATED:cce432ca]
     // Set the number of threads
     EventPollerPool::setPoolSize(threads);
     WorkThreadPool::setPoolSize(threads);
 
-    // 设置合并写	  [AUTO-TRANSLATED:e3aaf4f8]
     // Set merge write
     mINI::Instance()[General::kMergeWriteMS] = merge_ms;
 
@@ -142,7 +137,6 @@ int main(int argc, char *argv[]) {
     std::vector<std::string> output_urls;
 
     auto parse_urls = [&]() {
-        // 获取输入源列表	  [AUTO-TRANSLATED:ff8fdf28]
         // Get input source list
         auto inputs = ::split(toolkit::File::loadFile(in_urls), "\n");
         for(auto &url : inputs){
@@ -152,7 +146,6 @@ int main(int argc, char *argv[]) {
             auto input_url = ::trim(url);
             input_urls.emplace_back(input_url);
         }
-        // 获取输出源列表	  [AUTO-TRANSLATED:267eba3a]
         // Get output source list
         auto outputs = ::split(toolkit::File::loadFile(out_urls), "\n");
         for(auto &url : outputs){
@@ -168,17 +161,16 @@ int main(int argc, char *argv[]) {
         }
 
         for(size_t i = 0; i < input_urls.size(); i++){
-            InfoL << "拉流地址: " << input_urls[i] << ",推流地址：" << output_urls[i];
+            InfoL << "Pull the stream address: " << input_urls[i] << ",Pushing address:" << output_urls[i];
         }
         return 0;
     };
 
     if (0 != parse_urls()){
-        cout << "请检查inputs和outputs文件是否正确！" << endl;
+        cout << "Please check whether the inputs and outputs files are correct！" << endl;
         return -1;
     }
 
-    // 推流器map	  [AUTO-TRANSLATED:d6af6562]
     // Pusher map
     recursive_mutex mtx;
     unordered_map<int, PlayerProxy::Ptr> proxy_map;
@@ -187,52 +179,42 @@ int main(int argc, char *argv[]) {
     auto add_pusher = [&](const MediaSource::Ptr &src, const string &url, int index) {
         auto pusher = std::make_shared<MediaPusher>(src);
         pusher->setOnCreateSocket([](const EventPoller::Ptr &poller) {
-            // socket关闭互斥锁，提高性能	  [AUTO-TRANSLATED:d734e718]
             // Socket close mutex, improve performance
             return Socket::createSocket(poller, false);
         });
-        // 设置推流失败监听	  [AUTO-TRANSLATED:8e799d62]
         // Set push failure listener
         pusher->setOnPublished([&mtx, &pusher_map, index](const SockException &ex) {
             if (ex) {
-                // 推流失败，移除之	  [AUTO-TRANSLATED:92440807]
                 // Push failure, remove it
                 lock_guard<recursive_mutex> lck(mtx);
                 pusher_map.erase(index);
             }
         });
-        // 设置推流中途断开监听	  [AUTO-TRANSLATED:b1cc165d]
         // Set push midway disconnection listener
         pusher->setOnShutdown([&mtx, &pusher_map, index](const SockException &ex) {
-            // 推流中途失败，移除之	  [AUTO-TRANSLATED:9d79c581]
             // Push midway failure, remove it
             lock_guard<recursive_mutex> lck(mtx);
             pusher_map.erase(index);
         });
-        // 设置rtsp推流方式(在rtsp推流时有效)	  [AUTO-TRANSLATED:92584646]
         // Set RTSP push mode (effective when pushing RTSP)
         (*pusher)[Client::kRtpType] = rtp_type;
         pusher->publish(url);
-        // 保持对象不销毁	  [AUTO-TRANSLATED:43ddb698]
         // Keep the object from being destroyed
         lock_guard<recursive_mutex> lck(mtx);
         pusher_map.emplace(index, std::move(pusher));
-        // 休眠后再启动下一个推流，防止短时间海量链接	  [AUTO-TRANSLATED:2f17b482]
         // Sleep and then start the next push to prevent massive connections in a short time
         if (delay_ms > 0) {
             usleep(1000 * delay_ms);
         }
     };
 
-    // 添加转推任务	  [AUTO-TRANSLATED:122a8389]
     // Add relay task
     for(size_t i = 0; i < input_urls.size(); i++) {
-        // 休眠一秒打印	  [AUTO-TRANSLATED:338a3b2c]
         // Sleep for one second and print
         sleep(1);
         auto schema = findSubString(output_urls[i].data(), nullptr, "://");
         if (schema != RTSP_SCHEMA && schema != RTMP_SCHEMA) {
-            cout << "推流协议只支持rtsp或rtmp！" << endl;
+            cout << "The push streaming protocol only supports rtsp or rtmp!" << endl;
             return -1;
         }
         ProtocolOption option;
@@ -241,22 +223,18 @@ int main(int argc, char *argv[]) {
         option.enable_hls = false;
         option.enable_mp4 = false;
         option.modify_stamp = (int)ProtocolOption::kModifyStampRelative;
-        // 添加拉流代理  [AUTO-TRANSLATED:aa516f44]
         // Add pull stream agent
         auto tuple = MediaTuple { DEFAULT_VHOST, "app", std::to_string(i), "" };
         auto proxy = std::make_shared<PlayerProxy>(tuple, option, -1, nullptr, 1);
-        // 开始拉流代理	  [AUTO-TRANSLATED:c9fe3c34]
         // Start pull stream agent
         proxy->play(input_urls[i]);
         proxy_map.emplace(i, std::move(proxy));
     }
 
-    // 设置退出信号	  [AUTO-TRANSLATED:4f618479]
     // Set exit signal
     static bool exit_flag = false;
     signal(SIGINT, [](int) { exit_flag = true; });
     while (!exit_flag) {
-        // 休眠一秒打印	  [AUTO-TRANSLATED:338a3b2c]
         // Sleep for one second and print
         sleep(1);
 
@@ -265,7 +243,7 @@ int main(int argc, char *argv[]) {
             lock_guard<recursive_mutex> lck(mtx);
             alive_pusher = pusher_map.size();
         }
-        InfoL << "在线转推器个数:" << alive_pusher;
+        InfoL << "Number of online retweeters:" << alive_pusher;
 
         auto find_pusher = [&](int index){
             lock_guard<recursive_mutex> lck(mtx);

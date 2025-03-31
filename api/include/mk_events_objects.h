@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -163,24 +163,24 @@ API_EXPORT int API_CALL mk_media_source_get_bytes_speed(const mk_media_source ct
 // MediaSource::getAliveSecond()
 API_EXPORT uint64_t API_CALL mk_media_source_get_alive_second(const mk_media_source ctx);
 /**
- * 直播源在ZLMediaKit中被称作为MediaSource，
+ * 直播源在S3MediaKit中被称作为MediaSource，
  * 目前支持3种，分别是RtmpMediaSource、RtspMediaSource、HlsMediaSource
  * 源的产生有被动和主动方式:
  * 被动方式分别是rtsp/rtmp/rtp推流、mp4点播
  * 主动方式包括mk_media_create创建的对象(DevChannel)、mk_proxy_player_create创建的对象(PlayerProxy)
- * 被动方式你不用做任何处理，ZLMediaKit已经默认适配了MediaSource::close()事件，都会关闭直播流
+ * 被动方式你不用做任何处理，S3MediaKit已经默认适配了MediaSource::close()事件，都会关闭直播流
  * 主动方式你要设置这个事件的回调，你要自己选择删除对象
  * 通过mk_proxy_player_set_on_close、mk_media_set_on_close函数可以设置回调,
  * 请在回调中删除对象来完成媒体的关闭，否则又为什么要调用mk_media_source_close函数？
  * @param ctx 对象
  * @param force 是否强制关闭，如果强制关闭，在有人观看的情况下也会关闭
  * @return 0代表失败，1代表成功
- * Live sources are called MediaSource in ZLMediaKit,
+ * Live sources are called MediaSource in S3MediaKit,
  * Currently, there are 3 types, namely RtmpMediaSource, RtspMediaSource, HlsMediaSource
  * The source is generated in both passive and active ways:
  * Passive ways are rtsp/rtmp/rtp push stream, mp4 on-demand
  * Active ways include objects created by mk_media_create (DevChannel), objects created by mk_proxy_player_create (PlayerProxy)
- * You don't need to do anything for passive ways, ZLMediaKit has already adapted the MediaSource::close() event by default, which will close the live stream
+ * You don't need to do anything for passive ways, S3MediaKit has already adapted the MediaSource::close() event by default, which will close the live stream
  * For active ways, you need to set the callback of this event, you need to choose to delete the object yourself
  * You can set the callback through the mk_proxy_player_set_on_close and mk_media_set_on_close functions,
  * Please delete the object in the callback to complete the media closure, otherwise why call the mk_media_source_close function?

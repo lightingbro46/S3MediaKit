@@ -1,6 +1,6 @@
 package com.zlmediakit.jni;
 
-public class ZLMediaKit {
+public class S3MediaKit {
     static public class MediaFrame{
 
         /**

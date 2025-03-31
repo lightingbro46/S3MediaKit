@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -288,7 +288,7 @@ extern const std::string kContinuePushMS;
 // 平滑发送定时器间隔，单位毫秒，置0则关闭；开启后影响cpu性能同时增加内存  [AUTO-TRANSLATED:ad4e306a]
 // Smooth sending timer interval, unit is milliseconds, set to 0 to close; enabling it will affect CPU performance and increase memory
 // 该配置开启后可以解决一些流发送不平滑导致zlmediakit转发也不平滑的问题  [AUTO-TRANSLATED:0f2b1657]
-// Enabling this configuration can solve some problems where the stream is not sent smoothly, resulting in ZLMediaKit forwarding not being smooth
+// Enabling this configuration can solve some problems where the stream is not sent smoothly, resulting in S3MediaKit forwarding not being smooth
 extern const std::string kPacedSenderMS;
 
 // 是否开启转换为hls(mpegts)  [AUTO-TRANSLATED:bfc1167a]
@@ -366,8 +366,8 @@ extern const std::string kDirMenu;
 // 禁止缓存文件的后缀  [AUTO-TRANSLATED:92bcb7f7]
 // Forbidden cache file suffixes
 extern const std::string kForbidCacheSuffix;
-// 可以把http代理前真实客户端ip放在http头中：https://github.com/ZLMediaKit/ZLMediaKit/issues/1388  [AUTO-TRANSLATED:afcd9556]
-// You can put the real client IP address before the HTTP proxy in the HTTP header: https://github.com/ZLMediaKit/ZLMediaKit/issues/1388
+// 可以把http代理前真实客户端ip放在http头中：https://github.com/S3MediaKit/S3MediaKit/issues/1388  [AUTO-TRANSLATED:afcd9556]
+// You can put the real client IP address before the HTTP proxy in the HTTP header: https://github.com/S3MediaKit/S3MediaKit/issues/1388
 extern const std::string kForwardedIpHeader;
 // 是否允许所有跨域请求  [AUTO-TRANSLATED:2551c096]
 // Whether to allow all cross-domain requests
@@ -556,8 +556,8 @@ extern const std::string kOpusPT;
 // startSendRtp、startRecord相关功能是否提前开启gop缓存优化级联秒开体验，默认开启, 并缓存1个GOP  [AUTO-TRANSLATED:40c37c77]
 // Whether to enable gop cache optimization cascade second-open experience for startSendRtp/startRecord related functions, enabled by default, and cached 1 GOP
 extern const std::string kGopCache;
-// 国标发送g711 rtp 打包时，每个包的语音时长是多少，默认是100 ms，范围为20~180ms (gb28181-2016，c.2.4规定)，  [AUTO-TRANSLATED:3b3916a3]
-// When sending g711 rtp packets in national standard, what is the duration of each packet, the default is 100 ms, the range is 20~180ms (gb28181-2016, c.2.4),
+// 国标发送g711 rtp 打包时，每个包的语音时长是多少，默认是100 ms，范围为20~180ms (gb28181-2025，c.2.4规定)，  [AUTO-TRANSLATED:3b3916a3]
+// When sending g711 rtp packets in national standard, what is the duration of each packet, the default is 100 ms, the range is 20~180ms (gb28181-2025, c.2.4),
 // 最好为20 的倍数，程序自动向20的倍数取整  [AUTO-TRANSLATED:7bc6e0ec]
 // It is best to be a multiple of 20, the program automatically rounds to the nearest multiple of 20
 extern const std::string kRtpG711DurMs;

@@ -1,7 +1,7 @@
 ﻿/*
- * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
+ * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
  *
- * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
+ * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
  *
  * Use of this source code is governed by MIT-like license that can be found in the
  * LICENSE file in the root of the source tree. All contributing project authors
@@ -72,8 +72,8 @@ bool AACRtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool key_pos) {
     // The first 2 bytes represent the number of Au-Headers, in bits, so divide by 16 to get the number of Au-Headers
     auto au_header_count = ((ptr[0] << 8) | ptr[1]) >> 4;
     if (!au_header_count) {
-        // 问题issue: https://github.com/ZLMediaKit/ZLMediaKit/issues/1869  [AUTO-TRANSLATED:14be1ff8]
-        // Issue: https://github.com/ZLMediaKit/ZLMediaKit/issues/1869
+        // 问题issue: https://github.com/S3MediaKit/S3MediaKit/issues/1869  [AUTO-TRANSLATED:14be1ff8]
+        // Issue: https://github.com/S3MediaKit/S3MediaKit/issues/1869
         WarnL << "invalid aac rtp au_header_count";
         return false;
     }

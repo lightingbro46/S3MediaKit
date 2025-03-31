@@ -32,13 +32,13 @@ RUN apt-get update && \
 RUN mkdir -p /opt/media
 
 WORKDIR /opt/media
-RUN git clone --depth=1 https://github.com/ZLMediaKit/ZLMediaKit && \
-    cd ZLMediaKit && git submodule update --init --recursive && \
+RUN git clone --depth=1 https://github.com/S3MediaKit/S3MediaKit && \
+    cd S3MediaKit && git submodule update --init --recursive && \
     mkdir -p build release/linux/Release/
 
-WORKDIR /opt/media/ZLMediaKit/build
+WORKDIR /opt/media/S3MediaKit/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make
 
-ENV PATH /opt/media/ZLMediaKit/release/linux/Release/:$PATH
+ENV PATH /opt/media/S3MediaKit/release/linux/Release/:$PATH
 CMD ["MediaServer"]
