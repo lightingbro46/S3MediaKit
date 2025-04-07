@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <assert.h>
+﻿#include <assert.h>
 #include "mk_events_objects.h"
 #include "Common/config.h"
 #include "Record/MP4Recorder.h"
@@ -228,7 +218,6 @@ API_EXPORT mk_track API_CALL mk_media_source_get_track(const mk_media_source ctx
 API_EXPORT float API_CALL mk_media_source_get_track_loss(const mk_media_source ctx, const mk_track track) {
     assert(ctx);
     MediaSource *src = (MediaSource *)ctx;
-    // rtp推流只有一个统计器，但是可能有多个track，如果短时间多次获取间隔丢包率，第二次会获取为-1  [AUTO-TRANSLATED:b30fec2c]
     // RTP streaming has only one statistics object, but there may be multiple tracks. If the packet loss rate is obtained multiple times in a short period, the second time will be obtained as -1
     return src->getLossRate((*((Track::Ptr *)track))->getTrackType());
 }
@@ -609,13 +598,12 @@ API_EXPORT void API_CALL mk_rtc_send_datachannel(const mk_rtc_transport ctx, uin
     std::string msg_str(msg, len);
     std::weak_ptr<WebRtcTransport> weak_trans = transport->shared_from_this();
     transport->getPoller()->async([streamId, ppid, msg_str, weak_trans]() {
-        // 切换线程后再操作  [AUTO-TRANSLATED:12d77fca]
         // Operate after switching threads
         if (auto trans = weak_trans.lock()) {
             trans->sendDatachannel(streamId, ppid, msg_str.c_str(), msg_str.size());
         }
     });
 #else
-    WarnL << "未启用webrtc功能, 编译时请开启ENABLE_WEBRTC";
+    WarnL << "The webrtc function is not enabled. Please enable ENABLE_WEBRTC during compilation.";
 #endif
 }

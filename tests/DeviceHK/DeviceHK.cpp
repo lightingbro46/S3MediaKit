@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifdef ENABLE_HKDEVICE
+﻿#ifdef ENABLE_HKDEVICE
 #include "DeviceHK.h"
 #include "Util/TimeTicker.h"
 #include "Util/MD5.h"
@@ -110,12 +100,12 @@ DevChannelHK::DevChannelHK(int64_t i64LoginId, const char* pcDevName, int iChn, 
         m_i64LoginId(i64LoginId) {
     InfoL << endl;
     NET_DVR_PREVIEWINFO previewInfo;
-    previewInfo.lChannel = iChn; //通道号
-    previewInfo.dwStreamType = bMainStream ? 0 : 1; // 码流类型，0-主码流，1-子码流，2-码流3，3-码流4 等以此类推
-    previewInfo.dwLinkMode = 1; // 0：TCP方式,1：UDP方式,2：多播方式,3 - RTP方式，4-RTP/RTSP,5-RSTP/HTTP
-    previewInfo.hPlayWnd = 0; //播放窗口的句柄,为NULL表示不播放图象
-    previewInfo.byProtoType = 0; //应用层取流协议，0-私有协议，1-RTSP协议
-    previewInfo.dwDisplayBufNum = 1; //播放库播放缓冲区最大缓冲帧数，范围1-50，置0时默认为1
+    previewInfo.lChannel = iChn; //Channel number
+    previewInfo.dwStreamType = bMainStream ? 0 : 1; // Code stream type, 0-main code stream, 1-subcode stream, 2-code stream 3, 3-code stream 4, etc. and so on
+    previewInfo.dwLinkMode = 1; //0: TCP mode, 1: UDP mode, 2: Multicast mode, 3 -RTP mode, 4-RTP/RTSP, 5-RSTP/HTTP
+    previewInfo.hPlayWnd = 0; //The handle of the play window, NULL means that the image is not played
+    previewInfo.byProtoType = 0; //Application layer flow fetch protocol, 0-private protocol, 1-RTSP protocol
+    previewInfo.dwDisplayBufNum = 1; //The maximum number of buffered frames in the playback buffer of the playback library is 1-50. When set to 0, the default is 1.
     previewInfo.bBlocked = 0;
     m_i64PreviewHandle = NET_DVR_RealPlay_V40(m_i64LoginId, &previewInfo,
                                         [](LONG lPlayHandle,DWORD dwDataType,BYTE *pBuffer,DWORD dwBufSize,void* pUser) {
@@ -126,7 +116,7 @@ DevChannelHK::DevChannelHK(int64_t i64LoginId, const char* pcDevName, int iChn, 
                                             self->onPreview(dwDataType,pBuffer,dwBufSize);
                                         }, this);
     if (m_i64PreviewHandle == -1) {
-        throw std::runtime_error( StrPrinter 	<< "设备[" << pcDevName << "/" << iChn << "]开始实时预览失败:"
+        throw std::runtime_error( StrPrinter 	<< "Equipment[" << pcDevName << "/" << iChn << "] failed to start live preview:"
                                                 << NET_DVR_GetLastError() << endl);
     }
 }
@@ -147,18 +137,18 @@ DevChannelHK::~DevChannelHK() {
 void DevChannelHK::onPreview(DWORD dwDataType, BYTE* pBuffer, DWORD dwBufSize) {
     //TimeTicker1(-1);
     switch (dwDataType) {
-    case NET_DVR_SYSHEAD: { //系统头数据
-        if (!PlayM4_GetPort(&m_iPlayHandle)) {  //获取播放库未使用的通道号
+    case NET_DVR_SYSHEAD: { //System header data
+        if (!PlayM4_GetPort(&m_iPlayHandle)) {  //Get the channel number that is not used by the playback library
             WarnL << "PlayM4_GetPort:" << NET_DVR_GetLastError();
             break;
         }
         if (dwBufSize > 0) {
-            if (!PlayM4_SetStreamOpenMode(m_iPlayHandle, STREAME_REALTIME)) { //设置实时流播放模式
+            if (!PlayM4_SetStreamOpenMode(m_iPlayHandle, STREAME_REALTIME)) { //Set live streaming mode
                 WarnL << "PlayM4_SetStreamOpenMode:" << NET_DVR_GetLastError();
                 break;
             }
             if (!PlayM4_OpenStream(m_iPlayHandle, pBuffer, dwBufSize,
-                    1024 * 1024)) {  //打开流接口
+                    1024 * 1024)) {  //Open the streaming interface
                 WarnL << "PlayM4_OpenStream:" << NET_DVR_GetLastError();
                 break;
             }
@@ -171,12 +161,11 @@ void DevChannelHK::onPreview(DWORD dwDataType, BYTE* pBuffer, DWORD dwBufSize) {
                         }
                         chn->onGetDecData(pBuf,nSize,pFrameInfo);
                     }, this);
-            if (!PlayM4_Play(m_iPlayHandle, 0)) {  //播放开始
+            if (!PlayM4_Play(m_iPlayHandle, 0)) {  //Playback starts
                 WarnL << "PlayM4_Play:" << NET_DVR_GetLastError();
                 break;
             }
-            InfoL << "设置解码器成功！" << endl;
-            // 打开音频解码, 需要码流是复合流  [AUTO-TRANSLATED:ef6be0e4]
+            InfoL << "Setting the decoder successfully!" << endl;
             // Open audio decoding, requires the bitstream to be a composite stream
             if (!PlayM4_PlaySoundShare(m_iPlayHandle)) {
                 WarnL << "PlayM4_PlaySound:" << NET_DVR_GetLastError();
@@ -185,7 +174,7 @@ void DevChannelHK::onPreview(DWORD dwDataType, BYTE* pBuffer, DWORD dwBufSize) {
         }
     }
         break;
-    case NET_DVR_STREAMDATA: { //流数据（包括复合流或音视频分开的视频流数据）
+    case NET_DVR_STREAMDATA: { //Streaming data (including video stream data that is separated by composite streams or audio and video)
         if (dwBufSize > 0 && m_iPlayHandle != -1) {
             if (!PlayM4_InputData(m_iPlayHandle, pBuffer, dwBufSize)) {
                 WarnL << "PlayM4_InputData:" << NET_DVR_GetLastError();
@@ -194,10 +183,10 @@ void DevChannelHK::onPreview(DWORD dwDataType, BYTE* pBuffer, DWORD dwBufSize) {
         }
     }
         break;
-    case NET_DVR_AUDIOSTREAMDATA: { //音频数据
+    case NET_DVR_AUDIOSTREAMDATA: { //Audio data
     }
         break;
-    case NET_DVR_PRIVATE_DATA: { //私有数据,包括智能信息
+    case NET_DVR_PRIVATE_DATA: { //Private data, including smart information
     }
         break;
     default:

@@ -1,14 +1,4 @@
-﻿ /*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef YUVDISPLAYER_H_
+﻿#ifndef YUVDISPLAYER_H_
 #define YUVDISPLAYER_H_
 #include <stdexcept>
 #include "Util/onceToken.h"
@@ -101,7 +91,7 @@ public:
     YuvDisplayer(void *hwnd = nullptr,const char *title = "untitled"){
         static toolkit::onceToken token([]() {
             if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO) == -1) {
-                std::string err = "初始化SDL失败:";
+                std::string err = "Initialization of SDL failed:";
                 err+= SDL_GetError();
                 ErrorL << err;
                 throw std::runtime_error(err);
@@ -170,7 +160,7 @@ public:
         }
         if (_texture) {
 #if SDL_VERSION_ATLEAST(2,0,16)
-            //需要更新sdl到最新（>=2.0.16）
+            //Need to update sdl to the latest (>=2.0.16）
             if (pFrame->format == AV_PIX_FMT_NV12) {
                 SDL_UpdateNVTexture(
                     _texture, nullptr, pFrame->data[0], pFrame->linesize[0], pFrame->data[1], pFrame->linesize[1]);

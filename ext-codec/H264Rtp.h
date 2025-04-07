@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_H264RTPCODEC_H
+﻿#ifndef ZLMEDIAKIT_H264RTPCODEC_H
 #define ZLMEDIAKIT_H264RTPCODEC_H
 
 #include "H264.h"
@@ -19,14 +9,9 @@
 namespace mediakit {
 
 /**
- * h264 rtp解码类
- * 将 h264 over rtsp-rtp 解复用出 h264-Frame
- * rfc3984
  * h264 rtp decoder class
  * Demultiplex h264-Frame from h264 over rtsp-rtp
  * rfc3984
- 
- * [AUTO-TRANSLATED:84b4831b]
  */
 class H264RtpDecoder : public RtpCodec{
 public:
@@ -35,14 +20,9 @@ public:
     H264RtpDecoder();
 
     /**
-     * 输入264 rtp包
-     * @param rtp rtp包
-     * @param key_pos 此参数忽略之
      * Input 264 rtp packet
      * @param rtp rtp packet
      * @param key_pos This parameter is ignored
-     
-     * [AUTO-TRANSLATED:a9ed29db]
      */
     bool inputRtp(const RtpPacket::Ptr &rtp, bool key_pos = true) override;
 
@@ -65,31 +45,20 @@ private:
 };
 
 /**
- * 264 rtp打包类
  * 264 rtp packaging class
- 
- * [AUTO-TRANSLATED:baed5b50]
  */
 class H264RtpEncoder : public RtpCodec {
 public:
     using Ptr = std::shared_ptr<H264RtpEncoder>;
 
     /**
-     * 输入264帧
-     * @param frame 帧数据，必须
      * Input 264 frame
      * @param frame Frame data, required
-     
-     * [AUTO-TRANSLATED:1190bc60]
      */
     bool inputFrame(const Frame::Ptr &frame) override;
 
     /**
-     * 刷新输出所有frame缓存
      * Flush all frame buffers in the output
-     
-     
-     * [AUTO-TRANSLATED:adaea568]
      */
     void flush() override;
 

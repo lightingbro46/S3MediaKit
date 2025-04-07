@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Device.h"
+﻿#include "Device.h"
 #include "Util/logger.h"
 #include "Util/base64.h"
 #include "Extension/Factory.h"
@@ -45,7 +35,7 @@ bool DevChannel::inputYUV(char *yuv[3], int linesize[3], uint64_t cts) {
     }
     return false;
 #else
-    WarnL << "h264编码未启用,该方法无效,编译时请打开ENABLE_X264选项";
+    WarnL << "H264 encoding is not enabled, this method is invalid. Please turn on the ENABLE_X264 option during compilation";
     return false;
 #endif //ENABLE_X264
 }
@@ -68,7 +58,7 @@ bool DevChannel::inputPCM(char* pcData, int iDataLen, uint64_t uiStamp) {
     }
     return false;
 #else
-    WarnL << "aac编码未启用,该方法无效,编译时请打开ENABLE_FAAC选项";
+    WarnL << "AAC encoding is not enabled, this method is invalid. Please turn on the ENABLE_FAAC option during compilation";
     return false;
 #endif //ENABLE_FAAC
 }
@@ -103,18 +93,15 @@ bool DevChannel::inputAAC(const char *data_without_adts, int len, uint64_t dts, 
     }
 
     if (!adts_header) {
-        // 没有adts头  [AUTO-TRANSLATED:b9faaa83]
         // No adts header
         return inputFrame(std::make_shared<FrameFromPtr>(CodecAAC, (char *) data_without_adts, len, dts, 0, 0));
     }
 
     if (adts_header + ADTS_HEADER_LEN == data_without_adts) {
-        // adts头和帧在一起  [AUTO-TRANSLATED:76c4e678]
         // adts header and frame together
         return inputFrame(std::make_shared<FrameFromPtr>(CodecAAC, (char *) data_without_adts - ADTS_HEADER_LEN, len + ADTS_HEADER_LEN, dts, 0, ADTS_HEADER_LEN));
     }
 
-    // adts头和帧不在一起  [AUTO-TRANSLATED:591dd07a]
     // adts header and frame not together
     char *data_with_adts = new char[len + ADTS_HEADER_LEN];
     memcpy(data_with_adts, adts_header, ADTS_HEADER_LEN);

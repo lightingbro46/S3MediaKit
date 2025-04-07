@@ -14,11 +14,11 @@ using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
-/* 以太网帧头部 */
+/* Ethernet frame header */
 struct sniff_ethernet {
 #define ETHER_ADDR_LEN 6
-    u_char ether_dhost[ETHER_ADDR_LEN]; /* 目的主机的地址 */
-    u_char ether_shost[ETHER_ADDR_LEN]; /* 源主机的地址 */
+    u_char ether_dhost[ETHER_ADDR_LEN]; /* The address of the destination host */
+    u_char ether_shost[ETHER_ADDR_LEN]; /* The address of the source host */
     u_short ether_unused;
     u_short ether_type; /* IP：0x0800;IPV6:0x86DD; ARP:0x0806;RARP:0x8035 */
 };
@@ -28,29 +28,29 @@ struct sniff_ethernet {
 #define ETHERTYPE_ARP (0x0806)
 #define ETHERTYPE_RARP (0x8035)
 
-/* IP数据包的头部 */
+/* Header of IP packet */
 struct sniff_ip {
 #if BYTE_ORDER == LITTLE_ENDIAN
-    u_int ip_hl : 4, /* 头部长度 */
-        ip_v : 4;    /* 版本号 */
+    u_int ip_hl : 4, /* Head length */
+        ip_v : 4;    /* Version number */
 #if BYTE_ORDER == BIG_ENDIAN
-    u_int ip_v : 4, /* 版本号 */
-        ip_hl : 4;  /* 头部长度 */
+    u_int ip_v : 4, /* Version number */
+        ip_hl : 4;  /* Head length */
 #endif
 #endif              /* not _IP_VHL */
-    u_char ip_tos;  /* 服务的类型 */
-    u_short ip_len; /* 总长度 */
-    u_short ip_id;  /*包标志号 */
+    u_char ip_tos;  /* Type of service */
+    u_short ip_len; /* Total length */
+    u_short ip_id;  /* Package logo number */
     u_char ip_flag;
-    u_char ip_off;                 /* 碎片偏移 */
-#define IP_RF 0x8000               /* 保留的碎片标志 */
+    u_char ip_off;                 /* Fragment offset */
+#define IP_RF 0x8000               /* Retained fragment logo */
 #define IP_DF 0x4000               /* dont fragment flag */
-#define IP_MF 0x2000               /* 多碎片标志*/
-#define IP_OFFMASK 0x1fff          /*分段位 */
-    u_char ip_ttl;                 /* 数据包的生存时间 */
-    u_char ip_p;                   /* 所使用的协议:1 ICMP;2 IGMP;4 IP;6 TCP;17 UDP;89 OSPF */
-    u_short ip_sum;                /* 校验和 */
-    struct in_addr ip_src, ip_dst; /* 源地址、目的地址*/
+#define IP_MF 0x2000               /* Multi-fragment logo*/
+#define IP_OFFMASK 0x1fff          /* Segment */
+    u_char ip_ttl;                 /* The survival time of the packet */
+    u_char ip_p;                   /* The protocol used:1 ICMP;2 IGMP;4 IP;6 TCP;17 UDP;89 OSPF */
+    u_short ip_sum;                /* Checksum */
+    struct in_addr ip_src, ip_dst; /* Source address, destination address*/
 };
 #define IPTYPE_ICMP (1)
 #define IPTYPE_IGMP (2)
@@ -60,19 +60,19 @@ struct sniff_ip {
 #define IPTYPE_OSPF (89)
 
 typedef u_int tcp_seq;
-/* TCP 数据包的头部 */
+/* TCP The header of the packet */
 struct sniff_tcp {
-    u_short th_sport; /* 源端口 */
-    u_short th_dport; /* 目的端口 */
-    tcp_seq th_seq;   /* 包序号 */
-    tcp_seq th_ack;   /* 确认序号 */
+    u_short th_sport; /* Source port */
+    u_short th_dport; /* Destination port */
+    tcp_seq th_seq;   /* Package number */
+    tcp_seq th_ack;   /* Confirm serial number */
 #if BYTE_ORDER == LITTLE_ENDIAN
-    u_int th_x2 : 4, /* 还没有用到 */
-        th_off : 4;  /* 数据偏移 */
+    u_int th_x2 : 4, /* Not used yet */
+        th_off : 4;  /* Data offset */
 #endif
 #if BYTE_ORDER == BIG_ENDIAN
-    u_int th_off : 4, /* 数据偏移*/
-        th_x2 : 4;    /*还没有用到 */
+    u_int th_off : 4, /* Data offset*/
+        th_x2 : 4;    /*Not used yet */
 #endif
     u_char th_flags;
 #define TH_FIN 0x01
@@ -84,9 +84,9 @@ struct sniff_tcp {
 #define TH_ECE 0x40
 #define TH_CWR 0x80
 #define TH_FLAGS (TH_FINTH_SYNTH_RSTTH_ACKTH_URGTH_ECETH_CWR)
-    u_short th_win; /* TCP滑动窗口 */
-    u_short th_sum; /* 头部校验和 */
-    u_short th_urp; /* 紧急服务位 */
+    u_short th_win; /* TCP sliding window */
+    u_short th_sum; /* Head checksum */
+    u_short th_urp; /* Emergency service */
 };
 
 /* UDP header */
@@ -163,20 +163,20 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
         }
 
         struct sniff_ethernet *ethernet = (struct sniff_ethernet *)pkt_buff;
-        int eth_len = sizeof(struct sniff_ethernet);  // 以太网头的长度
-        int ip_len = sizeof(struct sniff_ip);         // ip头的长度
-        int tcp_len = sizeof(struct sniff_tcp);       // tcp头的长度
-        int udp_headr_len = sizeof(struct sniff_udp); // udp头的长度
+        int eth_len = sizeof(struct sniff_ethernet);  // The length of the Ethernet header
+        int ip_len = sizeof(struct sniff_ip);         // Length of IP head
+        int tcp_len = sizeof(struct sniff_tcp);       // Length of tcp header
+        int udp_headr_len = sizeof(struct sniff_udp); // Length of udp header
 
-        /*解析网络层  IP头*/
+        /*Parse the network layer IP header*/
         if (ntohs(ethernet->ether_type) == ETHERTYPE_IPV4) { // IPV4
             struct sniff_ip *ip = (struct sniff_ip *)(pkt_buff + eth_len);
-            ip_len = (ip->ip_hl & 0x0f) * 4;                            // ip头的长度
-            unsigned char *saddr = (unsigned char *)&ip->ip_src.s_addr; // 网络字节序转换成主机字节序
+            ip_len = (ip->ip_hl & 0x0f) * 4;                            // Length of IP head
+            unsigned char *saddr = (unsigned char *)&ip->ip_src.s_addr; // Convert network byte order to host byte order
             unsigned char *daddr = (unsigned char *)&ip->ip_dst.s_addr;
-            /*解析传输层  TCP、UDP、ICMP*/
+            /*Analyze the transport layer  TCP、UDP、ICMP*/
             if (ip->ip_p == IPTYPE_TCP) { // TCP
-                PrintI("ip->proto:TCP "); // 传输层用的哪一个协议
+                PrintI("ip->proto:TCP "); // Which protocol is used in the transport layer
                 struct sniff_tcp *tcp = (struct sniff_tcp *)(pkt_buff + eth_len + ip_len);
                 PrintI("tcp_sport = %u ", tcp->th_sport);
                 PrintI("tcp_dport = %u ", tcp->th_dport);
@@ -184,7 +184,7 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
                     PrintI("%02x ", *(pkt_buff + eth_len + ip_len + tcp_len + i));
                 }
             } else if (ip->ip_p == IPTYPE_UDP) { // UDP
-                // PrintI("ip->proto:UDP ");        // 传输层用的哪一个协议
+                // PrintI("ip->proto:UDP ");        // Which protocol is used in the transport layer
                 struct sniff_udp *udp = (struct sniff_udp *)(pkt_buff + eth_len + ip_len);
                 auto udp_pack_len = ntohs(udp->udp_length);
 
@@ -200,15 +200,15 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
                 processRtp(stream_id, rtp, rtp_len, true, poller);
 #endif                                            // #if defined(ENABLE_RTPPROXY)
             } else if (ip->ip_p == IPTYPE_ICMP) { // ICMP
-                PrintI("ip->proto:CCMP ");        // 传输层用的哪一个协议
+                PrintI("ip->proto:CCMP ");        // Which protocol is used in the transport layer
             } else {
-                PrintI("未识别的传输层协议");
+                PrintI("Unidentified Transport Layer Protocol");
             }
 
         } else if (ntohs(ethernet->ether_type) == ETHERTYPE_IPV6) { // IPV6
             PrintI("It's IPv6! ");
         } else {
-            PrintI("既不是IPV4也不是IPV6 ");
+            PrintI("Neither IPV4 nor IPV6 ");
         }
     }
 
@@ -216,19 +216,19 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
 }
 
 int main(int argc, char *argv[]) {
-    // 设置日志
+    // Setting up logs
     Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel"));
 
-    // 启动异步日志线程
+    // Start an asynchronous log thread
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
     loadIniConfig((exeDir() + "config.ini").data());
 
     TcpServer::Ptr rtspSrv(new TcpServer());
     TcpServer::Ptr rtmpSrv(new TcpServer());
     TcpServer::Ptr httpSrv(new TcpServer());
-    rtspSrv->start<RtspSession>(554);  // 默认554
-    rtmpSrv->start<RtmpSession>(1935); // 默认1935
-    httpSrv->start<HttpSession>(81);   // 默认80
+    rtspSrv->start<RtspSession>(554);  // Default 554
+    rtmpSrv->start<RtmpSession>(1935); // Default 1935
+    httpSrv->start<HttpSession>(81);   // Default 80
 
     if (argc == 2) {
         auto poller = EventPollerPool::Instance().getPoller();

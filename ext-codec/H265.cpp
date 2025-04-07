@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "H265.h"
+﻿#include "H265.h"
 #include "H265Rtp.h"
 #include "H265Rtmp.h"
 #include "SPSParser.h"
@@ -128,7 +118,7 @@ bool H265Track::inputFrame_l(const Frame::Ptr &frame) {
             break;
         }
         default: {
-            // 判断是否是I帧, 并且如果是,那判断前面是否插入过config帧, 如果插入过就不插入了
+            // Determine whether it is an I-frame, and if so, determine whether the config frame has been inserted before, and if it has been inserted, it will not be inserted.
             if (frame->keyFrame() && !_latest_is_config_frame) {
                 insertConfigFrame(frame);
             }
@@ -157,13 +147,13 @@ toolkit::Buffer::Ptr H265Track::getExtraData() const {
     extra_data.resize(1024);
     auto extra_data_size = mpeg4_hevc_decoder_configuration_record_save(&hevc, (uint8_t *)extra_data.data(), extra_data.size());
     if (extra_data_size == -1) {
-        WarnL << "生成H265 extra_data 失败";
+        WarnL << "Generating H265 extra_data failed";
         return nullptr;
     }
     extra_data.resize(extra_data_size);
     return std::make_shared<BufferString>(std::move(extra_data));
 #else
-    WarnL << "请开启MP4相关功能并使能\"ENABLE_MP4\",否则对H265的支持不完善";
+    WarnL << "Please enable MP4-related functions and enable \"ENABLE_MP4\", otherwise the support for H265 will be incomplete.";
     return nullptr;
 #endif
 }
@@ -183,7 +173,7 @@ void H265Track::setExtraData(const uint8_t *data, size_t bytes) {
         }
     }
 #else
-    WarnL << "请开启MP4相关功能并使能\"ENABLE_MP4\",否则对H265的支持不完善";
+    WarnL << "Please enable MP4-related functions and enable \"ENABLE_MP4\", otherwise the support for H265 will be incomplete.";
 #endif
 }
 
@@ -219,29 +209,18 @@ void H265Track::insertConfigFrame(const Frame::Ptr &frame) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
- * h265类型sdp
  * h265 type sdp
- 
- * [AUTO-TRANSLATED:4418a7df]
  */
 class H265Sdp : public Sdp {
 public:
     /**
-     * 构造函数
-     * @param sps 265 sps,不带0x00000001头
-     * @param pps 265 pps,不带0x00000001头
-     * @param payload_type  rtp payload type 默认96
-     * @param bitrate 比特率
      * Constructor
      * @param sps 265 sps, without 0x00000001 header
      * @param pps 265 pps, without 0x00000001 header
      * @param payload_type  rtp payload type, default 96
      * @param bitrate Bitrate
-     
-     * [AUTO-TRANSLATED:93f4ec48]
      */
     H265Sdp(const string &strVPS, const string &strSPS, const string &strPPS, int payload_type, int bitrate) : Sdp(90000, payload_type) {
-        // 视频通道  [AUTO-TRANSLATED:642ca881]
         // Video channel
         _printer << "m=video 0 RTP/AVP " << payload_type << "\r\n";
         if (bitrate) {
@@ -284,7 +263,6 @@ Track::Ptr getTrackBySdp(const SdpTrack::Ptr &track) {
     auto sps = decodeBase64(map["sprop-sps"]);
     auto pps = decodeBase64(map["sprop-pps"]);
     if (sps.empty() || pps.empty()) {
-        // 如果sdp里面没有sps/pps,那么可能在后续的rtp里面恢复出sps/pps  [AUTO-TRANSLATED:9300510b]
         // If there is no sps/pps in the sdp, then it may be possible to recover sps/pps from the subsequent rtp
         return std::make_shared<H265Track>();
     }

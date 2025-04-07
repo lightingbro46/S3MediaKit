@@ -1,27 +1,12 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <string.h>
+﻿#include <string.h>
 #include <stdio.h>
 #include "mk_mediakit.h"
 #define LOG_LEV 4
 
 /**
- * 注册或反注册MediaSource事件广播
- * @param regist 注册为1，注销为0
- * @param sender 该MediaSource对象
  * Register or unregister MediaSource event broadcast
  * @param regist Register as 1, unregister as 0
  * @param sender The MediaSource object
- 
- * [AUTO-TRANSLATED:8bb75918]
  */
 void API_CALL on_mk_media_changed(int regist,
                                   const mk_media_source sender) {
@@ -34,18 +19,11 @@ void API_CALL on_mk_media_changed(int regist,
 }
 
 /**
- * 收到rtsp/rtmp推流事件广播，通过该事件控制推流鉴权
- * @see mk_publish_auth_invoker_do
- * @param url_info 推流url相关信息
- * @param invoker 执行invoker返回鉴权结果
- * @param sender 该tcp客户端相关信息
  * Receive rtsp/rtmp push stream event broadcast, control push stream authentication through this event
  * @see mk_publish_auth_invoker_do
  * @param url_info Push stream url related information
  * @param invoker Execute invoker to return authentication result
  * @param sender The tcp client related information
- 
- * [AUTO-TRANSLATED:72053c81]
  */
 void API_CALL on_mk_media_publish(const mk_media_info url_info,
                                   const mk_publish_auth_invoker invoker,
@@ -64,24 +42,16 @@ void API_CALL on_mk_media_publish(const mk_media_info url_info,
                mk_media_info_get_stream(url_info),
                mk_media_info_get_params(url_info));
 
-    // 允许推流，并且允许转hls/mp4  [AUTO-TRANSLATED:4b2d0e4e]
     // Allow push stream, and allow to convert to hls/mp4
     mk_publish_auth_invoker_do(invoker, NULL, 1, 1);
 }
 
 /**
- * 播放rtsp/rtmp/http-flv/hls事件广播，通过该事件控制播放鉴权
- * @see mk_auth_invoker_do
- * @param url_info 播放url相关信息
- * @param invoker 执行invoker返回鉴权结果
- * @param sender 播放客户端相关信息
  * Play rtsp/rtmp/http-flv/hls event broadcast, control playback authentication through this event
  * @see mk_auth_invoker_do
  * @param url_info Play url related information
  * @param invoker Execute invoker to return authentication result
  * @param sender Play client related information
- 
- * [AUTO-TRANSLATED:fc351667]
  */
 void API_CALL on_mk_media_play(const mk_media_info url_info,
                                const mk_auth_invoker invoker,
@@ -101,24 +71,16 @@ void API_CALL on_mk_media_play(const mk_media_info url_info,
                mk_media_info_get_stream(url_info),
                mk_media_info_get_params(url_info));
 
-    // 允许播放  [AUTO-TRANSLATED:b940f821]
     // Allow playback
     mk_auth_invoker_do(invoker, NULL);
 }
 
 /**
- * 未找到流后会广播该事件，请在监听该事件后去拉流或其他方式产生流，这样就能按需拉流了
- * @param url_info 播放url相关信息
- * @param sender 播放客户端相关信息
- * @return 1 直接关闭
- *         0 等待流注册
  * This event will be broadcast after the stream is not found. Please pull the stream or other methods to generate the stream after listening to this event, so that you can pull the stream on demand
  * @param url_info Play url related information
  * @param sender Play client related information
  * @return 1 Close directly
  *         0 Wait for stream registration
- 
- * [AUTO-TRANSLATED:71caa7d8]
  */
 int API_CALL on_mk_media_not_found(const mk_media_info url_info,
                                     const mk_sock_info sender) {
@@ -139,12 +101,8 @@ int API_CALL on_mk_media_not_found(const mk_media_info url_info,
 }
 
 /**
- * 某个流无人消费时触发，目的为了实现无人观看时主动断开拉流等业务逻辑
- * @param sender 该MediaSource对象
  * Triggered when no one consumes a certain stream, the purpose is to achieve business logic such as actively disconnecting the pull stream when no one is watching
  * @param sender The MediaSource object
- 
- * [AUTO-TRANSLATED:d2881c87]
  */
 void API_CALL on_mk_media_no_reader(const mk_media_source sender) {
     log_printf(LOG_LEV,
@@ -155,7 +113,6 @@ void API_CALL on_mk_media_no_reader(const mk_media_source sender) {
                mk_media_source_get_stream(sender));
 }
 
-// 按照json转义规则转义webrtc answer sdp  [AUTO-TRANSLATED:b9373d68]
 // Escape webrtc answer sdp according to json escape rules
 static char *escape_string(const char *ptr){
     char *escaped = malloc(2 * strlen(ptr));
@@ -231,20 +188,12 @@ void API_CALL on_get_statistic_cb(void *user_data, mk_ini ini) {
 }
 
 /**
- * 收到http api请求广播(包括GET/POST)
- * @param parser http请求内容对象
- * @param invoker 执行该invoker返回http回复
- * @param consumed 置1则说明我们要处理该事件
- * @param sender http客户端相关信息
  * Receive http api request broadcast (including GET/POST)
  * @param parser Http request content object
  * @param invoker Execute this invoker to return http reply
  * @param consumed Set to 1 if we want to handle this event
  * @param sender Http client related information
- 
- * [AUTO-TRANSLATED:39435e52]
  */
-// 测试url : http://127.0.0.1/api/test  [AUTO-TRANSLATED:4776d7a3]
 // Test url : http://127.0.0.1/api/test
 void API_CALL on_mk_http_request(const mk_parser parser,
                                  const mk_http_response_invoker invoker,
@@ -271,7 +220,6 @@ void API_CALL on_mk_http_request(const mk_parser parser,
     const char *url = mk_parser_get_url(parser);
     *consumed = 1;
 
-    // 拦截api: /api/test  [AUTO-TRANSLATED:262baadf]
     // Intercept api: /api/test
     if (strcmp(url, "/api/test") == 0) {
         const char *response_header[] = { "Content-Type", "text/html", NULL };
@@ -289,7 +237,6 @@ void API_CALL on_mk_http_request(const mk_parser parser,
         mk_http_response_invoker_do(invoker, 200, response_header, body);
         mk_http_body_release(body);
     } else if (strcmp(url, "/index/api/webrtc") == 0) {
-        // 拦截api: /index/api/webrtc  [AUTO-TRANSLATED:1db21d1c]
         // Intercept api: /index/api/webrtc
         char rtc_url[1024];
         snprintf(rtc_url, sizeof(rtc_url), "rtc://%s/%s/%s?%s", mk_parser_get_header(parser, "Host"),
@@ -299,7 +246,6 @@ void API_CALL on_mk_http_request(const mk_parser parser,
         mk_webrtc_get_answer_sdp(mk_http_response_invoker_clone(invoker), on_mk_webrtc_get_answer_sdp_func,
                                  mk_parser_get_url_param(parser, "type"), mk_parser_get_content(parser, NULL), rtc_url);
     } else if (strcmp(url, "/index/api/getStatistic") == 0) {
-        // 拦截api: /index/api/webrtc  [AUTO-TRANSLATED:1db21d1c]
         // Intercept api: /index/api/webrtc
         mk_get_statistic(on_get_statistic_cb, mk_http_response_invoker_clone(invoker), (on_user_data_free) mk_http_response_invoker_clone_release);
     } else {
@@ -309,20 +255,12 @@ void API_CALL on_mk_http_request(const mk_parser parser,
 }
 
 /**
- * 在http文件服务器中,收到http访问文件或目录的广播,通过该事件控制访问http目录的权限
- * @param parser http请求内容对象
- * @param path 文件绝对路径
- * @param is_dir path是否为文件夹
- * @param invoker 执行invoker返回本次访问文件的结果
- * @param sender http客户端相关信息
  * In the http file server, receive the broadcast of http access to files or directories, control the access permission of http directory through this event
  * @param parser Http request content object
  * @param path File absolute path
  * @param is_dir Whether path is a folder
  * @param invoker Execute invoker to return the result of accessing the file this time
  * @param sender Http client related information
- 
- * [AUTO-TRANSLATED:2db5fc1e]
  */
 void API_CALL on_mk_http_access(const mk_parser parser,
                                 const char *path,
@@ -348,24 +286,16 @@ void API_CALL on_mk_http_access(const mk_parser parser,
                mk_parser_get_header(parser,"User-Agent"),
                mk_parser_get_content(parser,NULL));
 
-    // 有访问权限,每次访问文件都需要鉴权  [AUTO-TRANSLATED:6ade8f21]
     // Has access permission, each access to the file needs authentication
     mk_http_access_path_invoker_do(invoker, NULL, NULL, 0);
 }
 
 /**
- * 在http文件服务器中,收到http访问文件或目录前的广播,通过该事件可以控制http url到文件路径的映射
- * 在该事件中通过自行覆盖path参数，可以做到譬如根据虚拟主机或者app选择不同http根目录的目的
- * @param parser http请求内容对象
- * @param path 文件绝对路径,覆盖之可以重定向到其他文件
- * @param sender http客户端相关信息
  * In the http file server, receive the broadcast before http access to files or directories, through this event you can control the mapping of http url to file path
  * By overriding the path parameter in this event, you can achieve the purpose of selecting different http root directories according to virtual hosts or apps
  * @param parser Http request content object
  * @param path File absolute path, override it to redirect to other files
  * @param sender Http client related information
- 
- * [AUTO-TRANSLATED:e166f6cb]
  */
 void API_CALL on_mk_http_before_access(const mk_parser parser,
                                        char *path,
@@ -388,21 +318,14 @@ void API_CALL on_mk_http_before_access(const mk_parser parser,
                mk_parser_get_tail(parser),
                mk_parser_get_header(parser, "User-Agent"),
                mk_parser_get_content(parser,NULL));
-    // 覆盖path的值可以重定向文件  [AUTO-TRANSLATED:7b03ed02]
     // Overriding the value of path can redirect files
 }
 
 /**
- * 该rtsp流是否需要认证？是的话调用invoker并传入realm,否则传入空的realm
- * @param url_info 请求rtsp url相关信息
- * @param invoker 执行invoker返回是否需要rtsp专属认证
- * @param sender rtsp客户端相关信息
  * Does this rtsp stream need authentication? If so, call invoker and pass in realm, otherwise pass in empty realm
  * @param url_info Request rtsp url related information
  * @param invoker Execute invoker to return whether rtsp exclusive authentication is required
  * @param sender Rtsp client related information
- 
- * [AUTO-TRANSLATED:3308f34e]
  */
 void API_CALL on_mk_rtsp_get_realm(const mk_media_info url_info,
                                    const mk_rtsp_get_realm_invoker invoker,
@@ -421,20 +344,11 @@ void API_CALL on_mk_rtsp_get_realm(const mk_media_info url_info,
                mk_media_info_get_stream(url_info),
                mk_media_info_get_params(url_info));
 
-    // rtsp播放默认鉴权  [AUTO-TRANSLATED:3a820721]
     // Rtsp playback default authentication
     mk_rtsp_get_realm_invoker_do(invoker, "zlmediakit");
 }
 
 /**
- * 请求认证用户密码事件，user_name为用户名，must_no_encrypt如果为1，则必须提供明文密码(因为此时是base64认证方式),否则会导致认证失败
- * 获取到密码后请调用invoker并输入对应类型的密码和密码类型，invoker执行时会匹配密码
- * @param url_info 请求rtsp url相关信息
- * @param realm rtsp认证realm
- * @param user_name rtsp认证用户名
- * @param must_no_encrypt 如果为1，则必须提供明文密码(因为此时是base64认证方式),否则会导致认证失败
- * @param invoker  执行invoker返回rtsp专属认证的密码
- * @param sender rtsp客户端信息
  * Request authentication user password event, user_name is the username, must_no_encrypt if it is 1, then you must provide plain text password (because it is base64 authentication method at this time), otherwise it will lead to authentication failure
  * After getting the password, please call invoker and enter the corresponding type of password and password type, invoker will match the password when executing
  * @param url_info Request rtsp url related information
@@ -443,8 +357,6 @@ void API_CALL on_mk_rtsp_get_realm(const mk_media_info url_info,
  * @param must_no_encrypt If it is 1, then you must provide plain text password (because it is base64 authentication method at this time), otherwise it will lead to authentication failure
  * @param invoker  Execute invoker to return the password of rtsp exclusive authentication
  * @param sender Rtsp client information
- 
- * [AUTO-TRANSLATED:28391926]
  */
 void API_CALL on_mk_rtsp_auth(const mk_media_info url_info,
                               const char *realm,
@@ -469,16 +381,12 @@ void API_CALL on_mk_rtsp_auth(const mk_media_info url_info,
                mk_media_info_get_params(url_info),
                realm,user_name,(int)must_no_encrypt);
 
-    // rtsp播放用户名跟密码一致  [AUTO-TRANSLATED:31cc5970]
     // Rtsp playback username and password are consistent
     mk_rtsp_auth_invoker_do(invoker,0,user_name);
 }
 
 /**
- * 录制mp4分片文件成功后广播
  * Broadcast after recording mp4 fragment file successfully
- 
- * [AUTO-TRANSLATED:0fdeba0d]
  */
 void API_CALL on_mk_record_mp4(const mk_record_info mp4) {
     log_printf(LOG_LEV,
@@ -505,10 +413,7 @@ void API_CALL on_mk_record_mp4(const mk_record_info mp4) {
 }
 
 /**
- * shell登录鉴权
  * Shell login authentication
- 
- * [AUTO-TRANSLATED:cc20f95e]
  */
 void API_CALL on_mk_shell_login(const char *user_name,
                                 const char *passwd,
@@ -523,19 +428,11 @@ void API_CALL on_mk_shell_login(const char *user_name,
               mk_sock_info_peer_ip(sender,ip + 32),
               mk_sock_info_peer_port(sender),
               user_name, passwd);
-    // 允许登录shell  [AUTO-TRANSLATED:64a9b374]
     // Allow login shell
     mk_auth_invoker_do(invoker, NULL);
 }
 
 /**
- * 停止rtsp/rtmp/http-flv会话后流量汇报事件广播
- * @param url_info 播放url相关信息
- * @param total_bytes 耗费上下行总流量，单位字节数
- * @param total_seconds 本次tcp会话时长，单位秒
- * @param is_player 客户端是否为播放器
- * @param peer_ip 客户端ip
- * @param peer_port 客户端端口号
  * Stop rtsp/rtmp/http-flv session after traffic report event broadcast
  * @param url_info Play url related information
  * @param total_bytes Total traffic consumed up and down, unit is byte
@@ -543,8 +440,6 @@ void API_CALL on_mk_shell_login(const char *user_name,
  * @param is_player Whether the client is a player
  * @param peer_ip Client ip
  * @param peer_port Client port number
- 
- * [AUTO-TRANSLATED:6757a1c3]
  */
 void API_CALL on_mk_flow_report(const mk_media_info url_info,
                                 size_t total_bytes,

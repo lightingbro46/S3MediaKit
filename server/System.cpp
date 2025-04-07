@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if !defined(_WIN32)
+﻿#if !defined(_WIN32)
 #include <limits.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -133,30 +123,27 @@ void System::startDaemon(bool &kill_parent_if_failed) {
     do {
         pid = fork();
         if (pid == -1) {
-            WarnL << "fork失败:" << get_uv_errmsg();
-            // 休眠1秒再试  [AUTO-TRANSLATED:00e5d7bf]
+            WarnL << "Fork failed:" << get_uv_errmsg();
             // Sleep for 1 second and try again
             sleep(1);
             continue;
         }
 
         if (pid == 0) {
-            // 子进程  [AUTO-TRANSLATED:3f793797]
             // Child process
             return;
         }
 
-        // 父进程,监视子进程是否退出  [AUTO-TRANSLATED:0e13a34d]
         // Parent process, monitor whether the child process exits
-        DebugL << "启动子进程:" << pid;
+        DebugL << "Promoter process:" << pid;
         signal(SIGINT, [](int) {
-            WarnL << "收到主动退出信号,关闭父进程与子进程";
+            WarnL << "Received an active exit signal, close the parent and child processes";
             kill(pid, SIGINT);
             exit(0);
         });
 
         signal(SIGTERM,[](int) {
-            WarnL << "收到主动退出信号,关闭父进程与子进程";
+            WarnL << "Received an active exit signal, close the parent and child processes";
             kill(pid, SIGINT);
             exit(0);
         });
@@ -164,16 +151,14 @@ void System::startDaemon(bool &kill_parent_if_failed) {
         do {
             int status = 0;
             if (waitpid(pid, &status, 0) >= 0) {
-                WarnL << "子进程退出";
-                // 休眠3秒再启动子进程  [AUTO-TRANSLATED:608448bd]
+                WarnL << "Subprocess exits";
                 // Sleep for 3 seconds and then start the child process
                 sleep(3);
-                // 重启子进程，如果子进程重启失败，那么不应该杀掉守护进程，这样守护进程可以一直尝试重启子进程  [AUTO-TRANSLATED:0a336b0a]
                 // Restart the child process. If the child process fails to restart, the daemon process should not be killed. This allows the daemon process to continuously attempt to restart the child process.
                 kill_parent_if_failed = false;
                 break;
             }
-            DebugL << "waitpid被中断:" << get_uv_errmsg();
+            DebugL << "waitpid interrupted:" << get_uv_errmsg();
         } while (true);
     } while (true);
 #endif // _WIN32
@@ -194,7 +179,7 @@ void System::systemSetup(){
             rlim_new.rlim_cur = rlim_new.rlim_max = rlim.rlim_max;
             setrlimit(RLIMIT_CORE, &rlim_new);
         }
-        InfoL << "core文件大小设置为:" << rlim_new.rlim_cur;
+        InfoL << "Core file size is set to:" << rlim_new.rlim_cur;
     }
 
     if (getrlimit(RLIMIT_NOFILE, &rlim)==0) {
@@ -203,13 +188,12 @@ void System::systemSetup(){
             rlim_new.rlim_cur = rlim_new.rlim_max = rlim.rlim_max;
             setrlimit(RLIMIT_NOFILE, &rlim_new);
         }
-        InfoL << "文件最大描述符个数设置为:" << rlim_new.rlim_cur;
+        InfoL << "The maximum number of file descriptors is set to:" << rlim_new.rlim_cur;
     }
 
 #ifndef ANDROID
     signal(SIGSEGV, sig_crash);
     signal(SIGABRT, sig_crash);
-    // 忽略挂起信号  [AUTO-TRANSLATED:73e71e54]
     // Ignore the hang up signal
     signal(SIGHUP, SIG_IGN);
 #endif// ANDROID

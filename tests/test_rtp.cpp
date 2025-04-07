@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <map>
+﻿#include <map>
 #include <iostream>
 #include "Util/util.h"
 #include "Util/logger.h"
@@ -52,7 +42,6 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
         while (true) {
             if (2 != fread(&len, 1, 2, fp.get())) {
                 WarnL << "Read rtp size failed";
-                // 重新播放  [AUTO-TRANSLATED:9f678d55]
                 // Replay
                 fseek(fp.get(), 0, SEEK_SET);
                 return 1;
@@ -99,21 +88,18 @@ static bool loadFile(const char *path, const EventPoller::Ptr &poller) {
 #endif // #if defined(ENABLE_RTPPROXY)
 
 int main(int argc, char *argv[]) {
-    // 设置日志  [AUTO-TRANSLATED:50ba02ba]
     // Set log
     Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel"));
 #if defined(ENABLE_RTPPROXY)
-    // 启动异步日志线程  [AUTO-TRANSLATED:8340d047]
     // Start asynchronous log thread
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
     loadIniConfig((exeDir() + "config.ini").data());
     TcpServer::Ptr rtspSrv(new TcpServer());
     TcpServer::Ptr rtmpSrv(new TcpServer());
     TcpServer::Ptr httpSrv(new TcpServer());
-    rtspSrv->start<RtspSession>(554); // 默认554
-    rtmpSrv->start<RtmpSession>(1935); // 默认1935
-    httpSrv->start<HttpSession>(80); // 默认80
-    // 此处选择是否导出调试文件  [AUTO-TRANSLATED:b147c25b]
+    rtspSrv->start<RtspSession>(554); // Default 554
+    rtmpSrv->start<RtmpSession>(1935); // Default 1935
+    httpSrv->start<HttpSession>(80); // Default 80
     // Choose whether to export debug file here
     // mINI::Instance()[RtpProxy::kDumpDir] = "/Users/xzl/Desktop/";
 

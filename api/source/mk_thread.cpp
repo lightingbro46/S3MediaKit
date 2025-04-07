@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "mk_thread.h"
+﻿#include "mk_thread.h"
 #include "mk_tcp_private.h"
 #include "Util/logger.h"
 #include "Poller/EventPoller.h"
@@ -134,7 +124,6 @@ API_EXPORT void API_CALL mk_timer_release(mk_timer ctx){
 class WorkThreadPoolForC : public TaskExecutorGetterImp {
 public:
     WorkThreadPoolForC(const char *name, size_t n_thread, int priority) {
-        // 最低优先级  [AUTO-TRANSLATED:cd1f0dbc]
         // Lowest priority
         addPoller(name, n_thread, (ThreadPool::Priority) priority, false);
     }

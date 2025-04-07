@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "mk_media.h"
+﻿#include "mk_media.h"
 #include "Util/logger.h"
 #include "Common/Device.h"
 
@@ -21,7 +11,6 @@ public:
     using Ptr = std::shared_ptr<MediaHelper>;
     MediaHelper(const char *vhost, const char *app, const char *stream, float duration, const ProtocolOption &option) {
         _poller = EventPollerPool::Instance().getPoller();
-        // 在poller线程中创建DevChannel(MultiMediaSourceMuxer)对象，确保严格的线程安全限制  [AUTO-TRANSLATED:d5063d7a]
         // Create a DevChannel (MultiMediaSourceMuxer) object in the poller thread to ensure strict thread safety restrictions
         auto tuple = MediaTuple{vhost, app, stream};
         _poller->sync([&]() { _channel = std::make_shared<DevChannel>(tuple, duration, option); });
@@ -59,16 +48,13 @@ public:
     }
 
 protected:
-    // 通知其停止推流  [AUTO-TRANSLATED:d69d10d8]
     // Notify it to stop streaming
     bool close(MediaSource &sender) override {
         if (!_on_close) {
-            // 未设置回调，没法关闭  [AUTO-TRANSLATED:2c1423fe]
             // No callback is set, so it cannot be closed
-            WarnL << "请使用mk_media_set_on_close函数设置回调函数!";
+            WarnL << "Please use mk_media_set_on_close function to set the callback function!";
             return false;
         }
-        // 请在回调中调用mk_media_release函数释放资源,否则MediaSource::close()操作不会生效  [AUTO-TRANSLATED:da067eb0]
         // Please call the mk_media_release function to release resources in the callback, otherwise the MediaSource::close() operation will not take effect
         _on_close(_on_close_data.get());
         WarnL << "close media: " << sender.getUrl();
@@ -82,7 +68,6 @@ protected:
         return _on_seek(_on_seek_data.get(), stamp);
     }
 
-    // 通知暂停或恢复  [AUTO-TRANSLATED:ee3c219f]
     // Notify pause or resume
     bool pause(MediaSource &sender, bool pause) override {
         if (!_on_pause) {
@@ -91,7 +76,6 @@ protected:
         return _on_pause(_on_pause_data.get(), pause);
     }
 
-    // 通知倍数播放  [AUTO-TRANSLATED:12e66e3f]
     // Notify playback speed
     bool speed(MediaSource &sender, float speed) override {
         if (!_on_speed) {
@@ -303,7 +287,6 @@ API_EXPORT void API_CALL mk_media_start_send_rtp2(mk_media ctx, const char *dst_
     args.close_delay_ms = 30 * 1000;
     args.con_type = (mediakit::MediaSourceEvent::SendRtpArgs::ConType)con_type;
 
-    // sender参数无用  [AUTO-TRANSLATED:21590ae5]
     // The sender parameter is useless
     auto ref = *obj;
     std::shared_ptr<void> ptr(user_data, user_data_free ? user_data_free : [](void *) {});
@@ -342,7 +325,6 @@ API_EXPORT void API_CALL mk_media_start_send_rtp4(mk_media ctx, const char *dst_
     args.close_delay_ms = (*ini_ptr)["close_delay_ms"].empty() ? 30000 : (*ini_ptr)["close_delay_ms"].as<int>();
     args.rtcp_timeout_ms = (*ini_ptr)["rtcp_timeout_ms"].empty() ? 30000 : (*ini_ptr)["rtcp_timeout_ms"].as<int>();
     args.rtcp_send_interval_ms = (*ini_ptr)["rtcp_send_interval_ms"].empty() ? 5000 : (*ini_ptr)["rtcp_send_interval_ms"].as<int>();
-    // sender参数无用  [AUTO-TRANSLATED:21590ae5]
     // The sender parameter is useless
     auto ref = *obj;
     std::shared_ptr<void> ptr(
@@ -359,7 +341,6 @@ API_EXPORT void API_CALL mk_media_start_send_rtp4(mk_media ctx, const char *dst_
 API_EXPORT void API_CALL mk_media_stop_send_rtp(mk_media ctx, const char *ssrc) {
     assert(ctx);
     MediaHelper::Ptr *obj = (MediaHelper::Ptr *)ctx;
-    // sender参数无用  [AUTO-TRANSLATED:21590ae5]
     // The sender parameter is useless
     auto ref = *obj;
     string ssrc_str = ssrc ? ssrc : "";

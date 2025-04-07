@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <assert.h>
+﻿#include <assert.h>
 #include "mk_pusher.h"
 #include "Pusher/MediaPusher.h"
 
@@ -39,7 +29,6 @@ API_EXPORT void API_CALL mk_pusher_set_option(mk_pusher ctx, const char *key, co
     MediaPusher::Ptr &obj = *((MediaPusher::Ptr *)ctx);
     std::string key_str(key), val_str(val);
     obj->getPoller()->async([obj,key_str,val_str](){
-        // 切换线程再操作  [AUTO-TRANSLATED:b78259f9]
         // Switch threads and then operate
         (*obj)[key_str] = val_str;
     });
@@ -50,7 +39,6 @@ API_EXPORT void API_CALL mk_pusher_publish(mk_pusher ctx,const char *url){
     MediaPusher::Ptr &obj = *((MediaPusher::Ptr *)ctx);
     std::string url_str(url);
     obj->getPoller()->async([obj,url_str](){
-        // 切换线程再操作  [AUTO-TRANSLATED:b78259f9]
         // Switch threads and then operate
         obj->publish(url_str);
     });
@@ -65,7 +53,6 @@ API_EXPORT void API_CALL mk_pusher_set_on_result2(mk_pusher ctx, on_mk_push_even
     MediaPusher::Ptr &obj = *((MediaPusher::Ptr *)ctx);
     std::shared_ptr<void> ptr(user_data, user_data_free ? user_data_free : [](void *) {});
     obj->getPoller()->async([obj, cb, ptr]() {
-        // 切换线程再操作  [AUTO-TRANSLATED:bae49fee]
         // Switch threads and then operate
         obj->setOnPublished([cb, ptr](const SockException &ex) { cb(ptr.get(), ex.getErrCode(), ex.what()); });
     });
@@ -80,7 +67,6 @@ API_EXPORT void API_CALL mk_pusher_set_on_shutdown2(mk_pusher ctx, on_mk_push_ev
     MediaPusher::Ptr &obj = *((MediaPusher::Ptr *)ctx);
     std::shared_ptr<void> ptr(user_data, user_data_free ? user_data_free : [](void *) {});
     obj->getPoller()->async([obj, cb, ptr]() {
-        // 切换线程再操作  [AUTO-TRANSLATED:bae49fee]
         // Switch threads and then operate
         obj->setOnShutdown([cb, ptr](const SockException &ex) { cb(ptr.get(), ex.getErrCode(), ex.what()); });
     });

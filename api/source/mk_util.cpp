@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <cstdarg>
+﻿#include <cstdarg>
 #include <cassert>
 
 #include "mk_util.h"
@@ -63,7 +53,6 @@ API_EXPORT mk_ini API_CALL mk_ini_default() {
 
 static void emit_ini_file_reload(mk_ini ini) {
     if (ini == mk_ini_default()) {
-        // 广播配置文件热加载  [AUTO-TRANSLATED:86a0c1be]
         // Broadcast configuration hot reload
         NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
     }
@@ -224,7 +213,6 @@ API_EXPORT void API_CALL mk_get_statistic(on_mk_get_statistic_cb func, void *use
                 (*obj).emplace(prefix + pr.first, std::move(pr.second));
             }
         }
-        // 触发回调  [AUTO-TRANSLATED:ae2ff258]
         // Trigger callback
         cb(*obj);
     });

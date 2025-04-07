@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <cinttypes>
+﻿#include <cinttypes>
 #include "Parser.h"
 #include "strCoding.h"
 #include "Util/base64.h"
@@ -82,7 +72,7 @@ void Parser::parse(const char *buf, size_t size) {
             _headers.emplace_force(trim(std::move(key)), trim(std::move(value)));
         }
         ptr = next_line + offset;
-        if (strncmp(ptr, "\r\n", 2) == 0) { // 协议解析完毕
+        if (strncmp(ptr, "\r\n", 2) == 0) { // The protocol has been resolved
             _content.assign(ptr + 2, buf + size);
             break;
         }
@@ -165,7 +155,7 @@ StrCaseMap Parser::parseArgs(const string &str, const char *pair_delim, const ch
     auto arg_vec = split(str, pair_delim);
     for (auto &key_val : arg_vec) {
         if (key_val.empty()) {
-            // 忽略
+            // neglect
             continue;
         }
         auto pos = key_val.find(key_delim);
@@ -184,14 +174,14 @@ StrCaseMap Parser::parseArgs(const string &str, const char *pair_delim, const ch
 }
 
 std::string Parser::mergeUrl(const string &base_url, const string &path) {
-    // 以base_url为基础, 合并path路径生成新的url, path支持相对路径和绝对路径
+    // Based on base_url, merge path paths to generate new urls. path supports relative paths and absolute paths.
     if (base_url.empty()) {
         return path;
     }
     if (path.empty()) {
         return base_url;
     }
-    // 如果包含协议，则直接返回
+    // If the protocol is included, return directly
     if (path.find("://") != string::npos) {
         return path;
     }
@@ -201,7 +191,7 @@ std::string Parser::mergeUrl(const string &base_url, const string &path) {
     if (protocol_end != string::npos) {
         protocol = base_url.substr(0, protocol_end + 3);
     }
-    // 如果path以"//"开头，则直接拼接协议
+    // If the path starts with "//", then the protocol is directly spliced
     if (path.find("//") == 0) {
         return protocol + path.substr(2);
     }
@@ -216,7 +206,7 @@ std::string Parser::mergeUrl(const string &base_url, const string &path) {
             pos++;
         }
     }
-    // 如果path以"/"开头，则直接拼接协议和主机
+    // If the path starts with "/", then the protocol and host are directly spliced
     if (path[0] == '/') {
         return host + path;
     }
@@ -262,18 +252,18 @@ std::string Parser::mergeUrl(const string &base_url, const string &path) {
 void RtspUrl::parse(const string &strUrl) {
     auto schema = findSubString(strUrl.data(), nullptr, "://");
     bool is_ssl = strcasecmp(schema.data(), "rtsps") == 0;
-    // 查找"://"与"/"之间的字符串，用于提取用户名密码
+    // Find a string between "://" and "/" to extract username and password
     auto middle_url = findSubString(strUrl.data(), "://", "/");
     if (middle_url.empty()) {
         middle_url = findSubString(strUrl.data(), "://", nullptr);
     }
     auto pos = middle_url.rfind('@');
     if (pos == string::npos) {
-        // 并没有用户名密码
+        // No username and password
         return setup(is_ssl, strUrl, "", "");
     }
 
-    // 包含用户名密码
+    // Include username and password
     auto user_pwd = middle_url.substr(0, pos);
     auto suffix = strUrl.substr(schema.size() + 3 + pos + 1);
     auto url = StrPrinter << "rtsp://" << suffix << endl;
@@ -303,7 +293,7 @@ void RtspUrl::setup(bool is_ssl, const string &url, const string &user, const st
 
 static void inline checkHost(std::string &host) {
     if (host.back() == ']' && host.front() == '[') {
-        // ipv6去除方括号
+        // ipv6 removes square brackets
         host.pop_back();
         host.erase(0, 1);
         CHECK(SockUtil::is_ipv6(host.data()), "not a ipv6 address:", host);
@@ -314,7 +304,7 @@ void splitUrl(const std::string &url, std::string &host, uint16_t &port) {
     CHECK(!url.empty(), "empty url");
     auto pos = url.rfind(':');
     if (pos == string::npos || url.back() == ']') {
-        // 没有冒号，未指定端口;或者是纯粹的ipv6地址
+        // No colon, no port specified; or pure ipv6 address
         host = url;
         checkHost(host);
         return;
@@ -326,7 +316,7 @@ void splitUrl(const std::string &url, std::string &host, uint16_t &port) {
 }
 
 void parseProxyUrl(const std::string &proxy_url, std::string &proxy_host, uint16_t &proxy_port, std::string &proxy_auth) {
-    // 判断是否包含http://, 如果是则去掉
+    // Determine whether http://is included, if so, remove it
     std::string host;
     auto pos = proxy_url.find("://");
     if (pos != string::npos) {
@@ -334,7 +324,7 @@ void parseProxyUrl(const std::string &proxy_url, std::string &proxy_host, uint16
     } else {
         host = proxy_url;
     }
-    // 判断是否包含用户名和密码
+    // Determine whether the username and password are included
     pos = host.rfind('@');
     if (pos != string::npos) {
         proxy_auth = encodeBase64(host.substr(0, pos));
@@ -344,7 +334,7 @@ void parseProxyUrl(const std::string &proxy_url, std::string &proxy_host, uint16
 }
 
 #if 0
-//测试代码
+//Test code
 static onceToken token([](){
     string host;
     uint16_t port;

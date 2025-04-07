@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <string.h>
+﻿#include <string.h>
 #include <stdio.h>
 #include "mk_mediakit.h"
 
@@ -65,7 +55,6 @@ void API_CALL on_mk_media_source_regist_func(void *user_data, mk_media_source se
     Context *ctx = (Context *) user_data;
     const char *schema = mk_media_source_get_schema(sender);
     if (strncmp(schema, ctx->push_url, strlen(schema)) == 0) {
-        // 判断是否为推流协议相关的流注册或注销事件  [AUTO-TRANSLATED:00a88a17]
         // Determine if it is a stream registration or deregistration event related to the streaming protocol
         release_pusher(&(ctx->pusher));
         if (regist) {
@@ -132,11 +121,9 @@ int main(int argc, char *argv[]){
         return -1;
     }
 
-    // 可以通过  [AUTO-TRANSLATED:9a320d61]
     // Can be achieved through
     //rtmp://127.0.0.1/live/test
     //rtsp://127.0.0.1/live/test
-    // 播放mk_media的数据  [AUTO-TRANSLATED:623dc58f]
     // Playing the data of mk_media
     mk_rtsp_server_start(554, 0);
     mk_rtmp_server_start(1935, 0);
@@ -144,7 +131,6 @@ int main(int argc, char *argv[]){
     Context *ctx = (Context *) malloc(sizeof(Context));
     memset(ctx, 0, sizeof(Context));
 
-    // 推流给自己测试，当然也可以推流给其他服务器测试  [AUTO-TRANSLATED:616e4dc2]
     // Stream to yourself for testing, of course, you can also stream to other servers for testing
     context_start(ctx, argv[1], argv[2]);
 

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "H265Rtmp.h"
+﻿#include "H265Rtmp.h"
 #include "Rtmp/utils.h"
 #include "Common/config.h"
 #ifdef ENABLE_MP4
@@ -22,13 +12,11 @@ namespace mediakit {
 
 void H265RtmpDecoder::inputRtmp(const RtmpPacket::Ptr &pkt) {
     if (_info.codec == CodecInvalid) {
-        // 先判断是否为增强型rtmp  [AUTO-TRANSLATED:86c4f86a]
         // First, determine if it is an enhanced rtmp
         parseVideoRtmpPacket((uint8_t *)pkt->data(), pkt->size(), &_info);
     }
 
     if (_info.is_enhanced) {
-        // 增强型rtmp  [AUTO-TRANSLATED:d7d72114]
         // Enhanced rtmp
         parseVideoRtmpPacket((uint8_t *)pkt->data(), pkt->size(), &_info);
         if (!_info.is_enhanced || _info.codec != CodecH265) {
@@ -63,7 +51,6 @@ void H265RtmpDecoder::inputRtmp(const RtmpPacket::Ptr &pkt) {
         return;
     }
 
-    // 国内扩展(12) H265 rtmp  [AUTO-TRANSLATED:ba272139]
     // Domestic extension (12) H265 rtmp
     if (pkt->isConfigFrame()) {
         CHECK_RET(pkt->size() > 5);
@@ -96,7 +83,7 @@ inline void H265RtmpDecoder::outputFrame(const char *data, size_t size, uint32_t
     frame->_prefix_size = 4;
     frame->_dts = dts;
     frame->_pts = pts;
-    frame->_buffer.assign("\x00\x00\x00\x01", 4); // 添加265头
+    frame->_buffer.assign("\x00\x00\x00\x01", 4); // Add 265 heads
     frame->_buffer.append(data, size);
     RtmpCodec::inputFrame(frame);
 }
@@ -136,7 +123,6 @@ bool H265RtmpEncoder::inputFrame(const Frame::Ptr &frame) {
             _rtmp_packet->chunk_id = CHUNK_VIDEO;
             _rtmp_packet->stream_index = STREAM_MEDIA;
             _rtmp_packet->type_id = MSG_VIDEO;
-            // 输出rtmp packet  [AUTO-TRANSLATED:d72e89a7]
             // Output rtmp packet
             RtmpCodec::inputRtmp(_rtmp_packet);
             _rtmp_packet = nullptr;

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "mk_h264_splitter.h"
+﻿#include "mk_h264_splitter.h"
 #include "Http/HttpRequestSplitter.h"
 #include "Extension/Factory.h"
 
@@ -45,13 +35,11 @@ H264Splitter::~H264Splitter() {
 ssize_t H264Splitter::onRecvHeader(const char *data, size_t len) {
     auto frame = Factory::getFrameFromPtr(_h265 ? CodecH265 : CodecH264, (char *)data, len, 0, 0);
     if (_have_decode_frame && (frame->decodeAble() || frame->configFrame())) {
-        // 缓存中存在可解码帧，且下一帧是可解码帧或者配置帧，那么flush缓存  [AUTO-TRANSLATED:2c52093b]
         // Flush the cache if there are decodable frames in the cache and the next frame is a decodable frame or a configuration frame.
         _cb(_buffer.data(), _buffer.size());
         _buffer.assign(data, len);
         _have_decode_frame = frame->decodeAble();
     } else {
-        // 还需要缓存  [AUTO-TRANSLATED:a4dc19cb]
         // Still need to cache
         _buffer.append(data, len);
         _have_decode_frame = _have_decode_frame || frame->decodeAble();
@@ -61,11 +49,9 @@ ssize_t H264Splitter::onRecvHeader(const char *data, size_t len) {
 
 const char *H264Splitter::onSearchPacketTail(const char *data, size_t len) {
     for (size_t i = 2; len > 2 && i < len - 2; ++i) {
-        // 判断0x00 00 01  [AUTO-TRANSLATED:afa3d4c2]
         // Determine if it is 0x00 00 01
         if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
             if (i > 0 && data[i - 1] == 0) {
-                // 找到0x00 00 00 01  [AUTO-TRANSLATED:96a10021]
                 // Find 0x00 00 00 01
                 return data + i - 1;
             }

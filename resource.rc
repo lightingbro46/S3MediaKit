@@ -37,7 +37,7 @@ BEGIN
             VALUE "FileVersion", COMMIT_HASH_BRANCH_STR
             VALUE "InternalName", COMMIT_HASH_BRANCH_STR
             VALUE "LegalCopyright", "Copyright (c) 2025-present The S3MediaKit project authors"
-            VALUE "ProductName", "https://github.com/S3MediaKit"
+            VALUE "ProductName", "S3MediaKit"
             VALUE "ProductVersion", COMMIT_HASH_BRANCH_STR
         END
     END

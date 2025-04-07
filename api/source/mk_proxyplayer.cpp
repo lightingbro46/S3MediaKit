@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "mk_proxyplayer.h"
+﻿#include "mk_proxyplayer.h"
 #include "Player/PlayerProxy.h"
 #include "mk_util.h"
 
@@ -53,7 +43,6 @@ API_EXPORT void API_CALL mk_proxy_player_set_option(mk_proxy_player ctx, const c
     PlayerProxy::Ptr &obj = *((PlayerProxy::Ptr *) ctx);
     std::string key_str(key), val_str(val);
     obj->getPoller()->async([obj,key_str,val_str](){
-        // 切换线程再操作  [AUTO-TRANSLATED:b78259f9]
         // Switch threads and then operate
         (*obj)[key_str] = val_str;
     });
@@ -64,7 +53,6 @@ API_EXPORT void API_CALL mk_proxy_player_play(mk_proxy_player ctx, const char *u
     PlayerProxy::Ptr &obj = *((PlayerProxy::Ptr *) ctx);
     std::string url_str(url);
     obj->getPoller()->async([obj,url_str](){
-        // 切换线程再操作  [AUTO-TRANSLATED:b78259f9]
         // Switch threads and then operate
         obj->play(url_str);
     });
@@ -79,7 +67,6 @@ API_EXPORT void API_CALL mk_proxy_player_set_on_close2(mk_proxy_player ctx, on_m
     PlayerProxy::Ptr &obj = *((PlayerProxy::Ptr *)ctx);
     std::shared_ptr<void> ptr(user_data, user_data_free ? user_data_free : [](void *) {});
     obj->getPoller()->async([obj, cb, ptr]() {
-        // 切换线程再操作  [AUTO-TRANSLATED:bae49fee]
         // Switch threads and then operate
         obj->setOnClose([cb, ptr](const SockException &ex) {
             if (cb) {
@@ -94,7 +81,6 @@ API_EXPORT void API_CALL mk_proxy_player_set_on_play_result(mk_proxy_player ctx,
     PlayerProxy::Ptr &obj = *((PlayerProxy::Ptr *)ctx);
     std::shared_ptr<void> ptr(user_data, user_data_free ? user_data_free : [](void *) {});
     obj->getPoller()->async([obj, cb, ptr]() {
-        // 切换线程再操作  [AUTO-TRANSLATED:bae49fee]
         // Switch threads and then operate
         obj->setPlayCallbackOnce([cb, ptr](const SockException &ex) {
             if (cb) {

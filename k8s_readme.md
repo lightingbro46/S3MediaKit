@@ -1,31 +1,31 @@
-# k8s部署建议
+# k8s deployment suggestions
 
-## 编译
+## Compilation
 
-- 方式一 
+- Method 1
 
-    可以自己写脚本编译
+    You can write scripts and compile them yourself
 
-- 方式二
+- Method 2
 
-    可以使用自带`build_docker_images.sh`脚本编译，具体参见[部署](##部署)
+    You can use the built-in `build_docker_images.sh` script, see [Deployment] (##Deployment)
 
-## 部署
-- 可以是用根目录下面build_docker_images.sh脚本进行编译与推送到指定仓库
+## Deployment
+- It can be compiled and pushed to the specified repository using the build_docker_images.sh script under the root directory
 
-    - 推送
+    - Push
 
-        推送之前务必修改脚本中`镜像仓库用户名与仓库地址`。有需要也可以同时修改`命名空间与包名`。
+        Before pushing, be sure to modify the `mirror warehouse username and warehouse address` script. You can also modify the namespace and package name at the same time if necessary.
 
-    - 编译
+    - Compilation
 
         ```shell
         sh build_docker_images.sh [-t build|push] [-m Debug|Release] [-v [version]]
-        -t: 指定编译类型，build 编译镜像 push 推送到指定仓库
-        -m: 编译类型
-        -v：版本号
+        -t: Specify the compilation type, build the compilation image push to push to the specified repository
+        -m: Compile type
+        -v: Version number
         ```
 
-- 如果需要自定义配置文件，可以使用`configMap`挂载到pod中`/opt/media/conf/`目录来覆盖默认配置文件
-- 如果需要自定义证书，请替换源码目录`tests`目录下面的`default.pem`证书文件，zlmedia在pod启动时候会默认加载。
+- If you need to customize the configuration file, you can use `configMap` to mount it into the pod`/opt/media/conf/` directory to override the default configuration file
+- If you need a custom certificate, please replace the `default.pem` certificate file under the `tests` directory of the source code directory. zlmedia will be loaded by default when the pod is started.
 

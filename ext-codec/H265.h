@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_H265_H
+﻿#ifndef ZLMEDIAKIT_H265_H
 #define ZLMEDIAKIT_H265_H
 
 #include "H264.h"
@@ -65,7 +55,6 @@ public:
     bool keyFrame() const override {
         auto nal_ptr = (uint8_t *) this->data() + this->prefixSize();
         auto type = H265_TYPE(*nal_ptr);
-        // 参考自FFmpeg: IRAP VCL NAL unit types span the range  [AUTO-TRANSLATED:45413c06]
         // Referenced from FFmpeg: IRAP VCL NAL unit types span the range
         // [BLA_W_LP (16), RSV_IRAP_VCL23 (23)].
         return (type >= NAL_BLA_W_LP && type <= NAL_RSV_IRAP_VCL23) && decodeAble() ;
@@ -94,58 +83,36 @@ public:
     bool decodeAble() const override {
         auto nal_ptr = (uint8_t *) this->data() + this->prefixSize();
         auto type = H265_TYPE(*nal_ptr);
-        // 多slice情况下, first_slice_segment_in_pic_flag 表示其为一帧的开始  [AUTO-TRANSLATED:0427551b]
         // In the case of multiple slices, first_slice_segment_in_pic_flag indicates the beginning of a frame
         return type >= NAL_TRAIL_N && type <= NAL_RSV_IRAP_VCL23 && (nal_ptr[2] & 0x80);
     }
 };
 
 /**
- * 265帧类
  * 265 frame class
- 
- * [AUTO-TRANSLATED:9141a4be]
  */
 using H265Frame = H265FrameHelper<FrameImp>;
 
 /**
- * 防止内存拷贝的H265类
- * 用户可以通过该类型快速把一个指针无拷贝的包装成Frame类
  * H265 class to prevent memory copying
  * Users can quickly wrap a pointer into a Frame class without copying through this type
- 
- * [AUTO-TRANSLATED:44bde991]
  */
 using H265FrameNoCacheAble = H265FrameHelper<FrameFromPtr>;
 
 /**
-* 265视频通道
  * 265 video channel
- 
- * [AUTO-TRANSLATED:27c65a36]
 */
 class H265Track : public VideoTrack {
 public:
     using Ptr = std::shared_ptr<H265Track>;
 
     /**
-     * 不指定sps pps构造h265类型的媒体
-     * 在随后的inputFrame中获取sps pps
      * Construct a h265 media without specifying sps pps
      * Get sps pps in the subsequent inputFrame
-     
-     * [AUTO-TRANSLATED:bf86e048]
      */
     H265Track() = default;
 
     /**
-     * 构造h265类型的媒体
-     * @param vps vps帧数据
-     * @param sps sps帧数据
-     * @param pps pps帧数据
-     * @param vps_prefix_len 265头长度，可以为3个或4个字节，一般为0x00 00 00 01
-     * @param sps_prefix_len 265头长度，可以为3个或4个字节，一般为0x00 00 00 01
-     * @param pps_prefix_len 265头长度，可以为3个或4个字节，一般为0x00 00 00 01
      * Construct a h265 media
      * @param vps vps frame data
      * @param sps sps frame data
@@ -153,9 +120,6 @@ public:
      * @param vps_prefix_len 265 header length, can be 3 or 4 bytes, generally 0x00 00 00 01
      * @param sps_prefix_len 265 header length, can be 3 or 4 bytes, generally 0x00 00 00 01
      * @param pps_prefix_len 265 header length, can be 3 or 4 bytes, generally 0x00 00 00 01
-     
-     
-     * [AUTO-TRANSLATED:a8c42d9f]
      */
     H265Track(const std::string &vps,const std::string &sps, const std::string &pps,int vps_prefix_len = 4, int sps_prefix_len = 4, int pps_prefix_len = 4);
 

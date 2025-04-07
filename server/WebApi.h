@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_WEBAPI_H
+﻿#ifndef ZLMEDIAKIT_WEBAPI_H
 #define ZLMEDIAKIT_WEBAPI_H
 
 #include <string>
@@ -19,18 +9,15 @@
 #include "Http/HttpSession.h"
 #include "Common/MultiMediaSourceMuxer.h"
 
-// 配置文件路径  [AUTO-TRANSLATED:8a373c2f]
 // Configuration file path
 extern std::string g_ini_file;
 
 namespace mediakit {
-// //////////RTSP服务器配置///////////  [AUTO-TRANSLATED:950e1981]
 // //////////RTSP server configuration///////////
 namespace Rtsp {
 extern const std::string kPort;
 } //namespace Rtsp
 
-// //////////RTMP服务器配置///////////  [AUTO-TRANSLATED:8de6f41f]
 // //////////RTMP server configuration///////////
 namespace Rtmp {
 extern const std::string kPort;
@@ -39,13 +26,13 @@ extern const std::string kPort;
 
 namespace API {
 typedef enum {
-    NotFound = -500,//未找到
-    Exception = -400,//代码抛异常
-    InvalidArgs = -300,//参数不合法
-    SqlFailed = -200,//sql执行失败
-    AuthFailed = -100,//鉴权失败
-    OtherFailed = -1,//业务代码执行失败，
-    Success = 0//执行成功
+    NotFound = -500,//Not found
+    Exception = -400,//Code throws exception
+    InvalidArgs = -300,//Illegal parameters
+    SqlFailed = -200,//SQL execution failed
+    AuthFailed = -100,//Authentication failed
+    OtherFailed = -1,//Business code execution failed,
+    Success = 0//Execution successfully
 } ApiErr;
 
 extern const std::string kSecret;
@@ -156,24 +143,18 @@ using ArgsString = HttpAllArgs<std::string>;
 #define API_ARGS_STRING_ASYNC API_ARGS_STRING, const mediakit::HttpSession::HttpResponseInvoker &invoker
 #define API_ARGS_VALUE sender, headerOut, allArgs, val
 
-// 注册http请求参数是map<string, variant, StrCaseCompare>类型的http api  [AUTO-TRANSLATED:8a273897]
 // Register http request parameters as map<string, variant, StrCaseCompare> type http api
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_MAP)> &func);
-// 注册http请求参数是map<string, variant, StrCaseCompare>类型,但是可以异步回复的的http api  [AUTO-TRANSLATED:9da5d5f5]
 // Register http request parameters as map<string, variant, StrCaseCompare> type, but can be replied asynchronously http api
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_MAP_ASYNC)> &func);
 
-// 注册http请求参数是Json::Value类型的http api(可以支持多级嵌套的json参数对象)  [AUTO-TRANSLATED:c4794456]
 // Register http request parameters as Json::Value type http api (can support multi-level nested json parameter objects)
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_JSON)> &func);
-// 注册http请求参数是Json::Value类型，但是可以异步回复的的http api  [AUTO-TRANSLATED:742e57fd]
 // Register http request parameters as Json::Value type, but can be replied asynchronously http api
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_JSON_ASYNC)> &func);
 
-// 注册http请求参数是http原始请求信息的http api  [AUTO-TRANSLATED:72d3fe93]
 // Register http request parameters as http original request information http api
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_STRING)> &func);
-// 注册http请求参数是http原始请求信息的异步回复的http api  [AUTO-TRANSLATED:49feefa8]
 // Register http request parameters as http original request information asynchronous reply http api
 void api_regist(const std::string &api_path, const std::function<void(API_ARGS_STRING_ASYNC)> &func);
 
@@ -187,16 +168,13 @@ bool checkArgs(Args &args, const First &first, const KeyTypes &...keys) {
     return checkArgs(args, first) && checkArgs(args, keys...);
 }
 
-// 检查http url中或body中或http header参数是否为空的宏  [AUTO-TRANSLATED:9de001a4]
 // Check whether the http url, body or http header parameters are empty
 #define CHECK_ARGS(...)  \
     if(!checkArgs(allArgs,##__VA_ARGS__)){ \
         throw InvalidArgsException("Required parameter missed: " #__VA_ARGS__); \
     }
 
-// 检查http参数中是否附带secret密钥的宏，127.0.0.1的ip不检查密钥  [AUTO-TRANSLATED:7546956c]
 // Check whether the http parameters contain the secret key, the ip of 127.0.0.1 does not check the key
-// 同时检测是否在ip白名单内  [AUTO-TRANSLATED:d12f963d]
 // Check whether it is in the ip whitelist at the same time
 #define CHECK_SECRET() \
     do { \

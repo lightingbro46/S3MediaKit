@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "mk_player.h"
+﻿#include "mk_player.h"
 #include "Util/logger.h"
 #include "Player/MediaPlayer.h"
 
@@ -57,7 +47,6 @@ public:
     void onEvent(bool is_shutdown, const SockException &ex){
         lock_guard<recursive_mutex> lck(_mtx);
         if (is_shutdown) {
-            // 播放中断  [AUTO-TRANSLATED:9b841156]
             // Play interrupted
             if (_on_shutdown) {
                 _on_shutdown(_on_shutdown_data.get(), ex.getErrCode(), ex.what(), nullptr, 0);
@@ -65,7 +54,6 @@ public:
             return;
         }
 
-        // 播放结果  [AUTO-TRANSLATED:15f1e8fe]
         // Play result
         if (_on_play) {
             auto cpp_tracks = _player->getTracks(false);
@@ -120,7 +108,6 @@ API_EXPORT void API_CALL mk_player_set_option(mk_player ctx,const char* key,cons
     auto player = obj.getPlayer();
     string key_str(key), val_str(val);
     player->getPoller()->async([key_str,val_str,player](){
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         (*player)[key_str] = val_str;
     });
@@ -131,7 +118,6 @@ API_EXPORT void API_CALL mk_player_play(mk_player ctx, const char *url) {
     auto player = obj.getPlayer();
     string url_str(url);
     player->getPoller()->async([url_str,player](){
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         player->play(url_str);
     });
@@ -142,7 +128,6 @@ API_EXPORT void API_CALL mk_player_pause(mk_player ctx, int pause) {
     MediaPlayerForC &obj = **((MediaPlayerForC::Ptr *)ctx);
     auto player = obj.getPlayer();
     player->getPoller()->async([pause,player](){
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         player->pause(pause);
     });
@@ -153,7 +138,6 @@ API_EXPORT void API_CALL mk_player_speed(mk_player ctx, float speed) {
     MediaPlayerForC &obj = **((MediaPlayerForC::Ptr *) ctx);
     auto player = obj.getPlayer();
     player->getPoller()->async([speed, player]() {
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         player->speed(speed);
     });
@@ -164,7 +148,6 @@ API_EXPORT void API_CALL mk_player_seekto(mk_player ctx, float progress) {
     MediaPlayerForC &obj = **((MediaPlayerForC::Ptr *)ctx);
     auto player = obj.getPlayer();
     player->getPoller()->async([progress,player](){
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         player->seekTo(progress);
     });
@@ -175,7 +158,6 @@ API_EXPORT void API_CALL mk_player_seekto_pos(mk_player ctx, int seek_pos) {
     MediaPlayerForC &obj = **((MediaPlayerForC::Ptr *) ctx);
     auto player = obj.getPlayer();
     player->getPoller()->async([seek_pos, player]() {
-        // 切换线程后再操作  [AUTO-TRANSLATED:b8f01c71]
         // Operate after switching threads
         player->seekTo((uint32_t) seek_pos);
     });

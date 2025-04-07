@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_OPUS_H
+﻿#ifndef ZLMEDIAKIT_OPUS_H
 #define ZLMEDIAKIT_OPUS_H
 
 #include "Extension/Frame.h"
@@ -17,10 +7,7 @@
 namespace mediakit {
 
 /**
- * Opus帧音频通道
  * Opus frame audio channel
- 
- * [AUTO-TRANSLATED:522e95da]
  */
 class OpusTrack : public AudioTrackImp{
 public:
@@ -28,12 +15,10 @@ public:
     OpusTrack() : AudioTrackImp(CodecOpus,48000,2,16){}
 
 private:
-    // 克隆该Track  [AUTO-TRANSLATED:9a15682a]
     // Clone this Track
     Track::Ptr clone() const override {
         return std::make_shared<OpusTrack>(*this);
     }
-    // 生成sdp  [AUTO-TRANSLATED:663a9367]
     // Generate sdp
     Sdp::Ptr getSdp(uint8_t payload_type) const override ;
 };

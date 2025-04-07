@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "FFmpegSource.h"
+﻿#include "FFmpegSource.h"
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Common/MultiMediaSourceMuxer.h"
@@ -35,10 +25,8 @@ onceToken token([]() {
 #else
     string ffmpeg_bin = trim(System::execute("which ffmpeg"));
 #endif
-    // 默认ffmpeg命令路径为环境变量中路径  [AUTO-TRANSLATED:40c35597]
     // Default ffmpeg command path is the path in the environment variable
     mINI::Instance()[kBin] = ffmpeg_bin.empty() ? "ffmpeg" : ffmpeg_bin;
-    // ffmpeg日志保存路径  [AUTO-TRANSLATED:e455732d]
     // ffmpeg log save path
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
@@ -95,7 +83,7 @@ void FFmpegSource::play(const string &ffmpeg_cmd_key, const string &src_url, con
         if (cmd_it != mINI::Instance().end()) {
             ffmpeg_cmd = cmd_it->second;
         } else {
-            WarnL << "配置文件中,ffmpeg命令模板(" << ffmpeg_cmd_key << ")不存在,已采用默认模板(" << ffmpeg_cmd_default << ")";
+            WarnL << "In the configuration file, ffmpeg command template (" << ffmpeg_cmd_key << ") does not exist, the default template has been adopted(" << ffmpeg_cmd_default << ")";
         }
     }
 
@@ -107,61 +95,51 @@ void FFmpegSource::play(const string &ffmpeg_cmd_key, const string &src_url, con
     InfoL << cmd;
 
     if (is_local_ip(_media_info.host)) {
-        // 推流给自己的，通过判断流是否注册上来判断是否正常  [AUTO-TRANSLATED:423f2be6]
         // Push stream to yourself, judge whether the stream is registered to determine whether it is normal
         if (_media_info.schema != RTSP_SCHEMA && _media_info.schema != RTMP_SCHEMA) {
-            cb(SockException(Err_other, "本服务只支持rtmp/rtsp推流"));
+            cb(SockException(Err_other, "This service only supports rtmp/rtsp push streaming"));
             return;
         }
         weak_ptr<FFmpegSource> weakSelf = shared_from_this();
         findAsync(timeout_ms, [cb, weakSelf, timeout_ms](const MediaSource::Ptr &src) {
             auto strongSelf = weakSelf.lock();
             if (!strongSelf) {
-                // 自己已经销毁  [AUTO-TRANSLATED:3d45c3b0]
                 // Self has been destroyed
                 return;
             }
             if (src) {
-                // 推流给自己成功  [AUTO-TRANSLATED:65dba71b]
                 // Push stream to yourself successfully
                 cb(SockException());
                 strongSelf->onGetMediaSource(src);
                 strongSelf->startTimer(timeout_ms);
                 return;
             }
-            // 推流失败  [AUTO-TRANSLATED:4d8d226a]
             // Push stream failed
             if (!strongSelf->_process.wait(false)) {
-                // ffmpeg进程已经退出  [AUTO-TRANSLATED:04193893]
                 // ffmpeg process has exited
-                cb(SockException(Err_other, StrPrinter << "ffmpeg已经退出,exit code = " << strongSelf->_process.exit_code()));
+                cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
                 return;
             }
-            // ffmpeg进程还在线，但是等待推流超时  [AUTO-TRANSLATED:9f71f17b]
             // ffmpeg process is still online, but waiting for the stream to timeout
             cb(SockException(Err_other, "等待超时"));
         });
     } else{
-        // 推流给其他服务器的，通过判断FFmpeg进程是否在线判断是否成功  [AUTO-TRANSLATED:9b963da5]
         // Push stream to other servers, judge whether it is successful by judging whether the FFmpeg process is online
         weak_ptr<FFmpegSource> weakSelf = shared_from_this();
         _timer = std::make_shared<Timer>(timeout_ms / 1000.0f, [weakSelf, cb, timeout_ms]() {
             auto strongSelf = weakSelf.lock();
             if (!strongSelf) {
-                // 自身已经销毁  [AUTO-TRANSLATED:5f954f8a]
                 // Self has been destroyed
                 return false;
             }
-            // FFmpeg还在线，那么我们认为推流成功  [AUTO-TRANSLATED:4330df49]
             // FFmpeg is still online, so we think the push stream is successful
             if (strongSelf->_process.wait(false)) {
                 cb(SockException());
                 strongSelf->startTimer(timeout_ms);
                 return false;
             }
-            // ffmpeg进程已经退出  [AUTO-TRANSLATED:04193893]
             // ffmpeg process has exited
-            cb(SockException(Err_other, StrPrinter << "ffmpeg已经退出,exit code = " << strongSelf->_process.exit_code()));
+            cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
             return false;
         }, _poller);
     }
@@ -175,10 +153,8 @@ void FFmpegSource::findAsync(int maxWaitMS, const function<void(const MediaSourc
     }
 
     void *listener_tag = this;
-    // 若干秒后执行等待媒体注册超时回调  [AUTO-TRANSLATED:71010a04]
     // Execute the media registration timeout callback after a few seconds
     auto onRegistTimeout = _poller->doDelayTask(maxWaitMS, [cb, listener_tag]() {
-        // 取消监听该事件  [AUTO-TRANSLATED:31297323]
         // Cancel listening to this event
         NoticeCenter::Instance().delListener(listener_tag, Broadcast::kBroadcastMediaChanged);
         cb(nullptr);
@@ -189,7 +165,6 @@ void FFmpegSource::findAsync(int maxWaitMS, const function<void(const MediaSourc
     auto onRegist = [listener_tag, weakSelf, cb, onRegistTimeout](BroadcastMediaChangedArgs) {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
-            // 本身已经销毁，取消延时任务  [AUTO-TRANSLATED:cc2e420f]
             // Self has been destroyed, cancel the delayed task
             onRegistTimeout->cancel();
             NoticeCenter::Instance().delListener(listener_tag, Broadcast::kBroadcastMediaChanged);
@@ -198,38 +173,29 @@ void FFmpegSource::findAsync(int maxWaitMS, const function<void(const MediaSourc
 
         if (!bRegist || sender.getSchema() != strongSelf->_media_info.schema ||
             !equalMediaTuple(sender.getMediaTuple(), strongSelf->_media_info)) {
-            // 不是自己感兴趣的事件，忽略之  [AUTO-TRANSLATED:f61f5668]
             // Not an event of interest, ignore it
             return;
         }
 
-        // 查找的流终于注册上了；取消延时任务，防止多次回调  [AUTO-TRANSLATED:66fc5abf]
         // The stream you are looking for is finally registered; cancel the delayed task to prevent multiple callbacks
         onRegistTimeout->cancel();
-        // 取消事件监听  [AUTO-TRANSLATED:c722acb6]
         // Cancel event listening
         NoticeCenter::Instance().delListener(listener_tag, Broadcast::kBroadcastMediaChanged);
 
-        // 切换到自己的线程再回复  [AUTO-TRANSLATED:3b630c64]
         // Switch to your own thread and then reply
         strongSelf->_poller->async([weakSelf, cb]() {
             if (auto strongSelf = weakSelf.lock()) {
-                // 再找一遍媒体源，一般能找到  [AUTO-TRANSLATED:f0b81977]
                 // Find the media source again, usually you can find it
                 strongSelf->findAsync(0, cb);
             }
         }, false);
     };
-    // 监听媒体注册事件  [AUTO-TRANSLATED:ea3e763b]
     // Listen to media registration events
     NoticeCenter::Instance().addListener(listener_tag, Broadcast::kBroadcastMediaChanged, onRegist);
 }
 
 /**
- * 定时检查媒体是否在线
  * Check if the media is online regularly
- 
- * [AUTO-TRANSLATED:11bae8ab]
  */
 void FFmpegSource::startTimer(int timeout_ms) {
     weak_ptr<FFmpegSource> weakSelf = shared_from_this();
@@ -237,31 +203,25 @@ void FFmpegSource::startTimer(int timeout_ms) {
     _timer = std::make_shared<Timer>(1.0f, [weakSelf, timeout_ms]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
-            // 自身已经销毁  [AUTO-TRANSLATED:5a02ef8b]
             // Self has been destroyed
             return false;
         }
         bool needRestart = ffmpeg_restart_sec > 0 && strongSelf->_replay_ticker.elapsedTime() > ffmpeg_restart_sec * 1000;
         if (is_local_ip(strongSelf->_media_info.host)) {
-            // 推流给自己的，我们通过检查是否已经注册来判断FFmpeg是否工作正常  [AUTO-TRANSLATED:9a441d38]
             // Push stream to yourself, we judge whether FFmpeg is working properly by checking whether it has been registered
             strongSelf->findAsync(0, [&](const MediaSource::Ptr &src) {
-                // 同步查找流  [AUTO-TRANSLATED:97048f1e]
                 // Synchronously find the stream
                 if (!src || needRestart) {
                     if (needRestart) {
                         strongSelf->_replay_ticker.resetTime();
                         if (strongSelf->_process.wait(false)) {
-                            // FFmpeg进程还在运行，超时就关闭它  [AUTO-TRANSLATED:bd907d0c]
                             // The FFmpeg process is still running, timeout and close it
                             strongSelf->_process.kill(2000);
                         }
-                        InfoL << "FFmpeg即将重启, 将会继续拉流 " << strongSelf->_src_url;
+                        InfoL << "FFmpeg will be restarted soon and will continue to pull the stream " << strongSelf->_src_url;
                     }
-                    // 流不在线，重新拉流, 这里原先是10秒超时，实际发现10秒不够，改成20秒了  [AUTO-TRANSLATED:10e8c704]
                     // The stream is not online, re-pull the stream, here the original timeout was 10 seconds, but it was found that 10 seconds was not enough, so it was changed to 20 seconds
                     if (strongSelf->_replay_ticker.elapsedTime() > 20 * 1000) {
-                        // 上次重试时间超过10秒，那么再重试FFmpeg拉流  [AUTO-TRANSLATED:b308095a]
                         // The last retry time exceeds 10 seconds, then retry FFmpeg to pull the stream
                         strongSelf->_replay_ticker.resetTime();
                         strongSelf->play(strongSelf->_ffmpeg_cmd_key, strongSelf->_src_url, strongSelf->_dst_url, timeout_ms, [](const SockException &) {});
@@ -269,33 +229,27 @@ void FFmpegSource::startTimer(int timeout_ms) {
                 }
             });
         } else {
-            // 推流给其他服务器的，我们通过判断FFmpeg进程是否在线，如果FFmpeg推流中断，那么它应该会自动退出  [AUTO-TRANSLATED:82da3ea5]
             // Push stream to other servers, we judge whether the FFmpeg process is online, if FFmpeg push stream is interrupted, then it should exit automatically
             if (!strongSelf->_process.wait(false) || needRestart) {
                 if (needRestart) {
                     strongSelf->_replay_ticker.resetTime();
                     if (strongSelf->_process.wait(false)) {
-                        // FFmpeg进程还在运行，超时就关闭它  [AUTO-TRANSLATED:bd907d0c]
                         // The FFmpeg process is still running, timeout and close it
                         strongSelf->_process.kill(2000);
                     }
-                    InfoL << "FFmpeg即将重启, 将会继续拉流 " << strongSelf->_src_url;
+                    InfoL << "FFmpeg will be restarted soon and will continue to pull the stream " << strongSelf->_src_url;
                 }
-                // ffmpeg不在线，重新拉流  [AUTO-TRANSLATED:aa958c43]
                 // ffmpeg is not online, re-pull the stream
                 strongSelf->play(strongSelf->_ffmpeg_cmd_key, strongSelf->_src_url, strongSelf->_dst_url, timeout_ms, [weakSelf](const SockException &ex) {
                     if (!ex) {
-                        // 没有错误  [AUTO-TRANSLATED:037ae0ca]
                         // No error
                         return;
                     }
                     auto strongSelf = weakSelf.lock();
                     if (!strongSelf) {
-                        // 自身已经销毁  [AUTO-TRANSLATED:5f954f8a]
                         // Self has been destroyed
                         return;
                     }
-                    // 上次重试时间超过10秒，那么再重试FFmpeg拉流  [AUTO-TRANSLATED:b308095a]
                     // Retry FFmpeg stream pulling if the last retry time is over 10 seconds
                     strongSelf->startTimer(10 * 1000);
                 });
@@ -312,11 +266,9 @@ void FFmpegSource::setOnClose(const function<void()> &cb){
 bool FFmpegSource::close(MediaSource &sender) {
     auto listener = getDelegate();
     if (listener && !listener->close(sender)) {
-        // 关闭失败  [AUTO-TRANSLATED:83f07dba]
         // Close failed
         return false;
     }
-    // 该流无人观看，我们停止吧  [AUTO-TRANSLATED:43999b39]
     // No one is watching this stream, let's stop it
     if (_onClose) {
         _onClose();
@@ -336,7 +288,6 @@ void FFmpegSource::onGetMediaSource(const MediaSource::Ptr &src) {
     auto muxer = src->getMuxer();
     auto listener = muxer ? muxer->getDelegate() : nullptr;
     if (listener && listener.get() != this) {
-        // 防止多次进入onGetMediaSource函数导致无限递归调用的bug  [AUTO-TRANSLATED:ceadb9c7]
         // Prevent the bug of infinite recursive calls caused by entering the onGetMediaSource function multiple times
         setDelegate(listener);
         muxer->setDelegate(shared_from_this());
@@ -371,7 +322,7 @@ static void makeSnapAsync(const string &play_url, const string &save_path, float
         auto decoder = std::make_shared<FFmpegDecoder>(video);
         auto new_holder = std::make_shared<Holder>(*holder);
         auto timer = EventPollerPool::Instance().getPoller()->doDelayTask(1000 * timeout_sec, [cb, new_holder]() {
-            // 防止解码失败导致播放器无法释放
+            // Prevents the player from being unable to release if decoding fails
             new_holder->player = nullptr;
             cb(false, "decode frame timeout");
             return 0;
@@ -408,7 +359,6 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
     WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, save_path, cb, ticker]() {
         auto elapsed_ms = ticker.elapsedTime();
         if (elapsed_ms > timeout_sec * 1000) {
-            // 超时，后台线程负载太高，当代太久才启动该任务  [AUTO-TRANSLATED:815606d6]
             // Timeout, the background thread load is too high, it takes too long to start this task
             cb(false, "wait work poller schedule snap task timeout");
             return;
@@ -420,25 +370,20 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
         auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
         process->run(cmd, log_file);
 
-        // 定时器延时应该减去后台任务启动的延时  [AUTO-TRANSLATED:7d224687]
         // The timer delay should be reduced by the delay of the background task startup
         auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
             (uint64_t)(timeout_sec * 1000 - elapsed_ms), [process, cb, log_file, save_path]() {
                 if (process->wait(false)) {
-                    // FFmpeg进程还在运行，超时就关闭它  [AUTO-TRANSLATED:bd907d0c]
                     // The FFmpeg process is still running, close it if it times out
                     process->kill(2000);
                 }
                 return 0;
             });
 
-        // 等待FFmpeg进程退出  [AUTO-TRANSLATED:0a179187]
         // Wait for the FFmpeg process to exit
         process->wait(true);
-        // FFmpeg进程退出了可以取消定时器了  [AUTO-TRANSLATED:c8a4b513]
         // The FFmpeg process has exited, the timer can be canceled
         delayTask->cancel();
-        // 执行回调函数  [AUTO-TRANSLATED:7309a900]
         // Execute the callback function
         bool success = process->exit_code() == 0 && File::fileSize(save_path);
         cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "");

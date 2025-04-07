@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Rtmp/utils.h"
+﻿#include "Rtmp/utils.h"
 #include "H264Rtmp.h"
 
 using namespace std;
@@ -48,7 +38,7 @@ void H264RtmpDecoder::outputFrame(const char *data, size_t len, uint32_t dts, ui
     frame->_prefix_size = 4;
     frame->_dts = dts;
     frame->_pts = pts;
-    frame->_buffer.assign("\x00\x00\x00\x01", 4); // 添加264头
+    frame->_buffer.assign("\x00\x00\x00\x01", 4); // Add 264 heads
     frame->_buffer.append(data, len);
     RtmpCodec::inputFrame(frame);
 }
@@ -62,7 +52,6 @@ void H264RtmpEncoder::flush() {
 bool H264RtmpEncoder::inputFrame(const Frame::Ptr &frame) {
     if (!_rtmp_packet) {
         _rtmp_packet = RtmpPacket::create();
-        // flags/not config/cts预占位  [AUTO-TRANSLATED:7effb692]
         // flags/not config/cts placeholder
         _rtmp_packet->buffer.resize(5);
     }
@@ -79,7 +68,6 @@ bool H264RtmpEncoder::inputFrame(const Frame::Ptr &frame) {
             _rtmp_packet->chunk_id = CHUNK_VIDEO;
             _rtmp_packet->stream_index = STREAM_MEDIA;
             _rtmp_packet->type_id = MSG_VIDEO;
-            // 输出rtmp packet  [AUTO-TRANSLATED:d72e89a7]
             // Output rtmp packet
             RtmpCodec::inputRtmp(_rtmp_packet);
             _rtmp_packet = nullptr;

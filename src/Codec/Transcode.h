@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_TRANSCODE_H
+﻿#ifndef ZLMEDIAKIT_TRANSCODE_H
 #define ZLMEDIAKIT_TRANSCODE_H
 
 #if defined(ENABLE_FFMPEG)
@@ -165,9 +155,9 @@ private:
 class FFmpegUtils {
 public:
     /**
-     * 保持图片为jpeg或png
-     * @param frame 解码后的帧
-     * @param filename 保存文件路径
+     * Keep the image as jpeg or png
+     * @param frame Decoded frames
+     * @param filename Save file path
      * @param fmt jpg:AV_PIX_FMT_YUVJ420P，PNG:AV_PIX_FMT_RGB24
      * @return
      */

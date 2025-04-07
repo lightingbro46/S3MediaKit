@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <map>
+﻿#include <map>
 #include <list>
 #include <iostream>
 #include <functional>
@@ -18,7 +8,6 @@ using namespace std;
 using namespace mediakit;
 
 void test_real() {
-    // 这个是一次真实的rtp seq记录  [AUTO-TRANSLATED:a0cbaeff]
     // This is a real rtp seq record
     list<uint16_t> input_list = {15125, 15126, 15127, 15128, 15129, 15130, 15131, 15132, 15133, 15134, 15135, 15136,
                                  15137, 15138, 15139, 15140, 15141, 15142, 15143, 15144, 15145, 15146, 15147, 15148,

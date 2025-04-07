@@ -1,27 +1,4 @@
-# MIT License
-#
-# Copyright (c) 2025-2022 The S3MediaKit project authors. All Rights Reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
-# 查找 srtp 是否安装
+# Find out if srtp is installed
 find_package(SRTP QUIET)
 if(NOT SRTP_FOUND OR NOT ENABLE_OPENSSL)
   set(ENABLE_WEBRTC OFF)
@@ -43,7 +20,6 @@ find_package(SCTP QUIET)
 if(SCTP_FOUND)
   message(STATUS "found library: ${SCTP_INCLUDE_DIRS} ${SCTP_LIBRARIES}")
   include_directories(SYSTEM ${SCTP_INCLUDE_DIRS})
-  # TODO: 避免暴露 SCTP 到 WebRTC 模块外
   # TODO: Avoid exposing SCTP outside of WebRTC modules
   list(APPEND COMPILE_DEFINITIONS ENABLE_SCTP)
   list(APPEND INCLUDE_DIRECTORIES ${SCTP_INCLUDE_DIRS})
@@ -59,7 +35,6 @@ file(GLOB WEBRTC_SRC_LIST
 add_library(webrtc STATIC ${WEBRTC_SRC_LIST})
 add_library(S3MediaKit::WebRTC ALIAS webrtc)
 target_compile_definitions(webrtc
-  # ENABLE_SCTP 暂时需要暴露
   # ENABLE_SCTP temporarily needs to be exposed
   PUBLIC ${COMPILE_DEFINITIONS})
 target_compile_options(webrtc

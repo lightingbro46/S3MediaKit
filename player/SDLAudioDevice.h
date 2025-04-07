@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SDLAUDIOMIXER_SDLAUDIODEVICE_H_
+﻿#ifndef SDLAUDIOMIXER_SDLAUDIODEVICE_H_
 #define SDLAUDIOMIXER_SDLAUDIODEVICE_H_
 
 #include <mutex>
@@ -24,7 +14,7 @@
 
 class AudioSRC;
 
-//该对象主要实现sdl混音与播放
+//This object mainly implements SDL mixing and playback
 class SDLAudioDevice : public std::enable_shared_from_this<SDLAudioDevice>{
 public:
     using Ptr = std::shared_ptr<SDLAudioDevice>;

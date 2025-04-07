@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <signal.h>
+﻿#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
@@ -48,47 +38,43 @@ void release_context(void *user_data) {
     }
     free(ptr->url);
     free(ptr);
-    log_info("停止推流");
+    log_info("Stop pushing");
 }
 
 void on_push_result(void *user_data, int err_code, const char *err_msg) {
     Context *ptr = (Context *)user_data;
     if (err_code == 0) {
-        log_info("推流成功: %s", ptr->url);
+        log_info("Successful push: %s", ptr->url);
     } else {
-        log_warn("推流%s失败: %d(%s)", ptr->url, err_code, err_msg);
+        log_warn("Pushing %s failed: %d(%s)", ptr->url, err_code, err_msg);
     }
 }
 
 void on_push_shutdown(void *user_data, int err_code, const char *err_msg) {
     Context *ptr = (Context *)user_data;
-    log_warn("推流%s中断: %d(%s)", ptr->url, err_code, err_msg);
+    log_warn("Push %s interrupt: %d(%s)", ptr->url, err_code, err_msg);
 }
 
 void API_CALL on_regist(void *user_data, mk_media_source sender, int regist) {
     Context *ptr = (Context *)user_data;
     const char *schema = mk_media_source_get_schema(sender);
     if (strstr(ptr->url, schema) != ptr->url) {
-        // 协议匹配失败  [AUTO-TRANSLATED:436784d0]
         // Protocol matching failed
         return;
     }
 
     if (!regist) {
-        // 注销  [AUTO-TRANSLATED:ebc5be28]
         // Log out
         if (ptr->pusher) {
             mk_pusher_release(ptr->pusher);
             ptr->pusher = NULL;
         }
     } else {
-        // 注册  [AUTO-TRANSLATED:e2df30a6]
         // Register
         if (!ptr->pusher) {
             ptr->pusher = mk_pusher_create_src(sender);
             mk_pusher_set_on_result2(ptr->pusher, on_push_result, ptr, NULL);
             mk_pusher_set_on_shutdown2(ptr->pusher, on_push_shutdown, ptr, NULL);
-            // 开始推流  [AUTO-TRANSLATED:df3972ff]
             // Start streaming
             mk_pusher_publish(ptr->pusher, ptr->url);
         }
@@ -114,12 +100,11 @@ int main(int argc, char *argv[]) {
 
     FILE *fp = fopen(argv[1], "rb");
     if (!fp) {
-        log_error("打开文件失败!");
+        log_error("Failed to open the file!");
         return -1;
     }
 
     mk_media media = mk_media_create("__defaultVhost__", "live", "test", 0, 0, 0);
-    // h264的codec  [AUTO-TRANSLATED:e840179e]
     // h264 codec
     codec_args v_args = { 0 };
     mk_track v_track = mk_track_create(MKCodecH264, &v_args);
@@ -133,11 +118,10 @@ int main(int argc, char *argv[]) {
 
     mk_media_set_on_regist2(media, on_regist, ctx, release_context);
 
-    // 创建h264分帧器  [AUTO-TRANSLATED:72254159]
     // Create h264 frame splitter
     mk_h264_splitter splitter = mk_h264_splitter_create(on_h264_frame, media, 0);
-    signal(SIGINT, s_on_exit); // 设置退出信号
-    signal(SIGTERM, s_on_exit); // 设置退出信号
+    signal(SIGINT, s_on_exit); // Set the exit signal
+    signal(SIGTERM, s_on_exit); // Set the exit signal
 
     char buf[1024];
     while (!exit_flag) {
@@ -145,13 +129,12 @@ int main(int argc, char *argv[]) {
         if (size > 0) {
             mk_h264_splitter_input_data(splitter, buf, size);
         } else {
-            // 文件读完了，重新开始  [AUTO-TRANSLATED:ffffe75c]
             // File read finished, start again
             fseek(fp, 0, SEEK_SET);
         }
     }
 
-    log_info("文件读取完毕");
+    log_info("File reading is complete");
     mk_h264_splitter_release(splitter);
     mk_media_release(media);
     fclose(fp);

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Util/logger.h"
+﻿#include "Util/logger.h"
 #include "AudioSRC.h"
 #include "SDLAudioDevice.h"
 
@@ -47,18 +37,18 @@ int AudioSRC::getPCMData(char *buf, int size) {
         return 0;
     }
     if (!_audio_cvt.needed) {
-        //获取原始数据，不需要频率转换
+        //Get raw data without frequency conversion
         return _delegate->getPCMData(buf, size);
     }
 
-    //对应的未转换前pcm的长度
+    //The corresponding length of pcm before conversion
     auto original_size = (int) (size / _audio_cvt.len_ratio);
     if (original_size % 4 != 0) {
-        //必须为4byte的整数(双通道16bit一个采样就4个字节)
+        //Must be an integer of 4bytes (one sample of 16bit for dual channel is 4 bytes)
         original_size = 4 * (original_size / 4) + 4;
     }
 
-    //需要准备这么长的buf用于重采样
+    //Such a long buf is needed to be prepared for resampling
     if ((int) (original_size * _audio_cvt.len_mult) != _buf_size) {
         _buf_size = original_size * _audio_cvt.len_mult;
         _buf.reset(new char[_buf_size], [](char *ptr) {
@@ -69,7 +59,7 @@ int AudioSRC::getPCMData(char *buf, int size) {
 
     auto origin_size = _delegate->getPCMData(_buf.get(), original_size );
     if (!origin_size) {
-        //获取数据失败
+        //Failed to obtain data
         TraceL << "get empty pcm data";
         return 0;
     }

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_AAC_H
+﻿#ifndef ZLMEDIAKIT_AAC_H
 #define ZLMEDIAKIT_AAC_H
 
 #include "Extension/Frame.h"
@@ -18,10 +8,7 @@
 namespace mediakit{
 
 /**
- * aac音频通道
  * AAC audio channel
- 
- * [AUTO-TRANSLATED:0d58b638]
  */
 class AACTrack : public AudioTrack {
 public:
@@ -30,11 +17,7 @@ public:
     AACTrack() = default;
 
     /**
-     * 通过aac extra data 构造对象
      * Construct object through AAC extra data
-     
-     
-     * [AUTO-TRANSLATED:1fa035c8]
      */
     AACTrack(const std::string &aac_cfg);
 

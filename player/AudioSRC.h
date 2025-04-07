@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef AUDIOSRC_H_
+﻿#ifndef AUDIOSRC_H_
 #define AUDIOSRC_H_
 
 #include <memory>
@@ -38,7 +28,7 @@ public:
     virtual int getPCMData(char *buf, int size) = 0;
 };
 
-//该类实现pcm的重采样
+//This class implements resampling of pcm
 class AudioSRC {
 public:
     using Ptr = std::shared_ptr<AudioSRC>;

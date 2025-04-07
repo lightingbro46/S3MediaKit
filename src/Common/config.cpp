@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Common/config.h"
+﻿#include "Common/config.h"
 #include "MediaSource.h"
 #include "Util/NoticeCenter.h"
 #include "Util/logger.h"
@@ -39,7 +29,6 @@ bool loadIniConfig(const char *ini_path) {
         return false;
     }
 }
-// //////////广播名称///////////  [AUTO-TRANSLATED:439b2d74]
 // //////////Broadcast Name///////////
 namespace Broadcast {
 const string kBroadcastMediaChanged = "kBroadcastMediaChanged";
@@ -69,7 +58,6 @@ const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
 
 } // namespace Broadcast
 
-// 通用配置项目  [AUTO-TRANSLATED:ca344202]
 // General Configuration Items
 namespace General {
 #define GENERAL_FIELD "general."
@@ -167,7 +155,6 @@ static onceToken token([]() {
 });
 } // !Protocol
 
-// //////////HTTP配置///////////  [AUTO-TRANSLATED:a281d694]
 // //////////HTTP Configuration///////////
 namespace Http {
 #define HTTP_FIELD "http."
@@ -211,7 +198,6 @@ static onceToken token([]() {
 
 } // namespace Http
 
-// //////////SHELL配置///////////  [AUTO-TRANSLATED:f023ec45]
 // //////////SHELL Configuration///////////
 namespace Shell {
 #define SHELL_FIELD "shell."
@@ -220,7 +206,6 @@ const string kMaxReqSize = SHELL_FIELD "maxReqSize";
 static onceToken token([]() { mINI::Instance()[kMaxReqSize] = 1024; });
 } // namespace Shell
 
-// //////////RTSP服务器配置///////////  [AUTO-TRANSLATED:950e1981]
 // //////////RTSP Server Configuration///////////
 namespace Rtsp {
 #define RTSP_FIELD "rtsp."
@@ -232,7 +217,6 @@ const string kLowLatency = RTSP_FIELD"lowLatency";
 const string kRtpTransportType = RTSP_FIELD"rtpTransportType";
 
 static onceToken token([]() {
-    // 默认Md5方式认证  [AUTO-TRANSLATED:6155d989]
     // Default Md5 authentication
     mINI::Instance()[kAuthBasic] = 0;
     mINI::Instance()[kHandshakeSecond] = 15;
@@ -243,7 +227,6 @@ static onceToken token([]() {
 });
 } // namespace Rtsp
 
-// //////////RTMP服务器配置///////////  [AUTO-TRANSLATED:8de6f41f]
 // //////////RTMP Server Configuration///////////
 namespace Rtmp {
 #define RTMP_FIELD "rtmp."
@@ -260,15 +243,12 @@ static onceToken token([]() {
 });
 } // namespace Rtmp
 
-// //////////RTP配置///////////  [AUTO-TRANSLATED:23cbcb86]
 // //////////RTP Configuration///////////
 namespace Rtp {
 #define RTP_FIELD "rtp."
-// RTP打包最大MTU,公网情况下更小  [AUTO-TRANSLATED:869f5c4b]
 // Maximum RTP packet MTU, smaller for public networks
 const string kVideoMtuSize = RTP_FIELD "videoMtuSize";
 const string kAudioMtuSize = RTP_FIELD "audioMtuSize";
-// rtp包最大长度限制，单位是KB  [AUTO-TRANSLATED:aee4bffc]
 // Maximum RTP packet length limit, in KB
 const string kRtpMaxSize = RTP_FIELD "rtpMaxSize";
 const string kLowLatency = RTP_FIELD "lowLatency";
@@ -283,17 +263,13 @@ static onceToken token([]() {
 });
 } // namespace Rtp
 
-// //////////组播配置///////////  [AUTO-TRANSLATED:dc39b9d6]
 // //////////Multicast Configuration///////////
 namespace MultiCast {
 #define MULTI_FIELD "multicast."
-// 组播分配起始地址  [AUTO-TRANSLATED:069db91d]
 // Multicast allocation starting address
 const string kAddrMin = MULTI_FIELD "addrMin";
-// 组播分配截止地址  [AUTO-TRANSLATED:6d3fc54c]
 // Multicast allocation ending address
 const string kAddrMax = MULTI_FIELD "addrMax";
-// 组播TTL  [AUTO-TRANSLATED:c7c5339c]
 // Multicast TTL
 const string kUdpTTL = MULTI_FIELD "udpTTL";
 
@@ -304,7 +280,6 @@ static onceToken token([]() {
 });
 } // namespace MultiCast
 
-// //////////录像配置///////////  [AUTO-TRANSLATED:19de3e96]
 // //////////Recording Configuration///////////
 namespace Record {
 #define RECORD_FIELD "record."
@@ -325,7 +300,6 @@ static onceToken token([]() {
 });
 } // namespace Record
 
-// //////////HLS相关配置///////////  [AUTO-TRANSLATED:873cc84c]
 // //////////HLS Related Configuration///////////
 namespace Hls {
 #define HLS_FIELD "hls."
@@ -352,7 +326,6 @@ static onceToken token([]() {
 });
 } // namespace Hls
 
-// //////////Rtp代理相关配置///////////  [AUTO-TRANSLATED:7b285587]
 // //////////Rtp Proxy Related Configuration///////////
 namespace RtpProxy {
 #define RTP_PROXY_FIELD "rtp_proxy."
@@ -460,7 +433,6 @@ public:
     MemThreadInfo(bool is_thread_local) {
         _is_thread_local = is_thread_local;
         if (_is_thread_local) {
-            // 确保所有线程退出后才能释放全局内存统计器  [AUTO-TRANSLATED:edb51704]
             // Ensure that all threads exit before releasing the global memory statistics
             total_mem = Instance(false);
         }
@@ -511,7 +483,6 @@ private:
     MemThreadInfo *ptr;
 };
 
-// 该变量主要确保线程退出后才能释放MemThreadInfo变量  [AUTO-TRANSLATED:a72494b0]
 // This variable mainly ensures that the MemThreadInfo variable can be released only after the thread exits
 static thread_local MemThreadInfoLocal s_thread_mem_info;
 

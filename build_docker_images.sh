@@ -77,13 +77,13 @@ packagename="zlmediakit"
 case $type in
 	'build')
 	rm -rf ./build/CMakeCache.txt
-	# 以腾讯云账号为例
+	# Take Tencent Cloud Account as an example
 	docker buildx build --platform=$platform --network=host --build-arg MODEL=$model -t $namespace/$packagename:$model.$version .
 	#docker build --network=host --build-arg MODEL=$model -t $namespace/$packagename:$model.$version .
 		;;
 	'push')
 		echo "push to dst registry"
-		# 以腾讯云账号为例
+		# Take Tencent Cloud Account as an example
 		docker login --username=zlmediakit
 		docker push $namespace/$packagename:$model.$version
 		;;
