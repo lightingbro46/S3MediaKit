@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if defined(ENABLE_RTPPROXY)
+﻿#if defined(ENABLE_RTPPROXY)
 
 #include "PSEncoder.h"
 #include "Common/config.h"
@@ -24,7 +14,6 @@ PSEncoderImp::PSEncoderImp(uint32_t ssrc, uint8_t payload_type, bool ps_or_ts) :
     _rtp_encoder = std::make_shared<CommonRtpEncoder>();
     auto video_mtu = s_video_mtu;
     if (!ps_or_ts) {
-        // 确保ts rtp负载部分长度是188的倍数  [AUTO-TRANSLATED:ad7aa6c0]
         // Ensure the ts rtp payload length is a multiple of 188
         video_mtu = RtpPacket::kRtpHeaderSize + (s_video_mtu - (s_video_mtu % 188));
         if (video_mtu > s_video_mtu) {
@@ -46,7 +35,7 @@ void PSEncoderImp::onWrite(std::shared_ptr<Buffer> buffer, uint64_t stamp, bool 
     if (!buffer) {
         return;
     }
-    _rtp_encoder->inputFrame(std::make_shared<FrameFromPtr>(CodecH264/*只用于识别为视频*/, buffer->data(), buffer->size(), stamp, stamp, 0, key_pos));
+    _rtp_encoder->inputFrame(std::make_shared<FrameFromPtr>(CodecH264/*Used only as video*/, buffer->data(), buffer->size(), stamp, stamp, 0, key_pos));
 }
 
 }//namespace mediakit

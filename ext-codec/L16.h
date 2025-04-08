@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_L16_H
-#define ZLMEDIAKIT_L16_H
+﻿#ifndef S3MEDIAKIT_L16_H
+#define S3MEDIAKIT_L16_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -20,4 +20,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_L16_H
+#endif //S3MEDIAKIT_L16_H

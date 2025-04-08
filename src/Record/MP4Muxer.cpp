@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if defined(ENABLE_MP4)
+﻿#if defined(ENABLE_MP4)
 
 #include "MP4Muxer.h"
 #include "Common/config.h"
@@ -85,16 +75,13 @@ void MP4MuxerInterface::flush() {
 bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
     auto it = _tracks.find(frame->getIndex());
     if (it == _tracks.end()) {
-        // 该Track不存在或初始化失败  [AUTO-TRANSLATED:316597dc]
         // This Track does not exist or initialization failed
         return false;
     }
 
     if (!_started) {
-        // 该逻辑确保含有视频时，第一帧为关键帧  [AUTO-TRANSLATED:04f177fb]
         // This logic ensures that the first frame is a keyframe when there is video
         if (_have_video && !frame->keyFrame()) {
-            // 含有视频，但是不是关键帧，那么前面的帧丢弃  [AUTO-TRANSLATED:5f0ba99e]
             // Contains video, but not a keyframe, then the previous frames are discarded
             return false;
         }
@@ -103,7 +90,6 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
         _started = true;
     }
 
-    // fmp4封装超过一定I帧间隔，强制刷新segment，防止内存上涨  [AUTO-TRANSLATED:0be6ef15]
     // fmp4 encapsulation exceeds a certain I-frame interval, force refresh segment to prevent memory increase
     if (frame->getTrackType() == TrackVideo && _mov_writter->fmp4) {
         if (frame->keyFrame()) {
@@ -118,13 +104,11 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
         }
     }
 
-    // mp4文件时间戳需要从0开始  [AUTO-TRANSLATED:c963b841]
     // The mp4 file timestamp needs to start from 0
     auto &track = it->second;
     switch (frame->getCodecId()) {
         case CodecH264:
         case CodecH265: {
-            // 这里的代码逻辑是让SPS、PPS、IDR这些时间戳相同的帧打包到一起当做一个帧处理，  [AUTO-TRANSLATED:edf57c32]
             // The code logic here is to package frames with the same timestamp, such as SPS, PPS, and IDR, as one frame,
             track.merger.inputFrame(frame, [this, &track](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
                 int64_t dts_out, pts_out;
@@ -197,7 +181,6 @@ bool MP4MuxerInterface::addTrack(const Track::Ptr &track) {
         _tracks[track->getIndex()].track_id = track_id;
     }
 
-    // 尝试音视频同步  [AUTO-TRANSLATED:5f8b8040]
     // Try audio and video synchronization
     stampSync();
     return true;
@@ -230,18 +213,15 @@ void MP4MuxerMemory::resetTracks() {
 
 bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
     if (_init_segment.empty()) {
-        // 尚未生成init segment  [AUTO-TRANSLATED:b4baa65f]
         // Init segment has not been generated yet
         return false;
     }
 
-    // flush切片  [AUTO-TRANSLATED:c4358dce]
     // Flush segment
     saveSegment();
 
     auto data = _memory_file->getAndClearMemory();
     if (!data.empty()) {
-        // 输出切片数据  [AUTO-TRANSLATED:4bc994c9]
         // Output segment data
         onSegmentData(std::move(data), _last_dst, _key_frame);
         _key_frame = false;

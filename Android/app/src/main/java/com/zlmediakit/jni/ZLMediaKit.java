@@ -1,36 +1,36 @@
-package com.zlmediakit.jni;
+package com.s3mediakit.jni;
 
 public class S3MediaKit {
     static public class MediaFrame{
 
         /**
-         * 返回解码时间戳，单位毫秒
+         * Returns the decoded timestamp in milliseconds
          */
         public int dts;
 
         /**
-         * 返回显示时间戳，单位毫秒
+         * Returns the display timestamp in milliseconds
          */
         public int pts;
 
         /**
-         * 前缀长度，譬如264前缀为0x00 00 00 01,那么前缀长度就是4
-         * aac前缀则为7个字节
+         * The prefix length, for example, the prefix is ​​0x00 00 00 01, then the prefix length is 4
+         * The aac prefix is ​​7 bytes
          */
         public int prefixSize;
 
         /**
-         * 返回是否为关键帧
+         * Returns whether it is a keyframe
          */
         public boolean keyFrame;
 
         /**
-         * 音视频数据
+         * Audio and video data
          */
         public byte[] data;
 
         /**
-         * 是音频还是视频
+         * Is it audio or video
          * typedef enum {
          *     TrackInvalid = -1,
          *     TrackVideo = 0,
@@ -43,7 +43,7 @@ public class S3MediaKit {
 
 
         /**
-         * 编码类型
+         * Coding type
          * typedef enum {
          *     CodecInvalid = -1,
          *     CodecH264 = 0,
@@ -88,6 +88,6 @@ public class S3MediaKit {
     static public native long createMediaPlayer(String url,MediaPlayerCallBack callback);
 
     static {
-        System.loadLibrary("zlmediakit_jni");
+        System.loadLibrary("s3mediakit_jni");
     }
 }

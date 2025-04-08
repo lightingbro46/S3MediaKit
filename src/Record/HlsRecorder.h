@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef HLSRECORDER_H
+﻿#ifndef HLSRECORDER_H
 #define HLSRECORDER_H
 
 #include "HlsMakerImp.h"
@@ -29,7 +19,6 @@ public:
 
         _option = option;
         _hls = std::make_shared<HlsMakerImp>(is_fmp4, m3u8_file, params, hlsBufSize, hlsDuration, hlsNum, hlsKeep);
-        // 清空上次的残余文件  [AUTO-TRANSLATED:e16122be]
         // Clear the residual files from the last time
         _hls->clearCache();
     }
@@ -46,11 +35,9 @@ public:
     int readerCount() { return _hls->getMediaSource()->readerCount(); }
 
     void onReaderChanged(MediaSource &sender, int size) override {
-        // hls保留切片个数为0时代表为hls录制(不删除切片)，那么不管有无观看者都一直生成hls  [AUTO-TRANSLATED:55709255]
         // When the number of hls slices is 0, it means hls recording (not deleting slices), so hls is generated all the time regardless of whether there are viewers
         _enabled = _option.hls_demand ? (_hls->isLive() ? size : true) : true;
         if (!size && _hls->isLive() && _option.hls_demand) {
-            // hls直播时，如果无人观看就删除视频缓存，目的是为了防止视频跳跃  [AUTO-TRANSLATED:1d875c6a]
             // When hls is live, if no one is watching, delete the video cache to prevent video jumping
             _clear_cache = true;
         }
@@ -60,7 +47,6 @@ public:
     bool inputFrame(const Frame::Ptr &frame) override {
         if (_clear_cache && _option.hls_demand) {
             _clear_cache = false;
-            // 清空旧的m3u8索引文件于ts切片  [AUTO-TRANSLATED:a4ce0664]
             // Clear the old m3u8 index file and ts slices
             _hls->clearCache();
             _hls->getMediaSource()->setIndexFile("");
@@ -72,7 +58,6 @@ public:
     }
 
     bool isEnabled() {
-        // 缓存尚未清空时，还允许触发inputFrame函数，以便及时清空缓存  [AUTO-TRANSLATED:7cfd4d49]
         // When the cache has not been cleared, it is still allowed to trigger the inputFrame function to clear the cache in time
         return _option.hls_demand ? (_clear_cache ? true : _enabled) : true;
     }

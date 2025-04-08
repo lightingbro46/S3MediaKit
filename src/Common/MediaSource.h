@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MEDIASOURCE_H
-#define ZLMEDIAKIT_MEDIASOURCE_H
+﻿#ifndef S3MEDIAKIT_MEDIASOURCE_H
+#define S3MEDIAKIT_MEDIASOURCE_H
 
 #include <string>
 #include <atomic>
@@ -187,7 +187,7 @@ public:
     uint32_t continue_push_ms;
 
     // Smooth sending timer interval, in milliseconds, set to 0 to close; enabling it will affect cpu performance and increase memory at the same time
-    // This configuration can solve some problems where the stream is not sent smoothly, resulting in zlmediakit forwarding not being smooth
+    // This configuration can solve some problems where the stream is not sent smoothly, resulting in s3mediakit forwarding not being smooth
     uint32_t paced_sender_ms;
 
     // Whether to enable conversion to hls(mpegts)
@@ -461,4 +461,4 @@ private:
 };
 
 } /* namespace mediakit */
-#endif //ZLMEDIAKIT_MEDIASOURCE_H
+#endif //S3MEDIAKIT_MEDIASOURCE_H

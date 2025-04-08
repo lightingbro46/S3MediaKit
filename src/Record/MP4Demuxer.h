@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_MP4DEMUXER_H
-#define ZLMEDIAKIT_MP4DEMUXER_H
+﻿#ifndef S3MEDIAKIT_MP4DEMUXER_H
+#define S3MEDIAKIT_MP4DEMUXER_H
 #ifdef ENABLE_MP4
 
 #include <map>
@@ -26,69 +16,41 @@ public:
     ~MP4Demuxer() override;
 
     /**
-     * 打开文件
-     * @param file mp4文件路径
      * Open file
      * @param file mp4 file path
-     
-     * [AUTO-TRANSLATED:a64c5a6b]
      */
     void openMP4(const std::string &file);
 
     /**
-     * @brief 关闭 mp4 文件
      * @brief Close mp4 file
-     
-     * [AUTO-TRANSLATED:527865d9]
      */
     void closeMP4();
 
     /**
-     * 移动时间轴至某处
-     * @param stamp_ms 预期的时间轴位置，单位毫秒
-     * @return 时间轴位置
      * Move timeline to a specific location
      * @param stamp_ms Expected timeline position, in milliseconds
      * @return Timeline position
-     
-     * [AUTO-TRANSLATED:51ce0f6d]
      */
     int64_t seekTo(int64_t stamp_ms);
 
     /**
-     * 读取一帧数据
-     * @param keyFrame 是否为关键帧
-     * @param eof 是否文件读取完毕
-     * @return 帧数据,可能为空
      * Read a frame of data
      * @param keyFrame Whether it is a key frame
      * @param eof Whether the file has been read completely
      * @return Frame data, may be empty
-     
-     * [AUTO-TRANSLATED:adf550de]
      */
     Frame::Ptr readFrame(bool &keyFrame, bool &eof);
 
     /**
-     * 获取所有Track信息
-     * @param trackReady 是否要求track为就绪状态
-     * @return 所有Track
      * Get all Track information
      * @param trackReady Whether to require the track to be ready
      * @return All Tracks
-     
-     * [AUTO-TRANSLATED:c07ad51a]
      */
     std::vector<Track::Ptr> getTracks(bool trackReady) const override;
 
     /**
-     * 获取文件长度
-     * @return 文件长度，单位毫秒
      * Get file length
      * @return File length, in milliseconds
-     
-     
-     * [AUTO-TRANSLATED:dcd865d6]
      */
     uint64_t getDurationMS() const;
 
@@ -113,41 +75,41 @@ public:
     ~MultiMP4Demuxer() override = default;
 
     /**
-     * 批量打开mp4文件，把多个文件当做一个mp4看待
-     * @param file 多个mp4文件路径，以分号分隔; 或者包含多个mp4文件的文件夹
+     * Open mp4 files in batches and treat multiple files as one mp4
+     * @param file Multiple mp4 file paths, separated by semicolons; or folders containing multiple mp4 files
      */
     void openMP4(const std::string &file);
 
     /**
-     * @brief 批量关闭 mp4 文件
+     * @brief Batch Close mp4 Files
      */
     void closeMP4();
 
     /**
-     * 移动总体时间轴至某处
-     * @param stamp_ms 预期的时间轴总体长度位置，单位毫秒
-     * @return 时间轴总体长度位置
+     * Move the overall timeline to somewhere
+     * @param stamp_ms The expected overall length position of the timeline, in milliseconds
+     * @return Overall length position of timeline
      */
     int64_t seekTo(int64_t stamp_ms);
 
     /**
-     * 读取一帧数据
-     * @param keyFrame 是否为关键帧
-     * @param eof 是否所有文件读取完毕
-     * @return 帧数据,可能为空
+     * Read a frame of data
+     * @param keyFrame Is a keyframe
+     * @param eof Are all files read?
+     * @return Frame data, may be empty
      */
     Frame::Ptr readFrame(bool &keyFrame, bool &eof);
 
     /**
-     * 获取第一个文件所有Track信息
-     * @param trackReady 是否要求track为就绪状态
-     * @return 第一个文件所有Track信息
+     * Get all the track information in the first file
+     * @param trackReady Is it necessary to have track ready?
+     * @return All Track information in the first file
      */
     std::vector<Track::Ptr> getTracks(bool trackReady) const override;
 
     /**
-     * 获取文件总长度
-     * @return 文件总长度，单位毫秒
+     * Get the total file length
+     * @return Total file length, unit milliseconds
      */
     uint64_t getDurationMS() const;
 
@@ -159,4 +121,4 @@ private:
 
 }//namespace mediakit
 #endif//ENABLE_MP4
-#endif //ZLMEDIAKIT_MP4DEMUXER_H
+#endif //S3MEDIAKIT_MP4DEMUXER_H

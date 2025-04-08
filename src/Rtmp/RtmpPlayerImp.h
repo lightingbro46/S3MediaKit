@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RTMPPLAYERIMP_H_
+﻿#ifndef SRC_RTMP_RTMPPLAYERIMP_H_
 #define SRC_RTMP_RTMPPLAYERIMP_H_
 
 #include <memory>
@@ -43,10 +33,8 @@ public:
     }
 
 private:
-    // 派生类回调函数  [AUTO-TRANSLATED:61e20903]
     // Derived class callback function
     bool onMetadata(const AMFValue &val) override {
-        // 无metadata或metadata中无track信息时，需要从数据包中获取track  [AUTO-TRANSLATED:92a71803]
         // When there is no metadata or no track information in the metadata, it is necessary to obtain the track from the data packet
         _wait_track_ready = this->Super::operator[](Client::kWaitTrackReady).template as<bool>() || RtmpDemuxer::trackCount(val) == 0;
         onCheckMeta_l(val);
@@ -55,7 +43,6 @@ private:
 
     void onRtmpPacket(RtmpPacket::Ptr chunkData) override {
         if (!_demuxer) {
-            // 有些rtmp流没metadata  [AUTO-TRANSLATED:2509786f]
             // Some rtmp streams do not have metadata
             onCheckMeta_l(TitleMeta().getMetadata());
         }

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_SRTCALLER_H
-#define ZLMEDIAKIT_SRTCALLER_H
+﻿#ifndef S3MEDIAKIT_SRTCALLER_H
+#define S3MEDIAKIT_SRTCALLER_H
 
 //srt
 #include "srt/Packet.hpp"
@@ -31,7 +21,7 @@
 
 namespace mediakit {
 
-// 解析srt 信令url的工具类
+// Tool class for parsing srt signaling url
 class SrtUrl {
 public:
     std::string _full_url;
@@ -44,7 +34,7 @@ public:
     void parse(const std::string &url);
 };
 
-// 实现了webrtc代理拉流功能
+// Implements the webrtc proxy stream pulling function
 class SrtCaller : public std::enable_shared_from_this<SrtCaller>{
 public:
     using Ptr = std::shared_ptr<SrtCaller>;
@@ -193,5 +183,5 @@ private:
 };
 
 } /* namespace mediakit */
-#endif /* ZLMEDIAKIT_SRTCALLER_H */
+#endif /* S3MEDIAKIT_SRTCALLER_H */
 

@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_ACK_H
-#define ZLMEDIAKIT_SRT_ACK_H
+﻿#ifndef S3MEDIAKIT_SRT_ACK_H
+#define S3MEDIAKIT_SRT_ACK_H
 #include "Packet.hpp"
 
 namespace SRT {
@@ -87,4 +87,4 @@ public:
 };
 
 } // namespace SRT
-#endif // ZLMEDIAKIT_SRT_ACK_H
+#endif // S3MEDIAKIT_SRT_ACK_H

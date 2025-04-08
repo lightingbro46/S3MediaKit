@@ -305,7 +305,7 @@ int start_main(int argc,char *argv[]) {
         uint16_t httpsPort = mINI::Instance()[Http::kSSLPort];
         uint16_t rtpPort = mINI::Instance()[RtpProxy::kPort];
 
-        // Set the number of poller threads and CPU affinity. This function must be called before using ZLToolKit network related objects to take effect.
+        // Set the number of poller threads and CPU affinity. This function must be called before using S3ToolKit network related objects to take effect.
         // If you need to call the getSnap and addFFmpegSource interfaces, you can turn off CPU affinity
 
         EventPollerPool::setPoolSize(threads);

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_HTTPCOOKIE_H
-#define ZLMEDIAKIT_HTTPCOOKIE_H
+﻿#ifndef S3MEDIAKIT_HTTPCOOKIE_H
+#define S3MEDIAKIT_HTTPCOOKIE_H
 
 #include <string>
 #include <memory>
@@ -21,10 +11,7 @@
 namespace mediakit {
 
 /**
- * http客户端cookie对象
  * http client cookie object
- 
- * [AUTO-TRANSLATED:5c1840bb]
  */
 class HttpCookie {
 public:
@@ -49,11 +36,7 @@ private:
 
 
 /**
- * http客户端cookie全局保存器
  * http client cookie global saver
- 
- 
- * [AUTO-TRANSLATED:cac4a704]
  */
 class HttpCookieStorage{
 public:
@@ -72,4 +55,4 @@ private:
 
 } /* namespace mediakit */
 
-#endif //ZLMEDIAKIT_HTTPCOOKIE_H
+#endif //S3MEDIAKIT_HTTPCOOKIE_H

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_MPEG_H
-#define ZLMEDIAKIT_MPEG_H
+﻿#ifndef S3MEDIAKIT_MPEG_H
+#define S3MEDIAKIT_MPEG_H
 
 #if defined(ENABLE_HLS) || defined(ENABLE_RTPPROXY)
 
@@ -22,7 +12,6 @@
 #include "Util/ResourcePool.h"
 namespace mediakit {
 
-// 该类用于产生MPEG-TS/MPEG-PS  [AUTO-TRANSLATED:267efc85]
 // This class is used to generate MPEG-TS/MPEG-PS
 class MpegMuxer : public MediaSinkInterface {
 public:
@@ -30,50 +19,31 @@ public:
     ~MpegMuxer() override;
 
     /**
-     * 添加音视频轨道
      * Add audio and video tracks
-     
-     * [AUTO-TRANSLATED:7b0c1d64]
      */
     bool addTrack(const Track::Ptr &track) override;
 
     /**
-     * 重置音视频轨道
      * Reset audio and video tracks
-     
-     * [AUTO-TRANSLATED:6eb1b742]
      */
     void resetTracks() override;
 
     /**
-     * 输入帧数据
      * Input frame data
-     
-     * [AUTO-TRANSLATED:d13bc7f2]
      */
     bool inputFrame(const Frame::Ptr &frame) override;
 
     /**
-     * 刷新输出所有frame缓存
      * Flush all frame buffers in the output
-     
-     * [AUTO-TRANSLATED:adaea568]
      */
     void flush() override;
 
 protected:
     /**
-     * 输出ts/ps数据回调
-     * @param buffer ts/ps数据包
-     * @param timestamp 时间戳，单位毫秒
-     * @param key_pos 是否为关键帧的第一个ts/ps包，用于确保ts切片第一帧为关键帧
      * Callback for outputting ts/ps data
      * @param buffer ts/ps data packet
      * @param timestamp Timestamp, in milliseconds
      * @param key_pos Whether it is the first ts/ps packet of a key frame, used to ensure that the first frame of the ts slice is a key frame
-     
-     
-     * [AUTO-TRANSLATED:dda8ed40]
      */
     virtual void onWrite(std::shared_ptr<toolkit::Buffer> buffer, uint64_t timestamp, bool key_pos) = 0;
 
@@ -128,4 +98,4 @@ protected:
 
 #endif
 
-#endif //ZLMEDIAKIT_MPEG_H
+#endif //S3MEDIAKIT_MPEG_H

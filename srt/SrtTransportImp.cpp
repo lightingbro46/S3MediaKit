@@ -52,7 +52,7 @@ SrtTransport::Ptr querySrtTransport(uint8_t *data, size_t size, const EventPolle
 
 void SrtTransportImp::onHandShakeFinished(std::string &streamid, struct sockaddr_storage *addr) {
     SrtTransport::onHandShakeFinished(streamid,addr);
-    // TODO parse stream id like this zlmediakit.com/live/test?token=1213444&type=push
+    // TODO parse stream id like this s3mediakit.com/live/test?token=1213444&type=push
     if (!_addr) {
         _addr.reset(new sockaddr_storage(*((sockaddr_storage *)addr)));
     }

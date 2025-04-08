@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTPSPLITTER_H
-#define ZLMEDIAKIT_RTPSPLITTER_H
+﻿#ifndef S3MEDIAKIT_RTPSPLITTER_H
+#define S3MEDIAKIT_RTPSPLITTER_H
 
 #if defined(ENABLE_RTPPROXY)
 #include "Http/HttpRequestSplitter.h"
@@ -19,15 +9,9 @@ namespace mediakit{
 class RtpSplitter : public HttpRequestSplitter{
 protected:
     /**
-     * 收到rtp包回调
-     * @param data RTP包数据指针
-     * @param len RTP包数据长度
      * RTP packet received callback
      * @param data RTP packet data pointer
      * @param len RTP packet data length
-     
-     
-     * [AUTO-TRANSLATED:18a85278]
      */
     virtual void onRtpPacket(const char *data, size_t len) = 0;
 
@@ -45,4 +29,4 @@ private:
 
 }//namespace mediakit
 #endif//defined(ENABLE_RTPPROXY)
-#endif //ZLMEDIAKIT_RTPSPLITTER_H
+#endif //S3MEDIAKIT_RTPSPLITTER_H

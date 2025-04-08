@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MEDIASINK_H
-#define ZLMEDIAKIT_MEDIASINK_H
+﻿#ifndef S3MEDIAKIT_MEDIASINK_H
+#define S3MEDIAKIT_MEDIASINK_H
 
 #include <mutex>
 #include <memory>
@@ -205,4 +205,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_MEDIASINK_H
+#endif //S3MEDIAKIT_MEDIASINK_H

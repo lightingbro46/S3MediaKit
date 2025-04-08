@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "RtpCodec.h"
+﻿#include "RtpCodec.h"
 
 namespace mediakit{
 
@@ -21,7 +11,6 @@ RtpPacket::Ptr RtpInfo::makeRtp(TrackType type, const void* data, size_t len, bo
     rtp->type = type;
     rtp->track_index = _track_index;
 
-    // rtsp over tcp 头  [AUTO-TRANSLATED:4225b9ec]
     // rtsp over tcp header
     auto ptr = (uint8_t *) rtp->data();
     ptr[0] = '$';
@@ -29,7 +18,6 @@ RtpPacket::Ptr RtpInfo::makeRtp(TrackType type, const void* data, size_t len, bo
     ptr[2] = payload_len >> 8;
     ptr[3] = payload_len & 0xFF;
 
-    // rtp头  [AUTO-TRANSLATED:64aef747]
     // rtp header
     auto header = rtp->getHeader();
     header->version = RtpPacket::kRtpVersion;
@@ -43,7 +31,6 @@ RtpPacket::Ptr RtpInfo::makeRtp(TrackType type, const void* data, size_t len, bo
     header->stamp = htonl(uint64_t(stamp) * _sample_rate / 1000);
     header->ssrc = htonl(_ssrc);
     rtp->ntp_stamp = stamp;
-    // 有效负载  [AUTO-TRANSLATED:8530a274]
     // payload
     if (data) {
         memcpy(&ptr[RtpPacket::kRtpHeaderSize + RtpPacket::kRtpTcpHeaderSize], data, len);

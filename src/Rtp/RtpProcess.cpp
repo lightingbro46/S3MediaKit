@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if defined(ENABLE_RTPPROXY)
+﻿#if defined(ENABLE_RTPPROXY)
 #include "GB28181Process.h"
 #include "RtpProcess.h"
 #include "Util/File.h"
@@ -17,9 +7,7 @@
 using namespace std;
 using namespace toolkit;
 
-// 在创建_muxer对象前(也就是推流鉴权成功前)，需要先缓存frame，这样可以防止丢包，提高体验  [AUTO-TRANSLATED:fb12a6c2]
 // Before creating the _muxer object (before the streaming authentication is successful), you need to cache the frame first, which can prevent packet loss and improve the experience.
-// 但是同时需要控制缓冲长度，防止内存溢出。最多缓存10秒数据，应该足矣等待鉴权hook返回  [AUTO-TRANSLATED:23ff0a4a]
 // But at the same time, you need to control the buffer length to prevent memory overflow. Caching 10 seconds of data should be enough to wait for the authentication hook to return.
 static constexpr size_t kMaxCachedFrameMS = 10 * 1000;
 
@@ -63,11 +51,10 @@ void RtpProcess::flush() {
 
 RtpProcess::~RtpProcess() {
     uint64_t duration = (_last_frame_time.createdTime() - _last_frame_time.elapsedTime()) / 1000;
-    WarnP(this) << "RTP推流器("
+    WarnP(this) << "RTP stream pusher("
                 << _media_info.shortUrl()
-                << ")断开,耗时(s):" << duration;
+                << ") ddisconnected, time-consuming(s):" << duration;
 
-    // 流量统计事件广播  [AUTO-TRANSLATED:6b0b1234]
     // Traffic statistics event broadcast
     GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
     if (_total_bytes >= iFlowThreshold * 1024) {
@@ -86,7 +73,6 @@ void RtpProcess::onManager() {
 }
 
 void RtpProcess::createTimer() {
-    // 创建超时管理定时器  [AUTO-TRANSLATED:865cf865]
     // Create a timeout management timer
     weak_ptr<RtpProcess> weakSelf = shared_from_this();
     _timer = std::make_shared<Timer>(3.0f, [weakSelf] {
@@ -108,7 +94,6 @@ bool RtpProcess::inputRtp(bool is_udp, const Socket::Ptr &sock, const char *data
         throw toolkit::SockException(toolkit::Err_other, _auth_err);
     }
     if (_sock != sock) {
-        // 第一次运行本函数  [AUTO-TRANSLATED:a1d7ac17]
         // First time running this function
         bool first = !_sock;
         _sock = sock;
@@ -132,11 +117,10 @@ bool RtpProcess::inputRtp(bool is_udp, const Socket::Ptr &sock, const char *data
     }
 
     auto header = (RtpHeader *) data;
-    onRtp(ntohs(header->seq), ntohl(header->stamp), 0/*不发送sr,所以可以设置为0*/ , 90000/*ps/ts流时间戳按照90K采样率*/, len);
+    onRtp(ntohs(header->seq), ntohl(header->stamp), 0/*Sr is not sent, so it can be set to 0*/ , 90000/*ps/ts stream timestamps are based on 90K sampling rate*/, len);
 
     GET_CONFIG(string, dump_dir, RtpProxy::kDumpDir);
     if (_muxer && !_muxer->isEnabled() && !dts_out && dump_dir.empty()) {
-        // 无人访问、且不取时间戳、不导出调试文件时，我们可以直接丢弃数据  [AUTO-TRANSLATED:2fc75705]
         // When there is no access, and no timestamp is taken, and no debug file is exported, we can directly discard the data.
         _last_frame_time.resetTime();
         return false;
@@ -205,7 +189,6 @@ void RtpProcess::doCachedFunc() {
 bool RtpProcess::alive() {
     if (_stop_rtp_check.load()) {
         if(_last_check_alive.elapsedTime() > 5 * 60 * 1000){
-            // 最多暂停5分钟的rtp超时检测，因为NAT映射有效期一般不会太长  [AUTO-TRANSLATED:2df59aad]
             // Pause the RTP timeout detection for a maximum of 5 minutes, because the NAT mapping validity period is generally not very long.
             _stop_rtp_check = false;
         } else {
@@ -293,19 +276,17 @@ void RtpProcess::emitOnPublish() {
                 }
                 strong_self->_muxer->setMediaListener(strong_self);
                 strong_self->doCachedFunc();
-                InfoP(strong_self) << "允许RTP推流";
+                InfoP(strong_self) << "Allow RTP push streaming";
             } else {
                 strong_self->_auth_err = err;
-                WarnP(strong_self) << "禁止RTP推流:" << err;
+                WarnP(strong_self) << "Disable RTP push flow:" << err;
             }
         });
     };
 
-    // 触发推流鉴权事件  [AUTO-TRANSLATED:cd889b29]
     // Trigger the streaming authentication event
     auto flag = NOTICE_EMIT(BroadcastMediaPublishArgs, Broadcast::kBroadcastMediaPublish, MediaOriginType::rtp_push, _media_info, invoker, *this);
     if (!flag) {
-        // 该事件无人监听,默认不鉴权  [AUTO-TRANSLATED:e1fbc6ae]
         // No one is listening to this event, and authentication is not performed by default.
         invoker("", ProtocolOption());
     }

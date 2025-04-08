@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Rtmp.h"
+﻿#include "Rtmp.h"
 #include "Common/config.h"
 #include "Extension/Factory.h"
 
@@ -61,7 +51,7 @@ uint8_t getAudioRtmpFlags(const Track::Ptr &track) {
         case TrackAudio: {
             auto audioTrack = std::dynamic_pointer_cast<AudioTrack>(track);
             if (!audioTrack) {
-                WarnL << "获取AudioTrack失败";
+                WarnL << "Failed to get AudioTrack";
                 return 0;
             }
             auto iSampleRate = audioTrack->getAudioSampleRate();
@@ -70,14 +60,13 @@ uint8_t getAudioRtmpFlags(const Track::Ptr &track) {
 
             auto amf = Factory::getAmfByCodecId(track->getCodecId());
             if (!amf) {
-                WarnL << "该编码格式不支持转换为RTMP: " << track->getCodecName();
+                WarnL << "This encoding format does not support conversion to RTMP: " << track->getCodecName();
                 return 0;
             }
             uint8_t flvAudioType = amf.as_integer();
             switch (track->getCodecId()) {
                 case CodecAAC:
                 case CodecOpus: {
-                    // opus/aac不通过flags获取音频相关信息  [AUTO-TRANSLATED:0ddf328b]
                     // opus/aac does not get audio information through flags
                     iSampleRate = 44100;
                     iSampleBit = 16;

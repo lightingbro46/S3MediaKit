@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_G711_H
-#define ZLMEDIAKIT_G711_H
+﻿#ifndef S3MEDIAKIT_G711_H
+#define S3MEDIAKIT_G711_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -20,4 +20,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_G711_H
+#endif //S3MEDIAKIT_G711_H

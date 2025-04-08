@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "PusherProxy.h"
+﻿#include "PusherProxy.h"
 
 using namespace toolkit;
 using namespace std;
@@ -53,20 +43,17 @@ void PusherProxy::publish(const string &dst_url) {
 
         auto src = strong_self->getSrc();
         if (!err) {
-            // 推流成功  [AUTO-TRANSLATED:28ce6e56]
             // Stream successfully pushed
             strong_self->_live_ticker.resetTime();
             strong_self->_live_status = 0;
             *failed_cnt = 0;
             InfoL << "Publish " << dst_url << " success";
         } else if (src && (*failed_cnt < strong_self->_retry_count || strong_self->_retry_count < 0)) {
-            // 推流失败，延时重试推送  [AUTO-TRANSLATED:92b094ae]
             // Stream failed, retry pushing with delay
             strong_self->_republish_count++;
             strong_self->_live_status = 1;
             strong_self->rePublish(dst_url, (*failed_cnt)++);
         } else {
-            // 如果媒体源已经注销, 或达到了最大重试次数，回调关闭  [AUTO-TRANSLATED:444adf27]
             // If the media source has been deregistered, or the maximum retry count has been reached, callback to close
             strong_self->_on_close(err);
         }
@@ -79,7 +66,6 @@ void PusherProxy::publish(const string &dst_url) {
         }
 
         if (*failed_cnt == 0) {
-            // 第一次重推更新时长  [AUTO-TRANSLATED:5f778703]
             // Update duration for the first re-push
             strong_self->_live_secs += strong_self->_live_ticker.elapsedTime() / 1000;
             strong_self->_live_ticker.resetTime();
@@ -87,13 +73,11 @@ void PusherProxy::publish(const string &dst_url) {
         }
 
         auto src = strong_self->getSrc();
-        // 推流异常中断，延时重试播放  [AUTO-TRANSLATED:e69e5a05]
         // Stream abnormally interrupted, retry playing with delay
         if (src && (*failed_cnt < strong_self->_retry_count || strong_self->_retry_count < 0)) {
             strong_self->_republish_count++;
             strong_self->rePublish(dst_url, (*failed_cnt)++);
         } else {
-            // 如果媒体源已经注销, 或达到了最大重试次数，回调关闭  [AUTO-TRANSLATED:444adf27]
             // If the media source has been deregistered, or the maximum retry count has been reached, callback to close
             strong_self->_on_close(err);
         }
@@ -108,13 +92,12 @@ void PusherProxy::rePublish(const string &dst_url, int failed_cnt) {
     _timer = std::make_shared<Timer>(
         delay / 1000.0f,
         [weak_self, dst_url, failed_cnt]() {
-            // 推流失败次数越多，则延时越长  [AUTO-TRANSLATED:bda77afe]
             // The more times the stream fails, the longer the delay
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return false;
             }
-            WarnL << "推流重试[" << failed_cnt << "]:" << dst_url;
+            WarnL << "Try again by pushing flow[" << failed_cnt << "]:" << dst_url;
             strong_self->MediaPusher::publish(dst_url);
             return false;
         },

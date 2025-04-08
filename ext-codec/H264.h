@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_H264_H
-#define ZLMEDIAKIT_H264_H
+﻿#ifndef S3MEDIAKIT_H264_H
+#define S3MEDIAKIT_H264_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -138,4 +138,4 @@ Frame::Ptr createConfigFrame(const std::string &data, uint64_t dts, int index) {
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_H264_H
+#endif //S3MEDIAKIT_H264_H

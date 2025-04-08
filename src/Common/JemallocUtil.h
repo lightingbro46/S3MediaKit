@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_JEMALLOCUTIL_H
-#define ZLMEDIAKIT_JEMALLOCUTIL_H
+﻿#ifndef S3MEDIAKIT_JEMALLOCUTIL_H
+#define S3MEDIAKIT_JEMALLOCUTIL_H
 #include <functional>
 #include <string>
 #include <cstdint>
@@ -15,4 +15,4 @@ public:
     static void some_malloc_stats(const std::function<void(const char *, uint64_t)> &fn);
 };
 } // namespace mediakit
-#endif // ZLMEDIAKIT_JEMALLOCUTIL_H
+#endif // S3MEDIAKIT_JEMALLOCUTIL_H

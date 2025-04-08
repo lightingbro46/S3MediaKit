@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_SRTPUSHER_H
-#define ZLMEDIAKIT_SRTPUSHER_H
+﻿#ifndef S3MEDIAKIT_SRTPUSHER_H
+#define S3MEDIAKIT_SRTPUSHER_H
 
 #include "Network/Socket.h"
 #include "Pusher/PusherBase.h"
@@ -23,7 +13,7 @@
 
 namespace mediakit {
 
-// 实现了srt代理推流功能
+// Implemented the srt proxy streaming function
 class SrtPusher
     : public PusherBase , public SrtCaller {
 public:
@@ -56,4 +46,4 @@ protected:
 using SrtPusherImp = PusherImp<SrtPusher, PusherBase>;
 
 } /* namespace mediakit */
-#endif /* ZLMEDIAKIT_SRTPUSHER_H */
+#endif /* S3MEDIAKIT_SRTPUSHER_H */

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <assert.h>
+﻿#include <assert.h>
 #include "MPEG.h"
 
 #if defined(ENABLE_HLS) || defined(ENABLE_RTPPROXY)
@@ -54,11 +44,9 @@ bool MpegMuxer::inputFrame(const Frame::Ptr &frame) {
     switch (frame->getCodecId()) {
         case CodecH264:
         case CodecH265: {
-            // 这里的代码逻辑是让SPS、PPS、IDR这些时间戳相同的帧打包到一起当做一个帧处理，  [AUTO-TRANSLATED:edf57c32]
             // The code logic here is to package frames with the same timestamp, such as SPS, PPS, and IDR, together as one frame.
             return track.merger.inputFrame(frame, [this, &track](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
                 _key_pos = have_idr;
-                // 取视频时间戳为TS的时间戳  [AUTO-TRANSLATED:5ff7796d]
                 // Take the video timestamp as the TS timestamp.
                 _timestamp = dts;
                 _max_cache_size = 512 + 1.2 * buffer->size();
@@ -73,7 +61,6 @@ bool MpegMuxer::inputFrame(const Frame::Ptr &frame) {
 
         default: {
             if (!_have_video) {
-                // 没有视频时，才以音频时间戳为TS的时间戳  [AUTO-TRANSLATED:17cef4f7]
                 // When there is no video, use the audio timestamp as the TS timestamp.
                 _timestamp = frame->dts();
             }
@@ -92,7 +79,6 @@ bool MpegMuxer::inputFrame(const Frame::Ptr &frame) {
 
 void MpegMuxer::resetTracks() {
     _have_video = false;
-    // 通知片段中断  [AUTO-TRANSLATED:ed3d87ba]
     // Notify fragment interruption.
     onWrite(nullptr, _timestamp, false);
     releaseContext();
@@ -117,10 +103,9 @@ void MpegMuxer::createContext() {
             },
             /*free*/
             [](void *param, void *packet) {
-                // 什么也不做  [AUTO-TRANSLATED:e2f8de75]
                 // Do nothing.
             },
-            /*wtite*/
+            /*write*/
             [](void *param, int stream, void *packet, size_t bytes) {
                 MpegMuxer *thiz = (MpegMuxer *) param;
                 thiz->onWrite_l(packet, bytes);

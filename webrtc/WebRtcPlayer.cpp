@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "WebRtcPlayer.h"
+﻿#include "WebRtcPlayer.h"
 
 #include "Common/config.h"
 #include "Extension/Factory.h"
@@ -47,13 +37,13 @@ RtpPacket::Ptr H264BFrameFilter::processPacket(const RtpPacket::Ptr &packet) {
         _last_stamp = cur_stamp;
     }
 
-    // 处理时间戳连续性问题
+    // Handle timestamp continuity issues
     if (cur_stamp < _last_stamp) {
         return nullptr;
     }
     _last_stamp = cur_stamp;
 
-    // 处理 seq 连续性问题
+    // Handle seq continuity issues
     if (cur_seq > _last_seq + 4) {
         RtpHeader *header = packet->getHeader();
         _last_seq = (_last_seq + 1) & 0xFFFF;
@@ -251,9 +241,7 @@ void WebRtcPlayer::onStartWebRTC() {
             }
             if (data.is<Buffer>()) {
                 auto &buffer = data.get<Buffer>();
-                // PPID 51: 文本string  [AUTO-TRANSLATED:69a8cf81]
                 // PPID 51: Text string
-                // PPID 53: 二进制  [AUTO-TRANSLATED:faf00c3e]
                 // PPID 53: Binary
                 strong_self->sendDatachannel(0, 51, buffer.data(), buffer.size());
             } else {
@@ -265,11 +253,10 @@ void WebRtcPlayer::onStartWebRTC() {
 void WebRtcPlayer::onDestory() {
     auto duration = getDuration();
     auto bytes_usage = getBytesUsage();
-    // 流量统计事件广播  [AUTO-TRANSLATED:6b0b1234]
     // Traffic statistics event broadcast
     GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
     if (_reader && getSession()) {
-        WarnL << "RTC播放器(" << _media_info.shortUrl() << ")结束播放,耗时(s):" << duration;
+        WarnL << "RTC player(" << _media_info.shortUrl() << ") end playback, time-consuming(s):" << duration;
         if (bytes_usage >= iFlowThreshold * 1024) {
             NOTICE_EMIT(BroadcastFlowReportArgs, Broadcast::kBroadcastFlowReport, _media_info, bytes_usage, duration, true, *getSession());
         }
@@ -283,7 +270,6 @@ void WebRtcPlayer::onRtcConfigure(RtcConfigure &configure) const {
         return;
     }
     WebRtcTransportImp::onRtcConfigure(configure);
-    // 这是播放  [AUTO-TRANSLATED:d93c019e]
     // This is playing
     configure.audio.direction = configure.video.direction = RtpDirection::sendonly;
     configure.setPlayRtspInfo(playSrc->getSdp());

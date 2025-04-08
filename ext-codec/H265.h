@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_H265_H
-#define ZLMEDIAKIT_H265_H
+﻿#ifndef S3MEDIAKIT_H265_H
+#define S3MEDIAKIT_H265_H
 
 #include "H264.h"
 #include "Extension/Track.h"
@@ -151,4 +151,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_H265_H
+#endif //S3MEDIAKIT_H265_H

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTPCACHE_H
-#define ZLMEDIAKIT_RTPCACHE_H
+﻿#ifndef S3MEDIAKIT_RTPCACHE_H
+#define S3MEDIAKIT_RTPCACHE_H
 
 #if defined(ENABLE_RTPPROXY)
 
@@ -26,13 +16,8 @@ public:
 
 protected:
     /**
-     * 输入rtp(目的是为了合并写)
-     * @param buffer rtp数据
      * Input rtp (for merging)
      * @param buffer rtp data
-     
-     
-     * [AUTO-TRANSLATED:de9469b5]
      */
     void input(uint64_t stamp, toolkit::Buffer::Ptr buffer,bool is_key = false);
 
@@ -66,4 +51,4 @@ protected:
 } //namespace mediakit
 
 #endif//ENABLE_RTPPROXY
-#endif //ZLMEDIAKIT_RTPCACHE_H
+#endif //S3MEDIAKIT_RTPCACHE_H

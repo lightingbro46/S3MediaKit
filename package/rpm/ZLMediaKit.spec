@@ -157,7 +157,7 @@ rm -rf $RPM_BUILD_ROOT
 %files cxx-devel
 %{_includedir}/S3MediaKit/*
 %{_includedir}/ZLToolKit/*
-%{_libdir}/libzlmediakit.a
+%{_libdir}/libs3mediakit.a
 %{_libdir}/libzltoolkit.a
 %{_libdir}/libmpeg.a
 %{_libdir}/libmov.a

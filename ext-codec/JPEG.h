@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_JPEG_H
-#define ZLMEDIAKIT_JPEG_H
+﻿#ifndef S3MEDIAKIT_JPEG_H
+#define S3MEDIAKIT_JPEG_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -66,4 +66,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_JPEG_H
+#endif //S3MEDIAKIT_JPEG_H

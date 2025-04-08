@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifdef ENABLE_MP4
+﻿#ifdef ENABLE_MP4
 
 #include <algorithm>
 #include "MP4Demuxer.h"
@@ -132,7 +122,7 @@ Frame::Ptr MP4Demuxer::readFrame(bool &keyFrame, bool &eof) {
 
         default : {
             eof = true;
-            WarnL << "读取mp4文件数据失败:" << ret;
+            WarnL << "Failed to read mp4 file data:" << ret;
             return nullptr;
         }
     }
@@ -253,13 +243,13 @@ Frame::Ptr MultiMP4Demuxer::readFrame(bool &keyFrame, bool &eof) {
             }
         }
         if (eof && _it != _demuxers.end()) {
-            // 切换到下一个文件
+            // Switch to the next file
             if (++_it == _demuxers.end()) {
-                // 已经是最后一个文件了
+                // It's the last file
                 eof = true;
                 return nullptr;
             }
-            // 下一个文件从头开始播放
+            // The next file starts from scratch
             _it->second->seekTo(0);
             continue;
         }

@@ -8,8 +8,8 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef ZLMEDIAKIT_TWCCCONTEXT_H
-#define ZLMEDIAKIT_TWCCCONTEXT_H
+#ifndef S3MEDIAKIT_TWCCCONTEXT_H
+#define S3MEDIAKIT_TWCCCONTEXT_H
 
 #include <stdint.h>
 #include <map>
@@ -46,4 +46,4 @@ private:
 };
 
 }// namespace mediakit
-#endif //ZLMEDIAKIT_TWCCCONTEXT_H
+#endif //S3MEDIAKIT_TWCCCONTEXT_H

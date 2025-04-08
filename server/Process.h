@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_PROCESS_H
-#define ZLMEDIAKIT_PROCESS_H
+﻿#ifndef S3MEDIAKIT_PROCESS_H
+#define S3MEDIAKIT_PROCESS_H
 
 #if defined(_WIN32)
 #if !defined(__MINGW32__)
@@ -30,4 +30,4 @@ private:
 };
 
 
-#endif //ZLMEDIAKIT_PROCESS_H
+#endif //S3MEDIAKIT_PROCESS_H

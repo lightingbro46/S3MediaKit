@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_STAMP_H
-#define ZLMEDIAKIT_STAMP_H
+﻿#ifndef S3MEDIAKIT_STAMP_H
+#define S3MEDIAKIT_STAMP_H
 
 #include <set>
 #include <cstdint>
@@ -144,4 +144,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_STAMP_H
+#endif //S3MEDIAKIT_STAMP_H

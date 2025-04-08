@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_HS_EXT_H
-#define ZLMEDIAKIT_SRT_HS_EXT_H
+﻿#ifndef S3MEDIAKIT_SRT_HS_EXT_H
+#define S3MEDIAKIT_SRT_HS_EXT_H
 
 #include "Network/Buffer.h"
 
@@ -239,4 +239,4 @@ public:
 };
 
 } // namespace SRT
-#endif // ZLMEDIAKIT_SRT_HS_EXT_H
+#endif // S3MEDIAKIT_SRT_HS_EXT_H

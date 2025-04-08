@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "UDPServer.h"
+﻿#include "UDPServer.h"
 #include "Util/TimeTicker.h"
 #include "Util/onceToken.h"
 
@@ -33,7 +23,6 @@ Socket::Ptr UDPServer::getSock(SocketHelper &helper, const char* local_ip, int i
     if (it == _udp_sock_map.end()) {
         Socket::Ptr sock = helper.createSocket();
         if (!sock->bindUdpSock(local_port, local_ip)) {
-            // 分配失败  [AUTO-TRANSLATED:a6c6a6e6]
             // Allocation failed
             return nullptr;
         }

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTPSESSION_H
-#define ZLMEDIAKIT_RTPSESSION_H
+﻿#ifndef S3MEDIAKIT_RTPSESSION_H
+#define S3MEDIAKIT_RTPSESSION_H
 
 #if defined(ENABLE_RTPPROXY)
 
@@ -39,15 +29,12 @@ public:
     void setRtpProcess(RtpProcess::Ptr process);
 
 protected:
-    // 收到rtp回调  [AUTO-TRANSLATED:446b2cda]
     // Received RTP callback
     void onRtpPacket(const char *data, size_t len) override;
     // RtpSplitter override
     const char *onSearchPacketTail(const char *data, size_t len) override;
-    // 搜寻SSRC  [AUTO-TRANSLATED:2cfec2e1]
     // Search for SSRC
     const char *searchBySSRC(const char *data, size_t len);
-    // 搜寻PS包里的关键帧标头  [AUTO-TRANSLATED:d8e88339]
     // Search for keyframe header in PS packet
     const char *searchByPsHeaderFlag(const char *data, size_t len);
 
@@ -66,4 +53,4 @@ private:
 
 }//namespace mediakit
 #endif//defined(ENABLE_RTPPROXY)
-#endif //ZLMEDIAKIT_RTPSESSION_H
+#endif //S3MEDIAKIT_RTPSESSION_H

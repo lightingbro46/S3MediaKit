@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "SrtCaller.h"
+﻿#include "SrtCaller.h"
 #include "srt/Ack.hpp"
 #include "srt/SrtTransport.hpp"
 #include "Common/config.h"
@@ -21,10 +11,10 @@ using namespace SRT;
 
 namespace mediakit {
 
-//zlm play format
+//s3m play format
 //srt://127.0.0.1:9000?streamid=#!::r=live/test
 //srt://127.0.0.1:9000?streamid=#!::r=live/test,h=__defaultVhost__
-//zlm push format
+//s3m push format
 //srt://127.0.0.1:9000?streamid=#!::r=live/test,m=publish
 //srt://127.0.0.1:9000?streamid=#!::r=live/test,h=__defaultVhost__,m=publish
 void SrtUrl::parse(const string &strUrl) {
@@ -99,10 +89,10 @@ void SrtCaller::onConnect() {
 
 void SrtCaller::onResult(const SockException &ex) {
     if (!ex) {
-        // 会话建立成功
+        // Session establishment successfully
     } else {
         if (ex.getErrCode() == Err_shutdown) {
-            // 主动shutdown的，不触发回调
+            // Active shutdown, no callback triggering
             return;
         }
 
@@ -216,7 +206,7 @@ void SrtCaller::inputSockData(uint8_t *buf, int len, struct sockaddr *addr) {
     _alive_ticker.resetTime();
     _now = SteadyClock::now();
 
-    // 处理srt数据
+    // Process srt data
     if (DataPacket::isDataPacket(buf, len)) {
         uint32_t socketId = DataPacket::getSocketID(buf, len);
         if (isPlayer()) {
@@ -744,7 +734,7 @@ void SrtCaller::handleACKACK(uint8_t *buf, int len, struct sockaddr *addr) {
             // clear data
             for(auto it = _ack_send_timestamp.begin(); it != _ack_send_timestamp.end();){
                 if(DurationCountMicroseconds(_now-it->second)>5e6){
-                    // 超过五秒没有ackack 丢弃
+                    // No ackack discarded for more than five seconds
                     it = _ack_send_timestamp.erase(it);
                 }else{
                     it++;
@@ -995,7 +985,7 @@ std::string SrtCaller::generateStreamId() {
 };
 
 uint32_t SrtCaller::generateSocketId() {
-    // 生成一个 32 位的随机整数
+    // Generate a 32-bit random integer
     std::random_device rd;
     std::mt19937 mt(rd());
     std::uniform_int_distribution<uint32_t> dist(0, UINT32_MAX);
@@ -1005,7 +995,7 @@ uint32_t SrtCaller::generateSocketId() {
 }
 
 int32_t SrtCaller::generateInitSeq() {
-    // 生成一个 32 位的随机整数
+    // Generate a 32-bit random integer
     std::random_device rd;
     std::mt19937 mt(rd());
     std::uniform_int_distribution<uint32_t> dist(0, MAX_SEQ);

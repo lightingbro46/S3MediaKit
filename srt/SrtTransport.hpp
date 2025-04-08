@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_TRANSPORT_H
-#define ZLMEDIAKIT_SRT_TRANSPORT_H
+﻿#ifndef S3MEDIAKIT_SRT_TRANSPORT_H
+#define S3MEDIAKIT_SRT_TRANSPORT_H
 
 #include <atomic>
 #include <chrono>
@@ -197,4 +197,4 @@ private:
 
 } // namespace SRT
 
-#endif // ZLMEDIAKIT_SRT_TRANSPORT_H
+#endif // S3MEDIAKIT_SRT_TRANSPORT_H

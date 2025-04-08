@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Decoder.h"
+﻿#include "Decoder.h"
 #include "PSDecoder.h"
 #include "TSDecoder.h"
 #include "Extension/Factory.h"
@@ -35,7 +25,7 @@ static Decoder::Ptr createDecoder_l(DecoderImp::Type type) {
 #ifdef ENABLE_RTPPROXY
             return std::make_shared<PSDecoder>();
 #else
-            WarnL << "创建ps解复用器失败，请打开ENABLE_RTPPROXY然后重新编译";
+            WarnL << "Creating the ps demultiplexer failed, please open ENABLE_RTPPROXY and recompile";
             return nullptr;
 #endif//ENABLE_RTPPROXY
 
@@ -43,7 +33,7 @@ static Decoder::Ptr createDecoder_l(DecoderImp::Type type) {
 #ifdef ENABLE_HLS
             return std::make_shared<TSDecoder>();
 #else
-            WarnL << "创建mpegts解复用器失败，请打开ENABLE_HLS然后重新编译";
+            WarnL << "Creating mpegts demultiplexer failed, please open ENABLE_HLS and recompile";
             return nullptr;
 #endif//ENABLE_HLS
 
@@ -88,7 +78,6 @@ void DecoderImp::onStream(int stream, int codecid, const void *extra, size_t byt
     if (_finished) {
         return;
     }
-    // G711传统只支持 8000/1/16的规格，FFmpeg貌似做了扩展，但是这里不管它了  [AUTO-TRANSLATED:851813f7]
     // G711 traditionally only supports the 8000/1/16 specification. FFmpeg seems to have extended it, but we'll ignore that here.
     auto codec = getCodecByMpegId(codecid);
     if (codec != CodecInvalid) {
@@ -97,7 +86,6 @@ void DecoderImp::onStream(int stream, int codecid, const void *extra, size_t byt
             onTrack(stream, std::move(track));
         }
     }
-    // 防止未获取视频track提前complete导致忽略后续视频的问题，用于兼容一些不太规范的ps流  [AUTO-TRANSLATED:d6b349b5]
     // Prevent the problem of ignoring subsequent video due to premature completion of the video track before it is obtained. This is used to be compatible with some non-standard PS streams.
     if (finish && _have_video) {
         _finished = true;

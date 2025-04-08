@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if defined(ENABLE_MP4)
+﻿#if defined(ENABLE_MP4)
 
 #include "MP4.h"
 #include "Util/File.h"
@@ -42,7 +32,6 @@ static struct mov_buffer_t s_io = {
 MP4FileIO::Writer MP4FileIO::createWriter(int flags, bool is_fmp4){
     Writer writer;
     Ptr self = shared_from_this();
-    // 保存自己的强引用，防止提前释放  [AUTO-TRANSLATED:e8e14f60]
     // Save a strong reference to itself to prevent premature release
     writer.reset(mp4_writer_create(is_fmp4, &s_io,this, flags),[self](mp4_writer_t *ptr){
         if(ptr){
@@ -50,7 +39,7 @@ MP4FileIO::Writer MP4FileIO::createWriter(int flags, bool is_fmp4){
         }
     });
     if(!writer){
-        throw std::runtime_error("写入mp4文件失败!");
+        throw std::runtime_error("Failed to write to mp4 file!");
     }
     return writer;
 }
@@ -58,7 +47,6 @@ MP4FileIO::Writer MP4FileIO::createWriter(int flags, bool is_fmp4){
 MP4FileIO::Reader MP4FileIO::createReader(){
     Reader reader;
     Ptr self = shared_from_this();
-    // 保存自己的强引用，防止提前释放  [AUTO-TRANSLATED:e8e14f60]
     // Save a strong reference to itself to prevent premature release
     reader.reset(mov_reader_create(&s_io,this),[self](mov_reader_t *ptr){
         if(ptr){
@@ -66,7 +54,7 @@ MP4FileIO::Reader MP4FileIO::createReader(){
         }
     });
     if(!reader){
-        throw std::runtime_error("读取mp4文件失败!");
+        throw std::runtime_error("Failed to read mp4 file!");
     }
     return reader;
 }
@@ -82,16 +70,14 @@ MP4FileIO::Reader MP4FileIO::createReader(){
 #endif
 
 void MP4FileDisk::openFile(const char *file, const char *mode) {
-    // 创建文件  [AUTO-TRANSLATED:bd145ed5]
     // Create a file
     auto fp = File::create_file(file, mode);
     if(!fp){
-        throw std::runtime_error(string("打开文件失败:") + file);
+        throw std::runtime_error(string("Failed to open the file:") + file);
     }
 
     GET_CONFIG(uint32_t,mp4BufSize,Record::kFileBufSize);
 
-    // 新建文件io缓存  [AUTO-TRANSLATED:fda9ff47]
     // Create a new file io cache
     std::shared_ptr<char> file_buf(new char[mp4BufSize],[](char *ptr){
         if(ptr){
@@ -100,12 +86,10 @@ void MP4FileDisk::openFile(const char *file, const char *mode) {
     });
 
     if(file_buf){
-        // 设置文件io缓存  [AUTO-TRANSLATED:0ed9c8ad]
         // Set the file io cache
         setvbuf(fp, file_buf.get(), _IOFBF, mp4BufSize);
     }
 
-    // 创建智能指针  [AUTO-TRANSLATED:e7920ab2]
     // Create a smart pointer
     _file.reset(fp,[file_buf](FILE *fp) {
         fflush(fp);
@@ -174,7 +158,6 @@ int MP4FileMemory::onRead(void *data, size_t bytes){
 
 int MP4FileMemory::onWrite(const void *data, size_t bytes){
     if (_offset + bytes > _memory.size()) {
-        // 需要扩容  [AUTO-TRANSLATED:211c91e3]
         // Need to expand
         _memory.resize(_offset + bytes);
     }

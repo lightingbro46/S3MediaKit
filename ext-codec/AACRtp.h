@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_AACRTPCODEC_H
-#define ZLMEDIAKIT_AACRTPCODEC_H
+﻿#ifndef S3MEDIAKIT_AACRTPCODEC_H
+#define S3MEDIAKIT_AACRTPCODEC_H
 
 #include "AAC.h"
 #include "Rtsp/RtpCodec.h"
@@ -51,4 +51,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_AACRTPCODEC_H
+#endif //S3MEDIAKIT_AACRTPCODEC_H

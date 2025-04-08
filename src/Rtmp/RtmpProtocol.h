@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RTMPPROTOCOL_H_
+﻿#ifndef SRC_RTMP_RTMPPROTOCOL_H_
 #define SRC_RTMP_RTMPPROTOCOL_H_
 
 #include <memory>
@@ -28,7 +18,6 @@ public:
     virtual ~RtmpProtocol();
 
     void onParseRtmp(const char *data, size_t size);
-    // 作为客户端发送c0c1，等待s0s1s2并且回调  [AUTO-TRANSLATED:fed23902]
     // Send c0c1 as a client, wait for s0s1s2 and callback
     void startClientSession(const std::function<void()> &cb, bool complex = true);
 
@@ -104,7 +93,6 @@ private:
     std::function<const char * (const char *data, size_t len)> _next_step_func;
     ////////////Chunk////////////
     std::unordered_map<int, std::pair<RtmpPacket::Ptr/*now*/, RtmpPacket::Ptr/*last*/> > _map_chunk_data;
-    // 循环池  [AUTO-TRANSLATED:cf2e86c5]
     // Thread pool
     toolkit::ResourcePool<toolkit::BufferRaw> _packet_pool;
 };

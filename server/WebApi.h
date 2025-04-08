@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_WEBAPI_H
-#define ZLMEDIAKIT_WEBAPI_H
+﻿#ifndef S3MEDIAKIT_WEBAPI_H
+#define S3MEDIAKIT_WEBAPI_H
 
 #include <string>
 #include <functional>
@@ -200,4 +200,4 @@ void getStatisticJson(const std::function<void(Json::Value &val)> &cb);
 void addStreamProxy(const mediakit::MediaTuple &tuple, const std::string &url, int retry_count,
                     const mediakit::ProtocolOption &option, int rtp_type, float timeout_sec, const toolkit::mINI &args,
                     const std::function<void(const toolkit::SockException &ex, const std::string &key)> &cb);
-#endif //ZLMEDIAKIT_WEBAPI_H
+#endif //S3MEDIAKIT_WEBAPI_H

@@ -1,13 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-#include "FlvSplitter.h"
+﻿#include "FlvSplitter.h"
 #include "utils.h"
 
 using namespace std;
@@ -17,20 +8,16 @@ namespace mediakit {
 
 const char *FlvSplitter::onSearchPacketTail(const char *data, size_t len) {
     if (!_flv_started) {
-        // 还没获取到flv头  [AUTO-TRANSLATED:d1c8deaa]
         // Not yet got the flv header
         if (len < sizeof(FLVHeader)) {
-            // 数据不够  [AUTO-TRANSLATED:72802244]
             // Insufficient data
             return nullptr;
         }
         return data + sizeof(FLVHeader);
     }
 
-    // 获取到flv头，处理tag数据  [AUTO-TRANSLATED:a15a91da]
     // Got the flv header, processing tag data
     if (len < sizeof(RtmpTagHeader)) {
-        // 数据不够  [AUTO-TRANSLATED:72802244]
         // Insufficient data
         return nullptr;
     }
@@ -39,30 +26,28 @@ const char *FlvSplitter::onSearchPacketTail(const char *data, size_t len) {
 
 ssize_t FlvSplitter::onRecvHeader(const char *data, size_t len) {
     if (!_flv_started) {
-        // 获取到flv头了  [AUTO-TRANSLATED:1da417c0]
         // Got the flv header
         auto header = reinterpret_cast<const FLVHeader *>(data);
         if (memcmp(header->flv, "FLV", 3)) {
-            throw std::invalid_argument("不是flv容器格式！");
+            throw std::invalid_argument("Not the flv container format!");
         }
         if (header->version != FLVHeader::kFlvVersion) {
-            throw std::invalid_argument("flv头中version字段不正确");
+            throw std::invalid_argument("The version field in the flv header is incorrect");
         }
         if (!header->have_video && !header->have_audio) {
-            throw std::invalid_argument("flv头中声明音频和视频都不存在");
+            throw std::invalid_argument("The FLV header states that the audio and video do not exist");
         }
         if (FLVHeader::kFlvHeaderLength != ntohl(header->length)) {
-            throw std::invalid_argument("flv头中length字段非法");
+            throw std::invalid_argument("The length field in the flv header is illegal");
         }
         if (0 != ntohl(header->previous_tag_size0)) {
-            throw std::invalid_argument("flv头中previous tag size字段非法");
+            throw std::invalid_argument("The previous tag size field in the flv header is illegal");
         }
         onRecvFlvHeader(*header);
         _flv_started = true;
         return 0;
     }
 
-    // 获取到flv头，处理tag数据  [AUTO-TRANSLATED:a15a91da]
     // Got the flv header, processing tag data
     auto tag = reinterpret_cast<const RtmpTagHeader *>(data);
     auto data_size = load_be24(tag->data_size);
@@ -76,7 +61,7 @@ void FlvSplitter::onRecvContent(const char *data, size_t len) {
     len -= 4;
     auto previous_tag_size = load_be32(data + len);
     if (len != previous_tag_size - sizeof(RtmpTagHeader)) {
-        WarnL << "flv previous tag size 字段非法:" << len << " != " << previous_tag_size - sizeof(RtmpTagHeader);
+        WarnL << "flv previous tag size field is illegal:" << len << " != " << previous_tag_size - sizeof(RtmpTagHeader);
     }
     RtmpPacket::Ptr packet;
     switch (_type) {
@@ -122,7 +107,7 @@ void FlvSplitter::onRecvContent(const char *data, size_t len) {
             return;
         }
 
-        default: WarnL << "不识别的flv msg type:" << (int) _type; return;
+        default: WarnL << "Unrecognized flv msg type:" << (int) _type; return;
     }
 
     packet->time_stamp = _time_stamp;

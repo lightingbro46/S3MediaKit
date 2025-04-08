@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MP3_H
-#define ZLMEDIAKIT_MP3_H
+﻿#ifndef S3MEDIAKIT_MP3_H
+#define S3MEDIAKIT_MP3_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -20,4 +20,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_MP3_H
+#endif //S3MEDIAKIT_MP3_H

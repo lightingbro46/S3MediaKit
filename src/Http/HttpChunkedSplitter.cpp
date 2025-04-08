@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <string.h>
+﻿#include <string.h>
 #include "Common/macros.h"
 #include "HttpChunkedSplitter.h"
 
@@ -33,7 +23,6 @@ void HttpChunkedSplitter::onRecvContent(const char *data, size_t len) {
 ssize_t HttpChunkedSplitter::onRecvHeader(const char *data, size_t len) {
     int size;
     CHECK(sscanf(data, "%X", &size) == 1 && size >= 0);
-    // 包括后面\r\n两个字节  [AUTO-TRANSLATED:f5567007]
     // Including the following two bytes \r\n
     return size + 2;
 }

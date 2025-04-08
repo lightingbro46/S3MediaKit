@@ -34,7 +34,7 @@ option(ENABLE_WEBRTC "Enable WebRTC" ON)
 option(ENABLE_X264 "Enable x264" OFF)
 option(ENABLE_WEPOLL "Enable wepoll" ON)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
-option(DISABLE_REPORT "Disable report to report.zlmediakit.com" OFF)
+option(DISABLE_REPORT "Disable report to report.s3mediakit.com" OFF)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
 ##############################################################################
 # Set the default buffer size of the socket to 256k. If set to 0, the default buffer size of the socket will not be set,

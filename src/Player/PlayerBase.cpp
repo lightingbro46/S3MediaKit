@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <algorithm>
+﻿#include <algorithm>
 #include "PlayerBase.h"
 #include "Rtsp/RtspPlayerImp.h"
 #include "Rtmp/RtmpPlayerImp.h"
@@ -47,7 +37,6 @@ PlayerBase::Ptr PlayerBase::createPlayer(const EventPoller::Ptr &in_poller, cons
     string prefix = findSubString(url.data(), NULL, "://");
     auto pos = url.find('?');
     if (pos != string::npos) {
-        // 去除？后面的字符串  [AUTO-TRANSLATED:0ccb41c2]
         // Remove the string after the question mark
         url = url.substr(0, pos);
     }

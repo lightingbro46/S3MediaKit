@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTPEXT_H
-#define ZLMEDIAKIT_RTPEXT_H
+﻿#ifndef S3MEDIAKIT_RTPEXT_H
+#define S3MEDIAKIT_RTPEXT_H
 
 #include <stdint.h>
 #include <map>
@@ -47,7 +37,6 @@ enum class RtpExtType : uint8_t {
 
 class RtcMedia;
 
-// 使用次对象的方法前需保证RtpHeader内存未释放  [AUTO-TRANSLATED:0378877f]
 // Ensure that the RtpHeader memory has not been released before using the methods of this object
 class RtpExt {
 public:
@@ -130,10 +119,8 @@ private:
 
 private:
     OnGetRtp _cb;
-    // 发送rtp时需要修改rtp ext id  [AUTO-TRANSLATED:b92a494b]
     // Modify the rtp ext id when sending rtp
     std::map<RtpExtType, uint8_t> _rtp_ext_type_to_id;
-    // 接收rtp时需要修改rtp ext id  [AUTO-TRANSLATED:685e7a01]
     // Modify the rtp ext id when receiving rtp
     std::unordered_map<uint8_t, RtpExtType> _rtp_ext_id_to_type;
     //ssrc --> rid
@@ -141,4 +128,4 @@ private:
 };
 
 } //namespace mediakit
-#endif //ZLMEDIAKIT_RTPEXT_H
+#endif //S3MEDIAKIT_RTPEXT_H

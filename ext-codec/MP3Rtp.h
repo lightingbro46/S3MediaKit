@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MP3RTP_H
-#define ZLMEDIAKIT_MP3RTP_H
+﻿#ifndef S3MEDIAKIT_MP3RTP_H
+#define S3MEDIAKIT_MP3RTP_H
 
 #include "Rtsp/RtpCodec.h"
 #include "Extension/Frame.h"
@@ -44,4 +44,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_MP3RTP_H
+#endif //S3MEDIAKIT_MP3RTP_H

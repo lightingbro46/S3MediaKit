@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_CRYPTO_H
-#define ZLMEDIAKIT_SRT_CRYPTO_H
+﻿#ifndef S3MEDIAKIT_SRT_CRYPTO_H
+#define S3MEDIAKIT_SRT_CRYPTO_H
 #include <stdint.h>
 #include <vector>
 
@@ -99,4 +99,4 @@ private:
 
 } // namespace SRT
 
-#endif // ZLMEDIAKIT_SRT_CRYPTO_H
+#endif // S3MEDIAKIT_SRT_CRYPTO_H

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "WebRtcEchoTest.h"
+﻿#include "WebRtcEchoTest.h"
 
 namespace mediakit {
 
@@ -39,14 +29,13 @@ void WebRtcEchoTest::onRtcp(const char *buf, size_t len) {
     sendRtcpPacket(buf, len, true, nullptr);
 }
 
-// 修改mline的a=msid属性，目的是在echo test的情况下，如果offer和answer的msid相同，chrome会忽略远端的track  [AUTO-TRANSLATED:f2e3da54]
 // Modify the a=msid attribute of mline, the purpose is that in the echo test case, if the offer and answer have the same msid, chrome will ignore the remote track.
 void WebRtcEchoTest::onCheckSdp(SdpType type, RtcSession &sdp) {
     if (type == SdpType::answer) {
         for (auto &m : sdp.media) {
             for (auto &ssrc : m.rtp_rtx_ssrc) {
                 if (!ssrc.msid.empty()) {
-                    ssrc.msid = "zlmediakit-mslabel zlmediakit-label-" + m.mid;
+                    ssrc.msid = "s3mediakit-mslabel s3mediakit-label-" + m.mid;
                 }
             }
         }

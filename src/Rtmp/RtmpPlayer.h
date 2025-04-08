@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RtmpPlayer_H_
+﻿#ifndef SRC_RTMP_RtmpPlayer_H_
 #define SRC_RTMP_RtmpPlayer_H_
 
 #include <memory>
@@ -24,7 +14,6 @@
 
 namespace mediakit {
 
-// 实现了rtmp播放器协议部分的功能，及数据接收功能  [AUTO-TRANSLATED:1548a233]
 // Implemented the rtmp player protocol part functionality, and data receiving functionality
 class RtmpPlayer : public PlayerBase, public toolkit::TcpClient, public RtmpProtocol {
 public:
@@ -45,7 +34,6 @@ protected:
 
 protected:
     void onMediaData_l(RtmpPacket::Ptr chunk_data);
-    // 在获取config帧后才触发onPlayResult_l(而不是收到play命令回复)，所以此时所有track都初始化完毕了  [AUTO-TRANSLATED:c2d8c7a2]
     // Trigger onPlayResult_l after getting the config frame (instead of receiving the play command reply), so all tracks are initialized at this time
     void onPlayResult_l(const toolkit::SockException &ex, bool handshake_done);
 
@@ -85,11 +73,9 @@ private:
 
     bool _paused = false;
     bool _metadata_got = false;
-    // 是否为性能测试模式  [AUTO-TRANSLATED:1fde8234]
     // Whether it is performance test mode
     bool _benchmark_mode = false;
 
-    // 播放进度控制  [AUTO-TRANSLATED:62b3ee44]
     // Playback progress control
     uint32_t _seek_ms = 0;
     uint32_t _fist_stamp[2] = {0, 0};
@@ -98,16 +84,12 @@ private:
     std::deque<std::function<void(AMFValue &dec)> > _deque_on_status;
     std::unordered_map<int, std::function<void(AMFDecoder &dec)> > _map_on_result;
 
-    // rtmp接收超时计时器  [AUTO-TRANSLATED:292af22c]
     // Rtmp receive timeout timer
     toolkit::Ticker _rtmp_recv_ticker;
-    // 心跳发送定时器  [AUTO-TRANSLATED:04ac8e65]
     // Heartbeat send timer
     std::shared_ptr<toolkit::Timer> _beat_timer;
-    // 播放超时定时器  [AUTO-TRANSLATED:74d33688]
     // Playback timeout timer
     std::shared_ptr<toolkit::Timer> _play_timer;
-    // rtmp接收超时定时器  [AUTO-TRANSLATED:8c121e8c]
     // Rtmp receive timeout timer
     std::shared_ptr<toolkit::Timer> _rtmp_recv_timer;
 };

@@ -1,4 +1,4 @@
-package com.zlmediakit.demo;
+package com.s3s3mediakit.demo;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -9,7 +9,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
 
-import com.zlmediakit.jni.S3MediaKit;
+import com.s3s3mediakit.jni.S3MediaKit;
 
 public class MainActivity extends AppCompatActivity {
     public static final String TAG = "S3MediaKit";
@@ -27,7 +27,7 @@ public class MainActivity extends AppCompatActivity {
         for(String str : PERMISSIONS_STORAGE){
             int permission = ActivityCompat.checkSelfPermission(this, str);
             if (permission != PackageManager.PERMISSION_GRANTED) {
-                // 没有写的权限，去申请写的权限，会弹出对话框
+                // If you do not have permission to write, you will apply for permission to write and a dialog box will pop up.
                 ActivityCompat.requestPermissions(this, PERMISSIONS_STORAGE,1);
                 permissionSuccess = false;
                 break;
@@ -36,10 +36,10 @@ public class MainActivity extends AppCompatActivity {
 
         String sd_dir = Environment.getExternalStoragePublicDirectory("").toString();
         if(permissionSuccess){
-            Toast.makeText(this,"你可以修改配置文件再启动：" + sd_dir + "/zlmediakit.ini" ,Toast.LENGTH_LONG).show();
-            Toast.makeText(this,"SSL证书请放置在：" + sd_dir + "/zlmediakit.pem" ,Toast.LENGTH_LONG).show();
+            Toast.makeText(this,"You can modify the configuration file and start: " + sd_dir + "/s3mediakit.ini" ,Toast.LENGTH_LONG).show();
+            Toast.makeText(this,"Please place the SSL certificate in: " + sd_dir + "/s3mediakit.pem" ,Toast.LENGTH_LONG).show();
         }else{
-            Toast.makeText(this,"请给予我权限，否则无法启动测试！" ,Toast.LENGTH_LONG).show();
+            Toast.makeText(this,"Please give me permissions, otherwise the test will not be started！" ,Toast.LENGTH_LONG).show();
         }
         S3MediaKit.startDemo(sd_dir);
     }

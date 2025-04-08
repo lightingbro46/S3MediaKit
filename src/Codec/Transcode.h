@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_TRANSCODE_H
-#define ZLMEDIAKIT_TRANSCODE_H
+﻿#ifndef S3MEDIAKIT_TRANSCODE_H
+#define S3MEDIAKIT_TRANSCODE_H
 
 #if defined(ENABLE_FFMPEG)
 
@@ -166,4 +166,4 @@ public:
 
 }//namespace mediakit
 #endif// ENABLE_FFMPEG
-#endif //ZLMEDIAKIT_TRANSCODE_H
+#endif //S3MEDIAKIT_TRANSCODE_H

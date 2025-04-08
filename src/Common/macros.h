@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MACROS_H
-#define ZLMEDIAKIT_MACROS_H
+﻿#ifndef S3MEDIAKIT_MACROS_H
+#define S3MEDIAKIT_MACROS_H
 
 #include <sstream>
 #include <iostream>
@@ -76,4 +76,4 @@ void Assert_ThrowCpp(int failed, const char *exp, const char *func, const char *
 }
 
 } // namespace mediakit
-#endif // ZLMEDIAKIT_MACROS_H
+#endif // S3MEDIAKIT_MACROS_H

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Rtcp.h"
+﻿#include "Rtcp.h"
 #include "RtcpFCI.h"
 #include "Util/logger.h"
 #include <assert.h>
@@ -67,9 +57,8 @@ static void setupHeader(RtcpHeader *rtcp, RtcpType type, size_t report_count, si
     rtcp->version = 2;
     rtcp->padding = 0;
     if (report_count > 0x1F) {
-        throw std::invalid_argument(StrPrinter << "rtcp report_count最大赋值为31,当前为:" << report_count);
+        throw std::invalid_argument(StrPrinter << "The maximum assignment of rtcp report_count is 31, currently:" << report_count);
     }
-    // items总个数  [AUTO-TRANSLATED:2d40d010]
     // Total number of items
     rtcp->report_count = report_count;
     rtcp->pt = (uint8_t)type;
@@ -150,7 +139,6 @@ string RtcpHeader::dumpString() const {
 }
 
 size_t RtcpHeader::getSize() const {
-    // 加上rtcp头长度  [AUTO-TRANSLATED:21a40b4b]
     // Add rtcp header length
     return (1 + ntohs(length)) << 2;
 }
@@ -163,7 +151,6 @@ size_t RtcpHeader::getPaddingSize() const {
 }
 
 void RtcpHeader::setSize(size_t size) {
-    // 不包含rtcp头的长度  [AUTO-TRANSLATED:b26ad8ef]
     // Length excluding rtcp header
     length = htons((uint16_t)((size >> 2) - 1));
 }
@@ -210,7 +197,7 @@ void RtcpHeader::net2Host(size_t len) {
                 dlrr->net2Host(len);
                 TraceL << dlrr->dumpString();
             } else if (xr->bt == 42){
-                //当有浏览器将屏幕推流到服务器时会发生这个, 暂时没发现什么作用，先解析出来，不做处理
+                //This will happen when a browser pushes the screen to the server. No effect is found yet. parse it first and do not process it.
                 RtcpXRTargetBitrate* tb = (RtcpXRTargetBitrate *)this;
                 tb->net2Host(len);
                 //TraceL << tb->dumpString();
@@ -219,7 +206,7 @@ void RtcpHeader::net2Host(size_t len) {
             }
             break;
         }
-        default: throw std::runtime_error(StrPrinter << "未处理的rtcp包:" << rtcpTypeToStr((RtcpType)this->pt));
+        default: throw std::runtime_error(StrPrinter << "Unprocessed rtcp package:" << rtcpTypeToStr((RtcpType)this->pt));
     }
 }
 
@@ -231,16 +218,15 @@ vector<RtcpHeader *> RtcpHeader::loadFromBytes(char *data, size_t len) {
         RtcpHeader *rtcp = (RtcpHeader *)ptr;
         auto rtcp_len = rtcp->getSize();
         if (remain < (ssize_t)rtcp_len) {
-            WarnL << "非法的rtcp包,声明的长度超过实际数据长度";
+            WarnL << "Illegal rtcp package, declared length exceeds the actual data length";
             break;
         }
         try {
             rtcp->net2Host(rtcp_len);
             ret.emplace_back(rtcp);
         } catch (std::exception &ex) {
-            // 不能处理的rtcp包，或者无法解析的rtcp包，忽略掉  [AUTO-TRANSLATED:752ec400]
             // Ignore unprocessable rtcp packets or rtcp packets that cannot be parsed
-            WarnL << ex.what() << ",长度为:" << rtcp_len;
+            WarnL << ex.what() << ", the length is:" << rtcp_len;
         }
         ptr += rtcp_len;
         remain -= rtcp_len;
@@ -282,9 +268,7 @@ string RtcpSR::getNtpStamp() const {
 
 uint64_t RtcpSR::getNtpUnixStampMS() const {
     if (ntpmsw < 0x83AA7E80) {
-        // ntp时间戳起始时间为1900年，但是utc时间戳起始时间为1970年，两者相差0x83AA7E80秒  [AUTO-TRANSLATED:6b3ac2fa]
         // The ntp timestamp starts from 1900, but the utc timestamp starts from 1970, with a difference of 0x83AA7E80 seconds
-        // ntp时间戳不得早于1970年，否则无法转换为utc时间戳  [AUTO-TRANSLATED:d70fc88c]
         // The ntp timestamp must not be earlier than 1970, otherwise it cannot be converted to utc timestamp
         return 0;
     }
@@ -328,16 +312,13 @@ string RtcpSR::dumpString() const {
 #define CHECK_MIN_SIZE(size, kMinSize)                                                                                 \
     if (size < kMinSize) {                                                                                             \
         throw std::out_of_range(                                                                                       \
-            StrPrinter << rtcpTypeToStr((RtcpType)pt) << " 长度不足:" << size << " < " << kMinSize);                   \
+            StrPrinter << rtcpTypeToStr((RtcpType)pt) << " Insufficient length:" << size << " < " << kMinSize);        \
     }
 
 #define CHECK_REPORT_COUNT(item_count)                                                                                 \
-    /*修正个数，防止getItemList时内存越界
-     /*Correct the number to prevent memory overflow when getItemList
-     * [AUTO-TRANSLATED:852bd70e]
-     */                                                                \
+     /*Correct the number to prevent memory overflow when getItemList*/                                                \
     if (report_count != item_count) {                                                                                  \
-        WarnL << rtcpTypeToStr((RtcpType)pt) << " report_count 字段不正确,已修正为:" << (int)report_count << " -> "    \
+        WarnL << rtcpTypeToStr((RtcpType)pt) << " The report_count field is incorrect and has been corrected to:" << (int)report_count << " -> "      \
               << item_count;                                                                                           \
         report_count = item_count;                                                                                     \
     }
@@ -475,7 +456,6 @@ string SdesChunk::dumpString() const {
 std::shared_ptr<RtcpSdes> RtcpSdes::create(const std::vector<string> &item_text) {
     size_t item_total_size = 0;
     for (auto &text : item_text) {
-        // 统计所有SdesChunk对象占用的空间  [AUTO-TRANSLATED:87871205]
         // Count the space occupied by all SdesChunk objects
         item_total_size += alignSize(SdesChunk::minSize() + (0xFF & text.size()));
     }
@@ -486,7 +466,6 @@ std::shared_ptr<RtcpSdes> RtcpSdes::create(const std::vector<string> &item_text)
     auto item_ptr = &ptr->chunks;
     for (auto &text : item_text) {
         item_ptr->txt_len = (0xFF & text.size());
-        // 确保赋值\0为RTCP_SDES_END  [AUTO-TRANSLATED:316be0a3]
         // Ensure that the assignment \0 is RTCP_SDES_END
         memcpy(item_ptr->text, text.data(), item_ptr->txt_len + 1);
         item_ptr = (SdesChunk *)((char *)item_ptr + item_ptr->totalBytes());
@@ -625,7 +604,7 @@ string RtcpFB::dumpString() const {
             }
             break;
         }
-        default: /*不可达*/ assert(0); break;
+        default: /*Unreachable*/ assert(0); break;
     }
     return std::move(printer);
 }
@@ -696,7 +675,6 @@ void RtcpBye::net2Host(size_t size) {
         ssrc[i] = ntohl(ssrc[i]);
         offset += sizeof(ssrc);
     }
-    // 修正ssrc个数  [AUTO-TRANSLATED:57c74f58]
     // Correct the number of ssrcs
     CHECK_REPORT_COUNT(i);
 
@@ -704,7 +682,6 @@ void RtcpBye::net2Host(size_t size) {
         uint8_t *reason_len_ptr = &reason_len + sizeof(ssrc) * (report_count - 1);
         if (reason_len_ptr + 1 + *reason_len_ptr > (uint8_t *)this + size) {
             WarnL << "invalid rtcp bye reason length";
-            // 修正reason_len长度  [AUTO-TRANSLATED:1c0c9645]
             // Correct the length of reason_len
             *reason_len_ptr = ((uint8_t *)this + size - reason_len_ptr - 1) & 0xFF;
         }

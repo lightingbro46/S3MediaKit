@@ -345,7 +345,7 @@ void API_CALL on_mk_rtsp_get_realm(const mk_media_info url_info,
                mk_media_info_get_params(url_info));
 
     // Rtsp playback default authentication
-    mk_rtsp_get_realm_invoker_do(invoker, "zlmediakit");
+    mk_rtsp_get_realm_invoker_do(invoker, "s3mediakit");
 }
 
 /**

@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_PACKET_CACHE_H_
-#define ZLMEDIAKIT_PACKET_CACHE_H_
+﻿#ifndef S3MEDIAKIT_PACKET_CACHE_H_
+#define S3MEDIAKIT_PACKET_CACHE_H_
 
 #include "Common/config.h"
 #include "Util/List.h"
@@ -77,4 +77,4 @@ private:
 };
 }
 
-#endif //ZLMEDIAKIT_PACKET_CACHE_H_
+#endif //S3MEDIAKIT_PACKET_CACHE_H_

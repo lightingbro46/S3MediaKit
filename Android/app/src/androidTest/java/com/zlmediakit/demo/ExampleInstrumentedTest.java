@@ -1,4 +1,4 @@
-package com.zlmediakit.demo;
+package com.s3mediakit.demo;
 
 import android.content.Context;
 import android.support.test.InstrumentationRegistry;
@@ -21,6 +21,6 @@ public class ExampleInstrumentedTest {
         // Context of the app under test.
         Context appContext = InstrumentationRegistry.getTargetContext();
 
-        assertEquals("com.zlmediakit.demo", appContext.getPackageName());
+        assertEquals("com.s3mediakit.demo", appContext.getPackageName());
     }
 }

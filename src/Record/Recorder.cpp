@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Recorder.h"
+﻿#include "Recorder.h"
 #include "Common/config.h"
 #include "Util/File.h"
 #include "Common/MediaSource.h"
@@ -82,7 +72,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             ret->setMediaSource(tuple);
             return ret;
 #else
-            throw std::invalid_argument("hls相关功能未打开，请开启ENABLE_HLS宏后编译再测试");
+            throw std::invalid_argument("hls related functions are not turned on. Please enable the ENABLE_HLS macro and then compile and test it again");
 #endif
         }
 
@@ -91,7 +81,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             auto path = Recorder::getRecordPath(type, tuple, option.mp4_save_path);
             return std::make_shared<MP4Recorder>(tuple, path, option.mp4_max_second);
 #else
-            throw std::invalid_argument("mp4相关功能未打开，请开启ENABLE_MP4宏后编译再测试");
+            throw std::invalid_argument("The mp4-related functions are not turned on, please enable the ENABLE_MP4 macro and compile and test it again.");
 #endif
         }
 
@@ -103,7 +93,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             ret->setMediaSource(tuple);
             return ret;
 #else
-            throw std::invalid_argument("hls.fmp4相关功能未打开，请开启ENABLE_MP4宏后编译再测试");
+            throw std::invalid_argument("hls.fmp4 related functions are not turned on. Please enable the ENABLE_MP4 macro and then compile and test it");
 #endif
         }
 
@@ -111,7 +101,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
 #if defined(ENABLE_MP4)
             return std::make_shared<FMP4MediaSourceMuxer>(tuple, option);
 #else
-            throw std::invalid_argument("fmp4相关功能未打开，请开启ENABLE_MP4宏后编译再测试");
+            throw std::invalid_argument("fmp4 related functions are not turned on. Please enable the ENABLE_MP4 macro and then compile and test it");
 #endif
         }
 
@@ -119,11 +109,11 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
 #if defined(ENABLE_HLS) || defined(ENABLE_RTPPROXY)
             return std::make_shared<TSMediaSourceMuxer>(tuple, option);
 #else
-            throw std::invalid_argument("mpegts相关功能未打开，请开启ENABLE_HLS或ENABLE_RTPPROXY宏后编译再测试");
+            throw std::invalid_argument("mpegts related functions are not turned on. Please enable the ENABLE_HLS or ENABLE_RTPPROXY macro and then compile and test it");
 #endif
         }
 
-        default: throw std::invalid_argument("未知的录制类型");
+        default: throw std::invalid_argument("Unknown recording type");
     }
 }
 

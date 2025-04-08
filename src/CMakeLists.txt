@@ -18,20 +18,20 @@ endif()
 
 
 # Add library
-add_library(zlmediakit STATIC ${MediaKit_SRC_LIST})
-add_library(S3MediaKit::MediaKit ALIAS zlmediakit)
+add_library(s3mediakit STATIC ${MediaKit_SRC_LIST})
+add_library(S3MediaKit::MediaKit ALIAS s3mediakit)
 
 set(LINK_LIBRARIES ${MK_LINK_LIBRARIES})
 list(REMOVE_ITEM LINK_LIBRARIES S3MediaKit::MediaKit)
 set(COMPILE_DEFINITIONS ${MK_COMPILE_DEFINITIONS})
 
-target_compile_definitions(zlmediakit
+target_compile_definitions(s3mediakit
   PUBLIC ${COMPILE_DEFINITIONS})
-target_compile_options(zlmediakit
+target_compile_options(s3mediakit
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
-target_link_libraries(zlmediakit
+target_link_libraries(s3mediakit
   PUBLIC ${LINK_LIBRARIES})
-target_include_directories(zlmediakit
+target_include_directories(s3mediakit
   PRIVATE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
@@ -55,6 +55,6 @@ if(ENABLE_CXX_API)
         REGEX ".*/Srt.*" EXCLUDE
         PATTERN "*.h")
   endif()
-  install(TARGETS zlmediakit
+  install(TARGETS s3mediakit
     DESTINATION ${INSTALL_PATH_LIB})
 endif ()

@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MK_FRAME_H
-#define ZLMEDIAKIT_MK_FRAME_H
+﻿#ifndef S3MEDIAKIT_MK_FRAME_H
+#define S3MEDIAKIT_MK_FRAME_H
 
 #include "mk_common.h"
 
@@ -248,4 +248,4 @@ API_EXPORT void API_CALL mk_ps_decoder_input(mk_ps_decoder ctx, const char * dat
 }
 #endif
 
-#endif //ZLMEDIAKIT_MK_FRAME_H
+#endif //S3MEDIAKIT_MK_FRAME_H

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTPPROCESS_H
-#define ZLMEDIAKIT_RTPPROCESS_H
+﻿#ifndef S3MEDIAKIT_RTPPROCESS_H
+#define S3MEDIAKIT_RTPPROCESS_H
 
 #if defined(ENABLE_RTPPROXY)
 #include "ProcessInterface.h"
@@ -30,14 +20,6 @@ public:
     enum OnlyTrack { kAll = 0, kOnlyAudio = 1, kOnlyVideo = 2 };
 
     /**
-     * 输入rtp
-     * @param is_udp 是否为udp模式
-     * @param sock 本地监听的socket
-     * @param data rtp数据指针
-     * @param len rtp数据长度
-     * @param addr 数据源地址
-     * @param dts_out 解析出最新的dts
-     * @return 是否解析成功
      * Input rtp
      * @param is_udp Whether it is udp mode
      * @param sock Local listening socket
@@ -46,52 +28,33 @@ public:
      * @param addr Data source address
      * @param dts_out Parse out the latest dts
      * @return Whether the parsing is successful
-     
-     * [AUTO-TRANSLATED:a10c5edf]
      */
     bool inputRtp(bool is_udp, const toolkit::Socket::Ptr &sock, const char *data, size_t len, const struct sockaddr *addr , uint64_t *dts_out = nullptr);
 
 
     /**
-     * 超时时被RtpSelector移除时触发
      * Triggered when removed by RtpSelector when timeout
-     
-     * [AUTO-TRANSLATED:dc4c6609]
      */
     void onDetach(const toolkit::SockException &ex);
 
     /**
-     * 设置onDetach事件回调
      * Set onDetach event callback
-     
-     * [AUTO-TRANSLATED:b30f67c3]
      */
     void setOnDetach(onDetachCB cb);
 
     /**
-     * 设置onDetach事件回调,false检查RTP超时，true停止
      * Set onDetach event callback, false checks RTP timeout, true stops
-     
-     * [AUTO-TRANSLATED:2780397f]
      */
     void setStopCheckRtp(bool is_check=false);
 
     /**
-     * 设置为单track，单音频/单视频时可以加快媒体注册速度
-     * 请在inputRtp前调用此方法，否则可能会是空操作
      * Set to single track, single audio/single video can speed up media registration
      * Please call this method before inputRtp, otherwise it may be a null operation
-     
-     * [AUTO-TRANSLATED:55095289]
      */
     void setOnlyTrack(OnlyTrack only_track);
 
     /**
-     * flush输出缓存
      * Flush output cache
-     
-     
-     * [AUTO-TRANSLATED:40618a29]
      */
     void flush() override;
 
@@ -152,4 +115,4 @@ private:
 
 }//namespace mediakit
 #endif//defined(ENABLE_RTPPROXY)
-#endif //ZLMEDIAKIT_RTPPROCESS_H
+#endif //S3MEDIAKIT_RTPPROCESS_H

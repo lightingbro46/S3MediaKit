@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_JPEGRTP_H
-#define ZLMEDIAKIT_JPEGRTP_H
+﻿#ifndef S3MEDIAKIT_JPEGRTP_H
+#define S3MEDIAKIT_JPEGRTP_H
 
 #include "Rtsp/RtpCodec.h"
 #include "Extension/Frame.h"
@@ -56,4 +56,4 @@ private:
     void rtpSendJpeg(const uint8_t *buf, int size, uint64_t pts, uint8_t type);
 };
 }//namespace mediakit
-#endif //ZLMEDIAKIT_JPEGRTP_H
+#endif //S3MEDIAKIT_JPEGRTP_H

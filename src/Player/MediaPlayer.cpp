@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <algorithm>
+﻿#include <algorithm>
 #include "MediaPlayer.h"
 
 using namespace std;
@@ -26,7 +16,6 @@ static void setOnCreateSocket_l(const std::shared_ptr<PlayerBase> &delegate, con
         if (cb) {
             helper->setOnCreateSocket(cb);
         } else {
-            // 客户端，确保开启互斥锁  [AUTO-TRANSLATED:a75e6e36]
             // Client, ensure mutual exclusion lock is enabled
             helper->setOnCreateSocket([](const EventPoller::Ptr &poller) {
                 return Socket::createSocket(poller, true);

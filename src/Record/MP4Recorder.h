@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef MP4MAKER_H_
+﻿#ifndef MP4MAKER_H_
 #define MP4MAKER_H_
 
 #include <mutex>
@@ -30,35 +20,22 @@ public:
     ~MP4Recorder() override;
 
     /**
-     * 重置所有Track
      * Reset all Tracks
-     
-     * [AUTO-TRANSLATED:8dd80826]
      */
     void resetTracks() override;
 
     /**
-     * 输入frame
      * Input frame
-     
-     * [AUTO-TRANSLATED:3722ea0e]
      */
     bool inputFrame(const Frame::Ptr &frame) override;
 
     /**
-     * 刷新输出所有frame缓存
      * Refresh output all frame cache
-     
-     * [AUTO-TRANSLATED:adaea568]
      */
     void flush() override;
 
     /**
-     * 添加ready状态的track
      * Add ready state track
-     
-     
-     * [AUTO-TRANSLATED:2d8138b3]
      */
     bool addTrack(const Track::Ptr & track) override;
 

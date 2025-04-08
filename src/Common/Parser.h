@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_PARSER_H
-#define ZLMEDIAKIT_PARSER_H
+﻿#ifndef S3MEDIAKIT_PARSER_H
+#define S3MEDIAKIT_PARSER_H
 
 #include <map>
 #include <string>
@@ -125,4 +125,4 @@ private:
 
 } // namespace mediakit
 
-#endif // ZLMEDIAKIT_PARSER_H
+#endif // S3MEDIAKIT_PARSER_H

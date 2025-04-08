@@ -1,4 +1,4 @@
-package com.zlmediakit.demo;
+package com.s3mediakit.demo;
 
 import org.junit.Test;
 

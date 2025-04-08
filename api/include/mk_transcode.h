@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MK_TRANSCODE_H
-#define ZLMEDIAKIT_MK_TRANSCODE_H
+﻿#ifndef S3MEDIAKIT_MK_TRANSCODE_H
+#define S3MEDIAKIT_MK_TRANSCODE_H
 
 #include "mk_common.h"
 #include "mk_track.h"
@@ -176,4 +176,4 @@ API_EXPORT void API_CALL mk_set_av_frame_format(AVFrame *frame, int format);
 }
 #endif
 
-#endif //ZLMEDIAKIT_MK_TRANSCODE_H
+#endif //S3MEDIAKIT_MK_TRANSCODE_H

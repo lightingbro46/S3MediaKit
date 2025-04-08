@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef HLSMAKERIMP_H
+﻿#ifndef HLSMAKERIMP_H
 #define HLSMAKERIMP_H
 
 #include <memory>
@@ -26,29 +16,18 @@ public:
     ~HlsMakerImp() override;
 
     /**
-     * 设置媒体信息
      * Set media information
-     
-     * [AUTO-TRANSLATED:d205db9f]
      */
     void setMediaSource(const MediaTuple& tuple);
 
     /**
-     * 获取MediaSource
-     * @return
      * Get MediaSource
      * @return
-     
-     * [AUTO-TRANSLATED:af916433]
      */
     HlsMediaSource::Ptr getMediaSource() const;
 
      /**
-      * 清空缓存
       * Clear cache
-      
-      
-      * [AUTO-TRANSLATED:f872d7e2]
       */
      void clearCache();
 

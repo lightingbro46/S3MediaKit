@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_H265RTMPCODEC_H
-#define ZLMEDIAKIT_H265RTMPCODEC_H
+﻿#ifndef S3MEDIAKIT_H265RTMPCODEC_H
+#define S3MEDIAKIT_H265RTMPCODEC_H
 
 #include "H265.h"
 #include "Rtmp/RtmpCodec.h"
@@ -68,4 +68,4 @@ private:
 
 } // namespace mediakit
 
-#endif // ZLMEDIAKIT_H265RTMPCODEC_H
+#endif // S3MEDIAKIT_H265RTMPCODEC_H

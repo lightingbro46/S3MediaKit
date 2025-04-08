@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MK_H264_SPLITTER_H
-#define ZLMEDIAKIT_MK_H264_SPLITTER_H
+﻿#ifndef S3MEDIAKIT_MK_H264_SPLITTER_H
+#define S3MEDIAKIT_MK_H264_SPLITTER_H
 
 #include "mk_common.h"
 
@@ -45,4 +45,4 @@ API_EXPORT void API_CALL mk_h264_splitter_input_data(mk_h264_splitter ctx, const
 #ifdef __cplusplus
 }
 #endif
-#endif //ZLMEDIAKIT_MK_H264_SPLITTER_H
+#endif //S3MEDIAKIT_MK_H264_SPLITTER_H

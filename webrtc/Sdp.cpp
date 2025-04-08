@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Sdp.h"
+﻿#include "Sdp.h"
 #include "Rtsp/Rtsp.h"
 #include "Common/config.h"
 #include <cinttypes>
@@ -312,7 +302,7 @@ string RtcSessionSdp::toString() const {
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
-#define CHECK_SDP(exp) CHECK(exp, "解析sdp ", getKey(), " 字段失败:", str)
+#define CHECK_SDP(exp) CHECK(exp, "parse sdp ", getKey(), " Field failed:", str)
 
 void SdpTime::parse(const string &str) {
     CHECK_SDP(sscanf(str.data(), "%" SCNu64 " %" SCNu64, &start, &stop) == 2);
@@ -554,7 +544,6 @@ void SdpAttrRtpMap::parse(const string &str) {
     if (sscanf(str.data(), "%" SCNu8 " %31[^/]/%" SCNd32 "/%" SCNd32, &pt, buf, &sample_rate, &channel) != 4) {
         CHECK_SDP(sscanf(str.data(), "%" SCNu8 " %31[^/]/%" SCNd32, &pt, buf, &sample_rate) == 3);
         if (getTrackType(getCodecId(buf)) == TrackAudio) {
-            // 未指定通道数时，且为音频时，那么通道数默认为1  [AUTO-TRANSLATED:bd128fbd]
             // If the number of channels is not specified and it is audio, the number of channels defaults to 1
             channel = 1;
         }
@@ -656,7 +645,6 @@ void SdpAttrSSRCGroup::parse(const string &str) {
 string SdpAttrSSRCGroup::toString() const {
     if (value.empty()) {
         value = type;
-        // 最少要求2个ssrc  [AUTO-TRANSLATED:968acb83]
         // At least 2 SSRCs are required
         CHECK(ssrcs.size() >= 2);
         for (auto &ssrc : ssrcs) {
@@ -844,14 +832,11 @@ void RtcSession::loadFrom(const string &str) {
         for (auto &group : ssrc_groups) {
             if (group.isFID()) {
                 have_rtx_ssrc = true;
-                // ssrc-group:FID字段必须包含rtp/rtx的ssrc  [AUTO-TRANSLATED:3da97d7d]
                 // The ssrc-group:FID field must contain the SSRCs of rtp/rtx
                 CHECK(group.ssrcs.size() == 2);
-                // 根据rtp ssrc找到对象  [AUTO-TRANSLATED:c0a56b42]
                 // Find the object based on the RTP SSRC
                 auto it = rtc_ssrc_map.find(group.ssrcs[0]);
                 CHECK(it != rtc_ssrc_map.end());
-                // 设置rtx ssrc  [AUTO-TRANSLATED:422e2a55]
                 // Set the RTX SSRC
                 it->second.rtx_ssrc = group.ssrcs[1];
                 rtc_media.rtp_rtx_ssrc.emplace_back(it->second);
@@ -862,7 +847,6 @@ void RtcSession::loadFrom(const string &str) {
         }
 
         if (!have_rtx_ssrc) {
-            // 按照sdp顺序依次添加ssrc  [AUTO-TRANSLATED:0996ba7e]
             // Add SSRCs in the order of SDP
             for (auto &attr : ssrc_attr) {
                 if (attr.attribute == "cname") {
@@ -877,7 +861,6 @@ void RtcSession::loadFrom(const string &str) {
             // a=rid:m send
             // a=rid:l send
             // a=simulcast:send h;m;l
-            // 风格的simulcast  [AUTO-TRANSLATED:94ac2d55]
             // Style of simulcast
             unordered_set<string> rid_map;
             for (auto &rid : simulcast.rids) {
@@ -887,14 +870,12 @@ void RtcSession::loadFrom(const string &str) {
                 CHECK(rid.direction == simulcast.direction);
                 CHECK(rid_map.find(rid.rid) != rid_map.end());
             }
-            // simulcast最少要求2种方案  [AUTO-TRANSLATED:31732a7a]
             // Simulcast requires at least 2 schemes
             CHECK(simulcast.rids.size() >= 2);
             rtc_media.rtp_rids = simulcast.rids;
         }
 
         if (ssrc_group_sim) {
-            // 指定了a=ssrc-group:SIM  [AUTO-TRANSLATED:5732661e]
             // a=ssrc-group:SIM is specified
             for (auto ssrc : ssrc_group_sim->ssrcs) {
                 auto it = rtc_ssrc_map.find(ssrc);
@@ -902,17 +883,14 @@ void RtcSession::loadFrom(const string &str) {
                 rtc_media.rtp_ssrc_sim.emplace_back(it->second);
             }
         } else if (!rtc_media.rtp_rids.empty()) {
-            // 未指定a=ssrc-group:SIM, 但是指定了a=simulcast, 那么只能根据ssrc顺序来对应rid顺序  [AUTO-TRANSLATED:b198a817]
             // a=ssrc-group:SIM is not specified, but a=simulcast is specified, so the RID order can only be matched according to the SSRC order
             rtc_media.rtp_ssrc_sim = rtc_media.rtp_rtx_ssrc;
         }
 
         if (!rtc_media.supportSimulcast()) {
-            // 不支持simulcast的情况下，最多一组ssrc  [AUTO-TRANSLATED:3ea8ed65]
             // In the case of not supporting simulcast, there is at most one group of SSRCs
             CHECK(rtc_media.rtp_rtx_ssrc.size() <= 1);
         } else {
-            // simulcast的情况下，要么没有指定ssrc，要么指定的ssrc个数与rid个数一致  [AUTO-TRANSLATED:1d45ce03]
             // In the case of simulcast, either no SSRC is specified or the number of specified SSRCs is consistent with the number of RIDs
             // CHECK(rtc_media.rtp_ssrc_sim.empty() || rtc_media.rtp_ssrc_sim.size() == rtc_media.rtp_rids.size());
         }
@@ -920,33 +898,27 @@ void RtcSession::loadFrom(const string &str) {
         auto rtpmap_arr = media.getAllItem<SdpAttrRtpMap>('a', "rtpmap");
         auto rtcpfb_arr = media.getAllItem<SdpAttrRtcpFb>('a', "rtcp-fb");
         auto fmtp_aar = media.getAllItem<SdpAttrFmtp>('a', "fmtp");
-        // 方便根据pt查找rtpmap,一个pt必有一条  [AUTO-TRANSLATED:c3673faa]
         // Convenient to find rtpmap based on pt, one pt must have one
         map<uint8_t, SdpAttrRtpMap &> rtpmap_map;
-        // 方便根据pt查找rtcp-fb,一个pt可能有多条或0条  [AUTO-TRANSLATED:38361f68]
         // Convenient to find rtcp-fb based on pt, one pt may have multiple or 0
         multimap<uint8_t, SdpAttrRtcpFb &> rtcpfb_map;
-        // 方便根据pt查找fmtp，一个pt最多一条  [AUTO-TRANSLATED:be5d652d]
         // Convenient to find fmtp based on pt, one pt has at most one
         map<uint8_t, SdpAttrFmtp &> fmtp_map;
 
         for (auto &rtpmap : rtpmap_arr) {
-            // 添加失败，有多条  [AUTO-TRANSLATED:717782c0]
             // Add failed, there are multiple
-            CHECK(rtpmap_map.emplace(rtpmap.pt, rtpmap).second, "该pt存在多条a=rtpmap:", (int)rtpmap.pt);
+            CHECK(rtpmap_map.emplace(rtpmap.pt, rtpmap).second, "There are multiple lines of this pt a=rtpmap:", (int)rtpmap.pt);
         }
         for (auto &rtpfb : rtcpfb_arr) {
             rtcpfb_map.emplace(rtpfb.pt, rtpfb);
         }
         for (auto &fmtp : fmtp_aar) {
-            // 添加失败，有多条  [AUTO-TRANSLATED:717782c0]
             // Add failed, there are multiple
-            CHECK(fmtp_map.emplace(fmtp.pt, fmtp).second, "该pt存在多条a=fmtp:", (int)fmtp.pt);
+            CHECK(fmtp_map.emplace(fmtp.pt, fmtp).second, "There are multiple lines of a=fmtp in this pt:", (int)fmtp.pt);
         }
         for (auto &item : mline.fmts) {
             auto pt = atoi(item.c_str());
             CHECK(pt < 0xFF, "invalid payload type: ", item);
-            // 遍历所有编码方案的pt  [AUTO-TRANSLATED:40f2db36]
             // Traverse the pt of all encoding schemes
             rtc_media.plan.emplace_back();
             auto &plan = rtc_media.plan.back();
@@ -1144,7 +1116,6 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
                 rtp_map->codec = p.codec;
                 rtp_map->sample_rate = p.sample_rate;
                 rtp_map->channel = p.channel;
-                // 添加a=rtpmap  [AUTO-TRANSLATED:8bef5d64]
                 // Add a=rtpmap
                 sdp_media.addAttr(std::move(rtp_map));
 
@@ -1152,7 +1123,6 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
                     auto rtcp_fb = std::make_shared<SdpAttrRtcpFb>();
                     rtcp_fb->pt = p.pt;
                     rtcp_fb->rtcp_type = fb;
-                    // 添加a=rtcp-fb  [AUTO-TRANSLATED:11754b43]
                     // Add a=rtcp-fb
                     sdp_media.addAttr(std::move(rtcp_fb));
                 }
@@ -1161,14 +1131,12 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
                     auto fmtp = std::make_shared<SdpAttrFmtp>();
                     fmtp->pt = p.pt;
                     fmtp->fmtp = p.fmtp;
-                    // 添加a=fmtp  [AUTO-TRANSLATED:594a4425]
                     // Add a=fmtp
                     sdp_media.addAttr(std::move(fmtp));
                 }
             }
 
             {
-                // 添加a=msid字段  [AUTO-TRANSLATED:cf2c1471]
                 // Add a=msid field
                 if (!m.rtp_rtx_ssrc.empty()) {
                     if (!m.rtp_rtx_ssrc[0].msid.empty()) {
@@ -1181,16 +1149,13 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
 
             {
                 for (auto &ssrc : m.rtp_rtx_ssrc) {
-                    // 添加a=ssrc字段  [AUTO-TRANSLATED:75ca5225]
                     // Add a=ssrc field
                     CHECK(!ssrc.empty());
                     addSdpAttrSSRC(ssrc, sdp_media, ssrc.ssrc);
                     if (ssrc.rtx_ssrc) {
                         addSdpAttrSSRC(ssrc, sdp_media, ssrc.rtx_ssrc);
 
-                        // 生成a=ssrc-group:FID字段  [AUTO-TRANSLATED:22b1f966]
                         // Generate a=ssrc-group:FID field
-                        // 有rtx ssrc  [AUTO-TRANSLATED:fece8076]
                         // There is rtx ssrc
                         auto group = std::make_shared<SdpAttrSSRCGroup>();
                         group->type = "FID";
@@ -1203,13 +1168,11 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
 
             {
                 if (m.rtp_ssrc_sim.size() >= 2) {
-                    // simulcast 要求 2~3路  [AUTO-TRANSLATED:3237ffca]
                     // Simulcast requires 2~3 channels
                     auto group = std::make_shared<SdpAttrSSRCGroup>();
                     for (auto &ssrc : m.rtp_ssrc_sim) {
                         group->ssrcs.emplace_back(ssrc.ssrc);
                     }
-                    // 添加a=ssrc-group:SIM字段  [AUTO-TRANSLATED:46b04aae]
                     // Add a=ssrc-group:SIM field
                     group->type = "SIM";
                     sdp_media.addAttr(std::move(group));
@@ -1322,21 +1285,18 @@ void RtcMedia::checkValid() const {
     CHECK(!proto.empty());
     CHECK(direction != RtpDirection::invalid || type == TrackApplication);
     CHECK(!plan.empty() || type == TrackApplication);
-    CHECK(type == TrackApplication || rtcp_mux, "只支持rtcp-mux模式");
+    CHECK(type == TrackApplication || rtcp_mux, "Only support rtcp-mux mode");
 
     bool send_rtp = (direction == RtpDirection::sendonly || direction == RtpDirection::sendrecv);
     if (!supportSimulcast()) {
-        // 非simulcast时，检查有没有指定rtp ssrc  [AUTO-TRANSLATED:e2d53f8a]
         // When not simulcast, check if the RTP SSRC is specified
         CHECK(!rtp_rtx_ssrc.empty() || !send_rtp);
     }
 
 #if 0
-    // todo 发现Firefox(88.0)在mac平台下，开启rtx后没有指定ssrc  [AUTO-TRANSLATED:9112d91a]
     // todo Found that Firefox (88.0) on the mac platform does not specify ssrc when rtx is enabled
     auto rtx_plan = getPlan("rtx");
     if (rtx_plan) {
-        // 开启rtx后必须指定rtx_ssrc  [AUTO-TRANSLATED:c527f68d]
         // RTX must be specified after rtx_ssrc is enabled
         CHECK(rtp_rtx_ssrc.size() >= 2 || !send_rtp);
     }
@@ -1349,7 +1309,7 @@ void RtcSession::checkValid() const {
     CHECK(!session_name.empty());
     CHECK(!msid_semantic.empty());
     CHECK(!media.empty());
-    CHECK(!group.mids.empty() && group.mids.size() <= media.size(), "只支持group BUNDLE模式");
+    CHECK(!group.mids.empty() && group.mids.size() <= media.size(), "Only support group BUNDLE mode");
 
     bool have_active_media = false;
     for (auto &item : media) {
@@ -1365,7 +1325,7 @@ void RtcSession::checkValid() const {
             default: break;
         }
     }
-    CHECK(have_active_media, "必须确保最少有一个活跃的track");
+    CHECK(have_active_media, "It is necessary to ensure that at least one active track is");
 }
 
 const RtcMedia *RtcSession::getMedia(TrackType type) const {
@@ -1446,10 +1406,9 @@ void RtcConfigure::RtcTrackConfigure::setDefaultSetting(TrackType type) {
     ice_renomination = false;
     switch (type) {
         case TrackAudio: {
-            // 此处调整偏好的编码格式优先级  [AUTO-TRANSLATED:b8719e66]
             // Adjust the priority of preferred encoding formats here
             GET_CONFIG_FUNC(vector<CodecId>, s_preferred_codec, Rtc::kPreferredCodecA, toCodecArray);
-            CHECK(!s_preferred_codec.empty(), "rtc音频偏好codec不能为空");
+            CHECK(!s_preferred_codec.empty(), "rtc audio preference codec cannot be empty");
             preferred_codec = s_preferred_codec;
 
             rtcp_fb = { SdpConst::kTWCCRtcpFb, SdpConst::kRembRtcpFb };
@@ -1457,7 +1416,6 @@ void RtcConfigure::RtcTrackConfigure::setDefaultSetting(TrackType type) {
                        { RtpExtType::csrc_audio_level, RtpDirection::sendrecv },
                        { RtpExtType::abs_send_time, RtpDirection::sendrecv },
                        { RtpExtType::transport_cc, RtpDirection::sendrecv },
-                       // rtx重传rtp时，忽略sdes_mid类型的rtp ext,实测发现Firefox在接收rtx时，如果存在sdes_mid的ext,将导致无法播放  [AUTO-TRANSLATED:221df025]
                        // When rtx retransmits rtp, ignore the rtp ext of sdes_mid type. It is found that Firefox cannot play when receiving rtx if there is an ext of sdes_mid
                        //{RtpExtType::sdes_mid,RtpDirection::sendrecv},
                        { RtpExtType::sdes_rtp_stream_id, RtpDirection::sendrecv },
@@ -1465,16 +1423,14 @@ void RtcConfigure::RtcTrackConfigure::setDefaultSetting(TrackType type) {
             break;
         }
         case TrackVideo: {
-            // 此处调整偏好的编码格式优先级  [AUTO-TRANSLATED:b8719e66]
             // Adjust the priority of preferred encoding formats here
             GET_CONFIG_FUNC(vector<CodecId>, s_preferred_codec, Rtc::kPreferredCodecV, toCodecArray);
-            CHECK(!s_preferred_codec.empty(), "rtc视频偏好codec不能为空");
+            CHECK(!s_preferred_codec.empty(), "rtc video preference codec cannot be empty");
             preferred_codec = s_preferred_codec;
 
             rtcp_fb = { SdpConst::kTWCCRtcpFb, SdpConst::kRembRtcpFb, "nack", "ccm fir", "nack pli" };
             extmap = { { RtpExtType::abs_send_time, RtpDirection::sendrecv },
                        { RtpExtType::transport_cc, RtpDirection::sendrecv },
-                       // rtx重传rtp时，忽略sdes_mid类型的rtp ext,实测发现Firefox在接收rtx时，如果存在sdes_mid的ext,将导致无法播放  [AUTO-TRANSLATED:221df025]
                        // When rtx retransmits rtp, ignore the rtp ext of sdes_mid type. It is found that Firefox cannot play when receiving rtx if there is an ext of sdes_mid
                        //{RtpExtType::sdes_mid,RtpDirection::sendrecv},
                        { RtpExtType::sdes_rtp_stream_id, RtpDirection::sendrecv },
@@ -1483,7 +1439,6 @@ void RtcConfigure::RtcTrackConfigure::setDefaultSetting(TrackType type) {
                        { RtpExtType::color_space, RtpDirection::sendrecv },
                        { RtpExtType::video_content_type, RtpDirection::sendrecv },
                        { RtpExtType::playout_delay, RtpDirection::sendrecv },
-                       // 手机端推webrtc 会带有旋转角度，rtc协议能正常播放 其他协议拉流画面旋转  [AUTO-TRANSLATED:3f2f9e0e]
                        // Mobile push webrtc will have a rotation angle, rtc protocol can play normally, other protocols pull stream picture rotation
                        //{RtpExtType::video_orientation,           RtpDirection::sendrecv},
                        { RtpExtType::toffset, RtpDirection::sendrecv },
@@ -1584,7 +1539,6 @@ shared_ptr<RtcSession> RtcConfigure::createAnswer(const RtcSession &offer) const
         matchMedia(ret, m);
     }
 
-    // 设置音视频端口复用  [AUTO-TRANSLATED:ffe27d17]
     // Set audio and video port multiplexing
     if (!offer.group.mids.empty()) {
         for (auto &m : ret->media) {
@@ -1601,7 +1555,6 @@ static RtpDirection matchDirection(RtpDirection offer_direction, RtpDirection su
     switch (offer_direction) {
         case RtpDirection::sendonly: {
             if (supported != RtpDirection::recvonly && supported != RtpDirection::sendrecv) {
-                // 我们不支持接收  [AUTO-TRANSLATED:e4ef4034]
                 // We do not support receiving
                 return RtpDirection::inactive;
             }
@@ -1610,14 +1563,12 @@ static RtpDirection matchDirection(RtpDirection offer_direction, RtpDirection su
 
         case RtpDirection::recvonly: {
             if (supported != RtpDirection::sendonly && supported != RtpDirection::sendrecv) {
-                // 我们不支持发送  [AUTO-TRANSLATED:6505a226]
                 // We do not support sending
                 return RtpDirection::inactive;
             }
             return RtpDirection::sendonly;
         }
 
-        // 对方支持发送接收，那么最终能力根据配置来决定  [AUTO-TRANSLATED:d234d603]
         // The other party supports sending and receiving, so the final capability is determined by the configuration
         case RtpDirection::sendrecv: return (supported == RtpDirection::invalid ? RtpDirection::inactive : supported);
         case RtpDirection::inactive: return RtpDirection::inactive;
@@ -1660,35 +1611,31 @@ RETRY:
         answer_media.candidate = configure.candidate;
 #else
         answer_media.port = 0;
-        WarnL << "answer sdp忽略application mline, 请安装usrsctp后再测试datachannel功能";
+        WarnL << "Answer sdp ignores application mline, please install usrsctp and then test the datachannel function";
 #endif
         ret->media.emplace_back(answer_media);
         return;
     }
     for (auto &codec : configure.preferred_codec) {
         if (offer_media.ice_lite && configure.ice_lite) {
-            WarnL << "answer sdp配置为ice_lite模式，与offer sdp中的ice_lite模式冲突";
+            WarnL << "Answer sdp is configured as ice_lite mode, which conflicts with ice_lite mode in offer sdp";
             continue;
         }
         const RtcCodecPlan *selected_plan = nullptr;
         for (auto &plan : offer_media.plan) {
-            // 先检查编码格式是否为偏好  [AUTO-TRANSLATED:b7fb32a0]
             // First check if the encoding format is preferred
             if (check_codec && getCodecId(plan.codec) != codec) {
                 continue;
             }
-            // 命中偏好的编码格式,然后检查规格  [AUTO-TRANSLATED:a859c839]
             // Hit the preferred encoding format, then check the specifications
             if (check_profile && !onCheckCodecProfile(plan, codec)) {
                 continue;
             }
-            // 找到中意的codec  [AUTO-TRANSLATED:4b5eebfd]
             // Find the desired codec
             selected_plan = &plan;
             break;
         }
         if (!selected_plan) {
-            // offer中该媒体的所有的codec都不支持  [AUTO-TRANSLATED:3b57b86f]
             // All codecs for this media in the offer are not supported
             continue;
         }
@@ -1715,26 +1662,22 @@ RETRY:
 
         answer_media.role = mathDtlsRole(offer_media.role);
 
-        // 如果codec匹配失败，那么禁用该track  [AUTO-TRANSLATED:037de9a8]
         // If the codec matching fails, then disable the track
         answer_media.direction = check_codec ? matchDirection(offer_media.direction, configure.direction) : RtpDirection::inactive;
         if (answer_media.direction == RtpDirection::invalid) {
             continue;
         }
         if (answer_media.direction == RtpDirection::sendrecv) {
-            // 如果是收发双向，那么我们拷贝offer sdp的ssrc，确保ssrc一致  [AUTO-TRANSLATED:d4a621f2]
             // If it is bidirectional, then we copy the offer sdp ssrc to ensure ssrc consistency
             answer_media.rtp_rtx_ssrc = offer_media.rtp_rtx_ssrc;
         }
 
-        // 添加媒体plan  [AUTO-TRANSLATED:3f730050]
         // Add media plan
         answer_media.plan.emplace_back(*selected_plan);
         onSelectPlan(answer_media.plan.back(), codec);
 
         set<uint8_t> pt_selected = { selected_plan->pt };
 
-        // 添加rtx,red,ulpfec plan  [AUTO-TRANSLATED:1abff0c1]
         // Add rtx, red, ulpfec plan
         if (configure.support_red || configure.support_rtx || configure.support_ulpfec) {
             for (auto &plan : offer_media.plan) {
@@ -1762,7 +1705,6 @@ RETRY:
             }
         }
 
-        // 对方和我方都支持的扩展，那么我们才支持  [AUTO-TRANSLATED:a6cd98b2]
         // We only support extensions that are supported by both the other party and us
         for (auto &ext : offer_media.extmap) {
             auto it = configure.extmap.find(RtpExt::getExtType(ext.ext));
@@ -1780,18 +1722,15 @@ RETRY:
 
         auto &rtcp_fb_ref = answer_media.plan[0].rtcp_fb;
         rtcp_fb_ref.clear();
-        // 对方和我方都支持的rtcpfb，那么我们才支持  [AUTO-TRANSLATED:f10450bb]
         // We only support rtcpfb that is supported by both the other party and us
         for (auto &fp : selected_plan->rtcp_fb) {
             if (configure.rtcp_fb.find(fp) != configure.rtcp_fb.end()) {
-                // 对方该rtcp被我们支持  [AUTO-TRANSLATED:3b16e666]
                 // The other party's rtcp is supported by us
                 rtcp_fb_ref.emplace(fp);
             }
         }
 
 #if 0
-        // todo 此处为添加无效的plan，webrtc sdp通过调节plan pt顺序选择匹配的codec，意味着后面的codec其实放在sdp中是无意义的  [AUTO-TRANSLATED:502d0cb2]
         // todo This is to add an invalid plan. WebRTC sdp selects the matching codec by adjusting the plan pt order, which means that the subsequent codecs are actually meaningless in the sdp
         for (auto &plan : offer_media.plan) {
             if (pt_selected.find(plan.pt) == pt_selected.end()) {
@@ -1804,14 +1743,12 @@ RETRY:
     }
 
     if (check_profile) {
-        // 如果是由于检查profile导致匹配失败，那么重试一次，且不检查profile  [AUTO-TRANSLATED:897fa4ae]
         // If the matching fails due to profile check, retry once and do not check profile
         check_profile = false;
         goto RETRY;
     }
 
     if (check_codec) {
-        // 如果是由于检查codec导致匹配失败，那么重试一次，且不检查codec  [AUTO-TRANSLATED:fbd85968]
         // If the matching fails due to codec check, retry once and do not check codec
         check_codec = false;
         goto RETRY;
@@ -1851,17 +1788,14 @@ static const string kMode { "packetization-mode" };
 bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) const {
     if (_rtsp_audio_plan && codec == getCodecId(_rtsp_audio_plan->codec)) {
         if (plan.sample_rate != _rtsp_audio_plan->sample_rate || plan.channel != _rtsp_audio_plan->channel) {
-            // 音频采样率和通道数必须相同  [AUTO-TRANSLATED:6e591932]
             // Audio sampling rate and number of channels must be the same
             return false;
         }
         return true;
     }
     if (_rtsp_video_plan && codec == CodecH264 && getCodecId(_rtsp_video_plan->codec) == CodecH264) {
-        // h264时，profile-level-id  [AUTO-TRANSLATED:94a5f360]
         // When h264, profile-level-id
         if (strcasecmp(_rtsp_video_plan->fmtp[kProfile].data(), const_cast<RtcCodecPlan &>(plan).fmtp[kProfile].data())) {
-            // profile-level-id 不匹配  [AUTO-TRANSLATED:814ec4c4]
             // profile-level-id does not match
             return false;
         }
@@ -1875,15 +1809,9 @@ bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) 
  Single NAI Unit Mode = 0. // Single NAI mode (Only nals from 1-23 are allowed)
  Non Interleaved Mode = 1，// Non-interleaved Mode: 1-23，24 (STAP-A)，28 (FU-A) are allowed
  Interleaved Mode = 2,  // 25 (STAP-B)，26 (MTAP16)，27 (MTAP24)，28 (EU-A)，and 29 (EU-B) are allowed.
- Single NAI Unit Mode = 0. // Single NAI mode (Only nals from 1-23 are allowed)
- Non Interleaved Mode = 1，// Non-interleaved Mode: 1-23，24 (STAP-A)，28 (FU-A) are allowed
- Interleaved Mode = 2,  // 25 (STAP-B)，26 (MTAP16)，27 (MTAP24)，28 (EU-A)，and 29 (EU-B) are allowed.
- *
- * [AUTO-TRANSLATED:b1526114]
  **/
 void RtcConfigure::onSelectPlan(RtcCodecPlan &plan, CodecId codec) const {
     if (_rtsp_video_plan && codec == CodecH264 && getCodecId(_rtsp_video_plan->codec) == CodecH264) {
-        // h264时，设置packetization-mod为一致  [AUTO-TRANSLATED:59a00889]
         // When h264, set packetization-mod to be consistent
         auto mode = _rtsp_video_plan->fmtp[kMode];
         GET_CONFIG(bool, h264_stap_a, Rtp::kH264StapA);

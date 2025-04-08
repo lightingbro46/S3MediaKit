@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTCP_H
-#define ZLMEDIAKIT_RTCP_H
+﻿#ifndef S3MEDIAKIT_RTCP_H
+#define S3MEDIAKIT_RTCP_H
 
 #include "Common/macros.h"
 #include "Network/Buffer.h"
@@ -108,28 +98,28 @@ namespace mediakit {
     XX(RTCP_RTPFB_TMMBN, 4)                                                                                            \
     XX(RTCP_RTPFB_TWCC, 15)
 
-// rtcp类型枚举
+// rtcp type enum
 enum class RtcpType : uint8_t {
 #define XX(key, value) key = value,
     RTCP_PT_MAP(XX)
 #undef XX
 };
 
-// sdes类型枚举
+// sdes type enum
 enum class SdesType : uint8_t {
 #define XX(key, value) key = value,
     SDES_TYPE_MAP(XX)
 #undef XX
 };
 
-// psfb类型枚举
+// psfb type enum
 enum class PSFBType : uint8_t {
 #define XX(key, value) key = value,
     PSFB_TYPE_MAP(XX)
 #undef XX
 };
 
-// rtpfb类型枚举
+// rtpfb type enum
 enum class RTPFBType : uint8_t {
 #define XX(key, value) key = value,
     RTPFB_TYPE_MAP(XX)
@@ -137,99 +127,99 @@ enum class RTPFBType : uint8_t {
 };
 
 /**
- * RtcpType转描述字符串
+ * RtcpType to description string
  */
 const char *rtcpTypeToStr(RtcpType type);
 
 /**
- * SdesType枚举转描述字符串
+ * SdesType enumeration to describe string
  */
 const char *sdesTypeToStr(SdesType type);
 
 /**
- * psfb枚举转描述字符串
+ * psfb enumeration to describe string
  */
 const char *psfbTypeToStr(PSFBType type);
 
 /**
- * rtpfb枚举转描述字符串
+ * rtpfb enumeration to describe string
  */
 const char *rtpfbTypeToStr(RTPFBType type);
 
 class RtcpHeader {
 public:
 #if __BYTE_ORDER == __BIG_ENDIAN
-    // 版本号，固定为2
+    // Version number, fixed to 2
     uint32_t version : 2;
-    // padding，固定为0
+    // padding, fixed to 0
     uint32_t padding : 1;
     // reception report count
     uint32_t report_count : 5;
 #else
     // reception report count
     uint32_t report_count : 5;
-    // padding，末尾是否有追加填充
+    // padding, is there any additional padding at the end
     uint32_t padding : 1;
-    // 版本号，固定为2
+    // Version number, fixed to 2
     uint32_t version : 2;
 #endif
-    // rtcp类型,RtcpType
+    // rtcp type, RtcpType
     uint32_t pt : 8;
 
 private:
-    // 长度
+    // length
     uint32_t length : 16;
 
 public:
     /**
-     * 解析rtcp并转换网络字节序为主机字节序，返回RtcpHeader派生类列表
-     * @param data 数据指针
-     * @param size 数据总长度
-     * @return rtcp对象列表，无需free
+     * Parses rtcp and converts network byte order to host byte order, and returns the RtcpHeader derived class list
+     * @param data Data pointer
+     * @param size Total data length
+     * @return rtcp object list, no need for free
      */
     static std::vector<RtcpHeader *> loadFromBytes(char *data, size_t size);
 
     /**
-     * rtcp包转Buffer对象
-     * @param rtcp rtcp包对象智能指针
-     * @return Buffer对象
+     * rtcp package to Buffer object
+     * @param rtcp rtcp package object smart pointer
+     * @return Buffer object
      */
     static toolkit::Buffer::Ptr toBuffer(std::shared_ptr<RtcpHeader> rtcp);
 
     /**
-     * 打印rtcp相关字段详情(调用派生类的dumpString函数)
-     * 内部会判断是什么类型的派生类
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print rtcp related fields details (call dumpString function of derived class)
+     * What type of derived class is internally determined
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 根据length字段获取rtcp总长度
+     * Get the total length of rtcp based on the length field
      */
     size_t getSize() const;
 
     /**
-     * 后面追加padding数据长度
+     * Add padding data length later
      */
     size_t getPaddingSize() const;
 
     /**
-     * 设置rtcp length字段
-     * @param size rtcp总长度，单位字节
+     * Set the rtcp length field
+     * @param size rtcp total length, unit bytes
      */
     void setSize(size_t size);
 
 protected:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpHeader() const;
 
 private:
     /**
-     * 调用派生类的net2Host函数
-     * @param size rtcp字符长度
+     * Call the net2Host function of the derived class
+     * @param size rtcp character length
      */
     void net2Host(size_t size);
 
@@ -261,13 +251,13 @@ public:
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
+     * Convert network byte order to host byte order
      */
     void net2Host();
 };
@@ -326,47 +316,47 @@ public:
     uint32_t packet_count;
     // sender octet count
     uint32_t octet_count;
-    // 可能有很多个
+    // There may be many
     ReportItem items;
 
 public:
     /**
-     * 创建SR包，只赋值了RtcpHeader部分(网络字节序)
-     * @param item_count ReportItem对象个数
-     * @return SR包
+     * Create an SR package, only the RtcpHeader part (network endianness) is assigned
+     * @param item_count Number of ReportItem objects
+     * @return SR package
      */
     static std::shared_ptr<RtcpSR> create(size_t item_count);
 
     /**
-     * 设置ntpmsw与ntplsw字段为网络字节序
-     * @param tv 时间
+     * Set ntpmsw and ntplsw fields to network byte order
+     * @param tv time
      */
     void setNtpStamp(struct timeval tv);
     void setNtpStamp(uint64_t unix_stamp_ms);
 
     /**
-     * 返回ntp时间的字符串
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Returns the string of ntp time
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string getNtpStamp() const;
     uint64_t getNtpUnixStampMS() const;
 
     /**
-     * 获取ReportItem对象指针列表
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Get the ReportItem object pointer list
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::vector<ReportItem *> getItemList();
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 };
@@ -409,33 +399,33 @@ public:
     friend class RtcpHeader;
 
     uint32_t ssrc;
-    // 可能有很多个
+    // There may be many
     ReportItem items;
 
 public:
     /**
-     * 创建RR包，只赋值了RtcpHeader部分
-     * @param item_count ReportItem对象个数
-     * @return RR包
+     * Create an RR package, only the RtcpHeader part is assigned
+     * @param item_count Number of ReportItem objects
+     * @return RR package
      */
     static std::shared_ptr<RtcpRR> create(size_t item_count);
 
     /**
-     * 获取ReportItem对象指针列表
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Get the ReportItem object pointer list
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::vector<ReportItem *> getItemList();
 
 private:
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
@@ -464,7 +454,7 @@ chunk  |                          SSRC/CSRC_2                          |
 
 /*
 
-SDES items 定义
+SDES items definition
 0                   1                   2                   3
 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -480,34 +470,34 @@ public:
     uint32_t ssrc;
     // SdesType
     uint8_t type;
-    // text长度股，可以为0
+    // Text length strands, can be 0
     uint8_t txt_len;
-    // 不定长
+    // Undecidedly long
     char text[1];
-    // 最后以RTCP_SDES_END结尾
-    // 只字段为占位字段，不代表真实位置
+    // Finally ends with RTCP_SDES_END
+    // Only fields are placeholder fields, not representing the real location
     uint8_t end;
 
 public:
     /**
-     * 返回改对象字节长度
+     * Return to change the object byte length
      */
     size_t totalBytes() const;
 
     /**
-     * 本对象最少长度
+     * The minimum length of this object
      */
     static size_t minSize();
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
+     * Convert network byte order to host byte order
      */
     void net2Host();
 };
@@ -517,33 +507,33 @@ class RtcpSdes : public RtcpHeader {
 public:
     friend class RtcpHeader;
 
-    // 可能有很多个
+    // There may be many
     SdesChunk chunks;
 
 public:
     /**
-     * 创建SDES包，只赋值了RtcpHeader以及SdesChunk对象的length和text部分
-     * @param item_text SdesChunk列表，只赋值length和text部分
-     * @return SDES包
+     * Create SDES packages, assign only the length and text parts of the RtcpHeader and SdesChunk object.
+     * @param item_text SdesChunk list, only assign length and text parts
+     * @return SDES package
      */
     static std::shared_ptr<RtcpSdes> create(const std::vector<std::string> &item_text);
 
     /**
-     * 获取SdesChunk对象指针列表
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Get the list of SdesChunk object pointers
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::vector<SdesChunk *> getChunkList();
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 };
@@ -565,7 +555,7 @@ private:
 //   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 //   :            Feedback Control Information (FCI)                 :
 //   :                                                               :
-// rtcpfb和psfb的数据结构一致
+// The data structures of rtcpfb and psfb are consistent
 class RtcpFB : public RtcpHeader {
 public:
     friend class RtcpHeader;
@@ -574,19 +564,19 @@ public:
 
 public:
     /**
-     * 创建psfb类型的反馈包
+     * Create a feedback package of psfb type
      */
     static std::shared_ptr<RtcpFB> create(PSFBType fmt, const void *fci = nullptr, size_t fci_len = 0);
 
     /**
-     * 创建rtpfb类型的反馈包
+     * Create a feedback package of rtpfb type
      */
     static std::shared_ptr<RtcpFB> create(RTPFBType fmt, const void *fci = nullptr, size_t fci_len = 0);
 
     /**
-     * fci转换成某对象指针
-     * @tparam Type 对象类型
-     * @return 对象指针
+     * Convert fci into a pointer for an object
+     * @tparam Type object type
+     * @return Object pointer
      */
     template <typename Type>
     const Type &getFci() const {
@@ -598,25 +588,25 @@ public:
     }
 
     /**
-     * 获取fci指针
+     * Get fci pointer
      */
     const void *getFciPtr() const;
 
     /**
-     * 获取fci数据长度
+     * Get the FCI data length
      */
     size_t getFciSize() const;
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 
@@ -642,44 +632,44 @@ private:
 class RtcpBye : public RtcpHeader {
 public:
     friend class RtcpHeader;
-    /* 变长，根据count决定有多少个ssrc */
+    /* To lengthen, determine how many ssrcs are based on the count */
     uint32_t ssrc[1];
 
-    /** 中间可能有若干个 ssrc **/
+    /** There may be several in the middle ssrc **/
 
-    /* 可选 */
+    /* Optional */
     uint8_t reason_len;
     char reason[1];
 
 public:
     /**
-     * 创建bye包
-     * @param ssrc ssrc列表
-     * @param reason 原因
-     * @return rtcp bye包
+     * Create a bye package
+     * @param ssrc Ssrc List
+     * @param reason reason
+     * @return rtcp bye package
      */
     static std::shared_ptr<RtcpBye> create(const std::vector<uint32_t> &ssrc, const std::string &reason);
 
     /**
-     * 获取ssrc列表
+     * Get the ssrc list
      */
     std::vector<uint32_t *> getSSRC();
 
     /**
-     * 获取原因
+     * Get the reason
      */
     std::string getReason() const;
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 };
@@ -725,14 +715,14 @@ public:
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 
@@ -765,13 +755,13 @@ public:
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
+     * Convert network byte order to host byte order
      */
     void net2Host();
 };
@@ -786,28 +776,28 @@ public:
     RtcpXRDLRRReportItem items;
 
     /**
-     * 创建RtcpXRDLRR包，只赋值了RtcpHeader部分(网络字节序)
-     * @param item_count RtcpXRDLRRReportItem对象个数
-     * @return RtcpXRDLRR包
+     * Create the RtcpXRDLRR package, and only assign the RtcpHeader part(Network byte order)
+     * @param item_count RtcpXRDLRRReportItem object number
+     * @return RtcpXRDLRR package
      */
     static std::shared_ptr<RtcpXRDLRR> create(size_t item_count);
 
     /**
-     * 获取RtcpXRDLRRReportItem对象指针列表
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Get the list of RtcpXRDLRRReportItem object pointers
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::vector<RtcpXRDLRRReportItem *> getItemList();
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 
@@ -863,13 +853,13 @@ public:
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
+     * Convert network byte order to host byte order
      */
     void net2Host();
 };
@@ -885,28 +875,28 @@ public:
     RtcpXRTargetBitrateItem items;
 
     /**
-     * 创建RtcpXRTargetBitrate包，只赋值了RtcpHeader部分(网络字节序)
-     * @param item_count RtcpXRTargetBitrateItem对象个数
-     * @return RtcpXRTargetBitrate包
+     * Create the RtcpXRTargetBitrate package, and only assign the RtcpHeader part(Network byte order)
+     * @param item_count RtcpXRTargetBitrateItem object number
+     * @return RtcpXRTargetBitrate package
      */
     static std::shared_ptr<RtcpXRTargetBitrate> create(size_t item_count);
 
     /**
-     * 获取RtcpXRTargetBitrateItem对象指针列表
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Get the list of pointers for RtcpXRTargetBitrateItem object
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::vector<RtcpXRTargetBitrateItem *> getItemList();
 
 private:
     /**
-     * 打印字段详情
-     * 使用net2Host转换成主机字节序后才可使用此函数
+     * Print field details
+     * This function can only be used after converting it to host endianness using net2Host
      */
     std::string dumpString() const;
 
     /**
-     * 网络字节序转换为主机字节序
-     * @param size 字节长度，防止内存越界
+     * Convert network byte order to host byte order
+     * @param size Byte length to prevent memory from crossing boundaries
      */
     void net2Host(size_t size);
 
@@ -915,4 +905,4 @@ private:
 #pragma pack(pop)
 
 } // namespace mediakit
-#endif // ZLMEDIAKIT_RTCP_H
+#endif // S3MEDIAKIT_RTCP_H

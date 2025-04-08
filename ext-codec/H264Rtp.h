@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_H264RTPCODEC_H
-#define ZLMEDIAKIT_H264RTPCODEC_H
+﻿#ifndef S3MEDIAKIT_H264RTPCODEC_H
+#define S3MEDIAKIT_H264RTPCODEC_H
 
 #include "H264.h"
 // for DtsGenerator
@@ -79,4 +79,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_H264RTPCODEC_H
+#endif //S3MEDIAKIT_H264RTPCODEC_H

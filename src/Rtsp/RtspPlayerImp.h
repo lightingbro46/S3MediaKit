@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTP_RTPPARSERTESTER_H_
+﻿#ifndef SRC_RTP_RTPPARSERTESTER_H_
 #define SRC_RTP_RTPPARSERTESTER_H_
 
 #include <memory>
@@ -60,7 +50,6 @@ public:
     std::vector<Track::Ptr> getTracks(bool ready = true) const override;
 
 private:
-    // 派生类回调函数  [AUTO-TRANSLATED:61e20903]
     // Derived class callback function
     bool onCheckSDP(const std::string &sdp) override;
 

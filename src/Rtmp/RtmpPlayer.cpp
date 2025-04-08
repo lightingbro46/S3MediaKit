@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "RtmpPlayer.h"
+﻿#include "RtmpPlayer.h"
 #include "Rtmp/utils.h"
 #include "Util/util.h"
 #include "Util/onceToken.h"
@@ -58,14 +48,13 @@ void RtmpPlayer::play(const string &url)  {
     _stream_id = findSubString(url.data(), (host_url + "/" + _app + "/").data(), NULL);
     auto app_second = findSubString(_stream_id.data(), nullptr, "/");
     if (!app_second.empty() && app_second.find('?') == std::string::npos) {
-        // _stream_id存在多级；不包含'?', 说明分割符'/'不是url参数的一部分  [AUTO-TRANSLATED:ef820905]
         // _stream_id exists at multiple levels; it does not contain '?', indicating that the delimiter '/' is not part of the url parameter
         _app += "/" + app_second;
         _stream_id.erase(0, app_second.size() + 1);
     }
     _tc_url = schema + "://" + host_url + "/" + _app;
     if (_app.empty() || _stream_id.empty()) {
-        onPlayResult_l(SockException(Err_other, "rtmp url非法"), false);
+        onPlayResult_l(SockException(Err_other, "rtmp url illegal"), false);
         return;
     }
     DebugL << host_url << " " << _app << " " << _stream_id;
@@ -93,39 +82,32 @@ void RtmpPlayer::play(const string &url)  {
 }
 
 void RtmpPlayer::onError(const SockException &ex){
-    // 定时器_pPlayTimer为空后表明握手结束了  [AUTO-TRANSLATED:6e2661f4]
     // The timer _pPlayTimer is empty after the handshake is finished
     onPlayResult_l(ex, !_play_timer);
 }
 
 void RtmpPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {
     if (ex.getErrCode() == Err_shutdown) {
-        // 主动shutdown的，不触发回调  [AUTO-TRANSLATED:bd97b1c1]
         // Active shutdown does not trigger a callback
         return;
     }
 
     WarnL << ex.getErrCode() << " " << ex;
     if (!handshake_done) {
-        // 开始播放阶段  [AUTO-TRANSLATED:a246c5ee]
         // Start playback stage
         _play_timer.reset();
-        // 是否为性能测试模式  [AUTO-TRANSLATED:1fde8234]
         // Whether it is a performance test mode
         _benchmark_mode = (*this)[Client::kBenchmarkMode].as<int>();
         onPlayResult(ex);
     } else if (ex) {
-        // 播放成功后异常断开回调  [AUTO-TRANSLATED:b5c5fa80]
         // Callback for abnormal disconnection after successful playback
         onShutdown(ex);
     } else {
-        // 恢复播放  [AUTO-TRANSLATED:19a73f21]
         // Resume playback
         onResume();
     }
 
     if (!ex) {
-        // 播放成功，恢复rtmp接收超时定时器  [AUTO-TRANSLATED:29b58110]
         // After successful playback, restore the rtmp receive timeout timer
         _rtmp_recv_ticker.resetTime();
         auto timeout_ms = (*this)[Client::kMediaTimeoutMS].as<uint64_t>();
@@ -136,7 +118,6 @@ void RtmpPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {
                 return false;
             }
             if (strong_self->_rtmp_recv_ticker.elapsedTime() > timeout_ms) {
-                // 接收rtmp媒体数据超时  [AUTO-TRANSLATED:e14bc1fe]
                 // Receive rtmp media data timeout
                 SockException ex(Err_timeout, "receive rtmp timeout");
                 strong_self->onPlayResult_l(ex, true);
@@ -144,7 +125,6 @@ void RtmpPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {
             }
             return true;
         };
-        // 创建rtmp数据接收超时检测定时器  [AUTO-TRANSLATED:d255312b]
         // Create an rtmp data receive timeout detection timer
         _rtmp_recv_timer = std::make_shared<Timer>(timeout_ms / 2000.0f, lam, getPoller());
     } else {
@@ -162,13 +142,12 @@ void RtmpPlayer::onConnect(const SockException &err) {
         if (auto strong_self = weak_self.lock()) {
             strong_self->send_connect();
         }
-    },_app.find("vod") != 0); // 实测发现vod点播时，使用复杂握手fms无响应：issue #2007
+    },_app.find("vod") != 0); //In actual tests, when vod on demand, use complex handshake fms without response: issue #2007
 }
 
 void RtmpPlayer::onRecv(const Buffer::Ptr &buf){
     try {
         if (_benchmark_mode && !_play_timer) {
-            // 在性能测试模式下，如果rtmp握手完毕后，不再解析rtmp包  [AUTO-TRANSLATED:a39356cc]
             // In performance test mode, if the rtmp handshake is complete, the rtmp packet will no longer be parsed
             _rtmp_recv_ticker.resetTime();
             return;
@@ -176,7 +155,6 @@ void RtmpPlayer::onRecv(const Buffer::Ptr &buf){
         onParseRtmp(buf->data(), buf->size());
     } catch (exception &e) {
         SockException ex(Err_other, e.what());
-        // 定时器_pPlayTimer为空后表明握手结束了  [AUTO-TRANSLATED:6e2661f4]
         // The timer _pPlayTimer is empty after the handshake is finished
         onPlayResult_l(ex, !_play_timer);
     }
@@ -194,19 +172,14 @@ void RtmpPlayer::send_connect() {
     AMFValue obj(AMF_OBJECT);
     obj.set("app", _app);
     obj.set("tcUrl", _tc_url);
-    // 未使用代理  [AUTO-TRANSLATED:fa1ef5d7]
     // No proxy used
     obj.set("fpad", false);
-    // 参考librtmp,什么作用?  [AUTO-TRANSLATED:c6e3349f]
     // Refer to librtmp, what is the role?
     obj.set("capabilities", 15);
-    // SUPPORT_VID_CLIENT_SEEK 支持seek  [AUTO-TRANSLATED:81d2bb06]
     // SUPPORT_VID_CLIENT_SEEK supports seek
     obj.set("videoFunction", 1);
-    // 只支持aac  [AUTO-TRANSLATED:ab086b5b]
     // Only supports aac
     obj.set("audioCodecs", (double) (0x0400));
-    // 只支持H264  [AUTO-TRANSLATED:d8fb8696]
     // Only supports H264
     obj.set("videoCodecs", (double) (0x0080));
 
@@ -224,7 +197,7 @@ void RtmpPlayer::send_connect() {
         auto level = val["level"].as_string();
         auto code = val["code"].as_string();
         if (level != "status") {
-            throw std::runtime_error(StrPrinter << "connect 失败:" << level << " " << code << endl);
+            throw std::runtime_error(StrPrinter << "connect failed:" << level << " " << code << endl);
         }
         send_createStream();
     });
@@ -250,7 +223,7 @@ void RtmpPlayer::send_play() {
         auto level = val["level"].as_string();
         auto code = val["code"].as_string();
         if (level != "status") {
-            throw std::runtime_error(StrPrinter << "play 失败:" << level << " " << code << endl);
+            throw std::runtime_error(StrPrinter << "play failed:" << level << " " << code << endl);
         }
     };
     addOnStatusCB(fun);
@@ -267,14 +240,13 @@ void RtmpPlayer::send_pause(bool pause) {
         auto code = val["code"].as_string();
         if (level != "status") {
             if (!pause) {
-                throw std::runtime_error(StrPrinter << "pause 恢复播放失败:" << level << " " << code << endl);
+                throw std::runtime_error(StrPrinter << "pause failed to resume playback:" << level << " " << code << endl);
             }
         } else {
             _paused = pause;
             if (!pause) {
                 onPlayResult_l(SockException(Err_success, "resum rtmp success"), true);
             } else {
-                // 暂停播放  [AUTO-TRANSLATED:09cc521a]
                 // Pause playback
                 _rtmp_recv_timer.reset();
             }
@@ -327,10 +299,9 @@ void RtmpPlayer::onCmd_onStatus(AMFDecoder &dec) {
         auto level = val["level"];
         auto code = val["code"].as_string();
         if (level.type() == AMF_STRING) {
-            // warning 不应该断开  [AUTO-TRANSLATED:6db13b98]
             // warning should not be disconnected
             if (level.as_string() != "status" && level.as_string() != "warning") {
-                throw std::runtime_error(StrPrinter << "onStatus 失败:" << level.as_string() << " " << code << endl);
+                throw std::runtime_error(StrPrinter << "onStatus failed:" << level.as_string() << " " << code << endl);
             }
         }
         //WarnL << "unhandled onStatus:" << code;
@@ -354,21 +325,17 @@ void RtmpPlayer::onStreamDry(uint32_t stream_index) {
 void RtmpPlayer::onMediaData_l(RtmpPacket::Ptr chunk_data) {
     _rtmp_recv_ticker.resetTime();
     if (!_play_timer) {
-        // 已经触发了onPlayResult事件，直接触发onMediaData事件  [AUTO-TRANSLATED:5c12bd46]
         // The onPlayResult event has been triggered, directly trigger the onMediaData event
         onRtmpPacket(chunk_data);
         return;
     }
 
     if (chunk_data->isConfigFrame()) {
-        // 输入配置帧以便初始化完成各个track  [AUTO-TRANSLATED:2f571d31]
         // Input configuration frame to initialize each track
         onRtmpPacket(chunk_data);
     } else {
-        // 先触发onPlayResult事件，这个时候解码器才能初始化完毕  [AUTO-TRANSLATED:403c9195]
         // Trigger the onPlayResult event first, at this time the decoder can be initialized
         onPlayResult_l(SockException(Err_success, "play rtmp success"), false);
-        // 触发onPlayResult事件后，再把帧数据输入到解码器  [AUTO-TRANSLATED:bf058334]
         // After triggering the onPlayResult event, input the frame data to the decoder
         onRtmpPacket(chunk_data);
     }
@@ -406,7 +373,6 @@ void RtmpPlayer::onRtmpChunk(RtmpPacket::Ptr packet) {
         case MSG_VIDEO: {
             auto idx = chunk_data.type_id % 2;
             if (_now_stamp_ticker[idx].elapsedTime() > 500) {
-                // 计算播放进度时间轴用  [AUTO-TRANSLATED:383fd62c]
                 // Used to calculate the playback progress timeline
                 _now_stamp[idx] = chunk_data.time_stamp;
             }

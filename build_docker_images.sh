@@ -71,8 +71,8 @@ case $model in
         ;;
 esac
 
-namespace="zlmediakit"
-packagename="zlmediakit"
+namespace="s3mediakit"
+packagename="s3mediakit"
 
 case $type in
 	'build')
@@ -84,7 +84,7 @@ case $type in
 	'push')
 		echo "push to dst registry"
 		# Take Tencent Cloud Account as an example
-		docker login --username=zlmediakit
+		docker login --username=s3mediakit
 		docker push $namespace/$packagename:$model.$version
 		;;
  	*)

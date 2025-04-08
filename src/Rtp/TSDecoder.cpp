@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "TSDecoder.h"
+﻿#include "TSDecoder.h"
 namespace mediakit {
 
 bool TSSegment::isTSPacket(const char *data, size_t len){
@@ -21,7 +11,7 @@ void TSSegment::setOnSegment(TSSegment::onSegment cb) {
 
 ssize_t TSSegment::onRecvHeader(const char *data, size_t len) {
     if (!isTSPacket(data, len)) {
-        WarnL << "不是ts包:" << (int) (data[0]) << " " << len;
+        WarnL << "Not a ts package:" << (int) (data[0]) << " " << len;
         return 0;
     }
     _onSegment(data, len);
@@ -35,7 +25,6 @@ const char *TSSegment::onSearchPacketTail(const char *data, size_t len) {
         }
         return nullptr;
     }
-    // 下一个包头  [AUTO-TRANSLATED:c653c49d]
     // Next packet header
     if (((uint8_t *) data)[_size] == TS_SYNC_BYTE) {
         return data + _size;
@@ -45,11 +34,9 @@ const char *TSSegment::onSearchPacketTail(const char *data, size_t len) {
         return (char *) pos;
     }
     if (remainDataSize() > 4 * _size) {
-        // 数据这么多都没ts包，全部清空  [AUTO-TRANSLATED:95bece98]
         // So much data but no ts packets, clear all
         return data + len;
     }
-    // 等待更多数据  [AUTO-TRANSLATED:b47fbc81]
     // Wait for more data
     return nullptr;
 }
@@ -96,7 +83,6 @@ ssize_t TSDecoder::input(const uint8_t *data, size_t bytes) {
     try {
         _ts_segment.input((char *) data, bytes);
     } catch (...) {
-        // ts解析失败，清空缓存数据  [AUTO-TRANSLATED:18b3de5b]
         // ts parsing failed, clear cache data
         _ts_segment.reset();
         throw;

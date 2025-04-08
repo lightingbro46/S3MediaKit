@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <ctime>
+﻿#include <ctime>
 #include <iomanip> 
 #include <sys/stat.h>
 #include "HlsMakerImp.h"
@@ -44,7 +34,6 @@ HlsMakerImp::HlsMakerImp(bool is_fmp4, const string &m3u8_file, const string &pa
 
 HlsMakerImp::~HlsMakerImp() {
     try {
-        // 可能hls注册时导致抛异常  [AUTO-TRANSLATED:82add30d]
         // Possible exception thrown during hls registration
         clearCache(false, true);
     } catch (std::exception &ex) {
@@ -68,7 +57,6 @@ static void clearHls(const std::list<std::string> &files) {
 }
 
 void HlsMakerImp::clearCache(bool immediately, bool eof) {
-    // 录制完了  [AUTO-TRANSLATED:5d3bfbeb]
     // Recording finished
     flushLastSegment(eof);
     if (!isLive() || isKeep()) {
@@ -86,7 +74,6 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
             lst.emplace_back(std::move(pr.second));
         }
 
-        // hls直播才删除文件  [AUTO-TRANSLATED:81d2aaa5]
         // Delete file only after hls live streaming
         GET_CONFIG(uint32_t, delay, Hls::kDeleteDelaySec);
         if (!delay || immediately) {
@@ -104,13 +91,13 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
     _segment_file_paths.clear();
 }
 
-/** 写入该目录的init.mp4文件以及m3u8文件 **/
+/** Write to the init.mp4 file and m3u8 file **/
 void HlsMakerImp::saveCurrentDir() {
     if (_current_dir.empty() || _current_dir_seg_list.empty()) {
         return;
     }
     if (isFmp4()) {
-        // 写入init.mp4文件
+        // Write to init.mp4 file
         File::saveFile(_current_dir_init_file, _path_prefix + "/" + _current_dir + "init.mp4");
     }
 
@@ -140,7 +127,7 @@ void HlsMakerImp::saveCurrentDir() {
     index_str += ss.str();
     index_str += "#EXT-X-ENDLIST\n";
 
-    /** 写入该目录的m3u8文件 **/
+    /** Write m3u8 file to this directory **/
     File::saveFile(index_str, _path_prefix + "/" + _current_dir + (isFmp4() ? "vod.fmp4.m3u8" : "vod.m3u8"));
 }
 
@@ -154,11 +141,11 @@ string HlsMakerImp::onOpenSegment(uint64_t index) {
         segment_name = current_dir + strTime + "_" + std::to_string(index) + (isFmp4() ? ".mp4" : ".ts");
         segment_path = _path_prefix + "/" + segment_name;
         if (isLive()) {
-            // 直播
+            // live streaming
             _segment_file_paths.emplace(index, segment_path);
         }
         if (!isLive() || isKeep()) {
-            // 目录将发生变更，保留ts切片时，每个目录都生成一个m3u8文件
+            // Directory will change. When keeping the ts slice, each directory generates an m3u8 file.
             if (!_current_dir.empty() && current_dir != _current_dir) {
                 saveCurrentDir();
             }
@@ -167,7 +154,6 @@ string HlsMakerImp::onOpenSegment(uint64_t index) {
     }
     _file = makeFile(segment_path, true);
 
-    // 保存本切片的元数据  [AUTO-TRANSLATED:64e6f692]
     // Save metadata for this slice
     _info.start_time = ::time(NULL);
     _info.file_name = segment_name;
@@ -230,7 +216,6 @@ void HlsMakerImp::onWriteHls(const std::string &data, bool include_delay) {
 }
 
 void HlsMakerImp::onFlushLastSegment(uint64_t duration_ms) {
-    // 关闭并flush文件到磁盘  [AUTO-TRANSLATED:9798ec4d]
     // Close and flush file to disk
     _file = nullptr;
     if (!isLive() || isKeep()) {

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "SrtPlayer.h"
+﻿#include "SrtPlayer.h"
 #include "SrtPlayerImp.h"
 #include "Common/config.h"
 #include "Http/HlsPlayer.h"
@@ -61,16 +51,16 @@ void SrtPlayer::onResult(const SockException &ex) {
     SrtCaller::onResult(ex);
 
      if (!ex) {
-        // 播放成功
+        // Play successfully
         onPlayResult(ex);
         _benchmark_mode = (*this)[Client::kBenchmarkMode].as<int>();
 
-        // 播放成功，恢复数据包接收超时定时器
+        // Play successfully, the packet reception timeout timer is restored
         _recv_ticker.resetTime();
         auto timeout = getTimeOutSec();
-        //读取配置文件
+        //Read configuration files
         weak_ptr<SrtPlayer> weakSelf = static_pointer_cast<SrtPlayer>(shared_from_this());
-        // 创建rtp数据接收超时检测定时器
+        // Create a RTP data reception timeout detection timer
         _check_timer = std::make_shared<Timer>(timeout /2,
             [weakSelf, timeout]() {
                 auto strongSelf = weakSelf.lock();
@@ -78,7 +68,7 @@ void SrtPlayer::onResult(const SockException &ex) {
                     return false;
                 }
                 if (strongSelf->_recv_ticker.elapsedTime() > timeout * 1000) {
-                    // 接收媒体数据包超时
+                    // Receive media packet timeout
                     strongSelf->onResult(SockException(Err_timeout, "receive srt media data timeout:" + strongSelf->_url._full_url));
                     return false;
                 }
@@ -88,7 +78,7 @@ void SrtPlayer::onResult(const SockException &ex) {
     } else {
         WarnL << ex.getErrCode() << " " << ex.what();
         if (ex.getErrCode() == Err_shutdown) {
-            // 主动shutdown的，不触发回调
+            // Active shutdown, no callback triggering
             return;
         }
         if (!_is_handleshake_finished) {

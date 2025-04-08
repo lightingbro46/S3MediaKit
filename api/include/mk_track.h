@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_MK_TRACK_H
-#define ZLMEDIAKIT_MK_TRACK_H
+﻿#ifndef S3MEDIAKIT_MK_TRACK_H
+#define S3MEDIAKIT_MK_TRACK_H
 
 #include "mk_common.h"
 #include "mk_frame.h"
@@ -153,4 +153,4 @@ API_EXPORT int API_CALL mk_track_audio_sample_bit(mk_track track);
 }
 #endif
 
-#endif //ZLMEDIAKIT_MK_TRACK_H
+#endif //S3MEDIAKIT_MK_TRACK_H

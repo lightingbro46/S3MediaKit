@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_FMP4MEDIASOURCEMUXER_H
-#define ZLMEDIAKIT_FMP4MEDIASOURCEMUXER_H
+﻿#ifndef S3MEDIAKIT_FMP4MEDIASOURCEMUXER_H
+#define S3MEDIAKIT_FMP4MEDIASOURCEMUXER_H
 
 #include "FMP4MediaSource.h"
 #include "Record/MP4Muxer.h"
@@ -63,7 +53,6 @@ public:
     }
 
     bool isEnabled() {
-        // 缓存尚未清空时，还允许触发inputFrame函数，以便及时清空缓存  [AUTO-TRANSLATED:7cfd4d49]
         // The inputFrame function is still allowed to be triggered when the cache has not been cleared, so that the cache can be cleared in time.
         return _option.fmp4_demand ? (_clear_cache ? true : _enabled) : true;
     }
@@ -92,4 +81,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_FMP4MEDIASOURCEMUXER_H
+#endif //S3MEDIAKIT_FMP4MEDIASOURCEMUXER_H

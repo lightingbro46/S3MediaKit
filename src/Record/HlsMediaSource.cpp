@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "HlsMediaSource.h"
+﻿#include "HlsMediaSource.h"
 #include "Common/config.h"
 
 using namespace toolkit;
@@ -30,7 +20,6 @@ void HlsCookieData::addReaderCount() {
             _ring_reader = src->getRing()->attach(EventPollerPool::Instance().getPoller());
             auto added = _added;
             _ring_reader->setDetachCB([added]() {
-                // HlsMediaSource已经销毁  [AUTO-TRANSLATED:bedb0385]
                 // HlsMediaSource has been destroyed
                 *added = false;
             });
@@ -48,7 +37,7 @@ HlsCookieData::~HlsCookieData() {
     if (*_added) {
         uint64_t duration = (_ticker.createdTime() - _ticker.elapsedTime()) / 1000;
         WarnL << _sock_info->getIdentifier() << "(" << _sock_info->get_peer_ip() << ":" << _sock_info->get_peer_port()
-              << ") " << "HLS播放器(" << _info.shortUrl() << ")断开,耗时(s):" << duration;
+              << ") " << "HLS player (" << _info.shortUrl() << ") disconnected, time-consuming(s):" << duration;
 
         GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
         uint64_t bytes = _bytes.load();
@@ -91,7 +80,6 @@ void HlsMediaSource::setIndexFile(std::string index_file)
         regist();
     }
 
-    // 赋值m3u8索引文件内容  [AUTO-TRANSLATED:c11882b5]
     // Assign m3u8 index file content
     std::lock_guard<std::mutex> lck(_mtx_index);
     _index_file = std::move(index_file);
@@ -109,7 +97,6 @@ void HlsMediaSource::getIndexFile(std::function<void(const std::string& str)> cb
         cb(_index_file);
         return;
     }
-    // 等待生成m3u8文件  [AUTO-TRANSLATED:c3ae3286]
     // Waiting for m3u8 file generation
     _list_cb.emplace_back(std::move(cb));
 }

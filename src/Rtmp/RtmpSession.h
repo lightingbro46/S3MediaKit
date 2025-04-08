@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RTMPSESSION_H_
+﻿#ifndef SRC_RTMP_RTMPSESSION_H_
 #define SRC_RTMP_RTMPSESSION_H_
 
 #include <unordered_map>
@@ -66,22 +56,16 @@ private:
     }
 
     ///////MediaSourceEvent override///////
-    // 关闭  [AUTO-TRANSLATED:92392f02]
     // Close
     bool close(MediaSource &sender) override;
-    // 播放总人数  [AUTO-TRANSLATED:c42a3161]
     // Total number of plays
     int totalReaderCount(MediaSource &sender) override;
-    // 获取媒体源类型  [AUTO-TRANSLATED:34290a69]
     // Get media source type
     MediaOriginType getOriginType(MediaSource &sender) const override;
-    // 获取媒体源url或者文件路径  [AUTO-TRANSLATED:fa34d795]
     // Get media source url or file path
     std::string getOriginUrl(MediaSource &sender) const override;
-    // 获取媒体源客户端相关信息  [AUTO-TRANSLATED:037ef910]
     // Get media source client related information
     std::shared_ptr<SockInfo> getOriginSock(MediaSource &sender) const override;
-    // 由于支持断连续推，存在OwnerPoller变更的可能  [AUTO-TRANSLATED:1c863b40]
     // Due to support for discontinuous pushing, there may be changes in OwnerPoller
     toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
 
@@ -93,13 +77,10 @@ private:
 private:
     bool _set_meta_data = false;
     double _recv_req_id = 0;
-    // 断连续推延时  [AUTO-TRANSLATED:13ad578a]
     // Discontinuous pushing delay
     uint32_t _continue_push_ms = 0;
-    // 消耗的总流量  [AUTO-TRANSLATED:45ad2785]
     // Total traffic consumed
     uint64_t _total_bytes = 0;
-    // 数据接收超时计时器  [AUTO-TRANSLATED:3fba518a]
     // Data reception timeout timer
     toolkit::Ticker _ticker;
     MediaInfo _media_info;
@@ -112,11 +93,7 @@ private:
 };
 
 /**
- * 支持ssl加密的rtmp服务器
  * Supports ssl encrypted rtmp server
- 
- 
- * [AUTO-TRANSLATED:21d167ba]
  */
 using RtmpSessionWithSSL = toolkit::SessionWithSSL<RtmpSession>;
 

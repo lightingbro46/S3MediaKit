@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_GB28181ROCESS_H
-#define ZLMEDIAKIT_GB28181ROCESS_H
+﻿#ifndef S3MEDIAKIT_GB28181ROCESS_H
+#define S3MEDIAKIT_GB28181ROCESS_H
 
 #if defined(ENABLE_RTPPROXY)
 
@@ -29,25 +19,15 @@ public:
     GB28181Process(const MediaInfo &media_info, MediaSinkInterface *sink);
 
     /**
-     * 输入rtp
-     * @param data rtp数据指针
-     * @param data_len rtp数据长度
-     * @return 是否解析成功
      * Input rtp
      * @param data rtp data pointer
      * @param data_len rtp data length
      * @return Whether the parsing is successful
-     
-     * [AUTO-TRANSLATED:d7b14ffe]
      */
     bool inputRtp(bool, const char *data, size_t data_len) override;
 
     /**
-     * 刷新输出所有缓存
      * Refresh and output all caches
-     
-     
-     * [AUTO-TRANSLATED:4509b01f]
      */
     void flush() override;
 
@@ -68,4 +48,4 @@ private:
 
 }//namespace mediakit
 #endif//defined(ENABLE_RTPPROXY)
-#endif //ZLMEDIAKIT_GB28181ROCESS_H
+#endif //S3MEDIAKIT_GB28181ROCESS_H

@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_OPUS_H
-#define ZLMEDIAKIT_OPUS_H
+﻿#ifndef S3MEDIAKIT_OPUS_H
+#define S3MEDIAKIT_OPUS_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -24,4 +24,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_OPUS_H
+#endif //S3MEDIAKIT_OPUS_H

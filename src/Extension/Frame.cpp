@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Frame.h"
+﻿#include "Frame.h"
 #include "Common/Parser.h"
 #include "Common/Stamp.h"
 #include "Common/MediaSource.h"
@@ -45,7 +35,6 @@ FrameStamp::FrameStamp(Frame::Ptr frame) {
 
 FrameStamp::FrameStamp(Frame::Ptr frame, Stamp &stamp, int modify_stamp)
     : FrameStamp(std::move(frame)) {
-    // kModifyStampSystem时采用系统时间戳，kModifyStampRelative采用相对时间戳  [AUTO-TRANSLATED:54dd5685]
     // When using kModifyStampSystem, the system timestamp is used, and when using kModifyStampRelative, the relative timestamp is used.
     stamp.revise(_frame->dts(), _frame->pts(), _dts, _pts, modify_stamp == ProtocolOption::kModifyStampSystem);
 }
@@ -104,7 +93,6 @@ int getMpegIdByCodec(CodecId codec) {
 
 CodecId getCodecByMpegId(int mpeg_id) {
     if (mpeg_id == PSI_STREAM_RESERVED || mpeg_id == 0xBD) {
-        // 海康的 PS 流中会有0xBD 的包  [AUTO-TRANSLATED:32a250cb]
         // Hikvision's PS stream will have 0xBD packets.
         return CodecInvalid;
     }
@@ -176,7 +164,6 @@ static size_t constexpr kMaxFrameCacheSize = 100;
 
 bool FrameMerger::willFlush(const Frame::Ptr &frame) const{
     if (_frame_cache.empty()) {
-        // 缓存为空  [AUTO-TRANSLATED:b9505a19]
         // Cache is empty.
         return false;
     }
@@ -185,20 +172,17 @@ bool FrameMerger::willFlush(const Frame::Ptr &frame) const{
     }
     switch (_type) {
         case none : {
-            // frame不是完整的帧，我们合并为一帧  [AUTO-TRANSLATED:00e9f200]
             // The frame is not a complete frame, we merge it into one frame.
             bool new_frame = false;
             switch (frame->getCodecId()) {
                 case CodecH264:
                 case CodecH265: {
-                    // 如果是新的一帧，前面的缓存需要输出  [AUTO-TRANSLATED:b4deff81]
                     // If it is a new frame, the previous cache needs to be output.
                     new_frame = frame->prefixSize();
                     break;
                 }
                 default: break;
             }
-            // 遇到新帧、或时间戳变化或缓存太多，防止内存溢出，则flush输出  [AUTO-TRANSLATED:0292964a]
             // When encountering a new frame, or a timestamp change, or too much cache, flush the output to prevent memory overflow.
             return new_frame || _frame_cache.back()->dts() != frame->dts() || _frame_cache.size() > kMaxFrameCacheSize;
         }
@@ -206,27 +190,23 @@ bool FrameMerger::willFlush(const Frame::Ptr &frame) const{
         case mp4_nal_size:
         case h264_prefix: {
             if (!_have_decode_able_frame) {
-                // 缓存中没有有效的能解码的帧，所以这次不flush  [AUTO-TRANSLATED:5d860722]
                 // There are no valid frames that can be decoded in the cache, so no flush this time.
                 return _frame_cache.size() > kMaxFrameCacheSize;
             }
             if (_frame_cache.back()->dts() != frame->dts() || frame->decodeAble() || frame->configFrame()) {
-                // 时间戳变化了,或新的一帧，或遇到config帧，立即flush  [AUTO-TRANSLATED:8c2523b1]
                 // When the timestamp changes, or a new frame, or a config frame is encountered, flush immediately.
                 return true;
             }
             return _frame_cache.size() > kMaxFrameCacheSize;
         }
-        default: /*不可达*/ assert(0); return true;
+        default: /*Unreachable*/ assert(0); return true;
     }
 }
 
 void FrameMerger::doMerge(BufferLikeString &merged, const Frame::Ptr &frame) const{
     switch (_type) {
         case none : {
-            // 此处是合并ps解析输出的流，解析出的流可能是半帧或多帧，不能简单的根据nal type过滤  [AUTO-TRANSLATED:4a231bdc]
             // Here, the PS parsing output stream is merged. The parsed stream may be half a frame or multiple frames, and cannot be simply filtered according to the nal type.
-            // 此流程只用于合并ps解析输出为H264/H265，后面流程有split和忽略无效帧操作  [AUTO-TRANSLATED:2d40274e]
             // This process is only used to merge PS parsing output into H264/H265. The subsequent process has split and ignore invalid frame operations.
             merged.append(frame->data(), frame->size());
             break;
@@ -247,7 +227,7 @@ void FrameMerger::doMerge(BufferLikeString &merged, const Frame::Ptr &frame) con
             merged.append(frame->data() + frame->prefixSize(), frame->size() - frame->prefixSize());
             break;
         }
-        default: /*不可达*/ assert(0); break;
+        default: /*Unreachable*/ assert(0); break;
     }
 }
 
@@ -270,7 +250,6 @@ bool FrameMerger::inputFrame(const Frame::Ptr &frame, onOutput cb, BufferLikeStr
         bool have_key_frame = back->keyFrame();
 
         if (_frame_cache.size() != 1 || _type == mp4_nal_size || buffer) {
-            // 在MP4模式下，一帧数据也需要在前添加nalu_size  [AUTO-TRANSLATED:4a7e5c20]
             // In MP4 mode, a frame of data also needs to add nalu_size in front.
             BufferLikeString tmp;
             BufferLikeString &merged = buffer ? *buffer : tmp;
@@ -320,10 +299,7 @@ void FrameMerger::flush() {
     clear();
 }
 /**
- * 写帧接口转function，辅助类
  * Write frame interface to function, auxiliary class
- 
- * [AUTO-TRANSLATED:ce04a5e9]
  */
 class FrameWriterInterfaceHelper : public FrameWriterInterface {
 public:
@@ -331,19 +307,12 @@ public:
     using onWriteFrame = std::function<bool(const Frame::Ptr &frame)>;
 
     /**
-     * inputFrame后触发onWriteFrame回调
      * Trigger onWriteFrame callback after inputFrame
-     
-     * [AUTO-TRANSLATED:169e5944]
      */
     FrameWriterInterfaceHelper(onWriteFrame cb) { _callback = std::move(cb); }
 
     /**
-     * 写入帧数据
      * Write frame data
-     
-     
-     * [AUTO-TRANSLATED:d46c6fc2]
      */
     bool inputFrame(const Frame::Ptr &frame) override { return _callback(frame); }
 

@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_SRtPLAYERIMP_H
-#define ZLMEDIAKIT_SRtPLAYERIMP_H
+﻿#ifndef S3MEDIAKIT_SRtPLAYERIMP_H
+#define S3MEDIAKIT_SRtPLAYERIMP_H
 
 #include "SrtPlayer.h"
 
@@ -48,4 +38,4 @@ private:
 };
 
 } /* namespace mediakit */
-#endif /* ZLMEDIAKIT_SRtPLAYERIMP_H */
+#endif /* S3MEDIAKIT_SRtPLAYERIMP_H */

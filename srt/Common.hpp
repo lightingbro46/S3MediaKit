@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_COMMON_H
-#define ZLMEDIAKIT_SRT_COMMON_H
+﻿#ifndef S3MEDIAKIT_SRT_COMMON_H
+#define S3MEDIAKIT_SRT_COMMON_H
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -117,4 +117,4 @@ private:
 
 } // namespace SRT
 
-#endif // ZLMEDIAKIT_SRT_COMMON_H
+#endif // S3MEDIAKIT_SRT_COMMON_H

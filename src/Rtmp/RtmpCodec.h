@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTMPCODEC_H
-#define ZLMEDIAKIT_RTMPCODEC_H
+﻿#ifndef S3MEDIAKIT_RTMPCODEC_H
+#define S3MEDIAKIT_RTMPCODEC_H
 
 #include "Rtmp/Rtmp.h"
 #include "Extension/Frame.h"
@@ -25,23 +15,15 @@ public:
     virtual ~RtmpRing() = default;
 
     /**
-     * 设置rtmp环形缓存
      * Set rtmp ring buffer
-     
-     * [AUTO-TRANSLATED:0a25f795]
      */
     void setRtmpRing(const RingType::Ptr &ring) {
         _ring = ring;
     }
 
     /**
-     * 输入rtmp包
-     * @param rtmp rtmp包
      * Input rtmp packet
      * @param rtmp rtmp packet
-     
-     
-     * [AUTO-TRANSLATED:3a0f0599]
      */
     virtual void inputRtmp(const RtmpPacket::Ptr &rtmp) {
         if (_ring) {
@@ -70,4 +52,4 @@ private:
 
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_RTMPCODEC_H
+#endif //S3MEDIAKIT_RTMPCODEC_H

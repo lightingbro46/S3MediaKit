@@ -1,27 +1,4 @@
-﻿# MIT License
-#
-# Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
-aux_source_directory(. TEST_SRC_LIST)
+﻿aux_source_directory(. TEST_SRC_LIST)
 
 find_package(PCAP QUIET)
 
@@ -29,14 +6,14 @@ foreach(TEST_SRC ${TEST_SRC_LIST})
   get_filename_component(TEST_EXE_NAME ${TEST_SRC} NAME_WE)
 
   if(NOT PCAP_FOUND)
-    # message(WARNING "PCAP 未找到")
+    # message(WARNING "PCAP not found")
     if("${TEST_EXE_NAME}" MATCHES "test_rtp_pcap")
       continue()
     endif()
   endif()
   
   if(NOT TARGET S3MediaKit::WebRTC)
-    # 暂时过滤掉依赖 WebRTC 的测试模块
+    # Temporarily filter out test modules that depend on WebRTC
     if("${TEST_EXE_NAME}" MATCHES "test_rtcp_nack")
       continue()
     endif()

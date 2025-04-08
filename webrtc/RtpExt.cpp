@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "RtpExt.h"
+﻿#include "RtpExt.h"
 #include "Sdp.h"
 
 #pragma pack(push, 1)
@@ -136,7 +126,6 @@ void appendExt(map<uint8_t, RtpExt> &ret, uint8_t *ptr, const uint8_t *end) {
     while (ptr < end) {
         auto ext = reinterpret_cast<Type *>(ptr);
         if (ext->getId() == (uint8_t) RtpExtType::padding) {
-            // padding，忽略  [AUTO-TRANSLATED:a7fda608]
             // padding, ignore
             ++ptr;
             continue;
@@ -214,7 +203,7 @@ RtpExtType RtpExt::getExtType(const string &url) {
 const string &RtpExt::getExtUrl(RtpExtType type) {
     auto it = s_type_to_url.find(type);
     if (it == s_type_to_url.end()) {
-        throw std::invalid_argument(string("未识别的rtp ext类型:") + to_string((int) type));
+        throw std::invalid_argument(string("Unrecognized rtp ext type:") + to_string((int) type));
     }
     return it->second;
 }
@@ -466,8 +455,7 @@ void RtpExt::getVideoTiming(uint8_t &flags,
 //Values:
 //0x00: Unspecified. Default value. Treated the same as an absence of an extension.
 //0x01: Screenshare. Video stream is of a screenshare type.
-// 0x02: 摄像头？  [AUTO-TRANSLATED:ce2acbbb]
-// 0x02: Camera?
+//0x02: Camera?
 //Notes: Extension shoud be present only in the last packet of key-frames.
 // If attached to other packets it should be ignored.
 // If extension is absent, Unspecified value is assumed.
@@ -588,13 +576,11 @@ RtpExt RtpExtContext::changeRtpExtId(const RtpHeader *header, bool is_recv, stri
         if (is_recv) {
             auto it = _rtp_ext_id_to_type.find(pr.first);
             if (it == _rtp_ext_id_to_type.end()) {
-                // TraceL << "接收rtp时,忽略不识别的rtp ext, id=" << (int) pr.first;  [AUTO-TRANSLATED:284d8a38]
                 // TraceL << "Receiving rtp, ignoring unrecognized rtp ext, id=" << (int) pr.first;
                 pr.second.clearExt();
                 continue;
             }
             pr.second.setType(it->second);
-            // 重新赋值ext id为 ext type，作为后面处理ext的统一中间类型  [AUTO-TRANSLATED:ab825878]
             // Reassign ext id to ext type, as a unified intermediate type for processing ext later
             pr.second.setExtId((uint8_t) it->second);
             switch (it->second) {
@@ -606,12 +592,10 @@ RtpExt RtpExtContext::changeRtpExtId(const RtpHeader *header, bool is_recv, stri
             pr.second.setType((RtpExtType) pr.first);
             auto it = _rtp_ext_type_to_id.find((RtpExtType) pr.first);
             if (it == _rtp_ext_type_to_id.end()) {
-                // TraceL << "发送rtp时, 忽略不被客户端支持rtp ext:" << pr.second.dumpString();  [AUTO-TRANSLATED:5d9fd8cc]
                 // TraceL << "Sending rtp, ignoring rtp ext not supported by client:" << pr.second.dumpString();
                 pr.second.clearExt();
                 continue;
             }
-            // 重新赋值ext id为客户端sdp声明的类型  [AUTO-TRANSLATED:06d60796]
             // Reassign ext id to the type declared in client sdp
             pr.second.setExtId(it->second);
         }
@@ -628,11 +612,9 @@ RtpExt RtpExtContext::changeRtpExtId(const RtpHeader *header, bool is_recv, stri
     }
     auto ssrc = ntohl(header->ssrc);
     if (rid.empty()) {
-        // 获取rid  [AUTO-TRANSLATED:8ae4dffa]
         // Get rid
         rid = _ssrc_to_rid[ssrc];
     } else {
-        // 设置rid  [AUTO-TRANSLATED:5e34819b]
         // Set rid
         auto it = _ssrc_to_rid.find(ssrc);
         if (it == _ssrc_to_rid.end() || it->second != rid) {

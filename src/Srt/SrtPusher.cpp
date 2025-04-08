@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "SrtPusher.h"
+﻿#include "SrtPusher.h"
 #include "Common/config.h"
 
 using namespace toolkit;
@@ -54,7 +44,7 @@ void SrtPusher::onResult(const SockException &ex) {
     } else {
         WarnL << ex.getErrCode() << " " << ex.what();
         if (ex.getErrCode() == Err_shutdown) {
-            // 主动shutdown的，不触发回调
+            // Active shutdown, no callback triggering
             return;
         }
         if (!_is_handleshake_finished) {
@@ -87,13 +77,13 @@ void SrtPusher::doPublish() {
         onResult(SockException(Err_eof, "the media source was released"));
         return;
     }
-    // 异步查找直播流
+    // Asynchronously search for live streams
     std::weak_ptr<SrtPusher> weak_self = static_pointer_cast<SrtPusher>(shared_from_this());
     _ts_reader = src->getRing()->attach(getPoller());
     _ts_reader->setDetachCB([weak_self]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
-            // 本对象已经销毁
+            // This object has been destroyed
             return;
         }
         strong_self->onShutdown(SockException(Err_shutdown));
@@ -101,7 +91,7 @@ void SrtPusher::doPublish() {
     _ts_reader->setReadCB([weak_self](const TSMediaSource::RingDataType &ts_list) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
-            // 本对象已经销毁
+            // This object has been destroyed
             return;
         }
         size_t i = 0;

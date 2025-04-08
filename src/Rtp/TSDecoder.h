@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_TSDECODER_H
-#define ZLMEDIAKIT_TSDECODER_H
+﻿#ifndef S3MEDIAKIT_TSDECODER_H
+#define S3MEDIAKIT_TSDECODER_H
 
 #include "Util/logger.h"
 #include "Http/HttpRequestSplitter.h"
@@ -20,7 +10,6 @@
 
 namespace mediakit {
 
-// TS包分割器，用于split一个一个的ts包  [AUTO-TRANSLATED:a10b66b3]
 // TS package splitter, used to split one ts package at a time
 class TSSegment : public HttpRequestSplitter {
 public:
@@ -39,7 +28,6 @@ private:
 };
 
 #if defined(ENABLE_HLS)
-// ts解析器  [AUTO-TRANSLATED:f2b9f0cc]
 // ts parser
 class TSDecoder : public Decoder {
 public:
@@ -54,4 +42,4 @@ private:
 #endif//defined(ENABLE_HLS)
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_TSDECODER_H
+#endif //S3MEDIAKIT_TSDECODER_H

@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "FlvMuxer.h"
+﻿#include "FlvMuxer.h"
 #include "Util/File.h"
 #include "Rtmp/utils.h"
 #include "Http/HttpSession.h"
@@ -26,11 +16,10 @@ FlvMuxer::FlvMuxer(){
 
 void FlvMuxer::start(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr &media, uint32_t start_pts) {
     if (!media) {
-        throw std::runtime_error("RtmpMediaSource 无效");
+        throw std::runtime_error("RtmpMediaSource invalid");
     }
     if (!poller->isCurrentThread()) {
         weak_ptr<FlvMuxer> weak_self = getSharedPtr();
-        // 延时两秒启动录制，目的是为了等待config帧收集完毕  [AUTO-TRANSLATED:d359f59d]
         // Start recording after a delay of two seconds, the purpose is to wait for the config frame to be collected.
         poller->doDelayTask(2000, [weak_self, poller, media, start_pts]() {
             auto strong_self = weak_self.lock();
@@ -92,7 +81,6 @@ BufferRaw::Ptr FlvMuxer::obtainBuffer(const void *data, size_t len) {
 }
 
 void FlvMuxer::onWriteFlvHeader(const RtmpMediaSource::Ptr &src) {
-    // 发送flv文件头  [AUTO-TRANSLATED:ee2c5556]
     // Send the flv file header.
     auto buffer = obtainBuffer();
     buffer->setCapacity(sizeof(FLVHeader));
@@ -107,7 +95,6 @@ void FlvMuxer::onWriteFlvHeader(const RtmpMediaSource::Ptr &src) {
     header->length = htonl(FLVHeader::kFlvHeaderLength);
     header->have_video = src->haveVideo();
     header->have_audio = src->haveAudio();
-    // memset时已经赋值为0  [AUTO-TRANSLATED:0f71eef1]
     // It has already been assigned to 0 during memset.
     //header->previous_tag_size0 = 0;
 
@@ -170,14 +157,12 @@ void FlvRecorder::startRecord(const EventPoller::Ptr &poller, const RtmpMediaSou
                               const string &file_path) {
     stop();
     lock_guard<recursive_mutex> lck(_file_mtx);
-    // 开辟文件写缓存  [AUTO-TRANSLATED:22d1c17f]
     // Allocate file write cache.
     std::shared_ptr<char> fileBuf(new char[FILE_BUF_SIZE], [](char *ptr) {
         if (ptr) {
             delete[] ptr;
         }
     });
-    // 新建文件  [AUTO-TRANSLATED:f3d512a6]
     // Create a new file.
     _file.reset(File::create_file(file_path, "wb"), [fileBuf](FILE *fp) {
         if (fp) {
@@ -186,10 +171,9 @@ void FlvRecorder::startRecord(const EventPoller::Ptr &poller, const RtmpMediaSou
         }
     });
     if (!_file) {
-        throw std::runtime_error(StrPrinter << "打开文件失败:" << file_path);
+        throw std::runtime_error(StrPrinter << "Failed to open the file:" << file_path);
     }
 
-    // 设置文件写缓存  [AUTO-TRANSLATED:a767e55c]
     // Set the file write cache.
     setvbuf(_file.get(), fileBuf.get(), _IOFBF, FILE_BUF_SIZE);
     start(poller, media);

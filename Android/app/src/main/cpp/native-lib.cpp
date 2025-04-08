@@ -10,9 +10,9 @@ using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
-#define JNI_API(retType, funName, ...) extern "C"  JNIEXPORT retType Java_com_zlmediakit_jni_S3MediaKit_##funName(JNIEnv* env, jclass cls,##__VA_ARGS__)
-#define MediaPlayerCallBackSign "com/zlmediakit/jni/S3MediaKit$MediaPlayerCallBack"
-#define MediaFrameSign "com/zlmediakit/jni/S3MediaKit$MediaFrame"
+#define JNI_API(retType, funName, ...) extern "C"  JNIEXPORT retType Java_com_s3mediakit_jni_S3MediaKit_##funName(JNIEnv* env, jclass cls,##__VA_ARGS__)
+#define MediaPlayerCallBackSign "com/s3mediakit/jni/S3MediaKit$MediaPlayerCallBack"
+#define MediaFrameSign "com/s3mediakit/jni/S3MediaKit$MediaFrame"
 
 string stringFromJstring(JNIEnv *env, jstring jstr) {
     if (!env || !jstr) {
@@ -109,7 +109,7 @@ void doInJavaThread(FUN &&fun){
     }
     fun(env);
     if (status != JNI_OK) {
-        //Detach线程
+        //Detach thread
         s_jvm->DetachCurrentThread();
     }
 }
@@ -123,16 +123,16 @@ void doInJavaThread(FUN &&fun){
         if(localRef){ \
             env->CallVoidMethod(localRef, jmid, ##__VA_ARGS__); \
         }else{ \
-            WarnL << "弱引用已经释放:" << method << " " << argFmt; \
+            WarnL << "Weak references have been released:" << method << " " << argFmt; \
         }\
     }); \
 }
 
 /*
- * 加载动态库
+ * Loading dynamic library
  */
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    //设置日志
+    //Setting up logs
     s_jvm = vm;
     Logger::Instance().add(std::make_shared<ConsoleChannel>());
     Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
@@ -142,7 +142,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 
 static pthread_t s_tread_id = 0;
 /*
- * 卸载动态库
+ * Uninstall dynamic library
  */
 JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved){
     InfoL;
@@ -155,10 +155,10 @@ extern int start_main(int argc,char *argv[]);
 
 JNI_API(jboolean, startDemo, jstring ini_dir){
     string sd_path = stringFromJstring(env,ini_dir);
-    string ini_file = sd_path +  "/zlmediakit.ini";
+    string ini_file = sd_path +  "/s3mediakit.ini";
 
-    //可以在sd卡根目录下放置ssl证书以便支持https服务器，证书支持p12或pem格式
-    string pem_file = sd_path +  "/zlmediakit.pem";
+    //SSL certificate can be placed in the root directory of the SD card to support https server, and the certificate supports p12 or pem format
+    string pem_file = sd_path +  "/s3mediakit.pem";
 
     DebugL << "sd_path:" << sd_path;
     DebugL << "ini file:" << ini_file;
@@ -166,25 +166,25 @@ JNI_API(jboolean, startDemo, jstring ini_dir){
     static thread s_th([sd_path,ini_file,pem_file](){
         s_tread_id = pthread_self();
         try {
-            //http根目录修改默认路径
+            //http root directory modify the default path
             mINI::Instance()[Http::kRootPath] = sd_path + "/httpRoot";
-            //mp4录制点播根目录修改默认路径
+            //mp4 recording on-demand root directory to modify the default path
             mINI::Instance()[Protocol::kMP4SavePath] = sd_path + "/httpRoot";
-            //hls根目录修改默认路径
+            //hls root directory modify the default path
             mINI::Instance()[Protocol::kHlsSavePath]  = sd_path + "/httpRoot";
-            //替换默认端口号(在配置文件未生成时有效)
+            //Replace the default port number (valid when the configuration file is not generated)
             mINI::Instance()["http.port"] = 8080;
             mINI::Instance()["http.sslport"] = 8443;
             mINI::Instance()["rtsp.port"] = 8554;
             mINI::Instance()["rtsp.sslport"] = 8332;
             mINI::Instance()["general.enableVhost"] = 0;
             for (auto &pr : mINI::Instance()) {
-                //替换hook默认地址
+                //Replace hook default address
                 replace(pr.second, "https://127.0.0.1/", "http://127.0.0.1:8080/");
             }
-            //默认打开hook
+            //Hook is turned on by default
             mINI::Instance()["hook.enable"] = 0;
-            //默认打开http api调试
+            //Open http API debugging by default
             mINI::Instance()["api.apiDebug"] = 1;
 
             int argc = 5;

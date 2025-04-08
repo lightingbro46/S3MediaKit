@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTP_RTSPDEMUXER_H_
+﻿#ifndef SRC_RTP_RTSPDEMUXER_H_
 #define SRC_RTP_RTSPDEMUXER_H_
 
 #include <unordered_map>
@@ -22,33 +12,20 @@ public:
     using Ptr = std::shared_ptr<RtspDemuxer>;
 
     /**
-     * 加载sdp
      * Load sdp
-     
-     * [AUTO-TRANSLATED:235be34f]
      */
     void loadSdp(const std::string &sdp);
 
     /**
-     * 开始解复用
-     * @param rtp rtp包
-     * @return true 代表是i帧第一个rtp包
      * Start demultiplexing
      * @param rtp rtp packet
      * @return true represents the first rtp packet of the i-frame
-     
-     * [AUTO-TRANSLATED:116d3186]
      */
     bool inputRtp(const RtpPacket::Ptr &rtp);
 
     /**
-     * 获取节目总时长
-     * @return 节目总时长,单位秒
      * Get the total duration of the program
      * @return Total duration of the program, in seconds
-     
-     
-     * [AUTO-TRANSLATED:6b2ec56c]
      */
     float getDuration() const;
 

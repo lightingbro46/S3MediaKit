@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_WEBHOOK_H
-#define ZLMEDIAKIT_WEBHOOK_H
+﻿#ifndef S3MEDIAKIT_WEBHOOK_H
+#define S3MEDIAKIT_WEBHOOK_H
 
 #include <string>
 #include <functional>
@@ -29,4 +29,4 @@ void onProcessExited();
  * @param func Callback
  */
 void do_http_hook(const std::string &url, const ArgsType &body, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
-#endif //ZLMEDIAKIT_WEBHOOK_H
+#endif //S3MEDIAKIT_WEBHOOK_H

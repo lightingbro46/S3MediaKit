@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "Factory.h"
+﻿#include "Factory.h"
 #include "Rtmp/Rtmp.h"
 #include "CommonRtmp.h"
 #include "CommonRtp.h"
@@ -39,7 +29,6 @@ void Factory::registerPlugin(const CodecPlugin &plugin) {
 Track::Ptr Factory::getTrackBySdp(const SdpTrack::Ptr &track) {
     auto codec = getCodecId(track->_codec);
     if (codec == CodecInvalid) {
-        // 根据传统的payload type 获取编码类型以及采样率等信息  [AUTO-TRANSLATED:d01ca068]
         // Get the encoding type, sampling rate, and other information based on the traditional payload type
         codec = RtpPayload::getCodecId(track->_pt);
     }
@@ -77,7 +66,6 @@ RtpCodec::Ptr Factory::getRtpDecoderByCodecId(CodecId codec) {
     return it->second->getRtpDecoderByCodecId();
 }
 
-// ///////////////////////////rtmp相关///////////////////////////////////////////  [AUTO-TRANSLATED:da9645df]
 // ///////////////////////////rtmp related///////////////////////////////////////////
 
 static CodecId getVideoCodecIdByAmf(const AMFValue &val) {
@@ -206,7 +194,6 @@ AMFValue Factory::getAmfByCodecId(CodecId codecId) {
 Frame::Ptr Factory::getFrameFromPtr(CodecId codec, const char *data, size_t bytes, uint64_t dts, uint64_t pts) {
     auto it = s_plugins.find(codec);
     if (it == s_plugins.end()) {
-        // 创建不支持codec的frame  [AUTO-TRANSLATED:00936c6c]
         // Create a frame that does not support the codec
         return std::make_shared<FrameFromPtr>(codec, (char *)data, bytes, dts, pts);
     }

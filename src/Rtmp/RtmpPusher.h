@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RTMPPUSHER_H_
+﻿#ifndef SRC_RTMP_RTMPPUSHER_H_
 #define SRC_RTMP_RTMPPUSHER_H_
 
 #include "RtmpProtocol.h"
@@ -68,7 +58,6 @@ private:
     std::deque<std::function<void(AMFValue &dec)> > _deque_on_status;
     std::unordered_map<int, std::function<void(AMFDecoder &dec)> > _map_on_result;
 
-    // 推流超时定时器  [AUTO-TRANSLATED:7d2dcb86]
     // Stream timeout timer
     std::shared_ptr<toolkit::Timer> _publish_timer;
     std::weak_ptr<RtmpMediaSource> _publish_src;

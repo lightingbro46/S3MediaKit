@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "FlvPlayer.h"
+﻿#include "FlvPlayer.h"
 
 using namespace std;
 using namespace toolkit;
@@ -31,7 +21,6 @@ void FlvPlayer::play(const string &url) {
 
 void FlvPlayer::onResponseHeader(const string &status, const HttpClient::HttpHeader &header) {
     if (status != "200" && status != "206") {
-        // http状态码不符合预期  [AUTO-TRANSLATED:2b6996f7]
         // HTTP status code does not meet expectations
         throw invalid_argument("bad http status code:" + status);
     }
@@ -57,7 +46,6 @@ void FlvPlayer::onResponseCompleted(const SockException &ex) {
 
 void FlvPlayer::onResponseBody(const char *buf, size_t size) {
     if (!_benchmark_mode) {
-        // 性能测试模式不做数据解析，节省cpu  [AUTO-TRANSLATED:53e4af73]
         // Performance test mode does not parse data to save CPU
         FlvSplitter::input(buf, size);
     }

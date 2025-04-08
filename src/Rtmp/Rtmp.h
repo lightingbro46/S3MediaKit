@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef __rtmp_h
+﻿#ifndef __rtmp_h
 #define __rtmp_h
 
 #include <memory>
@@ -49,12 +39,12 @@
 #define STREAM_CONTROL				0
 #define STREAM_MEDIA				1
 
-#define CHUNK_NETWORK                   2 /*网络相关的消息(参见 Protocol Control Messages)*/
-#define CHUNK_SYSTEM                    3 /*向服务器发送控制消息(反之亦可)*/
-#define CHUNK_CLIENT_REQUEST_BEFORE		3 /*客户端在createStream前,向服务器发出请求的chunkID*/
-#define CHUNK_CLIENT_REQUEST_AFTER		4 /*客户端在createStream后,向服务器发出请求的chunkID*/
-#define CHUNK_AUDIO						6 /*音频chunkID*/
-#define CHUNK_VIDEO						7 /*视频chunkID*/
+#define CHUNK_NETWORK                   2 /*Network-related messages (see Protocol Control Messages)*/
+#define CHUNK_SYSTEM                    3 /*Send control messages to the server (or vice versa)*/
+#define CHUNK_CLIENT_REQUEST_BEFORE		3 /*Before the client createStream, the chunkID requested to the server*/
+#define CHUNK_CLIENT_REQUEST_AFTER		4 /*After the client createStream, the chunkID requested to the server*/
+#define CHUNK_AUDIO						6 /*Audio chunkID*/
+#define CHUNK_VIDEO						7 /*Video chunkID*/
 
 namespace mediakit {
 
@@ -81,7 +71,6 @@ public:
     uint8_t chunk_id : 6;
 #else
     uint8_t chunk_id : 6;
-    // 0、1、2、3分别对应 12、8、4、1长度  [AUTO-TRANSLATED:31d67e40]
     // 0, 1, 2, 3 correspond to lengths of 12, 8, 4, 1 respectively
     uint8_t fmt : 2;
 #endif
@@ -100,36 +89,26 @@ public:
     //File version (for example, 0x01 for FLV version 1)
     uint8_t version;
 #if __BYTE_ORDER == __BIG_ENDIAN
-    // 保留,置0  [AUTO-TRANSLATED:46985374]
     // Preserve, set to 0
     uint8_t : 5;
-    // 是否有音频  [AUTO-TRANSLATED:9467870a]
     // Whether there is audio
     uint8_t have_audio: 1;
-    // 保留,置0  [AUTO-TRANSLATED:46985374]
     // Preserve, set to 0
     uint8_t : 1;
-    // 是否有视频  [AUTO-TRANSLATED:42d0ed81]
     // Whether there is video
     uint8_t have_video: 1;
 #else
-    // 是否有视频  [AUTO-TRANSLATED:42d0ed81]
     // Whether there is video
     uint8_t have_video: 1;
-    // 保留,置0  [AUTO-TRANSLATED:46985374]
     // Preserve, set to 0
     uint8_t : 1;
-    // 是否有音频  [AUTO-TRANSLATED:9467870a]
     // Whether there is audio
     uint8_t have_audio: 1;
-    // 保留,置0  [AUTO-TRANSLATED:46985374]
     // Preserve, set to 0
     uint8_t : 5;
 #endif
-    // The length of this header in bytes,固定为9  [AUTO-TRANSLATED:126988fc]
     // The length of this header in bytes, fixed to 9
     uint32_t length;
-    // 固定为0  [AUTO-TRANSLATED:d266c0a7]
     // Fixed to 0
     uint32_t previous_tag_size0;
 };
@@ -196,15 +175,11 @@ public:
 
     void clear();
 
-    // video config frame和key frame都返回true  [AUTO-TRANSLATED:de025c52]
     // video config frame and key frame both return true
-    // 用于gop缓存定位  [AUTO-TRANSLATED:828204e5]
     // Used for gop cache positioning
     bool isVideoKeyFrame() const;
 
-    // aac config或h264/h265 config返回true，支持增强型rtmp  [AUTO-TRANSLATED:221955ec]
     // aac config or h264/h265 config returns true, supports enhanced rtmp
-    // 用于缓存解码配置信息  [AUTO-TRANSLATED:19304f64]
     // Used to cache decoding configuration information
     bool isConfigFrame() const;
 
@@ -222,16 +197,12 @@ private:
     RtmpPacket &operator=(const RtmpPacket &that);
 
 private:
-    // 对象个数统计  [AUTO-TRANSLATED:3b43e8c2]
     // Object count statistics
     toolkit::ObjectStatistic<RtmpPacket> _statistic;
 };
 
 /**
- * rtmp metadata基类，用于描述rtmp格式信息
  * rtmp metadata base class, used to describe rtmp format information
- 
- * [AUTO-TRANSLATED:8ced489c]
  */
 class Metadata {
 public:
@@ -249,10 +220,7 @@ protected:
 };
 
 /**
-* metadata中除音视频外的其他描述部分
  * Other descriptive parts in metadata besides audio and video
- 
- * [AUTO-TRANSLATED:e11f031f]
 */
 class TitleMeta : public Metadata {
 public:
@@ -278,7 +246,6 @@ public:
     AudioMeta(const AudioTrack::Ptr &audio);
 };
 
-// 根据音频track获取flags  [AUTO-TRANSLATED:a25fdd07]
 // Get flags based on audio track
 uint8_t getAudioRtmpFlags(const Track::Ptr &track);
 
@@ -305,9 +272,8 @@ enum class RtmpVideoCodec : uint32_t {
     vp6_alpha = 5, // On2 VP6 with alpha channel
     screen_video2 = 6, // Screen video version 2
     h264 = 7, // avc
-    h265 = 12, // 国内扩展
+    h265 = 12, // Domestic expansion
 
-    // 增强型rtmp FourCC  [AUTO-TRANSLATED:442b77fb]
     // Enhanced rtmp FourCC
     fourcc_vp9 = MKBETAG('v', 'p', '0', '9'),
     fourcc_av1 = MKBETAG('a', 'v', '0', '1'),
@@ -376,7 +342,7 @@ enum class RtmpAudioCodec : uint8_t {
     g711a = 7,
     g711u = 8,
     aac = 10,
-    opus = 13 // 国内扩展
+    opus = 13 // Domestic expansion
 };
 
 // UI8;

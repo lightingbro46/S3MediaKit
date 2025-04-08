@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_AAC_H
-#define ZLMEDIAKIT_AAC_H
+﻿#ifndef S3MEDIAKIT_AAC_H
+#define S3MEDIAKIT_AAC_H
 
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
@@ -44,4 +44,4 @@ private:
 };
 
 }//namespace mediakit
-#endif //ZLMEDIAKIT_AAC_H
+#endif //S3MEDIAKIT_AAC_H

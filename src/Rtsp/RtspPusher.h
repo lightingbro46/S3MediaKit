@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RTSPPUSHER_H
-#define ZLMEDIAKIT_RTSPPUSHER_H
+﻿#ifndef S3MEDIAKIT_RTSPPUSHER_H
+#define S3MEDIAKIT_RTSPPUSHER_H
 
 #include <string>
 #include <memory>
@@ -71,7 +61,6 @@ private:
     unsigned int _cseq = 1;
     Rtsp::eRtpType _rtp_type = Rtsp::RTP_TCP;
 
-    // rtsp鉴权相关  [AUTO-TRANSLATED:947dc6a3]
     // RTSP authentication related
     std::string _nonce;
     std::string _realm;
@@ -80,26 +69,20 @@ private:
     std::string _content_base;
     SdpParser _sdp_parser;
     std::vector<SdpTrack::Ptr> _track_vec;
-    // RTP端口,trackid idx 为数组下标  [AUTO-TRANSLATED:77c186bb]
     // RTP port, trackid idx is the array index
     toolkit::Socket::Ptr _rtp_sock[2];
-    // RTCP端口,trackid idx 为数组下标  [AUTO-TRANSLATED:446a7861]
     // RTCP port, trackid idx is the array index
     toolkit::Socket::Ptr _rtcp_sock[2];
-    // 超时功能实现  [AUTO-TRANSLATED:1d603b3a]
     // Timeout function implementation
     toolkit::Timer::Ptr _publish_timer;
-    // 心跳定时器  [AUTO-TRANSLATED:536ec800]
     // Heartbeat timer
     toolkit::Timer::Ptr _beat_timer;
     std::weak_ptr<RtspMediaSource> _push_src;
     RtspMediaSource::RingType::RingReader::Ptr _rtsp_reader;
     std::function<void(const Parser&)> _on_res_func;
     ////////// rtcp ////////////////
-    // rtcp发送时间,trackid idx 为数组下标  [AUTO-TRANSLATED:bf3248b1]
     // RTCP send time, trackid idx is the array index
     toolkit::Ticker _rtcp_send_ticker[2];
-    // 统计rtp并发送rtcp  [AUTO-TRANSLATED:0ac2b665]
     // Statistics RTP and send RTCP
     std::vector<RtcpContext::Ptr> _rtcp_context;
 };
@@ -107,4 +90,4 @@ private:
 using RtspPusherImp = PusherImp<RtspPusher, PusherBase>;
 
 } /* namespace mediakit */
-#endif //ZLMEDIAKIT_RTSPPUSHER_H
+#endif //S3MEDIAKIT_RTSPPUSHER_H

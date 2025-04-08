@@ -1,11 +1,11 @@
-package zlmediakit
+package s3mediakit
 
 //#include "mk_mediakit.h"
 //#include "mk_common.h"
 import "C"
 import (
 	"fmt"
-	"zlmediakit/helper"
+	"s3mediakit/helper"
 )
 
 type LogMask int

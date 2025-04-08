@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "HttpDownloader.h"
+﻿#include "HttpDownloader.h"
 #include "Util/File.h"
 #include "Util/MD5.h"
 using namespace toolkit;
@@ -27,13 +17,12 @@ void HttpDownloader::startDownload(const string &url, const string &file_path, b
     }
     _save_file = File::create_file(_file_path, append ? "ab" : "wb");
     if (!_save_file) {
-        auto strErr = StrPrinter << "打开文件失败:" << file_path << endl;
+        auto strErr = StrPrinter << "Failed to open the file:" << file_path << endl;
         throw std::runtime_error(strErr);
     }
     if (append) {
         auto currentLen = ftell(_save_file);
         if (currentLen) {
-            // 最少续传一个字节，怕遇到http 416的错误  [AUTO-TRANSLATED:8a3c5303]
             // Resume downloading at least one byte to avoid encountering a http 416 error
             currentLen -= 1;
             fseek(_save_file, -1, SEEK_CUR);
@@ -46,7 +35,6 @@ void HttpDownloader::startDownload(const string &url, const string &file_path, b
 
 void HttpDownloader::onResponseHeader(const string &status, const HttpHeader &headers) {
     if (status != "200" && status != "206") {
-        // 失败  [AUTO-TRANSLATED:27ec5fb1]
         // Failure
         throw std::invalid_argument("bad http status: " + status);
     }

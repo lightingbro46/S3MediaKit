@@ -1,15 +1,5 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef ZLMEDIAKIT_RAWENCODER_H
-#define ZLMEDIAKIT_RAWENCODER_H
+﻿#ifndef S3MEDIAKIT_RAWENCODER_H
+#define S3MEDIAKIT_RAWENCODER_H
 
 #if defined(ENABLE_RTPPROXY)
 
@@ -24,31 +14,21 @@ public:
     ~RawEncoderImp() override;
 
     /**
-     * 添加音视频轨道
      * Add audio and video tracks
-     
-     * [AUTO-TRANSLATED:7b0c1d64]
      */
     bool addTrack(const Track::Ptr &track) override;
 
     /**
-     * 重置音视频轨道
      * Reset audio and video tracks
-     
-     * [AUTO-TRANSLATED:6eb1b742]
      */
     void resetTracks() override;
 
     /**
-     * 输入帧数据
      * Input frame data
-     
-     * [AUTO-TRANSLATED:d13bc7f2]
      */
     bool inputFrame(const Frame::Ptr &frame) override;
 
 protected:
-    // rtp打包后回调  [AUTO-TRANSLATED:61f5159b]
     // Callback after RTP packaging
     virtual void onRTP(toolkit::Buffer::Ptr rtp, bool is_key = false) = 0;
 
@@ -65,4 +45,4 @@ private:
 } // namespace mediakit
 
 #endif // ENABLE_RTPPROXY
-#endif // ZLMEDIAKIT_RAWENCODER_H
+#endif // S3MEDIAKIT_RAWENCODER_H

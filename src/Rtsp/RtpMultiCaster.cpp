@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include <list>
+﻿#include <list>
 #include <type_traits>
 #include "RtpMultiCaster.h"
 #include "Util/util.h"
@@ -58,12 +48,10 @@ std::shared_ptr<uint32_t> MultiCastAddressMaker::obtain(uint32_t max_try) {
     }
     auto iGotAddr = _addr++;
     if (_used_addr.find(iGotAddr) != _used_addr.end()) {
-        // 已经分配过了  [AUTO-TRANSLATED:b231af33]
         // Already allocated
         if (max_try) {
             return obtain(--max_try);
         }
-        // 分配完了,应该不可能到这里  [AUTO-TRANSLATED:c7f06cb9]
         // Allocation is complete, it should not be possible to reach here
         ErrorL;
         return nullptr;
@@ -104,20 +92,19 @@ RtpMultiCaster::~RtpMultiCaster() {
 RtpMultiCaster::RtpMultiCaster(SocketHelper &helper, const string &local_ip, const MediaTuple &tuple, uint32_t multicast_ip, uint16_t video_port, uint16_t audio_port) {
     auto src = dynamic_pointer_cast<RtspMediaSource>(MediaSource::find(RTSP_SCHEMA, tuple.vhost, tuple.app, tuple.stream));
     if (!src) {
-        auto err = StrPrinter << "未找到媒体源:" << tuple.shortUrl() << endl;
+        auto err = StrPrinter << "Media source not found:" << tuple.shortUrl() << endl;
         throw std::runtime_error(err);
     }
     _multicast_ip = (multicast_ip) ? make_shared<uint32_t>(multicast_ip) : MultiCastAddressMaker::Instance().obtain();
     if (!_multicast_ip) {
-        throw std::runtime_error("获取组播地址失败");
+        throw std::runtime_error("Failed to obtain multicast address");
     }
 
     for (auto i = 0; i < 2; ++i) {
-        // 创建udp socket, 数组下标为TrackType  [AUTO-TRANSLATED:17d153d5]
         // Create UDP socket, array index is TrackType
         _udp_sock[i] = helper.createSocket();
         if (!_udp_sock[i]->bindUdpSock((i == TrackVideo) ? video_port : audio_port, local_ip.data())) {
-            auto err = StrPrinter << "绑定UDP端口失败:" << local_ip << endl;
+            auto err = StrPrinter << "Failed to bind UDP port:" << local_ip << endl;
             throw std::runtime_error(err);
         }
         auto fd = _udp_sock[i]->rawFD();
@@ -128,10 +115,8 @@ RtpMultiCaster::RtpMultiCaster(SocketHelper &helper, const string &local_ip, con
 
         struct sockaddr_in peer;
         peer.sin_family = AF_INET;
-        // 组播目标端口为本地发送端口  [AUTO-TRANSLATED:9eae5d47]
         // Multicast target port is the local sending port
         peer.sin_port = htons(_udp_sock[i]->get_local_port());
-        // 组播目标地址  [AUTO-TRANSLATED:3291a33b]
         // Multicast target address
         peer.sin_addr.s_addr = htonl(*_multicast_ip);
         bzero(&(peer.sin_zero), sizeof peer.sin_zero);

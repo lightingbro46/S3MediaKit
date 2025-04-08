@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "ShellSession.h"
+﻿#include "ShellSession.h"
 #include "Util/CMD.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
@@ -100,7 +90,7 @@ inline void ShellSession::pleaseInputPasswd() {
     _loginInterceptor = [this](const string &passwd) {
         auto onAuth = [this](const string &errMessage){
             if(!errMessage.empty()){
-                //鉴权失败
+                //Authentication failed
                 SockSender::send(StrPrinter
                                  << "\033[0mAuth failed("
                                  << errMessage
@@ -112,7 +102,7 @@ inline void ShellSession::pleaseInputPasswd() {
             }
             SockSender::send("\033[0m");
             SockSender::send("-----------------------------------------\r\n");
-            SockSender::send(StrPrinter<<"欢迎来到"<<kServerName<<", 你可输入\"help\"查看帮助.\r\n"<<endl);
+            SockSender::send(StrPrinter<<"Welcome"<<kServerName<<", You can enter \"help\" to view the help.\r\n"<<endl);
             SockSender::send("-----------------------------------------\r\n");
             printShellPrefix();
             _loginInterceptor=nullptr;
@@ -135,7 +125,7 @@ inline void ShellSession::pleaseInputPasswd() {
 
         auto flag = NOTICE_EMIT(BroadcastShellLoginArgs, Broadcast::kBroadcastShellLogin, _strUserName, passwd, invoker, *this);
         if (!flag) {
-            // 如果无人监听shell登录事件，那么默认shell无法登录
+            // If no one listens to shell login event, then the default shell cannot log in
             onAuth("please listen kBroadcastShellLogin event");
         }
         return true;

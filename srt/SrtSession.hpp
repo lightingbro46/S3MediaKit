@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_SESSION_H
-#define ZLMEDIAKIT_SRT_SESSION_H
+﻿#ifndef S3MEDIAKIT_SRT_SESSION_H
+#define S3MEDIAKIT_SRT_SESSION_H
 
 #include "Network/Session.h"
 #include "SrtTransport.hpp"
@@ -26,4 +26,4 @@ private:
 };
 
 } // namespace SRT
-#endif // ZLMEDIAKIT_SRT_SESSION_H
+#endif // S3MEDIAKIT_SRT_SESSION_H

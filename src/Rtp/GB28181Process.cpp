@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#if defined(ENABLE_RTPPROXY)
+﻿#if defined(ENABLE_RTPPROXY)
 #include "GB28181Process.h"
 #include "Extension/CommonRtp.h"
 #include "Extension/Factory.h"
@@ -23,7 +13,6 @@ using namespace toolkit;
 
 namespace mediakit {
 
-// 判断是否为ts负载  [AUTO-TRANSLATED:77d1aa3c]
 // Determine if it is a ts payload
 static inline bool checkTS(const uint8_t *packet, size_t bytes) {
     return bytes % TS_PACKET_SIZE == 0 && packet[0] == TS_SYNC_BYTE;
@@ -37,7 +26,6 @@ public:
         _sample_rate = sample_rate;
         setOnSorted(std::move(cb));
         setBeforeSorted(std::move(cb_before));
-        // GB28181推流不支持ntp时间戳  [AUTO-TRANSLATED:f661f052]
         // GB28181 streaming does not support ntp timestamps
         setNtpStamp(0, 0);
     }
@@ -79,7 +67,6 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
     auto &ref = _rtp_receiver[pt];
     if (!ref) {
         if (_rtp_receiver.size() > 2) {
-            // 防止pt类型太多导致内存溢出  [AUTO-TRANSLATED:7695e49b]
             // Prevent too many pt types from causing memory overflow
             WarnL << "Rtp payload type more than 2 types: " << _rtp_receiver.size();
         }
@@ -100,7 +87,6 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
                 }
             }
             if (pt == opus_pt) {
-                // opus负载  [AUTO-TRANSLATED:defa6a8d]
                 // opus payload
                 ref = std::make_shared<RtpReceiverImp>(48000, [this](RtpPacket::Ptr rtp) { onRtpSorted(std::move(rtp)); });
                 auto track = Factory::getTrackByCodecId(CodecOpus);
@@ -111,7 +97,6 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
                 break;
             }
             if (pt == h265_pt) {
-                // H265负载  [AUTO-TRANSLATED:61fbcf7f]
                 // H265 payload
                 ref = std::make_shared<RtpReceiverImp>(90000, [this](RtpPacket::Ptr rtp) { onRtpSorted(std::move(rtp)); });
                 auto track = Factory::getTrackByCodecId(CodecH265);
@@ -122,7 +107,6 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
                 break;
             }
             if (pt == h264_pt) {
-                // H264负载  [AUTO-TRANSLATED:6f3fbb0d]
                 // H264 payload
                 ref = std::make_shared<RtpReceiverImp>(90000, [this](RtpPacket::Ptr rtp) { onRtpSorted(std::move(rtp)); });
                 auto track = Factory::getTrackByCodecId(CodecH264);
@@ -137,10 +121,8 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
                 WarnL << "Unknown rtp payload type(" << (int)pt << "), decode it as mpeg-ps or mpeg-ts";
             }
             ref = std::make_shared<RtpReceiverImp>(90000, [this](RtpPacket::Ptr rtp) { onRtpSorted(std::move(rtp)); });
-            // ts或ps负载  [AUTO-TRANSLATED:3ca31480]
             // ts or ps payload
             _rtp_decoder[pt] = std::make_shared<CommonRtpDecoder>(CodecInvalid, 32 * 1024);
-            // 设置dump目录  [AUTO-TRANSLATED:23c88ace]
             // Set dump directory
             GET_CONFIG(string, dump_dir, RtpProxy::kDumpDir);
             if (!dump_dir.empty()) {
@@ -153,7 +135,6 @@ bool GB28181Process::inputRtp(bool, const char *data, size_t data_len) {
             }
         } while (false);
 
-        // 设置frame回调  [AUTO-TRANSLATED:dec7590f]
         // Set frame callback
         _rtp_decoder[pt]->addDelegate([this, pt](const Frame::Ptr &frame) {
             frame->setIndex(pt);
@@ -172,28 +153,23 @@ void GB28181Process::onRtpDecode(const Frame::Ptr &frame) {
         case CodecPS: break;
 
         default:
-            // 这里不是ps或ts  [AUTO-TRANSLATED:6f79ac69]
             // This is not ps or ts
             _interface->inputFrame(frame);
             return;
     }
 
-    // 这是TS或PS  [AUTO-TRANSLATED:55782860]
     // This is TS or PS
     if (_save_file_ps) {
         fwrite(frame->data(), frame->size(), 1, _save_file_ps.get());
     }
 
     if (!_decoder) {
-        // 创建解码器  [AUTO-TRANSLATED:0cc03d90]
         // Create decoder
         if (checkTS((uint8_t *)frame->data(), frame->size())) {
-            // 猜测是ts负载  [AUTO-TRANSLATED:c2be3a47]
             // Guess it is a ts payload
             InfoL << _media_info.stream << " judged to be TS";
             _decoder = DecoderImp::createDecoder(DecoderImp::decoder_ts, _interface);
         } else {
-            // 猜测是ps负载  [AUTO-TRANSLATED:b7c0ff45]
             // Guess it is a ps payload
             InfoL << _media_info.stream << " judged to be PS";
             _decoder = DecoderImp::createDecoder(DecoderImp::decoder_ps, _interface);

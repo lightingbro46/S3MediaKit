@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SYSTEM_H
-#define ZLMEDIAKIT_SYSTEM_H
+﻿#ifndef S3MEDIAKIT_SYSTEM_H
+#define S3MEDIAKIT_SYSTEM_H
 
 #include <string>
 
@@ -10,4 +10,4 @@ public:
     static void systemSetup();
 };
 
-#endif //ZLMEDIAKIT_SYSTEM_H
+#endif //S3MEDIAKIT_SYSTEM_H

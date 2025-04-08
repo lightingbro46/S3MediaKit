@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2025-present The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef SRC_RTMP_RTMPDEMUXER_H_
+﻿#ifndef SRC_RTMP_RTMPDEMUXER_H_
 #define SRC_RTMP_RTMPDEMUXER_H_
 
 #include <functional>
@@ -29,23 +19,14 @@ public:
     bool loadMetaData(const AMFValue &metadata);
 
     /**
-     * 开始解复用
-     * @param pkt rtmp包
      * Start demultiplexing
      * @param pkt rtmp packet
-     
-     * [AUTO-TRANSLATED:3a6f81de]
      */
     void inputRtmp(const RtmpPacket::Ptr &pkt);
 
     /**
-     * 获取节目总时长
-     * @return 节目总时长,单位秒
      * Get the total duration of the program
      * @return Total duration of the program, in seconds
-     
-     
-     * [AUTO-TRANSLATED:6b2ec56c]
      */
     float getDuration() const;
 

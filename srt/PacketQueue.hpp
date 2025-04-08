@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_SRT_PACKET_QUEUE_H
-#define ZLMEDIAKIT_SRT_PACKET_QUEUE_H
+﻿#ifndef S3MEDIAKIT_SRT_PACKET_QUEUE_H
+#define S3MEDIAKIT_SRT_PACKET_QUEUE_H
 #include "Packet.hpp"
 #include <algorithm>
 #include <list>
@@ -102,4 +102,4 @@ private:
 
 } // namespace SRT
 
-#endif // ZLMEDIAKIT_SRT_PACKET_QUEUE_H
+#endif // S3MEDIAKIT_SRT_PACKET_QUEUE_H

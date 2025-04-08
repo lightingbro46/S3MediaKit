@@ -1,5 +1,5 @@
-﻿#ifndef ZLMEDIAKIT_H264RTMPCODEC_H
-#define ZLMEDIAKIT_H264RTMPCODEC_H
+﻿#ifndef S3MEDIAKIT_H264RTMPCODEC_H
+#define S3MEDIAKIT_H264RTMPCODEC_H
 
 #include "H264.h"
 #include "Rtmp/RtmpCodec.h"
@@ -65,4 +65,4 @@ private:
 
 }//namespace mediakit
 
-#endif //ZLMEDIAKIT_H264RTMPCODEC_H
+#endif //S3MEDIAKIT_H264RTMPCODEC_H
