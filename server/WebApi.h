@@ -8,6 +8,7 @@
 #include "Network/Socket.h"
 #include "Http/HttpSession.h"
 #include "Common/MultiMediaSourceMuxer.h"
+#include "Device.h"
 
 // Configuration file path
 extern std::string g_ini_file;
@@ -200,4 +201,9 @@ void getStatisticJson(const std::function<void(Json::Value &val)> &cb);
 void addStreamProxy(const mediakit::MediaTuple &tuple, const std::string &url, int retry_count,
                     const mediakit::ProtocolOption &option, int rtp_type, float timeout_sec, const toolkit::mINI &args,
                     const std::function<void(const toolkit::SockException &ex, const std::string &key)> &cb);
+void delStreamProxy(const mediakit::MediaTuple &tuple);
+
+void getDeviceStatisticJson(const std::function<void(Json::Value &val)> &cb);
+void addDeviceProxy(const manager::DeviceTuple &tuple, const std::vector<manager::StreamTuple> &streams);
+void delDeviceProxy(const manager::DeviceTuple &tuple);
 #endif //S3MEDIAKIT_WEBAPI_H

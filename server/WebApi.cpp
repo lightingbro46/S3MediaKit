@@ -33,6 +33,7 @@
 #include "WebApi.h"
 #include "WebHook.h"
 #include "FFmpegSource.h"
+#include "Device.h"
 
 #include "Common/config.h"
 #include "Common/MediaSource.h"
@@ -65,6 +66,7 @@ using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
+using namespace manager;
 
 namespace API {
 #define API_FIELD "api."
@@ -652,6 +654,10 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
     player->play(url);
 };
 
+void delStreamProxy(const mediakit::MediaTuple &tuple) {
+    auto key = tuple.shortUrl();
+    s_player_proxy.erase(key);
+}
 
 void addStreamPusherProxy(const string &schema,
                           const string &vhost,
@@ -2169,4 +2175,46 @@ void unInstallWebApi(){
 #endif
 
     NoticeCenter::Instance().delListener(&web_api_tag);
+}
+
+static ServiceController<DeviceProxy> s_device_proxy;
+
+void addDeviceProxy(const DeviceTuple &device, const std::vector<StreamTuple> &streams) {
+    auto key = device.guid;
+    if (s_device_proxy.find(key)) {
+       // Already device
+       // todo: check differance and update config if need
+       WarnL << "Device already exists: " << key;
+       return;
+    }
+
+    // Add device proxy
+    auto device_proxy = s_device_proxy.make(key, device, streams);
+
+    //todo: connect
+    device_proxy->connect();
+
+    // Add stream proxy
+    for (const auto &stream : streams) {
+        auto tuple = MediaTuple { DEFAULT_VHOST, device.id, stream.id, "" };
+        mINI args;
+        args["vhost"] = DEFAULT_VHOST;
+        args["app"] = device.id;
+        args["stream_id"] = stream.id;
+
+        ProtocolOption option;
+        std::cout << "Add stream proxy: "<<device.id << "/" << stream.id << " " <<stream.getUrl() << std::endl;
+        addStreamProxy(tuple, stream.getUrl(), 0, option, 0, 10.0, args, [](const SockException &ex, const string &key) {
+            if (ex) {
+                WarnL << "Add stream failed: " << ex.what();
+            } else {
+                WarnL << "Add stream success: " << key;
+            }
+        });
+    }
+}
+
+void delDeviceProxy(std::string &key) {
+    // todo: del stream proxy
+    // todo: del device proxy
 }

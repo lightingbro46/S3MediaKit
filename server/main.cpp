@@ -103,13 +103,15 @@ onceToken token1([](){
 // todo: resource monitor configuration
 
 // todo: manager configuration
-namespace Manager {
-#define MANAGER_FIELD "manager."
-const string kDevice = MANAGER_FIELD"device";
-onceToken token1([](){
-    mINI::Instance()[kDevice] = 256;
-},nullptr);    
-}
+// namespace Manager {
+// #define MANAGER_FIELD "manager."
+// const string kDevice = MANAGER_FIELD"device";
+// const string kDevice = MANAGER_FIELD"load_interval";
+// const string kDevice = MANAGER_FIELD"update_status_interval";
+// onceToken token1([](){
+//     mINI::Instance()[kDevice] = 256;
+// },nullptr);    
+// }
 
 class CMD_main : public CMD {
 public:
@@ -444,6 +446,31 @@ int start_main(int argc,char *argv[]) {
             g_reload_certificates();
         });
 #endif
+#if 0
+        string deviceId = "11111111";
+        string streamId = "aaaaaaaaa";
+        string url = "rtsp://admin:123456aA@117.4.91.64:552/h264";
+        string url = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp"
+        std::cout << "DeviceID: " << deviceId << " StreamID: " << streamId << " Url: " << url << std::endl;
+        std::cout << "DeviceID: " << deviceId << " StreamID: " << streamId << std::endl;
+        auto tuple = MediaTuple { DEFAULT_VHOST, deviceId, streamId, "" };
+        mINI args;
+        args["vhost"] = DEFAULT_VHOST;
+        args["app"] = deviceId;
+        args["stream_id"] = streamId;
+        args["enable_rtsp"] = 1;
+
+        ProtocolOption option;
+
+        addStreamProxy(tuple, url, 0, option, 0, 10.0, args, [](const SockException &ex, const string &key) {
+            if (ex) {
+                std::cout << "Error: " << ex.what() << std::endl;
+            } else {
+                std::cout << "Success: " << key << std::endl;
+            }
+        });
+#endif
+
         sem.wait();
     }
     unInstallWebApi();

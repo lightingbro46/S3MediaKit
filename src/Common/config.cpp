@@ -183,7 +183,7 @@ static onceToken token([]() {
     mINI::Instance()[kNotFound] = StrPrinter << "<html>"
                                                 "<head><title>404 Not Found</title></head>"
                                                 "<body bgcolor=\"white\">"
-                                                "<center><h1>您访问的资源不存在！</h1></center>"
+                                                "<center><h1>The resources you access do not exist!</h1></center>"
                                                 "<hr><center>"
                                              << kServerName
                                              << "</center>"

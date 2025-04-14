@@ -10,11 +10,13 @@
 #include "Rtsp/RtspSession.h"
 #include "WebHook.h"
 #include "WebApi.h"
+#include "Device.h"
 
 using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
+using namespace manager;
 
 namespace Hook {
 #define HOOK_FIELD "hook."
@@ -37,9 +39,12 @@ const string kOnHttpAccess = HOOK_FIELD "on_http_access";
 const string kOnServerStarted = HOOK_FIELD "on_server_started";
 const string kOnServerExited = HOOK_FIELD "on_server_exited";
 const string kOnServerKeepalive = HOOK_FIELD "on_server_keepalive";
+const string kOnServerLoad = HOOK_FIELD "on_server_load";
+const string kOnServerReport = HOOK_FIELD "on_server_report";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
+const string kReportInterval = HOOK_FIELD "report_interval";
 const string kRetry = HOOK_FIELD "retry";
 const string kRetryDelay = HOOK_FIELD "retry_delay";
 
@@ -268,6 +273,97 @@ static void reportServerKeepalive() {
             // Execute hook
             do_http_hook(hook_server_keepalive, body, nullptr);
         });
+        return true;
+    }, nullptr);
+}
+
+// Server report statistics
+static Timer::Ptr g_report_timer;
+static void reportServerStatistic() {
+    // GET_CONFIG(bool, hook_enable, Hook::kEnable);
+    // GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
+    // GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+    // if (!hook_enable || hook_server_report.empty() || hook_server_load.empty()) {
+    //     return;
+    // }
+    GET_CONFIG(float, report_interval, Hook::kReportInterval);
+    report_interval = 10.0;
+    g_report_timer = std::make_shared<Timer>(report_interval,[]() {
+#if 0
+        ArgsType body;
+        do_http_hook(hook_server_load, body, [](const Value &obj, const string &err) mutable {
+            if (err.empty()) {
+                // Load server config succeeded
+                //todo: parse and add device proxy
+                EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
+                    getDeviceStatisticJson([](const Value &data) mutable {
+                        ArgsType body;
+                        body["data"] = data;
+                        // Execute hook
+                        do_http_hook(hook_server_report, body, nullptr);
+                    });
+                    return 0;
+                });
+
+            } else {
+                // Load server config failed
+            }
+        });
+#else
+        // Get device info
+        Json::Value data;
+        data["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+        data["username"] = "admin";
+        data["password"] = "Haiphong2025";
+        data["manufacturer"] = "Hikivision";
+        data["model"] = "DS-2CD2347G1-L";
+        data["is_enable"] = true;
+        data["address"] = "27.72.173.71";
+        data["http_port"] = 80;
+        data["rtsp_port"] = 5555;
+        data["tcp_port"] = Json::nullValue;
+        data["channels"] = Json::arrayValue;
+        Json::Value channel_1;
+        channel_1["id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
+        channel_1["is_enable"] = true;
+        channel_1["protocol"] = "rtsp";
+        channel_1["rtp_transport"] = "tcp";
+        channel_1["path"] = "/profile2/media.smp";
+        data["channels"].append(channel_1);
+        Json::Value channel_2;
+        channel_2["id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+        channel_2["is_enable"] = true;
+        channel_2["protocol"] = "rtsp";
+        channel_2["rtp_transport"] = "tcp";
+        channel_2["path"] = "/profile4/media.smp";
+        data["channels"].append(channel_2);
+        DeviceTuple device;
+        device.id = data["id"].asString();
+        device.guid = getGuid(device.id);
+        device.ip = data["address"].asString();
+        device.port = data["http_port"].asInt();
+        device.rtsp_port= data["rtsp_port"].asInt();
+        device.username = data["username"].asString();
+        device.password = data["password"].asString();
+        device.manufacturer = data["manufacturer"].asString();
+        device.model = data["model"].asString();
+        device.enable = data["is_enable"].asBool();
+        std::vector<StreamTuple> streams;
+        for (const auto &chn: data["channels"]) {
+            StreamTuple stream;
+            stream.id = chn["id"].asString();
+            stream.guid = getGuid(stream.id);
+            stream.enable = chn["is_enable"].asBool();
+            stream.protocol = chn["protocol"].asString();
+            stream.rtp_transport = chn["rtp_transport"].asString();
+            stream.path = chn["path"].asString();
+            auto device_weak_ptr = std::make_shared<DeviceTuple>(device);
+            stream.device = device_weak_ptr;
+            streams.emplace_back(stream);
+        }
+
+        addDeviceProxy(device, streams);
+#endif
         return true;
     }, nullptr);
 }
@@ -691,6 +787,9 @@ void installWebHook() {
 
     // Report keep-alive regularly
     reportServerKeepalive();
+
+    // Report serverserver statistics
+    reportServerStatistic();
 }
 
 void unInstallWebHook() {
