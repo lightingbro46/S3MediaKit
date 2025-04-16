@@ -121,7 +121,7 @@ void FFmpegSource::play(const string &ffmpeg_cmd_key, const string &src_url, con
                 return;
             }
             // ffmpeg process is still online, but waiting for the stream to timeout
-            cb(SockException(Err_other, "等待超时"));
+            cb(SockException(Err_other, "Wait for timeout"));
         });
     } else{
         // Push stream to other servers, judge whether it is successful by judging whether the FFmpeg process is online

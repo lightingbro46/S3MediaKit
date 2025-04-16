@@ -1,46 +1,45 @@
-## 特性
-- NACK(重传)
-- listener 支持
-- 推流只支持ts推流
-- 拉流只支持ts拉流
-- 协议实现 [参考](https://haivision.github.io/srt-rfc/draft-sharabayko-srt.html)
-- 版本支持(>=1.3.0)
-- fec没有实现
+## Features
+- NACK (retransmission)
+- listener Support
+- Pushing flow only supports ts push flow
+- Pulling stream only supports ts pull stream
+- Protocol Implementation [Reference](https://haivision.github.io/srt-rfc/draft-sharabayko-srt.html)
+- Version support (>=1.3.0)
+- fec has not been implemented
+## use
 
-## 使用
+The srt in s3m determines whether it is a streaming or a streaming based on streamid to determine vhost, app, streamid (in S3M),
 
-zlm中的srt根据streamid 来确定是推流还是拉流，来确定vhost,app,streamid(ZLM中的)、
+The streamid in srt is `#!::key1=value1,key2=value2,key3=value4......`
 
-srt中的streamid 为 `#!::key1=value1,key2=value2,key3=value4......`
+h,r is a special key to determine vhost, app, streamid. If there is no h, vhost is the default value
 
-h,r为特殊的key,来确定vhost,app,streamid,如果没有h则vhost为默认值
+m is a special key to determine whether it is a push stream or a pull stream. If it is publish, it is a push stream, otherwise it is a pull stream. If m does not exist, it is a pull stream.
 
-m 为特殊key来确定是推流还是拉流，如果为publish 则为推流，否则为拉流 ,如果不存在m,则默认为拉流
+Other keys and m will be used as authentication parameters for webhook
 
-其他key与m会作为webhook的鉴权参数
+like:
+  #!::h=s3mediakit.com,r=live/test,m=publish
 
-如：
-  #!::h=zlmediakit.com,r=live/test,m=publish
-
-  vhost = zlmediakit.com
+  vhost = s3mediakit.com
 
   app = live
 
   streamid = test
 
-  是推流
+  It's push
 
 
-- OBS 推流地址
+- OBS streaming address
 
     `srt://192.168.1.105:9000?streamid=#!::r=live/test,m=publish`
-- ffmpeg 推流
+- ffmpeg flow
 
     `ffmpeg -re -stream_loop -1 -i test.ts -c:v copy -c:a copy -f mpegts srt://192.168.1.105:9000?streamid=#!::r=live/test,m=publish`
-- ffplay 拉流
+- ffplay pull stream
 
     `ffplay -i srt://192.168.1.105:9000?streamid=#!::r=live/test`
 
-- vlc 拉流
-    - vlc拉流需要在偏好设置->串流输出->访问输出->SRT中设置streamid,例如`#!::r=live/test`
-    - 拉流时只需填入`srt://192.168.1.105:9000`即可
+- vlc pull stream
+    - vlc pull streaming needs to set streamid in preferences -> stream output -> access output -> SRT, for example `#!::r=live/test`
+    - When pulling the stream, just fill in `srt://192.168.1.105:9000`

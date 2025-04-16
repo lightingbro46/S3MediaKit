@@ -10,7 +10,6 @@
 #include "Rtsp/RtspSession.h"
 #include "WebHook.h"
 #include "WebApi.h"
-#include "Device.h"
 
 using namespace std;
 using namespace Json;
@@ -317,45 +316,45 @@ static void reportServerStatistic() {
         data["password"] = "Haiphong2025";
         data["manufacturer"] = "Hikivision";
         data["model"] = "DS-2CD2347G1-L";
-        data["is_enable"] = true;
+        data["enable"] = true;
         data["address"] = "27.72.173.71";
-        data["http_port"] = 80;
-        data["rtsp_port"] = 5555;
-        data["tcp_port"] = Json::nullValue;
-        data["channels"] = Json::arrayValue;
+        data["httpPort"] = 80;
+        data["rtspPort"] = 5555;
+        data["streams"] = Json::arrayValue;
         Json::Value channel_1;
         channel_1["id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-        channel_1["is_enable"] = true;
+        channel_1["enable"] = true;
         channel_1["protocol"] = "rtsp";
-        channel_1["rtp_transport"] = "tcp";
+        channel_1["rtpTransport"] = "tcp";
         channel_1["path"] = "/profile2/media.smp";
-        data["channels"].append(channel_1);
+        data["streams"].append(channel_1);
         Json::Value channel_2;
         channel_2["id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-        channel_2["is_enable"] = true;
+        channel_2["enable"] = true;
         channel_2["protocol"] = "rtsp";
         channel_2["rtp_transport"] = "tcp";
         channel_2["path"] = "/profile4/media.smp";
-        data["channels"].append(channel_2);
+        data["streams"].append(channel_2);
+
         DeviceTuple device;
         device.id = data["id"].asString();
         device.guid = getGuid(device.id);
         device.ip = data["address"].asString();
-        device.port = data["http_port"].asInt();
-        device.rtsp_port= data["rtsp_port"].asInt();
+        device.port = data["httpPort"].asInt();
+        device.rtsp_port= data["rtspPort"].asInt();
         device.username = data["username"].asString();
         device.password = data["password"].asString();
         device.manufacturer = data["manufacturer"].asString();
         device.model = data["model"].asString();
-        device.enable = data["is_enable"].asBool();
+        device.enable = data["enable"].asBool();
         std::vector<StreamTuple> streams;
         for (const auto &chn: data["channels"]) {
             StreamTuple stream;
             stream.id = chn["id"].asString();
             stream.guid = getGuid(stream.id);
-            stream.enable = chn["is_enable"].asBool();
+            stream.enable = chn["enable"].asBool();
             stream.protocol = chn["protocol"].asString();
-            stream.rtp_transport = chn["rtp_transport"].asString();
+            stream.rtp_transport = chn["rtpTransport"].asString();
             stream.path = chn["path"].asString();
             auto device_weak_ptr = std::make_shared<DeviceTuple>(device);
             stream.device = device_weak_ptr;

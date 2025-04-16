@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2020 The S3MediaKit project authors. All Rights Reserved.
- * Created by alex on 2021/4/6.
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "TsPlayerImp.h"
+﻿#include "TsPlayerImp.h"
 #include "HlsPlayer.h"
 #include "Common/config.h"
 
@@ -48,13 +38,11 @@ void TsPlayerImp::onPlayResult(const SockException &ex) {
 void TsPlayerImp::onShutdown(const SockException &ex) {
     while (_demuxer) {
         try {
-            // shared_from_this()可能抛异常  [AUTO-TRANSLATED:6af9bd3c]
             // shared_from_this() may throw an exception
             std::weak_ptr<TsPlayerImp> weak_self = static_pointer_cast<TsPlayerImp>(shared_from_this());
             if (_decoder) {
                 _decoder->flush();
             }
-            // 等待所有frame flush输出后，再触发onShutdown事件  [AUTO-TRANSLATED:93982eb3]
             // Wait for all frame flush output before triggering the onShutdown event
             static_pointer_cast<HlsDemuxer>(_demuxer)->pushTask([weak_self, ex]() {
                 if (auto strong_self = weak_self.lock()) {

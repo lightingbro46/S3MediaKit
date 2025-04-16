@@ -466,7 +466,6 @@ void HandshakePacket::assignPeerIP(struct sockaddr_storage *addr) {
     memset(peer_ip_addr, 0, sizeof(peer_ip_addr));
     if (addr->ss_family == AF_INET) {
         struct sockaddr_in *ipv4 = (struct sockaddr_in *)addr;
-        // 抓包 奇怪好像是小头端？？？  [AUTO-TRANSLATED:40eb164c]
         // Packet capture, weird, seems to be from the client side？？？
         storeUint32LE(peer_ip_addr, ipv4->sin_addr.s_addr);
     } else if (addr->ss_family == AF_INET6) {

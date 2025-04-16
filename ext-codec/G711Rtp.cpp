@@ -16,7 +16,6 @@ void G711RtpEncoder::setOpt(int opt, const toolkit::Any &param) {
                 WarnL << "set g711 rtp encoder  duration ms failed for " << dur;
                 return;
             }
-            // 向上 20ms 取整  [AUTO-TRANSLATED:b8a9e39e]
             // Round up to the nearest 20ms
             _pkt_dur_ms = (dur + 19) / 20 * 20;
         }
@@ -29,7 +28,7 @@ bool G711RtpEncoder::inputFrame(const Frame::Ptr &frame) {
     uint64_t in_pts;
     if (!_pkt_bytes) {
         in_pts = frame->pts();
-        // G711压缩率固定是2倍
+        // G711 compression rate is fixed 2 times
         _pkt_bytes = _pkt_dur_ms * _channels * (_sample_bit / 8) * _sample_rate / 1000 / 2;
     } else {
         in_pts = frame->pts() - _buffer.size() * _pkt_dur_ms / _pkt_bytes;

@@ -40,17 +40,12 @@ class JPEGFrame : public Parent, public JPEGFrameType {
 public:
     static constexpr auto kJFIFSize = 20u;
     /**
-     *  JPEG/MJPEG帧
-     * @param pix_type pixel format type; AV_PIX_FMT_YUVJ422P || (AVCOL_RANGE_JPEG && AV_PIX_FMT_YUV422P) : 1; AV_PIX_FMT_YUVJ420P || (AVCOL_RANGE_JPEG && AV_PIX_FMT_YUV420P) : 0
      *  JPEG/MJPEG frame
      * @param pix_type pixel format type; AV_PIX_FMT_YUVJ422P || (AVCOL_RANGE_JPEG && AV_PIX_FMT_YUV422P) : 1; AV_PIX_FMT_YUVJ420P || (AVCOL_RANGE_JPEG && AV_PIX_FMT_YUV420P) : 0
-     
-     * [AUTO-TRANSLATED:d746e541]
      */
     template <typename... ARGS>
     JPEGFrame(uint8_t pix_type, ARGS &&...args) : Parent(std::forward<ARGS>(args)...) {
         _pix_type = pix_type;
-        // JFIF头固定20个字节长度  [AUTO-TRANSLATED:bd63b447]
         // JFIF header is fixed at 20 bytes in length
         CHECK(this->size() > kJFIFSize);
     }

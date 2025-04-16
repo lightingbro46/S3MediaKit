@@ -1,41 +1,41 @@
-﻿此目录下的所有.cpp文件将被编译成可执行程序(不包含此目录下的子目录).
-子目录DeviceHK为海康IPC的适配程序,需要先下载海康的SDK才能编译,
-由于操作麻烦,所以仅把源码放在这里仅供参考.
+﻿All .cpp files in this directory will be compiled into executable programs (excluding subdirectories under this directory).
+The subdirectory DeviceHK is an adapter for Hikvision IPC. You need to download Hikvision SDK before compiling.
+Due to the troublesome operation, the source code is only for reference only.
 
 - test_benchmark.cpp
     
-    rtsp/rtmp性能测试客户端
+    rtsp/rtmp performance testing client
     
 - test_httpApi.cpp
   
-  http api 测试服务器
+  http api test server
  
 - test_httpClient.cpp
    
-   http 测试客户端
+   http test client
 
 - test_player.cpp
    
-   rtsp/rtmp带视频渲染的客户端
+   rtsp/rtmp client with video rendering
 
 - test_pusher.cpp
    
-   先拉流再推流的测试客户端
+   Test client that pulls streams first and then pushes streams
  
 - test_pusherMp4.cpp
    
-   解复用mp4文件再推流的测试客户端
+   Test client that demultiplexes mp4 files and then pushes stream
  
 - test_server.cpp
    
-   rtsp/rtmp/http等服务器
+   rtsp/rtmp/http and other servers
  
 - test_wsClient.cpp
   
-  websocket测试客户端
+  websocket test client
  
 - test_wsServer.cpp
    
-   websocket回显测试服务器
+   websocket echo test server
  
 

@@ -632,7 +632,6 @@ void JPEGRtpEncoder::rtpSendJpeg(const uint8_t *buf, int size, uint64_t pts, uin
             for (j = 0; j < tables; j++)
                 qtables[nb_qtables + j] = buf + i + 5 + j * 65;
             nb_qtables += tables;
-            // 大致忽略DQT/qtable所占字节数，提高搜寻速度  [AUTO-TRANSLATED:63423997]
             // Roughly ignore the number of bytes occupied by DQT/qtable to improve search speed
             i += tables << 6;
         } else if (buf[i + 1] == SOF0) {
@@ -643,7 +642,6 @@ void JPEGRtpEncoder::rtpSendJpeg(const uint8_t *buf, int size, uint64_t pts, uin
             }
             h = (buf[i + 5] * 256 + buf[i + 6]) / 8;
             w = (buf[i + 7] * 256 + buf[i + 8]) / 8;
-            // 大致忽略SOF0所占字节数，提高搜寻速度  [AUTO-TRANSLATED:438cbf70]
             // Roughly ignore the number of bytes occupied by SOF0 to improve search speed
             i += 16;
         } else if (buf[i + 1] == DHT) {
@@ -813,7 +811,6 @@ bool JPEGRtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool) {
     auto seq = rtp->getSeq();
     auto marker = rtp->getHeader()->mark;
     if (size <= 0) {
-        // 无实际负载  [AUTO-TRANSLATED:305af48f]
         // No actual load
         return false;
     }
@@ -832,7 +829,6 @@ bool JPEGRtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool) {
 ////////////////////////////////////////////////////////////////////////
 
 bool JPEGRtpEncoder::inputFrame(const Frame::Ptr &frame) {
-    // JFIF头固定20个字节长度  [AUTO-TRANSLATED:bd63b447]
     // JFIF header is fixed at 20 bytes in length
     auto ptr = (uint8_t *)frame->data() + frame->prefixSize() + JPEGFrameImp::kJFIFSize;
     auto len = frame->size() - frame->prefixSize() - JPEGFrameImp::kJFIFSize;

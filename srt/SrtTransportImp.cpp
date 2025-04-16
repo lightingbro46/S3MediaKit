@@ -11,9 +11,9 @@ SrtTransportImp::SrtTransportImp(const EventPoller::Ptr &poller)
 
 SrtTransportImp::~SrtTransportImp() {
     uint64_t duration = _alive_ticker.createdTime() / 1000;
-    WarnP(this) << (_is_pusher ? "srt 推流器(" : "srt 播放器(") << _media_info.shortUrl() << ")断开,耗时(s):" << duration;
+    WarnP(this) << (_is_pusher ? "srt streaming pusher(" : "srt player(") << _media_info.shortUrl() << ") disconnected, time-consuming(s):" << duration;
 
-    // 流量统计事件广播
+    // Traffic statistics event broadcast
     GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
     if (_total_bytes >= iFlowThreshold * 1024) {
         try {
@@ -34,12 +34,12 @@ SrtTransport::Ptr querySrtTransport(uint8_t *data, size_t size, const EventPolle
     if (HandshakePacket::isHandshakePacket(data, size)) {
         auto type = HandshakePacket::getHandshakeType(data, size);
         if (type == HandshakePacket::HS_TYPE_INDUCTION) {
-            // 握手第一阶段
+            // Handshake Phase 1
             return poller ? std::make_shared<SrtTransportImp>(poller) : nullptr;
         }
 
         if (type == HandshakePacket::HS_TYPE_CONCLUSION) {
-            // 握手第二阶段
+            // Handshake Stage 2
             uint32_t sync_cookie = HandshakePacket::getSynCookie(data, size);
             return SrtTransportManager::Instance().getHandshakeItem(sync_cookie);
         }
@@ -151,24 +151,24 @@ bool SrtTransportImp::close(mediakit::MediaSource &sender) {
         auto strong_self = weak_self.lock();
         if (strong_self) {
             strong_self->onShutdown(SockException(Err_shutdown, err));
-            // 主动关闭推流，那么不延时注销
+            // Actively close the push flow, then the logout will not be delayed
             strong_self->_muxer = nullptr;
         }
     });
     return true;
 }
 
-// 获取媒体源类型
+// Get media source type
 mediakit::MediaOriginType SrtTransportImp::getOriginType(mediakit::MediaSource &sender) const {
     return MediaOriginType::srt_push;
 }
 
-// 获取媒体源url或者文件路径
+// Get the media source url or file path
 std::string SrtTransportImp::getOriginUrl(mediakit::MediaSource &sender) const {
     return _media_info.full_url;
 }
 
-// 获取媒体源客户端相关信息
+// Get relevant information on the media source client
 std::shared_ptr<SockInfo> SrtTransportImp::getOriginSock(mediakit::MediaSource &sender) const {
     return static_pointer_cast<SockInfo>(getSession());
 }
@@ -190,18 +190,18 @@ void SrtTransportImp::emitOnPublish() {
                                                                               option);
                 strong_self->_muxer->setMediaListener(strong_self);
                 strong_self->doCachedFunc();
-                InfoP(strong_self) << "允许 srt 推流";
+                InfoP(strong_self) << "Allow srt push streaming";
             } else {
-                WarnP(strong_self) << "禁止 srt 推流:" << err;
+                WarnP(strong_self) << "SRT push streaming is prohibited:" << err;
                 strong_self->onShutdown(SockException(Err_refused, err));
             }
         });
     };
 
-    // 触发推流鉴权事件
+    // Trigger push flow authentication event
     auto flag = NOTICE_EMIT(BroadcastMediaPublishArgs, Broadcast::kBroadcastMediaPublish, MediaOriginType::srt_push, _media_info, invoker, *this);
     if (!flag) {
-        // 该事件无人监听,默认不鉴权
+        // This event is unsupervised and does not authenticate by default
         invoker("", ProtocolOption());
     }
 }
@@ -229,23 +229,23 @@ void SrtTransportImp::emitOnPlay() {
 }
 
 void SrtTransportImp::doPlay() {
-    // 异步查找直播流
+    // Asynchronously search for live streams
     MediaInfo info = _media_info;
     info.schema = TS_SCHEMA;
     std::weak_ptr<SrtTransportImp> weak_self = static_pointer_cast<SrtTransportImp>(shared_from_this());
     MediaSource::findAsync(info, getSession(), [weak_self](const MediaSource::Ptr &src) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
-            // 本对象已经销毁
-            TraceL << "本对象已经销毁";
+            // This object has been destroyed
+            TraceL << "This object has been destroyed";
             return;
         }
         if (!src) {
-            // 未找到该流
-            TraceL << "未找到该流";
+            // The stream was not found
+            TraceL << "The stream was not found";
             strong_self->onShutdown(SockException(Err_shutdown));
         } else {
-            TraceL << "找到该流";
+            TraceL << "Find the stream";
             auto ts_src = dynamic_pointer_cast<TSMediaSource>(src);
             assert(ts_src);
             ts_src->pause(false);
@@ -259,7 +259,7 @@ void SrtTransportImp::doPlay() {
             strong_self->_ts_reader->setDetachCB([weak_self]() {
                 auto strong_self = weak_self.lock();
                 if (!strong_self) {
-                    // 本对象已经销毁
+                    // This object has been destroyed
                     return;
                 }
                 strong_self->onShutdown(SockException(Err_shutdown));
@@ -267,7 +267,7 @@ void SrtTransportImp::doPlay() {
             strong_self->_ts_reader->setReadCB([weak_self](const TSMediaSource::RingDataType &ts_list) {
                 auto strong_self = weak_self.lock();
                 if (!strong_self) {
-                    // 本对象已经销毁
+                    // This object has been destroyed
                     return;
                 }
                 size_t i = 0;

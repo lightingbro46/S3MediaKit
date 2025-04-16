@@ -20,9 +20,9 @@ other key and m ,can use by webhook to auth for play or push
 
 
 like：
-  #!::h=zlmediakit.com,r=live/test,m=publish
+  #!::h=s3mediakit.com,r=live/test,m=publish
 
-  vhost = zlmediakit.com
+  vhost = s3mediakit.com
 
   app = live
 

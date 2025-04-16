@@ -8,7 +8,7 @@
 #include "Network/Socket.h"
 #include "Http/HttpSession.h"
 #include "Common/MultiMediaSourceMuxer.h"
-#include "Device.h"
+#include "Resource.h"
 
 // Configuration file path
 extern std::string g_ini_file;

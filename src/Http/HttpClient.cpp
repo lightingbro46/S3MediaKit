@@ -21,7 +21,7 @@ void HttpClient::sendRequest(const string &url) {
         port = 443;
         is_https = true;
     } else {
-        auto strErr = StrPrinter << "非法的http url:" << url << endl;
+        auto strErr = StrPrinter << "Illegal http url:" << url << endl;
         throw std::invalid_argument(strErr);
     }
 

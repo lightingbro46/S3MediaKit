@@ -2,13 +2,13 @@
 	"info": {
 		"_postman_id": "8b3cdc62-3e18-4700-9ddd-dc9f58ebce83",
 		"name": "S3MediaKit",
-		"description": "媒体服务器",
+		"description": "Media Server",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "26338564"
 	},
 	"item": [
 		{
-			"name": "获取服务器api列表(getApiList)",
+			"name": "Get the server api list(getApiList)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -26,7 +26,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key(Configuration file configuration)"
 						}
 					]
 				}
@@ -34,7 +34,7 @@
 			"response": []
 		},
 		{
-			"name": "关闭多屏拼接(stack/stop)",
+			"name": "Turn off multi-screen stitching(stack/stop)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -52,7 +52,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key(Configuration file configuration)"
 						},
 						{
 							"key": "id",
@@ -64,7 +64,7 @@
 			"response": []
 		},
 		{
-			"name": "添加多屏拼接(stack/start)",
+			"name": "Add multi-screen stitching(stack/start)",
 			"request": {
 				"method": "POST",
 				"header": [],
@@ -92,7 +92,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key(Configuration file configuration)"
 						}
 					]
 				}
@@ -100,7 +100,7 @@
 			"response": []
 		},
 		{
-			"name": "获取网络线程负载(getThreadsLoad)",
+			"name": "Get the network thread load(getThreadsLoad)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -118,7 +118,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -126,7 +126,7 @@
 			"response": []
 		},
 		{
-			"name": "获取主要对象个数(getStatistic)",
+			"name": "Get the number of main objects(getStatistic)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -144,7 +144,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -152,7 +152,7 @@
 			"response": []
 		},
 		{
-			"name": "获取后台线程负载(getWorkThreadsLoad)",
+			"name": "Get the background thread load(getWorkThreadsLoad)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -170,7 +170,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -178,7 +178,7 @@
 			"response": []
 		},
 		{
-			"name": "获取服务器配置(getServerConfig)",
+			"name": "Get server configuration(getServerConfig)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -196,7 +196,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -204,7 +204,7 @@
 			"response": []
 		},
 		{
-			"name": "设置服务器配置(setServerConfig)",
+			"name": "Setting up server configuration(setServerConfig)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -222,12 +222,12 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "api.apiDebug",
 							"value": "0",
-							"description": "配置键与配置项值"
+							"description": "Configuration keys and configuration item values"
 						}
 					]
 				}
@@ -235,7 +235,7 @@
 			"response": []
 		},
 		{
-			"name": "重启服务器(restartServer)",
+			"name": "Restart the server(restartServer)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -253,7 +253,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -261,7 +261,7 @@
 			"response": []
 		},
 		{
-			"name": "获取流列表(getMediaList)",
+			"name": "Get the stream list(getMediaList)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -279,30 +279,30 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtmp",
-							"description": "筛选协议，例如 rtsp或rtmp",
+							"description": "Filter protocols such as rtsp or rtmp",
 							"disabled": true
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "筛选虚拟主机，例如__defaultVhost__",
+							"description": "Filter virtual hosts, such as __defaultVhost__",
 							"disabled": true
 						},
 						{
 							"key": "app",
 							"value": null,
-							"description": "筛选应用名，例如 live",
+							"description": "Filter the application name, such as live",
 							"disabled": true
 						},
 						{
 							"key": "stream",
 							"value": null,
-							"description": "筛选流id，例如 test",
+							"description": "Filter the stream id, e.g. test",
 							"disabled": true
 						}
 					]
@@ -311,7 +311,7 @@
 			"response": []
 		},
 		{
-			"name": "关断单个流(close_stream)",
+			"name": "Turn off a single stream(close_stream)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -329,32 +329,32 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp"
+							"description": "Protocols such as rtsp or rtmp"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						},
 						{
 							"key": "force",
 							"value": "1",
-							"description": "是否强制关闭(有人在观看是否还关闭)",
+							"description": "Is it forced to close (whether someone is watching it still closed)",
 							"disabled": true
 						}
 					]
@@ -363,7 +363,7 @@
 			"response": []
 		},
 		{
-			"name": "批量关断流(close_streams)",
+			"name": "Batch shutdown flow(close_streams)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -381,32 +381,32 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp"
+							"description": "Protocols such as rtsp or rtmp"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						},
 						{
 							"key": "force",
 							"value": "1",
-							"description": "是否强制关闭(有人在观看是否还关闭)",
+							"description": "Is it forced to close (whether someone is watching it still closed)",
 							"disabled": true
 						}
 					]
@@ -415,7 +415,7 @@
 			"response": []
 		},
 		{
-			"name": "获取Session列表(getAllSession)",
+			"name": "Get the Session List(getAllSession)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -433,18 +433,18 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "local_port",
 							"value": "",
-							"description": "筛选本机端口，例如筛选rtsp链接：554",
+							"description": "Filter native ports, for example filter rtsp link: 554",
 							"disabled": true
 						},
 						{
 							"key": "peer_ip",
 							"value": null,
-							"description": "筛选客户端ip",
+							"description": "Filter client ip",
 							"disabled": true
 						}
 					]
@@ -453,7 +453,7 @@
 			"response": []
 		},
 		{
-			"name": "断开tcp连接(kick_session)",
+			"name": "Disconnect tcp(kick_session)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -471,12 +471,12 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "id",
 							"value": "123456",
-							"description": "客户端唯一id，可以通过getAllSession接口获取"
+							"description": "The unique id on the client can be obtained through the getAllSession interface"
 						}
 					]
 				}
@@ -484,7 +484,7 @@
 			"response": []
 		},
 		{
-			"name": "批量断开tcp连接(kick_sessions)",
+			"name": "Batch disconnection of tcp connection(kick_sessions)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -502,18 +502,18 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "local_port",
 							"value": "",
-							"description": "筛选本机端口，例如筛选rtsp链接：554",
+							"description": "Filter native ports, for example filter rtsp link: 554",
 							"disabled": true
 						},
 						{
 							"key": "peer_ip",
 							"value": null,
-							"description": "筛选客户端ip",
+							"description": "Filter client ip",
 							"disabled": true
 						}
 					]
@@ -522,7 +522,7 @@
 			"response": []
 		},
 		{
-			"name": "添加rtsp/rtmp/hls/srt拉流代理(addStreamProxy)",
+			"name": "Add rtsp/rtmp/hls/srt stream pull proxy(addStreamProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -540,140 +540,140 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "添加的流的虚拟主机，例如__defaultVhost__"
+							"description": "Added stream virtual host, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "添加的流的应用名，例如live"
+							"description": "The application name of the added stream, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "添加的流的id名，例如test"
+							"description": "The id name of the added stream, such as test"
 						},
 						{
 							"key": "url",
 							"value": "rtmp://live.hkstv.hk.lxdns.com/live/hks2",
-							"description": "拉流地址，例如rtmp://live.hkstv.hk.lxdns.com/live/hks2"
+							"description": "Pull the stream address, e.g. rtmp://live.hkstv.hk.lxdns.com/live/hks2"
 						},
 						{
 							"key": "rtp_type",
 							"value": null,
-							"description": "rtsp拉流时，拉流方式，0：tcp，1：udp，2：组播",
+							"description": "When rtsp pulls stream, the stream pulling method is 0: tcp, 1: udp, 2: multicast",
 							"disabled": true
 						},
 						{
 							"key": "timeout_sec",
 							"value": "10",
-							"description": "拉流超时时间，单位秒，float类型",
+							"description": "Pulling flow timeout time, unit seconds, float type",
 							"disabled": true
 						},
 						{
 							"key": "retry_count",
 							"value": "",
-							"description": "拉流重试次数,不传此参数或传值<=0时，则无限重试",
+							"description": "The number of times the stream is retryed. If this parameter is not passed or the value is <=0, then the infinite retry is done.",
 							"disabled": true
 						},
 						{
 							"key": "enable_hls",
 							"value": null,
-							"description": "是否转hls-ts",
+							"description": "Whether to convert hls-ts",
 							"disabled": true
 						},
 						{
 							"key": "enable_hls_fmp4",
 							"value": null,
-							"description": "是否转hls-fmp4",
+							"description": "Whether to convert hls-fmp4",
 							"disabled": true
 						},
 						{
 							"key": "enable_mp4",
 							"value": null,
-							"description": "是否mp4录制",
+							"description": "Whether to record mp4",
 							"disabled": true
 						},
 						{
 							"key": "enable_rtsp",
 							"value": "1",
-							"description": "是否转协议为rtsp/webrtc",
+							"description": "Whether to convert the protocol to rtsp/webrtc",
 							"disabled": true
 						},
 						{
 							"key": "enable_rtmp",
 							"value": "1",
-							"description": "是否转协议为rtmp/flv",
+							"description": "Whether to convert the protocol to rtmp/flv",
 							"disabled": true
 						},
 						{
 							"key": "enable_ts",
 							"value": "1",
-							"description": "是否转协议为http-ts/ws-ts",
+							"description": "Whether to convert the protocol to http-ts/ws-ts",
 							"disabled": true
 						},
 						{
 							"key": "enable_fmp4",
 							"value": "1",
-							"description": "是否转协议为http-fmp4/ws-fmp4",
+							"description": "Whether to convert the protocol to http-fmp4/ws-fmp4",
 							"disabled": true
 						},
 						{
 							"key": "enable_audio",
 							"value": "1",
-							"description": "转协议是否开启音频",
+							"description": "Whether to enable audio by transferring the protocol",
 							"disabled": true
 						},
 						{
 							"key": "add_mute_audio",
 							"value": "1",
-							"description": "转协议无音频时，是否添加静音aac音频",
+							"description": "Whether to add mute aac audio when there is no audio in the protocol",
 							"disabled": true
 						},
 						{
 							"key": "mp4_save_path",
 							"value": null,
-							"description": "mp4录制保存根目录，置空使用默认目录",
+							"description": "mp4 recording saves the root directory, empty the default directory",
 							"disabled": true
 						},
 						{
 							"key": "mp4_max_second",
 							"value": "1800",
-							"description": "mp4录制切片大小，单位秒",
+							"description": "mp4 recording slice size, unit seconds",
 							"disabled": true
 						},
 						{
 							"key": "hls_save_path",
 							"value": null,
-							"description": "hls保存根目录，置空使用默认目录",
+							"description": "hls save the root directory and empty it to use the default directory",
 							"disabled": true
 						},
 						{
 							"key": "modify_stamp",
 							"value": null,
-							"description": "是否修改原始时间戳，默认值2；取值范围：0.采用源视频流绝对时间戳，不做任何改变;1.采用s3mediakit接收数据时的系统时间戳(有平滑处理);2.采用源视频流时间戳相对时间戳(增长量)，有做时间戳跳跃和回退矫正",
+							"description": "Whether to modify the original timestamp, the default value is 2; value range: 0. The absolute timestamp of the source video stream is adopted without any changes; 1. The system timestamp when receiving data is adopted by s3mediakit (smooth processing); 2. The relative timestamp of the source video stream is adopted by the source video stream (growth volume), and the timestamp jump and back-back correction are performed",
 							"disabled": true
 						},
 						{
 							"key": "auto_close",
 							"value": null,
-							"description": "无人观看时，是否直接关闭(而不是通过on_none_reader hook返回close)",
+							"description": "Whether to close directly when no one watches (rather than returning close via on_none_reader hook)",
 							"disabled": true
 						},
 						{
 							"key": "latency",
 							"value": null,
-							"description": "srt延时, 单位毫秒",
+							"description": "srt delay, unit milliseconds",
 							"disabled": true
 						},
 						{
 							"key": "passphrase",
 							"value": null,
-							"description": "srt拉流的密码",
+							"description": "Password for srt pulling stream",
 							"disabled": true
                         }
 					]
@@ -682,7 +682,7 @@
 			"response": []
 		},
 		{
-			"name": "关闭拉流代理(delStreamProxy)",
+			"name": "Close the stream pull agent(delStreamProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -700,12 +700,12 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "key",
 							"value": "__defaultVhost__/live/1",
-							"description": "addStreamProxy接口返回的key"
+							"description": "The key returned by the addStreamProxy interface"
 						}
 					]
 				}
@@ -713,7 +713,7 @@
 			"response": []
 		},
 		{
-			"name": "获取拉流代理列表(listStreamProxy)",
+			"name": "Get the list of stream pulling agents(listStreamProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -731,7 +731,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -739,7 +739,7 @@
 			"response": []
 		},
 		{
-			"name": "获取推流代理列表(listStreamPusherProxy)",
+			"name": "Get the list of push streaming agents(listStreamPusherProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -757,7 +757,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -765,7 +765,7 @@
 			"response": []
 		},	
 		{
-			"name": "添加rtsp/rtmp/srt推流(addStreamPusherProxy)",
+			"name": "Add rtsp/rtmp/srt push stream (addStreamPusherProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -783,61 +783,61 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtmp",
-							"description": "推流协议，支持rtsp、rtmp，大小写敏感"
+							"description": "Pushing protocol, supports rtsp, rtmp, and case sensitive"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "已注册流的虚拟主机，一般为__defaultVhost__"
+							"description": "The virtual host with registered streams is generally __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "已注册流的应用名，例如live"
+							"description": "The name of the registered stream, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "已注册流的id名，例如test"
+							"description": "The id name of the registered stream, such as test"
 						},
 						{
 							"key": "dst_url",
 							"value": "rtmp://192.168.1.104/live/push",
-							"description": "推流地址，需要与schema字段协议一致"
+							"description": "The streaming address needs to be consistent with the schema field protocol"
 						},
 						{
 							"key": "rtp_type",
 							"value": "0",
-							"description": "rtsp推流时，推流方式，0：tcp，1：udp",
+							"description": "When rtsp push flow, the push flow method is 0: tcp, 1: udp",
 							"disabled": true
 						},
 						{
 							"key": "timeout_sec",
 							"value": "10",
-							"description": "推流超时时间，单位秒，float类型",
+							"description": "Push flow timeout time, unit seconds, float type",
 							"disabled": true
 						},
 						{
 							"key": "retry_count",
 							"value": null,
-							"description": "推流重试次数,不传此参数或传值<=0时，则无限重试",
+							"description": "The number of times the push stream retry is not passed, if this parameter is not passed or the value is <=0, then infinite retry is done.",
 							"disabled": true
 						},
                         {
 							"key": "latency",
 							"value": null,
-							"description": "srt延时, 单位毫秒",
+							"description": "srt delay, unit milliseconds",
 							"disabled": true
 						},
 						{
 							"key": "passphrase",
 							"value": null,
-							"description": "srt推流的密码",
+							"description": "Password for srt push stream",
 							"disabled": true
                         }
 
@@ -847,7 +847,7 @@
 			"response": []
 		},
 		{
-			"name": "关闭推流(delStreamPusherProxy)",
+			"name": "Turn off push flow(delStreamPusherProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -865,12 +865,12 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "key",
 							"value": "rtmp/__defaultVhost__/live/test/f40a8ab006cac16ecc0858409e890491",
-							"description": "addStreamPusherProxy接口返回的key"
+							"description": "The key returned by the addStreamPusherProxy interface"
 						}
 					]
 				}
@@ -878,7 +878,7 @@
 			"response": []
 		},
 		{
-			"name": "获取FFmpeg拉流代理列表(listFFmpegSource)",
+			"name": "Get the list of FFmpeg stream pulling agents(listFFmpegSource)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -896,7 +896,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -904,7 +904,7 @@
 			"response": []
 		},		
 		{
-			"name": "添加FFmpeg拉流代理(addFFmpegSource)",
+			"name": "Add FFmpeg stream pull proxy(addFFmpegSource)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -922,37 +922,37 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "src_url",
 							"value": "http://hefeng.live.tempsource.cjyun.org/videotmp/s10100-hftv.m3u8",
-							"description": "FFmpeg拉流地址,支持任意协议或格式(只要FFmpeg支持即可)"
+							"description": "FFmpeg streaming address, supports any protocol or format (as long as FFmpeg supports it)"
 						},
 						{
 							"key": "dst_url",
 							"value": "rtmp://127.0.0.1/live/hks2",
-							"description": "FFmpeg rtmp推流地址，一般都是推给自己，例如rtmp://127.0.0.1/live/stream_form_ffmpeg"
+							"description": "FFmpeg rtmp streaming address is usually pushed to oneself, for example rtmp://127.0.0.1/live/stream_form_ffmpeg"
 						},
 						{
 							"key": "timeout_ms",
 							"value": "10000",
-							"description": "FFmpeg推流成功超时时间,单位毫秒"
+							"description": "FFmpeg push flow successful timeout time, unit milliseconds"
 						},
 						{
 							"key": "enable_hls",
 							"value": "0",
-							"description": "是否开启hls录制"
+							"description": "Whether to enable hls recording"
 						},
 						{
 							"key": "enable_mp4",
 							"value": "0",
-							"description": "是否开启mp4录制"
+							"description": "Whether to enable mp4 recording"
 						},
 						{
 							"key": "ffmpeg_cmd_key",
 							"value": "ffmpeg.cmd_hd",
-							"description": "FFmpeg命名参数模板，置空则采用配置项:ffmpeg.cmd",
+							"description": "FFfmpeg command parameter template, if empty, use configuration items: ffmpeg.cmd",
 							"disabled": true
 						}
 					]
@@ -961,7 +961,7 @@
 			"response": []
 		},
 		{
-			"name": "关闭FFmpeg拉流代理(delFFmpegSource)",
+			"name": "Close FFmpeg stream pull proxy(delFFmpegSource)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -979,7 +979,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "key",
@@ -991,7 +991,7 @@
 			"response": []
 		},
 		{
-			"name": "流是否在线(isMediaOnline)",
+			"name": "Is the stream online?(isMediaOnline)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1009,27 +1009,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp"
+							"description": "Protocols such as rtsp or rtmp"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "proxy",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "1",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						}
 					]
 				}
@@ -1037,7 +1037,7 @@
 			"response": []
 		},
 		{
-			"name": "获取媒体流播放器列表(getMediaPlayerList)",
+			"name": "Get the list of media streaming players(getMediaPlayerList)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1055,27 +1055,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp"
+							"description": "Protocols such as rtsp or rtmp"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "proxy",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "1",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						}
 					]
 				}
@@ -1083,12 +1083,12 @@
 			"response": []
 		},
 		{
-			"name": "广播webrtc datachannel消息(broadcastMessage)",
+			"name": "Broadcast webrtc datachannel message(broadcastMessage)",
 			"request": {
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{S3MediaKit_URL}}/index/api/broadcastMessage?secret={{S3MediaKit_secret}}&schema=rtsp&vhost={{defaultVhost}}&app=live&stream=test&msg=Hello ZLMediakit",
+					"raw": "{{S3MediaKit_URL}}/index/api/broadcastMessage?secret={{S3MediaKit_secret}}&schema=rtsp&vhost={{defaultVhost}}&app=live&stream=test&msg=Hello S3Mediakit",
 					"host": [
 						"{{S3MediaKit_URL}}"
 					],
@@ -1101,31 +1101,31 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp，目前仅支持rtsp协议"
+							"description": "Protocols such as rtsp or rtmp, currently only the rtsp protocol is supported"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						},
 						{
 							"key": "msg",
-							"value": "Hello ZLMediakit"
+							"value": "Hello S3Mediakit"
 						}
 					]
 				}
@@ -1133,7 +1133,7 @@
 			"response": []
 		},
 		{
-			"name": "获取流信息(getMediaInfo)",
+			"name": "Get flow information(getMediaInfo)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1151,27 +1151,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "schema",
 							"value": "rtsp",
-							"description": "协议，例如 rtsp或rtmp"
+							"description": "Protocols such as rtsp or rtmp"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "mym9",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						}
 					]
 				}
@@ -1179,7 +1179,7 @@
 			"response": []
 		},
 		{
-			"name": "获取流信息(getMp4RecordFile)",
+			"name": "Get flow information(getMp4RecordFile)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1197,32 +1197,32 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "proxy",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "2",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						},
 						{
 							"key": "customized_path",
 							"value": "/www",
-							"description": "录像文件保存自定义根目录，为空则采用配置文件设置"
+							"description": "The video file is saved to custom root directory, if it is empty, the configuration file is set"
 						},
 						{
 							"key": "period",
 							"value": "2020-05-26",
-							"description": "流的录像日期，格式为2020-02-01,如果不是完整的日期，那么是搜索录像文件夹列表，否则搜索对应日期下的mp4文件列表"
+							"description": "The recording date of the stream is in the format of 2020-02-01. If it is not the complete date, then it is a search for the recording folder list, otherwise search for the mp4 file list under the corresponding date."
 						}
 					]
 				}
@@ -1230,7 +1230,7 @@
 			"response": []
 		},
 		{
-			"name": "删除录像文件夹(deleteRecordDirectory)",
+			"name": "Delete the video folder(deleteRecordDirectory)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1248,27 +1248,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "proxy",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "2",
-							"description": "流id，例如 test"
+							"description": "Stream id, e.g. test"
 						},
 						{
 							"key": "period",
 							"value": "2020-01-01",
-							"description": "流的录像日期，格式为2020-01-01,如果不是完整的日期，那么会删除失败"
+							"description": "The recording date of the stream is in the format of 2020-01-01. If it is not the complete date, it will fail to delete it."
 						}
 					]
 				}
@@ -1276,7 +1276,7 @@
 			"response": []
 		},
 		{
-			"name": "开始录制(startRecord)",
+			"name": "Start recording(startRecord)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1294,38 +1294,38 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "0为hls，1为mp4"
+							"description": "0 is hls, 1 is mp4"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "customized_path",
 							"value": null,
-							"description": "录像文件保存自定义根目录，为空则采用配置文件设置",
+							"description": "The video file is saved to custom root directory, if it is empty, the configuration file is set",
 							"disabled": true
 						},
 						{
 							"key": "max_second",
 							"value": "1000",
-							"description": "MP4录制的切片时间大小，单位秒",
+							"description": "MP4 recording slice time, unit seconds",
 							"disabled": true
 						}
 					]
@@ -1334,7 +1334,7 @@
 			"response": []
 		},
 		{
-			"name": "设置录像速度(setRecordSpeed)",
+			"name": "Set the recording speed(setRecordSpeed)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1352,27 +1352,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "speed",
 							"value": "2.0",
-							"description": "要设置的录像倍速"
+							"description": "Recording speed to set"
 						}
 					]
 				}
@@ -1380,7 +1380,7 @@
 			"response": []
 		},
 		{
-			"name": "设置录像流播放位置(seekRecordStamp)",
+			"name": "Set the playback position of the video stream(seekRecordStamp)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1398,27 +1398,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "stamp",
 							"value": "1000",
-							"description": "要设置的录像播放位置"
+							"description": "The video playback location to be set"
 						}
 					]
 				}
@@ -1426,7 +1426,7 @@
 			"response": []
 		},
 		{
-			"name": "停止录制(stopRecord)",
+			"name": "Stop recording(stopRecord)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1444,27 +1444,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "0为hls，1为mp4"
+							"description": "0 is hls, 1 is mp4"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						}
 					]
 				}
@@ -1472,7 +1472,7 @@
 			"response": []
 		},
 		{
-			"name": "是否正在录制(isRecording)",
+			"name": "Is it recording?(isRecording)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1490,27 +1490,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "0为hls，1为mp4"
+							"description": "0 is hls, 1 is mp4"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						}
 					]
 				}
@@ -1518,7 +1518,7 @@
 			"response": []
 		},
 		{
-			"name": "获取截图(getSnap)",
+			"name": "Get screenshots(getSnap)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1536,28 +1536,28 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "url",
 							"value": "rtsp://www.mym9.com/101065?from=2019-06-28/01:12:13",
-							"description": "需要截图的url，可以是本机的，也可以是远程主机的"
+							"description": "The URL that needs to be screenshot can be native or remote host"
 						},
 						{
 							"key": "timeout_sec",
 							"value": "10",
-							"description": "截图失败超时时间，防止FFmpeg一直等待截图"
+							"description": "Screenshot failed timeout, prevent FFmpeg from waiting for screenshot"
 						},
 						{
 							"key": "expire_sec",
 							"value": "1",
-							"description": "截图的过期时间，该时间内产生的截图都会作为缓存返回"
+							"description": "The expiration time of the screenshot, and the screenshots generated during that time will be returned as cache."
 						},
 						{
 							"key": "async",
 							"value": "0",
 							"disabled": true,
-							"description": "是否采用zlm内置播放器、解码器api异步截图，开启后截图速度提升但兼容性降低"
+							"description": "Whether to use s3m built-in player and decoder API asynchronous screenshots, the screenshot speed is improved but the compatibility is reduced after turning on"
 						}
 					]
 				}
@@ -1565,7 +1565,7 @@
 			"response": []
 		},
 		{
-			"name": "获取rtp推流信息(getRtpInfo)",
+			"name": "Get RTP push information(getRtpInfo)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1583,22 +1583,22 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "流id"
+							"description": "Id"
 						}
 					]
 				}
@@ -1606,7 +1606,7 @@
 			"response": []
 		},
 		{
-			"name": "创建RTP服务器(openRtpServer)",
+			"name": "Create an RTP server(openRtpServer)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1624,55 +1624,55 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "port",
 							"value": "0",
-							"description": "绑定的端口，0时为随机端口"
+							"description": "The bound port is a random port when 0 is"
 						},
 						{
 							"key": "tcp_mode",
 							"value": "1",
-							"description": "tcp模式，0时为不启用tcp监听，1时为启用tcp监听，2时为tcp主动连接模式"
+							"description": "TCP mode, 0 is not enabled for tcp listening, 1 is enabled for tcp listening, 2 is active connection mode"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id\n"
+							"description": "The stream id bound to this port\n"
 						},
 						{
 							"key": "re_use_port",
 							"value": "0",
-							"description": "是否重用端口，默认为0，非必选参数",
+							"description": "Whether to reuse the port, default is 0, non-required parameters",
 							"disabled": true
 						},
 						{
 							"key": "ssrc",
 							"value": "0",
-							"description": "是否指定收流的rtp ssrc, 十进制数字，不指定或指定0时则不过滤rtp，非必选参数",
+							"description": "Whether to specify the received rtp ssrc, decimal number, if not specified or 0 is specified, rtp will not be filtered, non-required parameters",
 							"disabled": true
 						},
 						{
 							"key": "only_track",
 							"value": "1",
-							"description": "是否为单音频/单视频track，0：不设置，1：单音频，2：单视频",
+							"description": "Is it a single audio/single video track, 0: not set, 1: single audio, 2: single video",
 							"disabled": true
 						},
 						{
 							"key": "local_ip",
 							"value": "::",
-							"description": "指定创建RTP的本地ip，ipv4可填”0.0.0.0“，ipv6可填”::“，一般保持默认",
+							"description": "Specify the local IP for creating RTP. ipv4 can be filled in \"0.0.0.0\". ipv6 can be filled in \"::\", generally keep the default",
 							"disabled": true
 						}
 					]
@@ -1681,7 +1681,7 @@
 			"response": []
 		},
 		{
-			"name": "创建多路复用RTP服务器(openRtpServerMultiplex)",
+			"name": "Create a multiplexed RTP server(openRtpServerMultiplex)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1699,43 +1699,43 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "port",
 							"value": "0",
-							"description": "绑定的端口，0时为随机端口"
+							"description": "The bound port is a random port when 0 is"
 						},
 						{
 							"key": "tcp_mode",
 							"value": "1",
-							"description": "tcp模式，0时为不启用tcp监听，1时为启用tcp监听"
+							"description": "TCP mode, 0 is not enabled for tcp listening, 1 is enabled for tcp listening"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id\n"
+							"description": "The stream id bound to this port\n"
 						},
 						{
 							"key": "only_track",
 							"value": "0",
-							"description": "是否为单音频/单视频track，0：不设置，1：单音频，2：单视频",
+							"description": "Is it a single audio/single video track, 0: not set, 1: single audio, 2: single video",
 							"disabled": true
 						},
 						{
 							"key": "local_ip",
 							"value": "::",
-							"description": "指定创建RTP的本地ip，ipv4可填”0.0.0.0“，ipv6可填”::“，一般保持默认",
+							"description": "Specify the local IP for creating RTP. ipv4 can be filled in \"0.0.0.0\". ipv6 can be filled in \"::\", generally keep the default",
 							"disabled": true
 						}
 					]
@@ -1744,7 +1744,7 @@
 			"response": []
 		},
 		{
-			"name": "连接RTP服务器(connectRtpServer)",
+			"name": "Connect to the RTP server(connectRtpServer)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1762,32 +1762,32 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "dst_url",
 							"value": "0",
-							"description": "tcp主动模式时服务端地址"
+							"description": "Server address in tcp active mode"
 						},
 						{
 							"key": "dst_port",
 							"value": "1",
-							"description": "tcp主动模式时服务端端口"
+							"description": "Server port in tcp active mode"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "OpenRtpServer时绑定的流id\n"
+							"description": "The stream id bound to OpenRtpServer\n"
 						}
 					]
 				}
@@ -1795,7 +1795,7 @@
 			"response": []
 		},
 		{
-			"name": "关闭RTP服务器(closeRtpServer)",
+			"name": "Turn off the RTP server(closeRtpServer)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1813,22 +1813,22 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id"
+							"description": "The stream id bound to this port"
 						}
 					]
 				}
@@ -1836,7 +1836,7 @@
 			"response": []
 		},
 		{
-			"name": "更新RTP服务器过滤SSRC(updateRtpServerSSRC)",
+			"name": "Update RTP server filter SSRC(updateRtpServerSSRC)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1854,27 +1854,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id"
+							"description": "The stream id bound to this port"
 						},
 						{
 							"key": "ssrc",
 							"value": "123456",
-							"description": "十进制ssrc"
+							"description": "Decimal ssrc"
 						}
 					]
 				}
@@ -1882,7 +1882,7 @@
 			"response": []
 		},
 		{
-			"name": "暂停RTP超时检查(pauseRtpCheck)",
+			"name": "Pause RTP timeout check(pauseRtpCheck)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1900,22 +1900,22 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id"
+							"description": "The stream id bound to this port"
 						}
 					]
 				}
@@ -1923,7 +1923,7 @@
 			"response": []
 		},
 		{
-			"name": "恢复RTP超时检查(resumeRtpCheck)",
+			"name": "Recover RTP timeout check(resumeRtpCheck)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1941,22 +1941,22 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream_id",
 							"value": "test",
-							"description": "该端口绑定的流id"
+							"description": "The stream id bound to this port"
 						}
 					]
 				}
@@ -1964,7 +1964,7 @@
 			"response": []
 		},
 		{
-			"name": "获取RTP服务器列表(listRtpServer)",
+			"name": "Get the RTP server list(listRtpServer)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1982,7 +1982,7 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						}
 					]
 				}
@@ -1990,7 +1990,7 @@
 			"response": []
 		},
 		{
-			"name": "开始active模式发送rtp(startSendRtp)",
+			"name": "Start active mode sending rtp(startSendRtp)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2008,89 +2008,89 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "ssrc_multi_send",
 							"value": "0",
-							"description": "是否支持同ssrc推流到多个上级服务器,该参数非必选参数 默认false",
+							"description": "Whether it supports pushing streams to multiple superior servers with the same ssrc, this parameter is not required. Default false",
 							"disabled": true
 						},
 						{
 							"key": "ssrc",
 							"value": "1",
-							"description": "rtp推流的ssrc"
+							"description": "RTP streaming ssrc"
 						},
 						{
 							"key": "dst_url",
 							"value": "127.0.0.1",
-							"description": "目标ip或域名"
+							"description": "Target IP or domain name"
 						},
 						{
 							"key": "dst_port",
 							"value": "10000",
-							"description": "目标端口"
+							"description": "Target port"
 						},
 						{
 							"key": "is_udp",
 							"value": "0",
-							"description": "1:udp active模式, 0:tcp active模式"
+							"description": "1:udp active mode, 0:tcp active mode"
 						},
 						{
 							"key": "src_port",
 							"value": "0",
-							"description": "指定tcp/udp客户端使用的本地端口，0时为随机端口，该参数非必选参数，不传时为随机端口。",
+							"description": "Specify the local port used by the tcp/udp client. When 0 is a random port, this parameter is not a required parameter, and when it is not passed, it is a random port.",
 							"disabled": true
 						},
 						{
 							"key": "from_mp4",
 							"value": "0",
-							"description": "是否推送本地MP4录像，该参数非必选参数",
+							"description": "Whether to push local MP4 video, this parameter is not a required parameter",
 							"disabled": true
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "rtp打包模式，0:es, 1: ps, 2: ts",
+							"description": "rtp packaging mode, 0:es, 1: ps, 2: ts",
 							"disabled": true
 						},
 						{
 							"key": "pt",
 							"value": "96",
-							"description": "rtp payload type，默认96，该参数非必选参数",
+							"description": "rtp payload type, default 96, this parameter is not required",
 							"disabled": true
 						},
 						{
 							"key": "only_audio",
 							"value": "1",
-							"description": "rtp es方式打包时，是否只打包音频，该参数非必选参数",
+							"description": "When packaging in RTP ES, is it necessary to package only audio?",
 							"disabled": true
 						},
 						{
 							"key": "udp_rtcp_timeout",
 							"value": "0",
-							"description": "udp方式推流时，是否开启rtcp发送和rtcp接收超时判断，开启后(默认关闭)，如果接收rr rtcp超时，将导致主动停止rtp发送",
+							"description": "When pushing streams using udp, whether to enable rtcp sending and rtcp receive timeout judgment, after turning on (default off), if the rr rtcp timeout is received, it will cause the rtp sending to be actively stopped.",
 							"disabled": true
 						},
 						{
 							"key": "recv_stream_id",
 							"value": "",
-							"description": "发送rtp同时接收，一般用于双向语言对讲, 如果不为空，说明开启接收，值为接收流的id",
+							"description": "Send RTP to receive at the same time, which is generally used for bidirectional language intercom. If it is not empty, it means that the reception is enabled and the value is the id of the receiving stream.",
 							"disabled": true
 						}
 					]
@@ -2099,7 +2099,7 @@
 			"response": []
 		},
 		{
-			"name": "开始passive模式发送rtp(startSendRtpPassive)",
+			"name": "Start Passive mode to send rtp(startSendRtpPassive)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2117,74 +2117,74 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "ssrc",
 							"value": "1",
-							"description": "rtp推流的ssrc，ssrc不同时，可以推流到多个上级服务器"
+							"description": "RTP push streaming ssrc, ssrc can be pushed to multiple superior servers"
 						},
 						{
 							"key": "is_udp",
 							"value": "0",
 							"disabled": true,
-							"description": "1:udp passive模式, 0:tcp passive模式"
+							"description": "1:udp passive mode, 0:tcp passive mode"
 						},
 						{
 							"key": "src_port",
 							"value": "0",
-							"description": "指定tcp/udp客户端使用的本地端口，0时为随机端口，该参数非必选参数，不传时为随机端口。",
+							"description": "Specify the local port used by the tcp/udp client. When 0 is a random port, this parameter is not a required parameter, and when it is not passed, it is a random port.",
 							"disabled": true
 						},
 						{
 							"key": "from_mp4",
 							"value": "0",
-							"description": "是否推送本地MP4录像，该参数非必选参数",
+							"description": "Whether to push local MP4 video, this parameter is not a required parameter",
 							"disabled": true
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "rtp打包模式，0:es, 1: ps, 2: ts",
+							"description": "rtp packaging mode, 0:es, 1: ps, 2: ts",
 							"disabled": true
 						},
 						{
 							"key": "pt",
 							"value": "96",
-							"description": "rtp payload type，默认96，该参数非必选参数",
+							"description": "rtp payload type, default 96, this parameter is not required",
 							"disabled": true
 						},
 						{
 							"key": "only_audio",
 							"value": "1",
-							"description": "rtp es方式打包时，是否只打包音频，该参数非必选参数",
+							"description": "When packaging in RTP ES, is it necessary to package only audio?",
 							"disabled": true
 						},
 						{
 							"key": "recv_stream_id",
 							"value": "",
-							"description": "发送rtp同时接收，一般用于双向语言对讲, 如果不为空，说明开启接收，值为接收流的id",
+							"description": "Send RTP to receive at the same time, which is generally used for bidirectional language intercom. If it is not empty, it means that the reception is enabled and the value is the id of the receiving stream.",
 							"disabled": true
 						},
 						{
 							"key": "close_delay_ms",
 							"value": "5000",
-							"description": "等待tcp连接超时时间，单位毫秒，默认5000毫秒",
+							"description": "Wait for tcp connection timeout time, unit milliseconds, default 5000 milliseconds",
 							"disabled": true
 						}
 					]
@@ -2193,7 +2193,7 @@
 			"response": []
 		},
 		{
-			"name": "开始双向对讲(startSendRtpTalk)",
+			"name": "Start two-way intercom(startSendRtpTalk)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2211,55 +2211,55 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "rtp",
-							"description": "应用名，例如 rtp"
+							"description": "Application name, for example rtp"
 						},
 						{
 							"key": "stream",
 							"value": "rtc",
-							"description": "流id，例如webrtc推流上来的流id"
+							"description": "stream id, such as stream id from webrtc push stream"
 						},
 						{
 							"key": "ssrc",
 							"value": "1",
-							"description": "rtp推流出去的ssrc"
+							"description": "RTP pushes out ssrc"
 						},
 						{
 							"key": "recv_stream_id",
 							"value": "",
-							"description": "对方rtp推流上来的流id，我们将通过这个链接回复他rtp流；请注意两个流的app和vhost需一致"
+							"description": "We will reply to the stream id of the other party's RTP stream through this link; please note that the app and vhost of the two streams must be consistent"
 						},
 						{
 							"key": "from_mp4",
 							"value": "0",
-							"description": "是否推送本地MP4录像，该参数非必选参数",
+							"description": "Whether to push local MP4 video, this parameter is not a required parameter",
 							"disabled": true
 						},
 						{
 							"key": "type",
 							"value": "1",
-							"description": "0(ES流)、1(PS流)、2(TS流)，默认1(PS流)；该参数非必选参数",
+							"description": "0 (ES stream), 1 (PS stream), 2 (TS stream), default 1 (PS stream); this parameter is not required",
 							"disabled": true
 						},
 						{
 							"key": "pt",
 							"value": "96",
-							"description": "rtp payload type，默认96；该参数非必选参数",
+							"description": "rtp payload type, default 96; this parameter is not required",
 							"disabled": true
 						},
 						{
 							"key": "only_audio",
 							"value": "1",
-							"description": "rtp es方式打包时，是否只打包音频；该参数非必选参数",
+							"description": "When packaging in RTP ES, is it necessary to package only audio?",
 							"disabled": true
 						}
 					]
@@ -2268,7 +2268,7 @@
 			"response": []
 		},
 		{
-			"name": "停止 发送rtp(stopSendRtp)",
+			"name": "Stop send rtp(stopSendRtp)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2286,27 +2286,27 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "obs",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						},
 						{
 							"key": "ssrc",
 							"value": "",
-							"description": "根据ssrc关停某路rtp推流，不传时关闭所有推流",
+							"description": "According to SRSC, shut down a certain RTP push stream, and if no transmission is transmitted, all push streams will be closed.",
 							"disabled": true
 						}
 					]
@@ -2315,7 +2315,7 @@
 			"response": []
 		},
 		{
-			"name": "获取rtp发送列表(listRtpSender)",
+			"name": "Get the rtp send list(listRtpSender)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2333,22 +2333,22 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "应用名，例如 live"
+							"description": "Application name, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "流id，例如 obs"
+							"description": "Stream id, e.g. obs"
 						}
 					]
 				}
@@ -2356,7 +2356,7 @@
 			"response": []
 		},
 		{
-			"name": "获取版本信息(version)",
+			"name": "Get version information(version)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2381,7 +2381,7 @@
 			"response": []
 		},
 		{
-			"name": "获取拉流代理信息(getProxyInfo)",
+			"name": "Get stream pulling agent information(getProxyInfo)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2410,7 +2410,7 @@
 			"response": []
 		},
 		{
-			"name": "获取推流代理信息(getProxyPusherInfo)",
+			"name": "Get push streaming agent information(getProxyPusherInfo)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2439,7 +2439,7 @@
 			"response": []
 		},
 		{
-			"name": "点播mp4文件(loadMP4File)",
+			"name": "On-demand mp4 file(loadMP4File)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2457,116 +2457,116 @@
 						{
 							"key": "secret",
 							"value": "{{S3MediaKit_secret}}",
-							"description": "api操作密钥(配置文件配置)"
+							"description": "API operation key (configuration file configuration)"
 						},
 						{
 							"key": "vhost",
 							"value": "{{defaultVhost}}",
-							"description": "添加的流的虚拟主机，例如__defaultVhost__"
+							"description": "Virtual hosts of added streams, such as __defaultVhost__"
 						},
 						{
 							"key": "app",
 							"value": "live",
-							"description": "添加的流的应用名，例如live"
+							"description": "The application name of the added stream, such as live"
 						},
 						{
 							"key": "stream",
 							"value": "test",
-							"description": "添加的流的id名，例如test"
+							"description": "The id name of the added stream, such as test"
 						},
 						{
 							"key": "file_path",
 							"value": "/path/to/mp4/file.mp4",
-							"description": "mp4文件绝对路径"
+							"description": "Absolute path of mp4 file"
 						},
 						{
 							"key": "file_repeat",
 							"value": "1",
-							"description": "是否循环点播mp4文件，如果配置文件已经开启循环点播，此参数无效",
+							"description": "Whether to loop on demand mp4 file, if the configuration file has already turned on loop on demand, this parameter is invalid",
 							"disabled": true
 						},
 						{
 							"key": "enable_hls",
 							"value": "",
-							"description": "是否转hls-ts",
+							"description": "Whether to convert hls-ts",
 							"disabled": true
 						},
 						{
 							"key": "enable_hls_fmp4",
 							"value": "",
-							"description": "是否转hls-fmp4",
+							"description": "Whether to convert hls-fmp4",
 							"disabled": true
 						},
 						{
 							"key": "enable_mp4",
 							"value": "",
-							"description": "是否mp4录制，默认不开启(覆盖配置文件)",
+							"description": "Whether to record mp4, it will not be enabled by default (overwrite configuration files)",
 							"disabled": true
 						},
 						{
 							"key": "enable_rtsp",
 							"value": "1",
-							"description": "是否转协议为rtsp/webrtc",
+							"description": "Whether to convert the protocol to rtsp/webrtc",
 							"disabled": true
 						},
 						{
 							"key": "enable_rtmp",
 							"value": "1",
-							"description": "是否转协议为rtmp/flv",
+							"description": "Whether to convert the protocol to rtmp/flv",
 							"disabled": true
 						},
 						{
 							"key": "enable_ts",
 							"value": "1",
-							"description": "是否转协议为http-ts/ws-ts",
+							"description": "Whether to convert the protocol to http-ts/ws-ts",
 							"disabled": true
 						},
 						{
 							"key": "enable_fmp4",
 							"value": "1",
-							"description": "是否转协议为http-fmp4/ws-fmp4",
+							"description": "Whether to convert the protocol to http-fmp4/ws-fmp4",
 							"disabled": true
 						},
 						{
 							"key": "enable_audio",
 							"value": "1",
-							"description": "转协议是否开启音频",
+							"description": "Whether to enable audio by transferring the protocol",
 							"disabled": true
 						},
 						{
 							"key": "add_mute_audio",
 							"value": "1",
-							"description": "转协议无音频时，是否添加静音aac音频",
+							"description": "Whether to add mute aac audio when there is no audio in the protocol",
 							"disabled": true
 						},
 						{
 							"key": "mp4_save_path",
 							"value": "",
-							"description": "mp4录制保存根目录，置空使用默认目录",
+							"description": "mp4 recording saves the root directory, empty the default directory",
 							"disabled": true
 						},
 						{
 							"key": "mp4_max_second",
 							"value": "1800",
-							"description": "mp4录制切片大小，单位秒",
+							"description": "mp4 recording slice size, unit seconds",
 							"disabled": true
 						},
 						{
 							"key": "hls_save_path",
 							"value": "",
-							"description": "hls保存根目录，置空使用默认目录",
+							"description": "hls save the root directory and empty it to use the default directory",
 							"disabled": true
 						},
 						{
 							"key": "modify_stamp",
 							"value": "",
-							"description": "是否修改原始时间戳，默认值2；取值范围：0.采用源视频流绝对时间戳，不做任何改变;1.采用s3mediakit接收数据时的系统时间戳(有平滑处理);2.采用源视频流时间戳相对时间戳(增长量)，有做时间戳跳跃和回退矫正",
+							"description": "Whether to modify the original timestamp, the default value is 2; value range: 0. The absolute timestamp of the source video stream is adopted without any changes; 1. The system timestamp when receiving data is adopted by s3mediakit (smooth processing); 2. The relative timestamp of the source video stream is adopted by the source video stream (growth volume), and the timestamp jump and back-back correction are performed",
 							"disabled": true
 						},
 						{
 							"key": "auto_close",
 							"value": "",
-							"description": "无人观看时，是否直接关闭(而不是通过on_none_reader hook返回close)；强制开启，此参数不生效",
+							"description": "When no one watches, is it closed directly (rather than returning close through the on_none_reader hook); forced on, this parameter does not take effect",
 							"disabled": true
 						}
 					]
@@ -2575,7 +2575,7 @@
 			"response": []
 		},
 		{
-			"name": "下载文件(downloadFile)",
+			"name": "Download the file(downloadFile)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -2593,12 +2593,12 @@
 						{
 							"key": "file_path",
 							"value": "/path/to/file.ext",
-							"description": "文件绝对路径，根据文件名生成Content-Type；该接口将触发on_http_access hook"
+							"description": "The absolute path of the file, generate Content-Type according to the file name; this interface will trigger the on_http_access hook"
 						},
 						{
 							"key": "save_name",
 							"value": "test",
-							"description": "浏览器下载文件后保存文件名；可选参数",
+							"description": "Save the file name after the browser downloads the file; optional parameters",
 							"disabled": true
 						}
 					]

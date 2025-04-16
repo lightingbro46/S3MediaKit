@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2021 The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#ifndef S3MEDIAKIT_TWCCCONTEXT_H
+﻿#ifndef S3MEDIAKIT_TWCCCONTEXT_H
 #define S3MEDIAKIT_TWCCCONTEXT_H
 
 #include <stdint.h>
@@ -21,10 +11,8 @@ namespace mediakit {
 class TwccContext {
 public:
     using onSendTwccCB = std::function<void(uint32_t ssrc, std::string fci)>;
-    // 每个twcc rtcp包最多表明的rtp ext seq增量  [AUTO-TRANSLATED:530d1e35]
     // Maximum RTP ext seq increment indicated by each twcc rtcp packet
     static constexpr size_t kMaxSeqSize = 20;
-    // 每个twcc rtcp包发送的最大时间间隔，单位毫秒  [AUTO-TRANSLATED:e45656da]
     // Maximum time interval for sending each twcc rtcp packet, in milliseconds
     static constexpr size_t kMaxTimeDelta = 256;
 

@@ -2,15 +2,15 @@
     "info": {
         "title": "S3MediaKit HTTP API",
         "version": "S3MediaKit(git hash:\"a78ca2e\"/\"2023-11-17T11:12:51+08:00\",branch:\"patch-63\",build time:\"2023-11-23T14:35:02\")",
-        "description": "You can test the HTTP API provided by ZlMediaKit here. For usage documentation, please refer to [here](https://docs.s3mediakit.com/guide/media_server/restful_api.html)",
-        "termsOfService": "https://docs.s3mediakit.com",
+        "description": "You can test the HTTP API provided by S3MediaKit here. For usage documentation, please refer to [here](https://docs.zlmediakit.com/guide/media_server/restful_api.html)",
+        "termsOfService": "https://docs.zlmediakit.com",
         "license": {
             "name": "MIT",
-            "url": "https://docs.s3mediakit.com/more/license.html"
+            "url": "https://docs.zlmediakit.com/more/license.html"
         },
         "contact": {
             "name": "Contact Support",
-            "url": "https://docs.s3mediakit.com/more/contact.html",
+            "url": "https://docs.zlmediakit.com/more/contact.html",
             "email": "1213642868@qq.com"
         },
         "xLogo": {
@@ -30,7 +30,7 @@
     ],
     "externalDocs": {
         "description": "S3MediaKit Documentation",
-        "url": "https://docs.s3mediakit.com"
+        "url": "https://docs.zlmediakit.com"
     },
     "additionalVars": {
         "defaultVhost": "__defaultVhost__",

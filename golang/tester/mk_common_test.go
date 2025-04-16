@@ -45,7 +45,7 @@ func TestCommonServer(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, uint16(11111), p)
 
-	p, err = s3mediakit.RtcServerStart(11222) // 未启用webrtc功能
+	p, err = s3mediakit.RtcServerStart(11222) // The webrtc feature is not enabled
 	require.NotNil(t, err)
 	//require.Equal(t, uint16(11222), p)
 

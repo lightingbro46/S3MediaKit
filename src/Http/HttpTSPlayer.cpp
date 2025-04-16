@@ -1,14 +1,4 @@
-﻿/*
- * Copyright (c) 2020 The S3MediaKit project authors. All Rights Reserved.
- *
- * This file is part of S3MediaKit(https://github.com/S3MediaKit/S3MediaKit).
- *
- * Use of this source code is governed by MIT-like license that can be found in the
- * LICENSE file in the root of the source tree. All contributing project authors
- * may be found in the AUTHORS file in the root of the source tree.
- */
-
-#include "HttpTSPlayer.h"
+﻿#include "HttpTSPlayer.h"
 
 using namespace std;
 using namespace toolkit;
@@ -21,7 +11,6 @@ HttpTSPlayer::HttpTSPlayer(const EventPoller::Ptr &poller) {
 
 void HttpTSPlayer::onResponseHeader(const string &status, const HttpClient::HttpHeader &header) {
     if (status != "200" && status != "206") {
-        // http状态码不符合预期  [AUTO-TRANSLATED:2b6996f7]
         // HTTP status code is not as expected
         throw invalid_argument("bad http status code:" + status);
     }

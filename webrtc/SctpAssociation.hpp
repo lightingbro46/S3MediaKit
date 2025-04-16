@@ -117,7 +117,7 @@ namespace RTC
         std::shared_ptr<SctpEnv> _env;
     };
 
-    //保证线程安全
+    //Ensure thread safety
     class SctpAssociationImp : public SctpAssociation, public std::enable_shared_from_this<SctpAssociationImp>{
     public:
         using Ptr = std::shared_ptr<SctpAssociationImp>;

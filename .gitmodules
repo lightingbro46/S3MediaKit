@@ -1,5 +1,5 @@
-[submodule "ZLToolKit"]
-	path = 3rdpart/ZLToolKit
+[submodule "S3ToolKit"]
+	path = 3rdpart/S3ToolKit
 	url = https://github.com/lightingbro46/S3ToolKit.git
 [submodule "3rdpart/media-server"]
 	path = 3rdpart/media-server

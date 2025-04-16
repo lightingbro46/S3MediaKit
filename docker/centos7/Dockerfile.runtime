@@ -112,7 +112,7 @@ RUN mkdir -p /opt/build/opt/zlm/ /opt/build/usr/local/bin/ /opt/build/usr/bin/  
     && /usr/bin/cp -ip /usr/bin/which ./usr/bin/
 
 FROM centos:${Version}
-LABEL maintainer="chengxiaosheng <kevin__cheng@outlook.com>" project-url="https://github.com/S3MediaKit/S3MediaKit" description="一个基于C++11的高性能运营级流媒体服务框架"
+LABEL maintainer="Viettel" project-url="https://github.com/S3MediaKit/S3MediaKit" description="A high-performance operational-level streaming service framework based on C++11"
 
 EXPOSE 9000/tcp \
  1935/tcp \

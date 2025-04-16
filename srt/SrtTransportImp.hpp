@@ -51,13 +51,13 @@ protected:
     bool isPusher() override { return _is_pusher; }
 
     ///////MediaSourceEvent override///////
-    // 关闭
+    // Close
     bool close(mediakit::MediaSource &sender) override;
-    // 获取媒体源类型
+    // Get media source type
     mediakit::MediaOriginType getOriginType(mediakit::MediaSource &sender) const override;
-    // 获取媒体源url或者文件路径
+    // Get the media source url or file path
     std::string getOriginUrl(mediakit::MediaSource &sender) const override;
-    // 获取媒体源客户端相关信息
+    // Get relevant information on the media source client
     std::shared_ptr<SockInfo> getOriginSock(mediakit::MediaSource &sender) const override;
 
     ///////MediaSinkInterface override///////

@@ -39,10 +39,10 @@ public:
     const Session::Ptr &getSession() const;
 
     /**
-     * socket收到udp数据
-     * @param buf 数据指针
-     * @param len 数据长度
-     * @param addr 数据来源地址
+     * The socket received udp data
+     * @param buf Data pointer
+     * @param len Data length
+     * @param addr Data source address
      */
     virtual void inputSockData(uint8_t *buf, int len, struct sockaddr_storage *addr);
     virtual void onSendTSData(const Buffer::Ptr &buffer, bool flush);
@@ -107,9 +107,9 @@ protected:
     void sendControlPacket(ControlPacket::Ptr pkt, bool flush = true);
 
 private:
-    // 当前选中的udp链接
+    // The currently selected udp link
     Session::Ptr _selected_session;
-    // 链接迁移前后使用过的udp链接
+    // UDP links used before and after link migration
     std::unordered_map<Session *, std::weak_ptr<Session>> _history_sessions;
 
     EventPoller::Ptr _poller;
@@ -153,16 +153,16 @@ private:
 
     UTicker _nak_ticker;
 
-    // 保持发送的握手消息，防止丢失重发
+    // Keep the handshake message sent to prevent loss of heavy sending
     HandshakePacket::Ptr _handleshake_res;
 
     Timer::Ptr _handleshake_timer;
 
     ResourcePool<BufferRaw> _packet_pool;
 
-    //检测超时的定时器
+    // Timer to detect timeout
     Timer::Ptr _timer;
-    //刷新计时器
+    // Refresh timer
     Ticker _alive_ticker;
 
     bool _is_handleshake_finished = false;

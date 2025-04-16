@@ -13,7 +13,7 @@
 %bcond_without openssl
 %bcond_without mysql
 
-# 默认不编译 API
+# The API is not compiled by default
 %bcond_with api
 %bcond_with cxx_api
 
@@ -158,7 +158,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_includedir}/S3MediaKit/*
 %{_includedir}/ZLToolKit/*
 %{_libdir}/libs3mediakit.a
-%{_libdir}/libzltoolkit.a
+%{_libdir}/libs3toolkit.a
 %{_libdir}/libmpeg.a
 %{_libdir}/libmov.a
 %{_libdir}/libflv.a

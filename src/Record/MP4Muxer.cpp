@@ -85,7 +85,6 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
             // Contains video, but not a keyframe, then the previous frames are discarded
             return false;
         }
-        // 开始写文件  [AUTO-TRANSLATED:bc3f11e2]
         // Start writing the file
         _started = true;
     }

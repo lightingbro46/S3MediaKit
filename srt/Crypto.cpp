@@ -38,13 +38,13 @@ inline const EVP_CIPHER* aes_key_len_mapping_ctr_cipher(int key_len) {
 
 /**
  * @brief: aes_wrap 
- * @param [in]: in 待warp的数据
- * @param [in]: in_len 待warp的数据长度
- * @param [out]: out warp后输出的数据
- * @param [out]: outLen 加密后输出的数据长度
- * @param [in]: key 密钥
- * @param [in]: key_len 密钥长度
- * @return : true: 成功，false: 失败
+ * @param [in]: in data to be warp
+ * @param [in]: in_len data length to warp
+ * @param [out]: data output after out warp
+ * @param [out]: outLen The length of data output after encryption
+ * @param [in]: key key
+ * @param [in]: key_len key length
+ * @return : true: Success, false: Failed
 **/
 static bool aes_wrap(const uint8_t* in, int in_len, uint8_t* out, int* outLen, uint8_t* key, int key_len) {
 
@@ -91,14 +91,14 @@ static bool aes_wrap(const uint8_t* in, int in_len, uint8_t* out, int* outLen, u
 }
 
 /**
- * @brief: aes_unwrap 
- * @param [in]: in 待unwrap的数据
- * @param [in]: in_len 待unwrap的数据长度
- * @param [out]: out unwrap后输出的数据
- * @param [out]: outLen unwrap后输出的数据长度
- * @param [in]: key 密钥
- * @param [in]: key_len 密钥长度
- * @return : true: 成功，false: 失败
+ * @brief: aes_unwrap
+ * @param [in]: in data to be unwrapped
+ * @param [in]: in_len Data length to be unwrap
+ * @param [out]: Out data output after unwrap
+ * @param [out]: outLen The output data length after unwrap
+ * @param [in]: key key
+ * @param [in]: key_len key length
+ * @return : true: successful, false: failed
 **/
 static bool aes_unwrap(const uint8_t* in, int in_len, uint8_t* out, int* outLen, uint8_t* key, int key_len) {
 
@@ -153,15 +153,15 @@ static bool aes_unwrap(const uint8_t* in, int in_len, uint8_t* out, int* outLen,
 }
 
 /**
- * @brief: aes ctr 加密
- * @param [in]: in 待加密的数据
- * @param [in]: in_len 待加密的数据长度
- * @param [out]: out 加密后输出的数据
- * @param [out]: outLen 加密后输出的数据长度
- * @param [in]: key 密钥
- * @param [in]: key_len 密钥长度
- * @param [in]: iv iv向量(16byte)
- * @return : true: 成功，false: 失败
+ * @brief: aes ctr encryption
+ * @param [in]: in Data to be encrypted
+ * @param [in]: in_len The length of data to be encrypted
+ * @param [out]: out Encrypted output data
+ * @param [out]: outLen The length of data output after encryption
+ * @param [in]: key key
+ * @param [in]: key_len key length
+ * @param [in]: iv iv vector (16byte)
+ * @return : true: successful, false: failed
 **/
 static bool aes_ctr_encrypt(const uint8_t* in, int in_len, uint8_t* out, int* outLen, uint8_t* key, int key_len, uint8_t* iv) {
 
@@ -208,15 +208,15 @@ static bool aes_ctr_encrypt(const uint8_t* in, int in_len, uint8_t* out, int* ou
 
 
 /**
- * @brief: aes ctr 解密
- * @param [in]: in 待解密的数据
- * @param [in]: in_len 待解密的数据长度
- * @param [out]: out 解密后输出的数据
- * @param [out]: outLen 解密后输出的数据长度
- * @param [in]: key 密钥
- * @param [in]: key_len 密钥长度
- * @param [in]: iv iv向量(16byte)
- * @return : true: 成功，false: 失败
+ * @brief: aes ctr decryption
+ * @param [in]: in Data to be decrypted
+ * @param [in]: in_len The length of data to be decrypted
+ * @param [out]: out The data output after decryption
+ * @param [out]: outLen The length of the output data after decryption
+ * @param [in]: key key
+ * @param [in]: key_len key length
+ * @param [in]: iv iv vector (16byte)
+ * @return : true: successful, false: failed
 **/
 static bool aes_ctr_decrypt(const uint8_t* in, int in_len, uint8_t* out, int* outLen, uint8_t* key, int key_len, uint8_t* iv) {
 

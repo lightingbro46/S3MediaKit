@@ -1,4 +1,4 @@
-package com.s3s3mediakit.demo;
+package com.s3mediakit.demo;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -9,7 +9,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
 
-import com.s3s3mediakit.jni.S3MediaKit;
+import com.s3mediakit.jni.S3MediaKit;
 
 public class MainActivity extends AppCompatActivity {
     public static final String TAG = "S3MediaKit";

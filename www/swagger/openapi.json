@@ -2,26 +2,26 @@
     "openapi": "3.0.0",
     "info": {
         "title": "S3MediaKit HTTP API",
-        "description": "You can test the HTTP API provided by ZlMediaKit here. For usage documentation, please refer to [here](https://docs.s3mediakit.com/guide/media_server/restful_api.html)",
+        "description": "You can test the HTTP API provided by S3MediaKit here. For usage documentation, please refer to [here](https://docs.zlmediakit.com/guide/media_server/restful_api.html)",
         "version": "S3MediaKit(git hash:\"5028151\"/\"2023-12-01T14:43:35+08:00\",branch:\"master\",build time:\"2023-12-01T07:54:14\")",
         "x-logo": {
             "url": "/logo.png",
             "backgroundColor": "#FFFFFF",
             "altText": "S3MediaKit"
         },
-        "termsOfService": "https://docs.s3mediakit.com",
+        "termsOfService": "https://docs.zlmediakit.com",
         "contact": {
             "name": "Contact Support",
-            "url": "https://docs.s3mediakit.com/more/contact.html",
+            "url": "https://docs.zlmediakit.com/more/contact.html",
             "email": "1213642868@qq.com"
         },
         "license": {
             "name": "MIT",
-            "url": "https://docs.s3mediakit.com/more/license.html"
+            "url": "https://docs.zlmediakit.com/more/license.html"
         }
     },
     "externalDocs": {
-        "url": "https://docs.s3mediakit.com",
+        "url": "https://docs.zlmediakit.com",
         "description": "S3MediaKit Documentation"
     },
     "servers": [
@@ -1809,7 +1809,7 @@
                         "schema": {
                             "type": "string"
                         },
-                        "example": "Hello ZLMediakit"
+                        "example": "Hello S3Mediakit"
                     }
                 ],
                 "responses": {
@@ -1878,7 +1878,7 @@
                         "schema": {
                             "type": "string"
                         },
-                        "example": "Hello ZLMediakit"
+                        "example": "Hello S3Mediakit"
                     }
                 ],
                 "responses": {

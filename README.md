@@ -1,7 +1,5 @@
 ![logo](https://raw.githubusercontent.com/zlmediakit/ZLMediaKit/master/www/logo.png)
 
-[简体中文](./README.md) | English
-
 # An high-performance, enterprise-level streaming media service framework based on C++11.
 
 
@@ -34,7 +32,7 @@
 - Provides complete functions, including clustering, on-demand protocol conversion, on-demand push/pull streams, playback before publishing, and continuous publishing after disconnection.
 - Provides ultimate performance, supporting 10W-level players on a single machine and 100Gb/s-level IO bandwidth capability.
 - Provides ultimate user experience with [exclusive features](https://github.com/ZLMediaKit/ZLMediaKit/wiki/ZLMediakit%E7%8B%AC%E5%AE%B6%E7%89%B9%E6%80%A7%E4%BB%8B%E7%BB%8D).
-- [Who is using zlmediakit?](https://github.com/ZLMediaKit/ZLMediaKit/issues/511)
+- [Who is using s3mediakit?](https://github.com/ZLMediaKit/ZLMediaKit/issues/511)
 - Fully supports IPv6 networks.
 
 ## Project Positioning
@@ -186,8 +184,8 @@ It is recommended to compile on Ubuntu or macOS. Compiling on Windows is cumbers
 
 - **You must use Git to clone the complete code. Do not download the source code by downloading the ZIP package. Otherwise, the submodule code will not be downloaded by default. You can do it like this:**
 ```
-git clone https://github.com/ZLMediaKit/ZLMediaKit.git
-cd ZLMediaKit
+git clone https://github.com/S3MediaKit/S3MediaKit.git
+cd S3MediaKit
 git submodule update --init
 ```
 
@@ -220,7 +218,7 @@ git submodule update --init
 	scl enable devtoolset-4 bash
 	
 	# 4. Build.
-	cd ZLMediaKit
+	cd S3MediaKit
 	./build_for_linux.sh
   ```
 
@@ -233,7 +231,7 @@ git submodule update --init
 - Guidance
   
   ```
-  cd ZLMediaKit
+  cd S3MediaKit
   ./build_for_mac.sh
   ```
 
@@ -241,7 +239,7 @@ git submodule update --init
 - You can generate Xcode projects and recompile them , [learn more](https://github.com/leetal/ios-cmake):
 
   ```
-  cd ZLMediaKit
+  cd S3MediaKit
   mkdir -p build
   cd build
   # Generate Xcode project, project file is in build directory
@@ -262,7 +260,7 @@ git submodule update --init
 - Guidance 
 
   ```
-  cd ZLMediaKit
+  cd S3MediaKit
   export ANDROID_NDK_ROOT=/path/to/ndk
   ./build_for_android.sh
   ```
@@ -276,9 +274,9 @@ git submodule update --init
   
 - Guidance
 ```
-1. Enter the ZLMediaKit directory and execute `git submodule update --init` to download the code for ZLToolKit.
+1. Enter the S3MediaKit directory and execute `git submodule update --init` to download the code for ZLToolKit.
 2. Open the project with CMake GUI and generate the Visual Studio project file.
-3. Find the project file (ZLMediaKit.sln), double-click to open it with VS2017.
+3. Find the project file (S3MediaKit.sln), double-click to open it with VS2017.
 4. Choose to compile the Release version. Find the target file and run the test cases.
 ```
 
@@ -355,7 +353,7 @@ git submodule update --init
 	```
 
 ## Binary file download
-zlmediakit uses github action to continuously integrate automatic compilation package and upload the compilation output package. Please download the latest sdk library file and executable file at [issue list] (https://github.com/ZLMediaKit/ZLMediaKit/issues/483).
+s3mediakit uses github action to continuously integrate automatic compilation package and upload the compilation output package. Please download the latest sdk library file and executable file at [issue list] (https://github.com/ZLMediaKit/ZLMediaKit/issues/483).
 
 ## Docker Image
 
@@ -363,7 +361,7 @@ You can download the pre-compiled image from Docker Hub and start it:
 
 ```bash
 #This image is pushed by the GitHub continuous integration automatic compilation to keep up with the latest code (master branch)
-docker run -id -p 1935:1935 -p 8080:80 -p 8443:443 -p 8554:554 -p 10000:10000 -p 10000:10000/udp -p 8000:8000/udp -p 9000:9000/udp zlmediakit/zlmediakit:master
+docker run -id -p 1935:1935 -p 8080:80 -p 8443:443 -p 8554:554 -p 10000:10000 -p 10000:10000/udp -p 8000:8000/udp -p 9000:9000/udp s3mediakit/s3mediakit:master
 ```
 
 You can also compile the image based on the Dockerfile:
@@ -377,8 +375,8 @@ bash build_docker_images.sh
 - Visual management website
    - [A backend management website for this project](https://github.com/1002victor/zlm_webassist)
    - [The latest web project with front-end and back-end separation, supporting webrtc playback](https://github.com/langmansh/AKStreamNVR)
-   - [Management web site based on ZLMediaKit master branch](https://gitee.com/kkkkk5G/MediaServerUI) 
-   - [Management web site based on ZLMediaKit branch](https://github.com/chenxiaolei/ZLMediaKit_NVR_UI)
+   - [Management web site based on S3MediaKit master branch](https://gitee.com/kkkkk5G/MediaServerUI) 
+   - [Management web site based on S3MediaKit branch](https://github.com/chenxiaolei/ZLMediaKit_NVR_UI)
    - [A very beautiful visual background management system](https://github.com/MingZhuLiu/ZLMediaServerManagent)
     
 - Media management platform
@@ -575,7 +573,7 @@ Thanks to all those who have supported this project in various ways, including b
 [N.z](https://github.com/neesonqk)
 [yanggs](https://github.com/callinglove)
 
-Also thank to JetBrains for their support for open source project, we developed and debugged zlmediakit with CLion:
+Also thank to JetBrains for their support for open source project, we developed and debugged s3mediakit with CLion:
 
 [![JetBrains](https://resources.jetbrains.com/storage/products/company/brand/logos/CLion.svg)](https://jb.gg/OpenSourceSupport)
 

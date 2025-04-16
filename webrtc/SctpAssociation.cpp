@@ -859,7 +859,7 @@ namespace RTC
                 if (notification->sn_strreset_event.strreset_flags & SCTP_STREAM_RESET_OUTGOING_SSN)
                     outgoing = true;
 
-                //todo 打印sctp调试信息
+                //todo Print STP debugging information
                 if (false /*MS_HAS_DEBUG_TAG(sctp)*/)
                 {
                     std::string streamIds;

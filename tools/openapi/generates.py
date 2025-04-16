@@ -57,7 +57,7 @@ def check_dependencies(need_install:bool = False) -> None:
             print()
             sys.exit(1)
         else:
-            # 先检查是否安装了npm, 没有就自动安装
+            # First check whether npm is installed, and if not, it will be installed automatically
             if not check_installed("npm"):
                 print("npm is not installed, install it first")
                 run_cmd("sudo apt install npm -y")
@@ -152,7 +152,7 @@ def generate() -> None:
 
 
 if __name__ == "__main__":
-    # 如果有参数install-dependencies，则安装依赖
+    # If there are parameter install-dependencies, the installation dependencies
     if len(sys.argv) > 1 and sys.argv[1] == "install-dependencies":
         check_dependencies(True)
     else:

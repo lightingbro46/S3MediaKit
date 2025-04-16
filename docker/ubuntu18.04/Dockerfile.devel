@@ -1,5 +1,5 @@
 FROM ubuntu:18.04
-LABEL maintainer "Gemfield <gemfield@civilnet.cn>"
+LABEL maintainer "Viettel"
 #shell,rtmp,rtsp,rtsps,http,https,rtp
 EXPOSE 9000/tcp
 EXPOSE 1935/tcp
