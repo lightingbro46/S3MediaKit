@@ -1,6 +1,7 @@
 [submodule "S3ToolKit"]
 	path = 3rdpart/S3ToolKit
 	url = https://github.com/lightingbro46/S3ToolKit.git
+	branch = develop
 [submodule "3rdpart/media-server"]
 	path = 3rdpart/media-server
 	url = https://gitee.com/ireader/media-server

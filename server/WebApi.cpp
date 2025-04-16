@@ -33,7 +33,6 @@
 #include "WebApi.h"
 #include "WebHook.h"
 #include "FFmpegSource.h"
-#include "Device.h"
 
 #include "Common/config.h"
 #include "Common/MediaSource.h"

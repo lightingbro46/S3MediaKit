@@ -1,28 +1,3 @@
-# MIT License
-#
-# Copyright (c) 2016-2022 The S3MediaKit project authors. All Rights Reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
-##############################################################################
-
 # jsoncpp
 file(GLOB JSONCPP_SRC_LIST
   ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/include/json/*.h
@@ -44,9 +19,9 @@ update_cached_list(MK_LINK_LIBRARIES jsoncpp)
 
 # media-server
 set(MediaServer_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/media-server")
-# TODO: 补一个函数处理各种库
+# TODO: Complement a function to handle various libraries
 
-# 添加 mov、flv 库用于 MP4 录制
+# Add mov and flv libraries for MP4 recording
 if (ENABLE_MP4)
   # MOV
   set(MediaServer_MOV_ROOT ${MediaServer_ROOT}/libmov)
@@ -82,7 +57,7 @@ if (ENABLE_MP4)
   endif ()
 endif ()
 
-# 添加 mpeg 用于支持 ts 生成
+# Add mpeg to support ts generation
 if(ENABLE_RTPPROXY OR ENABLE_HLS)
   # mpeg
   set(MediaServer_MPEG_ROOT ${MediaServer_ROOT}/libmpeg)
@@ -90,10 +65,10 @@ if(ENABLE_RTPPROXY OR ENABLE_HLS)
   aux_source_directory(${MediaServer_MPEG_ROOT}/source  MPEG_SRC_LIST)
   add_library(mpeg STATIC ${MPEG_SRC_LIST})
   add_library(MediaServer::mpeg ALIAS mpeg)
-  # media-server库相关编译宏
-  # MPEG_H26X_VERIFY - 视频流类型识别
-  # MPEG_ZERO_PAYLOAD_LENGTH - 兼容hik流
-  # MPEG_DAHUA_AAC_FROM_G711 - 兼容dahua流
+  # media-server library related compiled macros
+  # MPEG_H26X_VERIFY -Video stream type recognition
+  # MPEG_ZERO_PAYLOAD_LENGTH -Compatible with hik streams
+  # MPEG_DAHUA_AAC_FROM_G711 -Compatible with dahua streams
   target_compile_options(mpeg
     PRIVATE ${COMPILE_OPTIONS_DEFAULT} -DMPEG_H26X_VERIFY -DMPEG_ZERO_PAYLOAD_LENGTH -DMPEG_DAHUA_AAC_FROM_G711)
   target_include_directories(mpeg
@@ -116,19 +91,19 @@ endif()
 ##############################################################################
 
 # toolkit
-# TODO: 改造 toolkit 以便直接引用
+# TODO:Rebuild toolkit for direct reference
 
 include(CheckStructHasMember)
 include(CheckSymbolExists)
 
-# 检查 sendmmsg 相关依赖并设置对应的宏, 配置 _GNU_SOURCE 以启用 GNU 扩展特性
+# Check sendmmsg-related dependencies and set the corresponding macros, configure _GNU_SOURCE to enable the GNU extension feature
 list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_struct_has_member("struct mmsghdr" msg_hdr sys/socket.h HAVE_MMSG_HDR)
 check_symbol_exists(sendmmsg sys/socket.h HAVE_SENDMMSG_API)
 check_symbol_exists(recvmmsg sys/socket.h HAVE_RECVMMSG_API)
 
 set(COMPILE_DEFINITIONS)
-# ToolKit 依赖 ENABLE_OPENSSL 以及 ENABLE_MYSQL
+# ToolKit depends on ENABLE_OPENSSL and ENABLE_MYSQL, ENABLE_SQLITE
 list(FIND MK_COMPILE_DEFINITIONS ENABLE_OPENSSL ENABLE_OPENSSL_INDEX)
 if(NOT ENABLE_OPENSSL_INDEX EQUAL -1)
   list(APPEND COMPILE_DEFINITIONS ENABLE_OPENSSL)
@@ -162,8 +137,8 @@ if(DEFINED SOCKET_DEFAULT_BUF_SIZE)
   add_definitions(-DSOCKET_DEFAULT_BUF_SIZE=${SOCKET_DEFAULT_BUF_SIZE})
 endif()
 
-set(ToolKit_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/ZLToolKit)
-# 收集源代码
+set(ToolKit_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/S3ToolKit)
+# Collect source code
 file(GLOB ToolKit_SRC_LIST
   ${ToolKit_ROOT}/src/*/*.cpp
   ${ToolKit_ROOT}/src/*/*.h
@@ -174,41 +149,41 @@ if(IOS)
 endif()
 
 ###################################################################
-#使用wepoll windows iocp 模拟 epoll
+# Use wepoll windows iocp to simulate epoll
 if(ENABLE_WEPOLL)
   if(WIN32)
     message(STATUS "Enable wepoll")
-    #增加wepoll源文件及api参数兼容文件
+    #Add wepoll source files and API parameters compatible files
     list(APPEND ToolKit_SRC_LIST
             ${CMAKE_CURRENT_SOURCE_DIR}/wepoll/wepoll.c
             ${CMAKE_CURRENT_SOURCE_DIR}/wepoll/sys/epoll.cpp)
-    #增加wepoll头文件目录
+    #Add wepoll header file directory
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/wepoll)
-    #开启epoll
+    #Turn on epoll
     add_definitions(-DHAS_EPOLL)
   endif()
 endif()
 ###################################################################
 
-# 去除 win32 的适配代码
+# Remove win32 adapter code
 if(NOT WIN32)
   list(REMOVE_ITEM ToolKit_SRC_LIST ${ToolKit_ROOT}/win32/getopt.c)
 else()
-  # 防止 Windows.h 包含 Winsock.h
+  # Prevent Windows.h from including Winsock.h
   list(APPEND COMPILE_DEFINITIONS
     WIN32_LEAN_AND_MEAN MP4V2_NO_STDINT_DEFS
-    # 禁用警告
+    # Disable warning
     _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
 endif()
 
-# 添加库
-add_library(zltoolkit STATIC ${ToolKit_SRC_LIST})
-add_library(S3MediaKit::ToolKit ALIAS zltoolkit)
-target_compile_definitions(zltoolkit
+# Add library
+add_library(s3toolkit STATIC ${ToolKit_SRC_LIST})
+add_library(S3MediaKit::ToolKit ALIAS s3toolkit)
+target_compile_definitions(s3toolkit
   PUBLIC ${COMPILE_DEFINITIONS})
-target_compile_options(zltoolkit
+target_compile_options(s3toolkit
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
-target_include_directories(zltoolkit
+target_include_directories(s3toolkit
   PRIVATE
     "$<BUILD_INTERFACE:${ToolKit_ROOT}/src>"
   PUBLIC
@@ -217,13 +192,13 @@ target_include_directories(zltoolkit
 update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ToolKit)
 
 if(USE_SOLUTION_FOLDERS AND (NOT GROUP_BY_EXPLORER))
-  # 在 IDE 中对文件进行分组, 源文件和头文件分开
+  # Group files in the IDE, separate source files and header files
   set_file_group(${ToolKit_ROOT}/src ${ToolKit_SRC_LIST})
 endif()
 
-# 未在使用
+# Not in use
 if(ENABLE_CXX_API)
-  # 保留目录结构
+  # Keep directory structure
   install(DIRECTORY ${ToolKit_ROOT}/
     DESTINATION ${INSTALL_PATH_INCLUDE}/ZLToolKit
     REGEX "(.*[.](md|cpp)|win32)$" EXCLUDE)
