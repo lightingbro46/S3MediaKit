@@ -35,3 +35,17 @@ CREATE TABLE IF NOT EXITS "vms_resourcetype_parent" (
     "manufacture_id" INTEGER NULL,
     guid BLOB(16)
 );
+
+// vms_resource 
+// vms_resource_status
+
+CREATE vms_kvpair (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    private_key TEXT NOT NULL,
+    public_key TEXT NOT NULL
+);
+
+// vms_camera
+
+// vms_server

@@ -15,7 +15,7 @@ using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
-using namespace manager;
+// using namespace vmskit;
 
 namespace Hook {
 #define HOOK_FIELD "hook."
@@ -66,9 +66,12 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerStarted] = "";
     mINI::Instance()[kOnServerExited] = "";
     mINI::Instance()[kOnServerKeepalive] = "";
+    mINI::Instance()[kOnServerLoad] = "";
+    mINI::Instance()[kOnServerReport] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
-    mINI::Instance()[kAliveInterval] = 30.0;
+    mINI::Instance()[kAliveInterval] = 10.0;
+    mINI::Instance()[kReportInterval] = 60.0;
     mINI::Instance()[kRetry] = 1;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
@@ -88,6 +91,15 @@ static onceToken token([]() {
 });
 
 } // namespace Cluster
+
+namespace Manager {
+#define MANAGER_FIELD "vms."
+const string kApiUrl = MANAGER_FIELD "apiUrl";
+
+static onceToken token([]() {
+    mINI::Instance()[kApiUrl] = "";
+});
+} // namespace Manager
 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
@@ -213,6 +225,57 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
     do_http_hook(url, body, func, hook_retry);
 }
 
+void do_http_hook(const string &url, const HttpArgs &param, const function<void(const Value &, const string &)> &func, uint32_t retry) {
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
+    GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
+
+    const_cast<HttpArgs &>(param)["mediaServerId"] = mediaServerId;
+    const_cast<HttpArgs &>(param)["hook_index"] = (Json::UInt64)(s_hook_index++);
+
+    auto requester = std::make_shared<HttpRequester>();
+    requester->setMethod("GET");
+    auto paramStr = to_string(param);
+    auto full_url = url + "?" + paramStr;
+    requester->addHeader("Content-Type", getContentType(param));
+    auto vhost = getVhost(param);
+    if (!vhost.empty()) {
+        requester->addHeader("X-VHOST", vhost);
+    }
+    Ticker ticker;
+    requester->startRequester(full_url, [url, func, paramStr, param, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
+        onceToken token(nullptr, [&]() mutable { requester.reset(); });
+        parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
+            if (!err.empty()) {
+                // Hook failed
+                WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << err << ":" << paramStr;
+
+                if (retry-- > 0 && should_retry) {
+                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, func, retry] {
+                        do_http_hook(url, param, func, retry);
+                        return 0;
+                    });
+                    // Retry does not need to trigger callback
+                    return;
+                }
+
+            } else if (ticker.elapsedTime() > 500) {
+                // Hook succeeded, but hook response exceeded 500ms, print warning log
+                DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << paramStr;
+            }
+
+            if (func) {
+                func(obj, err);
+            }
+        });
+    }, hook_timeoutSec);
+}
+
+void do_http_hook(const std::string &url, const HttpArgs &param, const function<void(const Json::Value &, const string &)> &func) {
+    GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
+    do_http_hook(url, param, func, hook_retry);
+}
+
 void dumpMediaTuple(const MediaTuple &tuple, Json::Value& item);
 
 static ArgsType make_json(const MediaInfo &args) {
@@ -231,28 +294,47 @@ static ArgsType make_json(const MediaInfo &args) {
 static void reportServerStarted() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
+#if !defined(ENABLE_VMS)
     if (!hook_enable || hook_server_started.empty()) {
         return;
     }
-
+    auto full_url = hook_server_started;
+#else
+    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
+        return;
+    }
+    auto full_url = hook_api_url + hook_server_started;
+#endif
     ArgsType body;
     for (auto &pr : mINI::Instance()) {
         body[pr.first] = (string &)pr.second;
     }
     // Execute hook
-    do_http_hook(hook_server_started, body, nullptr);
+    do_http_hook(full_url, body, nullptr);
 }
 
 static void reportServerExited() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_exited, Hook::kOnServerExited);
+#if !defined(ENABLE_VMS)
     if (!hook_enable || hook_server_exited.empty()) {
         return;
     }
-
-    const ArgsType body;
+    auto full_url = hook_server_exited;
+#else
+    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    if (!hook_enable || hook_server_exited.empty() || hook_api_url.empty()) {
+        return;
+    }
+    auto full_url = hook_api_url + hook_server_exited;
+#endif
+    ArgsType body;
+    for (auto &pr : mINI::Instance()) {
+        body[pr.first] = (string &)pr.second;
+    }
     // Execute hook
-    do_http_hook(hook_server_exited, body, nullptr);
+    do_http_hook(full_url, body, nullptr);
 }
 
 // Server keep-alive timer
@@ -260,17 +342,25 @@ static Timer::Ptr g_keepalive_timer;
 static void reportServerKeepalive() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_keepalive, Hook::kOnServerKeepalive);
+#if !defined(ENABLE_VMS)
     if (!hook_enable || hook_server_keepalive.empty()) {
         return;
     }
-
+    auto full_url = hook_server_keepalive;
+#else
+    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    if (!hook_enable || hook_server_keepalive.empty() || hook_api_url.empty()) {
+        return;
+    }
+    auto full_url = hook_api_url + hook_server_keepalive;
+#endif
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
-    g_keepalive_timer = std::make_shared<Timer>(alive_interval,[]() {
-        getStatisticJson([](const Value &data) mutable {
+    g_keepalive_timer = std::make_shared<Timer>(alive_interval,[full_url]() {
+        getStatisticJson([full_url](const Value &data) mutable {
             ArgsType body;
             body["data"] = data;
             // Execute hook
-            do_http_hook(hook_server_keepalive, body, nullptr);
+            do_http_hook(full_url, body, nullptr);
         });
         return true;
     }, nullptr);
@@ -279,89 +369,86 @@ static void reportServerKeepalive() {
 // Server report statistics
 static Timer::Ptr g_report_timer;
 static void reportServerStatistic() {
-    // GET_CONFIG(bool, hook_enable, Hook::kEnable);
-    // GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
-    // GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
-    // if (!hook_enable || hook_server_report.empty() || hook_server_load.empty()) {
-    //     return;
-    // }
+    GET_CONFIG(bool, hook_enable, Hook::kEnable);
+    GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
+    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+#if !defined(ENABLE_VMS)
+    if (!hook_enable || hook_server_report.empty() || hook_server_load.empty()) {
+        return;
+    }
+    auto full_load_url = hook_server_load;
+    auto full_report_url = hook_server_report;
+#else
+    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    if (!hook_enable || hook_server_report.empty() || hook_server_load.empty() || hook_api_url.empty()) {
+        return;
+    }
+    auto full_load_url = hook_api_url + hook_server_load;
+    auto full_report_url = hook_api_url + hook_server_report;
+#endif
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
-    report_interval = 10.0;
-    g_report_timer = std::make_shared<Timer>(report_interval,[]() {
+    g_report_timer = std::make_shared<Timer>(report_interval,[full_load_url, full_report_url]() {
 #if 0
         ArgsType body;
-        do_http_hook(hook_server_load, body, [](const Value &obj, const string &err) mutable {
+        do_http_hook(full_load_url, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
+                InfoL << "hook " << full_load_url << " success:" << obj.toStyledString();
                 // Load server config succeeded
-                //todo: parse and add device proxy
-                EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
-                    getDeviceStatisticJson([](const Value &data) mutable {
+                // todo: parse and add device proxy
+
+                EventPollerPool::Instance().getPoller()->doDelayTask(5000, [full_report_url]() {
+                    getServerStatisticJson([full_report_url](const Value &data) mutable {
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
-                        do_http_hook(hook_server_report, body, nullptr);
+                        do_http_hook(full_report_url,  [](const Value &obj, const string &err) mutable {
+                            if (err.empty()) {
+                                // Report server statistic succeeded
+                                InfoL << "hook " << full_report_url << " success:" << obj.toStyledString();
+                            } else {
+                                // Load server config failed
+                                WarnL << "hook " <<  full_report_url << " failed:" << err;
+                            }
+                        });
                     });
                     return 0;
                 });
 
             } else {
                 // Load server config failed
+                WarnL << "hook " << full_load_url << " failed:" << err;
             }
         });
 #else
-        // Get device info
         Json::Value data;
-        data["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
-        data["username"] = "admin";
-        data["password"] = "Haiphong2025";
-        data["manufacturer"] = "Hikivision";
-        data["model"] = "DS-2CD2347G1-L";
-        data["enable"] = true;
-        data["address"] = "27.72.173.71";
-        data["httpPort"] = 80;
-        data["rtspPort"] = 5555;
-        data["streams"] = Json::arrayValue;
+        data["devices"] = Json::arrayValue;
+        Json::Value device;
+        device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+        device["username"] = "admin";
+        device["password"] = "Haiphong2025";
+        device["manufacturer"] = "Hikivision";
+        device["model"] = "DS-2CD2347G1-L";
+        device["enable"] = true;
+        device["address"] = "27.72.173.71";
+        device["httpPort"] = 80;
+        device["rtspPort"] = 5555;
+        device["streams"] = Json::arrayValue;
         Json::Value channel_1;
         channel_1["id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
         channel_1["enable"] = true;
         channel_1["protocol"] = "rtsp";
         channel_1["rtpTransport"] = "tcp";
         channel_1["path"] = "/profile2/media.smp";
-        data["streams"].append(channel_1);
-        Json::Value channel_2;
-        channel_2["id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-        channel_2["enable"] = true;
-        channel_2["protocol"] = "rtsp";
-        channel_2["rtp_transport"] = "tcp";
-        channel_2["path"] = "/profile4/media.smp";
-        data["streams"].append(channel_2);
-
-        DeviceTuple device;
-        device.id = data["id"].asString();
-        device.guid = getGuid(device.id);
-        device.ip = data["address"].asString();
-        device.port = data["httpPort"].asInt();
-        device.rtsp_port= data["rtspPort"].asInt();
-        device.username = data["username"].asString();
-        device.password = data["password"].asString();
-        device.manufacturer = data["manufacturer"].asString();
-        device.model = data["model"].asString();
-        device.enable = data["enable"].asBool();
-        std::vector<StreamTuple> streams;
-        for (const auto &chn: data["channels"]) {
-            StreamTuple stream;
-            stream.id = chn["id"].asString();
-            stream.guid = getGuid(stream.id);
-            stream.enable = chn["enable"].asBool();
-            stream.protocol = chn["protocol"].asString();
-            stream.rtp_transport = chn["rtpTransport"].asString();
-            stream.path = chn["path"].asString();
-            auto device_weak_ptr = std::make_shared<DeviceTuple>(device);
-            stream.device = device_weak_ptr;
-            streams.emplace_back(stream);
-        }
-
-        addDeviceProxy(device, streams);
+        device["streams"].append(channel_1);
+        // Json::Value channel_2;
+        // channel_2["id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+        // channel_2["enable"] = true;
+        // channel_2["protocol"] = "rtsp";
+        // channel_2["rtpTransport"] = "tcp";
+        // channel_2["path"] = "/profile4/media.smp";
+        // device["streams"].append(channel_2);
+        data["devices"].append(device);
+        // todo: parse and add device proxy
 #endif
         return true;
     }, nullptr);
@@ -428,10 +515,20 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPublish, [](BroadcastMediaPublishArgs) {
         GET_CONFIG(string, hook_publish, Hook::kOnPublish);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_publish.empty()) {
             invoker("", ProtocolOption());
             return;
         }
+        auto full_url = hook_publish;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_publish.empty() || hook_api_url.empty()) {
+            invoker("", ProtocolOption());
+            return;
+        }
+        auto full_url = hook_api_url + hook_publish;
+#endif
         // Asynchronously execute this hook api to prevent blocking NoticeCenter
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
@@ -440,7 +537,7 @@ void installWebHook() {
         body["originType"] = (int)type;
         body["originTypeStr"] = getOriginTypeString(type);
         // Execute hook
-        do_http_hook(hook_publish, body, [invoker](const Value &obj, const string &err) mutable {
+        do_http_hook(full_url, body, [invoker](const Value &obj, const string &err) mutable {
             if (err.empty()) {
                 // Push stream authentication succeeded
                 invoker(err, ProtocolOption(jsonToMini(obj)));
@@ -453,23 +550,42 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_play.empty()) {
             invoker("");
             return;
         }
+        auto full_url = hook_play;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_play.empty() || hook_api_url.empty()) {
+            invoker("");
+            return;
+        }
+        auto full_url = hook_api_url + hook_play;
+#endif
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
         // Execute hook
-        do_http_hook(hook_play, body, [invoker](const Value &obj, const string &err) { invoker(err); });
+        do_http_hook(full_url, body, [invoker](const Value &obj, const string &err) { invoker(err); });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {
         GET_CONFIG(string, hook_flowreport, Hook::kOnFlowReport);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_flowreport.empty()) {
             return;
         }
+        auto full_url = hook_flowreport;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_flowreport.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_flowreport;
+#endif
         auto body = make_json(args);
         body["totalBytes"] = (Json::UInt64)totalBytes;
         body["duration"] = (Json::UInt64)totalDuration;
@@ -478,7 +594,7 @@ void installWebHook() {
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
         // Execute hook
-        do_http_hook(hook_flowreport, body, nullptr);
+        do_http_hook(full_url, body, nullptr);
     });
 
     static const string unAuthedRealm = "unAuthedRealm";
@@ -486,17 +602,28 @@ void installWebHook() {
     // Listen to the kBroadcastOnGetRtspRealm event to determine whether the rtsp link needs authentication (traditional rtsp authentication scheme) to access
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastOnGetRtspRealm, [](BroadcastOnGetRtspRealmArgs) {
         GET_CONFIG(string, hook_rtsp_realm, Hook::kOnRtspRealm);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_rtsp_realm.empty()) {
             // No authentication required
             invoker("");
             return;
         }
+        auto full_url = hook_rtsp_realm;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_rtsp_realm.empty() || hook_api_url.empty()) {
+            // No authentication required
+            invoker("");
+            return;
+        }
+        auto full_url = hook_api_url + hook_rtsp_realm;
+#endif
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
         // Execute hook
-        do_http_hook(hook_rtsp_realm, body, [invoker](const Value &obj, const string &err) {
+        do_http_hook(full_url, body, [invoker](const Value &obj, const string &err) {
             if (!err.empty()) {
                 // If the interface access fails, then the rtsp stream authentication fails
                 invoker(unAuthedRealm);
@@ -509,11 +636,22 @@ void installWebHook() {
     // Listen to the kBroadcastOnRtspAuth event to return the correct rtsp authentication username and password
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastOnRtspAuth, [](BroadcastOnRtspAuthArgs) {
         GET_CONFIG(string, hook_rtsp_auth, Hook::kOnRtspAuth);
+#if !defined(ENABLE_VMS)
         if (unAuthedRealm == realm || !hook_enable || hook_rtsp_auth.empty()) {
             // Authentication failed
             invoker(false, makeRandStr(12));
             return;
         }
+        auto full_url = hook_rtsp_auth;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (unAuthedRealm == realm || !hook_enable || hook_rtsp_auth.empty() || hook_api_url.empty()) {
+            // Authentication failed
+            invoker(false, makeRandStr(12));
+            return;
+        }
+        auto full_url = hook_api_url + hook_rtsp_auth;
+#endif
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
@@ -522,7 +660,7 @@ void installWebHook() {
         body["must_no_encrypt"] = must_no_encrypt;
         body["realm"] = realm;
         // Execute hook
-        do_http_hook(hook_rtsp_auth, body, [invoker](const Value &obj, const string &err) {
+        do_http_hook(full_url, body, [invoker](const Value &obj, const string &err) {
             if (!err.empty()) {
                 // Authentication failed
                 invoker(false, makeRandStr(12));
@@ -535,9 +673,18 @@ void installWebHook() {
     // Listen to rtsp, rtmp source registration or deregistration events
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaChanged, [](BroadcastMediaChangedArgs) {
         GET_CONFIG(string, hook_stream_changed, Hook::kOnStreamChanged);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_stream_changed.empty()) {
             return;
         }
+        auto full_url = hook_stream_changed;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_stream_changed.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_stream_changed;
+#endif
         GET_CONFIG_FUNC(std::set<std::string>, stream_changed_set, Hook::kStreamChangedSchemas, [](const std::string &str) {
             std::set<std::string> ret;
             auto vec = split(str, "/");
@@ -564,7 +711,7 @@ void installWebHook() {
             body["regist"] = bRegist;
         }
         // Execute hook
-        do_http_hook(hook_stream_changed, body, nullptr);
+        do_http_hook(full_url, body, nullptr);
     });
 
     GET_CONFIG_FUNC(vector<string>, origin_urls, Cluster::kOriginUrl, [](const string &str) {
@@ -595,9 +742,18 @@ void installWebHook() {
         }
 
         GET_CONFIG(string, hook_stream_not_found, Hook::kOnStreamNotFound);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_stream_not_found.empty()) {
             return;
         }
+        auto full_url = hook_stream_not_found;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_stream_not_found.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_stream_not_found;
+#endif
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
@@ -612,7 +768,7 @@ void installWebHook() {
         };
 
         // Execute hook
-        do_http_hook(hook_stream_not_found, body, res_cb);
+        do_http_hook(full_url, body, res_cb);
     });
 
     static auto getRecordInfo = [](const RecordInfo &info) {
@@ -632,29 +788,56 @@ void installWebHook() {
     // Broadcast after recording the mp4 file successfully
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
         GET_CONFIG(string, hook_record_mp4, Hook::kOnRecordMp4);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_record_mp4.empty()) {
             return;
         }
+        auto full_url = hook_record_mp4;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_record_mp4.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_record_mp4;
+#endif
         // Execute hook
-        do_http_hook(hook_record_mp4, getRecordInfo(info), nullptr);
+        do_http_hook(full_url, getRecordInfo(info), nullptr);
     });
 #endif // ENABLE_MP4
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordTs, [](BroadcastRecordTsArgs) {
         GET_CONFIG(string, hook_record_ts, Hook::kOnRecordTs);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_record_ts.empty()) {
             return;
         }
+        auto full_url = hook_record_ts;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_record_ts.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_record_ts;
+#endif
         // Execute hook
-        do_http_hook(hook_record_ts, getRecordInfo(info), nullptr);
+        do_http_hook(full_url, getRecordInfo(info), nullptr);
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastShellLogin, [](BroadcastShellLoginArgs) {
         GET_CONFIG(string, hook_shell_login, Hook::kOnShellLogin);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_shell_login.empty()) {
             invoker("");
             return;
         }
+        auto full_url = hook_shell_login;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_shell_login.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_shell_login;
+#endif
         ArgsType body;
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
@@ -663,7 +846,7 @@ void installWebHook() {
         body["passwd"] = passwd;
 
         // Execute hook
-        do_http_hook(hook_shell_login, body, [invoker](const Value &, const string &err) { invoker(err); });
+        do_http_hook(full_url, body, [invoker](const Value &, const string &err) { invoker(err); });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastStreamNoneReader, [](BroadcastStreamNoneReaderArgs) {
@@ -674,16 +857,25 @@ void installWebHook() {
             return;
         }
         GET_CONFIG(string, hook_stream_none_reader, Hook::kOnStreamNoneReader);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_stream_none_reader.empty()) {
             return;
         }
+        auto full_url = hook_stream_none_reader;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_stream_none_reader.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_stream_none_reader;
+#endif
 
         ArgsType body;
         body["schema"] = sender.getSchema();
         dumpMediaTuple(sender.getMediaTuple(), body);
         weak_ptr<MediaSource> weakSrc = sender.shared_from_this();
         // Execute hook
-        do_http_hook(hook_stream_none_reader, body, [weakSrc](const Value &obj, const string &err) {
+        do_http_hook(full_url, body, [weakSrc](const Value &obj, const string &err) {
             bool flag = obj["close"].asBool();
             auto strongSrc = weakSrc.lock();
             if (!flag || !err.empty() || !strongSrc) {
@@ -696,10 +888,18 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSendRtpStopped, [](BroadcastSendRtpStoppedArgs) {
         GET_CONFIG(string, hook_send_rtp_stopped, Hook::kOnSendRtpStopped);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_send_rtp_stopped.empty()) {
             return;
         }
-
+        auto full_url = hook_send_rtp_stopped;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_send_rtp_stopped.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + hook_send_rtp_stopped;
+#endif
         ArgsType body;
         dumpMediaTuple(sender.getMediaTuple(), body);
         body["ssrc"] = ssrc;
@@ -709,7 +909,7 @@ void installWebHook() {
         body["msg"] = ex.what();
         body["err"] = ex.getErrCode();
         // Execute hook
-        do_http_hook(hook_send_rtp_stopped, body, nullptr);
+        do_http_hook(full_url, body, nullptr);
     });
 
     /**
@@ -729,6 +929,7 @@ void installWebHook() {
     // The purpose of tracking users is to cache the last authentication result, reduce the number of authentication times, and improve performance
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHttpAccess, [](BroadcastHttpAccessArgs) {
         GET_CONFIG(string, hook_http_access, Hook::kOnHttpAccess);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || hook_http_access.empty()) {
             // If http file access authentication is not enabled, then access is allowed, but authentication is required for each access;
             // Because authentication may be enabled at any time in the future (authentication may be re-enabled after reloading the configuration file)
@@ -739,7 +940,21 @@ void installWebHook() {
             }
             return;
         }
-
+        auto full_url = hook_http_access;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || hook_http_access.empty() || hook_api_url.empty()) {
+            // If http file access authentication is not enabled, then access is allowed, but authentication is required for each access;
+            // Because authentication may be enabled at any time in the future (authentication may be re-enabled after reloading the configuration file)
+            if (!HttpFileManager::isIPAllowed(sender.get_peer_ip())) {
+                invoker("Your ip is not allowed to access the service.", "", 0);
+            } else {
+                invoker("", "", 0);
+            }
+            return;
+        }
+        auto full_url = hook_api_url + hook_http_access;
+#endif
         ArgsType body;
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
@@ -751,7 +966,7 @@ void installWebHook() {
             body[string("header.") + pr.first] = pr.second;
         }
         // Execute hook
-        do_http_hook(hook_http_access, body, [invoker](const Value &obj, const string &err) {
+        do_http_hook(full_url, body, [invoker](const Value &obj, const string &err) {
             if (!err.empty()) {
                 // If the interface access fails, then only this time does not have permission to access the http server
                 invoker(err, "", 0);
@@ -766,9 +981,18 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRtpServerTimeout, [](BroadcastRtpServerTimeoutArgs) {
         GET_CONFIG(string, rtp_server_timeout, Hook::kOnRtpServerTimeout);
+#if !defined(ENABLE_VMS)
         if (!hook_enable || rtp_server_timeout.empty()) {
             return;
         }
+        auto full_url = rtp_server_timeout;
+#else
+        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        if (!hook_enable || rtp_server_timeout.empty() || hook_api_url.empty()) {
+            return;
+        }
+        auto full_url = hook_api_url + rtp_server_timeout;
+#endif
 
         ArgsType body;
         body["local_port"] = local_port;
@@ -778,7 +1002,7 @@ void installWebHook() {
         body["tcp_mode"] = tcp_mode;
         body["re_use_port"] = re_use_port;
         body["ssrc"] = ssrc;
-        do_http_hook(rtp_server_timeout, body);
+        do_http_hook(full_url, body);
     });
 
     // Report server restart

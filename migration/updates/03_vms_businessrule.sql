@@ -12,3 +12,5 @@ CREATE TABLE IF NOT EXITS "vms_businessrule" (
     "event_type" SMALLINT NOT NULL,
     "guid" BLOB(16)
 );
+
+//vms_scheduletask

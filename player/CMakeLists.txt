@@ -42,6 +42,7 @@ if(MSVC)
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
   target_link_libraries(${PLAYER_NAME} -Wl,--start-group ${LINK_LIBRARIES} -Wl,--end-group)
 else()
   target_link_libraries(${PLAYER_NAME} ${LINK_LIBRARIES})

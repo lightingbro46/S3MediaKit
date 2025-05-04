@@ -4,12 +4,3 @@ CREATE TABLE IF NOT EXITS "vms_migrationhistory" (
     "migration" VARCHAR(255) NOT NULL,
     "applied" datetime NOT NULL
 );
-
-
-
-CREATE vms_kvpair (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    private_key TEXT NOT NULL,
-    public_key TEXT NOT NULL
-);

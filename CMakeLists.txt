@@ -28,12 +28,13 @@ option(ENABLE_RTPPROXY "Enable RTPPROXY" ON)
 option(ENABLE_SERVER "Enable Server" ON)
 option(ENABLE_SERVER_LIB "Enable server as android static library" OFF)
 option(ENABLE_SRT "Enable SRT" ON)
-option(ENABLE_TESTS "Enable Tests" ON)
+option(ENABLE_TESTS "Enable Tests" OFF)
 option(ENABLE_SCTP "Enable SCTP" ON)
 option(ENABLE_WEBRTC "Enable WebRTC" ON)
 option(ENABLE_X264 "Enable x264" OFF)
 option(ENABLE_WEPOLL "Enable wepoll" ON)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
+option(ENABLE_VMS "Enable vms manager" ON)
 option(DISABLE_REPORT "Disable report to report.s3mediakit.com" OFF)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
 ##############################################################################
@@ -476,6 +477,10 @@ if(ENABLE_API)
   add_subdirectory(api)
 endif()
 
+if(ENABLE_VMS)
+  add_subdirectory(vms)
+endif()
+
 ##############################################################################
 
 if(ENABLE_PLAYER AND ENABLE_FFMPEG)
@@ -511,3 +516,10 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/default.pem" DESTINATION ${EXECUTABLE_OUT
 if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/novideo.yuv" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 endif ()
+
+if (ENABLE_VMS) 
+if (ENABLE_SQLITE)
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+endif()
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/plugins" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+endif()
