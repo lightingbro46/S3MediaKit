@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+message TimeBlock {
+  string app = 1;
+  string id = 2;
+  uint64 start_time = 3;
+  uint64 time_len = 4;
+  uint64 file_size = 5;
+  string file_path = 6;
+}

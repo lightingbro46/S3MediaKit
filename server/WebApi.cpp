@@ -65,7 +65,7 @@ using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
-// using namespace vmskit;
+// using namespace managerkit;
 
 namespace API {
 #define API_FIELD "api."
@@ -653,7 +653,8 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
     player->play(url);
 };
 
-void delStreamProxy(const string &key) {
+void delStreamProxy(const MediaTuple &tuple) {
+    auto key = tuple.shortUrl();
     auto player_proxy = s_player_proxy.find(key);
     if (player_proxy) {
         s_player_proxy.erase(key);
@@ -714,71 +715,6 @@ void addStreamPusherProxy(const string &schema,
     });
     pusher->publish(url);
 }
-
-// void onReceiveServerConfiguration(Json::Value &data) {
-//     if (data.isMember("server")) {
-//         // todo: add media server config
-//     }
-
-//     if (data.isMember("devices")) {
-//         auto devices = data["devices"];
-//         if (devices.isArray()) {
-//             // Add new devices
-//             for (auto &dev : devices) {
-//                 auto device_tuple = std::make_shared<DeviceTuple>();
-//                 device_tuple->id = dev["id"].asString();
-//                 device_tuple->port = dev["httpPort"].asInt();
-//                 device_tuple->rtsp_port = dev["rtspPort"].asInt();
-//                 device_tuple->ip = dev["address"].asString();
-//                 device_tuple->username = dev["username"].asString();
-//                 device_tuple->password = dev["password"].asString();
-//                 device_tuple->manufacturer = dev["manufacturer"].asString();
-//                 device_tuple->model = dev["model"].asString();
-//                 device_tuple->enable = dev["enable"].asBool();
-        
-//                 std::vector<StreamTuple::Ptr> stream_tuples;
-//                 for (const auto &str: dev["streams"]) {
-//                     auto stream_tuple = std::make_shared<StreamTuple>();
-//                     stream_tuple->id = str["id"].asString();
-//                     stream_tuple->enable = str["enable"].asBool();
-//                     stream_tuple->protocol = str["protocol"].asString();
-//                     stream_tuple->rtp_transport = str["rtpTransport"].asString();
-//                     stream_tuple->path = str["path"].asString();
-//                     stream_tuples.emplace_back(stream_tuple);
-//                 }
-
-//                 auto device = ResourceManager::Instance().createDevice(device_tuple->id, device_tuple, stream_tuples);
-//                 if (!device)
-//                     return;
-//                 // todo: setOnConnect and setOnDisconnect
-//                 device->connect();
-
-//                 // Add stream proxy
-//                 for (auto &stream_tuple : stream_tuples) {
-//                     auto tuple = MediaTuple { DEFAULT_VHOST, device_tuple->id, stream_tuple->id, "" };
-//                     mINI args;
-//                     args["vhost"] = DEFAULT_VHOST;
-//                     args["app"] = device_tuple->id;
-//                     args["stream_id"] = stream_tuple->id;
-
-//                     ProtocolOption option;
-
-//                     std::string url = getStreamUrl(device_tuple, stream_tuple);
-//                     std::cout << "Add stream proxy: "<< device_tuple->id << "/" << stream_tuple->id << " " << url << std::endl;
-//                     addStreamProxy(tuple, url, 0, option, 0, 10.0, args, [&stream_tuple](const SockException &ex, const string &key) {
-//                         if (ex) {
-//                             WarnL << "Add stream failed: " << ex.what();
-//                         } else {
-//                             InfoL << "Add stream success: " << key;
-//                         }
-//                     });
-//                 }
-//             }
-//         }
-
-//         // todo: remove old devices
-//     }
-// }
 
 /**
  * Install api interface

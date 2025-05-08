@@ -10,12 +10,12 @@
 #include "Rtsp/RtspSession.h"
 #include "WebHook.h"
 #include "WebApi.h"
+#include "ManagerHook.h"
 
 using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
-// using namespace vmskit;
 
 namespace Hook {
 #define HOOK_FIELD "hook."
@@ -92,14 +92,14 @@ static onceToken token([]() {
 
 } // namespace Cluster
 
-namespace Manager {
-#define MANAGER_FIELD "vms."
-const string kApiUrl = MANAGER_FIELD "apiUrl";
+namespace xGeneral {
+#define XGENERAL_FIELD "manager."
+const string kApiUrl = XGENERAL_FIELD "api_url";
 
 static onceToken token([]() {
     mINI::Instance()[kApiUrl] = "";
 });
-} // namespace Manager
+} // namespace xGeneral
 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
@@ -122,6 +122,7 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
+#ifndef ENABLE_MANAGER
     auto code = result["code"];
 
     if (!code.isInt64()) {
@@ -135,7 +136,7 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
-
+#endif
     try {
         fun(result, "", should_retry);
     } catch (std::exception &ex) {
@@ -294,13 +295,13 @@ static ArgsType make_json(const MediaInfo &args) {
 static void reportServerStarted() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
     if (!hook_enable || hook_server_started.empty()) {
         return;
     }
     auto full_url = hook_server_started;
 #else
-    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
     if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
         return;
     }
@@ -317,13 +318,13 @@ static void reportServerStarted() {
 static void reportServerExited() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_exited, Hook::kOnServerExited);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
     if (!hook_enable || hook_server_exited.empty()) {
         return;
     }
     auto full_url = hook_server_exited;
 #else
-    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
     if (!hook_enable || hook_server_exited.empty() || hook_api_url.empty()) {
         return;
     }
@@ -342,13 +343,13 @@ static Timer::Ptr g_keepalive_timer;
 static void reportServerKeepalive() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_keepalive, Hook::kOnServerKeepalive);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
     if (!hook_enable || hook_server_keepalive.empty()) {
         return;
     }
     auto full_url = hook_server_keepalive;
 #else
-    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
     if (!hook_enable || hook_server_keepalive.empty() || hook_api_url.empty()) {
         return;
     }
@@ -372,14 +373,14 @@ static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
     GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
     if (!hook_enable || hook_server_report.empty() || hook_server_load.empty()) {
         return;
     }
     auto full_load_url = hook_server_load;
     auto full_report_url = hook_server_report;
 #else
-    GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+    GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
     if (!hook_enable || hook_server_report.empty() || hook_server_load.empty() || hook_api_url.empty()) {
         return;
     }
@@ -387,32 +388,61 @@ static void reportServerStatistic() {
     auto full_report_url = hook_api_url + hook_server_report;
 #endif
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
-    g_report_timer = std::make_shared<Timer>(report_interval,[full_load_url, full_report_url]() {
+    bool report_period = false;
+    auto report_callback = [&report_period, full_load_url, full_report_url]() {
 #if 0
         ArgsType body;
-        do_http_hook(full_load_url, body, [](const Value &obj, const string &err) mutable {
+        do_http_hook(full_load_url, body, [full_load_url, full_report_url](const Value &obj, const string &err) mutable {
             if (err.empty()) {
                 InfoL << "hook " << full_load_url << " success:" << obj.toStyledString();
                 // Load server config succeeded
-                // todo: parse and add device proxy
+                if (obj.isMember("servers") && obj["servers"].isArray()) {
 
-                EventPollerPool::Instance().getPoller()->doDelayTask(5000, [full_report_url]() {
-                    getServerStatisticJson([full_report_url](const Value &data) mutable {
-                        ArgsType body;
-                        body["data"] = data;
-                        // Execute hook
-                        do_http_hook(full_report_url,  [](const Value &obj, const string &err) mutable {
-                            if (err.empty()) {
-                                // Report server statistic succeeded
-                                InfoL << "hook " << full_report_url << " success:" << obj.toStyledString();
-                            } else {
-                                // Load server config failed
-                                WarnL << "hook " <<  full_report_url << " failed:" << err;
-                            }
+                }
+
+                if (obj.isMember("devices") && obj["devices"].isArray()) {
+                    for (auto &dev : obj["devices"]) {
+                        auto device_json = dev;
+                        addCameraResource(device_json, [](const string &camera_id, const string &stream_id, const string &url) {
+                            auto tuple = MediaTuple { DEFAULT_VHOST, camera_id, stream_id, "" };
+                            mINI args;
+                            args["vhost"] = DEFAULT_VHOST;
+                            args["app"] = tuple.app;
+                            args["stream_id"] = tuple.stream;
+                
+                            ProtocolOption option;
+                
+                            std::cout << "Add stream proxy: "<< tuple.app << "/" << tuple.stream << " " << url << std::endl;
+                            addStreamProxy(tuple, url, 0, option, Rtsp::RTP_TCP, 10.0, args, [](const SockException &ex, const string &key) {
+                                if (ex) {
+                                    WarnL << "Add stream failed: " << ex.what();
+                                } else {
+                                    InfoL << "Add stream success: " << key;
+                                }
+                            });
                         });
-                    });
-                    return 0;
-                });
+                    }
+                }
+
+                // todo: delCameraResource
+
+                // EventPollerPool::Instance().getPoller()->doDelayTask(5000, [full_report_url]() {
+                //     getServerStatisticJson([full_report_url](const Value &data) mutable {
+                //         ArgsType body;
+                //         body["data"] = data;
+                //         // Execute hook
+                //         do_http_hook(full_report_url,  [](const Value &obj, const string &err) mutable {
+                //             if (err.empty()) {
+                //                 // Report server statistic succeeded
+                //                 InfoL << "hook " << full_report_url << " success:" << obj.toStyledString();
+                //             } else {
+                //                 // Load server config failed
+                //                 WarnL << "hook " <<  full_report_url << " failed:" << err;
+                //             }
+                //         });
+                //     });
+                //     return 0;
+                // });
 
             } else {
                 // Load server config failed
@@ -420,8 +450,6 @@ static void reportServerStatistic() {
             }
         });
 #else
-        Json::Value data;
-        data["devices"] = Json::arrayValue;
         Json::Value device;
         device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
         device["username"] = "admin";
@@ -431,7 +459,7 @@ static void reportServerStatistic() {
         device["enable"] = true;
         device["address"] = "27.72.173.71";
         device["httpPort"] = 80;
-        device["rtspPort"] = 5555;
+        device["mediaPort"] = 5555;
         device["streams"] = Json::arrayValue;
         Json::Value channel_1;
         channel_1["id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
@@ -447,11 +475,37 @@ static void reportServerStatistic() {
         // channel_2["rtpTransport"] = "tcp";
         // channel_2["path"] = "/profile4/media.smp";
         // device["streams"].append(channel_2);
-        data["devices"].append(device);
-        // todo: parse and add device proxy
+
+        addCameraResource(device, [](const string &camera_id, const string &stream_id, const string &url) {
+            auto tuple = MediaTuple { DEFAULT_VHOST, camera_id, stream_id, "" };
+            mINI args;
+            args["vhost"] = DEFAULT_VHOST;
+            args["app"] = tuple.app;
+            args["stream_id"] = tuple.stream;
+
+            ProtocolOption option;
+
+            std::cout << "Add stream proxy: "<< tuple.app << "/" << tuple.stream << " " << url << std::endl;
+            addStreamProxy(tuple, url, 0, option, Rtsp::RTP_TCP, 10.0, args, [](const SockException &ex, const string &key) {
+                if (ex) {
+                    WarnL << "Add stream failed: " << ex.what();
+                } else {
+                    InfoL << "Add stream success: " << key;
+                }
+            });
+        });
+
 #endif
+        if (!report_period) {
+            report_period = true;
+            return false;
+        }
         return true;
-    }, nullptr);
+    };
+
+    g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
+
+    EventPollerPool::Instance().getPoller()->doDelayTask(10000, report_callback);
 }
 
 static const string kEdgeServerParam = "edge=1";
@@ -515,14 +569,14 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPublish, [](BroadcastMediaPublishArgs) {
         GET_CONFIG(string, hook_publish, Hook::kOnPublish);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_publish.empty()) {
             invoker("", ProtocolOption());
             return;
         }
         auto full_url = hook_publish;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_publish.empty() || hook_api_url.empty()) {
             invoker("", ProtocolOption());
             return;
@@ -550,14 +604,14 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_play.empty()) {
             invoker("");
             return;
         }
         auto full_url = hook_play;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_play.empty() || hook_api_url.empty()) {
             invoker("");
             return;
@@ -574,13 +628,13 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {
         GET_CONFIG(string, hook_flowreport, Hook::kOnFlowReport);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_flowreport.empty()) {
             return;
         }
         auto full_url = hook_flowreport;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_flowreport.empty() || hook_api_url.empty()) {
             return;
         }
@@ -602,7 +656,7 @@ void installWebHook() {
     // Listen to the kBroadcastOnGetRtspRealm event to determine whether the rtsp link needs authentication (traditional rtsp authentication scheme) to access
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastOnGetRtspRealm, [](BroadcastOnGetRtspRealmArgs) {
         GET_CONFIG(string, hook_rtsp_realm, Hook::kOnRtspRealm);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_rtsp_realm.empty()) {
             // No authentication required
             invoker("");
@@ -610,7 +664,7 @@ void installWebHook() {
         }
         auto full_url = hook_rtsp_realm;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_rtsp_realm.empty() || hook_api_url.empty()) {
             // No authentication required
             invoker("");
@@ -636,7 +690,7 @@ void installWebHook() {
     // Listen to the kBroadcastOnRtspAuth event to return the correct rtsp authentication username and password
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastOnRtspAuth, [](BroadcastOnRtspAuthArgs) {
         GET_CONFIG(string, hook_rtsp_auth, Hook::kOnRtspAuth);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (unAuthedRealm == realm || !hook_enable || hook_rtsp_auth.empty()) {
             // Authentication failed
             invoker(false, makeRandStr(12));
@@ -644,7 +698,7 @@ void installWebHook() {
         }
         auto full_url = hook_rtsp_auth;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (unAuthedRealm == realm || !hook_enable || hook_rtsp_auth.empty() || hook_api_url.empty()) {
             // Authentication failed
             invoker(false, makeRandStr(12));
@@ -673,13 +727,13 @@ void installWebHook() {
     // Listen to rtsp, rtmp source registration or deregistration events
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaChanged, [](BroadcastMediaChangedArgs) {
         GET_CONFIG(string, hook_stream_changed, Hook::kOnStreamChanged);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_stream_changed.empty()) {
             return;
         }
         auto full_url = hook_stream_changed;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_stream_changed.empty() || hook_api_url.empty()) {
             return;
         }
@@ -742,13 +796,13 @@ void installWebHook() {
         }
 
         GET_CONFIG(string, hook_stream_not_found, Hook::kOnStreamNotFound);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_stream_not_found.empty()) {
             return;
         }
         auto full_url = hook_stream_not_found;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_stream_not_found.empty() || hook_api_url.empty()) {
             return;
         }
@@ -788,13 +842,13 @@ void installWebHook() {
     // Broadcast after recording the mp4 file successfully
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
         GET_CONFIG(string, hook_record_mp4, Hook::kOnRecordMp4);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_record_mp4.empty()) {
             return;
         }
         auto full_url = hook_record_mp4;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_record_mp4.empty() || hook_api_url.empty()) {
             return;
         }
@@ -807,13 +861,13 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordTs, [](BroadcastRecordTsArgs) {
         GET_CONFIG(string, hook_record_ts, Hook::kOnRecordTs);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_record_ts.empty()) {
             return;
         }
         auto full_url = hook_record_ts;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_record_ts.empty() || hook_api_url.empty()) {
             return;
         }
@@ -825,14 +879,14 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastShellLogin, [](BroadcastShellLoginArgs) {
         GET_CONFIG(string, hook_shell_login, Hook::kOnShellLogin);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_shell_login.empty()) {
             invoker("");
             return;
         }
         auto full_url = hook_shell_login;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_shell_login.empty() || hook_api_url.empty()) {
             return;
         }
@@ -857,13 +911,13 @@ void installWebHook() {
             return;
         }
         GET_CONFIG(string, hook_stream_none_reader, Hook::kOnStreamNoneReader);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_stream_none_reader.empty()) {
             return;
         }
         auto full_url = hook_stream_none_reader;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_stream_none_reader.empty() || hook_api_url.empty()) {
             return;
         }
@@ -888,13 +942,13 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSendRtpStopped, [](BroadcastSendRtpStoppedArgs) {
         GET_CONFIG(string, hook_send_rtp_stopped, Hook::kOnSendRtpStopped);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_send_rtp_stopped.empty()) {
             return;
         }
         auto full_url = hook_send_rtp_stopped;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_send_rtp_stopped.empty() || hook_api_url.empty()) {
             return;
         }
@@ -929,7 +983,7 @@ void installWebHook() {
     // The purpose of tracking users is to cache the last authentication result, reduce the number of authentication times, and improve performance
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHttpAccess, [](BroadcastHttpAccessArgs) {
         GET_CONFIG(string, hook_http_access, Hook::kOnHttpAccess);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || hook_http_access.empty()) {
             // If http file access authentication is not enabled, then access is allowed, but authentication is required for each access;
             // Because authentication may be enabled at any time in the future (authentication may be re-enabled after reloading the configuration file)
@@ -942,7 +996,7 @@ void installWebHook() {
         }
         auto full_url = hook_http_access;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || hook_http_access.empty() || hook_api_url.empty()) {
             // If http file access authentication is not enabled, then access is allowed, but authentication is required for each access;
             // Because authentication may be enabled at any time in the future (authentication may be re-enabled after reloading the configuration file)
@@ -981,13 +1035,13 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRtpServerTimeout, [](BroadcastRtpServerTimeoutArgs) {
         GET_CONFIG(string, rtp_server_timeout, Hook::kOnRtpServerTimeout);
-#if !defined(ENABLE_VMS)
+#if !defined(ENABLE_MANAGER)
         if (!hook_enable || rtp_server_timeout.empty()) {
             return;
         }
         auto full_url = rtp_server_timeout;
 #else
-        GET_CONFIG(string, hook_api_url, Manager::kApiUrl);
+        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
         if (!hook_enable || rtp_server_timeout.empty() || hook_api_url.empty()) {
             return;
         }

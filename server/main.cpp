@@ -35,9 +35,9 @@
 #include "System.h"
 #endif//!defined(_WIN32)
 
-#if defined(ENABLE_VMS)
-#include "../vms/ManagerHook.h"   
-#endif //ENABLE_VMS
+#if defined(ENABLE_MANAGER)
+#include "../manager/ManagerHook.h"   
+#endif //ENABLE_MANAGER
 
 using namespace std;
 using namespace toolkit;
@@ -361,10 +361,12 @@ int start_main(int argc,char *argv[]) {
         InfoL << "The http API interface has been started";
         installWebHook();
         InfoL << "The http hook interface has been started";
-#if defined(ENABLE_VMS)        
+
+#if defined(ENABLE_MANAGER)        
         installManagerHook();
         InfoL << "The manager hook interface has been started";
-#endif //defined(ENABLE_VMS)      
+#endif //defined(ENABLE_MANAGER)
+
         try {
             // rtsp server, default port 554
             if (rtspPort) { rtspSrv->start<RtspSession>(rtspPort, listen_ip); }
@@ -438,9 +440,11 @@ int start_main(int argc,char *argv[]) {
     }
     unInstallWebApi();
     unInstallWebHook();
-#if defined(ENABLE_VMS) 
+
+#if defined(ENABLE_MANAGER) 
     unInstallManagerHook();
-#endif //defined(ENABLE_VMS)
+#endif //defined(ENABLE_MANAGER)
+
     onProcessExited();
 
     // sleep for 1 second before exiting, to prevent resource release order errors

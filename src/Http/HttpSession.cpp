@@ -322,7 +322,8 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_suffix
 
 // http-fmp4 link format: http://vhost-url:port/app/streamid.live.mp4?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
-    return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb](const MediaSource::Ptr &src) {
+    auto start_pts = atoll(_parser.getUrlArgs()["startPts"].data());
+    return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb, start_pts](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
         if (!cb) {
@@ -337,6 +338,10 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
         setSocketFlags();
         onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        auto params_args = _parser.getUrlArgs();
+        if (start_pts > 0) {
+            fmp4_src->seekTo(start_pts);
+        }
         fmp4_src->pause(false);
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
         _fmp4_reader->setGetInfoCB([weak_self]() {
@@ -411,7 +416,7 @@ bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
 
 // http-flv link format: http://vhost-url:port/app/streamid.live.flv?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
-    auto start_pts = atoll(_parser.getUrlArgs()["starPts"].data());
+    auto start_pts = atoll(_parser.getUrlArgs()["startPts"].data());
     return checkLiveStream(RTMP_SCHEMA, ".live.flv", [this, cb, start_pts](const MediaSource::Ptr &src) {
         auto rtmp_src = dynamic_pointer_cast<RtmpMediaSource>(src);
         assert(rtmp_src);

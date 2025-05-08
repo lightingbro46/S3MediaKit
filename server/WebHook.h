@@ -5,7 +5,7 @@
 #include <functional>
 #include "json/json.h"
 
-// // Support json or urlencoded way to transmit parameters
+// Support json or urlencoded way to transmit parameters
 #define JSON_ARGS
 
 #ifdef JSON_ARGS
@@ -19,14 +19,28 @@ namespace Hook {
 extern const std::string kTimeoutSec;
 }//namespace Hook
 
+namespace xGeneral {
+// Api url for getting configuration and reporting statistic
+extern const std::string kApiUrl;
+}//namespace xGeneral
+
 void installWebHook();
 void unInstallWebHook();
 void onProcessExited();
 /**
- * Trigger http hook request
+ * Trigger http POST hook request
  * @param url Request address
  * @param body Request body
  * @param func Callback
  */
 void do_http_hook(const std::string &url, const ArgsType &body, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
+
+/**
+ * Trigger http GET hook request
+ * @param url Request address
+ * @param param Request parameter
+ * @param func Callback
+ */
+void do_http_hook(const std::string &url, const mediakit::HttpArgs &param, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
+
 #endif //S3MEDIAKIT_WEBHOOK_H
