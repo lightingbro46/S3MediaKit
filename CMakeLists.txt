@@ -483,7 +483,7 @@ if(ENABLE_MANAGER)
 endif()
 
 if(ENABLE_PLUGIN)
-  add_subdirectory(plugin)
+  add_subdirectory(plugins)
 endif()
 
 ##############################################################################
@@ -529,5 +529,5 @@ endif()
 endif()
 
 # if (ENABLE_PLUGIN) 
-#   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/plugin" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+#   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/plugins" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 # endif()

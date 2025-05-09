@@ -1,0 +1,1 @@
+tar -czf s3mediakit.tar.gz 3rdpart api cmake conf ext-codec migration player plugins server src srt tests manager webrtc www .clang-format .gitattributes .gitignore CMakeLists.txt default.pem S3MVersion.h.ini dockerfile build_docker_images.sh

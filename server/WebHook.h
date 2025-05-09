@@ -19,11 +19,6 @@ namespace Hook {
 extern const std::string kTimeoutSec;
 }//namespace Hook
 
-namespace xGeneral {
-// Api url for getting configuration and reporting statistic
-extern const std::string kApiUrl;
-}//namespace xGeneral
-
 void installWebHook();
 void unInstallWebHook();
 void onProcessExited();
