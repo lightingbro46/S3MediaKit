@@ -363,7 +363,7 @@ int start_main(int argc,char *argv[]) {
         InfoL << "The http hook interface has been started";
 
 #if defined(ENABLE_MANAGER)        
-        installManagerHook();
+        installxHook();
         InfoL << "The manager hook interface has been started";
 #endif //defined(ENABLE_MANAGER)
 
@@ -442,7 +442,7 @@ int start_main(int argc,char *argv[]) {
     unInstallWebHook();
 
 #if defined(ENABLE_MANAGER) 
-    unInstallManagerHook();
+    unInstallxHook();
 #endif //defined(ENABLE_MANAGER)
 
     onProcessExited();

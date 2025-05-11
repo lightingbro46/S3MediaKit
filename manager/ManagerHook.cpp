@@ -10,7 +10,6 @@
 #include "Record/Recorder.h"
 #include "../server/WebHook.h"
 #include "../server/WebApi.h"
-#include "Common/Resource.h"
 #include "Common/xConfig.h"
 #include "ManagerApi.h"
 #include "ManagerHook.h"
@@ -239,6 +238,7 @@ static string getPullUrl(const string &origin_fmt, const ResourceInfo &info) {
     // }
     // // Inform the origin station that this is a pull stream request from the edge station, if the stream is not found, please return the pull stream failure immediately
     // return string(url) + '?' + kEdgeServerParam + '&' + VHOST_KEY + '=' + info.vhost + '&' + info.params;
+    return "";
 }
 
 static void pullResourceFromOrigin(const vector<string> &urls, size_t index, size_t failed_cnt, const MediaInfo &args, const function<void()> &closePlayer) {
@@ -294,8 +294,8 @@ void installxHook() {
 #endif // ENABLE_MP4
 
     // Listen to rtsp, rtmp source registration or deregistration events
-    NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastResourceChanged, [](BroadcastResourceChangedArgs) {
-        WarnL << "kBroadcastResourceChanged ";
+    // NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastResourceChanged, [](BroadcastResourceChangedArgs) {
+    //     WarnL << "kBroadcastResourceChanged ";
         // GET_CONFIG(string, hook_api_url, xHook::kApiUrl);
         // GET_CONFIG(string, hook_resource_changed, xHook::kOnResourceChanged);
         // if (!hook_enable || hook_resource_changed.empty() || hook_api_url.empty()) {
@@ -329,7 +329,7 @@ void installxHook() {
         // }
         // // Execute hook
         // do_http_hook(hook_resource_changed, body, nullptr);
-    });
+    // });
 
     // GET_CONFIG_FUNC(vector<string>, origin_urls, Cluster::kOriginUrl, [](const string &str) {
     //     vector<string> ret;
@@ -343,7 +343,7 @@ void installxHook() {
     // });
 
     // Listen to playback failure (specific stream not found) event
-    NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastNotFoundResource, [](BroadcastNotFoundResourceArgs) {
+    // NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastNotFoundResource, [](BroadcastNotFoundResourceArgs) {
         // if (!origin_urls.empty()) {
         //     // If the source station is set, then try to trace the source
         //     static atomic<uint8_t> s_index { 0 };
@@ -379,9 +379,9 @@ void installxHook() {
 
         // // Execute hook
         // do_http_hook(hook_api_url + hook_resource_not_found, body, res_cb);
-    });
+    // });
 
-    NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastResourceNoneReader, [](BroadcastResourceNoneReaderArgs) {
+    // NoticeCenter::Instance().addListener(&x_hook_tag, xBroadcast::kBroadcastResourceNoneReader, [](BroadcastResourceNoneReaderArgs) {
         // if (!origin_urls.empty() && sender.getOriginType() == MediaOriginType::pull) {
         //     // If no one is watching at the edge station, stop tracing immediately if it is pulling
         //     sender.close(false);
@@ -408,9 +408,9 @@ void installxHook() {
         //     strongSrc->close(false);
         //     WarnL << "Actively close stream without watching:" << strongSrc->getOriginUrl();
         // });
-    });
+    // });
 
-    NoticeCenter::Instance().addListener(&x_hook_tag, Broadcast::kBroadcastHttpAccess, [](BroadcastHttpAccessArgs) {
+    // NoticeCenter::Instance().addListener(&x_hook_tag, Broadcast::kBroadcastHttpAccess, [](BroadcastHttpAccessArgs) {
         // GET_CONFIG(string, hook_api_url, xHook::kApiUrl);
         // GET_CONFIG(string, hook_http_access, Hook::kOnHttpAccess);
         // if (!hook_enable || hook_http_access.empty() || hook_api_url.empty()) {
@@ -446,7 +446,7 @@ void installxHook() {
         //     // The second parameter specifies the timeout time of this cookie, if second is 0, the result of this authentication will not be cached
         //     invoker(obj["err"].asString(), obj["path"].asString(), obj["second"].asInt());
         // });
-    });
+    // });
 
     // Report server restart
     reportServerStarted();

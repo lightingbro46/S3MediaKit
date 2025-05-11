@@ -14,7 +14,7 @@ namespace managerkit {
 void installxApi();
 void unInstallxApi();
 
-void handleServerResourceJson(Json::Value);
+void handleServerResourceJson(Json::Value &data);
 void getServerStatisticJson(const std::function<void(Json::Value &val)> &cb);
 
 #endif // S3MANAGERKIT_XAPI_H

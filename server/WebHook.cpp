@@ -734,18 +734,9 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRtpServerTimeout, [](BroadcastRtpServerTimeoutArgs) {
         GET_CONFIG(string, rtp_server_timeout, Hook::kOnRtpServerTimeout);
-#if !defined(ENABLE_MANAGER)
         if (!hook_enable || rtp_server_timeout.empty()) {
             return;
         }
-        auto full_url = rtp_server_timeout;
-#else
-        GET_CONFIG(string, hook_api_url, xGeneral::kApiUrl);
-        if (!hook_enable || rtp_server_timeout.empty() || hook_api_url.empty()) {
-            return;
-        }
-        auto full_url = hook_api_url + rtp_server_timeout;
-#endif
 
         ArgsType body;
         body["local_port"] = local_port;
@@ -755,7 +746,7 @@ void installWebHook() {
         body["tcp_mode"] = tcp_mode;
         body["re_use_port"] = re_use_port;
         body["ssrc"] = ssrc;
-        do_http_hook(full_url, body);
+        do_http_hook(rtp_server_timeout, body);
     });
 
     // Report server restart
