@@ -25,6 +25,8 @@ RUN apt-get update && \
          ca-certificates \
          tzdata \
          libssl-dev \
+         protobuf-compiler \
+         libprotobuf-dev \
          gcc \
          g++ \
          gdb && \
@@ -64,6 +66,7 @@ RUN apt-get update && \
          tzdata \
          curl \
          libssl-dev \
+         libprotobuf-dev \
          ffmpeg \
          gcc \
          g++ \
@@ -72,7 +75,7 @@ RUN apt-get update && \
          apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 
-ENV TZ=Asia/Shanghai
+ENV TZ="Asia/Ho_Chi_Minh"
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
         && echo $TZ > /etc/timezone && \
         mkdir -p /opt/media/bin/www
@@ -81,5 +84,5 @@ WORKDIR /opt/media/bin/
 COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/media/S3MediaKit/default.pem /opt/media/bin/
 COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
 COPY --from=build /opt/media/S3MediaKit/www/ /opt/media/bin/www/
-ENV PATH /opt/media/bin:$PATH
+ENV PATH=/opt/media/bin:$PATH
 CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l","0"]

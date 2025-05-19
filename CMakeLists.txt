@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1.3)
+cmake_minimum_required(VERSION 3.22)
 
 # Load custom modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -523,9 +523,7 @@ if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
 endif ()
 
 if (ENABLE_MANAGER) 
-if (ENABLE_SQLITE OR ENABLE_MYSQL)
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
-endif()
 endif()
 
 # if (ENABLE_PLUGIN) 

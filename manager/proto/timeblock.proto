@@ -2,9 +2,14 @@ syntax = "proto3";
 
 message TimeBlock {
   string app = 1;
-  string id = 2;
+  string stream = 2;
   uint64 start_time = 3;
-  uint64 time_len = 4;
+  uint32 time_len = 4;
   uint64 file_size = 5;
   string file_path = 6;
+}
+
+message TimeBlockList  {
+  repeated TimeBlock blocks = 1;
+  uint64 created_at = 2;
 }

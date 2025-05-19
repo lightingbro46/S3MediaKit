@@ -10,9 +10,9 @@
 #include "Record/Recorder.h"
 #include "../server/WebHook.h"
 #include "../server/WebApi.h"
-#include "Common/xConfig.h"
-#include "ManagerApi.h"
+#include "config.h"
 #include "ManagerHook.h"
+#include "Local/TimePeriodRecorder.h"
 
 using namespace std;
 using namespace Json;
@@ -55,36 +55,36 @@ static onceToken token([]() {
 });
 } // namespace xHook
 
-static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
-    bool should_retry = true;
-    if (ex) {
-        auto errStr = StrPrinter << "[network err]:" << ex << endl;
-        fun(Json::nullValue, errStr, should_retry);
-        return;
-    }
-    if (res.status() != "200") {
-        auto errStr = StrPrinter << "[bad http status code]:" << res.status() << endl;
-        fun(Json::nullValue, errStr, should_retry);
-        return;
-    }
-    Value result;
-    try {
-        stringstream ss(res.content());
-        ss >> result;
-    } catch (std::exception &ex) {
-        auto errStr = StrPrinter << "[parse json failed]:" << ex.what() << endl;
-        fun(Json::nullValue, errStr, should_retry);
-        return;
-    }
-    should_retry = false;
-    try {
-        fun(result, "", should_retry);
-    } catch (std::exception &ex) {
-        auto errStr = StrPrinter << "[do hook invoker failed]:" << ex.what() << endl;
-        // If an exception is still thrown, then re-throw the exception
-        fun(Json::nullValue, errStr, should_retry);
-    }
-}
+// static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
+//     bool should_retry = true;
+//     if (ex) {
+//         auto errStr = StrPrinter << "[network err]:" << ex << endl;
+//         fun(Json::nullValue, errStr, should_retry);
+//         return;
+//     }
+//     if (res.status() != "200") {
+//         auto errStr = StrPrinter << "[bad http status code]:" << res.status() << endl;
+//         fun(Json::nullValue, errStr, should_retry);
+//         return;
+//     }
+//     Value result;
+//     try {
+//         stringstream ss(res.content());
+//         ss >> result;
+//     } catch (std::exception &ex) {
+//         auto errStr = StrPrinter << "[parse json failed]:" << ex.what() << endl;
+//         fun(Json::nullValue, errStr, should_retry);
+//         return;
+//     }
+//     should_retry = false;
+//     try {
+//         fun(result, "", should_retry);
+//     } catch (std::exception &ex) {
+//         auto errStr = StrPrinter << "[do hook invoker failed]:" << ex.what() << endl;
+//         // If an exception is still thrown, then re-throw the exception
+//         fun(Json::nullValue, errStr, should_retry);
+//     }
+// }
 
 static void reportServerStarted() { 
     GET_CONFIG(bool, hook_enable, xHook::kEnable);
@@ -136,6 +136,37 @@ static void reportServerKeepalive() {
     }, nullptr);
 }
 
+static void handleServerResourceJson(Json::Value &data) {
+    if (data.isMember("mediaServer")) {
+
+    }
+
+    if (data.isMember("devices") && data["devices"].isArray()) {
+        for (auto &dev : data["devices"]) {
+            auto device_json = dev;
+            addCameraResource(device_json, [](const string &camera_id, const string &stream_id, const string &url) {
+                auto tuple = MediaTuple { DEFAULT_VHOST, camera_id, stream_id, "" };
+                mINI args;
+                args["vhost"] = DEFAULT_VHOST;
+                args["app"] = tuple.app;
+                args["stream_id"] = tuple.stream;
+    
+                ProtocolOption option;
+    
+                std::cout << "Add stream proxy: "<< tuple.app << "/" << tuple.stream << " " << url << std::endl;
+                addStreamProxy(tuple, url, 0, option, 0, 10.0, args, [](const SockException &ex, const string &key) {
+                    if (ex) {
+                        WarnL << "Add stream failed: " << ex.what();
+                    } else {
+                        InfoL << "Add stream success: " << key;
+                    }
+                });
+            });
+        }
+    }
+
+    // todo: delCameraResource
+}
 
 // Server report statistics
 static Timer::Ptr g_report_timer;
@@ -186,7 +217,7 @@ static void reportServerStatistic() {
         Json::Value data;
         data["devices"] = Json::arrayValue;
         Json::Value device;
-        device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+        device["camera_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
         device["username"] = "admin";
         device["password"] = "Haiphong2025";
         device["manufacturer"] = "Hikivision";
@@ -197,22 +228,16 @@ static void reportServerStatistic() {
         device["mediaPort"] = 5555;
         device["streams"] = Json::arrayValue;
         Json::Value channel_1;
-        channel_1["id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-        channel_1["enable"] = true;
-        channel_1["protocol"] = "rtsp";
-        channel_1["rtpTransport"] = "tcp";
-        channel_1["path"] = "/profile2/media.smp";
+        channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
+        channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
         device["streams"].append(channel_1);
-        // Json::Value channel_2;
-        // channel_2["id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-        // channel_2["enable"] = true;
-        // channel_2["protocol"] = "rtsp";
-        // channel_2["rtpTransport"] = "tcp";
-        // channel_2["path"] = "/profile4/media.smp";
-        // device["streams"].append(channel_2);
+        Json::Value channel_2;
+        channel_1["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+        channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile4/media.smp";
+        device["streams"].append(channel_2);
 
         data["devices"].append(device);
-        handleServerResourceJson(data);
+        // handleServerResourceJson(data);
 
 #endif
         if (report_first) {
@@ -229,7 +254,7 @@ static void reportServerStatistic() {
 
 static const string kEdgeServerParam = "edge=1";
 
-static string getPullUrl(const string &origin_fmt, const ResourceInfo &info) {
+// static string getPullUrl(const string &origin_fmt, const ResourceInfo &info) {
     // todo:
     // char url[1024] = { 0 };
     // if ((ssize_t)origin_fmt.size() > snprintf(url, sizeof(url), origin_fmt.data(), info.app.data(), info.stream.data())) {
@@ -238,8 +263,8 @@ static string getPullUrl(const string &origin_fmt, const ResourceInfo &info) {
     // }
     // // Inform the origin station that this is a pull stream request from the edge station, if the stream is not found, please return the pull stream failure immediately
     // return string(url) + '?' + kEdgeServerParam + '&' + VHOST_KEY + '=' + info.vhost + '&' + info.params;
-    return "";
-}
+    // return "";
+// }
 
 static void pullResourceFromOrigin(const vector<string> &urls, size_t index, size_t failed_cnt, const MediaInfo &args, const function<void()> &closePlayer) {
     // todo:
@@ -276,7 +301,7 @@ void installxHook() {
 
     NoticeCenter::Instance().addListener(&x_hook_tag, Broadcast::kBroadcastMediaPublish, [](BroadcastMediaPublishArgs) {
         WarnL << "kBroadcastMediaPublish ";
-        // todo: 
+        // todo:
     });
 
     // Listen to playing rtsp/rtmp/http-flv events. Control playback authentication through this event
@@ -284,12 +309,19 @@ void installxHook() {
         WarnL << "kBroadcastMediaPlayed ";
         // todo:
     });
-
+    
 #ifdef ENABLE_MP4
     // Broadcast after recording the mp4 file successfully
-    NoticeCenter::Instance().addListener(&x_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
-        WarnL << "Record mp4 file " << info.start_time << " " << info.time_len << info.url;
-        // todo: record timeline
+    NoticeCenter::Instance().addListener(&x_hook_tag, Broadcast::kBroadcastRecordMP4, [=](BroadcastRecordMP4Args) {
+        WarnL << "Record mp4 file " << info.app << " " << info.start_time << " " << info.time_len << " " << info.url;
+        TimeBlock block;
+        block.set_app(info.app);
+        block.set_stream(info.stream);
+        block.set_start_time(info.start_time);
+        block.set_time_len(info.time_len);
+        block.set_file_path(info.file_path);
+        
+        TimeBlockWriter::Instance().addBlock(block);
     });
 #endif // ENABLE_MP4
 
@@ -469,22 +501,17 @@ void onxProcessExited() {
 }
 
 void addCameraResource(Value &device, const function<void(const string &camera_id, const string &stream_id, const string &url)> &cb) {
-    string camera_id = device["id"].asString();
+    string camera_id = device["camera_id"].asString();
     string username = device["username"].asString();
     string password = device["password"].asString();
     string ip = device["address"].asString();
-    int media_port = device["mediaPort"].asInt();
 
     // todo: check config and compare with old config if exist
 
     if (device.isMember("streams") && device["streams"].isArray()) {
         for (const auto &str: device["streams"]) {
-            string stream_id = str["id"].asString();
-            string protocol = str["protocol"].asString();
-            string path = str["path"].asString();
-            string url = protocol + "://" + username + ":" + password + "@" + ip + ":" + to_string(media_port) + path;
-
-            // string url = str["source_url"].asString();
+            string stream_id = str["channel_id"].asString();
+            string url = str["source_url"].asString();
             WarnL << url;
             cb(camera_id, stream_id, url);
         }

@@ -27,5 +27,5 @@
         ```
 
 - If you need to customize the configuration file, you can use `configMap` to mount it into the pod`/opt/media/conf/` directory to override the default configuration file
-- If you need a custom certificate, please replace the `default.pem` certificate file under the `tests` directory of the source code directory. zlmedia will be loaded by default when the pod is started.
+- If you need a custom certificate, please replace the `default.pem` certificate file under the `tests` directory of the source code directory. s3media will be loaded by default when the pod is started.
 

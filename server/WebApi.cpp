@@ -61,11 +61,13 @@
 #include "VideoStack.h"
 #endif
 
+#include "Local/TimePeriodRecorder.h"
+
 using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
-// using namespace managerkit;
+using namespace managerkit;
 
 namespace API {
 #define API_FIELD "api."
@@ -2160,6 +2162,51 @@ void installWebApi() {
         val["code"] = ret;
         val["msg"] = ret ? "failed" : "success";
         invoker(200, headerOut, val.toStyledString());
+    });
+#endif
+
+#ifdef ENABLE_MANAGER
+    api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
+        CHECK_ARGS("cameraId");
+        CHECK_ARGS("startTime");
+        CHECK_ARGS("endTime");
+        CHECK_ARGS("periodType");
+        CHECK_ARGS("detail");
+
+        auto camera_id = allArgs["cameraId"];
+        auto start_time = allArgs["startTime"];
+        auto end_time = allArgs["endTime"];
+        auto period_type = allArgs["periodType"];
+        auto detail = allArgs["detail"];
+
+        auto camera_ids = vector<string> { camera_id };
+        if (end_time == "now") {
+            end_time = time(nullptr);
+        }
+
+        TimeBlockReader::Instance().getRecordedTimePeriod(start_time, end_time, camera_ids, period_type, detail,
+            [invoker, val, headerOut](const SockException &ex, const Json::Value &data) mutable {
+                if (ex) {
+                    val["code"] = API::OtherFailed;
+                    val["msg"] = ex.what();
+                } else {
+                    val = data;
+                    InfoL << "Get recorded time period success";
+                }
+                invoker(200, headerOut, val.toStyledString());
+            });
+    });
+
+    api_regist("/media/esc/recordedThumnails", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
+    });
+
+    api_regist("/media/mserver/discovery", [](API_ARGS_MAP_ASYNC) {
+    });
+
+    api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
+
     });
 #endif
 }

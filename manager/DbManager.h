@@ -1,26 +1,38 @@
-#include <iostream>
-#include "Util/logger.h"
-#include "Util/SqlitePool.h"
+// #ifndef S3MANAGERKIT_DBMANAGER_H
+// #define S3MANAGERKIT_DBMANAGER_H
 
-using namespace std;
-using namespace toolkit;
+// #include <string>
+// #include <mutex>
+// #include "Util/logger.h"
+// #include "Util/SqlitePool.h"
 
-namespace xDatabase
-{
-extern const std::string krdbms;
-extern const std::string kDbHost;
-extern const std::string kDbPort;
-extern const std::string kDbUser;
-extern const std::string kDbPasswd;
-extern const std::string kDbName;
-extern const std::string kDbFilename;
-extern const std::string kDbTimeoutSec;
-} // namespace xDatabase
+// namespace managerkit {
+// namespace xDatabase
+// {
+// extern const std::string kDbFilename;
+// extern const std::string kDbSavePath;
+// extern const std::string kDbTimeoutSec;
+// } // namespace xDatabase
 
-typedef enum {
-    ECS,
-    MSERVER,
-    TIMELINE,
-} DbOriginType;
 
-void installDbManager();
+// class DbManager {
+// public:
+//     typedef enum {
+//         type_ecs = 0,
+//         type_mserver,
+//     } DbOriginType;
+
+//     static DbManager &Instance();
+
+//     toolkit::SqlitePool::Ptr getInstance(DbOriginType dBtype);
+
+// private:
+//     std::unordered_map<int, toolkit::SqlitePool::Ptr> _map_db;
+//     std::recursive_mutex _mtx_db;
+// };
+
+// } // namespace managerkit
+
+// void installDbManager();
+
+// #endif // S3MANAGERKIT_DBMANAGER_H

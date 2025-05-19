@@ -1,5 +1,4 @@
-#include "Common/xConfig.h"
-#include "Resource.h"
+#include "config.h"
 #include "Util/logger.h"
 #include "Util/util.h"
 #include <assert.h>
@@ -34,34 +33,9 @@ static onceToken token([]() {
 
 } // namespace xGeneral
 
-//////////Resource Server Configuration///////////
-namespace xServerOption {
-
-} // namespace xServerOption
-
 //////////Resource Camera Configuration///////////
 namespace xCameraOption {
 
 } // namespace xCameraOption
-
-//////////Resource Local Configuration///////////
-namespace xLocalOption {
-
-} // namespace xLocalOption
-
-//////////Resource Storage Configuration///////////
-namespace xStorageOption {
-
-} // namespace xStorageOption
-
-//////////Resource User Configuration///////////
-namespace xUserOption {
-
-} // namespace xUserOption
-
-//////////Resource Client Configuration///////////
-namespace xClient {
-    
-} // namespace xClient
 
 } // namespace managerkit

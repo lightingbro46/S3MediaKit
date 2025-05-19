@@ -647,3 +647,27 @@ void operator delete[](void *ptr, std::size_t) noexcept {
     free(ptr);
 }
 #endif
+
+#ifdef ENABLE_MANAGER
+namespace managerkit {
+
+    
+namespace Manager {
+#define MANAGER_FIELD "manager."
+
+} // namespace Manager
+
+namespace Database {
+#define DATABASE_FIELD "database."
+
+} // namespace Database
+
+namespace Plugin {
+#define PLUGIN_FIELD "plugin."
+
+} // namespace Plugin
+
+namespace 
+} // namespace mediakit
+
+#endif
