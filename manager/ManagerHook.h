@@ -4,7 +4,6 @@
 #include <string>
 #include <functional>
 #include "json/json.h"
-#include "Server/util.h"
 
 namespace xHook {
 // Api url for getting configuration and reporting statistic
