@@ -282,6 +282,18 @@ int start_main(int argc,char *argv[]) {
         }
         g_reload_certificates();
 
+        auto &mediaServerId = mINI::Instance()[General::kMediaServerId];
+        if (mediaServerId == "your_server_id" || mediaServerId.empty()) {
+            // Starting with the default media server id is prohibited
+            mediaServerId = getHardwareUUID();
+            if (mediaServerId == "Unavailable" || mediaServerId.empty()) {
+                mediaServerId = makeRandStr(32, true);
+            }
+            mINI::Instance().dumpFile(g_ini_file);
+            WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << secret
+                  << ", saved config file: " << g_ini_file;
+        }
+
         std::string listen_ip = mINI::Instance()[General::kListenIP];
         uint16_t shellPort = mINI::Instance()[Shell::kPort];
         uint16_t rtspPort = mINI::Instance()[Rtsp::kPort];

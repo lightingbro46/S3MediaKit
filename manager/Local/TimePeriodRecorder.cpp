@@ -182,13 +182,12 @@ TimeBlockList TimeBlockReader::readList(uint32_t file_index, uint64_t offset) {
     return list;
 }
 
-std::vector<TimeBlock> TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const std::vector<std::string>& camera_ids) {
+std::vector<TimeBlock> TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const string &camera_id) {
     std::lock_guard<std::recursive_mutex> lock(_mtx_time);
 
     reloadIndex();
 
     std::vector<TimeBlock> result;
-    std::unordered_set<std::string> cam_set(camera_ids.begin(), camera_ids.end());
 
     for (const auto& entry : _index) {
         if (entry.start_time > end_time) continue;
@@ -198,7 +197,7 @@ std::vector<TimeBlock> TimeBlockReader::query(uint64_t start_time, uint64_t end_
         for (const auto& block : list.blocks()) {
             if (block.start_time() >= start_time &&
                 block.start_time() <= end_time &&
-                cam_set.count(block.app())) {
+                block.app() == camera_id) {
                 result.push_back(block);
             }
         }
@@ -207,13 +206,10 @@ std::vector<TimeBlock> TimeBlockReader::query(uint64_t start_time, uint64_t end_
     return result;
 }
 
-void TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const vector<string>& camera_ids, const function<void(const TimeBlock &block)> &cb) {
+void TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const string &camera_id, const function<void(const TimeBlock &block)> &cb) {
     std::lock_guard<std::recursive_mutex> lock(_mtx_time);
 
     reloadIndex();
-
-    std::unordered_set<std::string> cam_set(camera_ids.begin(), camera_ids.end());
-
     for (const auto& entry : _index) {
         if (entry.start_time > end_time) continue;
         if (entry.start_time + 60 < start_time) continue;  // each list last 1 minute
@@ -222,14 +218,14 @@ void TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const vector
         for (const auto& block : list.blocks()) {
             if (block.start_time() >= start_time &&
                 block.start_time() <= end_time &&
-                cam_set.count(block.app())) {
+                block.app() == camera_id) {
                 cb(block);
             }
         }
     }
 }
 
-void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const std::vector<std::string> &camera_ids, int period_type, int detail,
+void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const string &camera_id, int period_type, int detail,
     const function<void(const SockException &ex, const Json::Value &data)> &cb) {
     Json::Value result;
     if (period_type == 1) {
@@ -237,12 +233,12 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
             uint64_t startTime;
             uint32_t duration;
         };
+        result["camera_id"] = camera_id;
 
         if (detail == 0) {
-            result["periods"] = Json::arrayValue;
             vector<TimeRange> _result;
 
-            query(start_time, end_time, camera_ids, [&](const TimeBlock &block) mutable {
+            query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
                 if (!_result.empty()) {
                     TimeRange &last = _result.back();
                     uint64_t last_end = last.startTime + last.duration;
@@ -256,18 +252,20 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
                 _result.push_back({ block.start_time(), static_cast<uint32_t>(block.time_len()) });
             });
 
+            result["periods"] = Json::arrayValue;
+
             for (auto const &p : _result) {
                 Json::Value json_period;
                 json_period["startTime"] = p.startTime;
                 json_period["duration"] = p.duration;
                 result["periods"].append(json_period);
             }
+
         } else {
-            result = Json::arrayValue;
-            unordered_map<string /*camera_id*/, unordered_map<string /*stream_id*/, vector<TimeRange>>> _result;
-        
-            query(start_time, end_time, camera_ids, [&](const TimeBlock &block) mutable {
-                auto &range_map = _result[block.app()][block.stream()];
+            unordered_map<string /*stream_id*/, vector<TimeRange>> _result;
+
+            query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
+                auto &range_map = _result[block.stream()];
 
                 if (!range_map.empty()) {
                     TimeRange &last = range_map.back();
@@ -283,32 +281,27 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
                 range_map.push_back({ block.start_time(), static_cast<uint32_t>(block.time_len())});
             });
 
-            for (auto const &it_cam : _result) {
-                Json::Value json_camera;
-                json_camera["cameraId"] = it_cam.first;
-                json_camera["streams"] = Json::arrayValue;
+            result["streams"] = Json::arrayValue;
 
-                for (auto const &it_stream : it_cam.second) {
-                    Json::Value json_stream;
-                    json_stream["streamId"] = it_stream.first;
-                    json_stream["periods"] = Json::arrayValue;
+            for (auto const &it : _result) {
+                Json::Value json_stream;
+                json_stream["streamId"] = it.first;
+                json_stream["periods"] = Json::arrayValue;
 
-                    for (auto const &p : it_stream.second) {
-                        Json::Value json_period;
-                        json_period["startTime"] = p.startTime;
-                        json_period["duration"] = p.duration;
-                        json_stream["periods"].append(json_period);
-                    }
-                    json_camera["streams"].append(json_stream);
+                for (auto const &p : it.second) {
+                    Json::Value json_period;
+                    json_period["startTime"] = p.startTime;
+                    json_period["duration"] = p.duration;
+                    json_stream["periods"].append(json_period);
                 }
-                result.append(json_camera);
+                result["streams"].append(json_stream);
             }
         }
     } else if (period_type == 2) {
         if (detail == 0) {
             unordered_map<string /*date*/, set<int/*hour*/>> _result;
-            
-            query(start_time, end_time, camera_ids, [&](const TimeBlock &block) mutable {
+
+            query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
                 string date_str = getTimeStr("%Y-%m-%d", block.start_time());
                 string hour_str = getTimeStr("%H", block.start_time());
 
@@ -316,85 +309,88 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
                 hour_map.emplace(static_cast<int>(atoi(hour_str.data())));
             });
 
-            for (auto const &it_date : _result) {
-                string date_str = it_date.first;
-                set<int> hour_set = it_date.second;
-                result[date_str] = Json::arrayValue;
+            for (auto const &it : _result) {
+                string date_str = it.first;
+                auto &hour_set = it.second;
+                result["periods"][date_str] = Json::arrayValue;
+
                 for (int i = 0; i < 24; i++) {
                     auto it_hour = hour_set.find(i);
-                    result[date_str].append(it_hour != hour_set.end() ? 1 : 0);
+                    result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
                 }
             }
+
         } else {
-            result = Json::arrayValue;
-        //     struct TimeRange {
-        //         uint32_t startOffset;
-        //         uint32_t duration;
-        //     };
-        //     unordered_map<string /*camera_id*/, unordered_map<string /*stream_id*/, unordered_map<string /*date*/, unordered_map<int, std::vector<TimeRange>>>>> _result;
+            struct TimeRange {
+                uint32_t startOffset;
+                uint32_t duration;
+            };
 
-        //     query(start_time, end_time, camera_ids, [&](const TimeBlock &block) mutable {
-        //         string camera_id = block.app();
-        //         string stream_id = block.stream();
-        //         int64_t remaining = block.time_len();
-        //         int64_t current = block.start_time();
+            unordered_map<string /*stream_id*/, unordered_map<string /*date*/, unordered_map<int, std::vector<TimeRange>>>> _result;
+            
+            query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
+                string stream_id = block.stream();
+                uint32_t remaining = block.time_len();
+                uint64_t current = block.start_time();
 
-        //         while(remaining > 0) {
-        //             int64_t t = current;
-        //             string date_str = getTimeStr("%Y-%m-%d", current);
-        //             string hour_str = getTimeStr("%H", current);
+                while(remaining > 0) {
+                    int64_t t = current;
+                    string date_str = getTimeStr("%Y-%m-%d", current);
+                    string hour_str = getTimeStr("%H", current);
+                    string minute_str = getTimeStr("%M", current);
+                    string second_str = getTimeStr("%S", current);
+                    
+                    int64_t start_of_hour = current - atoi(minute_str.data()) * 60 - atoi(second_str.data());
+                    uint32_t offset = static_cast<int>(current - start_of_hour);
+                    uint32_t seconds_left_in_hour = 3600 - offset;
+                    uint32_t chunk = MIN(remaining, seconds_left_in_hour);
+                    
+                    auto &range_map = _result[stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
+                    if (!range_map.empty()) {
+                        auto& last = range_map.back();
+                        if (last.startOffset + last.duration == offset) {
+                            last.duration += chunk;
+                        } else {
+                            range_map.push_back({offset, chunk});
+                        }
+                    } else {
+                        range_map.push_back({offset, chunk});
+                    }
+                    current += chunk;
+                    remaining -= chunk;
+                }
+            });
 
-        //             int64_t start_of_hour = current; //todo
-        //             int offset = static_cast<int>(current - start_of_hour);
-        //             int seconds_left_in_hour = 3600 - offset;
-        //             int chunk = MIN(remaining, seconds_left_in_hour);
+            result["streams"] = Json::arrayValue; 
+            for (auto const &it_stream : _result) {
+                Json::Value json_stream;
+                json_stream["streamId"] = it_stream.first;
 
-        //             auto &range_map = _result[camera_id][stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
-        //             if (!range_map.empty()) {
-        //                 auto& last = range_map.back();
-        //                 if (last.startOffset + last.duration == offset) {
-        //                     last.duration += chunk;
-        //                 } else {
-        //                     range_map.push_back({offset, chunk});
-        //                 }
-        //             } else {
-        //                 range_map.push_back({offset, chunk});
-        //             }
-        //             current += chunk;
-        //             remaining -= chunk;
-        //         }
-        //     });
-
-        //     for (auto const &it_cam : _result) {
-        //         Json::Value json_camera;
-        //         json_camera["cameraId"] = it_cam.first;
-        //         json_camera["streams"] = Json::arrayValue;
-
-        //         for (auto const &it_stream : it_cam.second) {
-        //             Json::Value json_stream;
-        //             json_stream["streamId"] = it_stream.first;
-        //             json_stream["periods"] = Json::Value;
-
-        //             for (auto const &it_date : it_stream.second) {
-        //                 Json::Value json_date;
-        //                 json_date["streamId"] = it_stream.first;
-        //                 json_stream["periods"] = Json::Value;
-        //                 for (auto const &p : it_stream.second) {
-        //                     Json::Value json_period;
-        //                     json_period["startTime"] = p.startTime;
-        //                     json_period["duration"] = p.duration;
-        //                     json_stream["periods"].append(json_period);
-        //                 }
-        //             }
-                   
-        //             json_camera["streams"].append(json_stream);
-        //         }
-        //         result.append(json_camera);
-        //     }
+                for (auto const &it_date : it_stream.second) {
+                    Json::Value json_date;
+                    string date_string = it_date.first;
+                    auto hour_map = it_date.second;
+                    for (int i = 0; i < 24; i++) {
+                        Json::Value json_hour = Json::arrayValue;
+                        auto it_hour = hour_map.find(i);
+                        if (it_hour != hour_map.end()) {
+                            for (auto const &it : it_hour->second) {
+                                Json::Value json_period;
+                                json_period["startOffset"] = it.startOffset;
+                                json_period["duration"] = it.duration;
+                                WarnL << json_period.toStyledString();
+                                json_hour.append(json_period);
+                            }
+                        }
+                        json_date[date_string].append(json_hour);
+                    }
+                    json_stream["dates"] = json_date;
+                }
+                result["streams"].append(json_stream);
+            }
         }
-        
     } else if (period_type == 0) {
-        auto blocks = query(start_time, end_time, camera_ids);
+        auto blocks = query(start_time, end_time, camera_id);
         for (auto const &p : blocks) {
             Json::Value json_period;
             json_period["cameraId"] = p.app();

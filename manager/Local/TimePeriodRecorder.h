@@ -57,12 +57,12 @@ class TimeBlockReader {
 public:
     static TimeBlockReader& Instance();
 
-    void getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const std::vector<std::string> &camera_ids, int period_type, int detail,
+    void getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const std::string &camera_id, int period_type, int detail,
         const std::function<void(const toolkit::SockException &ex, const Json::Value &data)> &cb);
-
+    
 public:
-    std::vector<TimeBlock> query(uint64_t start_time, uint64_t end_time, const std::vector<std::string>& camera_ids);
-    void query(uint64_t start_time, uint64_t end_time, const std::vector<std::string> &camera_ids, const std::function<void(const TimeBlock &block)> &cb);
+    std::vector<TimeBlock> query(uint64_t start_time, uint64_t end_time, const std::string &camera_id);
+    void query(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::function<void(const TimeBlock &block)> &cb);
 
 private:
     TimeBlockReader();

@@ -136,7 +136,7 @@ static void reportServerKeepalive() {
     }, nullptr);
 }
 
-static void handleServerResourceJson(Json::Value &data) {
+static void handleServerResourceJson(const Json::Value &data) {
     if (data.isMember("mediaServer")) {
 
     }
@@ -190,23 +190,23 @@ static void reportServerStatistic() {
                 // Load server config succeeded
                 handleServerResourceJson(obj);
 
-                EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
-                    getServerStatisticJson([](const Value &data) mutable {
-                        ArgsType body;
-                        body["data"] = data;
-                        // Execute hook
-                        do_http_hook(hook_api_url + hook_server_report,  [](const Value &obj, const string &err) mutable {
-                            if (err.empty()) {
-                                // Report server statistic succeeded
-                                InfoL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                            } else {
-                                // Load server config failed
-                                WarnL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                            }
-                        });
-                    });
-                    return 0;
-                });
+                // EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
+                //     getServerStatisticJson([](const Value &data) mutable {
+                //         ArgsType body;
+                //         body["data"] = data;
+                //         // Execute hook
+                //         do_http_hook(hook_api_url + hook_server_report,  [](const Value &obj, const string &err) mutable {
+                //             if (err.empty()) {
+                //                 // Report server statistic succeeded
+                //                 InfoL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                //             } else {
+                //                 // Load server config failed
+                //                 WarnL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                //             }
+                //         });
+                //     });
+                //     return 0;
+                // });
 
             } else {
                 // Load server config failed

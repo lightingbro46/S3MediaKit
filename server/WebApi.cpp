@@ -2180,12 +2180,11 @@ void installWebApi() {
         auto period_type = allArgs["periodType"];
         auto detail = allArgs["detail"];
 
-        auto camera_ids = vector<string> { camera_id };
         if (end_time == "now") {
             end_time = time(nullptr);
         }
 
-        TimeBlockReader::Instance().getRecordedTimePeriod(start_time, end_time, camera_ids, period_type, detail,
+        TimeBlockReader::Instance().getRecordedTimePeriod(start_time, end_time, camera_id, period_type, detail,
             [invoker, val, headerOut](const SockException &ex, const Json::Value &data) mutable {
                 if (ex) {
                     val["code"] = API::OtherFailed;
@@ -2198,7 +2197,7 @@ void installWebApi() {
             });
     });
 
-    api_regist("/media/esc/recordedThumnails", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
     });
 
