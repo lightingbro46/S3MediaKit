@@ -228,12 +228,13 @@ void TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const string
 void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const string &camera_id, int period_type, int detail,
     const function<void(const SockException &ex, const Json::Value &data)> &cb) {
     Json::Value result;
+    result["camera_id"] = camera_id;
+
     if (period_type == 1) {
         struct TimeRange {
             uint64_t startTime;
             uint32_t duration;
         };
-        result["camera_id"] = camera_id;
 
         if (detail == 0) {
             vector<TimeRange> _result;

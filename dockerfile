@@ -65,12 +65,7 @@ RUN apt-get update && \
          ca-certificates \
          tzdata \
          curl \
-         libssl-dev \
-         libprotobuf-dev \
          ffmpeg \
-         gcc \
-         g++ \
-         gdb && \
          apt-get autoremove -y && \
          apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
