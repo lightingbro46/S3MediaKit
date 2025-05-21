@@ -35,10 +35,6 @@
 #include "System.h"
 #endif//!defined(_WIN32)
 
-#if defined(ENABLE_MANAGER)
-#include "../manager/ManagerHook.h"   
-#endif //ENABLE_MANAGER
-
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
@@ -50,8 +46,8 @@ namespace Http {
 const string kPort = HTTP_FIELD"port";
 const string kSSLPort = HTTP_FIELD"sslport";
 onceToken token1([](){
-    mINI::Instance()[kPort] = 80;
-    mINI::Instance()[kSSLPort] = 443;
+    mINI::Instance()[kPort] = 8080;
+    mINI::Instance()[kSSLPort] = 8443;
 },nullptr);
 }//namespace Http
 
@@ -285,12 +281,12 @@ int start_main(int argc,char *argv[]) {
         auto &mediaServerId = mINI::Instance()[General::kMediaServerId];
         if (mediaServerId == "your_server_id" || mediaServerId.empty()) {
             // Starting with the default media server id is prohibited
-            mediaServerId = getHardwareUUID();
-            if (mediaServerId == "Unavailable" || mediaServerId.empty()) {
-                mediaServerId = makeRandStr(32, true);
+            mediaServerId = strToLower(getHardwareUUID());
+            if (mediaServerId == strToLower("Unavailable") || mediaServerId.empty()) {
+                mediaServerId = makeRandStr(32);
             }
             mINI::Instance().dumpFile(g_ini_file);
-            WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << secret
+            WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << mediaServerId
                   << ", saved config file: " << g_ini_file;
         }
 
@@ -374,11 +370,6 @@ int start_main(int argc,char *argv[]) {
         installWebHook();
         InfoL << "The http hook interface has been started";
 
-#if defined(ENABLE_MANAGER)        
-        installxHook();
-        InfoL << "The manager hook interface has been started";
-#endif //defined(ENABLE_MANAGER)
-
         try {
             // rtsp server, default port 554
             if (rtspPort) { rtspSrv->start<RtspSession>(rtspPort, listen_ip); }
@@ -452,11 +443,6 @@ int start_main(int argc,char *argv[]) {
     }
     unInstallWebApi();
     unInstallWebHook();
-
-#if defined(ENABLE_MANAGER) 
-    unInstallxHook();
-#endif //defined(ENABLE_MANAGER)
-
     onProcessExited();
 
     // sleep for 1 second before exiting, to prevent resource release order errors

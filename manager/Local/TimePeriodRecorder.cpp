@@ -7,7 +7,6 @@
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
-using namespace managerkit;
 
 //////////////////////////TimeBlockWriter///////////////////////////////
 
@@ -147,6 +146,7 @@ void TimeBlockReader::loadIndex() {
     while (meta.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {
         _index.push_back(entry);
     }
+    meta.close();
 }
 
 void TimeBlockReader::reloadIndex() {
@@ -323,7 +323,7 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
 
         } else {
             struct TimeRange {
-                uint32_t startOffset;
+                uint64_t startTime;
                 uint32_t duration;
             };
 
@@ -331,8 +331,8 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
             
             query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
                 string stream_id = block.stream();
-                uint32_t remaining = block.time_len();
                 uint64_t current = block.start_time();
+                uint32_t remaining = block.time_len();
 
                 while(remaining > 0) {
                     int64_t t = current;
@@ -342,20 +342,16 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
                     string second_str = getTimeStr("%S", current);
                     
                     int64_t start_of_hour = current - atoi(minute_str.data()) * 60 - atoi(second_str.data());
-                    uint32_t offset = static_cast<int>(current - start_of_hour);
-                    uint32_t seconds_left_in_hour = 3600 - offset;
+                    uint32_t start_offset_in_hour = static_cast<int>(current - start_of_hour);
+                    uint32_t seconds_left_in_hour = 3600 - start_offset_in_hour;
                     uint32_t chunk = MIN(remaining, seconds_left_in_hour);
                     
                     auto &range_map = _result[stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
-                    if (!range_map.empty()) {
-                        auto& last = range_map.back();
-                        if (last.startOffset + last.duration == offset) {
-                            last.duration += chunk;
-                        } else {
-                            range_map.push_back({offset, chunk});
-                        }
+                    uint64_t chunk_start = current;
+                    if (!range_map.empty() && range_map.back().startTime + range_map.back().duration + 1 >= chunk_start) {
+                        range_map.back().duration += chunk;
                     } else {
-                        range_map.push_back({offset, chunk});
+                        range_map.push_back({chunk_start, chunk});
                     }
                     current += chunk;
                     remaining -= chunk;
@@ -368,24 +364,23 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
                 json_stream["streamId"] = it_stream.first;
 
                 for (auto const &it_date : it_stream.second) {
-                    Json::Value json_date;
                     string date_string = it_date.first;
                     auto hour_map = it_date.second;
+                    Json::Value json_date;
                     for (int i = 0; i < 24; i++) {
                         Json::Value json_hour = Json::arrayValue;
                         auto it_hour = hour_map.find(i);
                         if (it_hour != hour_map.end()) {
                             for (auto const &it : it_hour->second) {
                                 Json::Value json_period;
-                                json_period["startOffset"] = it.startOffset;
+                                json_period["startTime"] = it.startTime;
                                 json_period["duration"] = it.duration;
-                                WarnL << json_period.toStyledString();
                                 json_hour.append(json_period);
                             }
                         }
-                        json_date[date_string].append(json_hour);
+                        json_date.append(json_hour);
                     }
-                    json_stream["dates"] = json_date;
+                    json_stream["dates"][date_string] = json_date;
                 }
                 result["streams"].append(json_stream);
             }

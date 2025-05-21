@@ -77,7 +77,6 @@ const string kUnreadyFrameCache = GENERAL_FIELD "unready_frame_cache";
 const string kBroadcastPlayerCountChanged = GENERAL_FIELD "broadcast_player_count_changed";
 const string kListenIP = GENERAL_FIELD "listen_ip";
 
-
 static onceToken token([]() {
     mINI::Instance()[kFlowThreshold] = 1024;
     mINI::Instance()[kStreamNoneReaderDelayMS] = 20 * 1000;
@@ -85,7 +84,7 @@ static onceToken token([]() {
     mINI::Instance()[kEnableVhost] = 0;
     mINI::Instance()[kResetWhenRePlay] = 1;
     mINI::Instance()[kMergeWriteMS] = 0;
-    mINI::Instance()[kMediaServerId] = makeRandStr(16);
+    mINI::Instance()[kMediaServerId] = makeRandStr(32);
     mINI::Instance()[kCheckNvidiaDev] = 1;
     mINI::Instance()[kEnableFFmpegLog] = 0;
     mINI::Instance()[kWaitTrackReadyMS] = 10000;
@@ -134,16 +133,16 @@ static onceToken token([]() {
     mINI::Instance()[kPacedSenderMS] = 0;
     mINI::Instance()[kAutoClose] = 0;
 
-    mINI::Instance()[kEnableHls] = 1;
+    mINI::Instance()[kEnableHls] = 0;
     mINI::Instance()[kEnableHlsFmp4] = 0;
-    mINI::Instance()[kEnableMP4] = 0;
+    mINI::Instance()[kEnableMP4] = 1;
     mINI::Instance()[kEnableRtsp] = 1;
-    mINI::Instance()[kEnableRtmp] = 1;
-    mINI::Instance()[kEnableTS] = 1;
+    mINI::Instance()[kEnableRtmp] = 0;
+    mINI::Instance()[kEnableTS] = 0;
     mINI::Instance()[kEnableFMP4] = 1;
 
     mINI::Instance()[kMP4AsPlayer] = 0;
-    mINI::Instance()[kMP4MaxSecond] = 3600;
+    mINI::Instance()[kMP4MaxSecond] = 60;
     mINI::Instance()[kMP4SavePath] = "./www";
 
     mINI::Instance()[kHlsSavePath] = "./www";
@@ -373,6 +372,16 @@ const string kRtspSpeed = "rtsp_speed";
 const string kLatency = "latency";
 const string kPassPhrase = "passPhrase";
 } // namespace Client
+
+namespace Database {
+#define DATABASE_FIELD "database."
+
+} // namespace Database
+
+namespace Plugin {
+#define PLUGIN_FIELD "plugin."
+
+} // namespace Plugin
 
 } // namespace mediakit
 
@@ -646,28 +655,4 @@ void operator delete[](void *ptr) noexcept {
 void operator delete[](void *ptr, std::size_t) noexcept {
     free(ptr);
 }
-#endif
-
-#ifdef ENABLE_MANAGER
-namespace managerkit {
-
-    
-namespace Manager {
-#define MANAGER_FIELD "manager."
-
-} // namespace Manager
-
-namespace Database {
-#define DATABASE_FIELD "database."
-
-} // namespace Database
-
-namespace Plugin {
-#define PLUGIN_FIELD "plugin."
-
-} // namespace Plugin
-
-namespace 
-} // namespace mediakit
-
 #endif

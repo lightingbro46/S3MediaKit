@@ -1,3 +1,4 @@
+# protocpp
 find_package(Protobuf REQUIRED)
 
 set(PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
@@ -13,9 +14,29 @@ protobuf_generate(
   OUT_VAR GENERATED_PROTO_SRCS
 )
 
-file(GLOB_RECURSE MANAGER_SRC_LIST *.cpp *.h *.hpp)
+add_library(protocpp STATIC ${GENERATED_PROTO_SRCS})
+target_link_libraries(protocpp
+  PUBLIC
+    ${Protobuf_LIBRARIES}
+)
 
-add_library(s3managerkit STATIC ${MANAGER_SRC_LIST} ${GENERATED_PROTO_SRCS})
+target_compile_options(protocpp
+  PRIVATE ${COMPILE_OPTIONS_DEFAULT})
+target_include_directories(protocpp
+  PRIVATE
+    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>"
+  PUBLIC
+    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>")
+
+##############################################################################
+
+# manager
+file(GLOB MANAGER_SRC_LIST 
+  ${CMAKE_CURRENT_SOURCE_DIR}/*/*.cpp 
+  ${CMAKE_CURRENT_SOURCE_DIR}/*/*.h 
+  ${CMAKE_CURRENT_SOURCE_DIR}/*/*.c)
+
+add_library(s3managerkit STATIC ${MANAGER_SRC_LIST})
 
 add_library(S3MediaKit::ManagerKit ALIAS s3managerkit)
 
@@ -23,8 +44,7 @@ target_link_libraries(s3managerkit
   PUBLIC
     S3MediaKit::MediaKit
     S3MediaKit::ToolKit
-    ${Protobuf_LIBRARIES}
-)
+    protocpp)
 
 target_compile_options(s3managerkit
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
@@ -34,11 +54,6 @@ target_include_directories(s3managerkit
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
-    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>"
-)
+    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}/proto>")
 
-update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_MANAGER)
 update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ManagerKit)
-
-message(STATUS "managerkit function is enabled")

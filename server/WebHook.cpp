@@ -10,6 +10,8 @@
 #include "Rtsp/RtspSession.h"
 #include "WebHook.h"
 #include "WebApi.h"
+#include "ManagerHook.h"
+#include "Local/TimePeriodRecorder.h"
 
 using namespace std;
 using namespace Json;
@@ -37,15 +39,19 @@ const string kOnHttpAccess = HOOK_FIELD "on_http_access";
 const string kOnServerStarted = HOOK_FIELD "on_server_started";
 const string kOnServerExited = HOOK_FIELD "on_server_exited";
 const string kOnServerKeepalive = HOOK_FIELD "on_server_keepalive";
+const string kOnServerLoad = HOOK_FIELD "on_server_load";
+const string kOnServerReport = HOOK_FIELD "on_server_report";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
+const string kReportInterval = HOOK_FIELD "report_interval";
+const string kApiUrl = HOOK_FIELD "api_url";
 
 const string kRetry = HOOK_FIELD "retry";
 const string kRetryDelay = HOOK_FIELD "retry_delay";
 
 static onceToken token([]() {
-    mINI::Instance()[kEnable] = false;
+    mINI::Instance()[kEnable] = true;
     mINI::Instance()[kTimeoutSec] = 10;
     // Default hook address is set to empty, using default behavior (e.g. no authentication)
     mINI::Instance()[kOnPublish] = "";
@@ -60,15 +66,20 @@ static onceToken token([]() {
     mINI::Instance()[kOnShellLogin] = "";
     mINI::Instance()[kOnStreamNoneReader] = "";
     mINI::Instance()[kOnHttpAccess] = "";
-    mINI::Instance()[kOnServerStarted] = "";
-    mINI::Instance()[kOnServerExited] = "";
+    mINI::Instance()[kOnServerStarted] = "/api/media-server/start";
+    mINI::Instance()[kOnServerExited] = "/api/media-server/end";
+    mINI::Instance()[kOnServerKeepalive] = "/api/media-server/heartbeat";
+    mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration";
+    mINI::Instance()[kOnServerReport] = "/api/media-server/report";
     mINI::Instance()[kOnServerKeepalive] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
-    mINI::Instance()[kAliveInterval] = 10.0;
+    mINI::Instance()[kAliveInterval] = 5.0;
+    mINI::Instance()[kReportInterval] = 60.0;
     mINI::Instance()[kRetry] = 1;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
+    mINI::Instance()[kApiUrl] = "https://anat.vtscloud.vn";
 });
 } // namespace Hook
 
@@ -107,7 +118,7 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
-#ifndef ENABLE_MANAGER
+#if 0
     auto code = result["code"];
 
     if (!code.isInt64()) {
@@ -280,29 +291,39 @@ static ArgsType make_json(const MediaInfo &args) {
 static void reportServerStarted() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
-    if (!hook_enable || hook_server_started.empty()) {
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
         return;
     }
     ArgsType body;
+#if 0    
     for (auto &pr : mINI::Instance()) {
         body[pr.first] = (string &)pr.second;
     }
+#endif
+    // todo: get media server info
+    if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
+        return;
+    }
     // Execute hook
-    do_http_hook(hook_server_started, body, nullptr);
+    do_http_hook(hook_api_url + hook_server_started, body, nullptr);
 }
 
 static void reportServerExited() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_exited, Hook::kOnServerExited);
-    if (!hook_enable || hook_server_exited.empty()) {
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    if (!hook_enable || hook_server_exited.empty() || hook_api_url.empty()) {
         return;
     }
     ArgsType body;
+#if 0  
     for (auto &pr : mINI::Instance()) {
         body[pr.first] = (string &)pr.second;
     }
+#endif
     // Execute hook
-    do_http_hook(hook_server_exited, body, nullptr);
+    do_http_hook(hook_api_url + hook_server_exited, body, nullptr);
 }
 
 // Server keep-alive timer
@@ -310,19 +331,146 @@ static Timer::Ptr g_keepalive_timer;
 static void reportServerKeepalive() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_keepalive, Hook::kOnServerKeepalive);
-    if (!hook_enable || hook_server_keepalive.empty()) {
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    if (!hook_enable || hook_server_keepalive.empty() || hook_api_url.empty()) {
         return;
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_keepalive_timer = std::make_shared<Timer>(alive_interval,[]() {
+#if 0 
         getStatisticJson([](const Value &data) mutable {
             ArgsType body;
             body["data"] = data;
             // Execute hook
             do_http_hook(hook_server_keepalive, body, nullptr);
         });
+#endif
+        ArgsType body;
+        // Execute hook
+        do_http_hook(hook_api_url + hook_server_keepalive, body, nullptr);
         return true;
     }, nullptr);
+}
+
+void handleServerResourceJson(const Json::Value &data) {
+    if (data.isMember("mediaServer")) {
+
+    }
+
+    if (data.isMember("devices") && data["devices"].isArray()) {
+        for (auto &device : data["devices"]) {
+            auto device_json = device;
+            string camera_id = device_json["device_id"].asString();
+            if (device_json.isMember("streams") && device_json["streams"].isArray()) {
+                for (const auto &stream: device_json["streams"]) {
+                    string stream_id = stream["channel_id"].asString();
+                    string url = stream["source_url"].asString();
+                    auto tuple = MediaTuple { DEFAULT_VHOST, camera_id, stream_id, "" };
+                    mINI args;
+                    args["vhost"] = DEFAULT_VHOST;
+                    args["app"] = tuple.app;
+                    args["stream_id"] = tuple.stream;
+        
+                    ProtocolOption option;
+        
+                    std::cout << "Add stream proxy: "<< tuple.app << "/" << tuple.stream << " " << url << std::endl;
+                    addStreamProxy(tuple, url, 0, option, 0, 10.0, args, [](const SockException &ex, const string &key) {
+                        if (ex) {
+                            WarnL << "Add stream failed: " << ex.what();
+                        } else {
+                            InfoL << "Add stream success: " << key;
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    // todo: delCameraResource
+}
+
+// Server report statistics
+static Timer::Ptr g_report_timer;
+static bool report_first = true;
+static void reportServerStatistic() {
+    GET_CONFIG(bool, hook_enable, Hook::kEnable);
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
+    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+    if (!hook_enable || hook_server_report.empty() || hook_server_load.empty() || hook_api_url.empty()) {
+        return;
+    }
+    GET_CONFIG(float, report_interval, Hook::kReportInterval);
+
+    auto report_callback = []() {
+#if 0
+        ArgsType body;
+        do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
+            if (err.empty()) {
+                InfoL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
+                // Load server config succeeded
+                handleServerResourceJson(obj);
+
+                // EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
+                //     getServerStatisticJson([](const Value &data) mutable {
+                //         ArgsType body;
+                //         body["data"] = data;
+                //         // Execute hook
+                //         do_http_hook(hook_api_url + hook_server_report,  [](const Value &obj, const string &err) mutable {
+                //             if (err.empty()) {
+                //                 // Report server statistic succeeded
+                //                 InfoL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                //             } else {
+                //                 // Load server config failed
+                //                 WarnL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                //             }
+                //         });
+                //     });
+                //     return 0;
+                // });
+
+            } else {
+                // Load server config failed
+                WarnL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+            }
+        });
+#else
+        Json::Value data;
+        data["devices"] = Json::arrayValue;
+        Json::Value device;
+        device["device_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+        device["username"] = "admin";
+        device["password"] = "Haiphong2025";
+        device["manufacturer"] = "Hikivision";
+        device["model"] = "DS-2CD2347G1-L";
+        device["enable"] = true;
+        device["address"] = "27.72.173.71";
+        device["httpPort"] = 80;
+        device["mediaPort"] = 5555;
+        device["streams"] = Json::arrayValue;
+        Json::Value channel_1;
+        channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
+        channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
+        device["streams"].append(channel_1);
+        // Json::Value channel_2;
+        // channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+        // channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile4/media.smp";
+        // device["streams"].append(channel_2);
+
+        data["devices"].append(device);
+        handleServerResourceJson(data);
+
+#endif
+        if (report_first) {
+            report_first = false;
+            return false;
+        }
+        return true;
+    };
+
+    g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
+
+    EventPollerPool::Instance().getPoller()->doDelayTask(10000, report_callback);
 }
 
 static const string kEdgeServerParam = "edge=1";
@@ -604,6 +752,19 @@ void installWebHook() {
         // Execute hook
         do_http_hook(hook_record_mp4, getRecordInfo(info), nullptr);
     });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
+        WarnL << "Record mp4 file " << info.app << " " << info.start_time << " " << info.time_len << " " << info.url;
+
+        TimeBlock block;
+        block.set_app(info.app);
+        block.set_stream(info.stream);
+        block.set_start_time(info.start_time);
+        block.set_time_len(info.time_len);
+        block.set_file_path(info.file_path);
+        
+        TimeBlockWriter::Instance().addBlock(block);
+    });
 #endif // ENABLE_MP4
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordTs, [](BroadcastRecordTsArgs) {
@@ -750,14 +911,18 @@ void installWebHook() {
     });
 
     // Report server restart
-    reportServerStarted();
+    // reportServerStarted();
 
     // Report keep-alive regularly
-    reportServerKeepalive();
+    // reportServerKeepalive();
+
+    // Report server statistics
+    reportServerStatistic();
 }
 
 void unInstallWebHook() {
     g_keepalive_timer.reset();
+    g_report_timer.reset();
     NoticeCenter::Instance().delListener(&web_hook_tag);
 }
 

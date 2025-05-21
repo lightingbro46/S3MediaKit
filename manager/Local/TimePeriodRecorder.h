@@ -10,7 +10,7 @@
 #include "Network/Socket.h"
 #include "proto/timeblock.pb.h"
 
-namespace managerkit {
+namespace mediakit {
 
 struct BlockListIndexEntry {
     uint32_t file_index;
@@ -66,7 +66,7 @@ public:
 
 private:
     TimeBlockReader();
-
+    
     void loadIndex();
     void reloadIndex();
     std::string indexToFilename(uint32_t index);
@@ -79,6 +79,6 @@ private:
     int64_t _last_block_minute = -1;
 };
 
-} // namespace managerkit
+} // namespace mediakit
 
 #endif // S3MANAGER_TIMEPERIOD_H

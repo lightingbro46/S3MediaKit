@@ -71,8 +71,8 @@ case $model in
         ;;
 esac
 
-namespace="s3mediakit"
-packagename="s3mediakit"
+namespace="3spro"
+packagename="3spro-mserver"
 
 case $type in
 	'build')

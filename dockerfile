@@ -1,10 +1,10 @@
-FROM ubuntu:20.04 AS build
+FROM ubuntu:22.04 AS build
 ARG MODEL
 #shell,rtmp,rtsp,rtsps,http,https,rtp
 EXPOSE 1935/tcp
 EXPOSE 554/tcp
-EXPOSE 80/tcp
-EXPOSE 443/tcp
+EXPOSE 8080/tcp
+EXPOSE 8443/tcp
 EXPOSE 10000/udp
 EXPOSE 10000/tcp
 EXPOSE 8000/udp
@@ -27,6 +27,7 @@ RUN apt-get update && \
          libssl-dev \
          protobuf-compiler \
          libprotobuf-dev \
+         libsrtp2-dev \
          gcc \
          g++ \
          gdb && \
@@ -39,11 +40,11 @@ COPY . /opt/media/S3MediaKit
 WORKDIR /opt/media/S3MediaKit
 
 # 3rdpart init
-WORKDIR /opt/media/S3MediaKit/3rdpart
-RUN wget https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0.tar.gz && \
-    tar xfv libsrtp-2.3.0.tar.gz && \
-    mv libsrtp-2.3.0 libsrtp && \
-    cd libsrtp && ./configure --enable-openssl && make -j $(nproc) && make install
+# WORKDIR /opt/media/S3MediaKit/3rdpart
+# RUN wget https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0.tar.gz && \
+#     tar xfv libsrtp-2.3.0.tar.gz && \
+#     mv libsrtp-2.3.0 libsrtp && \
+#     cd libsrtp && ./configure --enable-openssl && make -j $(nproc) && make install
 #RUN git submodule update --init --recursive && \
 
 RUN mkdir -p build release/linux/${MODEL}/
@@ -65,7 +66,10 @@ RUN apt-get update && \
          ca-certificates \
          tzdata \
          curl \
-         ffmpeg \
+         libssl-dev \
+         libprotobuf-dev \
+         libsrtp2-dev \
+         ffmpeg && \
          apt-get autoremove -y && \
          apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*

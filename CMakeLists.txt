@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.16)
 
 # Load custom modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -34,7 +34,6 @@ option(ENABLE_WEBRTC "Enable WebRTC" ON)
 option(ENABLE_X264 "Enable x264" OFF)
 option(ENABLE_WEPOLL "Enable wepoll" ON)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
-option(ENABLE_MANAGER "Enable resource manager" ON)
 option(ENABLE_PLUGIN "Enable plugin manager" ON)
 option(DISABLE_REPORT "Disable report to report.s3mediakit.com" OFF)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
@@ -466,6 +465,8 @@ add_subdirectory(src)
 
 add_subdirectory(ext-codec)
 
+add_subdirectory(manager)
+
 if(ENABLE_SRT)
   add_subdirectory(srt)
 endif()
@@ -476,10 +477,6 @@ endif()
 
 if(ENABLE_API)
   add_subdirectory(api)
-endif()
-
-if(ENABLE_MANAGER)
-  add_subdirectory(manager)
 endif()
 
 if(ENABLE_PLUGIN)
@@ -522,10 +519,8 @@ if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/novideo.yuv" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 endif ()
 
-if (ENABLE_MANAGER) 
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
-endif()
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 
-# if (ENABLE_PLUGIN) 
-#   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/plugins" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
-# endif()
+if (ENABLE_PLUGIN) 
+  # file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/plugins" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+endif()

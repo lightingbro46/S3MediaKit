@@ -67,7 +67,6 @@ using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
-using namespace managerkit;
 
 namespace API {
 #define API_FIELD "api."
@@ -2165,7 +2164,6 @@ void installWebApi() {
     });
 #endif
 
-#ifdef ENABLE_MANAGER
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("cameraId");
@@ -2201,13 +2199,26 @@ void installWebApi() {
         // CHECK_TOKEN();
     });
 
+    api_regist("/media/esc/exportRecordedArchive", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
+    });
+
     api_regist("/media/mserver/discovery", [](API_ARGS_MAP_ASYNC) {
+        Value ver;
+        ver["buildTime"] = BUILD_TIME;
+        ver["branchName"] = BRANCH_NAME;
+        ver["commitHash"] = COMMIT_HASH;
+        val["data"] = ver;
+        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
 
     });
-#endif
+
+    api_regist("/media/mserver/getStatistic",[](API_ARGS_MAP_ASYNC){
+       
+    });
 }
 
 void unInstallWebApi(){
