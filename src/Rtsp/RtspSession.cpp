@@ -799,7 +799,22 @@ void RtspSession::handleReq_Play(const Parser &parser) {
         InfoP(this) << "rtsp set play speed:" << speed;
     }
 
-    if (!strRange.empty()) {
+    auto strParams = Parser::parseArgs(_media_info.params);
+    auto pos_stamp = static_cast<uint64_t>(atoll(strParams["pos"].data()));
+
+    if (pos_stamp > 0) {
+        Broadcast::SeekInvoker invoker = [&](int64_t offset) { 
+            auto iStartTime = 1000 * offset;
+            InfoP(this) << "rtsp seekTo(ms):" << iStartTime;
+            play_src->seekTo(iStartTime);
+        };
+        auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
+        if (!flag) {
+            // No one is listening to this event, do not seek by default
+        }
+    }
+    
+    if (pos_stamp == 0 && !strRange.empty()) {
         //This is a seek operation
         res_header.emplace("Range", strRange);
         auto strStart = findSubString(strRange.data(), "npt=", "-");

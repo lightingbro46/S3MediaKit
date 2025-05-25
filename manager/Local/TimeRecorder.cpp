@@ -2,101 +2,172 @@
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "Util/File.h"
-#include "TimePeriodRecorder.h"
+#include "TimeRecorder.h"
 
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
-//////////////////////////TimeBlockWriter///////////////////////////////
+static uint64_t getStartOfDay(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
 
-INSTANCE_IMP(TimeBlockWriter)
+    tm->tm_hour = 0;
+    tm->tm_min = 0;
+    tm->tm_sec = 0;
 
-TimeBlockWriter::TimeBlockWriter(size_t max_batch, size_t flush_threshold) 
-    : _max_batch(max_batch), _flush_threshold(flush_threshold) {
+    return static_cast<uint64_t>(std::mktime(tm));
+}
 
+static uint64_t getStartOfHour(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
+
+    tm->tm_min = 0;
+    tm->tm_sec = 0;
+
+    return static_cast<uint64_t>(std::mktime(tm));
+}
+
+static uint64_t getStartOfMinute(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
+
+    tm->tm_sec = 0;
+
+    return static_cast<uint64_t>(std::mktime(tm));
+}
+
+//////////////////////////////TimeRecorder//////////////////////////////////////
+
+INSTANCE_IMP(TimeRecorder)
+
+TimeRecorder::TimeRecorder(size_t max_batch, size_t flush_threshold) : _max_batch(max_batch), _flush_threshold(flush_threshold) {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
+
     GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
     GET_CONFIG(string, recordAppName, Record::kAppName);
-
     _output_dir = File::absolutePath(recordAppName, recordPath);
-    string meta_file_path = _output_dir + "/meta.idx";
-    _meta_stream.open(meta_file_path, std::ios::binary | std::ios::app);
-    if (!_meta_stream.is_open()) {
-        //todo: throw error
-        throw std::runtime_error("Cannot open meta.idx");
+    _file_index_map = getListDataIndex(_output_dir);
+    if (!_file_index_map.empty()) {
+        _current_file_index = *_file_index_map.rbegin();
     }
-
-    getCurrentIndex();
-
+    
     rolateFile();
 }
 
-TimeBlockWriter::~TimeBlockWriter() {
-    flush();
+TimeRecorder::~TimeRecorder() {
+    flush(false);
+
     if (_data_stream.is_open()) _data_stream.close();
     if (_meta_stream.is_open()) _meta_stream.close();
+
     google::protobuf::ShutdownProtobufLibrary();
 }
 
-void TimeBlockWriter::rolateFile() {
-    if (_data_stream.is_open()) {
-        _data_stream.close();
-    } 
+set<uint32_t> TimeRecorder::getListDataIndex(const string &dir_path) {
+    set<uint32_t> ret;
+    if (File::is_dir(dir_path)) {
+        File::scanDir(dir_path, [&](const string &path, bool is_dir) {
+            if (!is_dir && end_with(path, ".s3db")) {
+                auto index_str = findSubString(path.data(), "--", ".");
+                auto index = (uint32_t)(atof(index_str.data()));
+                ret.emplace(index);
+            }
+            return true;
+        });
+    }
+    return ret;
+}
+
+uint32_t TimeRecorder::getBlockListSize(const string &file_path) {
+    if (!File::fileExist(file_path)) {
+        return 0;
+    }
+
+    std::ifstream in(file_path, std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error("can not open file: " + file_path);
+    }   
+    
+    size_t ret = 0;
+    while (in.peek() != EOF) {
+        uint32_t size;
+        in.read(reinterpret_cast<char*>(&size), sizeof(size));
+        if (in.gcount() != sizeof(size)) break;
+
+        std::string buffer(size, '\0');
+        in.read(&buffer[0], size);
+        if (in.gcount() != size) break;
+
+        TimeBlockList list;
+        if (list.ParseFromString(buffer)) {
+            ret++;
+        }
+    }
+    in.close();
+    return ret;
+}
+
+std::string TimeRecorder::indexToDbFilePath(uint32_t index) {
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    string file_name = mediaServerId + "--" + to_string(index) + ".s3db";
+    return _output_dir + "/" + file_name;
+}
+
+std::string TimeRecorder::indexToMetaFilePath(uint32_t index) {
+    string file_name = "meta--" + to_string(index) + ".idx";
+    return _output_dir + "/" + file_name;
+}
+ 
+void TimeRecorder::rolateFile() {
+    if (_data_stream.is_open()) _data_stream.close();
+    if (_meta_stream.is_open()) _meta_stream.close();
+
     ++_current_file_index;
     _current_offset = 0;
+    _current_block_size = 0;
 
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
-    string next_filename = mediaServerId + "--" + to_string(_current_file_index) + ".s3db";
-    std::string data_file_path = _output_dir + "/" + next_filename;
-
-    _data_stream.open(data_file_path, std::ios::binary | std::ios::app);
+    string datafile_path = indexToDbFilePath(_current_file_index);
+    _data_stream.open(datafile_path, std::ios::binary | std::ios::app);
     if (!_data_stream.is_open()) {
-        //todo: throw error
-        throw std::runtime_error("Failed to open file: " + data_file_path);
+        throw std::runtime_error("can not open next data file: " + datafile_path);
     }
+
+    string metafile_path = indexToMetaFilePath(_current_file_index);
+    _meta_stream.open(metafile_path, std::ios::binary | std::ios::app);
+    if (!_data_stream.is_open()) {
+        throw std::runtime_error("can not open next meta file: " + metafile_path);
+    }
+
+    _file_index_map.emplace(_current_file_index);
 }
 
-void TimeBlockWriter::addBlock(TimeBlock& block) {
-    std::lock_guard<std::recursive_mutex> lock(_mtx_time);
-
-    int64_t block_minute = static_cast<int64_t>(block.start_time() / 60);
-    if (_current_minute == -1) {
-        _current_minute = block_minute;
+void TimeRecorder::flush(bool open_next_file) {
+    if (_pending_list.blocks_size() == 0) {
+        return;
     }
-
-    // Flush if current block is greater than old block
-    if (block_minute != _current_minute) {
-        flush();
-        _current_minute = block_minute;
-    }
-
-    *_pending_list.add_blocks() = block;
-
-    if (_pending_list.blocks_size() >= static_cast<int>(_max_batch)) {
-        flush();
-    }
-
-    //todo: flush when reach _flush_threshold
-}
-
-void TimeBlockWriter::flush() {
-    std::lock_guard<std::recursive_mutex> lock(_mtx_time);
-    if (_pending_list.blocks_size() == 0) return;
     _pending_list.set_created_at(_current_minute);
     writeList(_pending_list);
     _pending_list.Clear();
+
+    if (open_next_file && _current_block_size >= _flush_threshold) {
+        rolateFile();
+    }
 }
 
-void TimeBlockWriter::writeList(const TimeBlockList& list) {
-    if (list.blocks_size() == 0) return;
-    
+void TimeRecorder::writeList(const TimeBlockList& list) {
+    if (list.blocks_size() == 0) {
+        return;
+    }
+
     uint32_t size = list.ByteSizeLong();
     _data_stream.write(reinterpret_cast<const char*>(&size), sizeof(uint32_t));
+
     list.SerializeToOstream(&_data_stream);
     _data_stream.flush();
 
-    // Ghi chỉ mục
+    // write meta index
     BlockListIndexEntry entry;
     entry.file_index = _current_file_index;
     entry.start_time = _current_minute;
@@ -106,136 +177,102 @@ void TimeBlockWriter::writeList(const TimeBlockList& list) {
     _meta_stream.flush();
 
     _current_offset += sizeof(uint32_t) + size;
+    ++_current_block_size;
 }
 
-void TimeBlockWriter::getCurrentIndex() {
-    File::scanDir(_output_dir, [&](const string &path, bool isDir) -> bool {
-        if (!isDir && end_with(path, ".s3db")) {
-            auto strIndex = findSubString(path.data(), "--", ".");
-            auto index = (uint32_t)(atof(strIndex.data()));
-            if (index > _current_file_index) {
-                _current_file_index = index;
-            }
-        }
-        return true;
-    });
-}
+void TimeRecorder::addBlock(const TimeBlock &block) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
 
-//////////////////////////TimeBlockReader///////////////////////////////
-
-INSTANCE_IMP(TimeBlockReader);
-
-TimeBlockReader::TimeBlockReader() {
-    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
-    GET_CONFIG(string, recordAppName, Record::kAppName);
-
-    _output_dir = File::absolutePath(recordAppName, recordPath);
-}
-
-void TimeBlockReader::loadIndex() {
-    std::lock_guard<std::recursive_mutex> lock(_mtx_time);
-
-    _index.clear();
-    std::ifstream meta(_output_dir + "/meta.idx", std::ios::binary);
-    if (!meta.is_open()) {
-        //todo: throw error
-        throw std::runtime_error("Cannot open meta.idx");
+    int64_t block_minute = getStartOfMinute(block.start_time());
+    if (_current_minute == -1) {
+        _current_minute = block_minute;
     }
+
+    // Flush if current block is greater than old block
+    if (block_minute != _current_minute) {
+        flush(true);
+        _current_minute = block_minute;
+    }
+
+    *_pending_list.add_blocks() = block;
+
+    if (_pending_list.blocks_size() >= static_cast<int>(_max_batch)) {
+        flush(true);
+    }
+}
+
+vector<BlockListIndexEntry> TimeRecorder::readMetaList(uint32_t file_index) {
+    string metafile_path = indexToMetaFilePath(file_index);
+    std::ifstream meta(metafile_path, std::ios::binary);
+    if (!meta.is_open()) {
+        throw std::runtime_error("can not open meta file: " + metafile_path);
+    }
+    vector<BlockListIndexEntry> list;
 
     BlockListIndexEntry entry;
     while (meta.read(reinterpret_cast<char*>(&entry), sizeof(entry))) {
-        _index.push_back(entry);
+        list.push_back(entry);
     }
     meta.close();
-}
 
-void TimeBlockReader::reloadIndex() {
-    int64_t block_minute = static_cast<int64_t>(time(nullptr) / 60);
-    if (block_minute != _last_block_minute) {
-        loadIndex();
-        _last_block_minute = block_minute;
-    }
-}
-
-std::string TimeBlockReader::indexToFilename(uint32_t index) {
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
-    string file_name = mediaServerId + "--" + to_string(index) + ".s3db";
-    return _output_dir + "/" + file_name;
-}
-
-TimeBlockList TimeBlockReader::readList(uint32_t file_index, uint64_t offset) {
-    std::ifstream fin(indexToFilename(file_index), std::ios::binary);
-    if (!fin.is_open()) {
-        //todo: throw error
-        throw std::runtime_error("Cannot open data file " + indexToFilename(file_index));
-    }
-    fin.seekg(offset);
-
-    uint32_t size;
-    fin.read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
-
-    std::string buffer(size, '\0');
-    fin.read(&buffer[0], size);
-
-    TimeBlockList list;
-    list.ParseFromString(buffer);
     return list;
 }
 
-std::vector<TimeBlock> TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const string &camera_id) {
-    std::lock_guard<std::recursive_mutex> lock(_mtx_time);
+TimeBlockList TimeRecorder::readBlockList(uint32_t file_index, uint64_t offset) {
+    string datafile_path = indexToDbFilePath(file_index);
+    std::ifstream in(indexToDbFilePath(file_index), std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error("can not open data file: " + datafile_path);
+    }
+    in.seekg(offset);
 
-    reloadIndex();
+    uint32_t size;
+    in.read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
 
-    std::vector<TimeBlock> result;
+    std::string buffer(size, '\0');
+    in.read(&buffer[0], size);
 
-    for (const auto& entry : _index) {
-        if (entry.start_time > end_time) continue;
-        if (entry.start_time + 60 < start_time) continue;  // each list last 1 minute
+    TimeBlockList list;
+    list.ParseFromString(buffer);
 
-        auto list = readList(entry.file_index, entry.offset);
-        for (const auto& block : list.blocks()) {
-            if (block.start_time() >= start_time &&
-                block.start_time() <= end_time &&
-                block.app() == camera_id) {
-                result.push_back(block);
+    in.close();
+    return list;
+}
+
+void TimeRecorder::query(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::function<void(const TimeBlock &block)> &cb) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+
+    for (uint32_t idx : _file_index_map) {
+        auto meta_list = readMetaList(idx);
+        for (const auto& entry : meta_list) {
+            if (entry.start_time > end_time) continue;
+            if (entry.start_time + 60 < start_time) continue;  // each list last maximum one minute
+
+            auto list = readBlockList(entry.file_index, entry.offset);
+            for (const auto& block : list.blocks()) {
+                if (block.start_time() >= start_time &&
+                    block.start_time() <= end_time &&
+                    block.app() == camera_id) {
+                    cb(block);
+                }
             }
         }
     }
-
-    return result;
 }
 
-void TimeBlockReader::query(uint64_t start_time, uint64_t end_time, const string &camera_id, const function<void(const TimeBlock &block)> &cb) {
-    std::lock_guard<std::recursive_mutex> lock(_mtx_time);
+void TimeRecorder::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const std::string &camera_id, int period_type, int detail,
+    const std::function<void(const toolkit::SockException &ex, const Json::Value &data)> &cb) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
 
-    reloadIndex();
-    for (const auto& entry : _index) {
-        if (entry.start_time > end_time) continue;
-        if (entry.start_time + 60 < start_time) continue;  // each list last 1 minute
-
-        auto list = readList(entry.file_index, entry.offset);
-        for (const auto& block : list.blocks()) {
-            if (block.start_time() >= start_time &&
-                block.start_time() <= end_time &&
-                block.app() == camera_id) {
-                cb(block);
-            }
-        }
-    }
-}
-
-void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time, const string &camera_id, int period_type, int detail,
-    const function<void(const SockException &ex, const Json::Value &data)> &cb) {
     Json::Value result;
     result["camera_id"] = camera_id;
 
-    if (period_type == 1) {
-        struct TimeRange {
-            uint64_t startTime;
-            uint32_t duration;
-        };
+    struct TimeRange {
+        uint64_t startTime;
+        uint32_t duration;
+    };
 
+    if (period_type == 1) {
         if (detail == 0) {
             vector<TimeRange> _result;
 
@@ -322,11 +359,6 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
             }
 
         } else {
-            struct TimeRange {
-                uint64_t startTime;
-                uint32_t duration;
-            };
-
             unordered_map<string /*stream_id*/, unordered_map<string /*date*/, unordered_map<int, std::vector<TimeRange>>>> _result;
             
             query(start_time, end_time, camera_id, [&](const TimeBlock &block) mutable {
@@ -386,16 +418,51 @@ void TimeBlockReader::getRecordedTimePeriod(uint64_t start_time, uint64_t end_ti
             }
         }
     } else if (period_type == 0) {
-        auto blocks = query(start_time, end_time, camera_id);
+        vector<TimeBlock> blocks;
+        query(start_time, end_time, camera_id, [&blocks](const TimeBlock &block) { 
+            blocks.push_back(block); 
+        });
+
+        result["periods"] = Json::arrayValue; 
         for (auto const &p : blocks) {
             Json::Value json_period;
             json_period["cameraId"] = p.app();
             json_period["streamId"] = p.stream();
             json_period["startTime"] = p.start_time();
             json_period["timeLen"] = p.time_len();
-            result.append(json_period);
+            result["periods"].append(json_period);
         }
     }
 
     return cb(SockException(Err_success), result);
+}
+
+int64_t TimeRecorder::getOffsetOfDate(uint64_t pos_time, const std::string &camera_id, const std::string &stream_id) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+
+    int64_t ret = 0;
+
+    auto start_of_day = getStartOfDay(pos_time);
+    
+    for (uint32_t idx : _file_index_map) {
+        auto meta_list = readMetaList(idx);
+        for (const auto& entry : meta_list) {
+            if (entry.start_time > pos_time) break;
+            if (entry.start_time + 60 < start_of_day) continue;  // each list last maximum one minute
+
+            auto list = readBlockList(entry.file_index, entry.offset);
+            for (const auto& block : list.blocks()) {
+                if (block.app() == camera_id && block.stream() == stream_id) {
+                    if (block.start_time() < start_of_day && block.start_time() + block.time_len() > start_of_day) {
+                        ret += start_of_day - block.start_time() + block.time_len();
+                    } else if (block.start_time() >= start_of_day && block.start_time() + block.time_len() <= pos_time){
+                        ret += block.time_len();
+                    } else if (block.start_time() <= pos_time && block.start_time() + block.time_len() > pos_time) {
+                        ret += pos_time - block.start_time();
+                    }
+                }
+            }
+        }
+    }
+    return ret;
 }

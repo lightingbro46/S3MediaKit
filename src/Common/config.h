@@ -118,6 +118,11 @@ extern const std::string kBroadcastRtcSctpReceived;
 extern const std::string kBroadcastPlayerCountChanged;
 #define BroadcastPlayerCountChangedArgs const MediaTuple& args, const int& count
 
+using SeekInvoker = std::function <void(int64_t offset)>;
+// Broadcast for seeking rtsp/rtmp/http-flv events. Control playback seeking through this event.
+extern const std::string kBroadcastMediaSeeked;
+#define BroadcastMediaSeekedArgs const MediaInfo &args, const uint64_t &stamp, const Broadcast::SeekInvoker &invoker, SockInfo &sender
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

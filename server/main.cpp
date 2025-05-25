@@ -281,9 +281,11 @@ int start_main(int argc,char *argv[]) {
         auto &mediaServerId = mINI::Instance()[General::kMediaServerId];
         if (mediaServerId == "your_server_id" || mediaServerId.empty()) {
             // Starting with the default media server id is prohibited
-            mediaServerId = strToLower(getHardwareUUID());
-            if (mediaServerId == strToLower("Unavailable") || mediaServerId.empty()) {
-                mediaServerId = makeRandStr(32);
+            auto hardware_uuid = getHardwareUUID();
+            if (hardware_uuid == "Unavailable" || hardware_uuid.empty()) {
+                mediaServerId = format_guid(strToLower(makeRandStr(32)));
+            } else {
+                mediaServerId = format_guid(strToLower(hardware_uuid));
             }
             mINI::Instance().dumpFile(g_ini_file);
             WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << mediaServerId

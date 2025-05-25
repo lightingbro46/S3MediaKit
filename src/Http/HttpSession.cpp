@@ -322,8 +322,9 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_suffix
 
 // http-fmp4 link format: http://vhost-url:port/app/streamid.live.mp4?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
-    auto start_pts = atoll(_parser.getUrlArgs()["startPts"].data());
-    return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb, start_pts](const MediaSource::Ptr &src) {
+    auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
+    auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
+    return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
         if (!cb) {
@@ -338,10 +339,24 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
         setSocketFlags();
         onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-        auto params_args = _parser.getUrlArgs();
-        if (start_pts > 0) {
+
+        if (pos_stamp > 0) {
+            Broadcast::SeekInvoker invoker = [&](int64_t offset) {
+                auto iStartTime = 1000 * offset;
+                InfoP(this) << "http-mp4 seekTo(ms):" << iStartTime;
+                fmp4_src->seekTo(iStartTime);
+            };
+            auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
+            if (!flag) {
+                // No one is listening to this event, do not seek by default
+            }
+        }
+        
+        if (pos_stamp == 0 && start_pts > 0) {
+            InfoP(this) << "http-mp4 seekTo(ms):" << start_pts;
             fmp4_src->seekTo(start_pts);
         }
+
         fmp4_src->pause(false);
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
         _fmp4_reader->setGetInfoCB([weak_self]() {

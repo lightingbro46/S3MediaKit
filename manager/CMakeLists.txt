@@ -29,7 +29,6 @@ target_include_directories(protocpp
     "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>")
 
 ##############################################################################
-
 # manager
 file(GLOB MANAGER_SRC_LIST 
   ${CMAKE_CURRENT_SOURCE_DIR}/*/*.cpp 
@@ -46,6 +45,8 @@ target_link_libraries(s3managerkit
     S3MediaKit::ToolKit
     protocpp)
 
+target_compile_definitions(s3managerkit 
+  PUBLIC ${COMPILE_DEFINITIONS})
 target_compile_options(s3managerkit
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
   
@@ -54,6 +55,6 @@ target_include_directories(s3managerkit
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
-    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}/proto>")
+    "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>")
 
 update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ManagerKit)

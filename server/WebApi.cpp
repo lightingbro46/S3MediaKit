@@ -61,7 +61,7 @@
 #include "VideoStack.h"
 #endif
 
-#include "Local/TimePeriodRecorder.h"
+#include "Local/TimeRecorder.h"
 
 using namespace std;
 using namespace Json;
@@ -2182,7 +2182,7 @@ void installWebApi() {
             end_time = time(nullptr);
         }
 
-        TimeBlockReader::Instance().getRecordedTimePeriod(start_time, end_time, camera_id, period_type, detail,
+        TimeRecorder::Instance().getRecordedTimePeriod(start_time, end_time, camera_id, period_type, detail,
             [invoker, val, headerOut](const SockException &ex, const Json::Value &data) mutable {
                 if (ex) {
                     val["code"] = API::OtherFailed;

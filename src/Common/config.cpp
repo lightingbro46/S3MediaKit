@@ -55,6 +55,7 @@ const string kBroadcastRtcSctpClosed = "kBroadcastRtcSctpClosed";
 const string kBroadcastRtcSctpSend = "kBroadcastRtcSctpSend";
 const string kBroadcastRtcSctpReceived = "kBroadcastRtcSctpReceived";
 const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
+const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
 
 } // namespace Broadcast
 
@@ -133,7 +134,7 @@ static onceToken token([]() {
     mINI::Instance()[kPacedSenderMS] = 0;
     mINI::Instance()[kAutoClose] = 0;
 
-    mINI::Instance()[kEnableHls] = 0;
+    mINI::Instance()[kEnableHls] = 1;
     mINI::Instance()[kEnableHlsFmp4] = 0;
     mINI::Instance()[kEnableMP4] = 1;
     mINI::Instance()[kEnableRtsp] = 1;
