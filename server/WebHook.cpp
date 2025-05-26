@@ -1,5 +1,4 @@
 ﻿#include <sstream>
-#include <cmath>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
@@ -12,7 +11,6 @@
 #include "WebHook.h"
 #include "WebApi.h"
 #include "ManagerHook.h"
-#include "Local/TimeRecorder.h"
 
 using namespace std;
 using namespace Json;
@@ -753,27 +751,6 @@ void installWebHook() {
         // Execute hook
         do_http_hook(hook_record_mp4, getRecordInfo(info), nullptr);
     });
-
-    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
-        TraceL << "Record mp4 file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.url;
-
-        TimeBlock block;
-        block.set_app(info.app);
-        block.set_stream(info.stream);
-        block.set_start_time(info.start_time);
-        block.set_time_len(std::round(info.time_len));
-        block.set_file_size(info.file_size);
-        block.set_file_path(info.file_path);
-        
-        TimeRecorder::Instance().addBlock(block);
-    });
-
-    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
-        auto tuple = split(args.stream, "/");
-        int64_t offset = TimeRecorder::Instance().getOffsetOfDate(stamp, tuple[0], tuple[1]);
-        invoker(offset);
-    });
-
 #endif // ENABLE_MP4
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRecordTs, [](BroadcastRecordTsArgs) {

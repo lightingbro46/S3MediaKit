@@ -1,6 +1,9 @@
 #include <sstream>
+#include <cmath>
 #include "Common/config.h"
+#include "Common/MediaSource.h"
 #include "Common/Parser.h"
+#include "Record/Recorder.h"
 #include "Util/File.h"
 #include "TimeRecorder.h"
 
@@ -57,6 +60,8 @@ TimeRecorder::TimeRecorder(size_t max_batch, size_t flush_threshold) : _max_batc
 }
 
 TimeRecorder::~TimeRecorder() {
+    DebugL;
+
     flush(false);
 
     if (_data_stream.is_open()) _data_stream.close();
@@ -466,3 +471,31 @@ int64_t TimeRecorder::getOffsetOfDate(uint64_t pos_time, const std::string &came
     }
     return ret;
 }
+
+static void *time_recorder_tag = nullptr;
+
+static onceToken token([]() {
+#ifdef ENABLE_MP4
+NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
+        TraceL << "Record mp4 file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.url;
+        TimeBlock block;
+        block.set_app(info.app);
+        block.set_stream(info.stream);
+        block.set_start_time(info.start_time);
+        block.set_time_len(std::round(info.time_len));
+        block.set_file_size(info.file_size);
+        block.set_file_path(info.file_path);
+        
+        TimeRecorder::Instance().addBlock(block);
+    });
+
+    NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
+        auto tuple = split(args.stream, "/");
+        int64_t offset = TimeRecorder::Instance().getOffsetOfDate(stamp, tuple[0], tuple[1]);
+        invoker(offset);
+    });
+#endif // ENABLE_MP4
+
+}, []() {
+    NoticeCenter::Instance().delListener(&time_recorder_tag);
+});
