@@ -8,6 +8,7 @@
 #include "Common/Parser.h"
 #include "Common/MultiMediaSourceMuxer.h"
 #include "Record/MP4Reader.h"
+#include "Record/MKVReader.h"
 #include "PacketCache.h"
 
 using namespace std;
@@ -333,7 +334,7 @@ void MediaSource::for_each_media(const function<void(const Ptr &src)> &cb,
     }
 }
 
-static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4) {
+static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4, bool from_mkv) {
     string vhost = vhost_in;
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
     if(vhost.empty() || !enableVhost){
@@ -353,12 +354,18 @@ static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, con
         // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
         ret = MediaSource::createFromMP4(schema, vhost, app, id);
     }
+     if(!ret && from_mkv && schema != HLS_SCHEMA){
+        // If the media source is not found, read mkv to create one
+        // Playing hls does not trigger mkv on-demand (because HLS can also be used for recording, not purely live)
+        ret = MediaSource::createFromMKV(schema, vhost, app, id);
+    }
+
     return ret;
 }
 
 static void findAsync_l(const MediaInfo &info, const std::shared_ptr<Session> &session, bool retry,
                         const function<void(const MediaSource::Ptr &src)> &cb){
-    auto src = find_l(info.schema, info.vhost, info.app, info.stream, true);
+    auto src = find_l(info.schema, info.vhost, info.app, info.stream, true, true);
     if (src || !retry) {
         cb(src);
         return;
@@ -428,32 +435,32 @@ void MediaSource::findAsync(const MediaInfo &info, const std::shared_ptr<Session
     return findAsync_l(info, session, true, cb);
 }
 
-MediaSource::Ptr MediaSource::find(const string &schema, const string &vhost, const string &app, const string &id, bool from_mp4) {
-    return find_l(schema, vhost, app, id, from_mp4);
+MediaSource::Ptr MediaSource::find(const string &schema, const string &vhost, const string &app, const string &id, bool from_mp4, bool from_mkv) {
+    return find_l(schema, vhost, app, id, from_mp4, from_mkv);
 }
 
-MediaSource::Ptr MediaSource::find(const string &vhost, const string &app, const string &stream_id, bool from_mp4) {
-    auto src = MediaSource::find(RTMP_SCHEMA, vhost, app, stream_id, from_mp4);
+MediaSource::Ptr MediaSource::find(const string &vhost, const string &app, const string &stream_id, bool from_mp4, bool from_mkv) {
+    auto src = MediaSource::find(RTMP_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
     if (src) {
         return src;
     }
-    src = MediaSource::find(RTSP_SCHEMA, vhost, app, stream_id, from_mp4);
+    src = MediaSource::find(RTSP_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
     if (src) {
         return src;
     }
-    src = MediaSource::find(TS_SCHEMA, vhost, app, stream_id, from_mp4);
+    src = MediaSource::find(TS_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
     if (src) {
         return src;
     }
-    src = MediaSource::find(FMP4_SCHEMA, vhost, app, stream_id, from_mp4);
+    src = MediaSource::find(FMP4_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
     if (src) {
         return src;
     }
-    src = MediaSource::find(HLS_SCHEMA, vhost, app, stream_id, from_mp4);
+    src = MediaSource::find(HLS_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
     if (src) {
         return src;
     }
-    return MediaSource::find(HLS_FMP4_SCHEMA, vhost, app, stream_id, from_mp4);
+    return MediaSource::find(HLS_FMP4_SCHEMA, vhost, app, stream_id, from_mp4, from_mkv);
 }
 
 void MediaSource::emitEvent(bool regist){
@@ -598,6 +605,27 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
     WarnL << "Creating MP4 on demand failed. Please open the \"ENABLE_MP4\" option when compiling";
     return nullptr;
 #endif //ENABLE_MP4
+}
+
+MediaSource::Ptr MediaSource::createFromMKV(const string &schema, const string &vhost, const string &app, const string &stream, const string &file_path , bool check_app){
+    GET_CONFIG(string, appName, Record::kAppName);
+    if (check_app && app != appName) {
+        return nullptr;
+    }
+#ifdef ENABLE_MKV
+    try {
+        MediaTuple tuple = {vhost, app, stream, ""};
+        auto reader = std::make_shared<MKVReader>(tuple, file_path);
+        reader->startReadMKV();
+        return MediaSource::find(schema, vhost, app, stream);
+    } catch (std::exception &ex) {
+        WarnL << ex.what();
+        return nullptr;
+    }
+#else
+    WarnL << "Creating MKV on demand failed. Please open the \"ENABLE_MKV\" option when compiling";
+    return nullptr;
+#endif //ENABLE_MKV
 }
 
 /////////////////////////////////////MediaSourceEvent//////////////////////////////////////

@@ -12,6 +12,7 @@
 #include "Rtmp/RtmpMediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
+#include "WebM/WebMMediaSourceMuxer.h"
 
 namespace mediakit {
 
@@ -164,12 +165,14 @@ private:
     std::weak_ptr<Listener> _track_listener;
     std::unordered_multimap<std::string, RingType::RingReader::Ptr> _rtp_sender;
     FMP4MediaSourceMuxer::Ptr _fmp4;
+    WebMMediaSourceMuxer::Ptr _webm;
     RtmpMediaSourceMuxer::Ptr _rtmp;
     RtspMediaSourceMuxer::Ptr _rtsp;
     TSMediaSourceMuxer::Ptr _ts;
     MediaSinkInterface::Ptr _mp4;
     HlsRecorder::Ptr _hls;
     HlsFMP4Recorder::Ptr _hls_fmp4;
+    MediaSinkInterface::Ptr _mkv;
     toolkit::EventPoller::Ptr _poller;
     RingType::Ptr _ring;
 

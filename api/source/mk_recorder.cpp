@@ -2,6 +2,7 @@
 #include "Rtmp/FlvMuxer.h"
 #include "Record/Recorder.h"
 #include "Record/MP4Reader.h"
+#include "Record/MKVReader.h"
 
 using namespace std;
 using namespace toolkit;
@@ -28,7 +29,7 @@ API_EXPORT int API_CALL mk_flv_recorder_start(mk_flv_recorder ctx, const char *v
     }
 }
 
-// /////////////////////////////////////////hls/mp4 recording/////////////////////////////////////////////
+// /////////////////////////////////////////hls/mp4/mkv recording/////////////////////////////////////////////
 
 static inline bool isRecording(Recorder::type type, const string &vhost, const string &app, const string &stream_id){
     auto src = MediaSource::find(vhost, app, stream_id);
@@ -85,9 +86,10 @@ API_EXPORT void API_CALL mk_load_mp4_file2(const char *vhost, const char *app, c
     ProtocolOption option(*((mINI *)ini));
     // mp4 supports multiple tracks
     option.max_track = 16;
-    // By default, demultiplexing mp4 does not generate mp4
+    // By default, demultiplexing mp4 does not generate mp4, mkv
     option.enable_mp4 = false;
-    // But if the parameter explicitly specifies to enable mp4, then it is also allowed
+    option.enable_mkv = false;
+    // But if the parameter explicitly specifies to enable mp4, enable mkv then it is also allowed
 
     // Force automatic shutdown when no one is watching
     option.auto_close = true;
@@ -98,6 +100,34 @@ API_EXPORT void API_CALL mk_load_mp4_file2(const char *vhost, const char *app, c
     reader->startReadMP4(0, true, file_repeat);
 #else
     WarnL << "MP4-related features are disabled. Please enable the ENABLE_MP4 macro and recompile.";
+#endif
+}
+
+API_EXPORT void API_CALL mk_load_mkv_file(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat) {
+    mINI ini;
+    mk_load_mkv_file2(vhost, app, stream, file_path, file_repeat, (mk_ini)&ini);
+}
+
+API_EXPORT void API_CALL mk_load_mkv_file2(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat, mk_ini ini) {
+#if ENABLE_MKV
+    assert(vhost && app && stream && file_path && ini);
+    ProtocolOption option(*((mINI *)ini));
+    // mp4 supports multiple tracks
+    option.max_track = 16;
+    // By default, demultiplexing mkv does not generate mkv, mp4
+    option.enable_mkv = false;
+    option.enable_mp4 = false;
+    // But if the parameter explicitly specifies to enable mkv, enable mp4, then it is also allowed
+
+    // Force automatic shutdown when no one is watching
+    option.auto_close = true;
+    MediaTuple tuple = { vhost, app, stream, "" };
+    auto reader = std::make_shared<MKVReader>(tuple, file_path, option);
+    // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing,
+    // then force it to be enabled
+    reader->startReadMKV(0, true, file_repeat);
+#else
+    WarnL << "MKV-related features are disabled. Please enable the ENABLE_MKV macro and recompile.";
 #endif
 }
 

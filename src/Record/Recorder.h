@@ -42,6 +42,10 @@ public:
         type_fmp4 = 3,
         // ts live
         type_ts = 4,
+        // Record MKV
+        type_mkv = 5,
+        // WebM live
+        type_webm = 6,
     } type;
 
     /**

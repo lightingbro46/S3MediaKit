@@ -187,7 +187,7 @@ void TimeRecorder::writeList(const TimeBlockList& list) {
 
 void TimeRecorder::addBlock(const TimeBlock &block) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
-
+    //todo: async add block
     int64_t block_minute = getStartOfMinute(block.start_time());
     if (_current_minute == -1) {
         _current_minute = block_minute;
@@ -277,6 +277,7 @@ void TimeRecorder::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         uint32_t duration;
     };
 
+    //todo: async find
     if (period_type == 1) {
         if (detail == 0) {
             vector<TimeRange> _result;

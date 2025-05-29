@@ -224,6 +224,12 @@ bool HttpSession::checkWebSocket() {
         return true;
     }
 
+    // Determine whether it is websocket-webm
+    if (checkLiveStreamWebM(res_cb)) {
+        // This is a websocket-webm live request
+        return true;
+    }
+
     // This is a normal websocket connection
     if (!onWebSocketConnect(_parser)) {
         sendResponse(501, true, nullptr, headerOut);
@@ -385,6 +391,69 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
     });
 }
 
+// http-webm link format: http://vhost-url:port/app/streamid.live.webm?key1=value1&key2=value2
+bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
+    auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
+    auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
+    return checkLiveStream(WEBM_SCHEMA, ".live.webm", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
+        auto webm_src = dynamic_pointer_cast<WebMMediaSource>(src);
+        assert(webm_src);
+        if (!cb) {
+            // Found the source, send the http header, and send the load later
+            sendResponse(200, false, HttpFileManager::getContentType(".webm").data(), KeyValue(), nullptr, true);
+        } else {
+            // Custom send http header
+            cb();
+        }
+
+        // Live streaming sacrifices delay to improve sending performance
+        setSocketFlags();
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        if (pos_stamp > 0) {
+            Broadcast::SeekInvoker invoker = [&](int64_t offset) {
+                auto iStartTime = 1000 * offset;
+                InfoP(this) << "http-webm seekTo(ms):" << iStartTime;
+                webm_src->seekTo(iStartTime);
+            };
+            auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
+            if (!flag) {
+                // No one is listening to this event, do not seek by default
+            }
+        }
+        
+        if (pos_stamp == 0 && start_pts > 0) {
+            InfoP(this) << "http-webm seekTo(ms):" << start_pts;
+            webm_src->seekTo(start_pts);
+        }
+
+        webm_src->pause(false);
+        _webm_reader = webm_src->getRing()->attach(getPoller());
+        _webm_reader->setGetInfoCB([weak_self]() {
+            Any ret;
+            ret.set(static_pointer_cast<SockInfo>(weak_self.lock()));
+            return ret;
+        });
+        _webm_reader->setDetachCB([weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                // This object has been destroyed
+                return;
+            }
+            strong_self->shutdown(SockException(Err_shutdown, "webm ring buffer detached"));
+        });
+        _webm_reader->setReadCB([weak_self](const WebMMediaSource::RingDataType &webm_list) {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                // This object has been destroyed
+                return;
+            }
+            size_t i = 0;
+            auto size = webm_list->size();
+            webm_list->for_each([&](const WebMPacket::Ptr &ts) { strong_self->onWrite(ts, ++i == size); });
+        });
+    });
+}
+
 // http-ts link format: http://vhost-url:port/app/streamid.live.ts?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
     return checkLiveStream(TS_SCHEMA, ".live.ts", [this, cb](const MediaSource::Ptr &src) {
@@ -493,6 +562,11 @@ void HttpSession::onHttpRequest_GET() {
 
     if (checkLiveStreamFMP4()) {
         // Intercept http-fmp4 player
+        return;
+    }
+
+    if (checkLiveStreamWebM()) {
+        // Intercept http-webm player
         return;
     }
 

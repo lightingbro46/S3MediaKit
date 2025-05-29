@@ -81,6 +81,18 @@ API_EXPORT int API_CALL mk_recorder_stop(int type, const char *vhost, const char
 API_EXPORT void API_CALL mk_load_mp4_file(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat);
 API_EXPORT void API_CALL mk_load_mp4_file2(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat, mk_ini ini);
 
+/**
+ * Load mkv list
+ * @param vhost Virtual Host
+ * @param app Application name
+ * @param stream Stream id
+ * @param file_path File path
+ * @param file_repeat Cyclic demultiplexing
+ * @param ini Configuration
+ */
+API_EXPORT void API_CALL mk_load_mkv_file(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat);
+API_EXPORT void API_CALL mk_load_mkv_file2(const char *vhost, const char *app, const char *stream, const char *file_path, int file_repeat, mk_ini ini);
+
 #ifdef __cplusplus
 }
 #endif

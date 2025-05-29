@@ -57,6 +57,29 @@ if (ENABLE_MP4)
   endif ()
 endif ()
 
+# Add mkv libraries for MKV recording
+if (ENABLE_MKV)
+  # MOV
+  set(MediaServer_MKV_ROOT ${MediaServer_ROOT}/libmkv)
+  aux_source_directory(${MediaServer_MKV_ROOT}/include MKV_SRC_LIST)
+  aux_source_directory(${MediaServer_MKV_ROOT}/src MKV_SRC_LIST)
+  add_library(mkv STATIC ${MKV_SRC_LIST})
+  add_library(MediaServer::mkv ALIAS mkv)
+  target_compile_options(mkv PRIVATE ${COMPILE_OPTIONS_DEFAULT})
+  target_include_directories(mkv
+          PRIVATE
+          "$<BUILD_INTERFACE:${MediaServer_MKV_ROOT}/include>"
+          PUBLIC
+          "$<BUILD_INTERFACE:${MediaServer_MKV_ROOT}/include>")
+
+  update_cached_list(MK_LINK_LIBRARIES MediaServer::mkv)
+
+  if (ENABLE_MKV)
+    message(STATUS "ENABLE_MKV defined")
+    update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_MKV)
+  endif ()
+endif ()
+
 # Add mpeg to support ts generation
 if(ENABLE_RTPPROXY OR ENABLE_HLS)
   # mpeg

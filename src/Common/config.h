@@ -29,6 +29,10 @@ extern const std::string kBroadcastMediaChanged;
 extern const std::string kBroadcastRecordMP4;
 #define BroadcastRecordMP4Args const RecordInfo &info
 
+// Broadcast after recording mkv file successfully
+extern const std::string kBroadcastRecordMKV;
+#define BroadcastRecordMKVArgs const RecordInfo &info
+
 // Broadcast after recording ts file
 extern const std::string kBroadcastRecordTs;
 #define BroadcastRecordTsArgs const RecordInfo &info
@@ -236,6 +240,10 @@ extern const std::string kEnableRtmp;
 extern const std::string kEnableTS;
 // Whether to enable conversion to HTTP-FMP4/WS-FMP4
 extern const std::string kEnableFMP4;
+// Whether to enable MKV recording
+extern const std::string kEnableMKV;
+// Whether to enable conversion to HTTP-WebM/WS-WebM
+extern const std::string kEnableWebM;
 
 // Whether to treat MP4 recording as a viewer
 extern const std::string kMP4AsPlayer;
@@ -243,6 +251,13 @@ extern const std::string kMP4AsPlayer;
 extern const std::string kMP4MaxSecond;
 // MP4 recording save path
 extern const std::string kMP4SavePath;
+
+// Whether to treat MKV recording as a viewer
+extern const std::string kMKVAsPlayer;
+// MKV fragment size, unit is seconds
+extern const std::string kMKVMaxSecond;
+// MKV recording save path
+extern const std::string kMKVSavePath;
 
 // HLS recording save path
 extern const std::string kHlsSavePath;
@@ -253,6 +268,7 @@ extern const std::string kRtspDemand;
 extern const std::string kRtmpDemand;
 extern const std::string kTSDemand;
 extern const std::string kFMP4Demand;
+extern const std::string kWebMDemand;
 } // !Protocol
 
 // //////////HTTP configuration///////////
@@ -363,6 +379,8 @@ extern const std::string kFastStart;
 extern const std::string kFileRepeat;
 // Whether to use fmp4 format for MP4 recording files
 extern const std::string kEnableFmp4;
+// Whether to use webm dash format for MKV recording files
+extern const std::string kEnableWebM;
 } // namespace Record
 
 // //////////HLS related configuration///////////

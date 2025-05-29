@@ -206,6 +206,12 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
     if (option.enable_fmp4) {
         _fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(Recorder::createRecorder(Recorder::type_fmp4, _tuple, option));
     }
+    if (option.enable_mkv) {
+        _mkv = Recorder::createRecorder(Recorder::type_mkv, _tuple, option);
+    }
+    if (option.enable_webm) {
+        _webm = dynamic_pointer_cast<WebMMediaSourceMuxer>(Recorder::createRecorder(Recorder::type_webm, _tuple, option));
+    }
 
     // Audio related settings
     enableAudio(option.enable_audio);
@@ -249,6 +255,8 @@ int MultiMediaSourceMuxer::totalReaderCount() const {
            (_mp4 ? _option.mp4_as_player : 0) +
            (_hls ? _hls->readerCount() : 0) +
            (_hls_fmp4 ? _hls_fmp4->readerCount() : 0) +
+           (_mkv ? _option.mkv_as_player : 0) +
+           (_webm ? _webm->readerCount() : 0) +
            (_ring ? _ring->readerCount() : 0);
 }
 
@@ -280,6 +288,10 @@ bool MultiMediaSourceMuxer::setupRecord(MediaSource &sender, Recorder::type type
     onceToken token(nullptr, [&]() {
         if (_option.mp4_as_player && type == Recorder::type_mp4) {
             // Turn on/off mp4 recording, trigger events related to changes in the number of viewers
+            onReaderChanged(sender, totalReaderCount());
+        }
+        if (_option.mkv_as_player && type == Recorder::type_mkv) {
+            // Turn on/off mkv recording, trigger events related to changes in the number of viewers
             onReaderChanged(sender, totalReaderCount());
         }
     });
@@ -352,6 +364,30 @@ bool MultiMediaSourceMuxer::setupRecord(MediaSource &sender, Recorder::type type
             }
             return true;
         }
+        case Recorder::type_mkv : {
+            if (start && !_mkv) {
+                // Start recording
+                _option.mkv_save_path = custom_path;
+                _option.mkv_max_second = max_second;
+                _mkv = makeRecorder(sender, type);
+            } else if (!start && _mkv) {
+                // Stop recording
+                _mkv = nullptr;
+            }
+            return true;
+        }
+        case Recorder::type_webm: {
+            if (start && !_webm) {
+                auto webm = dynamic_pointer_cast<WebMMediaSourceMuxer>(makeRecorder(sender, type));
+                if (webm) {
+                    webm->setListener(shared_from_this());
+                }
+                _webm = webm;
+            } else if (!start && _webm) {
+                _webm = nullptr;
+            }
+            return true;
+        }
         default : return false;
     }
 }
@@ -364,6 +400,8 @@ bool MultiMediaSourceMuxer::isRecording(MediaSource &sender, Recorder::type type
         case Recorder::type_hls_fmp4: return !!_hls_fmp4;
         case Recorder::type_fmp4: return !!_fmp4;
         case Recorder::type_ts: return !!_ts;
+        case Recorder::type_mkv: return !!_mkv;
+        case Recorder::type_webm: return !!_webm;
         default: return false;
     }
 }
@@ -495,6 +533,12 @@ bool MultiMediaSourceMuxer::onTrackReady(const Track::Ptr &track) {
     if (_mp4) {
         ret = _mp4->addTrack(track) ? true : ret;
     }
+    if (_mkv) {
+        ret = _mkv->addTrack(track) ? true : ret;
+    }
+    if (_webm) {
+        ret = _webm->addTrack(track) ? true : ret;
+    }
     return ret;
 }
 
@@ -532,6 +576,12 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     }
     if (_hls_fmp4) {
         _hls_fmp4->addTrackCompleted();
+    }
+     if (_mkv) {
+        _mkv->addTrackCompleted();
+    }
+    if (_webm) {
+        _webm->addTrackCompleted();
     }
 
     auto listener = _track_listener.lock();
@@ -597,6 +647,12 @@ void MultiMediaSourceMuxer::resetTracks() {
     if (_mp4) {
         _mp4->resetTracks();
     }
+    if (_mkv) {
+        _mkv->resetTracks();
+    }
+    if (_webm) {
+        _webm->resetTracks();
+    }
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
@@ -635,6 +691,14 @@ bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
     if (_fmp4) {
         ret = _fmp4->inputFrame(frame) ? true : ret;
     }
+
+    if (_mkv) {
+        ret = _mkv->inputFrame(frame) ? true : ret;
+    }
+    if (_webm) {
+        ret = _webm->inputFrame(frame) ? true : ret;
+    }
+
     if (_ring) {
         // In this scenario, due to direct forwarding, there may be data cached in the pipeline due to thread switching, so CacheAbleFrame is needed
         frame = Frame::getCacheAbleFrame(frame);
@@ -665,7 +729,8 @@ bool MultiMediaSourceMuxer::isEnabled(){
                      (_ring ? (bool)_ring->readerCount() : false)  ||
                      (_hls ? _hls->isEnabled() : false) ||
                      (_hls_fmp4 ? _hls_fmp4->isEnabled() : false) ||
-                     _mp4;
+                     (_webm ? _webm->isEnabled() : false) ||
+                     _mp4 || _mkv;
 
         if (_is_enable) {
             // When no one is watching, do not refresh the timer, because each time no one is watching, it will be checked, so refreshing the counter is meaningless and wastes cpu

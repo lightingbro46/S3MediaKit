@@ -10,6 +10,7 @@
 #include "HttpFileManager.h"
 #include "TS/TSMediaSource.h"
 #include "FMP4/FMP4MediaSource.h"
+#include "WebM/WebMMediaSource.h"
 
 namespace mediakit {
 
@@ -101,6 +102,7 @@ private:
     bool checkLiveStreamFlv(const std::function<void()> &cb = nullptr);
     bool checkLiveStreamTS(const std::function<void()> &cb = nullptr);
     bool checkLiveStreamFMP4(const std::function<void()> &fmp4_list = nullptr);
+    bool checkLiveStreamWebM(const std::function<void()> &webm_list = nullptr);
 
     bool checkWebSocket();
     bool emitHttpEvent(bool doInvoke);
@@ -132,6 +134,7 @@ private:
     toolkit::Ticker _ticker;
     TSMediaSource::RingType::RingReader::Ptr _ts_reader;
     FMP4MediaSource::RingType::RingReader::Ptr _fmp4_reader;
+    WebMMediaSource::RingType::RingReader::Ptr _webm_reader;
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;
 };

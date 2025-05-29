@@ -1,4 +1,4 @@
-﻿#ifdef ENABLE_MP4
+﻿#ifdef ENABLE_MKV
 #include <signal.h>
 #include <atomic>
 #include <iostream>
@@ -11,7 +11,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Pusher/MediaPusher.h"
 #include "Player/PlayerProxy.h"
-#include "Record/MP4Reader.h"
+#include "Record/MKVReader.h"
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
@@ -141,14 +141,14 @@ int main(int argc, char *argv[]) {
     PlayerProxy::Ptr proxy = nullptr;;
 
     auto tuple = MediaTuple { DEFAULT_VHOST, app, stream, "" };
-    if (end_with(in_url, ".mp4")) {
-        // create MediaSource from mp4file
-        auto reader = std::make_shared<MP4Reader>(tuple, in_url);
-        //mp4 repeat
-        reader->startReadMP4(0, true, true);
+    if (end_with(in_url, ".mkv")) {
+        // create MediaSource from mkvfile
+        auto reader = std::make_shared<MKVReader>(tuple, in_url);
+        //mkv repeat
+        reader->startReadMKV(0, true, true);
         src = MediaSource::find(schema, DEFAULT_VHOST, app, stream, false);
         if (!src) {
-            // mp4 file does not exist
+            // mkv file does not exist
             WarnL << "no such file or directory: " << in_url;
             return -1;
         }

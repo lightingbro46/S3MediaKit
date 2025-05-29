@@ -1,0 +1,63 @@
+﻿#ifndef MKVMAKER_H_
+#define MKVMAKER_H_
+
+#include <mutex>
+#include <memory>
+#include "Common/MediaSink.h"
+#include "Record/Recorder.h"
+#include "MKVMuxer.h"
+
+namespace mediakit {
+
+#ifdef ENABLE_MKV
+
+class MKVRecorder final : public MediaSinkInterface {
+public:
+    using Ptr = std::shared_ptr<MKVRecorder>;
+
+    MKVRecorder(const MediaTuple &tuple, const std::string &path, size_t max_second);
+    ~MKVRecorder() override;
+
+    /**
+     * Reset all Tracks
+     */
+    void resetTracks() override;
+
+    /**
+     * Input frame
+     */
+    bool inputFrame(const Frame::Ptr &frame) override;
+
+    /**
+     * Refresh output all frame cache
+     */
+    void flush() override;
+
+    /**
+     * Add ready state track
+     */
+    bool addTrack(const Track::Ptr & track) override;
+
+private:
+    void createFile();
+    void closeFile();
+    void asyncClose();
+
+private:
+    bool _have_video = false;
+    size_t _max_second;
+    uint64_t _last_dts = 0;
+    uint64_t _file_index = 0;
+    std::string _folder_path;
+    std::string _full_path;
+    std::string _full_path_tmp;
+    RecordInfo _info;
+    MKVMuxer::Ptr _muxer;
+    std::list<Track::Ptr> _tracks;
+};
+
+#endif ///ENABLE_MKV
+
+} // namespace mediakit
+
+#endif // MKVMAKER_H_
