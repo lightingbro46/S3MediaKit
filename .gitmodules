@@ -11,6 +11,3 @@
 [submodule "www/webassist"]
 	path = www/webassist
 	url = https://github.com/lightingbro46/s3m_webassist.git
-[submodule "3rdpart/jwtcpp"]
-	path = 3rdpart/jwtcpp
-	url = https://github.com/Thalhammer/jwt-cpp.git
