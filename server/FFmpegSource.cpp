@@ -6,6 +6,7 @@
 #include "System.h"
 #include "Thread/WorkThreadPool.h"
 #include "Network/sockutil.h"
+#include "Local/TimeRecorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -17,6 +18,7 @@ const string kBin = FFmpeg_FIELD"bin";
 const string kCmd = FFmpeg_FIELD"cmd";
 const string kLog = FFmpeg_FIELD"log";
 const string kSnap = FFmpeg_FIELD"snap";
+const string kExtract = FFmpeg_FIELD"extract";
 const string kRestartSec = FFmpeg_FIELD"restart_sec";
 
 onceToken token([]() {
@@ -31,6 +33,7 @@ onceToken token([]() {
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
     mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s";
+    mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata author=%s -metadata comment=%s -metadata date=%s -metadata encoder=%s -c copy %s";
     mINI::Instance()[kRestartSec] = 0;
 });
 }
@@ -388,4 +391,159 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
         bool success = process->exit_code() == 0 && File::fileSize(save_path);
         cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "");
     });
+}
+
+FFmpegExtractor::FFmpegExtractor() {
+    _poller = EventPollerPool::Instance().getPoller();
+}
+
+FFmpegExtractor::~FFmpegExtractor() {
+    DebugL;
+}
+
+void FFmpegExtractor::setTuple(const ExtractTuple &tuple) {
+    _tuple = tuple;
+}
+
+static bool createSrcFile(std::string &file_path, std::string &camera_id, std::string &stream_id, uint64_t start_time, uint64_t end_time) {
+    auto file = std::shared_ptr<FILE>(File::create_file(file_path, "wb"), [](FILE *fp) {
+        if (fp) {
+            fflush(fp);
+            fclose(fp);
+        }
+    });
+    if (!file) {
+        ErrorL << "Failed to open the file:" << file_path;
+        return false;
+    }
+    bool has_data = false;
+    TimeRecorder::Instance().getRecordedFootage(start_time, end_time, camera_id, stream_id, [&](const vector<TimeBlock> &blocks) mutable {
+        if (blocks.empty()) {
+            return;
+        }
+        for (const auto &block : blocks) {
+            auto line = "file '" + block.file_path() + "'\n";
+            fwrite(line.c_str(), line.size(), 1, file.get());
+        }
+        has_data = true;
+    });
+    if (!has_data) {
+        ErrorL << "Have no data in time period";
+    }
+    return has_data ? true : false;
+}
+
+void FFmpegExtractor::makeExtract(const string &key, const string &root_path, int timeout_ms, const onExtract &cb) {
+    GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
+    GET_CONFIG(string, ffmpeg_extract, FFmpeg::kExtract);
+    GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+
+    _src_path = root_path + "/" + key + ".txt";
+    _save_path = root_path + "/" + key + ".mp4";
+
+    if (!createSrcFile(_src_path, _tuple.camera_id, _tuple.stream_id, _tuple.start_time, _tuple.end_time)) {
+        //error
+        cb(SockException(Err_other));
+        return;
+    }
+
+    char cmd[2048] = { 0 };
+    snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), _src_path.data(), _save_path.data());
+    _log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
+    _process.run(cmd, _log_file);
+    _cmd = cmd;
+    InfoL << cmd;
+
+    // judge whether it is successful by judging whether the FFmpeg process is online
+    weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
+    _timer = std::make_shared<Timer>(timeout_ms / 1000.0f, [weakSelf, cb, timeout_ms]() {
+        auto strongSelf = weakSelf.lock();
+        if (!strongSelf) {
+            // Self has been destroyed
+            return false;
+        }
+        // FFmpeg is still online, so we think the extract stream is successful
+        if (strongSelf->_process.wait(false)) {
+            cb(SockException());
+            strongSelf->startTimer(strongSelf->_tuple.end_time - strongSelf->_tuple.start_time);
+            return false;
+        }
+        // ffmpeg process has exited
+        strongSelf->_finished = true;
+        strongSelf->_progress = 1.0;
+        strongSelf->_success = strongSelf->_process.exit_code() == 0;
+        if (strongSelf->_success) {
+            cb(SockException());
+        } else {
+            cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));            
+        }
+        // close after process exited
+        EventPollerPool::Instance().getPoller()->doDelayTask((uint64_t)(30 * 1000), [weakSelf]() {
+            auto strongSelf = weakSelf.lock();
+            if (!strongSelf) {
+                // Self has been destroyed
+                return 0;
+            }
+            strongSelf->close();
+            return 0;
+        });
+        return false;
+    }, _poller);
+}
+
+/**
+ * Check if the media is online regularly
+ */
+void FFmpegExtractor::startTimer(int timeout_ms) {
+    weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
+    _timer = std::make_shared<Timer>(1.0f, [weakSelf, timeout_ms]() {
+        auto strongSelf = weakSelf.lock();
+        if (!strongSelf) {
+            // Self has been destroyed
+            return false;
+        }
+        // we judge whether the FFmpeg process is online, if FFmpeg push stream is interrupted, then it should exit automatically
+        if (strongSelf->_process.wait(false)) {
+            // The FFmpeg process is still running, close it if it times out
+            auto elapsed_ms = strongSelf->_ticker.elapsedTime();
+            if (strongSelf->_timeout_ms > 0 && elapsed_ms > strongSelf->_timeout_ms) {
+                strongSelf->_finished = true;
+            } else {
+                // check progress bar
+                // todo:
+            }
+        } else {
+            // ffmpeg is not online, check output file and set status
+            bool success = strongSelf->_process.exit_code() == 0 && File::fileSize(strongSelf->_save_path);
+            strongSelf->_progress = success ? 1.0 : strongSelf->_progress;
+            strongSelf->_success = success;
+            strongSelf->_err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
+            strongSelf->_finished = true;
+        }
+        if (strongSelf->_finished) {
+            // close after 5 minutes
+            EventPollerPool::Instance().getPoller()->doDelayTask((uint64_t)(300 * 1000), [weakSelf]() {
+                auto strongSelf = weakSelf.lock();
+                if (!strongSelf) {
+                    // Self has been destroyed
+                    return 0;
+                }
+                strongSelf->close();
+                return 0;
+            });
+            return false;
+        }
+        return true;
+    }, _poller);
+}
+
+void FFmpegExtractor::setOnClose(const function<void()> &cb){
+    _onClose = cb;
+}
+
+bool FFmpegExtractor::close() {
+    if (_onClose) {
+        _onClose();
+    }
+    return true;
 }

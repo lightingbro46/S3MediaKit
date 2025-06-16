@@ -3,7 +3,7 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Common/Parser.h"
-#include "Record/Recorder.h"
+#include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
 #include "TimeRecorder.h"
 
@@ -45,44 +45,46 @@ static uint64_t getStartOfMinute(uint64_t seconds) {
 
 INSTANCE_IMP(TimeRecorder)
 
-TimeRecorder::TimeRecorder(size_t max_batch, size_t flush_threshold) : _max_batch(max_batch), _flush_threshold(flush_threshold) {
+TimeRecorder::TimeRecorder(const std::string &file_path, size_t max_batch, size_t flush_threshold, toolkit::EventPoller::Ptr poller) : _file_path(file_path), _max_batch(max_batch), _flush_threshold(flush_threshold) {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
-
-    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
-    GET_CONFIG(string, recordAppName, Record::kAppName);
-    _output_dir = File::absolutePath(recordAppName, recordPath);
-    _file_index_map = getListDataIndex(_output_dir);
-    if (!_file_index_map.empty()) {
-        _current_file_index = *_file_index_map.rbegin();
+    // It is recommended to read and write files in the background thread
+    _poller = poller ? std::move(poller) : WorkThreadPool::Instance().getPoller();
+    if (_file_path.empty()) {
+        GET_CONFIG(string, recordPath, Protocol::kTimeSavePath);
+        GET_CONFIG(string, recordAppName, Record::kAppName);
+        _file_path = File::absolutePath(recordAppName, recordPath);
     }
-    
-    rolateFile();
+    if (!open(_file_path)) {
+        throw std::runtime_error("can not open time folder: " + _file_path);
+    }
 }
 
 TimeRecorder::~TimeRecorder() {
-    DebugL;
-
     flush(false);
-
     if (_data_stream.is_open()) _data_stream.close();
     if (_meta_stream.is_open()) _meta_stream.close();
 
     google::protobuf::ShutdownProtobufLibrary();
+    DebugL;
 }
 
-set<uint32_t> TimeRecorder::getListDataIndex(const string &dir_path) {
-    set<uint32_t> ret;
+bool TimeRecorder::open(const string &dir_path) {
     if (File::is_dir(dir_path)) {
         File::scanDir(dir_path, [&](const string &path, bool is_dir) {
             if (!is_dir && end_with(path, ".s3db")) {
                 auto index_str = findSubString(path.data(), "--", ".");
                 auto index = (uint32_t)(atof(index_str.data()));
-                ret.emplace(index);
+                _file_index_map.emplace(index);
             }
             return true;
         });
+        if (!_file_index_map.empty()) {
+            _current_file_index = *_file_index_map.rbegin();
+            _current_block_size = getBlockListSize(indexToDbFilePath(_current_file_index));
+        }
+        return true;
     }
-    return ret;
+    return false;
 }
 
 uint32_t TimeRecorder::getBlockListSize(const string &file_path) {
@@ -117,12 +119,12 @@ uint32_t TimeRecorder::getBlockListSize(const string &file_path) {
 std::string TimeRecorder::indexToDbFilePath(uint32_t index) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     string file_name = mediaServerId + "--" + to_string(index) + ".s3db";
-    return _output_dir + "/" + file_name;
+    return _file_path + "/" + file_name;
 }
 
 std::string TimeRecorder::indexToMetaFilePath(uint32_t index) {
     string file_name = "meta--" + to_string(index) + ".idx";
-    return _output_dir + "/" + file_name;
+    return _file_path + "/" + file_name;
 }
  
 void TimeRecorder::rolateFile() {
@@ -186,24 +188,25 @@ void TimeRecorder::writeList(const TimeBlockList& list) {
 }
 
 void TimeRecorder::addBlock(const TimeBlock &block) {
-    std::lock_guard<std::recursive_mutex> lock(_mutex);
-    //todo: async add block
-    int64_t block_minute = getStartOfMinute(block.start_time());
-    if (_current_minute == -1) {
-        _current_minute = block_minute;
-    }
+    _poller->async([&]() {
+        std::lock_guard<std::recursive_mutex> lock(_mutex);
+        int64_t block_minute = getStartOfMinute(block.start_time());
+        if (_current_minute == -1) {
+            _current_minute = block_minute;
+        }
 
-    // Flush if current block is greater than old block
-    if (block_minute != _current_minute) {
-        flush(true);
-        _current_minute = block_minute;
-    }
+        // Flush if current block is greater than old block
+        if (block_minute != _current_minute) {
+            flush(true);
+            _current_minute = block_minute;
+        }
 
-    *_pending_list.add_blocks() = block;
+        *_pending_list.add_blocks() = block;
 
-    if (_pending_list.blocks_size() >= static_cast<int>(_max_batch)) {
-        flush(true);
-    }
+        if (_pending_list.blocks_size() >= static_cast<int>(_max_batch)) {
+            flush(true);
+        }
+    });
 }
 
 vector<BlockListIndexEntry> TimeRecorder::readMetaList(uint32_t file_index) {
@@ -258,6 +261,28 @@ void TimeRecorder::query(uint64_t start_time, uint64_t end_time, const std::stri
                 if (block.start_time() >= start_time &&
                     block.start_time() <= end_time &&
                     block.app() == camera_id) {
+                    cb(block);
+                }
+            }
+        }
+    }
+}
+
+void TimeRecorder::query(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::string &stream_id, const std::function<void(const TimeBlock &block)> &cb) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+
+    for (uint32_t idx : _file_index_map) {
+        auto meta_list = readMetaList(idx);
+        for (const auto& entry : meta_list) {
+            if (entry.start_time > end_time) continue;
+            if (entry.start_time + 60 < start_time) continue;  // each list last maximum one minute
+
+            auto list = readBlockList(entry.file_index, entry.offset);
+            for (const auto& block : list.blocks()) {
+                if (block.start_time() >= start_time &&
+                    block.start_time() <= end_time &&
+                    block.app() == camera_id &&
+                    block.stream() == stream_id) {
                     cb(block);
                 }
             }
@@ -473,30 +498,59 @@ int64_t TimeRecorder::getOffsetOfDate(uint64_t pos_time, const std::string &came
     return ret;
 }
 
+void TimeRecorder::getRecordedFootage(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::string &stream_id,
+    const std::function<void(const std::vector<TimeBlock>)> &cb) {
+    std::vector<TimeBlock> blocks;
+    query(start_time, end_time, camera_id, stream_id, [&blocks](const TimeBlock &block) {
+        blocks.push_back(block); 
+    });
+    cb(blocks);
+}
+
 static void *time_recorder_tag = nullptr;
 
-static onceToken token([]() {
+static onceToken token(
+    []() {
 #ifdef ENABLE_MP4
-NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
-        TraceL << "Record mp4 file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.url;
-        TimeBlock block;
-        block.set_app(info.app);
-        block.set_stream(info.stream);
-        block.set_start_time(info.start_time);
-        block.set_time_len(std::round(info.time_len));
-        block.set_file_size(info.file_size);
-        block.set_file_path(info.file_path);
-        
-        TimeRecorder::Instance().addBlock(block);
-    });
+        NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
+            TraceL << "Record mp4 file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.file_path;
+            TimeBlock block;
+            block.set_app(info.app);
+            block.set_stream(info.stream);
+            block.set_start_time(info.start_time);
+            block.set_time_len(std::round(info.time_len));
+            block.set_file_size(info.file_size);
+            block.set_file_path(info.file_path);
 
-    NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
-        auto tuple = split(args.stream, "/");
-        int64_t offset = TimeRecorder::Instance().getOffsetOfDate(stamp, tuple[0], tuple[1]);
-        invoker(offset);
-    });
+            TimeRecorder::Instance().addBlock(block);
+        });
+
+        NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
+            auto tuple = split(args.stream, "/");
+            int64_t offset = TimeRecorder::Instance().getOffsetOfDate(stamp, tuple[0], tuple[1]);
+            invoker(offset);
+        });
 #endif // ENABLE_MP4
 
-}, []() {
-    NoticeCenter::Instance().delListener(&time_recorder_tag);
-});
+#ifdef ENABLE_MKV
+        NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastRecordMKV, [](BroadcastRecordMKVArgs) {
+            TraceL << "Record mkv file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.file_path;
+            TimeBlock block;
+            block.set_app(info.app);
+            block.set_stream(info.stream);
+            block.set_start_time(info.start_time);
+            block.set_time_len(std::round(info.time_len));
+            block.set_file_size(info.file_size);
+            block.set_file_path(info.file_path);
+
+            TimeRecorder::Instance().addBlock(block);
+        });
+
+        NoticeCenter::Instance().addListener(&time_recorder_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
+            auto tuple = split(args.stream, "/");
+            int64_t offset = TimeRecorder::Instance().getOffsetOfDate(stamp, tuple[0], tuple[1]);
+            invoker(offset);
+        });
+#endif // ENABLE_MKV
+    },
+    []() { NoticeCenter::Instance().delListener(&time_recorder_tag); });

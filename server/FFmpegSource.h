@@ -11,6 +11,7 @@
 namespace FFmpeg {
     extern const std::string kSnap;
     extern const std::string kBin;
+    extern const std::string kExtract;
 }
 
 class FFmpegSnap {
@@ -18,7 +19,7 @@ public:
     using onSnap = std::function<void(bool success, const std::string &err_msg)>;
     /**
      * Create a screenshot
-     * @param async Whether to use asynchronous screenshot method (not the ffmpeg command line, but use the zlm API, but only the stream pull protocol supported by the zlm player)
+     * @param async Whether to use asynchronous screenshot method (not the ffmpeg command line, but use the s3m API, but only the stream pull protocol supported by the s3m player)
      * @param play_url The playback URL address, as long as FFmpeg supports it
      * @param save_path The path to save the screenshot JPEG file
      * @param timeout_sec Timeout for generating the screenshot (to prevent blocking for too long)
@@ -95,5 +96,66 @@ private:
     toolkit::Ticker _replay_ticker;
 };
 
+class FFmpegExtractor : public std::enable_shared_from_this<FFmpegExtractor> {
+public:
+    using Ptr = std::shared_ptr<FFmpegExtractor>;
+    using onExtract = std::function<void(const toolkit::SockException &ex)>;
+    
+    FFmpegExtractor();
+    ~FFmpegExtractor();
+
+    struct ExtractTuple {
+        std::string camera_id;
+        std::string stream_id;
+        uint64_t start_time;
+        uint64_t end_time;
+        std::string filename;
+        std::string description;
+        std::string user_id;
+        std::string username;
+        uint64_t create_at;
+    };
+    void setTuple(const ExtractTuple &tuple);
+
+    /**
+     * Set the active close callback
+     */
+    void setOnClose(const std::function<void()> &cb);
+
+    void makeExtract(const std::string &key, const std::string &download_path, int timeout_ms, const onExtract &cb);
+
+    const std::string& getFilename() const { return _tuple.filename; }
+    const std::string& getSavePath() const { return _save_path; }
+    const std::string& getCmd() const { return _cmd; }
+    const float& progress() const { return _progress; }
+    const bool& finished() const { return _finished; }
+    const bool& success() const { return _success; }
+    const std::string& errMsg() const { return _err_msg; }
+
+private:
+    // create txt file include mp4 list
+    void create_src_path(std::string &src_path);
+    // make Timer to check ffmpeg status
+    void startTimer(int timeout_ms);
+    // Close
+    bool close();
+
+private:
+    ExtractTuple _tuple;
+    Process _process;
+    toolkit::Ticker _ticker;
+    toolkit::Timer::Ptr _timer;
+    toolkit::EventPoller::Ptr _poller;
+    std::string _src_path;
+    std::string _save_path;
+    std::string _log_file;
+    std::string _cmd;
+    std::function<void()> _onClose;
+    uint64_t _timeout_ms = 0;
+    float _progress = 0.0;
+    bool _finished = false;
+    bool _success = false;
+    std::string _err_msg;
+};
 
 #endif //FFMPEG_SOURCE_H

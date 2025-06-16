@@ -34,11 +34,13 @@ public:
 
     int64_t getOffsetOfDate(uint64_t pos_time, const std::string &camera_id, const std::string &stream_id);
 
+    void getRecordedFootage(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::string &stream_id,
+        const std::function<void(const std::vector<TimeBlock>)> &cb);
 
 private:
-    TimeRecorder(size_t max_batch = 1000, size_t flush_threshold = 1000000);
+    TimeRecorder(const std::string &file_path = "", size_t max_batch = 1000, size_t flush_threshold = 1000000, toolkit::EventPoller::Ptr poller = nullptr);
 
-    std::set<uint32_t> getListDataIndex(const std::string &dir_path);
+    bool open(const std::string &dir_path);
 
     uint32_t getBlockListSize(const std::string &file_path);
 
@@ -58,11 +60,14 @@ private:
 
     void query(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::function<void(const TimeBlock &block)> &cb);
 
+    void query(uint64_t start_time, uint64_t end_time, const std::string &camera_id, const std::string &stream_id, const std::function<void(const TimeBlock &block)> &cb);
+
 private:
     std::recursive_mutex _mutex;
+    toolkit::EventPoller::Ptr _poller;
     size_t _max_batch;
     size_t _flush_threshold;
-    std::string _output_dir;
+    std::string _file_path;
     std::ofstream _data_stream;
     std::ofstream _meta_stream;
     std::set<uint32_t> _file_index_map;

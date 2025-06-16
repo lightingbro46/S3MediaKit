@@ -8,7 +8,7 @@ project(S3MediaKit LANGUAGES C CXX)
 # Enable C++11
 set(CMAKE_CXX_STANDARD 11)
 
-option(ENABLE_API "Enable C API SDK" ON)
+option(ENABLE_API "Enable C API SDK" OFF)
 option(ENABLE_API_STATIC_LIB "Enable mk_api static lib" OFF)
 option(ENABLE_ASAN "Enable Address Sanitize" OFF)
 option(ENABLE_CXX_API "Enable C++ API SDK" OFF)
@@ -20,7 +20,7 @@ option(ENABLE_JEMALLOC_DUMP "Enable jemalloc to dump malloc statistics" OFF)
 option(ENABLE_MEM_DEBUG "Enable Memory Debug" OFF)
 option(ENABLE_MP4 "Enable MP4" ON)
 option(ENABLE_MKV "Enable MKV" ON)
-option(ENABLE_MSVC_MT "Enable MSVC Mt/Mtd lib" ON)
+option(ENABLE_MSVC_MT "Enable MSVC Mt/Mtd lib" OFF)
 option(ENABLE_MYSQL "Enable MySQL" OFF)
 option(ENABLE_SQLITE "Enable Sqlite" ON)
 option(ENABLE_OPENSSL "Enable OpenSSL" ON)
@@ -35,8 +35,9 @@ option(ENABLE_WEBRTC "Enable WebRTC" ON)
 option(ENABLE_X264 "Enable x264" OFF)
 option(ENABLE_WEPOLL "Enable wepoll" ON)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
+option(ENABLE_MANAGER "Enable resource manager" ON)
 option(ENABLE_PLUGIN "Enable plugin manager" ON)
-option(DISABLE_REPORT "Disable report to report.s3mediakit.com" OFF)
+option(DISABLE_REPORT "Disable report to report.s3mediakit.com" ON)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
 ##############################################################################
 # Set the default buffer size of the socket to 256k. If set to 0, the default buffer size of the socket will not be set,
@@ -512,7 +513,7 @@ endif ()
 
 # Copy www folder, configuration file, default certificate
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/www" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
-file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/config.ini" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+# file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/config.ini" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/default.pem" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 
 # Copy the default background image used by VideoStack when there is no video stream

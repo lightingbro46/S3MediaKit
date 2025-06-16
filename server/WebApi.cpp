@@ -74,6 +74,7 @@ namespace API {
 const string kApiDebug = API_FIELD"apiDebug";
 const string kSecret = API_FIELD"secret";
 const string kSnapRoot = API_FIELD"snapRoot";
+const string kExtractRoot = API_FIELD"extractRoot";
 const string kDefaultSnap = API_FIELD"defaultSnap";
 const string kDownloadRoot = API_FIELD"downloadRoot";
 
@@ -81,6 +82,7 @@ static onceToken token([]() {
     mINI::Instance()[kApiDebug] = "1";
     mINI::Instance()[kSecret] = "035c73f7-bb6b-4889-a715-d9eb2d1925cc";
     mINI::Instance()[kSnapRoot] = "./www/snap/";
+    mINI::Instance()[kExtractRoot] = "./www/extract/";
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
     mINI::Instance()[kDownloadRoot] = "./www";
 });
@@ -383,6 +385,9 @@ static ServiceController<PusherProxy> s_pusher_proxy;
 
 // FFmpeg pull stream proxy list
 static ServiceController<FFmpegSource> s_ffmpeg_src;
+
+// FFmpeg extractor proxy list
+static ServiceController<FFmpegExtractor> s_ffmpeg_extractor;
 
 #if defined(ENABLE_RTPPROXY)
 // RTP server list
@@ -716,6 +721,42 @@ void addStreamPusherProxy(const string &schema,
         s_pusher_proxy.erase(key);
     });
     pusher->publish(url);
+}
+
+struct Bookmark {
+    std::string id;
+    std::string name;
+    std::string description;
+    std::string camera_id;
+    uint64_t start_time;
+    uint64_t end_time;
+    uint32_t duration;
+    std::string tags;
+};
+
+static std::unordered_map<std::string, std::shared_ptr<Bookmark>> s_bookmark;
+
+void addBookmark(Bookmark record) {
+    if (record.id.empty()) {
+        record.id = format_guid(strToLower(makeRandStr(32)));
+    }
+    s_bookmark.emplace(record.id, std::make_shared<Bookmark>(record));
+}
+
+void updateBookmark(Bookmark record) {
+    s_bookmark.emplace(record.id, std::make_shared<Bookmark>(record));
+}
+
+void deleteBookmark(std::string guid) {
+    s_bookmark.erase(guid);
+}
+
+void getBookmarks(const std::function<void(std::vector<Bookmark>)> &cb) {
+    std::vector<Bookmark> ret;
+    for (const auto &p : s_bookmark) {
+        ret.push_back(*(p.second));
+    }
+    cb(ret);
 }
 
 /**
@@ -2221,30 +2262,208 @@ void installWebApi() {
 
     api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
+        GET_CONFIG(string, root_path, API::kDownloadRoot)
+        string file_path = File::absolutePath("./thumbnail_test.jpeg", root_path);
+        invoker.responseFile(allArgs.parser.getHeader(), StrCaseMap{}, file_path);
     });
 
-    api_regist("/media/esc/exportArchived", [](API_ARGS_MAP_ASYNC) {
+    static auto addFFmpegExtractor = [](const std::string &camera_id, const std::string &stream_id, uint64_t &start_time, uint64_t &end_time,
+                                        const std::string &filename, const std::string &description, int timeout_ms,
+                                        const function<void(const SockException &ex, const string &key)> &cb) {
+        auto dst_url = camera_id + "/" + stream_id + "/" + to_string(start_time) + "/" + to_string(end_time) + "/" + filename;
+        auto key = MD5(dst_url).hexdigest();
+        if (s_ffmpeg_extractor.find(key)) {
+            // Already create
+            cb(SockException(Err_success), key);
+            return;
+        }
+
+        auto ffmpeg = s_ffmpeg_extractor.make(key);
+
+        FFmpegExtractor::ExtractTuple tuple;
+        tuple.camera_id = camera_id;
+        tuple.stream_id = stream_id;
+        tuple.start_time = start_time;
+        tuple.end_time = end_time;
+        tuple.filename = filename;
+        tuple.description = description;
+        ffmpeg->setTuple(tuple);
+
+        ffmpeg->setOnClose([key]() {
+            s_ffmpeg_extractor.erase(key);
+        });
+
+        GET_CONFIG(string, extract_path, API::kExtractRoot)
+        ffmpeg->makeExtract(key, extract_path, timeout_ms, [cb, key](const SockException &ex) {
+            if (ex) {
+                s_ffmpeg_src.erase(key);
+            }
+            cb(ex, key);
+        });
+    };
+    api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
+        // CHECK_ARGS("camera_id","stream_id", "start_time", "end_time", "filename");
+
+        auto camera_id = allArgs["camera_id"];
+        auto stream_id = allArgs["stream_id"];
+        uint64_t start_time = allArgs["start_time"];
+        uint64_t end_time = allArgs["end_time"];
+        auto filename = allArgs["filename"];
+        auto description = allArgs["description"];
+        int timeout_ms = allArgs["timeout_ms"];
+
+        if (timeout_ms == 0) {
+            timeout_ms = 2000;
+        }
+
+        addFFmpegExtractor(camera_id, stream_id, start_time, end_time, filename, description, timeout_ms,
+            [invoker, val, headerOut](const SockException &ex, const string &key) mutable{
+            if (ex) {
+                val["code"] = API::OtherFailed;
+                val["msg"] = ex.what();
+            } else {
+                val["data"]["key"] = key;
+            }
+            invoker(200, headerOut, val.toStyledString());
+        });
     });
 
-    api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
+        CHECK_ARGS("key");
+        auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
+        if (!ffmpeg) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Key not found";
+            invoker(404, headerOut, val.toStyledString());
+            return;
+        }
+        if (!ffmpeg->finished()) {
+            val["code"] = API::Success;
+            val["msg"] = "Processing";
+            val["data"]["progress"] = ffmpeg->progress();
+            return invoker(202, headerOut, val.toStyledString());
+        }
+        if (!ffmpeg->success()) {
+            val["code"] = API::Exception;
+            val["msg"] = "Extract video failed";
+            return invoker(400, headerOut, val.toStyledString());
+        }
+        StrCaseMap res_header;
+        auto save_name = ffmpeg->getFilename();
+        auto save_path = ffmpeg->getSavePath();
+        if (!save_name.empty()) {
+            res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
+        }
+        invoker.responseFile(allArgs.parser.getHeader(), res_header, save_path);
+    });
+
+    api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP) {
+        // CHECK_TOKEN();
+        CHECK_ARGS("key");
+        val["data"]["flag"] = s_ffmpeg_extractor.erase(allArgs["key"]) == 1;
+    });
+
+    api_regist("/media/esc/exportArchived/list", [](API_ARGS_MAP) {
+        // CHECK_TOKEN();
+        s_ffmpeg_extractor.for_each([&val](const std::string& key, const FFmpegExtractor::Ptr& src) {
+            Json::Value item;
+            item["filename"] = src->getFilename();
+            item["save_path"] = src->getSavePath();
+            item["cmd"] = src->getCmd();
+            item["key"] = key;
+            val["data"].append(item);
+        });
     });
 
     api_regist("/media/esc/bookmark/list", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        Value list = Json::arrayValue;
+        getBookmarks([&](const std::vector<Bookmark> &vec) { 
+            for (const auto &b : vec) {
+                Value b_json;
+                b_json["id"] = b.id;
+                b_json["name"] = b.name;
+                b_json["description"] = b.description;
+                b_json["camera_id"] = b.camera_id;
+                b_json["start_time"] = b.start_time;
+                b_json["end_time"] = b.end_time;
+                b_json["duration"] = b.duration;
+                b_json["tags"] = b.tags;
+                list.append(b_json);
+            }
+        });
+        val = list;
+        invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/esc/bookmark/del", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+    api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("name", "camera_id", "start_time");
+        auto name = allArgs["name"];
+        auto description = allArgs["description"];
+        auto camera_id = allArgs["camera_id"];
+        auto start_time = allArgs["start_time"];
+        auto end_time = allArgs["end_time"];
+        auto duration = allArgs["duration"];
+        auto tags = allArgs["tags"];
+
+        Bookmark bm;
+        bm.name = name;
+        bm.description = description;
+        bm.camera_id = camera_id;
+        bm.start_time = start_time;
+        bm.end_time = end_time;
+        bm.duration = duration;
+        bm.tags = tags;
+
+        addBookmark(bm);
+        invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/discovery", [](API_ARGS_MAP_ASYNC) {
-        Value ver;
-        ver["buildTime"] = BUILD_TIME;
-        ver["branchName"] = BRANCH_NAME;
-        ver["commitHash"] = COMMIT_HASH;
-        val["data"] = ver;
+    api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("id");
+        CHECK_ARGS("name");
+        CHECK_ARGS("camera_id");
+        CHECK_ARGS("start_time");
+
+        auto id = allArgs["id"];
+        auto name = allArgs["name"];
+        auto description = allArgs["description"];
+        auto camera_id = allArgs["camera_guid"];
+        auto start_time = allArgs["start_time"];
+        auto end_time = allArgs["end_time"];
+        auto duration = allArgs["duration"];
+        auto tags = allArgs["tags"];
+
+        Bookmark bm;
+        bm.id = id;
+        bm.name = name;
+        bm.description = description;
+        bm.camera_id = camera_id;
+        bm.start_time = start_time;
+        bm.end_time = end_time;
+        bm.duration = duration;
+        bm.tags = tags;
+
+        updateBookmark(bm);
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) { 
+        // CHECK_ARGS("id"); 
+
+        auto id = allArgs["id"];
+
+        deleteBookmark(id);
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/mserver/description", [](API_ARGS_MAP_ASYNC) {
+        Value info;
+        info["guid"] = BUILD_TIME;
+        info["branchName"] = BRANCH_NAME;
+        info["commitHash"] = COMMIT_HASH;
+        val["data"] = info;
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -2260,6 +2479,7 @@ void installWebApi() {
 void unInstallWebApi(){
     s_player_proxy.clear();
     s_ffmpeg_src.clear();
+    s_ffmpeg_extractor.clear();
     s_pusher_proxy.clear();
 #if defined(ENABLE_RTPPROXY)
     s_rtp_server.clear();
