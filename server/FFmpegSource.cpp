@@ -1,6 +1,5 @@
 ﻿#include "FFmpegSource.h"
 #include "Common/config.h"
-#include "Common/strCoding.h"
 #include "Common/MediaSource.h"
 #include "Common/MultiMediaSourceMuxer.h"
 #include "Util/File.h"
@@ -475,12 +474,11 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     auto save_format = getFileExtension(_options.filename);
     _save_path = File::absolutePath(key + "." + save_format, root_path);
 
-    auto time_string = getTimeStr("", _created_at);
     char cmd[2048] = { 0 };
     snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
             _src_path.data(), 
             escape(_options.filename).data(),
-            escape(_options.description + "\n-- By --\n" + _options.username).data(),
+            escape(_options.description + " -- By -- " + _options.username).data(),
             escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
             escape(kServerName).data(),
             _save_path.data());
@@ -505,9 +503,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         }
         // ffmpeg process has exited
         strongSelf->_finished = true;
-        strongSelf->_progress = 1.0;
         strongSelf->_success = strongSelf->_process.exit_code() == 0;
         if (strongSelf->_success) {
+            strongSelf->_progress = 100.0f;
             cb(SockException());
         } else {
             cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));            
@@ -530,15 +528,44 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
 /**
  * Read ffmpeg log and calculation progress
  */
-float findFFmpegProgress(std::string &log_path, float duration) {
-    return 0;
+float trackFFmpegProgress(const std::string &log_path, const float &total_duration) {
+    float duration = 0.0f;
+    float progress = 0.0f;
+    if (!log_path.empty() && File::fileExist(log_path)) {
+        auto line = File::loadFile(log_path);
+        string pid;
+        size_t pos_pid = line.find("pid=");
+        if (pos_pid != std::string::npos) {
+            pid = line.substr(pos_pid + 4, 9);
+        }
+
+        size_t pos = line.find_last_of("time=");
+        if (pos != std::string::npos) {
+            auto time_str = line.substr(pos + 5, 11);
+            int hour = stoi(time_str.substr(0, 2));
+            int minute = stoi(time_str.substr(3, 2));
+            float second = stof(time_str.substr(6));
+            duration  = hour * 3600 + minute * 60 + second;
+            progress = duration > 0 && total_duration > 0 ? (duration / total_duration) * 100.0f : 0.0f;
+            if (progress >= 100.0f) {
+                progress = 99.9f;
+            }
+        }
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "FFmpeg (pid:%s) progress: %.1fs/%.1fs (%.1f%%)", pid.data(), duration, total_duration, progress);
+        DebugL << buf;
+    } else {
+        ErrorL << "Open file log " << log_path << " failed: No such file or directory";
+    }
+    
+    return progress;
 }
 
 /**
  * Check if the media is online regularly
  */
 void FFmpegExtractor::startTimer() {
-    uint64_t timeout_ms = _duration;
+    uint64_t timeout_ms = _duration * 1000;
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
     _timer = std::make_shared<Timer>(1.0f, [weakSelf, &timeout_ms]() {
         auto strongSelf = weakSelf.lock();
@@ -552,21 +579,18 @@ void FFmpegExtractor::startTimer() {
             auto elapsed_ms = strongSelf->_ticker.elapsedTime();
             if (timeout_ms > 0 && elapsed_ms > timeout_ms) {
                 strongSelf->_process.kill(2000);
-                strongSelf->_finished = true;
-            } else {
-                // find progress bar
-                auto progress_pos = findFFmpegProgress(strongSelf->_log_file, strongSelf->_duration);
-                strongSelf->_progress = progress_pos;
             }
+            // find progress bar
+            strongSelf->_progress = trackFFmpegProgress(strongSelf->_log_file, strongSelf->_duration);
+            return true;
         } else {
             // ffmpeg is not online, check output file and set status
             strongSelf->_finished = true;
-        }
-        if (strongSelf->_finished) {
-            strongSelf->_progress = 1.0;
             bool success = strongSelf->_process.exit_code() == 0 && File::fileSize(strongSelf->_save_path);
             strongSelf->_success = success;
+            strongSelf->_progress = success ? 100.0f : strongSelf->_progress;
             strongSelf->_err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
+
             // close after process finished
             GET_CONFIG(uint64_t, delay_close_sec, FFmpeg::kDelayCloseSec);
             EventPollerPool::Instance().getPoller()->doDelayTask((uint64_t)(delay_close_sec * 1000), [weakSelf]() {
@@ -580,7 +604,6 @@ void FFmpegExtractor::startTimer() {
             });
             return false;
         }
-        return true;
     }, _poller);
 }
 
