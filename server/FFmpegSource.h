@@ -96,35 +96,31 @@ private:
     toolkit::Ticker _replay_ticker;
 };
 
+struct ExtractOptions {
+    uint64_t start_time;
+    uint64_t end_time;
+    std::string filename;
+    std::string description;
+    std::string user_id;
+    std::string username;
+};
+
 class FFmpegExtractor : public std::enable_shared_from_this<FFmpegExtractor> {
 public:
     using Ptr = std::shared_ptr<FFmpegExtractor>;
     using onExtract = std::function<void(const toolkit::SockException &ex)>;
     
-    FFmpegExtractor();
+    FFmpegExtractor(mediakit::MediaTuple &tuple, ExtractOptions &options, int timeout_ms = 2000, toolkit::EventPoller::Ptr poller = nullptr);
     ~FFmpegExtractor();
-
-    struct ExtractTuple {
-        std::string camera_id;
-        std::string stream_id;
-        uint64_t start_time;
-        uint64_t end_time;
-        std::string filename;
-        std::string description;
-        std::string user_id;
-        std::string username;
-        uint64_t create_at;
-    };
-    void setTuple(const ExtractTuple &tuple);
 
     /**
      * Set the active close callback
      */
     void setOnClose(const std::function<void()> &cb);
 
-    void makeExtract(const std::string &key, const std::string &download_path, int timeout_ms, const onExtract &cb);
+    void makeExtract(const std::string &key, const std::string &download_path, const onExtract &cb);
 
-    const std::string& getFilename() const { return _tuple.filename; }
+    const std::string& getFilename() const { return _options.filename; }
     const std::string& getSavePath() const { return _save_path; }
     const std::string& getCmd() const { return _cmd; }
     const float& progress() const { return _progress; }
@@ -135,13 +131,14 @@ public:
 private:
     // create txt file include mp4 list
     void create_src_path(std::string &src_path);
-    // make Timer to check ffmpeg status
-    void startTimer(int timeout_ms);
+    // create Timer to check ffmpeg status
+    void startTimer();
     // Close
     bool close();
 
 private:
-    ExtractTuple _tuple;
+    mediakit::MediaTuple _tuple;
+    ExtractOptions _options;
     Process _process;
     toolkit::Ticker _ticker;
     toolkit::Timer::Ptr _timer;
@@ -151,7 +148,9 @@ private:
     std::string _log_file;
     std::string _cmd;
     std::function<void()> _onClose;
-    uint64_t _timeout_ms = 0;
+    uint64_t _created_at;
+    int _timeout_ms;
+    uint32_t _duration = 0;
     float _progress = 0.0;
     bool _finished = false;
     bool _success = false;

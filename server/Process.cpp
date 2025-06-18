@@ -37,6 +37,37 @@ static void setupChildProcess() {
     signal(SIGABRT, SIG_DFL);
 }
 
+std::vector<std::string> splitCommandLine(const std::string& cmd) {
+    std::vector<std::string> args;
+    std::string current;
+    bool in_single_quote = false, in_double_quote = false, escape = false;
+
+    for (size_t i = 0; i < cmd.size(); ++i) {
+        char c = cmd[i];
+        if (escape) {
+            current += c;
+            escape = false;
+        } else if (c == '\\') {
+            escape = true;
+        } else if (c == '"' && !in_single_quote) {
+            in_double_quote = !in_double_quote;
+        } else if (c == '\'' && !in_double_quote) {
+            in_single_quote = !in_single_quote;
+        } else if (isspace(c) && !in_single_quote && !in_double_quote) {
+            if (!current.empty()) {
+                args.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (!current.empty()) {
+        args.push_back(current);
+    }
+    return args;
+}
+
 /* Start function for cloned child */
 static int runChildProcess(string cmd, string log_file) {
     setupChildProcess();
@@ -72,7 +103,7 @@ static int runChildProcess(string cmd, string log_file) {
     }
     fprintf(stderr, "\r\n\r\n#### pid=%d,cmd=%s #####\r\n\r\n", getpid(), cmd.data());
 
-    auto params = split(cmd, " ");
+    auto params = splitCommandLine(cmd);
     // memory leak in child process, it's ok.
     char **charpv_params = new char *[params.size() + 1];
     for (int i = 0; i < (int)params.size(); i++) {

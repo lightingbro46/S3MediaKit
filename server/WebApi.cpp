@@ -2228,14 +2228,10 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 #endif
-
+    /////////////////////////S3MediaKit - MediaServer////////////////////////////
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("cameraId");
-        CHECK_ARGS("startTime");
-        CHECK_ARGS("endTime");
-        CHECK_ARGS("periodType");
-        CHECK_ARGS("detail");
+        CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
 
         auto camera_id = allArgs["cameraId"];
         auto start_time = allArgs["startTime"];
@@ -2252,11 +2248,12 @@ void installWebApi() {
                 if (ex) {
                     val["code"] = API::OtherFailed;
                     val["msg"] = ex.what();
+                    invoker(400, headerOut, val.toStyledString());
                 } else {
-                    val = data;
+                    val["data"] = data;
                     InfoL << "Get recorded time period success";
+                    invoker(200, headerOut, val.toStyledString());
                 }
-                invoker(200, headerOut, val.toStyledString());
             });
     });
 
@@ -2267,34 +2264,24 @@ void installWebApi() {
         invoker.responseFile(allArgs.parser.getHeader(), StrCaseMap{}, file_path);
     });
 
-    static auto addFFmpegExtractor = [](const std::string &camera_id, const std::string &stream_id, uint64_t &start_time, uint64_t &end_time,
-                                        const std::string &filename, const std::string &description, int timeout_ms,
-                                        const function<void(const SockException &ex, const string &key)> &cb) {
-        auto dst_url = camera_id + "/" + stream_id + "/" + to_string(start_time) + "/" + to_string(end_time) + "/" + filename;
-        auto key = MD5(dst_url).hexdigest();
+    static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
+        auto full_key = tuple.shortUrl() + "/" +
+                        to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
+        auto key = MD5(full_key).hexdigest();
         if (s_ffmpeg_extractor.find(key)) {
             // Already create
             cb(SockException(Err_success), key);
             return;
         }
-
-        auto ffmpeg = s_ffmpeg_extractor.make(key);
-
-        FFmpegExtractor::ExtractTuple tuple;
-        tuple.camera_id = camera_id;
-        tuple.stream_id = stream_id;
-        tuple.start_time = start_time;
-        tuple.end_time = end_time;
-        tuple.filename = filename;
-        tuple.description = description;
-        ffmpeg->setTuple(tuple);
+ 
+        auto ffmpeg = s_ffmpeg_extractor.make(key, tuple, options);
 
         ffmpeg->setOnClose([key]() {
             s_ffmpeg_extractor.erase(key);
         });
 
         GET_CONFIG(string, extract_path, API::kExtractRoot)
-        ffmpeg->makeExtract(key, extract_path, timeout_ms, [cb, key](const SockException &ex) {
+        ffmpeg->makeExtract(key, extract_path, [cb, key](const SockException &ex) {
             if (ex) {
                 s_ffmpeg_src.erase(key);
             }
@@ -2303,53 +2290,70 @@ void installWebApi() {
     };
     api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        // CHECK_ARGS("camera_id","stream_id", "start_time", "end_time", "filename");
+        CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
 
-        auto camera_id = allArgs["camera_id"];
-        auto stream_id = allArgs["stream_id"];
-        uint64_t start_time = allArgs["start_time"];
-        uint64_t end_time = allArgs["end_time"];
+        auto camera_id = allArgs["cameraId"];
+        auto stream_id = allArgs["streamId"];
+        auto start_time = allArgs["startTime"];
+        auto end_time = allArgs["endTime"];
         auto filename = allArgs["filename"];
         auto description = allArgs["description"];
-        int timeout_ms = allArgs["timeout_ms"];
 
-        if (timeout_ms == 0) {
-            timeout_ms = 2000;
+        if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
+            val["code"] = API::InvalidArgs;
+            val["msg"] = "Extension filename do not support";
+            invoker(400, headerOut, val.toStyledString());
+            return;
         }
 
-        addFFmpegExtractor(camera_id, stream_id, start_time, end_time, filename, description, timeout_ms,
-            [invoker, val, headerOut](const SockException &ex, const string &key) mutable{
-            if (ex) {
-                val["code"] = API::OtherFailed;
-                val["msg"] = ex.what();
-            } else {
-                val["data"]["key"] = key;
-            }
-            invoker(200, headerOut, val.toStyledString());
-        });
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, ""};
+        ExtractOptions options = {start_time, end_time, filename, description, "", ""};
+
+        addFFmpegExtractor(tuple, options, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
+                if (ex) {
+                    val["code"] = API::OtherFailed;
+                    val["msg"] = ex.what();
+                    invoker(400, headerOut, val.toStyledString());
+                } else {
+                    val["data"]["key"] = key;
+                    invoker(201, headerOut, val.toStyledString());
+                }
+            });
     });
 
-    api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("key");
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
         if (!ffmpeg) {
             val["code"] = API::NotFound;
             val["msg"] = "Key not found";
-            invoker(404, headerOut, val.toStyledString());
-            return;
+            return invoker(404, headerOut, val.toStyledString());
         }
-        if (!ffmpeg->finished()) {
-            val["code"] = API::Success;
-            val["msg"] = "Processing";
-            val["data"]["progress"] = ffmpeg->progress();
-            return invoker(202, headerOut, val.toStyledString());
-        }
-        if (!ffmpeg->success()) {
+
+        if (ffmpeg->finished() && !ffmpeg->success()) {
             val["code"] = API::Exception;
             val["msg"] = "Extract video failed";
             return invoker(400, headerOut, val.toStyledString());
         }
+
+        val["data"]["progress"] = ffmpeg->progress();
+        val["data"]["ready"] = ffmpeg->finished() && ffmpeg->success() ? true : false;
+        invoker(202, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
+        CHECK_ARGS("key");
+        auto key = allArgs["key"];
+        auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
+        if (!ffmpeg || !ffmpeg->finished() || !ffmpeg->success()) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Key not found";
+            invoker(404, headerOut, val.toStyledString());
+            return;
+        } 
+
         StrCaseMap res_header;
         auto save_name = ffmpeg->getFilename();
         auto save_path = ffmpeg->getSavePath();
@@ -2365,19 +2369,19 @@ void installWebApi() {
         val["data"]["flag"] = s_ffmpeg_extractor.erase(allArgs["key"]) == 1;
     });
 
-    api_regist("/media/esc/exportArchived/list", [](API_ARGS_MAP) {
+    api_regist("/media/esc/extractArchived/list", [](API_ARGS_MAP) {
         // CHECK_TOKEN();
-        s_ffmpeg_extractor.for_each([&val](const std::string& key, const FFmpegExtractor::Ptr& src) {
+        s_ffmpeg_extractor.for_each([&val](const std::string &key, const FFmpegExtractor::Ptr &src) {
             Json::Value item;
-            item["filename"] = src->getFilename();
-            item["save_path"] = src->getSavePath();
-            item["cmd"] = src->getCmd();
             item["key"] = key;
+            item["progress"] = src->progress();
+            item["ready"] = src->finished() && src->success() ? true : false;
             val["data"].append(item);
         });
     });
 
     api_regist("/media/esc/bookmark/list", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
         Value list = Json::arrayValue;
         getBookmarks([&](const std::vector<Bookmark> &vec) { 
             for (const auto &b : vec) {
@@ -2398,6 +2402,7 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
         CHECK_ARGS("name", "camera_id", "start_time");
         auto name = allArgs["name"];
         auto description = allArgs["description"];
@@ -2421,6 +2426,7 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
+        // CHECK_TOKEN();
         CHECK_ARGS("id");
         CHECK_ARGS("name");
         CHECK_ARGS("camera_id");
@@ -2450,6 +2456,7 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) { 
+        // CHECK_TOKEN();
         // CHECK_ARGS("id"); 
 
         auto id = allArgs["id"];
@@ -2472,7 +2479,7 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/getStatistic",[](API_ARGS_MAP_ASYNC){
-       // CHECK_TOKEN();
+       
     });
 }
 
