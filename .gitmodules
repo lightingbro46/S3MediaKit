@@ -2,12 +2,18 @@
 	path = 3rdpart/S3ToolKit
 	url = https://github.com/lightingbro46/S3ToolKit.git
 	branch = develop
-[submodule "3rdpart/media-server"]
-	path = 3rdpart/media-server
-	url = https://gitee.com/ireader/media-server
-[submodule "3rdpart/jsoncpp"]
-	path = 3rdpart/jsoncpp
-	url = https://gitee.com/mirrors/jsoncpp.git
 [submodule "www/webassist"]
 	path = www/webassist
 	url = https://github.com/lightingbro46/s3m_webassist.git
+[submodule "3rdpart/jwt-cpp"]
+	path = 3rdpart/jwt-cpp
+	url = https://github.com/Thalhammer/jwt-cpp.git
+[submodule "3rdpart/onvif"]
+	path = 3rdpart/onvif
+	url = https://github.com/lightingbro46/onvif.git
+[submodule "3rdpart/jsoncpp"]
+	path = 3rdpart/jsoncpp
+	url = https://github.com/open-source-parsers/jsoncpp.git
+[submodule "3rdpart/media-server"]
+	path = 3rdpart/media-server
+	url = https://github.com/ireader/media-server.git

@@ -228,3 +228,35 @@ if(ENABLE_CXX_API)
   install(TARGETS zltoolkit
     DESTINATION ${INSTALL_PATH_LIB})
 endif()
+
+###################################################################
+# ONVIF
+file(GLOB ONVIF_SRC_LIST
+  ${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/*/*.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/src/*/*.cpp
+)
+add_library(onvif STATIC ${ONVIF_SRC_LIST})
+target_include_directories(onvif
+  PRIVATE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/gsoap>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/gsoap/plugin>"
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include>"
+)
+target_compile_options(onvif PRIVATE ${COMPILE_OPTIONS_DEFAULT})
+update_cached_list(MK_LINK_LIBRARIES onvif)
+
+###################################################################
+# jwt-cpp
+file(GLOB JWTCPP_SRC_LIST
+  ${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include/jwt-cpp/*.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include/picojson/*.h
+)
+
+add_library(jwtcpp INTERFACE)
+target_include_directories(jwtcpp
+  INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include>"
+)
+update_cached_list(MK_LINK_LIBRARIES jwtcpp)
