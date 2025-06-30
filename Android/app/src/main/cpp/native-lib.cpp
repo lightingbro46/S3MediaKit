@@ -173,14 +173,14 @@ JNI_API(jboolean, startDemo, jstring ini_dir){
             //hls root directory modify the default path
             mINI::Instance()[Protocol::kHlsSavePath]  = sd_path + "/httpRoot";
             //Replace the default port number (valid when the configuration file is not generated)
-            mINI::Instance()["http.port"] = 8080;
-            mINI::Instance()["http.sslport"] = 8443;
-            mINI::Instance()["rtsp.port"] = 8554;
-            mINI::Instance()["rtsp.sslport"] = 8332;
+            mINI::Instance()["http.port"] = 80;
+            mINI::Instance()["http.sslport"] = 443;
+            mINI::Instance()["rtsp.port"] = 554;
+            mINI::Instance()["rtsp.sslport"] = 332;
             mINI::Instance()["general.enableVhost"] = 0;
             for (auto &pr : mINI::Instance()) {
                 //Replace hook default address
-                replace(pr.second, "https://127.0.0.1/", "http://127.0.0.1:8080/");
+                replace(pr.second, "https://127.0.0.1/", "http://127.0.0.1/");
             }
             //Hook is turned on by default
             mINI::Instance()["hook.enable"] = 0;

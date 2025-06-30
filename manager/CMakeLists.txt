@@ -57,4 +57,7 @@ target_include_directories(s3managerkit
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
     "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>")
 
+update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_MANAGER)
 update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ManagerKit)
+
+message(STATUS "manager function is enabled")

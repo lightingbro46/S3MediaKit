@@ -361,7 +361,7 @@ You can download the pre-compiled image from Docker Hub and start it:
 
 ```bash
 #This image is pushed by the GitHub continuous integration automatic compilation to keep up with the latest code (master branch)
-docker run -id -p 1935:1935 -p 8080:80 -p 8443:443 -p 8554:554 -p 10000:10000 -p 10000:10000/udp -p 8000:8000/udp -p 9000:9000/udp s3mediakit/s3mediakit:master
+docker run -id -p 1935:1935 -p 80:80 -p 443:443 -p 554:554 -p 10000:10000 -p 10000:10000/udp -p 8000:8000/udp -p 9000:9000/udp s3mediakit/s3mediakit:master
 ```
 
 You can also compile the image based on the Dockerfile:

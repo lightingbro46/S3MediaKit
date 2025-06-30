@@ -3,8 +3,8 @@ ARG MODEL
 #shell,rtmp,rtsp,rtsps,http,https,rtp
 EXPOSE 1935/tcp
 EXPOSE 554/tcp
-EXPOSE 8080/tcp
-EXPOSE 8443/tcp
+EXPOSE 80/tcp
+EXPOSE 443/tcp
 EXPOSE 10000/udp
 EXPOSE 10000/tcp
 EXPOSE 8000/udp
@@ -82,4 +82,4 @@ COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/
 COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
 COPY --from=build /opt/media/S3MediaKit/www/ /opt/media/bin/www/
 ENV PATH=/opt/media/bin:$PATH
-CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l","0"]
+CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l", "3"]

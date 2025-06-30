@@ -16,6 +16,7 @@
 #include "Rtp/RtpServer.h"
 #include "WebApi.h"
 #include "WebHook.h"
+#include "Manager.h"
 
 #if defined(ENABLE_WEBRTC)
 #include "../webrtc/WebRtcTransport.h"
@@ -46,8 +47,8 @@ namespace Http {
 const string kPort = HTTP_FIELD"port";
 const string kSSLPort = HTTP_FIELD"sslport";
 onceToken token1([](){
-    mINI::Instance()[kPort] = 8080;
-    mINI::Instance()[kSSLPort] = 8443;
+    mINI::Instance()[kPort] = 80;
+    mINI::Instance()[kSSLPort] = 443;
 },nullptr);
 }//namespace Http
 
@@ -371,6 +372,8 @@ int start_main(int argc,char *argv[]) {
         InfoL << "The http API interface has been started";
         installWebHook();
         InfoL << "The http hook interface has been started";
+        installManagerHook();
+        InfoL << "The manager hook interface has been started";
 
         try {
             // rtsp server, default port 554
@@ -445,6 +448,7 @@ int start_main(int argc,char *argv[]) {
     }
     unInstallWebApi();
     unInstallWebHook();
+    unInstallManagerHook();
     onProcessExited();
 
     // sleep for 1 second before exiting, to prevent resource release order errors

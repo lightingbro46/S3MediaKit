@@ -10,7 +10,6 @@
 #include "Rtsp/RtspSession.h"
 #include "WebHook.h"
 #include "WebApi.h"
-#include "ManagerHook.h"
 
 using namespace std;
 using namespace Json;
