@@ -62,6 +62,8 @@ public:
 
     void readBlockList(TimeBlockList &list, bool &eof);
 
+    uint64_t getFirstStamp() { return _demuxers.begin()->first; }
+
 private:
     std::map<uint64_t, TimeDemuxer::Ptr>::iterator _it;
     std::map<uint64_t, TimeDemuxer::Ptr> _demuxers;

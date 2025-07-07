@@ -27,17 +27,6 @@ public:
      */
     static void makeSnap(bool async, const std::string &play_url, const std::string &save_path, float timeout_sec, const onSnap &cb);
 
-    /**
-     * Create a thumbnail from archive footage
-     * @param camera_id Camera id
-     * @param stream_id Stream id
-     * @param pos_time  Extract thumbnail at that timestamp
-     * @param save_path The path to save the screenshot JPEG file
-     * @param timeout_sec Timeout for generating the thumbnail (to prevent blocking for too long)
-     * @param cb Callback for whether the screenshot was generated successfully
-     */
-    static void makeSnap(const std::string &camera_id, const std::string &stream_id, uint64_t pos_time, const std::string &save_path, float timeout_sec, const onSnap &cb);
-
 private:
     FFmpegSnap() = delete;
     ~FFmpegSnap() = delete;

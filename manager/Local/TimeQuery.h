@@ -43,6 +43,8 @@ public:
 
     int64_t getOffsetOfDate(uint64_t pos_time);
 
+    std::shared_ptr<TimeBlock> getLastBlock(uint32_t interval_sec = 600);
+
 private:
     /**
      * Seek to centain timestamp, return the nearest lower value

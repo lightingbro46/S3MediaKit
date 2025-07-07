@@ -2361,10 +2361,38 @@ void installWebApi() {
         CHECK_ARGS("cameraId", "streamId", "pos");
         auto camera_id = allArgs["cameraId"];
         auto stream_id = allArgs["streamId"];
-        auto pos_time = allArgs["pos"];
+        auto pos_str = allArgs["pos"];
 
-        if (pos_time == "latest") {
-            pos_time = time(NULL) - 60;
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+        auto query = std::make_shared<TimeQuery>(tuple);
+        string src_path;
+        uint64_t pos_time = 0;
+        if (pos_str == "latest") {
+            auto block = query->getLastBlock();
+            if (block) {
+                pos_time = block->start_time();
+                src_path = block->file_path();
+            }
+        } else {
+            pos_time = stoll(pos_str);
+            auto start_time = pos_time - 60;
+            auto end_time = pos_time + 60;
+            query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
+                for (const auto &block : blocks) {
+                    if (block.start_time() > pos_time) {
+                        break;
+                    }
+                    pos_time = block.start_time();
+                    src_path = block.file_path();
+                }
+            });
+        }
+
+        if (src_path.empty() || pos_time == 0) {
+            val["code"] = API::NotFound;
+            val["msg"] = "No data in period";
+            invoker(404, headerOut, val.toStyledString());
+            return;
         }
 
         GET_CONFIG(string, snap_root, API::kSnapRoot);
@@ -2414,7 +2442,7 @@ void installWebApi() {
 
         // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
         auto new_snap_tmp = new_snap + ".tmp";
-        FFmpegSnap::makeSnap(camera_id, stream_id, stoll(pos_time), new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+        FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
             if (!success) {
                 // Screenshot generation failed, there may be residual empty files
                 File::delete_file(new_snap_tmp);

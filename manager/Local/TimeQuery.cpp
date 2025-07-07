@@ -202,4 +202,23 @@ int64_t TimeQuery::getOffsetOfDate(uint64_t pos_time) {
     return ret;
 }
 
+std::shared_ptr<TimeBlock> TimeQuery::getLastBlock(uint32_t interval_sec) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    uint64_t pos = time(nullptr);
+    bool has_block = false;
+    std::shared_ptr<TimeBlock> last_block;
+    uint64_t first_time = _demuxer->getFirstStamp();
+    while (!has_block && pos > first_time) {
+        auto start_pos = pos - interval_sec;
+        query(start_pos, pos, [&](const TimeBlock &block) { 
+            has_block = true;
+            last_block = std::make_shared<TimeBlock>(block);
+        });
+        if (!has_block) {
+            pos = start_pos;
+        }
+    }
+    return has_block ? last_block : nullptr;
+}
+
 } // namespace mediakit
