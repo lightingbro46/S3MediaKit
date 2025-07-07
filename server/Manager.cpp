@@ -6,35 +6,15 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Record/Recorder.h"
-#include "Manager.h"
 #include "Local/TimeRecorder.h"
 #include "Local/TimeQuery.h"
+#include "Storage/MigrationHistory.h"
+#include "Manager.h"
 
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
-
-// void addCameraResource(Json::Value &device, const function<void(const string &camera_id, const string &stream_id, const string &url)> &cb) {
-//     string camera_id = device["device_id"].asString();
-//     string username = device["username"].asString();
-//     string password = device["password"].asString();
-//     string ip = device["address"].asString();
-
-//     // todo: check config and compare with old config if exist
-
-//     if (device.isMember("streams") && device["streams"].isArray()) {
-//         for (const auto &str: device["streams"]) {
-//             string stream_id = str["channel_id"].asString();
-//             string url = str["source_url"].asString();
-//             WarnL << url;
-//             cb(camera_id, stream_id, url);
-//         }
-//     }
-// }
-
-// void delCameraResource(const string &id) {
-
-// }
+using namespace managerkit;
 
 static void *manager_hook_tag = nullptr;
 
@@ -84,4 +64,16 @@ void installManagerHook () {
 
 void unInstallManagerHook() {
     NoticeCenter::Instance().delListener(&manager_hook_tag);
+}
+
+void migrateDatabase() {
+    TraceL << "Prepare migrating local media server database";
+    auto localDbMigrate = std::make_shared<MigrationHistoryImp>(Database::kMediaServerDb);
+    GET_CONFIG(string, mserverUpdateSavePath, Database::kMServerMigrationSavePath)
+    localDbMigrate->migrate(mserverUpdateSavePath);
+
+    TraceL << "Prepare migrating edge storage database";
+    auto escDbMigrate = std::make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
+    GET_CONFIG(string, escUpdateSavePath, Database::kESCMigrationSavePath)
+    escDbMigrate->migrate(escUpdateSavePath);
 }

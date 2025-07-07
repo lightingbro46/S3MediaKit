@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS "migrationhistory" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "app_name" VARCHAR(255) NOT NULL,
+    "migration" VARCHAR(255) NOT NULL,
+    "applied" DATETIME NOT NULL);

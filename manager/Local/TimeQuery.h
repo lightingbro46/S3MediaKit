@@ -1,5 +1,5 @@
-#ifndef LOCAL_TIMEREADER_H_
-#define LOCAL_TIMEREADER_H_
+#ifndef S3MEDIAKIT_TIMEQUERY_H_
+#define S3MEDIAKIT_TIMEQUERY_H_
 
 #include <vector>
 #include <unordered_map>
@@ -82,4 +82,4 @@ private:
 
 } // namespace mediakit
 
-#endif // MANAGER_LOCAL_TIMEREADER_H_
+#endif // S3MEDIAKIT_TIMEQUERY_H_

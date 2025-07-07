@@ -293,6 +293,10 @@ int start_main(int argc,char *argv[]) {
                   << ", saved config file: " << g_ini_file;
         }
 
+        // Execute migrating database before running other
+        migrateDatabase();
+        InfoL << "Migrating database has been executed successfully";
+        
         std::string listen_ip = mINI::Instance()[General::kListenIP];
         uint16_t shellPort = mINI::Instance()[Shell::kPort];
         uint16_t rtspPort = mINI::Instance()[Rtsp::kPort];
