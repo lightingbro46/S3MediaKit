@@ -62,7 +62,7 @@
 #include "VideoStack.h"
 #endif
 
-#include "Local/TimeRecorder.h"
+#include "Local/TimeQuery.h"
 
 using namespace std;
 using namespace Json;
@@ -2229,6 +2229,105 @@ void installWebApi() {
     });
 #endif
     /////////////////////////S3MediaKit - MediaServer////////////////////////////
+    static auto findTimePeriod = [](MediaTuple &tuple, uint64_t start_time, uint64_t end_time, int period_type, int detail,
+                                    const function<void(const SockException&, const Value&)> &cb) {
+        auto query = std::make_shared<TimeQuery>(tuple);
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        Value result;
+        if (period_type == 1) {
+            if (detail == 0) {
+                query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
+                    result["cameraId"] = tuple.app;
+                    result["periods"] = arrayValue;
+                    for (auto const &p : ret) {
+                        Value period;
+                        period["startTime"] = p.startTime;
+                        period["duration"] = p.duration;
+                        period["mediaServerId"] = mediaServerId;
+                        result["periods"].append(period);
+                    }
+                });
+            } else {
+                query->getRecordedTimePeriod(start_time, end_time, [&]( unordered_map<string, vector<TimeRange>> &ret) {
+                    result["cameraId"] = tuple.app;
+                    result["streams"] = arrayValue;
+                    for (auto const &it : ret) {
+                        Value stream;
+                        stream["streamId"] = it.first;
+                        stream["periods"] = arrayValue;
+                        for (auto const &p : it.second) {
+                            Value period;
+                            period["startTime"] = p.startTime;
+                            period["duration"] = p.duration;
+                            period["mediaServerId"] = mediaServerId;
+                            stream["periods"].append(period);
+                        }
+                        result["streams"].append(stream);
+                    }
+                });
+            }
+        } else if (period_type == 2) {
+            if (detail == 0) {
+                query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, set<int>> &ret) {
+                    result["cameraId"] = tuple.app;
+                    for (auto const &it : ret) {
+                        string date_str = it.first;
+                        auto &hour_set = it.second;
+                        result["periods"][date_str] = arrayValue;
+                        for (int i = 0; i < 24; i++) {
+                            auto it_hour = hour_set.find(i);
+                            result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
+                        }
+                    }   
+                });
+            } else {
+                query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, unordered_map<string, unordered_map<int, std::vector<TimeRange>>>> &ret) {
+                    result["cameraId"] = tuple.app;
+                    result["streams"] = arrayValue;
+                    for (auto const &it_stream : ret) {
+                        Value stream;
+                        stream["streamId"] = it_stream.first;
+
+                        for (auto const &it_date : it_stream.second) {
+                            string date_str = it_date.first;
+                            auto hour_map = it_date.second;
+                            Value date;
+                            for (int i = 0; i < 24; i++) {
+                                Value hour = arrayValue;
+                                auto it_hour = hour_map.find(i);
+                                if (it_hour != hour_map.end()) {
+                                    for (auto const &it : it_hour->second) {
+                                        Json::Value period;
+                                        period["startTime"] = it.startTime;
+                                        period["duration"] = it.duration;
+                                        period["mediaServerId"] = mediaServerId;
+                                        hour.append(period);
+                                    }
+                                }
+                                date.append(hour);
+                            }
+                            stream["dates"][date_str] = date;
+                        }
+                        result["streams"].append(stream);
+                    }
+                });
+            }
+        } else if (period_type == 0) {
+            query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeBlock> &ret) {
+                result["periods"] = arrayValue;
+                for (auto const &p : ret) {
+                    Value period;
+                    period["cameraId"] = p.app();
+                    period["streamId"] = p.stream();
+                    period["startTime"] = p.start_time();
+                    period["timeLen"] = p.time_len();
+                    period["mediaServerId"] = mediaServerId;
+                    result["periods"].append(period);
+                }
+            });
+        }
+        return cb(SockException(Err_success), result);                                  
+    };
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
@@ -2243,18 +2342,18 @@ void installWebApi() {
             end_time = time(nullptr);
         }
 
-        TimeRecorder::Instance().getRecordedTimePeriod(start_time, end_time, camera_id, period_type, detail,
-            [invoker, val, headerOut](const SockException &ex, const Json::Value &data) mutable {
-                if (ex) {
-                    val["code"] = API::OtherFailed;
-                    val["msg"] = ex.what();
-                    invoker(400, headerOut, val.toStyledString());
-                } else {
-                    val["data"] = data;
-                    InfoL << "Get recorded time period success";
-                    invoker(200, headerOut, val.toStyledString());
-                }
-            });
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
+        findTimePeriod(tuple, start_time, end_time, period_type, detail, [&](const SockException &ex, const Value &data) {
+            if (ex) {
+                val["code"] = API::OtherFailed;
+                val["msg"] = ex.what();
+                invoker(400, headerOut, val.toStyledString());
+            } else {
+                val["data"] = data;
+                InfoL << "Get recorded time period success";
+                invoker(200, headerOut, val.toStyledString());
+            }
+        });
     });
 
     // Get screenshot cache or real-time screenshot
@@ -2529,17 +2628,53 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/description", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/description", [](API_ARGS_MAP) {
         Value info;
-        info["guid"] = BUILD_TIME;
-        info["branchName"] = BRANCH_NAME;
-        info["commitHash"] = COMMIT_HASH;
+        info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
+        info["verion"] = kServerName;
+        info["osInfo"]["platform"] = "";
+        info["osInfo"]["variant"] = "";
+        info["osInfo"]["variantVerison"] = "";
+        info["httpPort"] =  mINI::Instance()["http.port"];
+        info["httpsPort"] = mINI::Instance()["http.sslport"];
+        info["preferSSL"] = false;
         val["data"] = info;
-        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("mediaServerId", "domain", "ip", "httpPort", "httpsPort", "preferSSL")
+        
+        auto mediaServerId = allArgs["mediaServerId"];
+        auto apiDomain = allArgs["domain"];
+        auto apiIp = allArgs["ip"];
+        int httpPort = allArgs["httpPort"];
+        int httpsPort = allArgs["httpsPort"];
+        bool preferSSL = allArgs["preferSSL"];
 
+        auto protocol = preferSSL ? "https://" : "http://";
+        auto address = apiDomain;
+        string apiPort = "";
+        if (preferSSL &&  httpsPort > 0) {
+            apiPort = ":" + to_string(httpsPort);
+        } else if (!preferSSL && httpPort > 0) {
+            apiPort = ":" + to_string(httpPort);
+        }
+        auto apiUrl = protocol + address + apiPort;
+
+        int changed = API::Success;
+        auto &ini = mINI::Instance();
+        if (ini["hook.apiUrl"] != apiUrl) {
+            ini["hook.apiUrl"] = apiUrl;
+            ++changed;
+        }
+        if (changed > 0) {
+            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+            ini.dumpFile(g_ini_file);
+        }
+
+        //todo: restart
+
+        val["changed"] = changed;
     });
 
     api_regist("/media/mserver/getStatistic",[](API_ARGS_MAP_ASYNC){

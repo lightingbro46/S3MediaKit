@@ -262,6 +262,9 @@ extern const std::string kMKVSavePath;
 // HLS recording save path
 extern const std::string kHlsSavePath;
 
+// Time recording save path
+extern const std::string kTimeSavePath;
+
 // On-demand protocol conversion switch
 extern const std::string kHlsDemand;
 extern const std::string kRtspDemand;

@@ -6,7 +6,7 @@
 #include "System.h"
 #include "Thread/WorkThreadPool.h"
 #include "Network/sockutil.h"
-#include "Local/TimeRecorder.h"
+#include "Local/TimeQuery.h"
 
 using namespace std;
 using namespace toolkit;
@@ -420,11 +420,10 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         return cb(err, file_duration);
     }
 
-    TimeRecorder::Instance().getRecordedFootage(start_time, end_time, camera_id, stream_id, [&](const vector<TimeBlock> &blocks) mutable {
-        if (blocks.empty()) {
-            return;
-        }
-        for (const auto &block : blocks) {
+    MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+    auto query = std::make_shared<TimeQuery>(tuple);
+    query->getRecordedTimePeriod(start_time, end_time, [&file_duration, file_ptr](const vector<TimeBlock> &ret) {
+        for (const auto &block : ret) {
             auto line = "file '" + block.file_path() + "'\n";
             fwrite(line.c_str(), line.size(), 1, file_ptr.get());
             file_duration += block.time_len();

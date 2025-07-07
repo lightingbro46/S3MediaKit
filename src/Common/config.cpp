@@ -127,6 +127,8 @@ const string kMKVSavePath = string(kFieldName) + "mkv_save_path";
 
 const string kHlsSavePath = string(kFieldName) + "hls_save_path";
 
+const string kTimeSavePath = string(kFieldName) + "time_save_path";
+
 const string kHlsDemand = string(kFieldName) + "hls_demand";
 const string kRtspDemand = string(kFieldName) + "rtsp_demand";
 const string kRtmpDemand = string(kFieldName) + "rtmp_demand";
@@ -160,7 +162,9 @@ static onceToken token([]() {
     mINI::Instance()[kMKVMaxSecond] = 60;
     mINI::Instance()[kMKVSavePath] = "./www";
 
-    mINI::Instance()[kHlsSavePath] = "./www";
+    mINI::Instance()[kHlsSavePath] = "./www/live";
+
+    mINI::Instance()[kTimeSavePath] = "./www";
 
     mINI::Instance()[kHlsDemand] = 0;
     mINI::Instance()[kRtspDemand] = 0;
@@ -195,7 +199,7 @@ static onceToken token([]() {
     mINI::Instance()[kVirtualPath] = "";
     mINI::Instance()[kCharSet] = "utf-8";
 
-    mINI::Instance()[kRootPath] = "./www";
+    mINI::Instance()[kRootPath] = "./www/live";
     mINI::Instance()[kNotFound] = StrPrinter << "<html>"
                                                 "<head><title>404 Not Found</title></head>"
                                                 "<body bgcolor=\"white\">"
@@ -333,10 +337,10 @@ const string kFastRegister = HLS_FIELD "fastRegister";
 
 static onceToken token([]() {
     mINI::Instance()[kSegmentDuration] = 2;
-    mINI::Instance()[kSegmentNum] = 3;
+    mINI::Instance()[kSegmentNum] = 6;
     mINI::Instance()[kSegmentKeep] = false;
     mINI::Instance()[kSegmentDelay] = 0;
-    mINI::Instance()[kSegmentRetain] = 5;
+    mINI::Instance()[kSegmentRetain] = 10;
     mINI::Instance()[kFileBufSize] = 64 * 1024;
     mINI::Instance()[kBroadcastRecordTs] = false;
     mINI::Instance()[kDeleteDelaySec] = 10;
@@ -390,16 +394,6 @@ const string kRtspSpeed = "rtsp_speed";
 const string kLatency = "latency";
 const string kPassPhrase = "passPhrase";
 } // namespace Client
-
-namespace Database {
-#define DATABASE_FIELD "database."
-
-} // namespace Database
-
-namespace Plugin {
-#define PLUGIN_FIELD "plugin."
-
-} // namespace Plugin
 
 } // namespace mediakit
 

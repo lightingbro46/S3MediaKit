@@ -100,7 +100,7 @@ int main(int argc, char *argv[]) {
 
         TcpServer::Ptr httpSrvOld(new TcpServer());
         // Compatible with previous code (but does not support generating Session type based on URL)
-        httpSrvOld->start<WebSocketSession<EchoSession, HttpSession> >(8080);
+        httpSrvOld->start<WebSocketSession<EchoSession, HttpSession> >(80);
 
         DebugL << "Please open the web page:http://www.websocket-test.com/, perform a test";
         DebugL << "connect ws://127.0.0.1/xxxx，ws://127.0.0.1/ The test results will be different, and different processing logics are supported according to the URL selection.";
