@@ -2257,11 +2257,75 @@ void installWebApi() {
             });
     });
 
-    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
-        GET_CONFIG(string, root_path, API::kDownloadRoot)
-        string file_path = File::absolutePath("./thumbnail_test.jpeg", root_path);
-        invoker.responseFile(allArgs.parser.getHeader(), StrCaseMap{}, file_path);
+    // Get screenshot cache or real-time screenshot
+    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC){
+        CHECK_ARGS("cameraId", "streamId", "pos");
+        auto camera_id = allArgs["cameraId"];
+        auto stream_id = allArgs["streamId"];
+        auto pos_time = allArgs["pos"];
+
+        if (pos_time == "latest") {
+            pos_time = time(NULL) - 60;
+        }
+
+        GET_CONFIG(string, snap_root, API::kSnapRoot);
+        int expire_sec = 60;
+
+        bool have_old_snap = false, res_old_snap = false;
+        auto path = camera_id + "/" + stream_id;
+        auto scan_path = File::absolutePath(path, snap_root) + "/";
+        string new_snap = StrPrinter << scan_path << pos_time << ".jpeg";
+
+        File::scanDir(scan_path, [&](const string &path, bool isDir) {
+            if (isDir || !end_with(path, ".jpeg")) {
+                // Ignore folders or other types of files
+                return true;
+            }
+
+            // Find screenshot
+            auto tm = findSubString(path.data() + scan_path.size(), nullptr, ".jpeg");
+            if (atoll(tm.data()) + expire_sec < time(NULL)) {
+                // Screenshot has expired, rename it so that it can be returned when requested again
+                rename(path.data(), new_snap.data());
+                have_old_snap = true;
+                return true;
+            }
+
+            // Screenshot exists and has not expired, so return it
+            res_old_snap = true;
+            responseSnap(path, allArgs.parser.getHeader(), invoker);
+            // Interrupt traversal
+            return false;
+        });
+
+        if (res_old_snap) {
+            // Old screenshot has been replied
+            return;
+        }
+
+        // No screenshot or screenshot has expired
+        if (!have_old_snap) {
+            // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
+            // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
+            auto file = File::create_file(new_snap, "wb");
+            if (file) {
+                fclose(file);
+            }
+        }
+
+        // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
+        auto new_snap_tmp = new_snap + ".tmp";
+        FFmpegSnap::makeSnap(camera_id, stream_id, stoll(pos_time), new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+            if (!success) {
+                // Screenshot generation failed, there may be residual empty files
+                File::delete_file(new_snap_tmp);
+            } else {
+                // Temporary file changed to formal file
+                File::delete_file(new_snap);
+                rename(new_snap_tmp.data(), new_snap.data());
+            }
+            responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
+        });
     });
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
