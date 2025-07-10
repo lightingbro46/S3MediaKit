@@ -2549,13 +2549,12 @@ void installWebApi() {
         int size = allArgs["size"];
         string sort = allArgs["sort"];
 
-        if (size <= 0) {
-            size = 1;
-        }
+        if (size <= 0) size = 1;
 
         auto imp = std::make_shared<BookmarkImp>();
         auto ret = imp->search(start_time, end_time, camera_id, search, page, size, sort);
- 
+
+        val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
             auto tags = imp->findTagsByBookmark(b.guid);
             Value b_json;
@@ -2640,6 +2639,22 @@ void installWebApi() {
         auto imp = std::make_shared<BookmarkImp>();
         imp->remove(id);
         val["data"]["flag"] = true;
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) { 
+        // CHECK_TOKEN();
+        CHECK_ARGS("size"); 
+        int size = allArgs["size"];
+        if (size < 0) size = 1;
+        
+        auto imp = std::make_shared<BookmarkTagCountImp>();
+        auto tags = imp->findTagsByCountDesc(size);
+
+        val["data"] = arrayValue;
+        for (const auto &tag : tags) {
+            val["data"].append(tag);
+        }
         invoker(200, headerOut, val.toStyledString());
     });
 
