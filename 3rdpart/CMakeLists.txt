@@ -223,9 +223,9 @@ endif()
 if(ENABLE_CXX_API)
   # Keep directory structure
   install(DIRECTORY ${ToolKit_ROOT}/
-    DESTINATION ${INSTALL_PATH_INCLUDE}/ZLToolKit
+    DESTINATION ${INSTALL_PATH_INCLUDE}/S3ToolKit
     REGEX "(.*[.](md|cpp)|win32)$" EXCLUDE)
-  install(TARGETS zltoolkit
+  install(TARGETS s3toolkit
     DESTINATION ${INSTALL_PATH_LIB})
 endif()
 

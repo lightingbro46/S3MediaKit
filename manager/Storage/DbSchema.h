@@ -8,18 +8,71 @@ namespace managerkit {
 
 // Nullable value
 template<typename T>
-struct Nullable {
-    bool has_value;
-    T value;
+struct Optional {
+    bool has_value_;
+    T value_;
 
-    Nullable() : has_value(false) {}
-    Nullable(const T& v) : has_value(true), value(v) {}
+    Optional() : has_value_(false), value_() {}
 
-    operator bool() const { return has_value; }
-    const T& operator*() const { return value; }
+    Optional(const T& value) : has_value_(true), value_(value) {}
+
+    Optional(T&& value) : has_value_(true), value_(std::move(value)) {}
+
+    Optional(const Optional& other) : has_value_(other.has_value_) {
+        if (has_value_) value_ = other.value_;
+    }
+
+    Optional(Optional&& other) noexcept : has_value_(other.has_value_) {
+        if (has_value_) value_ = std::move(other.value_);
+    }
+
+    Optional& operator=(const Optional& other) {
+        if (this != &other) {
+            has_value_ = other.has_value_;
+            if (has_value_) value_ = other.value_;
+        }
+        return *this;
+    }
+
+    Optional& operator=(Optional&& other) noexcept {
+        if (this != &other) {
+            has_value_ = other.has_value_;
+            if (has_value_) value_ = std::move(other.value_);
+        }
+        return *this;
+    }
+
+    void reset() {
+        has_value_ = false;
+        value_ = T{};
+    }
+
+    bool has_value() const {
+        return has_value_;
+    }
+
+    explicit operator bool() const {
+        return has_value_;
+    }
+
+    T& value() {
+        if (!has_value_) throw std::logic_error("bad Optional access");
+        return value_;
+    }
+
+    const T& value() const {
+        if (!has_value_) throw std::logic_error("bad Optional access");
+        return value_;
+    }
+
+    T value_or(const T& default_value) const {
+        return has_value_ ? value_ : default_value;
+    }
 };
 
-// serialize_sql_value
+// ===============================
+// Serialize value to string
+// ===============================
 template<typename FieldType>
 inline std::string serialize_sql_value(const FieldType& val);
 
@@ -39,11 +92,13 @@ inline std::string serialize_sql_value(const std::string& val) {
 }
 
 template<typename T>
-inline std::string serialize_sql_value(const Nullable<T>& val) {
-    return val.has_value ? serialize_sql_value(val.value) : "NULL";
+inline std::string serialize_sql_value(const Optional<T>& val) {
+    return val.has_value() ? serialize_sql_value(val.value()) : "NULL";
 }
 
-// parse_sql_value
+// ===============================
+// Parse value from string
+// ===============================
 template<typename FieldType>
 inline FieldType parse_sql_value(const std::string& s, FieldType);
 
@@ -66,9 +121,9 @@ inline std::string parse_sql_value<std::string>(const std::string& s, std::strin
 }
 
 template<typename T>
-inline Nullable<T> parse_sql_value(const std::string& s, Nullable<T>) {
-    if (s == "NULL") return Nullable<T>();
-    return Nullable<T>(parse_sql_value<T>(s));
+inline Optional<T> parse_sql_value(const std::string& s, Optional<T> mem) {
+    if (s == "NULL") return Optional<T>();
+    return Optional<T>(parse_sql_value<T>(s, T{}));
 }
 
 // Macro DECLARE_ENTITY
@@ -88,11 +143,11 @@ struct EntityTraits<EntityType> {                                               
     static std::vector<std::string> getValues(const EntityType &obj) {                                                                                     \
         return getValuesImpl(obj, __VA_ARGS__);                                                                                                            \
     }                                                                                                                                                      \
-    static std::string getPrimaryKey() {                                                                                                                   \
-        return std::string(#PrimaryKey);                                                                                                                   \
+    static std::vector<std::string> getPrimaryKey() {                                                                                                      \
+        return PrimaryKey;                                                                                                                                 \
     }                                                                                                                                                      \
-    static std::string getPrimaryKeyValue(const EntityType &obj) {                                                                                         \
-        return serialize_sql_value(obj.PrimaryKey);                                                                                                        \
+    static std::vector<std::string> getPrimaryKeyValue(const EntityType &obj) {                                                                            \
+        return getPrimaryKeyValuesImpl(obj, PrimaryKey, __VA_ARGS__);                                                                                      \
     }                                                                                                                                                      \
     static EntityType fromRow(const std::vector<std::string> &row) {                                                                                       \
         return fromVectorImpl<EntityType>(row, __VA_ARGS__);                                                                                               \
@@ -167,6 +222,23 @@ std::vector<Entity> fromVector(const std::vector<std::vector<std::string>>& rows
     std::vector<Entity> result;
     for (const auto& row : rows) {
         result.push_back(fromVectorImpl<Entity>(row, args...));
+    }
+    return result;
+}
+
+// getPrimaryKeyValuesImpl
+template<typename Entity, typename... Args>
+std::vector<std::string> getPrimaryKeyValuesImpl(const Entity& obj, const std::vector<std::string>& primaryKeys, Args... args) {
+    std::vector<std::string> result;
+    auto cols = getColumnsImpl(args...);
+    auto values = getValuesImpl(obj, args...);
+    for (size_t i = 0; i < primaryKeys.size(); ++i) {
+        for (size_t j = 0; j < cols.size(); ++j) {
+            if (cols[j] == primaryKeys[i]) {
+                result.push_back(values[j]);
+                break;
+            }
+        }
     }
     return result;
 }

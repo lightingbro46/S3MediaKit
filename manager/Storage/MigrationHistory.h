@@ -2,31 +2,28 @@
 #define STORAGE_MIGRATIONHISTORY_H
 
 #include <string>
-#include "DbSchema.h"
 #include "DbStorage.h"
 
 namespace managerkit {
 
 struct MigrateHistory {
-    std::string id;
+    int id;
     std::string app_name;
     std::string migration;
     std::string applied;
 };
 
 DECLARE_ENTITY(MigrateHistory, "migrationHistory",
-    id,
+    { "id" },
     &MigrateHistory::id, "id", 
     &MigrateHistory::app_name, "app_name", 
     &MigrateHistory::migration, "migration", 
     &MigrateHistory::applied, "applied"
 )
 
-class MigrationHistoryRepository : public SqliteRespository<MigrateHistory> {
+class MigrationHistoryRepository : public SqliteRepository<MigrateHistory> {
 public:
-    using Ptr = std::shared_ptr<MigrationHistoryRepository>;
-    MigrationHistoryRepository(const std::string &tag)
-        : SqliteRespository<MigrateHistory>(tag), _tag(tag) {}
+    MigrationHistoryRepository(const std::string &tag) : SqliteRepository<MigrateHistory>(tag) {}
     
     std::vector<MigrateHistory> findByMigration(const std::string path) {
         auto query = toolkit::QueryBuilder()
@@ -40,11 +37,6 @@ public:
         }
         return ret;
     }
-
-    std::string getTag() { return _tag; }
-
-private:
-    std::string _tag;
 };
 
 class MigrationHistoryImp : public MigrationHistoryRepository {
@@ -60,7 +52,7 @@ public:
 private:
     void removeFile(const std::string &folder_path);
 
-    bool execSqlQuery(std::string &sql_query);
+    void execSqlQuery(const std::string &sql_query);
 
 private:
     std::mutex _mtx;

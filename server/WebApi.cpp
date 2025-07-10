@@ -63,11 +63,13 @@
 #endif
 
 #include "Local/TimeQuery.h"
+#include "Storage/Bookmark.h"
 
 using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
+using namespace managerkit;
 
 namespace API {
 #define API_FIELD "api."
@@ -721,42 +723,6 @@ void addStreamPusherProxy(const string &schema,
         s_pusher_proxy.erase(key);
     });
     pusher->publish(url);
-}
-
-struct Bookmark {
-    std::string id;
-    std::string name;
-    std::string description;
-    std::string camera_id;
-    uint64_t start_time;
-    uint64_t end_time;
-    uint32_t duration;
-    std::string tags;
-};
-
-static std::unordered_map<std::string, std::shared_ptr<Bookmark>> s_bookmark;
-
-void addBookmark(Bookmark record) {
-    if (record.id.empty()) {
-        record.id = format_guid(strToLower(makeRandStr(32)));
-    }
-    s_bookmark.emplace(record.id, std::make_shared<Bookmark>(record));
-}
-
-void updateBookmark(Bookmark record) {
-    s_bookmark.emplace(record.id, std::make_shared<Bookmark>(record));
-}
-
-void deleteBookmark(std::string guid) {
-    s_bookmark.erase(guid);
-}
-
-void getBookmarks(const std::function<void(std::vector<Bookmark>)> &cb) {
-    std::vector<Bookmark> ret;
-    for (const auto &p : s_bookmark) {
-        ret.push_back(*(p.second));
-    }
-    cb(ret);
 }
 
 /**
@@ -2571,88 +2537,109 @@ void installWebApi() {
         });
     });
 
-    api_regist("/media/esc/bookmark/list", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/bookmark/search", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        Value list = Json::arrayValue;
-        getBookmarks([&](const std::vector<Bookmark> &vec) { 
-            for (const auto &b : vec) {
-                Value b_json;
-                b_json["id"] = b.id;
-                b_json["name"] = b.name;
-                b_json["description"] = b.description;
-                b_json["camera_id"] = b.camera_id;
-                b_json["start_time"] = b.start_time;
-                b_json["end_time"] = b.end_time;
-                b_json["duration"] = b.duration;
-                b_json["tags"] = b.tags;
-                list.append(b_json);
-            }
-        });
-        val = list;
+        CHECK_ARGS("start_time", "end_time", "page", "size", "sort");
+
+        string camera_id = allArgs["camera_id"];
+        int64_t start_time = allArgs["start_time"];
+        int64_t end_time = allArgs["end_time"];
+        string search = allArgs["search"];
+        int page = allArgs["page"];
+        int size = allArgs["size"];
+        string sort = allArgs["sort"];
+
+        if (size <= 0) {
+            size = 1;
+        }
+
+        auto imp = std::make_shared<BookmarkImp>();
+        auto ret = imp->search(start_time, end_time, camera_id, search, page, size, sort);
+ 
+        for (const Bookmark &b : ret) {
+            auto tags = imp->findTagsByBookmark(b.guid);
+            Value b_json;
+            b_json["id"] = b.guid;
+            b_json["camera_id"] = b.camera_guid;
+            b_json["start_time"] = b.start_time;
+            b_json["duration"] = b.duration;
+            b_json["name"] = b.name ? b.name.value() : "";
+            b_json["end_time"] = b.end_time ? b.name.value() : 0;
+            b_json["description"] = b.description ? b.description.value() : "";
+            b_json["tags"] = tags;
+            val["data"].append(b_json);
+        }
+
+        auto total =  imp->count(start_time, end_time, camera_id, search);
+        val["currentPage"] = page;
+        val["totalItems"] = total;
+        val["totalPages"] = static_cast<int>(std::ceil(static_cast<double>(total)/ size));
         invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("name", "camera_id", "start_time");
-        auto name = allArgs["name"];
-        auto description = allArgs["description"];
-        auto camera_id = allArgs["camera_id"];
-        auto start_time = allArgs["start_time"];
-        auto end_time = allArgs["end_time"];
-        auto duration = allArgs["duration"];
-        auto tags = allArgs["tags"];
+        CHECK_ARGS("camera_id", "start_time", "duration");
+
+        string name = allArgs["name"];
+        string description = allArgs["description"];
+        string camera_id = allArgs["camera_id"];
+        int64_t start_time = allArgs["start_time"];
+        int64_t end_time = allArgs["end_time"];
+        int64_t duration = allArgs["duration"];
+        string tags = allArgs["tags"];
 
         Bookmark bm;
         bm.name = name;
         bm.description = description;
-        bm.camera_id = camera_id;
+        bm.camera_guid = camera_id;
         bm.start_time = start_time;
         bm.end_time = end_time;
         bm.duration = duration;
-        bm.tags = tags;
 
-        addBookmark(bm);
+        auto imp = std::make_shared<BookmarkImp>();
+        imp->add(bm, tags);
+
+        val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("id");
-        CHECK_ARGS("name");
-        CHECK_ARGS("camera_id");
-        CHECK_ARGS("start_time");
+        CHECK_ARGS("id", "camera_id", "start_time", "duration");
 
-        auto id = allArgs["id"];
-        auto name = allArgs["name"];
-        auto description = allArgs["description"];
-        auto camera_id = allArgs["camera_guid"];
-        auto start_time = allArgs["start_time"];
-        auto end_time = allArgs["end_time"];
-        auto duration = allArgs["duration"];
-        auto tags = allArgs["tags"];
+        string id = allArgs["id"];
+        string name = allArgs["name"];
+        string description = allArgs["description"];
+        string camera_id = allArgs["camera_guid"];
+        int64_t start_time = allArgs["start_time"];
+        int64_t end_time = allArgs["end_time"];
+        int64_t duration = allArgs["duration"];
+        string tags = allArgs["tags"];
 
         Bookmark bm;
-        bm.id = id;
+        bm.guid = id;
         bm.name = name;
         bm.description = description;
-        bm.camera_id = camera_id;
+        bm.camera_guid = camera_id;
         bm.start_time = start_time;
         bm.end_time = end_time;
         bm.duration = duration;
-        bm.tags = tags;
 
-        updateBookmark(bm);
+        auto imp = std::make_shared<BookmarkImp>();
+        imp->update(bm, tags);
+        val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) { 
         // CHECK_TOKEN();
-        // CHECK_ARGS("id"); 
-
+        CHECK_ARGS("id"); 
         auto id = allArgs["id"];
 
-        deleteBookmark(id);
+        auto imp = std::make_shared<BookmarkImp>();
+        imp->remove(id);
+        val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
     });
 

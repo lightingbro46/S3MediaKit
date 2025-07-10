@@ -137,9 +137,3 @@ std::string getHardwareUUID() {
 
 #endif
 
-std::string format_guid(const std::string& s) {
-    if (s.length() != 32) return "";
-    return s.substr(0,8) + "-" + s.substr(8,4) + "-" + s.substr(12,4) + "-" +
-           s.substr(16,4) + "-" + s.substr(20,12);
-}
-

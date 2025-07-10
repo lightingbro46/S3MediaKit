@@ -10,10 +10,6 @@ namespace mediakit {
  */
 std::string getHardwareUUID();
 
-/**
- * Format by uuid/guid form
- */
-std::string format_guid(const std::string& s);
 
 } // namespace mediakit
 

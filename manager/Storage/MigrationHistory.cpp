@@ -30,17 +30,11 @@ void MigrationHistoryImp::migrate(const string &files_string) {
         files = split(files_string, ";");
     }
 
-    bool check_sql_file = true;
-    std::string file_save_path = SqlitePoolMap::Instance().getSavePath(getTag());
-    file_save_path = File::absolutePath("", file_save_path);
-    if (File::fileSize(file_save_path) == 0) {
-        check_sql_file = false;
-    }
-
-    for (const auto &file : files) {
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        auto file = *it;
         if (File::fileExist(file)) {
             try {
-                if (check_sql_file) {
+                if (it != files.begin()) {
                     auto records = findByMigration(file);
                     if (!records.empty()) {
                         continue;
@@ -50,6 +44,7 @@ void MigrationHistoryImp::migrate(const string &files_string) {
                 auto sql_stmt = File::loadFile(file);
                 execSqlQuery(sql_stmt);
                 DebugL << "Execute sql statement success: " << file;
+
                 MigrateHistory entry;
                 entry.app_name = mediakit::kServerName;
                 entry.migration = file;
@@ -63,8 +58,10 @@ void MigrationHistoryImp::migrate(const string &files_string) {
     }
 }
 
-bool MigrationHistoryImp::execSqlQuery(string &sql_query) {
-    return _executor->execDML(sql_query);
+void MigrationHistoryImp::execSqlQuery(const string &sql_query) {
+    auto txn = _executor->execTxn();
+    txn->execScript(sql_query);
+    txn->commit();
 }
 
 void MigrationHistoryImp::removeFile(const std::string &folder_path) {

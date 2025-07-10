@@ -23,8 +23,6 @@ extern const std::string kEdgeStorageControllerDb;
 
 namespace managerkit {
 
-static bool is_migrate_db = false;
-
 // Global Sqlite pool record object, convenient for later management
 // Thread-safe
 class SqlitePoolMap : public std::enable_shared_from_this<SqlitePoolMap> {
@@ -63,7 +61,7 @@ public:
     ~SqliteHelper() = default;
 
     toolkit::SqlitePool::Ptr pool() {
-        return is_migrate_db ? nullptr : _pool;
+        return _pool;
     }
 
 private:
@@ -76,6 +74,7 @@ class SqliteQueryExecutor {
 public:
     using Ptr = std::shared_ptr<SqliteQueryExecutor>;
     using Executor = toolkit::QueryExecutor<toolkit::SqlitePool, toolkit::SqliteBaseWriter>;
+    using ExecutorWithTxn = toolkit::QueryExecutor<toolkit::SqliteTransaction, toolkit::SqliteTransactionWriter>;
 
     SqliteQueryExecutor(const std::string &tag, toolkit::EventPoller::Ptr poller = nullptr) {
         _poller = poller ? std::move(poller) : toolkit::EventPollerPool::Instance().getPoller();
@@ -94,34 +93,53 @@ public:
         return Executor::executeRaw(pool, std::forward<ArgsType>(args)...);
     }
 
+    toolkit::SqliteTransaction::Ptr execTxn() {
+        auto pool = _helper->pool();
+        return std::make_shared<toolkit::SqliteTransaction>(pool);
+    }
+
+    template<typename ...ArgsType>
+    bool execDMLWithTxn(toolkit::SqliteTransaction::Ptr pool, ArgsType &&...args) {
+        return ExecutorWithTxn::execDML(pool, std::forward<ArgsType>(args)...) > 0;
+    }
+
+    template<typename ...ArgsType>
+    toolkit::SqlitePool::SqlRetType executeRawWithTxn(toolkit::SqliteTransaction::Ptr pool, ArgsType &&...args)  {
+        return ExecutorWithTxn::executeRaw(pool, std::forward<ArgsType>(args)...);
+    }
+
 private:
     SqliteHelper::Ptr _helper;
     toolkit::EventPoller::Ptr _poller;
 };
 
 template<typename T>
-class SqliteRespository { 
+class SqliteRepository { 
 public:
-    SqliteRespository(const std::string &tag) { 
-        _executor = std::make_shared<SqliteQueryExecutor>(tag); 
+    SqliteRepository(const std::string &tag) : _tag(tag) { 
+        _executor = std::make_shared<SqliteQueryExecutor>(_tag); 
     }
 
-    virtual ~SqliteRespository() = default;
+    virtual ~SqliteRepository() = default;
 
-    virtual bool save(const T& obj) { 
+    std::string getTag() { return _tag; }
+
+protected:
+    virtual bool save(const T& obj, bool include_id = false) { 
         auto cols = EntityTraits<T>::getColumns();
         auto vals = EntityTraits<T>::getValues(obj);
 
         std::vector<std::pair<std::string, std::string>> assignments;
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
         for (size_t i = 0; i < cols.size(); ++i) {
-            if (cols[i] == EntityTraits<T>::getPrimaryKey()) continue;
+            if (!include_id && std::find(primaryKeys.begin(), primaryKeys.end(), cols[i]) != primaryKeys.end()) continue;
             assignments.push_back(std::make_pair(cols[i], vals[i]));
         }
 
         auto query = toolkit::QueryBuilder()
                         .insertInto(EntityTraits<T>::tableName())
                         .values(assignments);
-        return _executor->execDML(query);
+        return _executor->execDML(query) > 0;
     }
 
     virtual bool updateById(const T& obj) {
@@ -129,26 +147,58 @@ public:
         auto vals = EntityTraits<T>::getValues(obj);
 
         std::vector<std::pair<std::string, std::string>> assignments;
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
         for (size_t i = 0; i < cols.size(); ++i) {
-            if (cols[i] == EntityTraits<T>::getPrimaryKey()) continue;
+            if (std::find(primaryKeys.begin(), primaryKeys.end(), cols[i]) != primaryKeys.end()) continue;
             assignments.push_back(std::make_pair(cols[i], vals[i]));
+        }
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
         }
 
         auto query = toolkit::QueryBuilder()
                             .update(EntityTraits<T>::tableName())
                             .set(assignments)
-                            .where(EntityTraits<T>::getPrimaryKey() + "= ?", { EntityTraits<T>::getPrimaryKeyValue(obj) });
-        return _executor->execDML(query);
+                            .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        return _executor->execDML(query) > 0;
     } 
 
     virtual bool removeById(const T& obj) {
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
+        }
         auto query = toolkit::QueryBuilder()
                              .deleteFrom(EntityTraits<T>::tableName())
-                             .where(EntityTraits<T>::getPrimaryKey(), { EntityTraits<T>::getPrimaryKeyValue(obj) });
-        return _executor->execDML(query);
+                             .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        return _executor->execDML(query) > 0;
+    }
+
+    virtual std::vector<T> findById(const T& obj) {
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
+        }
+        auto query = toolkit::QueryBuilder()
+                             .select(EntityTraits<T>::getColumns())
+                             .from(EntityTraits<T>::tableName())
+                             .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        auto rows = _executor->executeRaw(query);
+        std::vector<T> ret;
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<T>::fromRow(row));
+        }
+        return ret;
     }
 
 protected:
+    std::string _tag;
     SqliteQueryExecutor::Ptr _executor;
 };
 
