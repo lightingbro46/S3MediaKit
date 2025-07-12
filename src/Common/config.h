@@ -476,6 +476,14 @@ extern const std::string kLatency;
 // Set SRT PassPhrase
 extern const std::string kPassPhrase;
 } // namespace Client
+
+// //////////SSDP configuration///////////
+namespace Ssdp {
+// SSDP timeout time
+extern const std::string kTimeOutSec;
+// Multicast allocation address
+extern const std::string kAddrMulticast;
+} //namespace SSDP
 } // namespace mediakit
 
 #endif /* COMMON_CONFIG_H */

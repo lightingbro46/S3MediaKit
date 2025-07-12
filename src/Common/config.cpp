@@ -395,6 +395,18 @@ const string kLatency = "latency";
 const string kPassPhrase = "passPhrase";
 } // namespace Client
 
+// //////////SSDP configuration///////////
+namespace Ssdp {
+#define SSDP_FIELD "ssdp."
+const string kTimeOutSec = SSDP_FIELD "timeoutSec";
+const string kAddrMulticast = SSDP_FIELD "addrMulticast";
+
+static onceToken token([]() {
+    mINI::Instance()[kTimeOutSec] = 5;
+    mINI::Instance()[kAddrMulticast] = "239.255.255.250";
+});
+} //namespace SSDP
+
 } // namespace mediakit
 
 #ifdef ENABLE_MEM_DEBUG

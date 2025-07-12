@@ -12,6 +12,7 @@
 #include "Rtsp/RtspSession.h"
 #include "Rtmp/RtmpSession.h"
 #include "Shell/ShellSession.h"
+#include "Ssdp/SsdpSession.h"
 #include "Http/WebSocketSession.h"
 #include "Rtp/RtpServer.h"
 #include "WebApi.h"
@@ -92,6 +93,15 @@ onceToken token1([](){
     mINI::Instance()[kPort] = 10000;
 },nullptr);
 } //namespace RtpProxy
+
+// //////////SSDP configuration///////////
+namespace Ssdp {
+#define SSDP_FIELD "ssdp."
+const string kPort = SSDP_FIELD "port";
+static onceToken token([]() {
+    mINI::Instance()[kPort] = 1900;
+});
+} //namespace SSDP
 
 }  // namespace mediakit
 
@@ -260,6 +270,24 @@ int start_main(int argc,char *argv[]) {
                   << ", saved config file: " << g_ini_file;
         }
 
+        auto &mediaServerId = mINI::Instance()[General::kMediaServerId];
+        if (mediaServerId == "your_server_id" || mediaServerId.empty()) {
+            // Starting with the default media server id is prohibited
+            auto hardware_uuid = getHardwareUUID();
+            if (hardware_uuid == "Unavailable" || hardware_uuid.empty()) {
+                mediaServerId = format_guid(strToLower(makeRandStr(32)));
+            } else {
+                mediaServerId = format_guid(strToLower(hardware_uuid));
+            }
+            mINI::Instance().dumpFile(g_ini_file);
+            WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << mediaServerId
+                  << ", saved config file: " << g_ini_file;
+        }
+
+        // Execute migrating database before running other
+        migrateDatabase();
+        InfoL << "Migrating database has been executed successfully";
+
         if (!File::is_dir(ssl_file)) {
             // Not a folder, load certificate, certificate contains public key and private key
             g_reload_certificates = [ssl_file] () {
@@ -279,24 +307,6 @@ int start_main(int argc,char *argv[]) {
         }
         g_reload_certificates();
 
-        auto &mediaServerId = mINI::Instance()[General::kMediaServerId];
-        if (mediaServerId == "your_server_id" || mediaServerId.empty()) {
-            // Starting with the default media server id is prohibited
-            auto hardware_uuid = getHardwareUUID();
-            if (hardware_uuid == "Unavailable" || hardware_uuid.empty()) {
-                mediaServerId = format_guid(strToLower(makeRandStr(32)));
-            } else {
-                mediaServerId = format_guid(strToLower(hardware_uuid));
-            }
-            mINI::Instance().dumpFile(g_ini_file);
-            WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << mediaServerId
-                  << ", saved config file: " << g_ini_file;
-        }
-
-        // Execute migrating database before running other
-        migrateDatabase();
-        InfoL << "Migrating database has been executed successfully";
-        
         std::string listen_ip = mINI::Instance()[General::kListenIP];
         uint16_t shellPort = mINI::Instance()[Shell::kPort];
         uint16_t rtspPort = mINI::Instance()[Rtsp::kPort];
@@ -306,6 +316,8 @@ int start_main(int argc,char *argv[]) {
         uint16_t httpPort = mINI::Instance()[Http::kPort];
         uint16_t httpsPort = mINI::Instance()[Http::kSSLPort];
         uint16_t rtpPort = mINI::Instance()[RtpProxy::kPort];
+        uint16_t ssdpPort = mINI::Instance()[Ssdp::kPort];
+        string multiAddr = mINI::Instance()[Ssdp::kAddrMulticast];
 
         // Set the number of poller threads and CPU affinity. This function must be called before using S3ToolKit network related objects to take effect.
         // If you need to call the getSnap and addFFmpegSource interfaces, you can turn off CPU affinity
@@ -329,6 +341,9 @@ int start_main(int argc,char *argv[]) {
         // http[s] server
         auto httpSrv = std::make_shared<TcpServer>();
         auto httpsSrv = std::make_shared<TcpServer>();
+
+        // ssdp server
+        auto ssdpSrv = std::make_shared<UdpServer>();
 
 #if defined(ENABLE_RTPPROXY)
         // GB28181 rtp push stream port, supports UDP/TCP
@@ -397,6 +412,12 @@ int start_main(int argc,char *argv[]) {
 
             // telnet remote debug server
             if (shellPort) { shellSrv->start<ShellSession>(shellPort, listen_ip); }
+
+            // ssdp server
+            if (ssdpPort) { 
+                ssdpSrv->start<SsdpSession>(ssdpPort, listen_ip); 
+                ssdpSrv->joinMultiAddr(multiAddr);
+            }
 
 #if defined(ENABLE_RTPPROXY)
             // create rtp server
