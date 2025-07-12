@@ -51,7 +51,7 @@ void SsdpSession::onManager() {
 }
 
 string getSystemPlatform() {
-    // todo: set platform info and location
+    // todo: set platform info
     return "Ubuntu/22.04";
 }
 

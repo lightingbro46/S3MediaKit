@@ -2658,17 +2658,48 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/description", [](API_ARGS_MAP) {
-        Value info;
-        info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
-        info["verion"] = kServerName;
-        info["osInfo"]["platform"] = "";
-        info["osInfo"]["variant"] = "";
-        info["osInfo"]["variantVerison"] = "";
-        info["httpPort"] =  mINI::Instance()["http.port"];
-        info["httpsPort"] = mINI::Instance()["http.sslport"];
-        info["preferSSL"] = false;
-        val["data"] = info;
+    api_regist("/media/mserver/description", [](API_ARGS_MAP_ASYNC) {
+        if (allArgs["Accept"].find("application/json") == 0) {
+            // use for same system
+            Value info;
+            info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
+            info["verion"] = kServerName;
+            // todo: set platform info
+            info["osInfo"]["platform"] = "Ubuntu";
+            info["osInfo"]["variant"] = "22.04";
+            info["osInfo"]["variantVerison"] = "";
+            info["httpPort"] =  mINI::Instance()["http.port"];
+            info["httpsPort"] = mINI::Instance()["http.sslport"];
+            info["preferSSL"] = false;
+            val["data"] = info;
+            invoker(200, headerOut, val.toStyledString());
+        } else {
+            // use for UPnP protocol, but not running
+            ostringstream ss;
+            ss << "<?xml version=\"1.0\"?>\r\n";
+            ss << "<root xmlns=\"urn:schemas-upnp-org:device:MediaServer:1\">\r\n";
+            ss << "<specVersion>\r\n";
+            ss << "<major>1</major>\r\n";
+            ss << "<minor>0</minor>\r\n";
+            ss << "</specVersion>\r\n";
+            ss << "<device>\r\n";
+            ss << "<deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>\r\n";
+            ss << "<friendlyName>S3MediaServer</friendlyName>\r\n";
+            ss << "<manufacturer>Viettel</manufacturer>\r\n";
+            ss << "<manufacturerURL></manufacturerURL>\r\n";
+            ss << "<modelDescription>Streaming Media Server</modelDescription>\r\n";
+            ss << "<modelName>S3MediaServer</modelName>\r\n";
+            ss << "<modelNumber>" << kServerName << "</modelNumber>\r\n";
+            ss << "<modelURL></modelURL>\r\n";
+            ss << "<serialNumber></serialNumber>\r\n";
+            ss << "<UDN>uuid:"<< mINI::Instance()[General::kMediaServerId] << "</UDN>\r\n";
+            ss << "<presentationURL></presentationURL>\r\n";
+            ss << "</device>\r\n";
+            ss << "</root>\r\n";
+            ss << "\r\n";
+            headerOut["Content-Type"] = string("application/xml");
+            invoker(200, headerOut, ss.str());
+        }
     });
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
