@@ -21,7 +21,7 @@ void MKVMuxer::openMKV(const string &file) {
 
 MKVFileIO::Writer MKVMuxer::createWriter() {
     GET_CONFIG(bool, recordEnableWebM, Record::kEnableWebM);
-    return _mkv_file->createWriter(recordEnableWebM ? MKV_OPTION_WEBM : 0);
+    return _mkv_file->createWriter(recordEnableWebM ? (int)MKV_OPTION_WEBM : 0);
 }
 
 void MKVMuxer::closeMKV() {
