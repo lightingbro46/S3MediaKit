@@ -17,6 +17,8 @@ typedef mediakit::HttpArgs ArgsType;
 namespace Hook {
 // Maximum timeout for web hook reply
 extern const std::string kTimeoutSec;
+// Address for management system
+extern const std::string kApiUrl;
 }//namespace Hook
 
 void installWebHook();

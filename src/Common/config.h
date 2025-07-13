@@ -127,6 +127,10 @@ using SeekInvoker = std::function <void(int64_t offset)>;
 extern const std::string kBroadcastMediaSeeked;
 #define BroadcastMediaSeekedArgs const MediaInfo &args, const uint64_t &stamp, const Broadcast::SeekInvoker &invoker, SockInfo &sender
 
+// Broadcast for restart server events. Control server restarting through this event.
+extern const std::string kBroadcastRestartServer;
+#define BroadcastRestartServerArgs void
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

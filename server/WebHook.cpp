@@ -77,7 +77,7 @@ static onceToken token([]() {
     mINI::Instance()[kRetry] = 1;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
-    mINI::Instance()[kApiUrl] = "https://anat.vtscloud.vn";
+    mINI::Instance()[kApiUrl] = "";
 });
 } // namespace Hook
 
@@ -895,11 +895,29 @@ void installWebHook() {
         do_http_hook(rtp_server_timeout, body);
     });
 
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRestartServer, [](BroadcastRestartServerArgs) {
+        GET_CONFIG(string, secret_key, API::kSecret);
+        GET_CONFIG(uint16_t, http_port, "http.port");
+
+        ostringstream ss;
+        ss << "http://localhost";
+        if (http_port > 0 && http_port != 80) {
+            ss << ":" << http_port;
+        }
+        ss << "/index/api/restartServer";
+        string restart_server_trigger = ss.str();
+
+        HttpArgs params;
+        params["secret"] = secret_key;
+        
+        do_http_hook(restart_server_trigger, params);
+    });
+
     // Report server restart
-    // reportServerStarted();
+    reportServerStarted();
 
     // Report keep-alive regularly
-    // reportServerKeepalive();
+    reportServerKeepalive();
 
     // Report server statistics
     reportServerStatistic();

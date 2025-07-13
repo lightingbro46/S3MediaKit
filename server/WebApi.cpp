@@ -64,6 +64,8 @@
 
 #include "Local/TimeQuery.h"
 #include "Storage/Bookmark.h"
+#include "Storage/Certification.h"
+#include "Manager.h"
 
 using namespace std;
 using namespace Json;
@@ -2676,37 +2678,73 @@ void installWebApi() {
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("mediaServerId", "domain", "ip", "httpPort", "httpsPort", "preferSSL")
         
-        auto mediaServerId = allArgs["mediaServerId"];
-        auto apiDomain = allArgs["domain"];
-        auto apiIp = allArgs["ip"];
+        string mediaServerId_ = allArgs["mediaServerId"];
+        string apiDomain = allArgs["domain"];
+        string apiIp = allArgs["ip"];
         int httpPort = allArgs["httpPort"];
         int httpsPort = allArgs["httpsPort"];
         bool preferSSL = allArgs["preferSSL"];
+        string mediaServerDomain = allArgs["mediaServerDomain"];
+        string mediaServerCert = allArgs["mediaServerCert"];
 
-        auto protocol = preferSSL ? "https://" : "http://";
-        auto address = apiDomain;
-        string apiPort = "";
-        if (preferSSL &&  httpsPort > 0) {
-            apiPort = ":" + to_string(httpsPort);
-        } else if (!preferSSL && httpPort > 0) {
-            apiPort = ":" + to_string(httpPort);
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (mediaServerId != mediaServerId_) {
+            val["data"]["changed"] = 0;
+            invoker(200, headerOut, val.toStyledString());
+            return;
         }
-        auto apiUrl = protocol + address + apiPort;
 
-        int changed = API::Success;
+        int changed = 0;
+        bool need_to_restart = false;
         auto &ini = mINI::Instance();
-        if (ini["hook.apiUrl"] != apiUrl) {
-            ini["hook.apiUrl"] = apiUrl;
-            ++changed;
+        // get new config and compare to old one of system
+        ostringstream ss;
+        if (preferSSL) {
+            ss << "https://" << apiDomain;
+            if (httpsPort > 0) {
+                ss << ":" << httpsPort;
+            }
+        } else {
+            ss << "http://" << apiIp;
+            if (httpPort > 0) {
+                ss << ":" << httpsPort;
+            }
         }
+        string apiUrlTmp = ss.str();
+        if (ini[Hook::kApiUrl] != apiUrlTmp) {
+            ini[Hook::kApiUrl] = apiUrlTmp;
+            ++changed;
+            need_to_restart = true;
+        }
+
+        if (!mediaServerDomain.empty() && !mediaServerCert.empty()) {
+            if (ini[Manager::kMediaServerDomain] != mediaServerDomain) {
+                ini[Manager::kMediaServerDomain] = mediaServerDomain;
+                ++changed;
+            }
+            
+            {
+                auto imp = std::make_shared<CertificateImp>();
+                if (!imp->certExist(mediaServerCert)) {
+                    imp->saveCert(mediaServerCert);
+                    ++changed;
+                }
+            }
+        }
+
         if (changed > 0) {
+            // notify to reload config and dump ini file
             NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
             ini.dumpFile(g_ini_file);
         }
 
-        //todo: restart
+        if (need_to_restart) {
+            // notify to restart server
+            NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
+        }
 
-        val["changed"] = changed;
+        val["data"]["changed"] = changed;
+        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/mserver/getStatistic",[](API_ARGS_MAP_ASYNC){

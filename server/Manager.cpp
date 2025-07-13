@@ -16,6 +16,23 @@ using namespace toolkit;
 using namespace mediakit;
 using namespace managerkit;
 
+namespace managerkit {
+
+namespace Manager {
+#define GENERAL_FIELD "manager."
+const std::string kMediaServerDomain = GENERAL_FIELD"mediaServerDomain";
+const std::string kCertSavePath = GENERAL_FIELD"certSavePath";
+const std::string kMaxAllowedDevices = GENERAL_FIELD"maxAllowedDevices";
+
+static onceToken token([]() {
+    mINI::Instance()[kMediaServerDomain] = "";
+    mINI::Instance()[kCertSavePath] = "./certs";
+    mINI::Instance()[kMaxAllowedDevices] = 256;
+});
+} // namespace Manager
+
+} // namespace managerkit
+
 static void *manager_hook_tag = nullptr;
 
 void installManagerHook () {

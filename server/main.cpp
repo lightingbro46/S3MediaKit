@@ -40,6 +40,7 @@
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
+using namespace managerkit;
 
 namespace mediakit {
 // //////////HTTP configuration///////////
@@ -288,18 +289,35 @@ int start_main(int argc,char *argv[]) {
         migrateDatabase();
         InfoL << "Migrating database has been executed successfully";
 
+        auto &cert_folder = mINI::Instance()[Manager::kCertSavePath];
         if (!File::is_dir(ssl_file)) {
             // Not a folder, load certificate, certificate contains public key and private key
-            g_reload_certificates = [ssl_file] () {
+            g_reload_certificates = [ssl_file, cert_folder] () {
                 SSL_Initor::Instance().loadCertificate(ssl_file.data());
+
+                File::scanDir(cert_folder, [](const string &path, bool isDir) {
+                    if (!isDir) {
+                        // Load all certificate in folder, but not used as default
+                        SSL_Initor::Instance().loadCertificate(path.data(), true, "", true, false);
+                    }
+                    return true;
+                });
             };
+            
         } else {
             // Load all certificates under the folder
-            g_reload_certificates = [ssl_file]() {
+            g_reload_certificates = [ssl_file, cert_folder]() {
                 File::scanDir(ssl_file, [](const string &path, bool isDir) {
                     if (!isDir) {
                         // The last certificate will be used as the default certificate (client ssl handshake does not specify the host)
                         SSL_Initor::Instance().loadCertificate(path.data());
+                    }
+                    return true;
+                });
+                File::scanDir(cert_folder, [](const string &path, bool isDir) {
+                    if (!isDir) {
+                        // Load all certificate in folder, but not used as default
+                        SSL_Initor::Instance().loadCertificate(path.data(), true, "", true, false);
                     }
                     return true;
                 });

@@ -5,6 +5,20 @@
 #include <functional>
 #include "json/json.h"
 
+namespace managerkit {
+
+namespace Manager {
+// Media server domain that management system regist for 
+extern const std::string kMediaServerDomain;
+// Maximum number of devices that service operation normally
+extern const std::string kMaxAllowedDevices;
+// Certification save path
+extern const std::string kCertSavePath;
+} // namespace Manager
+
+} // namespace managerkit
+
+
 void installManagerHook();
 
 void unInstallManagerHook();

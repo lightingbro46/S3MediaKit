@@ -57,6 +57,7 @@ const string kBroadcastRtcSctpSend = "kBroadcastRtcSctpSend";
 const string kBroadcastRtcSctpReceived = "kBroadcastRtcSctpReceived";
 const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
 const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
+const string kBroadcastRestartServer = "kBroadcastRestartServer";
 
 } // namespace Broadcast
 
