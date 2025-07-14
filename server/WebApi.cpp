@@ -2660,7 +2660,7 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/description", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/description", [](API_ARGS_MAP) {
         Value info;
         info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
         info["verion"] = kServerName;
@@ -2672,7 +2672,6 @@ void installWebApi() {
         info["httpsPort"] = mINI::Instance()["http.sslport"];
         info["preferSSL"] = false;
         val["data"] = info;
-        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {

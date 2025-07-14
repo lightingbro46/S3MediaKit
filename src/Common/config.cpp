@@ -163,7 +163,11 @@ static onceToken token([]() {
     mINI::Instance()[kMKVMaxSecond] = 60;
     mINI::Instance()[kMKVSavePath] = "./www";
 
+#ifdef _linux_
+    mINI::Instance()[kHlsSavePath] = "/dev/shm/live";
+#else
     mINI::Instance()[kHlsSavePath] = "./www/live";
+#endif
 
     mINI::Instance()[kTimeSavePath] = "./www";
 
@@ -196,11 +200,11 @@ static onceToken token([]() {
     mINI::Instance()[kSendBufSize] = 64 * 1024;
     mINI::Instance()[kMaxReqSize] = 4 * 10240;
     mINI::Instance()[kKeepAliveSecond] = 15;
-    mINI::Instance()[kDirMenu] = true;
+    mINI::Instance()[kDirMenu] = false;
     mINI::Instance()[kVirtualPath] = "";
     mINI::Instance()[kCharSet] = "utf-8";
 
-    mINI::Instance()[kRootPath] = "./www/live";
+    mINI::Instance()[kRootPath] = "./www";
     mINI::Instance()[kNotFound] = StrPrinter << "<html>"
                                                 "<head><title>404 Not Found</title></head>"
                                                 "<body bgcolor=\"white\">"

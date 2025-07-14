@@ -68,7 +68,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerExited] = "/api/media-server/end";
     mINI::Instance()[kOnServerKeepalive] = "/api/media-server/heartbeat";
     mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration";
-    mINI::Instance()[kOnServerReport] = "/api/media-server/report";
+    mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
     mINI::Instance()[kOnServerKeepalive] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";

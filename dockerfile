@@ -27,6 +27,8 @@ RUN apt-get update && \
          libssl-dev \
          protobuf-compiler \
          libprotobuf-dev \
+         libsqlite3-dev \
+         libcurl4-openssl-dev \
          gcc \
          g++ \
          gdb && \
@@ -67,6 +69,8 @@ RUN apt-get update && \
          curl \
          libssl-dev \
          libprotobuf-dev \
+         libsqlite3-dev \
+         libcurl4-openssl-dev \
          ffmpeg && \
          apt-get autoremove -y && \
          apt-get clean -y && \
