@@ -80,7 +80,8 @@ void installManagerHook () {
 }
 
 void unInstallManagerHook() {
-    NoticeCenter::Instance().delListener(&manager_hook_tag);
+    // Note: Comment the following code in order to save last segments when program exit
+    // NoticeCenter::Instance().delListener(&manager_hook_tag);
 }
 
 void migrateDatabase() {
