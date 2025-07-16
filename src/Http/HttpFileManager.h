@@ -42,7 +42,7 @@ public:
      * @param parser http request
      * @param cb Callback object
     */
-    static void onAccessPath(toolkit::Session &sender, Parser &parser, const invoker &cb);
+    static void onAccessPath(toolkit::Session &sender, Parser &parser, MediaInfo &info, const invoker &cb);
 
     /**
      * Get mime value

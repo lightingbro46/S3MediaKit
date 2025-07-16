@@ -559,23 +559,29 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
 
 static string getFilePath(const Parser &parser,const MediaInfo &media_info, Session &sender) {
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
-    GET_CONFIG(string, rootPath, Http::kRootPath);
-    GET_CONFIG_FUNC(StrCaseMap, virtualPathMap, Http::kVirtualPath, [](const string &str) {
-        return Parser::parseArgs(str, ";", ",");
-    });
-
     string url, path, virtual_app;
-    auto it = virtualPathMap.find(media_info.app);
-    if (it != virtualPathMap.end()) {
-        // Accessing virtualPath
-        path = it->second;
-        url = parser.url().substr(1 + media_info.app.size());
-        virtual_app = media_info.app + "/";
+    if (media_info.schema != HLS_SCHEMA && media_info.schema != HLS_FMP4_SCHEMA) {
+        GET_CONFIG(string, rootPath, Http::kRootPath);
+        GET_CONFIG_FUNC(StrCaseMap, virtualPathMap, Http::kVirtualPath, [](const string &str) {
+            return Parser::parseArgs(str, ";", ",");
+        });
+        auto it = virtualPathMap.find(media_info.app);
+        if (it != virtualPathMap.end()) {
+            // Accessing virtualPath
+            path = it->second;
+            url = parser.url().substr(1 + media_info.app.size());
+            virtual_app = media_info.app + "/";
+        } else {
+            // Accessing rootPath
+            path = rootPath;
+            url = parser.url();
+        }
     } else {
-        // Accessing rootPath
-        path = rootPath;
+        GET_CONFIG(string, hlsSavePath, Protocol::kHlsSavePath);
+        path = hlsSavePath;
         url = parser.url();
     }
+
     for (auto &ch : url) {
         if (ch == '\\') {
             // If the url contains "\", this directory is in Windows style; it needs to be converted to standard "/" in batches; prevent access to files outside the directory permissions
@@ -600,9 +606,12 @@ static string getFilePath(const Parser &parser,const MediaInfo &media_info, Sess
  * @param parser http request
  * @param cb Callback object
  */
-void HttpFileManager::onAccessPath(Session &sender, Parser &parser, const HttpFileManager::invoker &cb) {
-    auto fullUrl = "http://" + parser["Host"] + parser.fullUrl();
-    MediaInfo media_info(fullUrl);
+void HttpFileManager::onAccessPath(Session &sender, Parser &parser, MediaInfo &info, const HttpFileManager::invoker &cb) {
+    MediaInfo media_info = info;
+    if (media_info.getUrl().empty()) {
+        auto fullUrl = "http://" + parser["Host"] + parser.fullUrl();
+        media_info.parse(fullUrl);
+    }
     auto file_path = getFilePath(parser, media_info, sender);
     if (file_path.size() == 0) {
         sendNotFound(cb);

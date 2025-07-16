@@ -276,6 +276,8 @@ extern const std::string kRtmpDemand;
 extern const std::string kTSDemand;
 extern const std::string kFMP4Demand;
 extern const std::string kWebMDemand;
+// Application name for viewing live stream
+extern const std::string kAppName;
 } // !Protocol
 
 // //////////HTTP configuration///////////

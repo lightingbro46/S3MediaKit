@@ -136,6 +136,7 @@ const string kRtmpDemand = string(kFieldName) + "rtmp_demand";
 const string kTSDemand = string(kFieldName) + "ts_demand";
 const string kFMP4Demand = string(kFieldName) + "fmp4_demand";
 const string kWebMDemand = string(kFieldName) + "webm_demand";
+const string kAppName = string(kFieldName) + "appName";
 
 static onceToken token([]() {
     mINI::Instance()[kModifyStamp] = (int)ProtocolOption::kModifyStampRelative;
@@ -177,6 +178,7 @@ static onceToken token([]() {
     mINI::Instance()[kTSDemand] = 0;
     mINI::Instance()[kFMP4Demand] = 0;
     mINI::Instance()[kWebMDemand] = 0;
+    mINI::Instance()[kAppName] = "live";
 });
 } // !Protocol
 

@@ -239,7 +239,7 @@ bool HttpSession::checkWebSocket() {
     return true;
 }
 
-bool HttpSession::checkLiveStream(const string &schema, const string &url_suffix, const function<void(const MediaSource::Ptr &src)> &cb) {
+bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix, const string &url_suffix, const function<void(const MediaSource::Ptr &src)> &cb) {
     std::string url = _parser.url();
     auto it = _parser.getUrlArgs().find("schema");
     if (it != _parser.getUrlArgs().end()) {
@@ -248,13 +248,34 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_suffix
             return false;
         }
     } else {
-        auto prefix_size = url_suffix.size();
-        if (url.size() < prefix_size || strcasecmp(url.data() + (url.size() - prefix_size), url_suffix.data())) {
-            // Suffix not found
-            return false;
+        auto prefix_size = url_prefix.size();
+        if (prefix_size > 0) {
+            if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
+                // Prefix not found
+                return false;
+            }
+            // Remove special prefix from url
+            url.erase(0, prefix_size);
         }
-        // Remove special suffix from url
-        url.resize(url.size() - prefix_size);
+
+        auto suffix_size = url_suffix.size();
+        if (suffix_size > 0) {
+            if (url.size() < suffix_size || strcasecmp(url.data() + (url.size() - suffix_size), url_suffix.data())) {
+                // Suffix not found
+                return false;
+            }
+            // Remove special suffix from url
+            url.resize(url.size() - suffix_size);
+        }
+    }
+
+    GET_CONFIG(string, appName, Protocol::kAppName)
+    if (!appName.empty()) {
+        auto app_prefix = "/" + appName;
+        if (start_with(url, app_prefix)) {
+            // Remove special prefix from url
+            url.erase(0, app_prefix.size());
+        }
     }
 
     // Url with parameters
@@ -326,11 +347,11 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_suffix
     return true;
 }
 
-// http-fmp4 link format: http://vhost-url:port/app/streamid.live.mp4?key1=value1&key2=value2
+// http-fmp4 link format: http://vhost-url:port/media/app/streamid.live.mp4?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
     auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
     auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
-    return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
+    return checkLiveStream(FMP4_SCHEMA, "/media", ".live.mp4", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
         if (!cb) {
@@ -391,11 +412,11 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
     });
 }
 
-// http-webm link format: http://vhost-url:port/app/streamid.live.webm?key1=value1&key2=value2
+// http-webm link format: http://vhost-url:port/media/app/streamid.live.webm?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
     auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
     auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
-    return checkLiveStream(WEBM_SCHEMA, ".live.webm", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
+    return checkLiveStream(WEBM_SCHEMA, "/media", ".live.webm", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
         auto webm_src = dynamic_pointer_cast<WebMMediaSource>(src);
         assert(webm_src);
         if (!cb) {
@@ -454,9 +475,9 @@ bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
     });
 }
 
-// http-ts link format: http://vhost-url:port/app/streamid.live.ts?key1=value1&key2=value2
+// http-ts link format: http://vhost-url:port/media/app/streamid.live.ts?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
-    return checkLiveStream(TS_SCHEMA, ".live.ts", [this, cb](const MediaSource::Ptr &src) {
+    return checkLiveStream(TS_SCHEMA, "/media", ".live.ts", [this, cb](const MediaSource::Ptr &src) {
         auto ts_src = dynamic_pointer_cast<TSMediaSource>(src);
         assert(ts_src);
         if (!cb) {
@@ -498,10 +519,10 @@ bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
     });
 }
 
-// http-flv link format: http://vhost-url:port/app/streamid.live.flv?key1=value1&key2=value2
+// http-flv link format: http://vhost-url:port/media/app/streamid.live.flv?key1=value1&key2=value2
 bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
     auto start_pts = atoll(_parser.getUrlArgs()["startPts"].data());
-    return checkLiveStream(RTMP_SCHEMA, ".live.flv", [this, cb, start_pts](const MediaSource::Ptr &src) {
+    return checkLiveStream(RTMP_SCHEMA, "/media", ".live.flv", [this, cb, start_pts](const MediaSource::Ptr &src) {
         auto rtmp_src = dynamic_pointer_cast<RtmpMediaSource>(src);
         assert(rtmp_src);
         if (!cb) {
@@ -531,6 +552,77 @@ bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
 
         start(getPoller(), rtmp_src, start_pts);
     });
+}
+
+bool HttpSession::checkLiveStreamHls() {
+    std::string url = _parser.url();
+    string url_prefix = "/media";
+    string hls_suffix = "/hls.m3u8";
+    string ts_suffix = ".ts";
+    string hlsfmp4_suffix = "/hls.fmp4.m3u8";
+    string fmp4_suffix = ".mp4";
+    auto it = _parser.getUrlArgs().find("schema");
+    if (it != _parser.getUrlArgs().end()) {
+        if (strcasecmp(it->second.c_str(), HLS_SCHEMA)) {
+            // unsupported schema
+            return false;
+        }
+        if (strcasecmp(it->second.c_str(), HLS_FMP4_SCHEMA)) {
+            // unsupported schema
+            return false;
+        }
+    } else {
+        auto prefix_size = url_prefix.size();
+        if (prefix_size > 0) {
+            if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
+                // Prefix not found
+                return false;
+            }
+            // Remove special prefix from url
+            url.erase(0, prefix_size);
+        }
+        if (!end_with(url, hls_suffix) && !end_with(url, ts_suffix) && !end_with(url, hlsfmp4_suffix) && !end_with(url, fmp4_suffix)) {
+            // Suffix not found
+            return false;
+        }
+    }
+
+    GET_CONFIG(string, appName, Protocol::kAppName)
+    if (!appName.empty()) {
+        auto app_prefix = "/" + appName;
+        if (start_with(url, app_prefix)) {
+            // Remove special prefix from url
+            url.erase(0, app_prefix.size());
+        }
+    }
+
+    // Set url without prefix and suffix
+    _parser.setUrl(url);  
+
+    // Url with parameters
+    if (!_parser.params().empty()) {
+        url += "?";
+        url += _parser.params();
+    }
+
+    string schema;
+    if (end_with(url, hls_suffix) || end_with(url, ts_suffix)) {
+        schema = HLS_SCHEMA;
+    } else {
+        schema = HLS_FMP4_SCHEMA;
+    }
+
+    // Parse the complete url with protocol + parameters
+    _media_info.parse(schema + "://" + _parser["Host"] + url);
+
+    if (_media_info.app.empty() || _media_info.stream.empty()) {
+        // URL is invalid
+        return false;
+    }
+
+    _media_info.protocol = overSsl() ? "https" : "http";
+
+    return true;
 }
 
 void HttpSession::onHttpRequest_GET() {
@@ -570,9 +662,13 @@ void HttpSession::onHttpRequest_GET() {
         return;
     }
 
+    if (checkLiveStreamHls()) {
+        // Intercept hls-ts, hls-fmp4 player
+    }
+
     bool bClose = !strcasecmp(_parser["Connection"].data(), "close");
     weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-    HttpFileManager::onAccessPath(*this, _parser, [weak_self, bClose](int code, const string &content_type,
+    HttpFileManager::onAccessPath(*this, _parser, _media_info, [weak_self, bClose](int code, const string &content_type,
                                                                       const StrCaseMap &responseHeader, const HttpBody::Ptr &body) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {

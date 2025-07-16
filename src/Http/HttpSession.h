@@ -97,12 +97,13 @@ private:
     void onHttpRequest_HEAD();
     void onHttpRequest_OPTIONS();
 
-    bool checkLiveStream(const std::string &schema, const std::string  &url_suffix, const std::function<void(const MediaSource::Ptr &src)> &cb);
+    bool checkLiveStream(const std::string &schema, const std::string &url_prefix, const std::string  &url_suffix, const std::function<void(const MediaSource::Ptr &src)> &cb);
 
     bool checkLiveStreamFlv(const std::function<void()> &cb = nullptr);
     bool checkLiveStreamTS(const std::function<void()> &cb = nullptr);
     bool checkLiveStreamFMP4(const std::function<void()> &fmp4_list = nullptr);
     bool checkLiveStreamWebM(const std::function<void()> &webm_list = nullptr);
+    bool checkLiveStreamHls();
 
     bool checkWebSocket();
     bool emitHttpEvent(bool doInvoke);
