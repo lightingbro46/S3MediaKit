@@ -31,8 +31,15 @@ INSTANCE_IMP(SqlitePoolMap)
 
 SqlitePoolMap::SqlitePoolMap() {
     GET_CONFIG(std::string, dbSavePath, Database::kDbSavePath);
+    GET_CONFIG(std::string, mediaServerId, General::kMediaServerId);
     _save_path = dbSavePath;
-    File::create_file(_save_path, "wb+");
+    // Make saving directory and try to create file to check write permission
+    auto file_check = File::absolutePath(mediaServerId + ".txt", _save_path);
+    shared_ptr<FILE>(File::create_file(file_check, "wb+"), [](FILE *fp) {
+        if (fp) {
+            fclose(fp);
+        }
+    });
 }
 
 SqlitePool::Ptr SqlitePoolMap::get(const std::string &tag)  {
