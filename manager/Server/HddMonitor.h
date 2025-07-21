@@ -14,6 +14,7 @@ struct DiskUsage {
     uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
     uint64_t used_bytes = 0;
+    double usage_pct = 0;
 };
 
 struct DiskPartition {
@@ -23,6 +24,7 @@ struct DiskPartition {
     uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
     uint64_t used_bytes = 0;
+    double usage_pct = 0;
 };
 
 class HddCollector : public MetricCollector<DiskUsage> {

@@ -17,6 +17,14 @@ public:
 
     void start();
 
+    CpuInfo getCpuUsage();
+
+    MemoryInfo getMemUsage();
+
+    std::vector<NetInterfaceInfo> getNetUsage();
+    
+    std::vector<DiskPartition> getHddUsage();
+
 private:
     GlobalMonitor();
 

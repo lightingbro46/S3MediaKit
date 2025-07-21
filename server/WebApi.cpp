@@ -65,6 +65,7 @@
 #include "Local/TimeQuery.h"
 #include "Storage/Bookmark.h"
 #include "Storage/Certification.h"
+#include "Server/GlobalMonitor.h"
 #include "Manager.h"
 
 using namespace std;
@@ -725,6 +726,44 @@ void addStreamPusherProxy(const string &schema,
         s_pusher_proxy.erase(key);
     });
     pusher->publish(url);
+}
+
+Value makeSystemStatisticJson() {
+    Value val;
+    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
+    val["cpu"]["cores"] = cpu_usage.cores;
+    val["cpu"]["usage_pct"] = cpu_usage.usagePct;
+    val["cpu"]["proc_usage_pct"] = cpu_usage.procUsagePct;
+    
+    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
+    val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
+    val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
+    val["ram"]["usage_pct"] = mem_usage.usagePct;
+    val["ram"]["proc_usage_pct"] = mem_usage.procUsagePct;
+
+    auto net_usage = GlobalMonitor::Instance().getNetUsage();
+    for (const auto &n : net_usage) {
+        Value net_val;
+        net_val["name"] = n.name;
+        net_val["ipv4"] = n.ipv4;
+        net_val["ipv6"] = n.ipv6;
+        net_val["mac"] = n.mac_address;
+        net_val["rx_mbps"] = n.rx_mbps;
+        net_val["tx_mbps"] = n.tx_mbps;
+        net_val["speed_mbps"] = n.speed_mbps;
+        val["nets"].append(net_val);
+    }
+   
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    for (const auto &d : hdd_usage) {
+        Value disk;
+        disk["mount"] = d.mount_point;
+        disk["used"] = (Json::UInt64)d.used_bytes;
+        disk["total"] = (Json::UInt64)d.total_bytes;
+        disk["used_pct"] = d.usage_pct;
+        val["disks"].append(disk);
+    }
+    return val;
 }
 
 /**
@@ -2746,8 +2785,9 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/getStatistic",[](API_ARGS_MAP_ASYNC){
-       
+    api_regist("/media/mserver/systemStatistic",[](API_ARGS_MAP) {
+        //CHECK_TOKEN
+        val["data"] = makeSystemStatisticJson();
     });
 }
 

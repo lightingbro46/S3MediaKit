@@ -77,12 +77,30 @@ void GlobalMonitor::start() {
                 }
                 DebugL << "HDD usage:";
                 for (const auto &it : hdd_usage) {
-                    DebugL << "     " << it.mount_point << " - total " << format_bytes_human_readable(it.total_bytes) << ", used " << format_bytes_human_readable(it.used_bytes);
+                    DebugL << "     " << it.mount_point << " - total " << format_bytes_human_readable(it.total_bytes) 
+                                                        << ", used " << format_bytes_human_readable(it.used_bytes) 
+                                                        << ", usage " << format_double_2f(it.usage_pct) << "%";
                 }
             }
             return true;
         },
         _poller);
+}
+
+CpuInfo GlobalMonitor::getCpuUsage() {
+    return _cpu_monitor->getCurrentUsage();
+}
+
+MemoryInfo GlobalMonitor::getMemUsage() {
+    return _mem_monitor->getCurrentUsage();
+}
+
+vector<NetInterfaceInfo> GlobalMonitor::getNetUsage() {
+    return _net_monitor->getCurrentUsage();
+}
+
+vector<DiskPartition> GlobalMonitor::getHddUsage() {
+    return _hdd_monitor->getCurrentUsage();
 }
 
 } // namespace managerkit 

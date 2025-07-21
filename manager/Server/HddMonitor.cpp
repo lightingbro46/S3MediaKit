@@ -16,6 +16,12 @@ using namespace toolkit;
 
 namespace managerkit {
 
+struct DiskStats {
+    int64_t total_bytes = 0;
+    uint64_t free_bytes = 0;
+    uint64_t used_bytes = 0;
+};
+
 #if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
 
 bool is_read_only(const std::string& options) {
@@ -176,8 +182,8 @@ std::vector<DiskPartition> get_disk_partitions() {
 }
 #endif
 
-DiskUsage get_disk_usage(const std::string& path) {
-    DiskUsage usage;
+DiskStats get_disk_usage(const std::string& path) {
+    DiskStats usage;
 
 #if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
     struct statvfs stat;
@@ -207,10 +213,11 @@ DiskUsage get_disk_usage(const std::string& path) {
 }
 
 void HddCollector::collect() {
-    DiskUsage usage = get_disk_usage(_info.name);
+    DiskStats usage = get_disk_usage(_info.name);
     _info.total_bytes = usage.total_bytes;
     _info.free_bytes = usage.free_bytes;
     _info.used_bytes = usage.used_bytes;
+    _info.usage_pct = _info.total_bytes == 0 ? 0.0 : (100.0 * (double)_info.used_bytes / _info.total_bytes);
 
     onCollect(_info);
 }
@@ -224,6 +231,7 @@ void HddMonitor::start() {
             _map_result[info.name].total_bytes = info.total_bytes;
             _map_result[info.name].free_bytes = info.free_bytes;
             _map_result[info.name].used_bytes = info.used_bytes;
+            _map_result[info.name].usage_pct = info.usage_pct;
         });
 
         _map_collector[d.mount_point] = collector;
