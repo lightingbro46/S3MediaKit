@@ -15,6 +15,7 @@
 #include "Ssdp/SsdpSession.h"
 #include "Http/WebSocketSession.h"
 #include "Rtp/RtpServer.h"
+#include "Server/GlobalMonitor.h"
 #include "WebApi.h"
 #include "WebHook.h"
 #include "Manager.h"
@@ -288,6 +289,10 @@ int start_main(int argc,char *argv[]) {
         // Execute migrating database before running other
         migrateDatabase();
         InfoL << "Migrating database has been executed successfully";
+
+        // Start monitoring all resource 
+        GlobalMonitor::Instance().start();
+        InfoL << "Global monitor has been started successfully";
 
         auto &cert_folder = mINI::Instance()[Manager::kCertSavePath];
         if (!File::is_dir(ssl_file)) {
