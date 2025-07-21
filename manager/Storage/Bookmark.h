@@ -4,7 +4,6 @@
 #include <string>
 #include "DbStorage.h"
 #include "BookmarkTag.h"
-#include "Common/guid.h"
 #include "Util/util.h"
 
 namespace managerkit {
@@ -108,7 +107,7 @@ public:
 
     void add(Bookmark &bm, const std::string &tags) { 
         if (bm.guid.empty()) {
-            bm.guid = generate_guid();
+            bm.guid = toolkit::generate_guid();
             DebugL << "Generate bookmark guid: " << bm.guid;
         }
         save(bm, true);
