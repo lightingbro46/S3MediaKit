@@ -8,13 +8,16 @@
 #include "Http/HttpRequester.h"
 #include "Network/Session.h"
 #include "Rtsp/RtspSession.h"
+#include "Server/GlobalMonitor.h"
 #include "WebHook.h"
 #include "WebApi.h"
+#include "Manager.h"
 
 using namespace std;
 using namespace Json;
 using namespace toolkit;
 using namespace mediakit;
+using namespace managerkit;
 
 namespace Hook {
 #define HOOK_FIELD "hook."
@@ -299,10 +302,16 @@ static void reportServerStarted() {
         body[pr.first] = (string &)pr.second;
     }
 #endif
-    // todo: get media server info
-    if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
-        return;
-    }
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    GET_CONFIG(string, mediaServerDomain, Manager::kMediaServerDomain)
+    body["id"] = mediaServerId;
+    body["domain"] = mediaServerDomain;
+    body["ip"] = GlobalMonitor::Instance().getLocalIps();
+    body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
+    body["rtspPort"] = mINI::Instance()["rtsp.port"];
+    body["rtmpPort"] = mINI::Instance()["rtmp.port"];
+    body["httpPort"] = mINI::Instance()["http.port"];
+    body["httpsPort"] = mINI::Instance()["http.sslport"];
     // Execute hook
     do_http_hook(hook_api_url + hook_server_started, body, nullptr);
 }

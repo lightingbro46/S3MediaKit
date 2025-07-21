@@ -28,6 +28,10 @@ public:
 
     std::vector<DiskPartition> getHddUsage();
 
+    std::string getLocalIps();
+
+    std::string getMacAddresses();
+
 private:
     GlobalMonitor();
 

@@ -108,4 +108,37 @@ vector<DiskPartition> GlobalMonitor::getHddUsage() {
     return _hdd_monitor->getCurrentUsage();
 }
 
+string GlobalMonitor::getLocalIps() {
+    auto net_usage = _net_monitor->getCurrentUsage();
+    vector<string> ips;
+    for (const auto &net : net_usage) {
+        if (net.ipv4.empty())
+            ips.push_back(net.ipv4);
+        if (net.ipv6.empty())
+            ips.push_back(net.ipv6);
+    }
+
+    _StrPrinter printer;
+    for (int i = 0; i < ips.size(); i++) {
+        printer << ips[i];
+        if (i + 1 < ips.size())
+            printer << ",";
+    }
+}
+
+string GlobalMonitor::getMacAddresses() {
+    auto net_usage = _net_monitor->getCurrentUsage();
+    vector<string> macs;
+    for (const auto &net : net_usage) {
+        macs.push_back(net.mac_address);
+    }
+
+    _StrPrinter printer;
+    for (int i = 0; i < macs.size(); i++) {
+        printer << macs[i];
+        if (i + 1 < macs.size())
+            printer << ",";
+    }
+}
+
 } // namespace managerkit 
