@@ -730,11 +730,16 @@ void addStreamPusherProxy(const string &schema,
 
 Value makeSystemStatisticJson() {
     Value val;
+    auto osinfo = GlobalMonitor::Instance().getOsInfo();
+    val["osInfo"]["platform"] = osinfo.platform;
+    val["osInfo"]["variant"] = osinfo.variant;
+    val["osInfo"]["variant_verison"] = osinfo.variant_version;
+
     auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
     val["cpu"]["cores"] = cpu_usage.cores;
     val["cpu"]["usage_pct"] = cpu_usage.usagePct;
     val["cpu"]["proc_usage_pct"] = cpu_usage.procUsagePct;
-    
+
     auto mem_usage = GlobalMonitor::Instance().getMemUsage();
     val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
     val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
@@ -2703,10 +2708,10 @@ void installWebApi() {
         Value info;
         info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
         info["verion"] = kServerName;
-        // todo: set platform info
-        info["osInfo"]["platform"] = "Ubuntu";
-        info["osInfo"]["variant"] = "22.04";
-        info["osInfo"]["variantVerison"] = "";
+        auto osinfo = GlobalMonitor::Instance().getOsInfo();
+        info["osInfo"]["platform"] = osinfo.platform;
+        info["osInfo"]["variant"] = osinfo.variant;
+        info["osInfo"]["variantVerison"] = osinfo.variant_version;
         info["httpPort"] =  mINI::Instance()["http.port"];
         info["httpsPort"] = mINI::Instance()["http.sslport"];
         info["preferSSL"] = false;

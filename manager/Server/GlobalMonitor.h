@@ -5,6 +5,7 @@
 #include "MemoryMonitor.h"
 #include "NetworkMonitor.h"
 #include "HddMonitor.h"
+#include "osInfo.h"
 
 namespace managerkit {
 
@@ -17,18 +18,21 @@ public:
 
     void start();
 
+    OSInfo getOsInfo();
+
     CpuInfo getCpuUsage();
 
     MemoryInfo getMemUsage();
 
     std::vector<NetInterfaceInfo> getNetUsage();
-    
+
     std::vector<DiskPartition> getHddUsage();
 
 private:
     GlobalMonitor();
 
 private:
+    OSInfo _info;
     CpuMonitor::Ptr _cpu_monitor;
     MemoryMonitor::Ptr _mem_monitor;
     NetworkMonitor::Ptr _net_monitor;

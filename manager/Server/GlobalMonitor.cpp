@@ -13,6 +13,7 @@ INSTANCE_IMP(GlobalMonitor)
 
 GlobalMonitor::GlobalMonitor() {
     _poller = EventPollerPool::Instance().getPoller();
+    _info = get_os_info();
 }
 
 GlobalMonitor::~GlobalMonitor() {
@@ -85,6 +86,10 @@ void GlobalMonitor::start() {
             return true;
         },
         _poller);
+}
+
+OSInfo GlobalMonitor::getOsInfo() {
+    return _info;
 }
 
 CpuInfo GlobalMonitor::getCpuUsage() {

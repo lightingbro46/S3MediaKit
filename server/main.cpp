@@ -125,7 +125,11 @@ public:
         (*_parser) << Option('l',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
                              "level",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
                              Option::ArgRequired,/*This option must be followed by a value*/
-                             to_string(LDebug).data(),/*This option must be followed by a value*/
+#if defined(_DEBUG) || defined(DEBUG)
+                            to_string(LDebug).data(),/*This option must be followed by a value*/
+#else
+                            to_string(LInfo).data(),/*This option must be followed by a value*/
+#endif
                              false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
                              "Log Level,LTrace~LError(0~4)",/*This option description*/
                              nullptr);
@@ -260,6 +264,10 @@ int start_main(int argc,char *argv[]) {
 
         InfoL << kServerName;
 
+        // Start monitoring all resource 
+        GlobalMonitor::Instance().start();
+        InfoL << "Global monitor has been started successfully";
+
         // Load configuration file, create one if it doesn't exist
         loadIniConfig(g_ini_file.data());
 
@@ -289,10 +297,6 @@ int start_main(int argc,char *argv[]) {
         // Execute migrating database before running other
         migrateDatabase();
         InfoL << "Migrating database has been executed successfully";
-
-        // Start monitoring all resource 
-        GlobalMonitor::Instance().start();
-        InfoL << "Global monitor has been started successfully";
 
         auto &cert_folder = mINI::Instance()[Manager::kCertSavePath];
         if (!File::is_dir(ssl_file)) {

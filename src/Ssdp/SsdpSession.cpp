@@ -1,5 +1,6 @@
 #include "SsdpSession.h"
 #include "Common/config.h"
+#include "../manager/Server/GlobalMonitor.h"
 
 using namespace std;
 using namespace toolkit;
@@ -56,9 +57,9 @@ void SsdpSession::onManager() {
     }
 }
 
-string getSystemPlatform() {
-    // todo: set platform info
-    return "Ubuntu/22.04";
+static string getSystemPlatform() {
+    auto osinfo = managerkit::GlobalMonitor::Instance().getOsInfo(); 
+    return StrPrinter << osinfo.variant << "/" << osinfo.variant_version;
 }
 
 string getSystemLocation(const string &if_ip) {

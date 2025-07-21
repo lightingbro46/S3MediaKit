@@ -6,13 +6,15 @@
 #include "osInfo.h"
 
 using namespace std;
-using namespace mediakit;
+
+namespace managerkit {
 
 #if defined(_WIN32)
 #include <windows.h>
 #include <comdef.h>
 #include <Wbemidl.h>
 #pragma comment(lib, "wbemuuid.lib")
+#include <VersionHelpers.h>
 
 std::string getHardwareUUID() {
     HRESULT hres;
@@ -85,9 +87,33 @@ std::string getHardwareUUID() {
     return uuid;
 }
 
+OSInfo get_os_info() {
+    OSInfo info;
+    info.platform = "Windows";
+
+    // Lấy version từ registry (vì GetVersionEx bị hạn chế sau Windows 8.1)
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char productName[256];
+        DWORD size = sizeof(productName);
+        if (RegQueryValueExA(hKey, "ProductName", nullptr, nullptr, (LPBYTE)productName, &size) == ERROR_SUCCESS) {
+            info.variant = productName;
+        }
+
+        char buildNumber[256];
+        size = sizeof(buildNumber);
+        if (RegQueryValueExA(hKey, "CurrentBuildNumber", nullptr, nullptr, (LPBYTE)buildNumber, &size) == ERROR_SUCCESS) {
+            info.variant_version = buildNumber;
+        }
+
+        RegCloseKey(hKey);
+    }
+    return info;
+}
 
 #elif defined(__linux__) || defined(__linux)
 #include <fstream>
+#include <sys/utsname.h>
 
 std::string getHardwareUUID() {
     std::ifstream uuidFile("/sys/class/dmi/id/product_uuid");
@@ -101,10 +127,31 @@ std::string getHardwareUUID() {
     return uuid;
 }
 
+OSInfo get_os_info() {
+    OSInfo info;
+    info.platform = "Linux";
+    std::ifstream os_release("/etc/os-release");
+    std::string line;
+
+    while (std::getline(os_release, line)) {
+        if (line.find("NAME=") == 0) {
+            size_t first = line.find("\""), last = line.rfind("\"");
+            if (first != std::string::npos && last != std::string::npos && last > first)
+                info.variant = line.substr(first + 1, last - first - 1);
+        } else if (line.find("VERSION_ID=") == 0) {
+            size_t first = line.find("\""), last = line.rfind("\"");
+            if (first != std::string::npos && last != std::string::npos && last > first)
+                info.variant_version = line.substr(first + 1, last - first - 1);
+        }
+    }
+    return info;
+}
+
 #elif defined(__APPLE__)
 #include <array>
 #include <memory>
 #include <cstdio>
+#include <sys/utsname.h>
 
 std::string execCommand(const char* cmd) {
     std::array<char, 128> buffer;
@@ -129,11 +176,29 @@ std::string getHardwareUUID() {
     return "Unavailable";
 }
 
+OSInfo get_os_info() {
+    OSInfo info;
+    info.platform = "macOS";
+    struct utsname uts{};
+    if (uname(&uts) == 0) {
+        info.variant = "macOS";
+        info.variant_version = uts.release;  // ex: 22.6.0 (macOS Ventura)
+    }
+    return info;
+}
+
 #else
 
 std::string getHardwareUUID() {
     return "Unsupported platform";
 }
 
+OSInfo get_os_info() {
+    OSInfo info;
+    info.platform = "Unsupported platform";
+    return info;
+}
+
 #endif
 
+} // namespace managerkit
