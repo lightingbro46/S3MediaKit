@@ -6,6 +6,11 @@ using namespace toolkit;
 
 namespace mediakit {
 
+static string ssdp_search_header = "M-SEARCH * HTTP/1.1";
+static string ssdp_search_man = "ssdp:discover";
+static string service_taget = "urn:schemas-upnp-org:device:MediaServer:1";
+static string service_taget_all = "ssdp:all";
+
 SsdpSession::SsdpSession(const Socket::Ptr &sock) : Session(sock) {
     socklen_t addr_len = sizeof(_peer_addr);
     memset(&_peer_addr, 0, addr_len);
@@ -22,7 +27,8 @@ void SsdpSession::onRecv(const Buffer::Ptr &buffer) {
     string data(buffer->data(), buffer->size());
     TraceL << "Received UDP data from " << SockUtil::inet_ntoa((struct sockaddr *)&_peer_addr) << ":" << SockUtil::inet_port((struct sockaddr *)&_peer_addr) << "\n" << data;
     _ticker.resetTime();
-    if (data.find("M-SEARCH * HTTP/1.1") != string::npos) {
+    if (data.find(ssdp_search_header) != string::npos && data.find(ssdp_search_man) != string::npos &&
+        (data.find(service_taget_all) != string::npos || data.find(service_taget) != string::npos)) {
         /**
          * @brief SSDP message incomming
          * M-SEARCH * HTTP/1.1
@@ -85,8 +91,8 @@ void SsdpSession::sendResponse() {
         ss << "EXT:\r\n";
         ss << "LOCATION: "<< location << "\r\n";
         ss << "SERVER: "<< platform << " UPnP/1.0 3SPro/3.0\r\n";
-        ss << "ST: urn:schemas-upnp-org:device:MediaServer:1\r\n";
-        ss << "USN: uuid:" << mediaServerId << "::urn:schemas-upnp-org:device:MediaServer:1\r\n";
+        ss << "ST: "<< service_taget << "\r\n";
+        ss << "USN: uuid:" << mediaServerId << "::" << service_taget << "\r\n";
         ss << "\r\n";
 
     auto msg = ss.str();
