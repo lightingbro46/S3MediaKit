@@ -119,11 +119,12 @@ string GlobalMonitor::getLocalIps() {
     }
 
     _StrPrinter printer;
-    for (int i = 0; i < ips.size(); i++) {
+    for (size_t i = 0; i < ips.size(); i++) {
         printer << ips[i];
         if (i + 1 < ips.size())
             printer << ",";
     }
+    return printer;
 }
 
 string GlobalMonitor::getMacAddresses() {
@@ -134,11 +135,12 @@ string GlobalMonitor::getMacAddresses() {
     }
 
     _StrPrinter printer;
-    for (int i = 0; i < macs.size(); i++) {
+    for (size_t i = 0; i < macs.size(); i++) {
         printer << macs[i];
         if (i + 1 < macs.size())
             printer << ",";
     }
+    return printer;
 }
 
 } // namespace managerkit 

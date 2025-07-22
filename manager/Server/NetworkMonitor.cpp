@@ -37,7 +37,7 @@ using namespace toolkit;
 
 namespace managerkit {
 
-bool is_virtual_interface(const std::string& name) {
+static bool is_virtual_interface(const std::string& name) {
     static const std::vector<std::string> virtual_prefixes = {
         "lo", "docker", "veth", "br-", "vmnet", "virbr", "zt", "tun", "tap"
     };
@@ -48,7 +48,7 @@ bool is_virtual_interface(const std::string& name) {
     return false;
 }
 
-std::vector<NetInterfaceInfo> get_network_interfaces() {
+static std::vector<NetInterfaceInfo> get_network_interfaces() {
     std::vector<NetInterfaceInfo> interfaces;
 
 #if defined(_WIN32)
@@ -149,7 +149,7 @@ std::vector<NetInterfaceInfo> get_network_interfaces() {
     return interfaces;
 }
 
-std::pair<uint64_t, uint64_t> get_rx_tx_bytes(const std::string& interface_name) {
+static std::pair<uint64_t, uint64_t> get_rx_tx_bytes(const std::string& interface_name) {
 #if defined(__linux__) || defined(__ANDROID__)
     std::ifstream file("/proc/net/dev");
     std::string line;

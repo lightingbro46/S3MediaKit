@@ -24,7 +24,7 @@ struct MemoryStats {
 
 #if defined(__linux__) || defined(__ANDROID__)
 
-MemoryStats get_system_memory_info() {
+static MemoryStats get_system_memory_info() {
     std::ifstream file("/proc/meminfo");
     std::string key;
     uint64_t value;
@@ -52,7 +52,7 @@ MemoryStats get_system_memory_info() {
 
 #elif defined(__APPLE__)
 
-MemoryStats get_system_memory_info() {
+static MemoryStats get_system_memory_info() {
     MemoryStats info = {};
     int64_t memsize = 0;
     size_t len = sizeof(memsize);
@@ -79,7 +79,7 @@ MemoryStats get_system_memory_info() {
 
 #elif defined(_WIN32)
 
-MemoryStats get_system_memory_info() {
+static MemoryStats get_system_memory_info() {
     MemoryStats info = {};
     MEMORYSTATUSEX mem = { sizeof(mem) };
     GlobalMemoryStatusEx(&mem);
@@ -95,7 +95,7 @@ MemoryStats get_system_memory_info() {
 
 #else
 
-MemoryStats get_system_memory_info() {
+static MemoryStats get_system_memory_info() {
     GlobalMemoryStatusEx(&mem);
     return MemoryStats {
         .total_physical = 0,

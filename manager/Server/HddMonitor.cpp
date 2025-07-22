@@ -24,7 +24,7 @@ struct DiskStats {
 
 #if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
 
-bool is_read_only(const std::string& options) {
+static bool is_read_only(const std::string& options) {
     std::istringstream ss(options);
     std::string token;
 
@@ -36,7 +36,7 @@ bool is_read_only(const std::string& options) {
     return false;  // không rõ → mặc định là ghi được
 }
 
-bool is_virtual_filesystem(const std::string& fstype, const std::string& mount_point, const std::string& options = "") {
+static bool is_virtual_filesystem(const std::string& fstype, const std::string& mount_point, const std::string& options = "") {
     static const std::set<std::string> virtual_fs = {
         "tmpfs", "proc", "sysfs", "devtmpfs", "devpts", "cgroup", "overlay",
         "squashfs", "rpc_pipefs", "securityfs", "pstore", "debugfs",
@@ -68,7 +68,7 @@ bool is_virtual_filesystem(const std::string& fstype, const std::string& mount_p
 
 #if defined(__linux__) || defined(__ANDROID__)
 
-std::vector<DiskPartition> get_disk_partitions() {
+static std::vector<DiskPartition> get_disk_partitions() {
     std::vector<DiskPartition> result;
     FILE* mtab = setmntent("/etc/mtab", "r");
     if (!mtab) return result;
@@ -107,7 +107,7 @@ std::vector<DiskPartition> get_disk_partitions() {
 
 #elif defined(__APPLE__)
 
-std::vector<DiskPartition> get_disk_partitions() {
+static std::vector<DiskPartition> get_disk_partitions() {
     std::vector<DiskPartition> result;
     struct statfs* mounts;
     int count = getmntinfo(&mounts, MNT_NOWAIT);
@@ -141,7 +141,7 @@ std::vector<DiskPartition> get_disk_partitions() {
 
 #elif defined(_WIN32)
 
-std::vector<DiskPartition> get_disk_partitions() {
+static std::vector<DiskPartition> get_disk_partitions() {
     std::vector<DiskPartition> result;
 
     DWORD size = GetLogicalDriveStringsA(0, nullptr);
@@ -182,7 +182,7 @@ std::vector<DiskPartition> get_disk_partitions() {
 }
 #endif
 
-DiskStats get_disk_usage(const std::string& path) {
+static DiskStats get_disk_usage(const std::string& path) {
     DiskStats usage;
 
 #if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)

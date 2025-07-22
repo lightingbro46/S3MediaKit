@@ -33,17 +33,17 @@ struct CpuTimes {
 
 #ifdef _WIN32
 
-int get_cpu_core_count() {
+static int get_cpu_core_count() {
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     return sysinfo.dwNumberOfProcessors;
 }
 
-uint64_t fileTimeToUint64(const FILETIME& ft) {
+static uint64_t fileTimeToUint64(const FILETIME& ft) {
     return ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
 }
 
-CpuTimes get_cpu_time() {
+static CpuTimes get_cpu_time() {
     FILETIME idleTime, kernelTime, userTime;
     CpuTimes times;
 
@@ -65,7 +65,7 @@ CpuTimes get_cpu_time() {
 
 #elif __APPLE__
 
-int get_cpu_core_count() {
+static int get_cpu_core_count() {
     int count = 0;
     size_t size = sizeof(count);
     if (sysctlbyname("hw.logicalcpu", &count, &size, nullptr, 0) == 0 && count > 0)
@@ -73,7 +73,7 @@ int get_cpu_core_count() {
     return 1;
 }
 
-CpuTimes get_cpu_times() {
+static CpuTimes get_cpu_times() {
     CpuTimes times;
     mach_msg_type_number_t count;
     processor_info_array_t infoArray;
@@ -110,7 +110,7 @@ CpuTimes get_cpu_times() {
 
 #elif __ANDROID__ || __linux__
 
-int get_cpu_core_count() {
+static int get_cpu_core_count() {
     // Dùng sysconf là an toàn và nhanh
     long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
     if (nprocs > 0) return static_cast<int>(nprocs);
@@ -131,7 +131,7 @@ int get_cpu_core_count() {
     return count > 0 ? count : 1;
 }
 
-CpuTimes get_cpu_times() {
+static CpuTimes get_cpu_times() {
     std::ifstream file("/proc/stat");
     std::string line;
     CpuTimes times;
@@ -162,11 +162,11 @@ CpuTimes get_cpu_times() {
 
 #else
 
-int get_cpu_core_count() {
+static int get_cpu_core_count() {
     return 1; // fallback
 }
 
-CpuTimes get_cpu_times() {
+static CpuTimes get_cpu_times() {
     CpuTimes times;
     return times; // fallback
 }

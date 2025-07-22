@@ -83,9 +83,9 @@ set(LIBRARY_OUTPUT_PATH    ${OUTPUT_DIR})
 set(EXECUTABLE_OUTPUT_PATH ${OUTPUT_DIR})
 
 # Add git version information
-set(COMMIT_HASH "Git_Unkown_commit")
-set(COMMIT_TIME "Git_Unkown_time")
-set(BRANCH_NAME "Git_Unkown_branch")
+set(COMMIT_HASH "Git_Unknown_commit")
+set(COMMIT_TIME "Git_Unknown_time")
+set(BRANCH_NAME "Git_Unknown_branch")
 set(BUILD_TIME "")
 
 string(TIMESTAMP BUILD_TIME "%Y-%m-%dT%H:%M:%S")
