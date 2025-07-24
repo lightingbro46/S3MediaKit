@@ -14,6 +14,8 @@ typedef Json::Value ArgsType;
 typedef mediakit::HttpArgs ArgsType;
 #endif
 
+typedef mediakit::StrCaseMap HeaderType;
+
 namespace Hook {
 // Maximum timeout for web hook reply
 extern const std::string kTimeoutSec;
@@ -31,6 +33,14 @@ void onProcessExited();
  * @param func Callback
  */
 void do_http_hook(const std::string &url, const ArgsType &body, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
+/**
+ * Trigger http POST hook request
+ * @param url Request address
+ * @param body Request body
+ * @param header Request header
+ * @param func Callback
+ */
+void do_http_hook(const std::string &url, const ArgsType &body, const HeaderType &header, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
 
 /**
  * Trigger http GET hook request
@@ -39,5 +49,13 @@ void do_http_hook(const std::string &url, const ArgsType &body, const std::funct
  * @param func Callback
  */
 void do_http_hook(const std::string &url, const mediakit::HttpArgs &param, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
+/**
+ * Trigger http GET hook request
+ * @param url Request address
+ * @param param Request parameter
+ * @param header Request header
+ * @param func Callback
+ */
+void do_http_hook(const std::string &url, const mediakit::HttpArgs &param, const HeaderType &header, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
 
 #endif //S3MEDIAKIT_WEBHOOK_H

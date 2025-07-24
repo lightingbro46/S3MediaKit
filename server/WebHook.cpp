@@ -172,7 +172,7 @@ string getVhost(const HttpArgs &value) {
 
 static atomic<uint64_t> s_hook_index { 0 };
 
-void do_http_hook(const string &url, const ArgsType &body, const function<void(const Value &, const string &)> &func, uint32_t retry) {
+void do_http_hook(const string &url, const ArgsType &body, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
     GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
@@ -184,13 +184,16 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
     requester->setMethod("POST");
     auto bodyStr = to_string(body);
     requester->setBody(bodyStr);
+    for (const auto &it : header) {
+        requester->addHeader(it.first, it.second);
+    }
     requester->addHeader("Content-Type", getContentType(body));
     auto vhost = getVhost(body);
     if (!vhost.empty()) {
         requester->addHeader("X-VHOST", vhost);
     }
     Ticker ticker;
-    requester->startRequester(url, [url, func, bodyStr, body, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
+    requester->startRequester(url, [url, func, bodyStr, body, header, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
         onceToken token(nullptr, [&]() mutable { requester.reset(); });
         parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
             if (!err.empty()) {
@@ -198,8 +201,8 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
                 WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << err << ":" << bodyStr;
 
                 if (retry-- > 0 && should_retry) {
-                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, body, func, retry] {
-                        do_http_hook(url, body, func, retry);
+                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, body, header, func, retry] {
+                        do_http_hook(url, body, header, func, retry);
                         return 0;
                     });
                     // Retry does not need to trigger callback
@@ -220,10 +223,16 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
 
 void do_http_hook(const string &url, const ArgsType &body, const function<void(const Value &, const string &)> &func) {
     GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
-    do_http_hook(url, body, func, hook_retry);
+    HeaderType header;
+    do_http_hook(url, body, header, func, hook_retry);
 }
 
-void do_http_hook(const string &url, const HttpArgs &param, const function<void(const Value &, const string &)> &func, uint32_t retry) {
+void do_http_hook(const string &url, const ArgsType &body, const HeaderType &header, const function<void(const Value &, const string &)> &func) {
+    GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
+    do_http_hook(url, body, header, func, hook_retry);
+}
+
+void do_http_hook(const string &url, const HttpArgs &param, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
     GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
@@ -235,13 +244,16 @@ void do_http_hook(const string &url, const HttpArgs &param, const function<void(
     requester->setMethod("GET");
     auto paramStr = to_string(param);
     auto full_url = url + "?" + paramStr;
+    for (const auto &it : header) {
+        requester->addHeader(it.first, it.second);
+    }
     requester->addHeader("Content-Type", getContentType(param));
     auto vhost = getVhost(param);
     if (!vhost.empty()) {
         requester->addHeader("X-VHOST", vhost);
     }
     Ticker ticker;
-    requester->startRequester(full_url, [url, func, paramStr, param, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
+    requester->startRequester(full_url, [url, func, paramStr, param, header, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
         onceToken token(nullptr, [&]() mutable { requester.reset(); });
         parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
             if (!err.empty()) {
@@ -249,8 +261,8 @@ void do_http_hook(const string &url, const HttpArgs &param, const function<void(
                 WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << err << ":" << paramStr;
 
                 if (retry-- > 0 && should_retry) {
-                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, func, retry] {
-                        do_http_hook(url, param, func, retry);
+                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, header, func, retry] {
+                        do_http_hook(url, param, header, func, retry);
                         return 0;
                     });
                     // Retry does not need to trigger callback
@@ -271,7 +283,13 @@ void do_http_hook(const string &url, const HttpArgs &param, const function<void(
 
 void do_http_hook(const std::string &url, const HttpArgs &param, const function<void(const Json::Value &, const string &)> &func) {
     GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
-    do_http_hook(url, param, func, hook_retry);
+    HeaderType header;
+    do_http_hook(url, param, header, func, hook_retry);
+}
+
+void do_http_hook(const std::string &url, const HttpArgs &param, const HeaderType &header, const function<void(const Json::Value &, const string &)> &func) {
+    GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
+    do_http_hook(url, param, header, func, hook_retry);
 }
 
 void dumpMediaTuple(const MediaTuple &tuple, Json::Value& item);
@@ -359,43 +377,6 @@ static void reportServerKeepalive() {
     }, nullptr);
 }
 
-void handleServerResourceJson(const Json::Value &data) {
-    if (data.isMember("mediaServer")) {
-
-    }
-
-    if (data.isMember("devices") && data["devices"].isArray()) {
-        for (auto &device : data["devices"]) {
-            auto device_json = device;
-            string camera_id = device_json["device_id"].asString();
-            if (device_json.isMember("streams") && device_json["streams"].isArray()) {
-                for (const auto &stream: device_json["streams"]) {
-                    string stream_id = stream["channel_id"].asString();
-                    string url = stream["source_url"].asString();
-                    auto tuple = MediaTuple { DEFAULT_VHOST, camera_id, stream_id, "" };
-                    mINI args;
-                    args["vhost"] = DEFAULT_VHOST;
-                    args["app"] = tuple.app;
-                    args["stream_id"] = tuple.stream;
-        
-                    ProtocolOption option;
-        
-                    std::cout << "Add stream proxy: "<< tuple.app << "/" << tuple.stream << " " << url << std::endl;
-                    addStreamProxy(tuple, url, 0, option, 0, 10.0, args, [](const SockException &ex, const string &key) {
-                        if (ex) {
-                            WarnL << "Add stream failed: " << ex.what();
-                        } else {
-                            InfoL << "Add stream success: " << key;
-                        }
-                    });
-                }
-            }
-        }
-    }
-
-    // todo: delCameraResource
-}
-
 // Server report statistics
 static Timer::Ptr g_report_timer;
 static bool report_first = true;
@@ -410,64 +391,40 @@ static void reportServerStatistic() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
-#if 0
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
-                InfoL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
-                // Load server config succeeded
-                handleServerResourceJson(obj);
+                DebugL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
+                InfoL << "Load server config success";
+                // Load server config success
+                loadServerConfigJson(obj);
 
-                // EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
-                //     getServerStatisticJson([](const Value &data) mutable {
-                //         ArgsType body;
-                //         body["data"] = data;
-                //         // Execute hook
-                //         do_http_hook(hook_api_url + hook_server_report,  [](const Value &obj, const string &err) mutable {
-                //             if (err.empty()) {
-                //                 // Report server statistic succeeded
-                //                 InfoL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                //             } else {
-                //                 // Load server config failed
-                //                 WarnL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                //             }
-                //         });
-                //     });
-                //     return 0;
-                // });
+                EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
+                    getServerStatisticJson([](const Value &data) mutable {
+                        ArgsType body;
+                        body["data"] = data;
+                        // Execute hook
+                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
+                            if (err.empty()) {
+                                // Report server statistic succeeded
+                                DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                                InfoL << "Report server statistic success";
+                            } else {
+                                // Load server config failed
+                                DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                                WarnL << "Report server statistic failed:" << err;
+                            }
+                        });
+                    });
+                    return 0;
+                });
 
             } else {
                 // Load server config failed
-                WarnL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+                DebugL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+                WarnL << "Load server config failed:" << err;
             }
         });
-#else
-        Json::Value data;
-        data["devices"] = Json::arrayValue;
-        Json::Value device;
-        device["device_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
-        device["username"] = "admin";
-        device["password"] = "Haiphong2025";
-        device["manufacturer"] = "Hikivision";
-        device["model"] = "DS-2CD2347G1-L";
-        device["enable"] = true;
-        device["address"] = "27.72.173.71";
-        device["httpPort"] = 80;
-        device["mediaPort"] = 5555;
-        device["streams"] = Json::arrayValue;
-        Json::Value channel_1;
-        channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-        channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
-        device["streams"].append(channel_1);
-        // Json::Value channel_2;
-        // channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-        // channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile4/media.smp";
-        // device["streams"].append(channel_2);
-
-        data["devices"].append(device);
-        handleServerResourceJson(data);
-
-#endif
         if (report_first) {
             report_first = false;
             return false;

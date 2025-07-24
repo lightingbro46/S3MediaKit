@@ -9,6 +9,7 @@
 #include "Local/TimeRecorder.h"
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
+#include "Common/CameraSource.h"
 #include "Manager.h"
 
 using namespace std;
@@ -94,4 +95,107 @@ void migrateDatabase() {
     auto escDbMigrate = std::make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
     GET_CONFIG(string, escUpdateSavePath, Database::kESCMigrationSavePath)
     escDbMigrate->migrate(escUpdateSavePath);
+}
+
+// static CameraInfo fromJson(Json::Value &data) {
+//     string camera_id = data["device_id"].asString();
+//     string camera_name = data["name_device"].asString();
+//     string manufacturer = data["manufacturer"].asString();
+//     string model = data["model"].asString();
+    
+//     CameraTuple tuple;
+//     tuple.camera_id = camera_id;
+//     tuple.camera_name = camera_name;
+//     tuple.manufacturer = manufacturer;
+//     tuple.model = model;
+//     return tuple;
+// }
+
+// static CameraCredentials fromJson(Json::Value &data) {
+//     string username = data["username"].asString();
+//     string password = data["password"].asString();
+//     string ip = data["address"].asString();
+//     int port = data["http_port"].asInt();
+    
+//     CameraCredentials credential;
+//     credential.username = username;
+//     credential.password = password;
+//     credential.ip = ip;
+//     credential.port = port
+//     return credential;
+// }
+
+// static CameraOptions fromJson(Json::Value &data) {
+//     bool enable_camera = data["is_enable"].asBool();
+//     bool enable_recording = data["enable_recording"].asBool();
+//     bool do_not_record_primary_stream = data["do_not_record_primary_stream"].asBool();
+//     bool do_not_record_secondary_stream = data["do_not_record_secondary_stream"].asBool();
+    
+//     CameraOptions options;
+//     options.enable_camera = enable_camera;
+//     options.enable_recording = enable_recording;
+//     options.do_not_record_primary_stream = do_not_record_primary_stream;
+//     options.do_not_record_secondary_stream = do_not_record_secondary_stream;
+//     return options;
+// }
+
+void loadServerConfigJson(const Json::Value &data) {
+    if (data.isMember("mediaServer")) {
+        bool enableFailover = data["mediaServer"]["failover"].asBool();
+        int maxNumberCamera = data["mediaServer"]["maxNumberCamera"].asInt();
+        int serverLocationId = data["mediaServer"]["serverLocationId"].asInt();
+        //todo: cấu hình lưu bookmark, cấu hình lưu video push, số lượng thiết bị tối đa cho phép
+    }
+
+    if (data.isMember("list_media_server") && data["list_media_server"].isArray()) {
+        //todo: cấu hình cluster
+    }
+
+    if (data.isMember("devices") && data["devices"].isArray()) {
+        for (const auto &camera : data["cameras"]) {
+            // camera tuple
+            string camera_id = camera["device_id"].asString();
+            string camera_name = camera["name_device"].asString();
+            string manufacturer = camera["manufacturer"].asString();
+            string model = camera["model"].asString();
+            //onvif credentials
+            string username = camera["username"].asString();
+            string password = camera["password"].asString();
+            string ip = camera["address"].asString();
+            int port = camera["http_port"].asInt();
+            // stream info
+            string primary_url;
+            string primary_id;
+            string secondary_url;
+            string secondary_id;
+            if (camera.isMember("streams") && camera["streams"].isArray()) {
+                if (1 <= camera["streams"].size()) {
+                    Json::Value stream = camera["streams"][0];
+                    primary_url = stream["source_url"].asString();
+                    primary_id = stream["channel_id"].asString();
+                }
+                if (2 <= camera["streams"].size()) {
+                    Json::Value stream = camera["streams"][1];
+                    secondary_url = stream["source_url"].asString();
+                    secondary_id = stream["channel_id"].asString();
+                }
+            }
+            // camera options
+            bool enable_camera = camera["is_enable"].asBool();
+            bool enable_recording = camera["enable_recording"].asBool();
+            bool do_not_record_primary_stream = camera["do_not_record_primary_stream"].asBool();
+            bool do_not_record_secondary_stream = camera["do_not_record_secondary_stream"].asBool();
+
+            // auto ret = CameraSource::find()
+        }
+    }
+
+}
+
+void getServerStatisticJson(const std::function<void(Json::Value &data)> &cb) {
+    Json::Value data;
+    // CameraSource::for_each_camera([&](const CameraSource::Ptr &camera) {
+
+    // });
+    cb(data);
 }
