@@ -28,8 +28,9 @@ void SsdpSession::onRecv(const Buffer::Ptr &buffer) {
     string data(buffer->data(), buffer->size());
     TraceL << "Received UDP data from " << SockUtil::inet_ntoa((struct sockaddr *)&_peer_addr) << ":" << SockUtil::inet_port((struct sockaddr *)&_peer_addr) << "\n" << data;
     _ticker.resetTime();
-    if (data.find(ssdp_search_header) != string::npos && data.find(ssdp_search_man) != string::npos &&
-        (data.find(service_taget_all) != string::npos || data.find(service_taget) != string::npos)) {
+    if (1) {
+    // if (data.find(ssdp_search_header) != string::npos && data.find(ssdp_search_man) != string::npos &&
+    //     (data.find(service_taget_all) != string::npos || data.find(service_taget) != string::npos)) {
         /**
          * @brief SSDP message incomming
          * M-SEARCH * HTTP/1.1
@@ -38,7 +39,7 @@ void SsdpSession::onRecv(const Buffer::Ptr &buffer) {
          * MX: 2
          * ST: urn:schemas-upnp-org:device:MediaServer:1
          */
-        DebugL << "M-SEARCH request detected!";
+        InfoL << "M-SEARCH request detected!";
         sendResponse();
     } else {
         // WarnL<< "ingore  data";
@@ -80,7 +81,18 @@ void SsdpSession::sendResponse() {
 
     auto peer_ip = SockUtil::inet_ntoa((struct sockaddr *)&_peer_addr);
     auto peer_port = SockUtil::inet_port((struct sockaddr *)&_peer_addr);
-    auto local_ip = SockUtil::get_ifr_ip(SockUtil::get_ifr_name(peer_ip.c_str()).c_str());
+    string local_ip;
+    auto netifs = SockUtil::getInterfaceList();
+    for (const auto &netif : netifs) {
+        for (const auto &it : netif) {
+            if (it.first == "ip" && SockUtil::in_same_lan(it.second.c_str(), peer_ip.c_str())) {
+                local_ip = it.second;
+            }
+        }
+    }
+    if (local_ip.empty()) {
+        local_ip = SockUtil::get_local_ip();
+    }
     string location = getSystemLocation(local_ip);
 
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -98,6 +110,7 @@ void SsdpSession::sendResponse() {
 
     auto msg = ss.str();
     SockSender::send(msg);
+    DebugL << "Sent SSDP response to " << peer_ip << ":" << peer_port << " " << msg;
     InfoL << "Sent SSDP response to " << peer_ip << ":" << peer_port;
 }
 
