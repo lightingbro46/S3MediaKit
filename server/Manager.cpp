@@ -10,6 +10,7 @@
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
 #include "Common/CameraSource.h"
+#include "Local/StorageManager.h"
 #include "Manager.h"
 
 using namespace std;
@@ -33,6 +34,10 @@ static onceToken token([]() {
 } // namespace Manager
 
 } // namespace managerkit
+
+static void manageStorageVolume() {
+    StorageManager::Instance();
+}
 
 static void *manager_hook_tag = nullptr;
 
@@ -78,6 +83,7 @@ void installManagerHook () {
     });
 #endif // defined(ENABLE_MP4) || defined(ENABLE_MKV)
 
+    manageStorageVolume();
 }
 
 void unInstallManagerHook() {

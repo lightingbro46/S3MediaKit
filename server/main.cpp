@@ -496,8 +496,8 @@ int start_main(int argc,char *argv[]) {
     }
     unInstallWebApi();
     unInstallWebHook();
-    unInstallManagerHook();
     onProcessExited();
+    unInstallManagerHook();
 
     // sleep for 1 second before exiting, to prevent resource release order errors
     InfoL << "The program is exiting, please wait...";
