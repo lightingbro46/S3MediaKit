@@ -2714,7 +2714,7 @@ void installWebApi() {
         info["osInfo"]["variantVerison"] = osinfo.variant_version;
         info["httpPort"] =  mINI::Instance()["http.port"];
         info["httpsPort"] = mINI::Instance()["http.sslport"];
-        info["preferSSL"] = false;
+        info["clientUseSsl"] = false;
         val["data"] = info;
     });
 
