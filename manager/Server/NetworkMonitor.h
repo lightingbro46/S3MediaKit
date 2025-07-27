@@ -45,11 +45,14 @@ private:
 class NetworkMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<NetworkMonitor>;
-    NetworkMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {}
-    
-    void start() override;
+    NetworkMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+        start();
+    }
 
     std::vector<NetInterfaceInfo> getCurrentUsage();
+
+private:
+    void start() override;
 
 private:
     std::unordered_map<std::string, NetworkCollector::Ptr> _map_collector;

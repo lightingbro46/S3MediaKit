@@ -28,11 +28,14 @@ private:
 class MemoryMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<MemoryMonitor>;
-    MemoryMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {}
-
-    void start() override;
+    MemoryMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+        start();
+    }
 
     MemoryInfo getCurrentUsage();
+
+private:
+    void start() override;
 
 private:
     MemoryCollector::Ptr _collector;

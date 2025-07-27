@@ -26,11 +26,14 @@ private:
 class CpuMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<CpuMonitor>;
-    CpuMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {}
-
-    void start() override;
+    CpuMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+        start();
+    }
 
     CpuInfo getCurrentUsage();
+
+private:
+    void start() override;
 
 private:
     CpuCollector::Ptr _collector;

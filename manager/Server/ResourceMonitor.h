@@ -51,8 +51,9 @@ public:
         _poller = poller ? poller : toolkit::EventPollerPool::Instance().getPoller();
     }
 
-    virtual ~ResourceMonitor() =    default;
+    virtual ~ResourceMonitor() = default;
 
+private:
     virtual void start() = 0;
 
 protected:

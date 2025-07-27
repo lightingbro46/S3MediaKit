@@ -45,11 +45,14 @@ private:
 class HddMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<HddMonitor>;
-    HddMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {}
-    
-    void start() override;
+    HddMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+        start();
+    }
 
     std::vector<DiskPartition> getCurrentUsage();
+
+private:
+    void start() override;
 
 private:
     std::unordered_map<std::string, HddCollector::Ptr> _map_collector;
