@@ -1,5 +1,5 @@
-#ifndef S3MEDIAKIT_WEBERRORCODE_H
-#define S3MEDIAKIT_WEBERRORCODE_H
+#ifndef S3MEDIAKIT_WEBCODE_H
+#define S3MEDIAKIT_WEBCODE_H
 
 #include <string>
 #include "Network/Socket.h"
@@ -33,5 +33,6 @@ const char* getMessageByCode(API::CustomCode code = API::CustomCode::CODE_SUCCES
  */
 int getHttpCodeByCode(API::CustomCode code = API::CustomCode::CODE_SUCCESS);
 
+// todo: use ApiException, AuthException,... from webapi.h
 
-#endif // S3MEDIAKIT_WEBERRORCODE_H
+#endif // S3MEDIAKIT_WEBCODE_H

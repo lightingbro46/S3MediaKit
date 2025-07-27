@@ -16,6 +16,7 @@
 #include "Http/WebSocketSession.h"
 #include "Rtp/RtpServer.h"
 #include "Server/GlobalMonitor.h"
+#include "Storage/Certification.h"
 #include "WebApi.h"
 #include "WebHook.h"
 #include "Manager.h"

@@ -6,6 +6,11 @@
 
 namespace managerkit {
 
+namespace Manager {
+// Certification save path
+extern const std::string kCertSavePath;
+} // namespace Manager
+
 struct Certificate {   
     int id;
     std::string type;

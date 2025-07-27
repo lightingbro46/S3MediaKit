@@ -523,18 +523,43 @@ void installWebHook() {
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
-        GET_CONFIG(string, hook_play, Hook::kOnPlay);
-        if (!hook_enable || hook_play.empty()) {
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
+        if (!enable_authorize) {
             invoker("");
+            return;                                                                                                                                                
+        } 
+        string device_id = args.app;
+        auto params = Parser::parseArgs(args.params);
+        string bearer_token = params["token"];
+
+        // auto cache = UserAuthorManager::Instance().getUserAuthCache(device_id, bearer_token);
+        // if (cache) {
+        //     // User auth cache has still been expired. Check user permission
+        //     invoker(cache.hasLicensed() ? "" : "Unauthorized");
+        //     return;
+        // }
+
+        GET_CONFIG(string, hook_play, Hook::kOnPlay);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_play.empty() || hook_api_url.empty() ) {
+            invoker("Unauthorized");
             return;
         }
-
+#if 0
         auto body = make_json(args);
         body["ip"] = sender.get_peer_ip();
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
+#endif
+        ArgsType body;
+        body["deviceId"] = device_id;
+        HeaderType header;
+        header["Authorization"] = bearer_token;
         // Execute hook
-        do_http_hook(hook_play, body, [invoker](const Value &obj, const string &err) { invoker(err); });
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, bearer_token, invoker](const Value &obj, const string &err) {
+            // UserAuthorManager::Instance().addUserAuthCache(device_id, bearer_token, err.empty());
+            invoker(err);
+        });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {

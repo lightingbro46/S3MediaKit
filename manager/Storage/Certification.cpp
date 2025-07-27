@@ -10,8 +10,8 @@ using namespace mediakit;
 namespace managerkit {
 
 namespace Manager {
-#define GENERAL_FIELD "manager."
-const std::string kCertSavePath = GENERAL_FIELD"certSavePath";
+#define MANAGER_FIELD "manager."
+const std::string kCertSavePath = MANAGER_FIELD"certSavePath";
 
 static onceToken token([]() {
     mINI::Instance()[kCertSavePath] = "./certs";

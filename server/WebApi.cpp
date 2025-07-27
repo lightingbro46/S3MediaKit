@@ -237,6 +237,69 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     return allArgs;
 }
 
+#define CHECK_USER_AUTH(XX)                                                                                                                                    \
+    CHECK_ARGS("Authorization");                                                                                                                               \
+    string bearer_token = allArgs["Authorization"];                                                                                                            \
+    string jwt_token = findSubString(bearer_token.data(), "Bearer ", nullptr);                                                                                 \
+    string host = allArgs["Host"];                                                                                                                             \
+    string camera_id = allArgs["cameraId"];                                                                                                                    \
+    string stream_id = allArgs["streamId"];                                                                                                                    \
+    string url = (StrPrinter << "http://" << host << "/" << camera_id << "/" << stream_id << "?token=" << jwt_token);                                          \
+    MediaInfo media_info(url);                                                                                                                                 \
+    Broadcast::AuthInvoker auth_invoker = [&](const string &err) {                                                                                             \
+        if (!err.empty()) {                                                                                                                                    \
+            invoker(401, StrCaseMap {}, err);                                                                                                                  \
+            return;                                                                                                                                            \
+        }                                                                                                                                                      \
+        XX                                                                                                                                                     \
+    };                                                                                                                                                         \
+    bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);                                     \
+    if (!flag) {                                                                                                                                               \
+        auth_invoker("Unauthorized");                                                                                                                          \
+    }
+
+#define USER_AUTH_CALLBACK                                                                                                                                     \
+    cb(API_ARGS_VALUE);                                                                                                                                        \
+    invoker(200, headerOut, val.toStyledString());
+
+#define USER_AUTH_CALLBACK_ASYNC  cb(API_ARGS_VALUE, invoker);
+
+static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP_ASYNC)> &cb) {
+    return [cb](API_ARGS_MAP_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
+    };
+}
+
+static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP)> &cb) {
+    return [cb](API_ARGS_MAP_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
+    };
+}
+
+static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
+    return [cb](API_ARGS_JSON_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
+    };
+}
+
+static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON)> &cb) {
+    return [cb](API_ARGS_JSON_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
+    };
+}
+
+static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING_ASYNC)> &cb) {
+    return [cb](API_ARGS_STRING_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
+    };
+}
+
+static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING)> &cb) {
+    return [cb](API_ARGS_STRING_ASYNC) {
+        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
+    };
+}
+
 extern uint64_t getTotalMemUsage();
 extern uint64_t getTotalMemBlock();
 extern uint64_t getThisThreadMemUsage();
@@ -2790,10 +2853,16 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/systemStatistic",[](API_ARGS_MAP) {
+    api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
         //CHECK_TOKEN
         val["data"] = makeSystemStatisticJson();
     });
+    
+    // example with user auth
+    api_regist("/checkUserAuth", withUserAuth([](API_ARGS_MAP) {
+        //CHECK_TOKEN
+        val["data"] = "Success";
+    }));
 }
 
 void unInstallWebApi(){

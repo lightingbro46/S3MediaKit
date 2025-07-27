@@ -21,22 +21,27 @@ using namespace managerkit;
 namespace managerkit {
 
 namespace Manager {
-#define GENERAL_FIELD "manager."
-const std::string kMediaServerDomain = GENERAL_FIELD"mediaServerDomain";
-const std::string kCertSavePath = GENERAL_FIELD"certSavePath";
-const std::string kMaxAllowedDevices = GENERAL_FIELD"maxAllowedDevices";
+#define MANAGER_FIELD "manager."
+const string kMediaServerDomain = MANAGER_FIELD"mediaServerDomain";
+const string kMaxAllowedDevices = MANAGER_FIELD"maxAllowedDevices";
+const string kServerLocationId = MANAGER_FIELD"serverLocationId";
+const string kEnableFailover = MANAGER_FIELD"enableFailover";
+const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
-    mINI::Instance()[kCertSavePath] = "./certs";
     mINI::Instance()[kMaxAllowedDevices] = 256;
+    mINI::Instance()[kServerLocationId] = 1;
+    mINI::Instance()[kEnableFailover] = false;
+    mINI::Instance()[kEnableAuthorize] = true;
 });
 } // namespace Manager
 
 } // namespace managerkit
 
-static void manageStorageVolume() {
-    StorageManager::Instance();
+void enforceStoragePolicy() {
+    StorageManager::Instance().start();
+    DebugL << "Storage manager has been started monitoring";
 }
 
 static void *manager_hook_tag = nullptr;
@@ -50,7 +55,7 @@ void installManagerHook () {
         block.set_app(info.app);
         block.set_stream(info.stream);
         block.set_start_time(info.start_time);
-        block.set_time_len(std::round(info.time_len));
+        block.set_time_len(round(info.time_len));
         block.set_file_size(info.file_size);
         block.set_file_path(info.file_path);
 
@@ -65,7 +70,7 @@ void installManagerHook () {
         block.set_app(info.app);
         block.set_stream(info.stream);
         block.set_start_time(info.start_time);
-        block.set_time_len(std::round(info.time_len));
+        block.set_time_len(round(info.time_len));
         block.set_file_size(info.file_size);
         block.set_file_path(info.file_path);
 
@@ -77,13 +82,13 @@ void installManagerHook () {
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
         auto infos = split(args.stream, "/");
         MediaTuple tuple = { args.vhost, infos[0], infos[1], "" };
-        auto query = std::make_shared<TimeQuery>(tuple);
+        auto query = make_shared<TimeQuery>(tuple);
         int64_t offset = query->getOffsetOfDate(stamp);
         invoker(offset);
     });
 #endif // defined(ENABLE_MP4) || defined(ENABLE_MKV)
 
-    manageStorageVolume();
+    enforceStoragePolicy();
 }
 
 void unInstallManagerHook() {
@@ -93,12 +98,12 @@ void unInstallManagerHook() {
 
 void migrateDatabase() {
     TraceL << "Prepare migrating local media server database";
-    auto localDbMigrate = std::make_shared<MigrationHistoryImp>(Database::kMediaServerDb);
+    auto localDbMigrate = make_shared<MigrationHistoryImp>(Database::kMediaServerDb);
     GET_CONFIG(string, mserverUpdateSavePath, Database::kMServerMigrationSavePath)
     localDbMigrate->migrate(mserverUpdateSavePath);
 
     TraceL << "Prepare migrating edge storage database";
-    auto escDbMigrate = std::make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
+    auto escDbMigrate = make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
     GET_CONFIG(string, escUpdateSavePath, Database::kESCMigrationSavePath)
     escDbMigrate->migrate(escUpdateSavePath);
 }
@@ -198,7 +203,7 @@ void loadServerConfigJson(const Json::Value &data) {
 
 }
 
-void getServerStatisticJson(const std::function<void(Json::Value &data)> &cb) {
+void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     Json::Value data;
     // CameraSource::for_each_camera([&](const CameraSource::Ptr &camera) {
 
