@@ -528,11 +528,10 @@ void installWebHook() {
             invoker("");
             return;                                                                                                                                                
         } 
-        string device_id = args.app;
         auto params = Parser::parseArgs(args.params);
-        string bearer_token = params["token"];
+        string jwt_token = params["token"];
 
-        // auto cache = UserAuthorManager::Instance().getUserAuthCache(device_id, bearer_token);
+        // auto cache = UserAuthorManager::Instance().getAuthCache(args, jwt_token);
         // if (cache) {
         //     // User auth cache has still been expired. Check user permission
         //     invoker(cache.hasLicensed() ? "" : "Unauthorized");
@@ -552,12 +551,12 @@ void installWebHook() {
         body["id"] = sender.getIdentifier();
 #endif
         ArgsType body;
-        body["deviceId"] = device_id;
+        body["data"] = args.app;
         HeaderType header;
-        header["Authorization"] = bearer_token;
+        header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, bearer_token, invoker](const Value &obj, const string &err) {
-            // UserAuthorManager::Instance().addUserAuthCache(device_id, bearer_token, err.empty());
+        do_http_hook(hook_api_url + hook_play, body, header, [args, jwt_token, invoker](const Value &obj, const string &err) {
+            // UserAuthorManager::Instance().addAuthCache(args, jwt_token, err.empty());
             invoker(err);
         });
     });

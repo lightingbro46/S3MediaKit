@@ -240,7 +240,7 @@ static ApiArgsType getAllArgs(const Parser &parser) {
 #define CHECK_USER_AUTH(XX)                                                                                                                                    \
     CHECK_ARGS("Authorization");                                                                                                                               \
     string bearer_token = allArgs["Authorization"];                                                                                                            \
-    string jwt_token = findSubString(bearer_token.data(), "Bearer ", nullptr);                                                                                 \
+    string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                            \
     string host = allArgs["Host"];                                                                                                                             \
     string camera_id = allArgs["cameraId"];                                                                                                                    \
     string stream_id = allArgs["streamId"];                                                                                                                    \
