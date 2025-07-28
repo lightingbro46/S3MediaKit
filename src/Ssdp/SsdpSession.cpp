@@ -28,9 +28,8 @@ void SsdpSession::onRecv(const Buffer::Ptr &buffer) {
     string data(buffer->data(), buffer->size());
     TraceL << "Received UDP data from " << SockUtil::inet_ntoa((struct sockaddr *)&_peer_addr) << ":" << SockUtil::inet_port((struct sockaddr *)&_peer_addr) << "\n" << data;
     _ticker.resetTime();
-    if (1) {
-    // if (data.find(ssdp_search_header) != string::npos && data.find(ssdp_search_man) != string::npos &&
-    //     (data.find(service_taget_all) != string::npos || data.find(service_taget) != string::npos)) {
+    if (data.find(ssdp_search_header) != string::npos && data.find(ssdp_search_man) != string::npos &&
+        (data.find(service_taget_all) != string::npos || data.find(service_taget) != string::npos)) {
         /**
          * @brief SSDP message incomming
          * M-SEARCH * HTTP/1.1
