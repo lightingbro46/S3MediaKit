@@ -26,7 +26,7 @@ private:
 class CpuMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<CpuMonitor>;
-    CpuMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+    CpuMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(ResourceType::CPU, poller) {
         start();
     }
 

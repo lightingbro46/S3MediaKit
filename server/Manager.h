@@ -34,4 +34,6 @@ void loadServerConfigJson(const Json::Value &config);
 
 void getServerStatisticJson(const std::function<void(Json::Value &data)> &cb);
 
+void getServerUsageJson(const std::function<void(Json::Value &data)> &cb);
+
 #endif // S3MANAGERKIT_MANAGER_H

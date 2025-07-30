@@ -45,7 +45,7 @@ private:
 class NetworkMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<NetworkMonitor>;
-    NetworkMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+    NetworkMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(ResourceType::NETWORK, poller) {
         start();
     }
 

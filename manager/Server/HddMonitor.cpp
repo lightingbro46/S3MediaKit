@@ -232,6 +232,7 @@ void HddMonitor::start() {
             _map_result[info.name].free_bytes = info.free_bytes;
             _map_result[info.name].used_bytes = info.used_bytes;
             _map_result[info.name].usage_pct = info.usage_pct;
+            emitSystemAlert(info.usage_pct);
         });
 
         _map_collector[d.mount_point] = collector;

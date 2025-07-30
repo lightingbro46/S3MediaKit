@@ -1,7 +1,5 @@
 #include "GlobalMonitor.h"
-#include "Util/util.h"
 #include "Common/macros.h"
-#include <iomanip>
 
 using namespace std;
 using namespace toolkit;
@@ -18,27 +16,6 @@ GlobalMonitor::GlobalMonitor() {
 
 GlobalMonitor::~GlobalMonitor() {
     _timer.reset();
-}
-
-static std::string format_double_2f(double value) {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2) << value;
-    return oss.str();
-}
-
-static std::string format_bytes_human_readable(uint64_t bytes) {
-    const char* units[] = {"B", "KB", "MB", "GB", "TB", "PB"};
-    double size = static_cast<double>(bytes);
-    int unit_index = 0;
-
-    while (size >= 1024.0 && unit_index < 5) {
-        size /= 1024.0;
-        ++unit_index;
-    }
-
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2) << size << " " << units[unit_index];
-    return oss.str();
 }
 
 void GlobalMonitor::start() {
@@ -115,9 +92,9 @@ string GlobalMonitor::getLocalIps() {
     auto net_usage = _net_monitor->getCurrentUsage();
     vector<string> ips;
     for (const auto &net : net_usage) {
-        if (net.ipv4.empty())
+        if (!net.ipv4.empty())
             ips.push_back(net.ipv4);
-        if (net.ipv6.empty())
+        if (!net.ipv6.empty())
             ips.push_back(net.ipv6);
     }
 
@@ -144,6 +121,27 @@ string GlobalMonitor::getMacAddresses() {
             printer << ",";
     }
     return printer;
+}
+
+void GlobalMonitor::setThreshold(const ResourceType &type, double warning_threshold, double critical_threshold) {
+    std::shared_ptr<ResourceMonitor> monitor;
+    if (type == ResourceType::CPU && _cpu_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+    }
+    if (type == ResourceType::MEMORY && _mem_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+    }
+    if (type == ResourceType::HDD && _hdd_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+    }
+    if (type == ResourceType::NETWORK && _net_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_net_monitor);
+    }
+    if (monitor) {
+        monitor->setThreshold(warning_threshold, critical_threshold);
+    } else {
+        WarnL << "Not found " << getResourceTypeString(type) << "monitor. Ignore set threshold";
+    }
 }
 
 } // namespace managerkit 

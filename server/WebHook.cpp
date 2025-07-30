@@ -42,6 +42,8 @@ const string kOnServerExited = HOOK_FIELD "on_server_exited";
 const string kOnServerKeepalive = HOOK_FIELD "on_server_keepalive";
 const string kOnServerLoad = HOOK_FIELD "on_server_load";
 const string kOnServerReport = HOOK_FIELD "on_server_report";
+const string kOnServerReportUsage = HOOK_FIELD "on_server_report_usage";
+const string kOnSystemAlert = HOOK_FIELD "on_system_alert";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
@@ -72,6 +74,8 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerKeepalive] = "/api/media-server/heartbeat";
     mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration";
     mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
+    mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
+    mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
     mINI::Instance()[kOnServerKeepalive] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
@@ -435,6 +439,39 @@ static void reportServerStatistic() {
     g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
 
     EventPollerPool::Instance().getPoller()->doDelayTask(10000, report_callback);
+}
+
+// Server report usage
+static Timer::Ptr g_report_usage_timer;
+static void reportServerUsage() {
+    GET_CONFIG(bool, hook_enable, Hook::kEnable);
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    GET_CONFIG(string, hook_server_report_usage, Hook::kOnServerReportUsage);
+    if (!hook_enable || hook_server_report_usage.empty() || hook_api_url.empty()) {
+        return;
+    }
+    GET_CONFIG(float, report_interval, Hook::kReportInterval);
+
+    auto report_callback = []() {
+        getServerUsageJson([](const Value &data) mutable {
+            ArgsType body = data;
+            // Execute hook
+            do_http_hook(hook_api_url + hook_server_report_usage, body, [](const Value &obj, const string &err) mutable {
+                if (err.empty()) {
+                    // Report server usage succeeded
+                    DebugL << "hook " << hook_api_url + hook_server_report_usage << " success:" << obj.toStyledString();
+                    InfoL << "Report server usage success";
+                } else {
+                    // Load server config failed
+                    DebugL << "hook " <<  hook_api_url + hook_server_report_usage << " failed:" << err;
+                    WarnL << "Report server usage failed:" << err;
+                }
+            });
+        });
+        return true;
+    };
+
+    g_report_usage_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
 }
 
 static const string kEdgeServerParam = "edge=1";
@@ -903,6 +940,33 @@ void installWebHook() {
         do_http_hook(restart_server_trigger, params);
     });
 
+    static auto getEventCode = [](ResourceType type, bool is_critical = false) {
+        string eventCode;
+        switch (type) {
+            case ResourceType::CPU: eventCode = (StrPrinter << "Cpu" << (is_critical ? "Critical" : "Warning")); break;
+            case ResourceType::MEMORY: eventCode = (StrPrinter << "Ram" << (is_critical ? "Critical" : "Warning")); break;
+            case ResourceType::HDD: eventCode = (StrPrinter << "Disk" << (is_critical ? "Critical" : "Warning")); break;
+            case ResourceType::NETWORK: eventCode = (StrPrinter << "NetWork" << (is_critical ? "Critical" : "Warning")); break;
+        }
+        return eventCode;
+    };
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSystemAlert, [](BroadcastSystemAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = getEventCode(static_cast<ResourceType>(type), is_critical);
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = usage;
+        body["threshold"] = threshold;
+        // Execute hook
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     // Report server restart
     reportServerStarted();
 
@@ -911,6 +975,9 @@ void installWebHook() {
 
     // Report server statistics
     reportServerStatistic();
+
+    // Report server usage
+    reportServerUsage();
 }
 
 void unInstallWebHook() {

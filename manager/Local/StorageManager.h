@@ -1,3 +1,4 @@
+
 #ifndef LOCAL_STORAGEMANAGER_H
 #define LOCAL_STORAGEMANAGER_H
 
@@ -9,17 +10,25 @@
 
 namespace managerkit {
  
-class StorageManager {
+class StorageManager : public std::enable_shared_from_this<StorageManager> {
 public:
     using Ptr = std::shared_ptr<StorageManager>;
 
     static StorageManager &Instance();
     ~StorageManager();
 
+    void start();
+
+    void getMainStorageUsage(double &usage_pct, size_t &total_bytes);
+
+    void getBackUpStorageUsage(double &usage_pct, size_t &total_bytes);
+
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);
 
     void cleanupTemporaryFiles();
+
+    void enforceStoragePolicy();
 
 private:
     toolkit::EventPoller::Ptr _poller;

@@ -28,7 +28,7 @@ private:
 class MemoryMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<MemoryMonitor>;
-    MemoryMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+    MemoryMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(ResourceType::MEMORY, poller) {
         start();
     }
 

@@ -11,6 +11,7 @@
 #include "Storage/MigrationHistory.h"
 #include "Common/CameraSource.h"
 #include "Local/StorageManager.h"
+#include "Server/GlobalMonitor.h"
 #include "Manager.h"
 
 using namespace std;
@@ -152,9 +153,22 @@ void migrateDatabase() {
 
 void loadServerConfigJson(const Json::Value &data) {
     if (data.isMember("mediaServer")) {
-        bool enableFailover = data["mediaServer"]["failover"].asBool();
-        int maxNumberCamera = data["mediaServer"]["maxNumberCamera"].asInt();
-        int serverLocationId = data["mediaServer"]["serverLocationId"].asInt();
+        auto &ini = mINI::Instance();
+        auto mserver_data = data["mediaServer"];
+        // failover config
+        bool enableFailover = mserver_data["failover"].asBool();
+        int maxNumberCamera = mserver_data["maxNumberCamera"].asInt();
+        int serverLocationId = mserver_data["serverLocationId"].asInt();
+
+        // monitor threshold config
+#define GET_THRESHOLD(type, name)                                                                                                                              \
+    double levelLow_##type = !mserver_data["thresholdConfig"].isNull() ? mserver_data["thresholdConfig"][#name "_levelLow"].asDouble() : -1;                   \
+    double levelMedium_##type = !mserver_data["thresholdConfig"].isNull() ? mserver_data["thresholdConfig"][#name "_levelMedium"].asDouble() : -1;             \
+    GlobalMonitor::Instance().setThreshold(ResourceType::type, levelLow_##type, levelMedium_##type);
+        GET_THRESHOLD(CPU, CPU);
+        GET_THRESHOLD(MEMORY, RAM);
+        GET_THRESHOLD(HDD, STORAGE);
+
         //todo: cấu hình lưu bookmark, cấu hình lưu video push, số lượng thiết bị tối đa cho phép
     }
 
@@ -208,5 +222,22 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     // CameraSource::for_each_camera([&](const CameraSource::Ptr &camera) {
 
     // });
+    cb(data);
+}
+
+void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
+    Json::Value data;
+    int numCritical = 0;
+    int numWarning = 0;
+    int numNormal = 0;
+    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
+    data["cpuUsage"] = cpu_usage.usagePct;
+    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
+    data["ramUsage"] = mem_usage.usagePct;
+    double mainStorageUsage = 0.0;
+    size_t mainStorageTotalBytes = 0;
+    StorageManager::Instance().getMainStorageUsage(mainStorageUsage, mainStorageTotalBytes);
+    data["currentStorageUsage"] = mainStorageUsage;
+    data["maxStorageCapacity"] = mainStorageTotalBytes;
     cb(data);
 }

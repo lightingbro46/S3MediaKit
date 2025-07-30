@@ -127,6 +127,7 @@ void MemoryMonitor::start() {
     _collector->setOnCollect([&](MemoryInfo &info) { 
         lock_guard<mutex> lck(_mtx);
         _info = info;
+        emitSystemAlert(_info.usagePct);
     });
 }
 

@@ -32,6 +32,8 @@ public:
 
     std::string getMacAddresses();
 
+    void setThreshold(const ResourceType &type, double warning_threshold = -1, double critical_threshold = -1);
+
 private:
     GlobalMonitor();
 

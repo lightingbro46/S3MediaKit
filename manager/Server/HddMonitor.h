@@ -45,7 +45,7 @@ private:
 class HddMonitor : public ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<HddMonitor>;
-    HddMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(poller) {
+    HddMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(ResourceType::HDD, poller) {
         start();
     }
 

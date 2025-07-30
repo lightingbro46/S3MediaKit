@@ -4,8 +4,15 @@
 #include <memory>
 #include <mutex>
 #include "Poller/Timer.h"
+#include "Common/config.h"
 
 namespace managerkit {
+
+std::string format_bytes_human_readable(uint64_t bytes);
+
+std::string format_double_2f(double value);
+
+std::string formatDuration(int64_t milliseconds);
 
 template <typename T>
 class MetricCollector {
@@ -43,22 +50,39 @@ protected:
     std::function<void(T &)> _on_collect;
 };
 
+enum class ResourceType : uint8_t {
+    CPU = 0,
+    MEMORY = 1,
+    NETWORK = 2,
+    HDD = 3
+};
+
+std::string getResourceTypeString(const ResourceType &type);
+
 class ResourceMonitor : public std::enable_shared_from_this<ResourceMonitor> {
 public:
     using Ptr = std::shared_ptr<ResourceMonitor>;
 
-    explicit ResourceMonitor(toolkit::EventPoller::Ptr poller = nullptr) {
+    explicit ResourceMonitor(const ResourceType type, toolkit::EventPoller::Ptr poller = nullptr) : _type(type) {
         _poller = poller ? poller : toolkit::EventPollerPool::Instance().getPoller();
     }
 
     virtual ~ResourceMonitor() = default;
 
+    void setThreshold(double warning_threshold = -1, double critical_threshold = -1);
+
 private:
     virtual void start() = 0;
 
 protected:
+    void emitSystemAlert(double usage);
+
+protected:
     std::mutex _mtx;
+    ResourceType _type;
     toolkit::EventPoller::Ptr _poller;
+    double _warning_threshold = -1;
+    double _critical_threshold = -1;
 };
 
 } // namespace managerkit

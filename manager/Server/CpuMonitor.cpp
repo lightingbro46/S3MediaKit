@@ -200,6 +200,7 @@ void CpuMonitor::start() {
     _collector->setOnCollect([&](CpuInfo &info) { 
         lock_guard<mutex> lck(_mtx);
         _info = info;
+        emitSystemAlert(_info.usagePct);
     });
 }
 

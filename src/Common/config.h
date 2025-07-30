@@ -131,6 +131,10 @@ extern const std::string kBroadcastMediaSeeked;
 extern const std::string kBroadcastRestartServer;
 #define BroadcastRestartServerArgs void
 
+// Broadcast for system alert events. Control server emit system alert through this event.
+extern const std::string kBroadcastSystemAlert;
+#define BroadcastSystemAlertArgs uint8_t &type, double &usage, double &threshold, bool &is_critical
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
