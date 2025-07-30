@@ -50,7 +50,7 @@ static bool is_virtual_filesystem(const std::string& fstype, const std::string& 
     // mount point hệ thống
     static const std::vector<std::string> system_mounts = {
         "/boot", "/boot/efi", "/sys", "/proc", "/dev", "/run", "/snap",
-        "/var", "/var/lib", "/var/lib/docker", "/var/lib/flatpak", "/tmp"
+        "/var", "/var/lib", "/var/lib/docker", "/var/lib/flatpak", "/tmp", "/etc"
     };
     for (const auto& prefix : system_mounts) {
         if (mount_point == prefix || mount_point.find(prefix + "/") == 0)

@@ -71,6 +71,8 @@ public:
 
     void setThreshold(double warning_threshold = -1, double critical_threshold = -1);
 
+    std::pair<double, double> getThreshold();
+
 private:
     virtual void start() = 0;
 
@@ -81,8 +83,8 @@ protected:
     std::mutex _mtx;
     ResourceType _type;
     toolkit::EventPoller::Ptr _poller;
-    double _warning_threshold = -1;
-    double _critical_threshold = -1;
+    double _warning_threshold = -1.0;
+    double _critical_threshold = -1.0;
 };
 
 } // namespace managerkit

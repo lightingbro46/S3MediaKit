@@ -129,10 +129,10 @@ void GlobalMonitor::setThreshold(const ResourceType &type, double warning_thresh
         monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
     }
     if (type == ResourceType::MEMORY && _mem_monitor) {
-        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_mem_monitor);
     }
     if (type == ResourceType::HDD && _hdd_monitor) {
-        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_hdd_monitor);
     }
     if (type == ResourceType::NETWORK && _net_monitor) {
         monitor = dynamic_pointer_cast<ResourceMonitor>(_net_monitor);
@@ -141,6 +141,28 @@ void GlobalMonitor::setThreshold(const ResourceType &type, double warning_thresh
         monitor->setThreshold(warning_threshold, critical_threshold);
     } else {
         WarnL << "Not found " << getResourceTypeString(type) << "monitor. Ignore set threshold";
+    }
+}
+
+std::pair<double, double> GlobalMonitor::getThreshold(const ResourceType &type) {
+    std::shared_ptr<ResourceMonitor> monitor;
+    if (type == ResourceType::CPU && _cpu_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
+    }
+    if (type == ResourceType::MEMORY && _mem_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_mem_monitor);
+    }
+    if (type == ResourceType::HDD && _hdd_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_hdd_monitor);
+    }
+    if (type == ResourceType::NETWORK && _net_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_net_monitor);
+    }
+    if (monitor) {
+        return monitor->getThreshold();
+    } else {
+        WarnL << "Not found " << getResourceTypeString(type) << "monitor. Ignore get threshold";
+        return std::make_pair(-1.0, -1.0);
     }
 }
 

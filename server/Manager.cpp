@@ -230,14 +230,39 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
     int numCritical = 0;
     int numWarning = 0;
     int numNormal = 0;
+
+#define COUNT_ALERT(usage_value, low_threshold, high_threshold)                                                                                                \
+    if (high_threshold > 0 && usage_value >= high_threshold) {                                                                                                 \
+        numCritical++;                                                                                                                                         \
+    } else if (low_threshold > 0 && usage_value >= low_threshold) {                                                                                            \
+        numWarning++;                                                                                                                                          \
+    } else {                                                                                                                                                   \
+        numNormal++;                                                                                                                                           \
+    }
     auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
-    data["cpuUsage"] = cpu_usage.usagePct;
+    auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
+    COUNT_ALERT(cpu_usage.usagePct, cpu_threshold.first, cpu_threshold.second)
+
     auto mem_usage = GlobalMonitor::Instance().getMemUsage();
-    data["ramUsage"] = mem_usage.usagePct;
+    auto mem_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::MEMORY);
+    COUNT_ALERT(mem_usage.usagePct, mem_threshold.first, mem_threshold.second)
+
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
+    for (const auto& disk: hdd_usage) {
+        COUNT_ALERT(disk.usage_pct, hdd_threshold.first, hdd_threshold.second)
+    }
+    
     double mainStorageUsage = 0.0;
     size_t mainStorageTotalBytes = 0;
     StorageManager::Instance().getMainStorageUsage(mainStorageUsage, mainStorageTotalBytes);
+
+    data["cpuUsage"] = cpu_usage.usagePct;
+    data["ramUsage"] = mem_usage.usagePct;
     data["currentStorageUsage"] = mainStorageUsage;
     data["maxStorageCapacity"] = mainStorageTotalBytes;
+    data["numCritical"] = numCritical;
+    data["numWarning"] = numWarning;
+    data["numNormal"] = numNormal;
     cb(data);
 }

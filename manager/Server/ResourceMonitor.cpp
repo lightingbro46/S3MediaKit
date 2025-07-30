@@ -63,6 +63,10 @@ void ResourceMonitor::setThreshold(double warning_threshold, double critical_thr
     _critical_threshold = critical_threshold;
 }
 
+std::pair<double, double> ResourceMonitor::getThreshold() {
+    return std::make_pair(_warning_threshold, _critical_threshold);
+}
+
 void ResourceMonitor::emitSystemAlert(double usage) {
     if (_critical_threshold < 0 && _critical_threshold < 0) {
         TraceL << "No system " << getResourceTypeString(_type) << " threshold config. Ignore system alert";

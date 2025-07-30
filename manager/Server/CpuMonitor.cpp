@@ -174,10 +174,9 @@ static CpuTimes get_cpu_times() {
 #endif
 
 void CpuCollector::collect() {
-    int interval_ms = 100;
     _info.cores = get_cpu_core_count();
     CpuTimes t1 = get_cpu_times();
-    _poller->doDelayTask(100, [&]() {
+    _poller->doDelayTask(1000, [&]() {
         CpuTimes t2 = get_cpu_times();
         uint64_t idleDiff = t2.idleTime - t1.idleTime;
         uint64_t totalDiff = t2.totalTime - t1.totalTime;
