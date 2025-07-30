@@ -30,11 +30,17 @@ void MigrationHistoryImp::migrate(const string &files_string) {
         files = split(files_string, ";");
     }
 
+    auto save_path = SqlitePoolMap::Instance().getSavePath(_tag);
+    save_path = File::absolutePath("", save_path);
+    bool exist_db = File::fileExist(save_path) && File::fileSize(save_path) > 0;
+
     for (auto it = files.begin(); it != files.end(); ++it) {
         auto file = *it;
         if (File::fileExist(file)) {
             try {
-                if (it != files.begin()) {
+                if (it == files.begin() && !exist_db) {
+                    TraceL << "Database " << _tag << " has not been created before. Ignore checking migration history sql file";
+                } else {
                     auto records = findByMigration(file);
                     if (!records.empty()) {
                         continue;
