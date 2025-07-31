@@ -14,6 +14,8 @@ std::string format_double_2f(double value);
 
 std::string formatDuration(int64_t milliseconds);
 
+double sanitize_for_json(double val);
+
 template <typename T>
 class MetricCollector {
 public:

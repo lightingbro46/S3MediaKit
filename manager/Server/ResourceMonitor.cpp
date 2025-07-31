@@ -1,6 +1,7 @@
-#include "ResourceMonitor.h"
-#include "Util/util.h"
 #include <iomanip>
+#include <cmath>
+#include "Util/util.h"
+#include "ResourceMonitor.h"
 
 using namespace std;
 using namespace toolkit;
@@ -43,6 +44,13 @@ string formatDuration(int64_t milliseconds) {
     oss << ms << "ms";
 
     return oss;
+}
+
+double sanitize_for_json(double val) {
+    if (std::isnan(val) || std::isinf(val))
+        return 0.0;
+    if (val == 0.0) return 0.0; // chuyển -0.0 → +0.0
+    return val;
 }
 
 ////////////////////////////////////ResourceMonitor//////////////////////////////////////////

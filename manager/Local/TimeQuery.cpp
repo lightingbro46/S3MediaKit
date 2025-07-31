@@ -41,7 +41,7 @@ bool TimeQuery::seekTo(uint64_t seek_stamp) {
     return true;
 }
 
-bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const function<void(const TimeBlock &block)> &cb) {
+bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const TimeBlockImp &cb) {
     bool eof = false;
     while (!eof && end_stamp > getCurrentStamp()) {
         TimeBlockList list;
@@ -51,10 +51,11 @@ bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const 
             setCurrentStamp(list.created_at());
             for (const auto &block : list.blocks()) {
                 if (block.start_time() + block.time_len() > start_stamp &&
-                    block.start_time() <= end_stamp && 
-                    block.app() == _tuple.app) {
-                    if (_tuple.stream.empty() || _tuple.stream == block.stream()) {
-                        cb(block);
+                    block.start_time() <= end_stamp) {
+                    if (_tuple.app.empty() || block.app() == _tuple.app) {
+                        if (_tuple.stream.empty() || _tuple.stream == block.stream()) {
+                            cb(block);
+                        }
                     }
                 }
             };
@@ -63,7 +64,7 @@ bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const 
     return !eof;
 }
 
-void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const std::function<void(const TimeBlock &block)> &cb) {
+void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const TimeBlockImp &cb) {
     if (_demuxer) {
         lock_guard<recursive_mutex> lck(_mtx);
         if (!seekTo(start_time)) {
@@ -240,6 +241,30 @@ std::shared_ptr<TimeBlock> TimeQuery::getLastBlock(uint32_t interval_sec) {
     } catch (...) {}
     
     return has_block ? last_block : nullptr;
+}
+
+std::shared_ptr<TimeBlock> TimeQuery::getFirstBlock(uint32_t interval_sec) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    uint64_t last_time = time(nullptr);
+    bool has_block = false;
+    std::shared_ptr<TimeBlock> first_block;
+    try {
+        uint64_t pos = _demuxer->getFirstStamp();
+        while (!has_block && pos > last_time) {
+            auto end_pos = pos + interval_sec;
+            query(pos, end_pos, [&](const TimeBlock &block) {
+                if (!has_block) {
+                    has_block = true;
+                    first_block = std::make_shared<TimeBlock>(block);
+                }
+            });
+            if (!has_block) {
+                pos = end_pos;
+            }
+        }
+    } catch (...) {}
+    
+    return has_block ? first_block : nullptr;
 }
 
 } // namespace mediakit

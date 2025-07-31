@@ -800,14 +800,14 @@ Value makeSystemStatisticJson() {
 
     auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
     val["cpu"]["cores"] = cpu_usage.cores;
-    val["cpu"]["usage_pct"] = cpu_usage.usagePct;
-    val["cpu"]["proc_usage_pct"] = cpu_usage.procUsagePct;
+    val["cpu"]["usage_pct"] = sanitize_for_json(cpu_usage.usagePct);
+    val["cpu"]["proc_usage_pct"] = sanitize_for_json(cpu_usage.procUsagePct);
 
     auto mem_usage = GlobalMonitor::Instance().getMemUsage();
     val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
     val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
-    val["ram"]["usage_pct"] = mem_usage.usagePct;
-    val["ram"]["proc_usage_pct"] = mem_usage.procUsagePct;
+    val["ram"]["usage_pct"] = sanitize_for_json(mem_usage.usagePct);
+    val["ram"]["proc_usage_pct"] = sanitize_for_json(mem_usage.procUsagePct);
 
     auto net_usage = GlobalMonitor::Instance().getNetUsage();
     for (const auto &n : net_usage) {
@@ -828,7 +828,7 @@ Value makeSystemStatisticJson() {
         disk["mount"] = d.mount_point;
         disk["used"] = (Json::UInt64)d.used_bytes;
         disk["total"] = (Json::UInt64)d.total_bytes;
-        disk["used_pct"] = d.usage_pct;
+        disk["used_pct"] = sanitize_for_json(d.usage_pct);
         val["disks"].append(disk);
     }
     return val;

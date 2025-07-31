@@ -15,10 +15,13 @@ struct TimeRange {
     uint32_t duration;
 };
 
+class TimeRebuilder;
 class TimeQuery final {
 public:
+    friend class TimeRebuilder;
     using Ptr = std::shared_ptr<TimeQuery>;
     using TimeBlockListPtr = std::shared_ptr<TimeQuery>;
+    using TimeBlockImp = std::function<void(const TimeBlock &block)>;
 
     TimeQuery(const MediaTuple &tuple, const std::string file_path = "");
 
@@ -45,6 +48,8 @@ public:
 
     std::shared_ptr<TimeBlock> getLastBlock(uint32_t interval_sec = 600);
 
+    std::shared_ptr<TimeBlock> getFirstBlock(uint32_t interval_sec = 600);
+
 private:
     /**
      * Seek to centain timestamp, return the nearest lower value
@@ -54,12 +59,12 @@ private:
     /**
      * Read block list in range time
      */
-    bool readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const std::function<void(const TimeBlock &block)> &cb);
+    bool readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const TimeBlockImp &cb);
     
     /**
      * Find blocks with start_time and end_time
      */
-    void query(uint64_t &start_time, uint64_t &end_time, const std::function<void(const TimeBlock &block)> &cb);
+    void query(uint64_t &start_time, uint64_t &end_time, const TimeBlockImp &cb);
 
     /**
      * @brief Sets the current timestamp.

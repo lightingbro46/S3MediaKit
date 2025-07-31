@@ -34,7 +34,7 @@ static onceToken token([]() {
     mINI::Instance()[kMaxAllowedDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
-    mINI::Instance()[kEnableAuthorize] = true;
+    mINI::Instance()[kEnableAuthorize] = false;
 });
 } // namespace Manager
 
@@ -253,13 +253,13 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
         COUNT_ALERT(disk.usage_pct, hdd_threshold.first, hdd_threshold.second)
     }
     
-    double mainStorageUsage = 0.0;
+    size_t mainStorageUsedBytes = 0;
     size_t mainStorageTotalBytes = 0;
-    StorageManager::Instance().getMainStorageUsage(mainStorageUsage, mainStorageTotalBytes);
+    StorageManager::Instance().getMainStorageUsage(mainStorageUsedBytes, mainStorageTotalBytes);
 
-    data["cpuUsage"] = cpu_usage.usagePct;
-    data["ramUsage"] = mem_usage.usagePct;
-    data["currentStorageUsage"] = mainStorageUsage;
+    data["cpuUsage"] = sanitize_for_json(cpu_usage.usagePct);
+    data["ramUsage"] = sanitize_for_json(mem_usage.usagePct);
+    data["currentStorageUsage"] = mainStorageUsedBytes;
     data["maxStorageCapacity"] = mainStorageTotalBytes;
     data["numCritical"] = numCritical;
     data["numWarning"] = numWarning;

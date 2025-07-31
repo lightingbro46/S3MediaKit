@@ -324,10 +324,7 @@ static void reportServerStarted() {
         body[pr.first] = (string &)pr.second;
     }
 #endif
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    GET_CONFIG(string, mediaServerDomain, Manager::kMediaServerDomain)
-    body["id"] = mediaServerId;
-    body["domain"] = mediaServerDomain;
+    body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
     body["ip"] = GlobalMonitor::Instance().getLocalIps();
     body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
     body["rtspPort"] = mINI::Instance()["rtsp.port"];
@@ -961,8 +958,8 @@ void installWebHook() {
         ArgsType body;
         body["eventCode"] = getEventCode(static_cast<ResourceType>(type), is_critical);
         body["eventTime"] = time(nullptr);
-        body["currentValue"] = usage;
-        body["threshold"] = threshold;
+        body["currentValue"] = sanitize_for_json(usage);
+        body["threshold"] = sanitize_for_json(threshold);
         // Execute hook
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
