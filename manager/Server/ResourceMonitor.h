@@ -14,7 +14,7 @@ std::string format_double_2f(double value);
 
 std::string formatDuration(int64_t milliseconds);
 
-double sanitize_for_json(double val);
+std::string sanitize_for_json(double val);
 
 template <typename T>
 class MetricCollector {
@@ -61,7 +61,7 @@ enum class ResourceType : uint8_t {
 
 std::string getResourceTypeString(const ResourceType &type);
 
-class ResourceMonitor : public std::enable_shared_from_this<ResourceMonitor> {
+class ResourceMonitor {
 public:
     using Ptr = std::shared_ptr<ResourceMonitor>;
 

@@ -135,6 +135,10 @@ extern const std::string kBroadcastRestartServer;
 extern const std::string kBroadcastSystemAlert;
 #define BroadcastSystemAlertArgs uint8_t &type, double &usage, double &threshold, bool &is_critical
 
+// Register or unregister DeviceSource event broadcast
+extern const std::string kBroadcastDeviceChanged;
+#define BroadcastDeviceChangedArgs const bool &bRegist, DeviceSource &sender
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

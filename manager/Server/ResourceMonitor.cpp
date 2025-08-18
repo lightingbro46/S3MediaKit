@@ -8,13 +8,13 @@ using namespace toolkit;
 
 namespace managerkit {
 
-std::string format_double_2f(double value) {
+string format_double_2f(double value) {
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(2) << value;
     return oss.str();
 }
 
-std::string format_bytes_human_readable(uint64_t bytes) {
+string format_bytes_human_readable(uint64_t bytes) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB", "PB"};
     double size = static_cast<double>(bytes);
     int unit_index = 0;
@@ -46,11 +46,12 @@ string formatDuration(int64_t milliseconds) {
     return oss;
 }
 
-double sanitize_for_json(double val) {
+string sanitize_for_json(double val) {
+    double ret = val;
     if (std::isnan(val) || std::isinf(val))
-        return 0.0;
-    if (val == 0.0) return 0.0; // chuyển -0.0 → +0.0
-    return val;
+        ret = 0.0;
+    if (val <= 0.0) ret = 0.0; // chuyển -0.0 → +0.0
+    return format_double_2f(ret);
 }
 
 ////////////////////////////////////ResourceMonitor//////////////////////////////////////////

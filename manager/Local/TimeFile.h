@@ -99,7 +99,7 @@ public:
      * @param bytes Data length
      * @return Whether it is successful (0 successful)
      */
-    virtual int onFlush() = 0;
+    virtual int onFlush() { return 0; }
 };
 
 // Disk Time file class
@@ -128,6 +128,31 @@ protected:
 
 private:
     std::shared_ptr<FILE> _file;
+};
+
+class TimeFileMemory : public TimeFileIO {
+public:
+    using Ptr = std::shared_ptr<TimeFileMemory>;
+
+    /**
+     * Get the file size
+     */
+    size_t fileSize() const;
+
+    /**
+     * Get and clear the file cache
+     */
+    std::string getAndClearMemory();
+
+protected:
+    uint64_t onTell() override;
+    int onSeek(uint64_t offset) override;
+    int onRead(void *data, size_t bytes) override;
+    int onWrite(const void *data, size_t bytes) override;
+    
+private:
+    uint64_t _offset = 0;
+    std::string _memory;
 };
 
 } // namespace mediakit

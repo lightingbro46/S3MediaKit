@@ -53,6 +53,7 @@ protected:
             for (size_t i = 0; i < camera_guids.size(); i++) {
                 whereClause << " ? ";
                 if (i + 1 < camera_guids.size()) whereClause << ",";
+                whereParams.push_back(camera_guids[i]);
             }
             whereClause << ")";
         }
@@ -85,6 +86,7 @@ protected:
             for (size_t i = 0; i < camera_guids.size(); i++) {
                 whereClause << " ? ";
                 if (i + 1 < camera_guids.size()) whereClause << ",";
+                whereParams.push_back(camera_guids[i]);
             }
             whereClause << ")";
         }

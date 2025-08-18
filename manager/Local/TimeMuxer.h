@@ -30,25 +30,17 @@ public:
     /**
      * Save time block list
      */
-    void save();
-
-    /**
-     * input index if use maker
-     */
-    virtual void onInput(uint64_t block_time) = 0;
-
-    /**
-     * write index if use maker
-     */
-    virtual void onFlush(size_t bytes) = 0;
+    virtual size_t save();
 
 protected:
     virtual TimeFileIO::Writer createWriter() = 0;
+   
+protected:
+    TimeBlockList _pending_list;
 
 private:
     uint64_t _last_minute = 0;
     TimeFileIO::Writer _writer;
-    TimeBlockList _pending_list;
 };
 
 class TimeMuxer : public TimeMuxerInterface {
@@ -69,18 +61,35 @@ public:
      */
     void closeFile();
     
-private:
+    bool inputBlock(const TimeBlock &block) override;
+
+    size_t save() override; 
+
+protected:
     TimeFileIO::Writer createWriter() override;
 
-    void onInput(uint64_t block_time) override;
+    void onInput(uint64_t block_time);
 
-    void onFlush(size_t bytes) override;
+    void onFlush(size_t bytes);
 
 private:
     std::string _file_name;
     TimeFileDisk::Ptr _file;
     bool _use_maker;
     TimeMakerImp::Ptr _maker;
+};
+
+class TimeMuxerMemory : public TimeMuxerInterface {
+public:
+    TimeMuxerMemory();
+
+protected:
+    TimeFileIO::Writer createWriter() override;
+
+    void getTimeBlockList(const std::function<void(const TimeBlockList &block)>);
+
+private:
+    TimeFileMemory::Ptr _memory_file;
 };
 
 } // namespace mediakit 

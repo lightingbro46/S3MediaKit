@@ -47,9 +47,21 @@ void TimeMuxer::onFlush(size_t bytes) {
     }
 }
 
+bool TimeMuxer::inputBlock(const TimeBlock &block) {
+    TimeMuxerInterface::inputBlock(block);
+    onInput(_pending_list.created_at());
+    return true;
+}
+
+size_t TimeMuxer::save() {
+    size_t writen_size = TimeMuxerInterface::save();
+    onFlush(writen_size);
+    return writen_size;
+}
+
 /////////////////////////////////////////// TimeMuxerInterface /////////////////////////////////////////////
 
-void TimeMuxerInterface::save() {
+size_t TimeMuxerInterface::save() {
     string data = _pending_list.SerializeAsString();
     uint32_t size = data.size();
     if (!_writer) {
@@ -59,7 +71,7 @@ void TimeMuxerInterface::save() {
     _writer->write(data.c_str(), size);
     _writer->flush();
 
-    onFlush(sizeof(uint32_t) + size);
+    return sizeof(uint32_t) + size;
 }
 
 void TimeMuxerInterface::reset() {
@@ -82,9 +94,21 @@ bool TimeMuxerInterface::inputBlock(const TimeBlock &block) {
     }
 
     *_pending_list.add_blocks() = block;
-    onInput(_pending_list.created_at());
-
     return true;
+}
+
+/////////////////////////////////////////// TimeMuxerMemory /////////////////////////////////////////////
+
+TimeMuxerMemory::TimeMuxerMemory() {
+    _memory_file = std::make_shared<TimeFileMemory>();
+}
+
+TimeFileIO::Writer TimeMuxerMemory::createWriter() {
+    return _memory_file->createWriter();
+}
+
+void TimeMuxerMemory::getTimeBlockList(const std::function<void(const TimeBlockList &block)>) {
+    
 }
 
 } // namespace mediakit

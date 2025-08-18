@@ -59,6 +59,7 @@ const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
 const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
 const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
+const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
 
 } // namespace Broadcast
 

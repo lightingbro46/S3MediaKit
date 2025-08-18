@@ -85,5 +85,7 @@ WORKDIR /opt/media/bin/
 COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/media/S3MediaKit/default.pem /opt/media/bin/
 COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
 COPY --from=build /opt/media/S3MediaKit/www/ /opt/media/bin/www/
+COPY --from=build /opt/media/S3MediaKit/migration/mserver_updates/ /opt/media/bin/mserver_updates/
+COPY --from=build /opt/media/S3MediaKit/migration/updates/ /opt/media/bin/updates/
 ENV PATH=/opt/media/bin:$PATH
 CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l", "3"]

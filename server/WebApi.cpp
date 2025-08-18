@@ -728,6 +728,18 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
     player->play(url);
 };
 
+void addStreamProxy(const mediakit::MediaTuple &tuple, const ProtocolOption &option, const std::function<void(const string &err, const PlayerProxy::Ptr &player)> &cb) {
+    auto key = tuple.shortUrl();
+    if (s_player_proxy.find(key)) {
+        // Already pulling stream
+        cb("This stream already exists", nullptr);
+        return;
+    }
+    // Add pull stream proxy
+    auto player = s_player_proxy.make(key, tuple, option);
+    cb("", player);
+}
+
 void delStreamProxy(const MediaTuple &tuple) {
     auto key = tuple.shortUrl();
     auto player_proxy = s_player_proxy.find(key);
@@ -816,8 +828,8 @@ Value makeSystemStatisticJson() {
         net_val["ipv4"] = n.ipv4;
         net_val["ipv6"] = n.ipv6;
         net_val["mac"] = n.mac_address;
-        net_val["rx_mbps"] = n.rx_mbps;
-        net_val["tx_mbps"] = n.tx_mbps;
+        net_val["rx_mbps"] = sanitize_for_json(n.rx_mbps);
+        net_val["tx_mbps"] = sanitize_for_json(n.tx_mbps);
         net_val["speed_mbps"] = n.speed_mbps;
         val["nets"].append(net_val);
     }
@@ -831,6 +843,17 @@ Value makeSystemStatisticJson() {
         disk["used_pct"] = sanitize_for_json(d.usage_pct);
         val["disks"].append(disk);
     }
+
+    auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
+    val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
+    val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
+    auto mem_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::MEMORY);
+    val["threshold"]["ram_levelLow"] = mem_threshold.first;
+    val["threshold"]["ram_levelMedium"] = mem_threshold.second;
+    auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
+    val["threshold"]["disk_levelLow"] = hdd_threshold.first;
+    val["threshold"]["disk_levelMedium"] = hdd_threshold.second;
+    
     return val;
 }
 
@@ -2672,7 +2695,7 @@ void installWebApi() {
             b_json["start_time"] = b.start_time;
             b_json["duration"] = b.duration;
             b_json["name"] = b.name ? b.name.value() : "";
-            b_json["end_time"] = b.end_time ? b.name.value() : 0;
+            b_json["end_time"] = b.end_time ? b.end_time.value() : 0;
             b_json["description"] = b.description ? b.description.value() : "";
             b_json["tags"] = tags;
             val["data"].append(b_json);
@@ -2770,13 +2793,13 @@ void installWebApi() {
     api_regist("/media/mserver/description", [](API_ARGS_MAP) {
         Value info;
         info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
-        info["verion"] = kServerName;
+        info["version"] = kServerName;
         auto osinfo = GlobalMonitor::Instance().getOsInfo();
         info["osInfo"]["platform"] = osinfo.platform;
         info["osInfo"]["variant"] = osinfo.variant;
         info["osInfo"]["variantVerison"] = osinfo.variant_version;
-        info["httpPort"] =  mINI::Instance()["http.port"];
-        info["httpsPort"] = mINI::Instance()["http.sslport"];
+        info["httpPort"] =  static_cast<int>(mINI::Instance()["http.port"]);
+        info["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
         info["clientUseSsl"] = false;
         val["data"] = info;
     });

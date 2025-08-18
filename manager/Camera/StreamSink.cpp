@@ -1,0 +1,94 @@
+#include "StreamSink.h"
+
+using namespace std;
+using namespace toolkit;
+using namespace mediakit;
+
+namespace managerkit {
+    
+StreamSink::StreamSink(const std::unordered_map<int, StreamTuple> &stream_map) {
+    for (const auto& it: stream_map) {
+        _stream_map.emplace(it.first, make_pair(it.second, false));
+    }
+}
+
+bool StreamSink::onStreamReady(int type) {
+    auto it = _stream_map.find(type);
+    if (it != _stream_map.end()) {
+        if (!it->second.second) {
+            // set stream ready
+            it->second.second = true;
+
+            // check if all stream ready
+            checkStreamIfReady();
+        }
+    }
+    return true;
+}
+
+void StreamSink::checkStreamIfReady() {
+    bool all_stream_ready = true;
+    for (auto &ptr : _stream_map) {
+        if (!ptr.second.second) {
+            all_stream_ready = false;
+        }
+    }
+    if (all_stream_ready) {
+        emitAllStreamReady();
+    }
+}
+
+void StreamSink::emitAllStreamReady() {
+    if (_all_stream_ready) {
+        return;
+    }
+    onAllStreamReady();
+    _all_stream_ready = true;
+}
+
+void StreamSink::setupMonitor(int type, bool start_record, int rtp_type) {
+    auto it = _monitor_map.find(type);
+    if (it != _monitor_map.end()) {
+        if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType()) {
+            TraceL << "Stream " << getStreamTuple(type).shortUrl() << " config do not change. Ignore";
+            return;
+        }
+        _monitor_map.erase(type);
+    }
+    auto tuple = getStreamTuple(type);
+    auto monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type);
+    monitor->setOnStreamReady([type, this]() { 
+        onStreamReady(type); 
+    });
+    monitor->start();
+    _monitor_map[type] = monitor;
+}
+
+void StreamSink::stopMonitor(int type) {
+    auto it = _monitor_map.find(type);
+    if (it != _monitor_map.end()) {
+        _monitor_map.erase(type);
+    }
+
+    onStreamReady(type);
+}
+
+bool StreamSink::isStreamLive(int type) {
+    bool live = false;
+    auto it = _monitor_map.find(type);
+    if (it != _monitor_map.end()) {
+        live = it->second->isLive();
+    }
+    return live;
+}
+
+string StreamSink::getStreamStatus(int type) {
+    string status;
+    auto it = _monitor_map.find(type);
+    if (it != _monitor_map.end()) {
+        status = it->second->getStatus();
+    }
+    return status;
+}
+
+} // namespace managerkit

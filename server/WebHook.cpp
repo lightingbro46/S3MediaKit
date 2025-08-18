@@ -327,10 +327,10 @@ static void reportServerStarted() {
     body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
     body["ip"] = GlobalMonitor::Instance().getLocalIps();
     body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
-    body["rtspPort"] = mINI::Instance()["rtsp.port"];
-    body["rtmpPort"] = mINI::Instance()["rtmp.port"];
-    body["httpPort"] = mINI::Instance()["http.port"];
-    body["httpsPort"] = mINI::Instance()["http.sslport"];
+    body["rtspPort"] = static_cast<int>(mINI::Instance()["rtsp.port"]);
+    body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
+    body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
+    body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
     // Execute hook
     do_http_hook(hook_api_url + hook_server_started, body, nullptr);
 }
@@ -395,7 +395,7 @@ static void reportServerStatistic() {
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
-                DebugL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
+                // DebugL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
                 InfoL << "Load server config success";
                 // Load server config success
                 loadServerConfigJson(obj);
@@ -404,6 +404,7 @@ static void reportServerStatistic() {
                     getServerStatisticJson([](const Value &data) mutable {
                         ArgsType body;
                         body["data"] = data;
+                        DebugL << body.toStyledString();
                         // Execute hook
                         do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
                             if (err.empty()) {
@@ -944,6 +945,7 @@ void installWebHook() {
             case ResourceType::MEMORY: eventCode = (StrPrinter << "Ram" << (is_critical ? "Critical" : "Warning")); break;
             case ResourceType::HDD: eventCode = (StrPrinter << "Disk" << (is_critical ? "Critical" : "Warning")); break;
             case ResourceType::NETWORK: eventCode = (StrPrinter << "NetWork" << (is_critical ? "Critical" : "Warning")); break;
+            default: eventCode = "Unknown";
         }
         return eventCode;
     };
@@ -964,17 +966,17 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
-    // Report server restart
-    reportServerStarted();
+    // // Report server restart
+    // reportServerStarted();
 
-    // Report keep-alive regularly
-    reportServerKeepalive();
+    // // Report keep-alive regularly
+    // reportServerKeepalive();
 
     // Report server statistics
     reportServerStatistic();
 
     // Report server usage
-    reportServerUsage();
+    // reportServerUsage();
 }
 
 void unInstallWebHook() {

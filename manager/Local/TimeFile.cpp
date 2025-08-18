@@ -125,4 +125,50 @@ int TimeFileDisk::onFlush() {
     return fflush(_file.get());
 }
 
+/////////////////////////////////////////////////////TimeFileMemory/////////////////////////////////////////////////////////
+
+string TimeFileMemory::getAndClearMemory() {
+    string ret;
+    ret.swap(_memory);
+    _offset = 0;
+    return ret;
+}
+
+size_t TimeFileMemory::fileSize() const {
+    return _memory.size();
+}
+
+uint64_t TimeFileMemory::onTell() {
+    return _offset;
+}
+
+int TimeFileMemory::onSeek(uint64_t offset) {
+    if (offset > _memory.size()) {
+        return -1;
+    }
+    _offset = offset;
+    return 0;
+}
+
+int TimeFileMemory::onRead(void *data, size_t bytes){
+    if (_offset >= _memory.size()) {
+        //EOF
+        return -1;
+    }
+    bytes = MIN(bytes, _memory.size() - _offset);
+    memcpy(data, _memory.data(), bytes);
+    _offset += bytes;
+    return 0;
+}
+
+int TimeFileMemory::onWrite(const void *data, size_t bytes){
+    if (_offset + bytes > _memory.size()) {
+        // Need to expand
+        _memory.resize(_offset + bytes);
+    }
+    memcpy((uint8_t *) _memory.data() + _offset, data, bytes);
+    _offset += bytes;
+    return 0;
+}
+
 } // namespace mediakit

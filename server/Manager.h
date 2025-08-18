@@ -23,6 +23,7 @@ extern const std::string kEnableFailover;
 
 } // namespace managerkit
 
+extern std::string g_ini_file;
 
 void installManagerHook();
 
