@@ -55,17 +55,18 @@ public:
         if (!update && tagstring.empty())
             return;
 
+        // remove previous tags
+        remove(bmGuid);
+
+        // add new tags
         if (tagstring.empty()) {
-            return remove(bmGuid);
+            return;
         }
-        auto tagsAdded = findTagsByBookmark(bmGuid);
         auto tags = toolkit::split(tagstring, ",");
         for (const auto &tag : tags) {
-            if (tagsAdded.empty() || find(tagsAdded.begin(), tagsAdded.end(), tag) == tagsAdded.end()) {
-                BookmarkTag bTag = { bmGuid, tag };
-                save(bTag, true);
-                _bTagCount->add(tag, 1);
-            }
+            BookmarkTag bTag = { bmGuid, tag };
+            save(bTag, true);
+            _bTagCount->add(tag, 1);
         }
     }
 

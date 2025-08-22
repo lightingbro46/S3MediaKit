@@ -2329,103 +2329,121 @@ void installWebApi() {
     /////////////////////////S3MediaKit - MediaServer////////////////////////////
     static auto findTimePeriod = [](MediaTuple &tuple, uint64_t start_time, uint64_t end_time, int period_type, int detail,
                                     const function<void(const SockException&, const Value&)> &cb) {
-        auto query = std::make_shared<TimeQuery>(tuple);
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         Value result;
+        TimeQuery::Ptr query;
+        try {
+            query = std::make_shared<TimeQuery>(tuple);
+        } catch (...) {
+            WarnL << "Timefile has not been created";
+        }
+
         if (period_type == 1) {
             if (detail == 0) {
-                query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
-                    result["cameraId"] = tuple.app;
-                    result["periods"] = arrayValue;
-                    for (auto const &p : ret) {
-                        Value period;
-                        period["startTime"] = p.startTime;
-                        period["duration"] = p.duration;
-                        period["mediaServerId"] = mediaServerId;
-                        result["periods"].append(period);
-                    }
-                });
-            } else {
-                query->getRecordedTimePeriod(start_time, end_time, [&]( unordered_map<string, vector<TimeRange>> &ret) {
-                    result["cameraId"] = tuple.app;
-                    result["streams"] = arrayValue;
-                    for (auto const &it : ret) {
-                        Value stream;
-                        stream["streamId"] = it.first;
-                        stream["periods"] = arrayValue;
-                        for (auto const &p : it.second) {
+                result["cameraId"] = tuple.app;
+                result["periods"] = arrayValue;
+                if (query) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
+                        for (auto const &p : ret) {
                             Value period;
                             period["startTime"] = p.startTime;
                             period["duration"] = p.duration;
                             period["mediaServerId"] = mediaServerId;
-                            stream["periods"].append(period);
+                            result["periods"].append(period);
                         }
-                        result["streams"].append(stream);
-                    }
-                });
+                    });
+                }
+            } else {
+                result["cameraId"] = tuple.app;
+                result["streams"] = arrayValue;
+                if (query) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, vector<TimeRange>> &ret) {
+                        for (auto const &it : ret) {
+                            Value stream;
+                            stream["streamId"] = it.first;
+                            stream["periods"] = arrayValue;
+                            for (auto const &p : it.second) {
+                                Value period;
+                                period["startTime"] = p.startTime;
+                                period["duration"] = p.duration;
+                                period["mediaServerId"] = mediaServerId;
+                                stream["periods"].append(period);
+                            }
+                            result["streams"].append(stream);
+                        }
+                    });
+                }
             }
         } else if (period_type == 2) {
             if (detail == 0) {
-                query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, set<int>> &ret) {
-                    result["cameraId"] = tuple.app;
-                    for (auto const &it : ret) {
-                        string date_str = it.first;
-                        auto &hour_set = it.second;
-                        result["periods"][date_str] = arrayValue;
-                        for (int i = 0; i < 24; i++) {
-                            auto it_hour = hour_set.find(i);
-                            result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
-                        }
-                    }   
-                });
-            } else {
-                query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, unordered_map<string, unordered_map<int, std::vector<TimeRange>>>> &ret) {
-                    result["cameraId"] = tuple.app;
-                    result["streams"] = arrayValue;
-                    for (auto const &it_stream : ret) {
-                        Value stream;
-                        stream["streamId"] = it_stream.first;
-
-                        for (auto const &it_date : it_stream.second) {
-                            string date_str = it_date.first;
-                            auto hour_map = it_date.second;
-                            Value date;
+                result["cameraId"] = tuple.app;
+                result["periods"] = objectValue;
+                if (query) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, set<int>> &ret) {
+                        for (auto const &it : ret) {
+                            string date_str = it.first;
+                            auto &hour_set = it.second;
+                            result["periods"][date_str] = arrayValue;
                             for (int i = 0; i < 24; i++) {
-                                Value hour = arrayValue;
-                                auto it_hour = hour_map.find(i);
-                                if (it_hour != hour_map.end()) {
-                                    for (auto const &it : it_hour->second) {
-                                        Json::Value period;
-                                        period["startTime"] = it.startTime;
-                                        period["duration"] = it.duration;
-                                        period["mediaServerId"] = mediaServerId;
-                                        hour.append(period);
-                                    }
-                                }
-                                date.append(hour);
+                                auto it_hour = hour_set.find(i);
+                                result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
                             }
-                            stream["dates"][date_str] = date;
+                        }   
+                    });
+                }
+            } else {
+                result["cameraId"] = tuple.app;
+                result["streams"] = arrayValue;
+                if (query) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, unordered_map<string, unordered_map<int, std::vector<TimeRange>>>> &ret) {
+                        for (auto const &it_stream : ret) {
+                            Value stream;
+                            stream["streamId"] = it_stream.first;
+
+                            for (auto const &it_date : it_stream.second) {
+                                string date_str = it_date.first;
+                                auto hour_map = it_date.second;
+                                Value date;
+                                for (int i = 0; i < 24; i++) {
+                                    Value hour = arrayValue;
+                                    auto it_hour = hour_map.find(i);
+                                    if (it_hour != hour_map.end()) {
+                                        for (auto const &it : it_hour->second) {
+                                            Json::Value period;
+                                            period["startTime"] = it.startTime;
+                                            period["duration"] = it.duration;
+                                            period["mediaServerId"] = mediaServerId;
+                                            hour.append(period);
+                                        }
+                                    }
+                                    date.append(hour);
+                                }
+                                stream["dates"][date_str] = date;
+                            }
+                            result["streams"].append(stream);
                         }
-                        result["streams"].append(stream);
+                    });
+                }
+            }
+        } else if (period_type == 0) {
+            result["periods"] = arrayValue;
+            if (query) {
+                query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeBlock> &ret) {
+                    for (auto const &p : ret) {
+                        Value period;
+                        period["cameraId"] = p.app();
+                        period["streamId"] = p.stream();
+                        period["startTime"] = p.start_time();
+                        period["timeLen"] = p.time_len();
+                        period["mediaServerId"] = mediaServerId;
+                        result["periods"].append(period);
                     }
                 });
             }
-        } else if (period_type == 0) {
-            query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeBlock> &ret) {
-                result["periods"] = arrayValue;
-                for (auto const &p : ret) {
-                    Value period;
-                    period["cameraId"] = p.app();
-                    period["streamId"] = p.stream();
-                    period["startTime"] = p.start_time();
-                    period["timeLen"] = p.time_len();
-                    period["mediaServerId"] = mediaServerId;
-                    result["periods"].append(period);
-                }
-            });
         }
-        return cb(SockException(Err_success), result);                                  
+        return cb(SockException(Err_success), result);
     };
+
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
@@ -2695,8 +2713,12 @@ void installWebApi() {
             b_json["start_time"] = b.start_time;
             b_json["duration"] = b.duration;
             b_json["name"] = b.name ? b.name.value() : "";
-            b_json["end_time"] = b.end_time ? b.end_time.value() : 0;
+            b_json["end_time"] = b.end_time ? b.end_time.value() : -1;
             b_json["description"] = b.description ? b.description.value() : "";
+            b_json["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
+            // todo: search username
+            b_json["creator"] = "admin";
+            b_json["created"] = b.created ? b.created.value() : -1;
             b_json["tags"] = tags;
             val["data"].append(b_json);
         }
@@ -2727,6 +2749,9 @@ void installWebApi() {
         bm.start_time = start_time;
         bm.end_time = end_time;
         bm.duration = duration;
+        bm.creator_guid = format_guid("99cbc715539b4bfe856f799b45b69b1e");
+        // todo: record username
+        bm.created = time(nullptr);
 
         auto imp = std::make_shared<BookmarkImp>();
         imp->add(bm, tags);
@@ -2742,14 +2767,21 @@ void installWebApi() {
         string id = allArgs["id"];
         string name = allArgs["name"];
         string description = allArgs["description"];
-        string camera_id = allArgs["camera_guid"];
+        string camera_id = allArgs["camera_id"];
         int64_t start_time = allArgs["start_time"];
         int64_t end_time = allArgs["end_time"];
         int64_t duration = allArgs["duration"];
         string tags = allArgs["tags"];
 
-        Bookmark bm;
-        bm.guid = id;
+        auto imp = std::make_shared<BookmarkImp>();
+        auto ret = imp->findById(id);
+        if (!ret.size()) {
+            val["data"]["flag"] = false;
+            invoker(404, headerOut, val.toStyledString());
+            return;
+        }
+
+        Bookmark bm = ret[0];
         bm.name = name;
         bm.description = description;
         bm.camera_guid = camera_id;
@@ -2757,7 +2789,6 @@ void installWebApi() {
         bm.end_time = end_time;
         bm.duration = duration;
 
-        auto imp = std::make_shared<BookmarkImp>();
         imp->update(bm, tags);
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());

@@ -128,6 +128,12 @@ public:
         _bTag->remove(guid);
     }
 
+    std::vector<Bookmark> findById(std::string id) { 
+        Bookmark bm_search;
+        bm_search.guid = id;
+        return BookmarkRepository::findById(bm_search);
+    }
+
     std::vector<Bookmark> search(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &search,
                                 int page, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
