@@ -93,6 +93,9 @@ void installManagerHook () {
 }
 
 void unInstallManagerHook() {
+    // turn off and clear all camera
+    CameraManager::Instance().clear();
+
     // Note: Comment the following code in order to save last segments when program exit
     // NoticeCenter::Instance().delListener(&manager_hook_tag);
 }
@@ -142,18 +145,19 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     int keep_archived_max_for = data["keep_archived_max_for"].asInt();
     int media_port = data["media_port"].asInt();
     bool media_port_auto = data["media_port_auto"].asBool();
+    int rtp_transport = data["rtp_transport"].asInt();
     
     option.enableActive = enable_camera;
-    option.enableRecord = true;
-    option.doNotRecordPrimaryStream = false;
-    option.doNotRecordSecondaryStream = false;
-    option.keepArchivedMinForAuto = true;
-    option.keepArchivedMinFor = 0;
-    option.keepArchivedMaxForAuto = false;
-    option.keepArchivedMaxFor = true;
-    option.mediaPort = 0;
-    option.autoMediaPort = true;
-    option.rtpTransport = CameraOption::kRtpTransportAuto;
+    option.enableRecord = enable_recording;
+    option.doNotRecordPrimaryStream = do_not_record_primary_stream;
+    option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
+    option.keepArchivedMinForAuto = keep_archived_min_for_auto;
+    option.keepArchivedMinFor = keep_archived_min_for;
+    option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
+    option.keepArchivedMaxFor = keep_archived_max_for;
+    option.mediaPort = media_port;
+    option.autoMediaPort = media_port_auto;
+    option.rtpTransport = rtp_transport;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -216,8 +220,13 @@ static Json::Value exampleJson() {
     device["enable"] = true;
     device["address"] = "27.72.173.71";
     device["http_port"] = 80;
-    device["is_enable"] = true;
+    device["is_enable"] = false;
     device["enable_recording"] = true;
+    device["keep_archived_min_for_auto"] = true;
+    device["keep_archived_min_for"] = 0;
+    device["keep_archived_max_for_auto"] = false;
+    device["keep_archived_max_for"] = 10 * 60;
+    device["rtp_transport"] = 0;
     device["streams"] = Json::arrayValue;
     Json::Value channel_1;
     channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
@@ -397,6 +406,7 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
 
 static Json::Value makeDeviceStorageJson(DeviceSource &device) {
     Json::Value data;
+    // todo: 
     data["bytesSpeed"] = 0;
     data["oldestTimeBlock"] = 0;
     data["volumeSize"] = 0;

@@ -30,7 +30,7 @@ class StreamSource : public std::enable_shared_from_this<StreamSource> {
 public:
     using Ptr = std::shared_ptr<StreamSource>;
 
-    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, float timeout_sec = 2.0f);
+    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0, float timeout_sec = 2.0f);
 
     ~StreamSource();
 
@@ -39,6 +39,8 @@ public:
     bool isRecording() { return _record; }
 
     int getRtpType() { return _rtp_type; }
+
+    int getMediaPort() { return _media_port; }
 
     void setOnStreamReady(const std::function<void()> &cb) { _on_ready = std::move(cb); };
 
@@ -55,7 +57,9 @@ private:
     StreamTuple _tuple;
     bool _record;
     int _rtp_type;
+    int _media_port;
     float _timeout_sec;
+    std::string _full_url;
     std::atomic_bool _live {false};
     std::string _status;
     mediakit::TranslationInfo _info;

@@ -107,8 +107,8 @@ TimeFileIO::Writer TimeMuxerMemory::createWriter() {
     return _memory_file->createWriter();
 }
 
-void TimeMuxerMemory::getTimeBlockList(const std::function<void(const TimeBlockList &block)>) {
-    
+string TimeMuxerMemory::getMemoryBlock() {
+    return _memory_file->getAndClearMemory();
 }
 
 } // namespace mediakit

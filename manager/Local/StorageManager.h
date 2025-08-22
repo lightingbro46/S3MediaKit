@@ -19,9 +19,9 @@ public:
 
     void start();
 
-    void getMainStorageUsage(double &usage_pct, size_t &total_bytes);
+    void getMainStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
-    void getBackUpStorageUsage(double &usage_pct, size_t &total_bytes);
+    void getBackUpStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);

@@ -133,6 +133,7 @@ private:
 class TimeFileMemory : public TimeFileIO {
 public:
     using Ptr = std::shared_ptr<TimeFileMemory>;
+    TimeFileMemory(const std::string &buf = "");
 
     /**
      * Get the file size

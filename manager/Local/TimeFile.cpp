@@ -127,6 +127,10 @@ int TimeFileDisk::onFlush() {
 
 /////////////////////////////////////////////////////TimeFileMemory/////////////////////////////////////////////////////////
 
+TimeFileMemory::TimeFileMemory(const string &buf) : _memory(buf) {
+    _offset = _memory.size();
+}
+
 string TimeFileMemory::getAndClearMemory() {
     string ret;
     ret.swap(_memory);

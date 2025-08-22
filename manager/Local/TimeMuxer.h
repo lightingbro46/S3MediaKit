@@ -83,10 +83,11 @@ class TimeMuxerMemory : public TimeMuxerInterface {
 public:
     TimeMuxerMemory();
 
+    std::string getMemoryBlock();
+
 protected:
     TimeFileIO::Writer createWriter() override;
 
-    void getTimeBlockList(const std::function<void(const TimeBlockList &block)>);
 
 private:
     TimeFileMemory::Ptr _memory_file;

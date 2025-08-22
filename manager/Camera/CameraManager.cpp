@@ -106,6 +106,10 @@ bool CameraManager::delCamera(const string &key) {
     return false;
 }
 
+void CameraManager::clear() {
+    _gcImp.clear();
+}
+
 vector<string> CameraManager::getCameraKeys() {
     vector<string> ret;
     for (const auto &it : _gcImp ) {

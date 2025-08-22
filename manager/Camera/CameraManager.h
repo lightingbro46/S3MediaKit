@@ -19,6 +19,8 @@ public:
 
     bool delCamera(const std::string &key);
 
+    void clear();
+
     std::vector<std::string> getCameraKeys();
 
 private:

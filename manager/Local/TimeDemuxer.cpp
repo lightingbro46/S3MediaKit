@@ -168,4 +168,75 @@ void MultiTimeDemuxer::readBlockList(TimeBlockList &list, bool &eof) {
     }
 }
 
+////////////////////////////TimeMemoryDemuxer//////////////////////////////////////
+
+TimeMemoryDemuxer::TimeMemoryDemuxer(const string& buf) {
+    _file = std::make_shared<TimeFileMemory>(buf);
+    _reader = _file->createReader();
+    _first_stamp = findFirstStamp();
+}
+
+int64_t TimeMemoryDemuxer::seekTo(int64_t stamp_sec) {
+    auto pos_time = 0;
+    {
+        // find without index file, by scanning db file 
+        _reader->seek(0);
+        auto last_offset = 0;
+        bool eof = false;
+        while (!eof && pos_time < stamp_sec) {
+            last_offset = _reader->tell();
+            uint32_t size;
+            auto ret = _reader->read(reinterpret_cast<char *>(&size), sizeof(uint32_t));
+            if (ret < 0) {
+                eof = true;
+                break;
+            }
+            string buffer(size, '\0');
+            ret = _reader->read(&buffer[0], size);
+            if (ret < 0) {
+                eof = true;
+                break;
+            }
+            TimeBlockList list;
+            list.ParseFromString(buffer);
+            pos_time = list.created_at();
+        }
+        _reader->seek(last_offset);
+    }
+    
+    return pos_time;
+}
+
+void TimeMemoryDemuxer::readBlockList(TimeBlockList &list, bool &eof) {
+    eof = false;
+    uint32_t size;
+    auto ret = _reader->read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
+    if (ret < 0) {
+        eof = true;
+        return;
+    }
+    string buffer(size, '\0');
+    ret = _reader->read(reinterpret_cast<char*>(&buffer[0]), size);
+    if (ret < 0) {
+        eof = true;
+        return;
+    }
+    if (!list.ParseFromString(buffer)) {
+        throw std::runtime_error("Parse from buffer failed");
+    }
+}
+
+uint64_t TimeMemoryDemuxer::findFirstStamp() {
+    auto first_stamp = 0;
+    auto eof = false;
+    _reader->seek(0);
+    TimeBlockList list;
+    readBlockList(list, eof);
+    if (!eof) {
+        first_stamp = list.created_at();
+    }
+    _reader->seek(0);
+    return first_stamp;
+}
+
 } // namespace mediakit

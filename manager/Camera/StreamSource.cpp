@@ -21,8 +21,27 @@ const string getStreamTypeString(int type) {
     }
 }
 
-StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, float timeout_sec) 
-    : _tuple(std::move(tuple)), _record(record), _rtp_type(rtp_type), _timeout_sec(timeout_sec) {}
+static string replacePort(const string &in_url, int nat_port) {
+    auto schema = findSubString(in_url.data(), nullptr, "://");
+    auto middle_url = findSubString(in_url.data(), "://", "/");
+    auto _middle_url = middle_url;
+    auto it = middle_url.rfind(":");
+    if (it != string::npos) {
+        _middle_url = middle_url.substr(0, it);
+    }
+    _middle_url += ":" + to_string(nat_port);
+    auto path = findSubString(in_url.data() + schema.size() + middle_url.size() + 4, "/", nullptr);
+    return (StrPrinter << schema << "://" << _middle_url << "/" << path);
+}
+
+StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, int media_port, float timeout_sec) 
+    : _tuple(std::move(tuple)), _record(record), _rtp_type(rtp_type), _media_port(media_port), _timeout_sec(timeout_sec) {
+
+    _full_url = tuple.full_url;
+    if (_media_port) {
+        _full_url = replacePort(tuple.full_url, _media_port);
+    }
+}
 
 StreamSource::~StreamSource() {
     closePlayer();

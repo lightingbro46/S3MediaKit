@@ -31,7 +31,7 @@ public:
 
     std::string getStreamStatus(int type);
 
-    void setupMonitor(int type, bool start_record, int rtp_type);
+    void setupMonitor(int type, bool start_record, int rtp_type, int media_port);
 
     void stopMonitor(int type);
 

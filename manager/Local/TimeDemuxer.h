@@ -69,6 +69,29 @@ private:
     std::map<uint64_t, TimeDemuxer::Ptr> _demuxers;
 };
 
+class TimeMemoryDemuxer final {
+public:
+    using Ptr = std::shared_ptr<TimeMemoryDemuxer>;
+
+    TimeMemoryDemuxer(const std::string &buf);
+    ~TimeMemoryDemuxer() = default;
+
+    int64_t seekTo(int64_t stamp_ms);
+
+    void readBlockList(TimeBlockList &list, bool &eof);
+
+    uint64_t getFirstStamp() { return _first_stamp; }
+
+private:
+    uint64_t findFirstStamp();
+
+private:
+    std::string _buffer;
+    uint64_t _first_stamp;
+    TimeFileMemory::Ptr _file;
+    TimeFileMemory::Reader _reader;
+};
+
 } // namespace mediakit 
 
 #endif // LOCAL_TIMEDEMUXER_H

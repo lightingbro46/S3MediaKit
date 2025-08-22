@@ -46,10 +46,10 @@ void StreamSink::emitAllStreamReady() {
     _all_stream_ready = true;
 }
 
-void StreamSink::setupMonitor(int type, bool start_record, int rtp_type) {
+void StreamSink::setupMonitor(int type, bool start_record, int rtp_type, int media_port) {
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
-        if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType()) {
+        if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
             TraceL << "Stream " << getStreamTuple(type).shortUrl() << " config do not change. Ignore";
             return;
         }
