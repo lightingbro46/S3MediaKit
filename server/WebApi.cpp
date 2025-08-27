@@ -67,6 +67,8 @@
 #include "Storage/Certification.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
+#include "Extension/Plugin.h"
+#include "ext-plugin/onvif.h"
 
 using namespace std;
 using namespace Json;
@@ -2917,6 +2919,96 @@ void installWebApi() {
         //CHECK_TOKEN
         val["data"] = "Success";
     }));
+
+    static auto discovery_device = [](string &ip, int &port, string &username, string &password, const function<void(const string &, const Value &)> &cb) {
+        Value ret;
+        string ipAddress = StrPrinter << ip << ":" << port;
+        auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
+        if (!onvif->initControl()) {
+            return cb("Device Not Found", ret);
+        }
+
+        auto info = onvif->getDeviceInfo();
+        ret["manufacturer"] = info.manufacturer;
+        ret["model"] = info.model;
+        ret["firmwareVersion"] = info.firmwareVersion;
+        ret["serialNumber"] = info.serialNumber;
+        ret["hardwareId"] = info.hardwareId;
+        ret["isPtz"] = onvif->isDeviceSupportPTZ();
+        ret["profiles"] = arrayValue;
+        auto profiles = onvif->selectStreamUrls();
+        for (const auto &it : profiles) {
+            Value stream;
+            stream["vcodec"] = it.vcodec;
+            stream["width"] = it.width;
+            stream["height"] = it.height;
+            stream["fps"] = it.fps;
+            stream["bitrate"] = it.bitrate;
+            stream["url"] = replaceIp(it.url, ip);
+            ret["profiles"].append(stream);
+        }
+        cb("", ret);
+    };
+
+    api_regist("/media/mserver/discovery", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("ip","port", "defaultPort",  "username", "password");
+        string ip = allArgs["ip"];
+        int port = allArgs["port"];
+        bool defaultPort = allArgs["defaultPort"];
+        string username = allArgs["username"];
+        string password = allArgs["password"];
+
+        if (defaultPort) {
+            port = 80;
+        }
+
+        discovery_device(ip, port, username, password, [&](const string &err, const Json::Value &data) {
+            if (!err.empty()) {
+                val["code"] = API::NotFound;
+                val["msg"] = err;
+                invoker(404, headerOut, val.toStyledString());
+                return;
+            }
+            val["data"] = data;
+            invoker(200, headerOut, val.toStyledString());
+        });
+    });
+
+    api_regist("/media/mserver/subnetScan", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("startIp", "endIp", "port", "defaultPort", "username", "password");
+        string startIp = allArgs["startIp"];
+        string endIp = allArgs["endIp"];
+        int port = allArgs["port"];
+        bool defaultPort = allArgs["defaultPort"];
+        string username = allArgs["username"];
+        string password = allArgs["password"];
+
+        if (!SockUtil::is_ipv4(startIp.data()) || !SockUtil::is_ipv4(endIp.data())) {
+            val["code"] = API::InvalidArgs;
+            val["msg"] = "startIp or endIp must be a IPv4";
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
+        
+        if (defaultPort) {
+            port = 80;
+        }
+
+        val["data"] = arrayValue;
+        auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
+        for (auto &ip : ip_range) {
+            discovery_device(ip, port, username, password, [&](const string &err, const Json::Value &data) {
+                if (err.empty()) {
+                    val["data"].append(data);
+                }
+            });
+        }
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/mserver/subnetScan", [](API_ARGS_MAP_ASYNC) {
+
+    });
 }
 
 void unInstallWebApi(){

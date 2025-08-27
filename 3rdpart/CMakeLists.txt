@@ -231,21 +231,8 @@ endif()
 
 ###################################################################
 # ONVIF
-file(GLOB ONVIF_SRC_LIST
-  ${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/*/*.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/src/*/*.cpp
-)
-add_library(onvif STATIC ${ONVIF_SRC_LIST})
-target_include_directories(onvif
-  PRIVATE
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/gsoap>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include/gsoap/plugin>"
-  PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/onvif/core/include>"
-)
-target_compile_options(onvif PRIVATE ${COMPILE_OPTIONS_DEFAULT})
-update_cached_list(MK_LINK_LIBRARIES onvif)
+add_subdirectory(onvif/core)
+update_cached_list(MK_LINK_LIBRARIES onvifcore)
 
 ###################################################################
 # jwt-cpp

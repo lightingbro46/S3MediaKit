@@ -467,8 +467,6 @@ add_subdirectory(src)
 
 add_subdirectory(ext-codec)
 
-add_subdirectory(manager)
-
 if(ENABLE_SRT)
   add_subdirectory(srt)
 endif()
@@ -481,8 +479,12 @@ if(ENABLE_API)
   add_subdirectory(api)
 endif()
 
+if(ENABLE_MANAGER)
+  add_subdirectory(manager)
+endif()
+
 if(ENABLE_PLUGIN)
-  add_subdirectory(plugins)
+  add_subdirectory(ext-plugin)
 endif()
 
 ##############################################################################

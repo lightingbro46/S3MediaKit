@@ -1,4 +1,5 @@
 #include "StreamSource.h"
+#include "Extension/Plugin.h"
 #include "../../server/WebApi.h"
 
 using namespace std;
@@ -19,19 +20,6 @@ const string getStreamTypeString(int type) {
         SWITCH_CASE(SecondaryStream);
         default : return "unknown";
     }
-}
-
-static string replacePort(const string &in_url, int nat_port) {
-    auto schema = findSubString(in_url.data(), nullptr, "://");
-    auto middle_url = findSubString(in_url.data(), "://", "/");
-    auto _middle_url = middle_url;
-    auto it = middle_url.rfind(":");
-    if (it != string::npos) {
-        _middle_url = middle_url.substr(0, it);
-    }
-    _middle_url += ":" + to_string(nat_port);
-    auto path = findSubString(in_url.data() + schema.size() + middle_url.size() + 4, "/", nullptr);
-    return (StrPrinter << schema << "://" << _middle_url << "/" << path);
 }
 
 StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, int media_port, float timeout_sec) 

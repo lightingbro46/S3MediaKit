@@ -147,17 +147,29 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     bool media_port_auto = data["media_port_auto"].asBool();
     int rtp_transport = data["rtp_transport"].asInt();
     
+    // option.enableActive = enable_camera;
+    // option.enableRecord = enable_recording;
+    // option.doNotRecordPrimaryStream = do_not_record_primary_stream;
+    // option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
+    // option.keepArchivedMinForAuto = keep_archived_min_for_auto;
+    // option.keepArchivedMinFor = keep_archived_min_for;
+    // option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
+    // option.keepArchivedMaxFor = keep_archived_max_for;
+    // option.mediaPort = media_port;
+    // option.autoMediaPort = media_port_auto;
+    // option.rtpTransport = rtp_transport;
+
     option.enableActive = enable_camera;
-    option.enableRecord = enable_recording;
-    option.doNotRecordPrimaryStream = do_not_record_primary_stream;
-    option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
-    option.keepArchivedMinForAuto = keep_archived_min_for_auto;
-    option.keepArchivedMinFor = keep_archived_min_for;
-    option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
-    option.keepArchivedMaxFor = keep_archived_max_for;
-    option.mediaPort = media_port;
-    option.autoMediaPort = media_port_auto;
-    option.rtpTransport = rtp_transport;
+    option.enableRecord = true;
+    option.doNotRecordPrimaryStream = false;
+    option.doNotRecordSecondaryStream = false;
+    option.keepArchivedMinForAuto = true;
+    option.keepArchivedMinFor = 0;
+    option.keepArchivedMaxForAuto = false;
+    option.keepArchivedMaxFor = 28800;
+    option.mediaPort = 0;
+    option.autoMediaPort = false;
+    option.rtpTransport = 0;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -220,7 +232,7 @@ static Json::Value exampleJson() {
     device["enable"] = true;
     device["address"] = "27.72.173.71";
     device["http_port"] = 80;
-    device["is_enable"] = false;
+    device["is_enable"] = true;
     device["enable_recording"] = true;
     device["keep_archived_min_for_auto"] = true;
     device["keep_archived_min_for"] = 0;
@@ -230,7 +242,8 @@ static Json::Value exampleJson() {
     device["streams"] = Json::arrayValue;
     Json::Value channel_1;
     channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
+    // channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
+    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
     device["streams"].append(channel_1);
     // Json::Value channel_2;
     // channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
@@ -241,8 +254,10 @@ static Json::Value exampleJson() {
     return data;
 }
 
-void loadServerConfigJson(const Json::Value &data1) {
-    auto data = exampleJson();
+void loadServerConfigJson(const Json::Value &data) {
+#if 0
+    data = exampleJson();
+#endif
     if (data.isMember("mediaServer")) {
         loadServerConfigFromJson(data["mediaServer"]);
     }
@@ -338,6 +353,12 @@ static Json::Value makeStreamStatisticJson(GenericRtspCameraImp::Ptr &camera, in
     item["channelId"] = tuple.stream_id;
     // item["streamId"] = tuple.stream_id;
     item["status"] = 0;
+    item["codec"] = "";
+    item["width"] = 0;
+    item["height"] = 0;
+    item["volumeSize"] = 0;
+    item["volumeRate"] = 0;
+    item["oldestTenMinutesBlock"] = 0;
     return item;
 }
 
