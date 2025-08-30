@@ -18,7 +18,8 @@ extern const std::string kEnableAuthorize;
 extern const std::string kServerLocationId;
 // Enable failover mode to receive cameras from other server in same cluster
 extern const std::string kEnableFailover;
-
+// Store public key to validate jwt token
+extern const std::string kJwtPublicKey;
 } // namespace Manager
 
 } // namespace managerkit
@@ -36,5 +37,7 @@ void loadServerConfigJson(const Json::Value &config);
 void getServerStatisticJson(const std::function<void(Json::Value &data)> &cb);
 
 void getServerUsageJson(const std::function<void(Json::Value &data)> &cb);
+
+void loadServerStartedConfig(const Json::Value &data);
 
 #endif // S3MANAGERKIT_MANAGER_H

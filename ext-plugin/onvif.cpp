@@ -31,6 +31,10 @@ bool OnvifController::initControl() {
         return false;
     }
 
+    if (!getNetworkInterfaces()) {
+        return false;
+    }
+
     if (!getDeviceCapabilities()) {
         return false;
     }
@@ -336,6 +340,33 @@ bool OnvifController::getMediaProfiles() {
         _mediaProfile.push_back(_profile);
     }
     return true;    
+}
+
+bool OnvifController::getNetworkInterfaces() {
+    if (_proxyDevice == nullptr) {
+        WarnL << "Unknown proxyDevice";
+        return false;
+    }
+    // get network interface and print mac address
+    _tds__GetNetworkInterfaces *GetNetworkInterfaces = soap_new__tds__GetNetworkInterfaces(_m_soap);
+    _tds__GetNetworkInterfacesResponse GetNetworkInterfacesResponse;
+    if (!setCredentials()) {
+        destroyControl();
+        return false;
+    }
+    if (_proxyDevice->GetNetworkInterfaces(GetNetworkInterfaces, GetNetworkInterfacesResponse)) {
+        reportError();
+        destroyControl();
+        return false;
+    }
+
+    for (const auto network : GetNetworkInterfacesResponse.NetworkInterfaces) {
+        if (network->Enabled && !network->Info->HwAddress.empty()) {
+            _deviceInfo.macAddress = network->Info->HwAddress;
+            break;
+        }
+    }
+    return true;
 }
 
 void OnvifController::reportError() {

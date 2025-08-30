@@ -261,12 +261,12 @@ static RecordProfiles getRecordProfiles() {
                 max_value = current_time - option.keepArchivedMaxFor;
             }
 
-            if (ptr->hasPrimaryStream()) {
+            if (ptr->hasStreamTuple(PrimaryStream)) {
                 auto tuple = ptr->getStreamTuple(PrimaryStream);
                 string key_primary = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
                 profiles.emplace(key_primary, make_pair(min_value, max_value));
             }
-            if (ptr->hasSecondaryStream()) {
+            if (ptr->hasStreamTuple(SecondaryStream)) {
                 auto tuple = ptr->getStreamTuple(SecondaryStream);
                 string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
                 profiles.emplace(key_second, make_pair(min_value, max_value));

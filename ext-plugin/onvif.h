@@ -140,6 +140,11 @@ private:
     bool getDeviceCapabilities();
 
     /**
+     * get network interface by soap protocol
+     */
+    bool getNetworkInterfaces();
+
+    /**
      * get media profiles by soap protocol
      */
     bool getMediaProfiles();

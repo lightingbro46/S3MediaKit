@@ -128,7 +128,7 @@ public:
         _bTag->remove(guid);
     }
 
-    std::vector<Bookmark> findById(std::string id) { 
+    std::vector<Bookmark> findById(std::string id) {
         Bookmark bm_search;
         bm_search.guid = id;
         return BookmarkRepository::findById(bm_search);

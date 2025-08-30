@@ -1,5 +1,6 @@
 #include "CameraManager.h"
 #include "Util/util.h"
+#include <algorithm>
 
 using namespace std;
 using namespace toolkit;
@@ -12,48 +13,37 @@ INSTANCE_IMP(CameraManager)
 CameraManager::CameraManager() {}
 
 template <typename Pointer>
+static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTuple> stream_map) {
+    // if (stream_map.find(type) != stream_map.end()) {
+    //     return ptr->hasStreamTuple(type) && equalStreamTuple(ptr->getStreamTuple(type), stream_map[type]);
+    // } else {
+    //     return !ptr->hasStreamTuple(type);
+    // }
+    if (ptr->hasStreamTuple(type)) {
+        auto tuple = ptr->getStreamTuple(type);
+        auto it = std::find_if(stream_map.begin(), stream_map.end(), [&](const pair<int, StreamTuple> &pair) { return pair.second.stream_id == tuple.stream_id; });
+        if (it != stream_map.end()) {
+            return equalStreamTuple(tuple, it->second);
+        } else {
+            return false;
+        }
+    } else {
+        return stream_map.find(type) == stream_map.end();
+    }
+}
+
+template <typename Pointer>
 static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, StreamTuple> stream_map) {
     if (!equalCameraInfo(ptr->getCameraInfo(), info)) {
         return false;
     }
 
-    if (ptr->hasPrimaryStream()) {
-        // current camera has primary stream
-        if (stream_map.find(PrimaryStream) != stream_map.end()) {
-            // primary stream tuple do exist, compare stream tuple config
-            if (!equalStreamTuple(ptr->getStreamTuple(PrimaryStream), stream_map[PrimaryStream])) {
-                return false;
-            }
-        } else {
-            // primary stream tuple do not exist
-            return false;
-        }
-
-    } else {
-        // current camera do not have primary stream
-        if (stream_map.find(PrimaryStream) != stream_map.end()) {
-            // primary stream tuple do exist
-            return false;
-        }
+    if (!equalStreamConfig(ptr, PrimaryStream, stream_map)) {
+        return false;
     }
 
-    if (ptr->hasSecondaryStream() && stream_map.find(SecondaryStream) != stream_map.end()) {
-        // current camera has secondary stream
-        if (stream_map.find(SecondaryStream) != stream_map.end()) {
-            // secondary stream tuple do exist, compare stream tuple config
-            if (!equalStreamTuple(ptr->getStreamTuple(SecondaryStream), stream_map[SecondaryStream])) {
-                return false;
-            }
-        } else {
-            // secondary stream tuple do not exist
-            return false;
-        }
-    } else {
-         // current camera do not have secondary stream
-        if (stream_map.find(SecondaryStream) != stream_map.end()) {
-            // secondary stream tuple do exist
-            return false;
-        }
+    if (!equalStreamConfig(ptr, SecondaryStream, stream_map)) {
+        return false;
     }
     
     return true;

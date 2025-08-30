@@ -47,15 +47,15 @@ void StreamSink::emitAllStreamReady() {
 }
 
 void StreamSink::setupMonitor(int type, bool start_record, int rtp_type, int media_port) {
+    auto tuple = getStreamTuple(type);
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
-            TraceL << "Stream " << getStreamTuple(type).shortUrl() << " config do not change. Ignore";
+            DebugL << "Stream " << tuple.shortUrl() << " config do not change. Ignore";
             return;
         }
         _monitor_map.erase(type);
     }
-    auto tuple = getStreamTuple(type);
     auto monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type);
     monitor->setOnStreamReady([type, this]() { 
         onStreamReady(type); 

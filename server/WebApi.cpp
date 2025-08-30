@@ -1993,9 +1993,15 @@ void installWebApi() {
         GET_CONFIG(string, defaultSnap, API::kDefaultSnap);
         if (!File::fileSize(snap_path)) {
             if (!err_msg.empty() && (!s_snap_success_once || defaultSnap.empty())) {
+#if 0
                 // If the screenshot has never been successful or the default screenshot image is empty, then directly return the FFmpeg error log
                 headerOut["Content-Type"] = HttpFileManager::getContentType(".txt");
                 invoker.responseFile(headerIn, headerOut, err_msg, false, false);
+#endif
+                Value val;
+                val["code"] = API::Exception;
+                val["msg"] = err_msg;
+                invoker(404, headerOut, val.toStyledString());
                 return;
             }
             // If the screenshot has been successful once, then it is considered that the configuration is error-free, and when the screenshot fails, the preset default image is returned
@@ -2913,12 +2919,6 @@ void installWebApi() {
         //CHECK_TOKEN
         val["data"] = makeSystemStatisticJson();
     });
-    
-    // example with user auth
-    api_regist("/checkUserAuth", withUserAuth([](API_ARGS_MAP) {
-        //CHECK_TOKEN
-        val["data"] = "Success";
-    }));
 
     static auto discovery_device = [](string &ip, int &port, string &username, string &password, const function<void(const string &, const Value &)> &cb) {
         Value ret;
@@ -2934,6 +2934,7 @@ void installWebApi() {
         ret["firmwareVersion"] = info.firmwareVersion;
         ret["serialNumber"] = info.serialNumber;
         ret["hardwareId"] = info.hardwareId;
+        ret["macAddress"] = info.macAddress;
         ret["isPtz"] = onvif->isDeviceSupportPTZ();
         ret["profiles"] = arrayValue;
         auto profiles = onvif->selectStreamUrls();
@@ -3006,7 +3007,11 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/subnetScan", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/ptz_control", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("deviceId", "direct", "speed");
+        string deviceId = allArgs["deviceId"];
+        string strDirect = allArgs["direct"];
+        int speed = allArgs["speed"];
 
     });
 }

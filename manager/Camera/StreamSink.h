@@ -11,12 +11,8 @@ public:
 
     StreamSink(const std::unordered_map<int, StreamTuple> &stream_map);
 
-    bool hasPrimaryStream() { 
-        return _stream_map.find(PrimaryStream) != _stream_map.end(); 
-    }
-
-    bool hasSecondaryStream() { 
-        return _stream_map.find(SecondaryStream) != _stream_map.end(); 
+    bool hasStreamTuple(int type) { 
+        return _stream_map.find(type) != _stream_map.end(); 
     }
 
     const StreamTuple getStreamTuple(int type) {

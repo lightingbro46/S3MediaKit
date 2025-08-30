@@ -3,6 +3,7 @@
 #include <sstream>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
+#include "Util/base64.h"
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Record/Recorder.h"
@@ -28,6 +29,7 @@ const string kMaxAllowedDevices = MANAGER_FIELD"maxAllowedDevices";
 const string kServerLocationId = MANAGER_FIELD"serverLocationId";
 const string kEnableFailover = MANAGER_FIELD"enableFailover";
 const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
+const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
@@ -35,6 +37,7 @@ static onceToken token([]() {
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
     mINI::Instance()[kEnableAuthorize] = false;
+    mINI::Instance()[kJwtPublicKey] = "";
 });
 } // namespace Manager
 
@@ -158,15 +161,26 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     // option.mediaPort = media_port;
     // option.autoMediaPort = media_port_auto;
     // option.rtpTransport = rtp_transport;
-
+    bool enable_recording_ = false;
+    uint64_t retention_ = 0;
+    for (const auto &stream : data["streams"]) {
+        if (stream["is_storing"].asBool()) {
+            enable_recording_ = true;
+        }
+        uint64_t stream_retention = stream["retention_time"].asUInt64();
+        auto retention = stream_retention * 3600;
+        if (retention_ == 0 || retention < retention_) {
+            retention_ = retention;
+        }
+    }
     option.enableActive = enable_camera;
-    option.enableRecord = true;
+    option.enableRecord = enable_recording_;
     option.doNotRecordPrimaryStream = false;
     option.doNotRecordSecondaryStream = false;
     option.keepArchivedMinForAuto = true;
     option.keepArchivedMinFor = 0;
     option.keepArchivedMaxForAuto = false;
-    option.keepArchivedMaxFor = 28800;
+    option.keepArchivedMaxFor = retention_;
     option.mediaPort = 0;
     option.autoMediaPort = false;
     option.rtpTransport = 0;
@@ -191,20 +205,35 @@ static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &da
 }
 
 static void loadServerConfigFromJson(const Json::Value &data) {
+    int change = 0;
     auto &ini = mINI::Instance();
     // failover config
     bool enableFailover = data["failover"].asBool();
+    bool currentEnableFailover = ini[Manager::kEnableFailover];
+    if (currentEnableFailover != enableFailover) {
+        ini[Manager::kEnableFailover] = enableFailover;
+        change++;
+    }
     int maxNumberCamera = data["maxNumberCamera"].asInt();
+    int currentMaxNumberCamera = ini[Manager::kMaxAllowedDevices];
+    if (currentMaxNumberCamera != maxNumberCamera) {
+        ini[Manager::kMaxAllowedDevices] = maxNumberCamera;
+        change++;
+    }
     int serverLocationId = data["serverLocationId"].asInt();
-    ini[Manager::kEnableFailover] = enableFailover;
-    ini[Manager::kMaxAllowedDevices] = maxNumberCamera;
-    ini[Manager::kServerLocationId] = serverLocationId;
+    int currentServerLocationId = ini[Manager::kServerLocationId];
+    if (currentServerLocationId != serverLocationId) {
+        ini[Manager::kServerLocationId] = serverLocationId;
+        change++;
+    }
 
     //todo: cấu hình lưu bookmark, cấu hình lưu video push, số lượng thiết bị tối đa cho phép
 
     // Reload config and save file 
-    NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
-    ini.dumpFile(g_ini_file);
+    if (change > 0) {
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+        ini.dumpFile(g_ini_file);
+    }
 
     // monitor threshold config
 #define GET_THRESHOLD(type, name)                                                                                                                              \
@@ -242,22 +271,19 @@ static Json::Value exampleJson() {
     device["streams"] = Json::arrayValue;
     Json::Value channel_1;
     channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-    // channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
-    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
     device["streams"].append(channel_1);
-    // Json::Value channel_2;
-    // channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-    // channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile4/media.smp";
-    // device["streams"].append(channel_2);
+    Json::Value channel_2;
+    channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+    channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    device["streams"].append(channel_2);
 
     data["devices"].append(device);
     return data;
 }
 
-void loadServerConfigJson(const Json::Value &data) {
-#if 0
-    data = exampleJson();
-#endif
+void loadServerConfigJson(const Json::Value &data1) {
+    auto data = exampleJson();
     if (data.isMember("mediaServer")) {
         loadServerConfigFromJson(data["mediaServer"]);
     }
@@ -371,10 +397,10 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
             auto tuple = camera->getCameraInfo();
             item["cameraId"] = tuple.device_id;
             item["channels"] = Json::arrayValue;
-            if (camera->hasPrimaryStream()) {
+            if (camera->hasStreamTuple(PrimaryStream)) {
                 item["channels"].append(makeStreamStatisticJson(camera, PrimaryStream));
             }
-            if (camera->hasSecondaryStream()) {
+            if (camera->hasStreamTuple(SecondaryStream)) {
                 item["channels"].append(makeStreamStatisticJson(camera, SecondaryStream));
             }
             data.append(item);
@@ -440,4 +466,24 @@ void getStorageStatisticJson(const function<void(Json::Value &data)> &cb) {
         data.append(makeDeviceStorageJson(*device));
     });
     cb(data);
+}
+
+void loadServerStartedConfig(const Json::Value &data) {
+    int change = 0;
+    auto &ini = mINI::Instance();
+    // public key
+    if (data.isMember("publicKey")) {
+        string publicKey = data["publicKey"].asString();
+        auto base64_publicKey = encodeBase64(publicKey);
+        if (ini[Manager::kJwtPublicKey] != base64_publicKey) {
+            ini[Manager::kJwtPublicKey] = base64_publicKey;
+            change++;
+        }
+    }
+
+    // save ini file if there are changes
+    if (change > 0) {
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+        ini.dumpFile(g_ini_file);
+    }
 }

@@ -16,21 +16,21 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
     int media_port = _option.autoMediaPort ? 0 :  _option.mediaPort;
 
     if (!_enabled) {
-        if (hasPrimaryStream()) {
+        if (hasStreamTuple(PrimaryStream)) {
             stopMonitor(PrimaryStream);
         }
-        if (hasSecondaryStream()) {
+        if (hasStreamTuple(SecondaryStream)) {
             stopMonitor(SecondaryStream);
         }
         return;
     }
 
-    if (hasPrimaryStream()) {
+    if (hasStreamTuple(PrimaryStream)) {
         bool enable_record = _option.enableRecord && !_option.doNotRecordPrimaryStream;
         setupMonitor(PrimaryStream, enable_record, rtp_type, media_port);
     }
 
-    if (hasSecondaryStream()) { 
+    if (hasStreamTuple(SecondaryStream)) { 
         bool enable_record = _option.enableRecord && !_option.doNotRecordSecondaryStream;
         setupMonitor(SecondaryStream, enable_record, rtp_type, media_port);
     }

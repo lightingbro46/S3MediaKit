@@ -51,6 +51,13 @@ void StreamSource::createPlayer() {
         if (!strong_self) {
             return;
         }
+
+        // return if player proxy with same key exist
+        if (!err.empty()) {
+            WarnL << "Create stream player proxy " << strong_self->_tuple.shortUrl() << " failed: " << err;
+            return;
+        }
+
         (*player)[Client::kRtpType] = strong_self->_rtp_type;
 
         if (strong_self->_timeout_sec > 0.1f) {

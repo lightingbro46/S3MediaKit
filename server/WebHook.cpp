@@ -12,6 +12,7 @@
 #include "WebHook.h"
 #include "WebApi.h"
 #include "Manager.h"
+#include "User/UserAuthorManager.h"
 
 using namespace std;
 using namespace Json;
@@ -58,7 +59,7 @@ static onceToken token([]() {
     mINI::Instance()[kTimeoutSec] = 10;
     // Default hook address is set to empty, using default behavior (e.g. no authentication)
     mINI::Instance()[kOnPublish] = "";
-    mINI::Instance()[kOnPlay] = "";
+    mINI::Instance()[kOnPlay] = "/api/camera/check-camera-of-user";
     mINI::Instance()[kOnFlowReport] = "";
     mINI::Instance()[kOnRtspRealm] = "";
     mINI::Instance()[kOnRtspAuth] = "";
@@ -332,7 +333,16 @@ static void reportServerStarted() {
     body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
     body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
     // Execute hook
-    do_http_hook(hook_api_url + hook_server_started, body, nullptr);
+    do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
+            InfoL << "Report server started success";
+            loadServerStartedConfig(obj);
+        } else{
+            DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
+            WarnL << "Report server started failed:" << err;
+        }
+    });
 }
 
 static void reportServerExited() {
@@ -404,19 +414,19 @@ static void reportServerStatistic() {
                     getServerStatisticJson([](const Value &data) mutable {
                         ArgsType body;
                         body["data"] = data;
-                        DebugL << body.toStyledString();
                         // Execute hook
-                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
-                            if (err.empty()) {
-                                // Report server statistic succeeded
-                                DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                                InfoL << "Report server statistic success";
-                            } else {
-                                // Load server config failed
-                                DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                                WarnL << "Report server statistic failed:" << err;
-                            }
-                        });
+                        // do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
+                        //     if (err.empty()) {
+                        //         // Report server statistic succeeded
+                        //         // DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                        //         InfoL << "Report server statistic success";
+                        //     } else {
+                        //         // Load server config failed
+                        //         DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                        //         WarnL << "Report server statistic failed:" << err;
+                        //     }
+                        // });
+                        //todo: update to db
                     });
                     return 0;
                 });
@@ -425,8 +435,10 @@ static void reportServerStatistic() {
                 // Load server config failed
                 DebugL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                 WarnL << "Load server config failed:" << err;
+                // todo: load from db
             }
         });
+
         if (report_first) {
             report_first = false;
             return false;
@@ -566,12 +578,12 @@ void installWebHook() {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
 
-        // auto cache = UserAuthorManager::Instance().getAuthCache(args, jwt_token);
-        // if (cache) {
-        //     // User auth cache has still been expired. Check user permission
-        //     invoker(cache.hasLicensed() ? "" : "Unauthorized");
-        //     return;
-        // }
+        auto cache =  UserAuthorManager::Instance().getAuthCache(args, jwt_token);
+        if (cache) {
+            // User auth cache has still been expired. Check user permission
+            invoker(cache->hasLicensed() ? "" : "Unauthorized");
+            return;
+        }
 
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -591,9 +603,9 @@ void installWebHook() {
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [args, jwt_token, invoker](const Value &obj, const string &err) {
-            // UserAuthorManager::Instance().addAuthCache(args, jwt_token, err.empty());
-            invoker(err);
-        });
+            UserAuthorManager::Instance().addAuthCache(args, jwt_token, err.empty()); 
+            invoker(!err.empty() ? "Unauthorized" : "");
+        }, 0);
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {
@@ -966,17 +978,17 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
-    // // Report server restart
-    // reportServerStarted();
+    // Report server restart
+    reportServerStarted();
 
-    // // Report keep-alive regularly
-    // reportServerKeepalive();
+    // Report keep-alive regularly
+    reportServerKeepalive();
 
     // Report server statistics
     reportServerStatistic();
 
     // Report server usage
-    // reportServerUsage();
+    reportServerUsage();
 }
 
 void unInstallWebHook() {
