@@ -21,7 +21,10 @@ void TimeMuxer::openFile(const string &file) {
     if (_use_maker) {
         auto index_path = TimeMakerImp::indexFile(_file_name);
         _maker = std::make_shared<TimeMakerImp>();
+        // open file to write time index in append mode
         _maker->openFile(index_path, "ab+");
+        // set current offset to write correct time index after restart server
+        _maker->setLastOffset(File::fileSize(_file_name));
     }
 }
 
@@ -30,39 +33,26 @@ TimeFileIO::Writer TimeMuxer::createWriter() {
 }
 
 void TimeMuxer::closeFile() {
-    TimeMuxerInterface::flush();
     _file = nullptr;
     _maker = nullptr;
 }
 
-void TimeMuxer::onInput(uint64_t block_time) {
+void TimeMuxer::onInput(uint64_t block_time, size_t bytes) {
     if (_maker) {
-        _maker->inputData(block_time); 
+        _maker->inputData(block_time, bytes); 
     }
 }
 
-void TimeMuxer::onFlush(size_t bytes) {
-    if (_maker) {
-        _maker->writeIndex(bytes);
-    }
-}
-
-bool TimeMuxer::inputBlock(const TimeBlock &block) {
-    TimeMuxerInterface::inputBlock(block);
-    onInput(_pending_list.created_at());
-    return true;
-}
-
-size_t TimeMuxer::save() {
-    size_t writen_size = TimeMuxerInterface::save();
-    onFlush(writen_size);
+size_t TimeMuxer::save(const TimeBlock &block) {
+    size_t writen_size = TimeMuxerInterface::save(block);
+    onInput(block.start_time(), writen_size);
     return writen_size;
 }
 
 /////////////////////////////////////////// TimeMuxerInterface /////////////////////////////////////////////
 
-size_t TimeMuxerInterface::save() {
-    string data = _pending_list.SerializeAsString();
+size_t TimeMuxerInterface::save(const TimeBlock &block) {
+    string data = block.SerializeAsString();
     uint32_t size = data.size();
     if (!_writer) {
         _writer = createWriter();
@@ -74,26 +64,8 @@ size_t TimeMuxerInterface::save() {
     return sizeof(uint32_t) + size;
 }
 
-void TimeMuxerInterface::reset() {
-    _pending_list.Clear();
-}
-
-void TimeMuxerInterface::flush() {
-    if (_pending_list.blocks_size() == 0) {
-        return;
-    }
-    save();
-    reset();
-}
-
 bool TimeMuxerInterface::inputBlock(const TimeBlock &block) {
-    auto block_minute = getStartOfMinute(block.start_time());
-    if (block_minute != _pending_list.created_at()) {
-        flush();
-        _pending_list.set_created_at(block_minute);
-    }
-
-    *_pending_list.add_blocks() = block;
+    save(block);
     return true;
 }
 

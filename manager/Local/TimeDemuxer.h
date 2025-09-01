@@ -6,7 +6,38 @@
 
 namespace mediakit {
 
-class TimeDemuxer final {
+class TimerDemuxerInterface {
+public:
+    using Ptr = std::shared_ptr<TimerDemuxerInterface>;
+
+    virtual ~TimerDemuxerInterface() = default;
+
+    /**
+     * Move timeline to a specific location
+     */
+    virtual int64_t seekTo(uint64_t stamp_ms);
+
+    /**
+     * Read a block
+     * @param eof Whether the file has been read completely
+     * @return Blocklist data, may be empty
+     */
+    void readBlock(TimeBlock &block, bool &eof);
+
+    /**
+     * Get timestamp of the first block in file
+     */
+    uint64_t getFirstStamp() { return _first_stamp; }
+
+protected:
+    virtual uint64_t findFirstStamp();
+
+protected:
+    uint64_t _first_stamp;
+    TimeFileIO::Reader _reader;
+};
+
+class TimeDemuxer final : public TimerDemuxerInterface {
 public:
     using Ptr = std::shared_ptr<TimeDemuxer>;
 
@@ -23,28 +54,14 @@ public:
      */
     void closeFile();
 
-    /**
-     * Move timeline to a specific location
-     */
-    int64_t seekTo(int64_t stamp_ms);
-
-    /**
-     * Read a blocklist
-     * @param eof Whether the file has been read completely
-     * @return Blocklist data, may be empty
-     */
-    void readBlockList(TimeBlockList &list, bool &eof);
-
-    uint64_t getFirstStamp() { return _first_stamp; }
+    int64_t seekTo(uint64_t stamp_ms) override;
 
 private:
-    uint64_t findFirstStamp();
+    uint64_t findFirstStamp() override;
 
 private:
     std::string _file_name;
-    uint64_t _first_stamp;
     TimeFileDisk::Ptr _file;
-    TimeFileDisk::Reader _reader;
     TimeMakerImp::Ptr _maker;
 };
 
@@ -58,9 +75,9 @@ public:
 
     void closeFile();
 
-    int64_t seekTo(int64_t stamp_ms);
+    int64_t seekTo(uint64_t stamp_ms);
 
-    void readBlockList(TimeBlockList &list, bool &eof);
+    void readBlock(TimeBlock &block, bool &eof);
 
     uint64_t getFirstStamp() { return _demuxers.begin()->first; }
 
@@ -69,27 +86,15 @@ private:
     std::map<uint64_t, TimeDemuxer::Ptr> _demuxers;
 };
 
-class TimeMemoryDemuxer final {
+class TimeMemoryDemuxer final : public TimerDemuxerInterface {
 public:
     using Ptr = std::shared_ptr<TimeMemoryDemuxer>;
 
     TimeMemoryDemuxer(const std::string &buf);
     ~TimeMemoryDemuxer() = default;
 
-    int64_t seekTo(int64_t stamp_ms);
-
-    void readBlockList(TimeBlockList &list, bool &eof);
-
-    uint64_t getFirstStamp() { return _first_stamp; }
-
 private:
-    uint64_t findFirstStamp();
-
-private:
-    std::string _buffer;
-    uint64_t _first_stamp;
     TimeFileMemory::Ptr _file;
-    TimeFileMemory::Reader _reader;
 };
 
 } // namespace mediakit 

@@ -17,28 +17,37 @@ uint64_t getStartOfMinute(uint64_t seconds);
 struct BlockListIndexEntry {
     uint64_t start_time;
     uint64_t offset;
-    uint32_t count;
 } __attribute__((packed));
 
 class TimeMaker {
 public:
     virtual ~TimeMaker() = default;
 
-    bool inputData(uint64_t &block_time);
+    bool inputData(uint64_t &block_time, size_t &block_size);
 
-    void writeIndex(size_t &block_size);
+    bool findLowerBound(BlockListIndexEntry &entry, uint64_t &stamp);
 
-    bool findLowerBound(BlockListIndexEntry &entry, int64_t &stamp);
+    uint64_t getFirstStamp() { return _first_minute; }
 
-    uint64_t getFirstStamp() { return _first_stamp; }
-
-    void setFirstStamp(uint64_t stamp) { _first_stamp = stamp; }
+    void setLastOffset(uint64_t offset) { _last_offset = offset; }
 
 protected:
+    /**
+     * Return first time block in minute or return 0
+     */
     uint64_t findFirstStamp();
 
+    /**
+     * Return last time block in minute or return 0
+     */
+    uint64_t findLastStamp();
+
+    void setFirstStamp(uint64_t stamp) { _first_minute = stamp; }
+
+    void setLastStamp(uint64_t stamp) { _last_minute = stamp; }
+
 private:
-    void reset();
+    void writeIndex(uint64_t stamp, uint64_t offset);
 
     virtual void onWriteIndex(BlockListIndexEntry &entry) = 0;
 
@@ -47,8 +56,7 @@ private:
     virtual bool onSeekIndex(uint32_t offset) = 0;
 
 private:
-    uint64_t _first_stamp = 0;
-    uint32_t _last_count = 0;
+    uint64_t _first_minute = 0;
     uint64_t _last_minute = 0;
     uint32_t _last_offset = 0;
 };

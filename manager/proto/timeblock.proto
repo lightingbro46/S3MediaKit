@@ -8,8 +8,3 @@ message TimeBlock {
   uint64 file_size = 5;
   string file_path = 6;
 }
-
-message TimeBlockList  {
-  repeated TimeBlock blocks = 1;
-  uint64 created_at = 2;
-}

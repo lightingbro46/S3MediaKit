@@ -9,15 +9,17 @@ namespace mediakit {
 
 class TimeRecorder final : public std::enable_shared_from_this<TimeRecorder> {
 public:
+    friend class TimeRebuilder;
     using Ptr = std::shared_ptr<TimeRecorder>;
 
     static TimeRecorder& Instance();
 
     TimeRecorder(const std::string &path = "");
+
     ~TimeRecorder();
 
     /**
-     * Input block
+     * Input block, write block to file
      */
     bool inputBlock(const TimeBlock &block);
 
@@ -37,10 +39,6 @@ public:
     void getMemoryBlockAndRefresh(const std::function<void(const std::string &buf)> &on_data, const std::function<void()> &on_close);
 
 private:
-    /**
-     * Write block list to file
-     */
-    void flush();
 
     /**
      * Create file

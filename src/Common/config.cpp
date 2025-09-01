@@ -130,8 +130,6 @@ const string kMKVSavePath = string(kFieldName) + "mkv_save_path";
 
 const string kHlsSavePath = string(kFieldName) + "hls_save_path";
 
-const string kTimeSavePath = string(kFieldName) + "time_save_path";
-
 const string kHlsDemand = string(kFieldName) + "hls_demand";
 const string kRtspDemand = string(kFieldName) + "rtsp_demand";
 const string kRtmpDemand = string(kFieldName) + "rtmp_demand";
@@ -171,8 +169,6 @@ static onceToken token([]() {
 #else
     mINI::Instance()[kHlsSavePath] = "./www/live";
 #endif
-
-    mINI::Instance()[kTimeSavePath] = "./www";
 
     mINI::Instance()[kHlsDemand] = 0;
     mINI::Instance()[kRtspDemand] = 0;

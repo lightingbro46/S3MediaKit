@@ -26,14 +26,14 @@ INSTANCE_IMP(TimeRecorder)
 TimeRecorder::TimeRecorder(const string &path) {
     _path = path;
     if (_path.empty()) {
-        GET_CONFIG(string, recordPath, Protocol::kTimeSavePath);
-        _path = File::absolutePath("", recordPath);
+        GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
+        GET_CONFIG(string, appName, Record::kAppName);
+        _path = File::absolutePath(appName, recordPath);
     }
 }
 
 TimeRecorder::~TimeRecorder() {
     try {
-        flush();
         closeFile();
     } catch (std::exception &ex) {
         WarnL << ex.what();
@@ -96,15 +96,6 @@ void TimeRecorder::closeFile() {
     }
 }
 
-void TimeRecorder::flush() {
-    if (_muxer) {
-        _muxer->flush();
-    }
-    if (_mem_muxer) {
-        _mem_muxer->flush();
-    }
-}
-
 bool TimeRecorder::inputBlock(const TimeBlock &block) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
     if (_mem_muxer) {
@@ -123,8 +114,6 @@ bool TimeRecorder::inputBlock(const TimeBlock &block) {
 bool TimeRecorder::enableMemoryMuxer() {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
     if (!_mem_muxer) {
-        flush();
-
         _mem_muxer = std::make_shared<TimeMuxerMemory>();
         TraceL << "Enable record time block in memory";
         return true;
@@ -134,7 +123,6 @@ bool TimeRecorder::enableMemoryMuxer() {
 
 void TimeRecorder::getMemoryBlockAndRefresh(const std::function<void(const string &buf)> &on_data, const std::function<void()> &on_close) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
-    flush();
     if (_mem_muxer) {
         auto mem_muxer_ptr = dynamic_pointer_cast<TimeMuxerMemory>(_mem_muxer);
         if (mem_muxer_ptr) {
@@ -162,11 +150,12 @@ void TimeRebuilder::createTempFile() {
         return;
     }
     _src_path = strong_recorder->getFilePath();
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     if (_src_path.empty()) {
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        GET_CONFIG(string, recordPath, Protocol::kTimeSavePath)
-        recordPath = File::absolutePath("", recordPath);
-        File::scanDir(recordPath, [&](const string &path, bool is_dir) { 
+        GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
+        GET_CONFIG(string, appName, Record::kAppName)
+        auto save_path = File::absolutePath(appName, recordPath);
+        File::scanDir(save_path, [&](const string &path, bool is_dir) { 
             if (!is_dir && path.find("/" + mediaServerId) != string::npos && end_with(path, ".s3db")) {
                 _src_path = path;
             }
@@ -176,13 +165,12 @@ void TimeRebuilder::createTempFile() {
     
     if (_src_path.empty() || File::fileSize(_src_path) == 0) {
         // string _src_path empty or file time source empty cause error
-        throw std::runtime_error("Time file has not been created");
+        throw std::runtime_error("Timefile has not been created");
     }
     TraceL << "Time source file: " << _src_path;
 
     string parent_path = File::parentDir(_src_path);
     auto src_index = findFileIndex(_src_path);
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     string file_name = (StrPrinter << mediaServerId << "--" << ++src_index << ".s3db");
 
     auto full_path = parent_path + file_name;
@@ -330,15 +318,13 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
             auto demuxer = std::make_shared<TimeMemoryDemuxer>(buf);
             bool eof = false;
             while (!eof) {
-                TimeBlockList list;
-                demuxer->readBlockList(list, eof);
+                TimeBlock block;
+                demuxer->readBlock(block, eof);
                 if (eof) {
                     break;
                 }
-                for (const auto& block : list.blocks()) {
-                    if (keep_block(block)) {
-                        _writer->inputBlock(block);
-                    }
+                if (keep_block(block)) {
+                    _writer->inputBlock(block);
                 }
             }
         };
@@ -347,6 +333,7 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
         auto afterClose = [&]() { 
             closeTempFile(); 
             if (removed_bytes >= space_reclaim) {
+                // if remove enough bytes, rename tmp file to original , or delete tmp file and rebuild timefile
                 commitTempFile();
             }
         };

@@ -150,40 +150,40 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     bool media_port_auto = data["media_port_auto"].asBool();
     int rtp_transport = data["rtp_transport"].asInt();
     
-    // option.enableActive = enable_camera;
-    // option.enableRecord = enable_recording;
-    // option.doNotRecordPrimaryStream = do_not_record_primary_stream;
-    // option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
-    // option.keepArchivedMinForAuto = keep_archived_min_for_auto;
-    // option.keepArchivedMinFor = keep_archived_min_for;
-    // option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
-    // option.keepArchivedMaxFor = keep_archived_max_for;
-    // option.mediaPort = media_port;
-    // option.autoMediaPort = media_port_auto;
-    // option.rtpTransport = rtp_transport;
-    bool enable_recording_ = false;
-    uint64_t retention_ = 0;
-    for (const auto &stream : data["streams"]) {
-        if (stream["is_storing"].asBool()) {
-            enable_recording_ = true;
-        }
-        uint64_t stream_retention = stream["retention_time"].asUInt64();
-        auto retention = stream_retention * 3600;
-        if (retention_ == 0 || retention < retention_) {
-            retention_ = retention;
-        }
-    }
     option.enableActive = enable_camera;
-    option.enableRecord = enable_recording_;
-    option.doNotRecordPrimaryStream = false;
-    option.doNotRecordSecondaryStream = false;
-    option.keepArchivedMinForAuto = true;
-    option.keepArchivedMinFor = 0;
-    option.keepArchivedMaxForAuto = false;
-    option.keepArchivedMaxFor = retention_;
-    option.mediaPort = 0;
-    option.autoMediaPort = false;
-    option.rtpTransport = 0;
+    option.enableRecord = enable_recording;
+    option.doNotRecordPrimaryStream = do_not_record_primary_stream;
+    option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
+    option.keepArchivedMinForAuto = keep_archived_min_for_auto;
+    option.keepArchivedMinFor = keep_archived_min_for;
+    option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
+    option.keepArchivedMaxFor = keep_archived_max_for;
+    option.mediaPort = media_port;
+    option.autoMediaPort = media_port_auto;
+    option.rtpTransport = rtp_transport;
+    // bool enable_recording_ = false;
+    // uint64_t retention_ = 0;
+    // for (const auto &stream : data["streams"]) {
+    //     if (stream["is_storing"].asBool()) {
+    //         enable_recording_ = true;
+    //     }
+    //     uint64_t stream_retention = stream["retention_time"].asUInt64();
+    //     auto retention = stream_retention * 3600;
+    //     if (retention_ == 0 || retention < retention_) {
+    //         retention_ = retention;
+    //     }
+    // }
+    // option.enableActive = enable_camera;
+    // option.enableRecord = enable_recording_;
+    // option.doNotRecordPrimaryStream = false;
+    // option.doNotRecordSecondaryStream = false;
+    // option.keepArchivedMinForAuto = true;
+    // option.keepArchivedMinFor = 0;
+    // option.keepArchivedMaxForAuto = false;
+    // option.keepArchivedMaxFor = retention_;
+    // option.mediaPort = 0;
+    // option.autoMediaPort = false;
+    // option.rtpTransport = 0;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -468,7 +468,7 @@ void getStorageStatisticJson(const function<void(Json::Value &data)> &cb) {
     cb(data);
 }
 
-void loadServerStartedConfig(const Json::Value &data) {
+void loadServerStartedConfigJson(const Json::Value &data) {
     int change = 0;
     auto &ini = mINI::Instance();
     // public key

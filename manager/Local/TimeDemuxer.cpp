@@ -5,7 +5,63 @@ using namespace std;
 using namespace toolkit;
 
 namespace mediakit {
+/////////////////////////TimerDemuxerInterface////////////////////////
 
+int64_t TimerDemuxerInterface::seekTo(uint64_t stamp_sec) {
+    uint64_t pos_time = 0;
+    {
+        // find without index file, by scanning db file 
+        _reader->seek(0);
+        auto last_offset = 0;
+        bool eof = false;
+        while (!eof && pos_time < stamp_sec) {
+            last_offset = _reader->tell();
+            TimeBlock block;
+            readBlock(block, eof);
+            if (eof) {
+                break;
+            }
+            pos_time = block.start_time();
+        }
+        _reader->seek(last_offset);
+    }
+    
+    return pos_time;
+}
+
+void TimerDemuxerInterface::readBlock(TimeBlock &block, bool &eof) {
+    eof = false;
+    uint32_t size;
+    auto ret = _reader->read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
+    if (ret < 0) {
+        eof = true;
+        return;
+    }
+    string buffer(size, '\0');
+    ret = _reader->read(reinterpret_cast<char*>(&buffer[0]), size);
+    if (ret < 0) {
+        eof = true;
+        return;
+    }
+    if (!block.ParseFromString(buffer)) {
+        throw std::runtime_error("Parse from buffer failed");
+    }
+}
+
+uint64_t TimerDemuxerInterface::findFirstStamp() {
+    auto first_stamp = 0;
+    auto eof = false;
+    _reader->seek(0);
+    TimeBlock block;
+    readBlock(block, eof);
+    if (!eof) {
+        first_stamp = block.start_time();
+    }
+    _reader->seek(0);
+    return first_stamp;
+}
+
+/////////////////////////TimeDemuxer////////////////////////
 TimeDemuxer::~TimeDemuxer() {
     closeFile();
 }
@@ -33,12 +89,12 @@ void TimeDemuxer::closeFile() {
     _file.reset();
 }
 
-int64_t TimeDemuxer::seekTo(int64_t stamp_sec) {
+int64_t TimeDemuxer::seekTo(uint64_t stamp_sec) {
     if (_maker) {
         // find with index file
         BlockListIndexEntry entry;
         if (!_maker->findLowerBound(entry, stamp_sec)) {
-            return -1;
+            return 0;
         }
         if (_reader->seek(entry.offset) < 0) {
             return -1;
@@ -46,73 +102,20 @@ int64_t TimeDemuxer::seekTo(int64_t stamp_sec) {
         return entry.start_time;
     }
 
-    auto pos_time = 0;
-    {
-        // find without index file, by scanning db file 
-        _reader->seek(0);
-        auto last_offset = 0;
-        bool eof = false;
-        while (!eof && pos_time < stamp_sec) {
-            last_offset = _reader->tell();
-            uint32_t size;
-            auto ret = _reader->read(reinterpret_cast<char *>(&size), sizeof(uint32_t));
-            if (ret < 0) {
-                eof = true;
-                break;
-            }
-            string buffer(size, '\0');
-            ret = _reader->read(&buffer[0], size);
-            if (ret < 0) {
-                eof = true;
-                break;
-            }
-            TimeBlockList list;
-            list.ParseFromString(buffer);
-            pos_time = list.created_at();
-        }
-        _reader->seek(last_offset);
-    }
-    
-    return pos_time;
-}
-
-void TimeDemuxer::readBlockList(TimeBlockList &list, bool &eof) {
-    eof = false;
-    uint32_t size;
-    auto ret = _reader->read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
-    if (ret < 0) {
-        eof = true;
-        return;
-    }
-    string buffer(size, '\0');
-    ret = _reader->read(reinterpret_cast<char*>(&buffer[0]), size);
-    if (ret < 0) {
-        eof = true;
-        return;
-    }
-    if (!list.ParseFromString(buffer)) {
-        throw std::runtime_error("Parse from buffer failed");
-    }
+    return TimerDemuxerInterface::seekTo(stamp_sec);
 }
 
 uint64_t TimeDemuxer::findFirstStamp() {
     if (_maker) {
+        // find with index file
         return _maker->getFirstStamp();
     }
 
-    auto first_stamp = 0;
-    auto eof = false;
-    _reader->seek(0);
-    TimeBlockList list;
-    readBlockList(list, eof);
-    if (!eof) {
-        first_stamp = list.created_at();
-    }
-    _reader->seek(0);
-    return first_stamp;
+    // find without index file, scan db
+    return TimerDemuxerInterface::findFirstStamp();
 }
 
-/////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////MultiTimeDemuxer/////////////////////////////////////////////
 
 void MultiTimeDemuxer::openFile(const string &files_string) {
     std::vector<std::string> files;
@@ -144,16 +147,16 @@ void MultiTimeDemuxer::closeFile() {
     _it = _demuxers.end();
 }
 
-int64_t MultiTimeDemuxer::seekTo(int64_t stamp_sec) {
+int64_t MultiTimeDemuxer::seekTo(uint64_t stamp_sec) {
     auto it = _demuxers.upper_bound(stamp_sec);
     // find last element less than or equal to stamp_sec, or return the first element
-    _it = it == _demuxers.begin() ? it :  std::prev(it);
+    _it = it == _demuxers.begin() ? it : std::prev(it);
     return _it->second->seekTo(stamp_sec);
 }
 
-void MultiTimeDemuxer::readBlockList(TimeBlockList &list, bool &eof) {
+void MultiTimeDemuxer::readBlock(TimeBlock &block, bool &eof) {
     for (;;) {
-        _it->second->readBlockList(list, eof);
+        _it->second->readBlock(block, eof);
         if (eof && _it != _demuxers.end()) {
             // Switch to the next file
             if (++_it == _demuxers.end()) {
@@ -174,69 +177,6 @@ TimeMemoryDemuxer::TimeMemoryDemuxer(const string& buf) {
     _file = std::make_shared<TimeFileMemory>(buf);
     _reader = _file->createReader();
     _first_stamp = findFirstStamp();
-}
-
-int64_t TimeMemoryDemuxer::seekTo(int64_t stamp_sec) {
-    auto pos_time = 0;
-    {
-        // find without index file, by scanning db file 
-        _reader->seek(0);
-        auto last_offset = 0;
-        bool eof = false;
-        while (!eof && pos_time < stamp_sec) {
-            last_offset = _reader->tell();
-            uint32_t size;
-            auto ret = _reader->read(reinterpret_cast<char *>(&size), sizeof(uint32_t));
-            if (ret < 0) {
-                eof = true;
-                break;
-            }
-            string buffer(size, '\0');
-            ret = _reader->read(&buffer[0], size);
-            if (ret < 0) {
-                eof = true;
-                break;
-            }
-            TimeBlockList list;
-            list.ParseFromString(buffer);
-            pos_time = list.created_at();
-        }
-        _reader->seek(last_offset);
-    }
-    
-    return pos_time;
-}
-
-void TimeMemoryDemuxer::readBlockList(TimeBlockList &list, bool &eof) {
-    eof = false;
-    uint32_t size;
-    auto ret = _reader->read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
-    if (ret < 0) {
-        eof = true;
-        return;
-    }
-    string buffer(size, '\0');
-    ret = _reader->read(reinterpret_cast<char*>(&buffer[0]), size);
-    if (ret < 0) {
-        eof = true;
-        return;
-    }
-    if (!list.ParseFromString(buffer)) {
-        throw std::runtime_error("Parse from buffer failed");
-    }
-}
-
-uint64_t TimeMemoryDemuxer::findFirstStamp() {
-    auto first_stamp = 0;
-    auto eof = false;
-    _reader->seek(0);
-    TimeBlockList list;
-    readBlockList(list, eof);
-    if (!eof) {
-        first_stamp = list.created_at();
-    }
-    _reader->seek(0);
-    return first_stamp;
 }
 
 } // namespace mediakit

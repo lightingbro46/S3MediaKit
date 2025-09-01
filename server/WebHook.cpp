@@ -337,7 +337,7 @@ static void reportServerStarted() {
         if (err.empty()) {
             // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
             InfoL << "Report server started success";
-            loadServerStartedConfig(obj);
+            loadServerStartedConfigJson(obj);
         } else{
             DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
             WarnL << "Report server started failed:" << err;
