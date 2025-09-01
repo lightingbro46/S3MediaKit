@@ -123,16 +123,19 @@ string TimeMakerImp::indexFile(const string &db_path) {
 void TimeMakerImp::openFile(const std::string &file, string mode) {
     closeFile();
 
+    if (mode != "rb" && mode != "ab+") {
+        throw std::runtime_error("File mode \"" + mode + "\" do not support in reading or writing index");
+    }
+
     _file_path = file;
     _file = std::make_shared<TimeFileDisk>();
     _file->openFile(_file_path.data(), mode.data());
 
     if (mode == "ab+") {
         _writer = _file->createWriter();
-    } else if (mode == "rb") {
+    } 
+    if (mode == "rb" || mode == "ab+") {
         _reader = _file->createReader();
-    } else {
-        throw std::runtime_error("File mode \"" + mode + "\" do not support in reading or writing index");
     }
 
     if (_reader) {
@@ -140,7 +143,7 @@ void TimeMakerImp::openFile(const std::string &file, string mode) {
         setFirstStamp(first_stamp);
     }
 
-    if (_writer) {
+    if (_writer && _reader) {
         auto last_stamp = findLastStamp();
         setLastStamp(last_stamp);
     }
