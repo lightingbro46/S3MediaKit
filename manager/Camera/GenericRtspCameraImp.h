@@ -3,10 +3,11 @@
 
 #include "GenericRtspCamera.h"
 #include "StreamSink.h"
+#include "CameraController.h"
 
 namespace managerkit {
     
-class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink {
+class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController{
 public:
     using Ptr = std::shared_ptr<GenericRtspCameraImp>;
 

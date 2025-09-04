@@ -6,6 +6,7 @@
 #include "soapMediaBindingProxy.h"
 #include "soapImagingBindingProxy.h"
 #include "soapPTZBindingProxy.h"
+#include "Common/DeviceController.h"
 
 namespace managerkit {
 
@@ -65,17 +66,18 @@ struct OnvifMediaProfile {
     VideoConfigOption vOption;
 };
 
-class OnvifController {
+class OnvifController : public DeviceController {
 public:
+    using Ptr = std::shared_ptr<OnvifController>;
     using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
 
-    OnvifController(std::string strCameraIp, std::string strUsername = "", std::string strPassword = "");
-    ~OnvifController();
+    OnvifController(std::string strDeviceIp, std::string strUsername = "", std::string strPassword = "");
+    ~OnvifController() override;
 
-    bool initControl();
+    bool initControl() override;
 
     /**
-     * Get Onvif device info
+     * Get onvif device info
      */
     OnvifDeviceInfo getDeviceInfo() { return _deviceInfo; }
 
@@ -87,7 +89,12 @@ public:
     /**
      * If device has PTZ capacibility
      */
-    bool isDeviceSupportPTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
+    bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
+
+    /**
+     * Get onvif ptz profile
+     */
+    OnvifPTZProfile getPTZProfile() { return _ptzProfile; }
 
     /**
      * Execute PTZ Absolute Move 
@@ -105,9 +112,14 @@ public:
     tt__MoveStatus PTZ_GetStatus(float &pan, float &tilt, float &zoom);
 
     /**
-     * Execute PTZ Continuous Move 
+     * Execute PTZ Continuous Move, timeout in second
      */
-    bool PTZ_ContinuousMove(float pan, float tilt, float zoom);
+    bool PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout = 0);
+
+    /**
+     * Execute Stop PTZ Continuous Move
+     */
+    bool PTZ_Stop(bool panTilt, bool zoom);
 
     /**
      * Execute PTZ Relative Move 
@@ -118,6 +130,8 @@ public:
      * Execute PTZ Relative Move with speed
      */
     bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
+
+    std::string getSoapErrMsg() { return _soapErrMsg; }
 
 private:
     bool destroyControl();
@@ -159,6 +173,8 @@ private:
     // PTZ configuration
     OnvifPTZProfile _ptzProfile;
 
+    std::string _soapErrMsg;
+
 private:
     soap   *_m_soap = nullptr;  //Soap for onvif
     DeviceBindingProxy  *_proxyDevice  = nullptr;    //Device API
@@ -166,7 +182,7 @@ private:
     ImagingBindingProxy *_proxyImaging = nullptr;    //Imaging API
     PTZBindingProxy     *_proxyPTZ     = nullptr;    //PTZ API
 
-    std::string _strCameraIp;
+    std::string _strDeviceIp;
     std::string _strUsername;
     std::string _strPassword;
 };

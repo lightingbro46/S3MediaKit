@@ -7,7 +7,7 @@ using namespace mediakit;
 namespace managerkit {
 
 GenericRtspCameraImp::GenericRtspCameraImp(const CameraInfo &info, const unordered_map<int, StreamTuple> &stream_map)
-    : GenericRtspCamera(info), StreamSink(stream_map) {}
+    : GenericRtspCamera(info), StreamSink(stream_map), CameraController(info) {}
 
 void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
     _option = option;
@@ -34,6 +34,8 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
         bool enable_record = _option.enableRecord && !_option.doNotRecordSecondaryStream;
         setupMonitor(SecondaryStream, enable_record, rtp_type, media_port);
     }
+
+    setupController();
 }
 
 void GenericRtspCameraImp::onAllStreamReady() {

@@ -13,7 +13,7 @@ INSTANCE_IMP(CameraManager)
 CameraManager::CameraManager() {}
 
 template <typename Pointer>
-static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTuple> stream_map) {
+static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTuple> &stream_map) {
     // if (stream_map.find(type) != stream_map.end()) {
     //     return ptr->hasStreamTuple(type) && equalStreamTuple(ptr->getStreamTuple(type), stream_map[type]);
     // } else {
@@ -33,7 +33,7 @@ static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTu
 }
 
 template <typename Pointer>
-static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, StreamTuple> stream_map) {
+static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, StreamTuple> &stream_map) {
     if (!equalCameraInfo(ptr->getCameraInfo(), info)) {
         return false;
     }
@@ -51,10 +51,10 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
 
 bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    auto ret = DeviceSource::find(CAMERA_SCHEMA, info.vhost, info.device_id);
-    if  (ret) {
+    auto it = _gcImp.find(info.shortUrl());
+    if  (it != _gcImp.end()) {
         // device tuple already exist
-        auto gc = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
+        auto gc = it->second;
         if (gc) {
             if (equalCameraConfig(gc, info, stream_map)) {
                 gc->setCameraOption(option);

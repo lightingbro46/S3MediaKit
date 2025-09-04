@@ -46,6 +46,6 @@ private:
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
 };
 
-};
+} // namespace managerkit
 
 #endif // CAMERA_STREAMSINK_H

@@ -3,9 +3,6 @@
 
 #include "GenericRtspCameraImp.h"
 
-#define DEFAULT_GENERIC_RTSP "GENERIC-RTSP"
-#define DEFAULT_ONVIF_CAMERA "ONVIF-CAMERA"
-
 namespace managerkit {
 
 class CameraManager {

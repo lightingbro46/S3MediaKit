@@ -43,6 +43,7 @@ target_link_libraries(s3managerkit
   PUBLIC
     S3MediaKit::MediaKit
     S3MediaKit::ToolKit
+    S3MediaKit::ext-plugin
     protocpp)
 
 target_compile_definitions(s3managerkit 

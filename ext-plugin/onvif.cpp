@@ -9,8 +9,8 @@ using namespace toolkit;
 
 namespace managerkit {
 
-OnvifController::OnvifController(std::string strCameraIp, std::string strUsername, std::string strPassword)
-    : _strCameraIp(strCameraIp), _strUsername(strUsername), _strPassword(strPassword) {}
+OnvifController::OnvifController(std::string strDeviceIp, std::string strUsername, std::string strPassword)
+    : _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
 
 OnvifController::~OnvifController() {
     destroyControl();
@@ -70,7 +70,7 @@ bool OnvifController::destroyControl() {
 bool OnvifController::getDeviceInformation() {
     // get device info and print
     thread_local string strDeviceUrl;
-    strDeviceUrl = "http://" + _strCameraIp + "/onvif/device_service";
+    strDeviceUrl = "http://" + _strDeviceIp + "/onvif/device_service";
     _proxyDevice->soap_endpoint = strDeviceUrl.c_str();
     DebugL << "Onvif device url: " << _proxyDevice->soap_endpoint;
     _tds__GetDeviceInformation *GetDeviceInformation = soap_new__tds__GetDeviceInformation(_m_soap);
@@ -126,7 +126,7 @@ bool OnvifController::getDeviceCapabilities() {
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
             strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strCameraIp);
+            strUrl.insert(0, "http://" + _strDeviceIp);
         }
         DebugL << "Media XAddr:  " << strUrl;
         _proxyMedia = new MediaBindingProxy(_m_soap);
@@ -140,7 +140,7 @@ bool OnvifController::getDeviceCapabilities() {
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
             strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strCameraIp);
+            strUrl.insert(0, "http://" + _strDeviceIp);
         }
         DebugL << "Imaging XAddr:  " << strUrl << endl;
         _proxyImaging = new ImagingBindingProxy(_m_soap);
@@ -154,7 +154,7 @@ bool OnvifController::getDeviceCapabilities() {
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
             strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strCameraIp);
+            strUrl.insert(0, "http://" + _strDeviceIp);
         }
         DebugL << "PTZ XAddr:  " << strUrl << endl;
 
@@ -372,6 +372,7 @@ bool OnvifController::getNetworkInterfaces() {
 void OnvifController::reportError() {
     std::ostringstream oss;
     soap_stream_fault(_m_soap, oss);
+    _soapErrMsg = oss.str();
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
@@ -500,7 +501,7 @@ tt__MoveStatus OnvifController::PTZ_GetStatus(float &pan, float &tilt, float &zo
     return tt__MoveStatus__UNKNOWN;
 }
 
-bool OnvifController::PTZ_ContinuousMove(float pan, float tilt, float zoom) {
+bool OnvifController::PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -519,12 +520,49 @@ bool OnvifController::PTZ_ContinuousMove(float pan, float tilt, float zoom) {
     ContinuosMove->Velocity->PanTilt->x = pan;
     ContinuosMove->Velocity->PanTilt->y = tilt;
     ContinuosMove->Velocity->Zoom->x = zoom;
+    if (timeout > 0) {
+        ostringstream ss;
+        ss << "PT" << timeout << "S";
+        ContinuosMove->Timeout = soap_new_std__string(_m_soap, -1);
+        *ContinuosMove->Timeout = ss.str();
+    }
 
     if (!setCredentials()) {
         return false;
     }
 
     if (_proxyPTZ->ContinuousMove(ContinuosMove, ContinuosMoveResponse)) {
+        reportError();
+        return false;
+    }
+    return true;
+}
+
+bool OnvifController::PTZ_Stop(bool panTilt, bool zoom) {
+    if (_proxyPTZ == nullptr) {
+        WarnL << "Unknown proxyPTZ";
+        return false;
+    }
+
+    _tptz__Stop *Stop = soap_new__tptz__Stop(_m_soap);
+    _tptz__StopResponse StopResponse;
+
+    Stop->ProfileToken = _ptzProfile.strMediaProfileToken;
+    if (Stop->PanTilt == nullptr) {
+        Stop->PanTilt = soap_new_bool(_m_soap, -1);
+        *Stop->PanTilt = panTilt;
+    }
+
+    if (Stop->Zoom == nullptr) {
+        Stop->Zoom = soap_new_bool(_m_soap, -1);
+        *Stop->Zoom = zoom;
+    }
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (_proxyPTZ->Stop(Stop, StopResponse)) {
         reportError();
         return false;
     }

@@ -69,6 +69,7 @@
 #include "Manager.h"
 #include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
+#include "Camera/GenericRtspCameraImp.h"
 
 using namespace std;
 using namespace Json;
@@ -2935,7 +2936,7 @@ void installWebApi() {
         ret["serialNumber"] = info.serialNumber;
         ret["hardwareId"] = info.hardwareId;
         ret["macAddress"] = info.macAddress;
-        ret["isPtz"] = onvif->isDeviceSupportPTZ();
+        ret["isPtz"] = onvif->enablePTZ();
         ret["profiles"] = arrayValue;
         auto profiles = onvif->selectStreamUrls();
         for (const auto &it : profiles) {
@@ -3007,12 +3008,41 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/ptz_control", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("deviceId", "direct", "speed");
         string deviceId = allArgs["deviceId"];
         string strDirect = allArgs["direct"];
         int speed = allArgs["speed"];
 
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = deviceId;
+
+        auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
+        if (!ret) {
+            val["code"] = API::Exception;
+            val["msg"] = "Device not found";
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
+
+        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
+        if (!ptr) {
+            val["code"] = API::Exception;
+            val["msg"] = "Device not found";
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
+
+        ptr->PTZMove(strDirect, speed, [&](const SockException &ex) {
+            if (ex) {
+                val["code"] = API::Exception;
+                val["msg"] = ex.what();
+                invoker(400, headerOut, val.toStyledString());
+            } else {
+                invoker(200, headerOut, val.toStyledString());
+            }
+        });
     });
 }
 
