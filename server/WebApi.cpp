@@ -2830,6 +2830,40 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
+    api_regist("/media/esc/bookmark/recent", [](API_ARGS_MAP_ASYNC) { 
+        // CHECK_TOKEN();
+        CHECK_ARGS("size", "sort"); 
+        string camera_id = allArgs["camera_id"];
+        int size = allArgs["size"];
+        string sort = allArgs["sort"];
+        
+        if (size < 0) size = 1;
+        if (size > 50) size = 50;
+        
+        auto imp = std::make_shared<BookmarkImp>();
+        auto ret =  imp->findRecentById(camera_id, size, sort);
+
+        val["data"] = arrayValue;
+        for (const Bookmark &b : ret) {
+            auto tags = imp->findTagsByBookmark(b.guid);
+            Value b_json;
+            b_json["id"] = b.guid;
+            b_json["camera_id"] = b.camera_guid;
+            b_json["start_time"] = b.start_time;
+            b_json["duration"] = b.duration;
+            b_json["name"] = b.name ? b.name.value() : "";
+            b_json["end_time"] = b.end_time ? b.end_time.value() : -1;
+            b_json["description"] = b.description ? b.description.value() : "";
+            b_json["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
+            // todo: search username
+            b_json["creator"] = "admin";
+            b_json["created"] = b.created ? b.created.value() : -1;
+            b_json["tags"] = tags;
+            val["data"].append(b_json);
+        }
+        invoker(200, headerOut, val.toStyledString());
+    });
+
     api_regist("/media/mserver/description", [](API_ARGS_MAP) {
         Value info;
         info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
@@ -3040,6 +3074,7 @@ void installWebApi() {
                 val["msg"] = ex.what();
                 invoker(400, headerOut, val.toStyledString());
             } else {
+                val["msg"] = ex.what();
                 invoker(200, headerOut, val.toStyledString());
             }
         });

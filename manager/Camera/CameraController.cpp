@@ -15,7 +15,11 @@ void CameraController::setupController() {
     }
 
     // create new controller
-    if (_info.manufacturer.empty()) {
+    // if (_info.manufacturer.empty()) {
+    //     return;
+    // }
+
+    if (_info.ip.empty() || _info.port == 0) {
         return;
     }
 
@@ -77,8 +81,8 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
 
     auto invoker = [cb](bool ret, string msg) {
         if (ret) {
-            InfoL << "Execute PTZ control success";
-            cb(SockException(Err_success, "Success"));
+            InfoL << "Execute PTZ control success: " << msg;
+            cb(SockException(Err_success, msg));
         } else {
             WarnL << "Execute PTZ control failed: " << msg;
             cb(SockException(Err_other, msg));
@@ -114,9 +118,8 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
             invoker(false, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg());
             return;
         }
-
         // Execute success
-        return invoker(true, "");
+        return invoker(true, "Device execute ptz absolute move success");
     };
 
     if (profile.isRelMoveEnable) {
@@ -140,7 +143,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
             return;
         }
         // Execute success
-        return invoker(true, "");
+        return invoker(true, "Device execute ptz relative move success");
     } 
     
     if (profile.isConsMoveEnable) {
@@ -172,7 +175,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
                 return 0;
             }
             // Execute success
-            invoker(true, "");
+            invoker(true, "Device execute ptz continuous move success");
             return 0;
         });
     }
@@ -203,7 +206,7 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
             onvifPTZMove(ptr, direct, speed, cb);
             return;
         }
-        // add more ptz function from manufacturer sdk
+        // todo: add more ptz function from manufacturer sdk
     }
 
     return cb(SockException(Err_other, "Device do not support PTZ"));

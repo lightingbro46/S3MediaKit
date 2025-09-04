@@ -98,6 +98,34 @@ protected:
         auto rows = _executor->executeRaw(query);
         return rows.empty() ? 0 : std::stoi(rows[0][0].c_str());
     }
+
+    std::vector<Bookmark> findByTimeCreated(const std::vector<std::string> &camera_guids, int limit, std::string &sort) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        if (camera_guids.size() > 0) {
+            whereClause << " camera_guid IN (";
+            for (size_t i = 0; i < camera_guids.size(); i++) {
+                whereClause << " ? ";
+                if (i + 1 < camera_guids.size()) whereClause << ",";
+                whereParams.push_back(camera_guids[i]);
+            }
+            whereClause << ")";
+        }
+
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<Bookmark>::getColumns())
+                         .from(EntityTraits<Bookmark>::tableName())
+                         .where(whereClause.str(), whereParams)
+                         .limit(limit)
+                         .orderBy("created " + sort);
+        auto rows = _executor->executeRaw(query);
+        std::vector<Bookmark> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<Bookmark>::fromRow(row));
+        }
+        return ret;
+    }
 };
 
 class BookmarkImp : public BookmarkRepository {
@@ -163,6 +191,15 @@ public:
             oss << ret[i];
         }
         return oss.str();
+    }
+
+    std::vector<Bookmark> findRecentById(const std::string &camera_guids, int size, std::string sort) {
+        std::vector<std::string> _camera_guids;
+        if (!camera_guids.empty()) {
+            _camera_guids = toolkit::split(camera_guids, ",");
+        }
+        std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
+        return findByTimeCreated(_camera_guids, size, _sort);
     }
 
 private:
