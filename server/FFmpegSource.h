@@ -157,4 +157,31 @@ private:
     std::string _err_msg;
 };
 
-#endif //FFMPEG_SOURCE_H
+struct ProbeInfo {
+    std::string url;
+    bool hasVideo = false;
+    std::string vcodec;
+    int width = 0;
+    int height = 0;
+    int bitrate = 0;
+    float fps = 0.0;
+    float quality = 0.0;
+};
+
+class FFmpegProbe {
+public:
+    using onProbe = std::function<void(bool success, const std::string &err_msg, const ProbeInfo &info)>;
+    /**
+     * Probe url to get source information
+     * @param play_url The playback URL address, as long as FFmpeg supports it
+     * @param timeout_sec Timeout for probe url (to prevent blocking for too long)
+     * @param cb Callback for whether the screenshot was generated successfully
+     */
+    static void makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb);
+
+private:
+    FFmpegProbe() = delete;
+    ~FFmpegProbe() = delete;
+};
+
+#endif // FFMPEG_SOURCE_H

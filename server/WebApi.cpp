@@ -69,7 +69,7 @@
 #include "Manager.h"
 #include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
-#include "Camera/GenericRtspCameraImp.h"
+#include "Camera/CameraManager.h"
 
 using namespace std;
 using namespace Json;
@@ -2955,50 +2955,88 @@ void installWebApi() {
         val["data"] = makeSystemStatisticJson();
     });
 
-    static auto discovery_device = [](string &ip, int &port, string &username, string &password, const function<void(const string &, const Value &)> &cb) {
+    static auto discovery_device = [](string &address, int &port, bool &defaultPort, string &username, string &password, const function<void(const string &, const Value &)> &cb) {
         Value ret;
-        string ipAddress = StrPrinter << ip << ":" << port;
-        auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
-        if (!onvif->initControl()) {
-            return cb("Device Not Found", ret);
-        }
+        if (start_with(address, "rtsp://")) {
+            // address is rtsp url
+            string url = address;
+            
+            if (!username.empty() && !password.empty()) {
+                url = replaceCredentials(url, username, password);
+            }
+            if (!defaultPort) {
+                url = replacePort(url, port);
+            }
+            FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
+                if (!success) {
+                    cb("Device Not Found", ret);
+                } else {
+                    ret["manufacturer"] = GENERIC_RTSP_CAMERA;
+                    ret["model"] = GENERIC_RTSP_CAMERA;
+                    ret["firmwareVersion"] = "";
+                    ret["serialNumber"] = "";
+                    ret["hardwareId"] = "";
+                    ret["macAddress"] = "";
+                    ret["isPtz"] = false;
+                    ret["profiles"] = arrayValue;
+                    Value stream;
+                    stream["vcodec"] = info.vcodec;
+                    stream["width"] = info.width;
+                    stream["height"] = info.height;
+                    stream["fps"] = info.fps;
+                    stream["bitrate"] = info.bitrate;
+                    stream["url"] = replaceCredentials(url, "", "");
+                    ret["profiles"].append(stream);
+                    cb("", ret);
+                }
+            });
+        } else if (isIP(address.data())) {
+            // address is ip
+            string ip = address;
+            if (defaultPort) {
+                port = 80;
+            }
+            string ipAddress = StrPrinter << ip << ":" << port;
+            auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
+            if (!onvif->initControl()) {
+                return cb("Device Not Found", ret);
+            }
 
-        auto info = onvif->getDeviceInfo();
-        ret["manufacturer"] = info.manufacturer;
-        ret["model"] = info.model;
-        ret["firmwareVersion"] = info.firmwareVersion;
-        ret["serialNumber"] = info.serialNumber;
-        ret["hardwareId"] = info.hardwareId;
-        ret["macAddress"] = info.macAddress;
-        ret["isPtz"] = onvif->enablePTZ();
-        ret["profiles"] = arrayValue;
-        auto profiles = onvif->selectStreamUrls();
-        for (const auto &it : profiles) {
-            Value stream;
-            stream["vcodec"] = it.vcodec;
-            stream["width"] = it.width;
-            stream["height"] = it.height;
-            stream["fps"] = it.fps;
-            stream["bitrate"] = it.bitrate;
-            stream["url"] = replaceIp(it.url, ip);
-            ret["profiles"].append(stream);
+            auto info = onvif->getDeviceInfo();
+            ret["manufacturer"] = info.manufacturer;
+            ret["model"] = info.model;
+            ret["firmwareVersion"] = info.firmwareVersion;
+            ret["serialNumber"] = info.serialNumber;
+            ret["hardwareId"] = info.hardwareId;
+            ret["macAddress"] = info.macAddress;
+            ret["isPtz"] = onvif->enablePTZ();
+            ret["profiles"] = arrayValue;
+            auto profiles = onvif->selectStreamUrls();
+            for (const auto &it : profiles) {
+                Value stream;
+                stream["vcodec"] = it.vcodec;
+                stream["width"] = it.width;
+                stream["height"] = it.height;
+                stream["fps"] = it.fps;
+                stream["bitrate"] = it.bitrate;
+                stream["url"] = replaceIp(it.url, ip);
+                ret["profiles"].append(stream);
+            }
+            cb("", ret);
+        } else {
+            cb("Address must be ip or rtsp url", ret);
         }
-        cb("", ret);
     };
 
-    api_regist("/media/mserver/discovery", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS("ip","port", "defaultPort",  "username", "password");
-        string ip = allArgs["ip"];
+    api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("address","port", "defaultPort");
+        string address = allArgs["address"];
         int port = allArgs["port"];
         bool defaultPort = allArgs["defaultPort"];
         string username = allArgs["username"];
         string password = allArgs["password"];
 
-        if (defaultPort) {
-            port = 80;
-        }
-
-        discovery_device(ip, port, username, password, [&](const string &err, const Json::Value &data) {
+        discovery_device(address, port, defaultPort, username, password, [=](const string &err, const Value &data) mutable {
             if (!err.empty()) {
                 val["code"] = API::NotFound;
                 val["msg"] = err;
@@ -3010,8 +3048,8 @@ void installWebApi() {
         });
     });
 
-    api_regist("/media/mserver/subnetScan", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS("startIp", "endIp", "port", "defaultPort", "username", "password");
+    api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("startIp", "endIp", "port", "defaultPort");
         string startIp = allArgs["startIp"];
         string endIp = allArgs["endIp"];
         int port = allArgs["port"];
@@ -3025,15 +3063,11 @@ void installWebApi() {
             invoker(400, headerOut, val.toStyledString());
             return;
         }
-        
-        if (defaultPort) {
-            port = 80;
-        }
 
         val["data"] = arrayValue;
         auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
         for (auto &ip : ip_range) {
-            discovery_device(ip, port, username, password, [&](const string &err, const Json::Value &data) {
+            discovery_device(ip, port, defaultPort, username, password, [&](const string &err, const Json::Value &data) {
                 if (err.empty()) {
                     val["data"].append(data);
                 }

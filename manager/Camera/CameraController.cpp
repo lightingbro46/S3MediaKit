@@ -1,4 +1,5 @@
 #include "CameraController.h"
+#include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
 
 using namespace std;
@@ -15,9 +16,9 @@ void CameraController::setupController() {
     }
 
     // create new controller
-    // if (_info.manufacturer.empty()) {
-    //     return;
-    // }
+    if (_info.manufacturer.empty() || _info.manufacturer == GENERIC_RTSP_CAMERA) {
+        return;
+    }
 
     if (_info.ip.empty() || _info.port == 0) {
         return;

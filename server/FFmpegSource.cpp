@@ -15,26 +15,32 @@ using namespace mediakit;
 namespace FFmpeg {
 #define FFmpeg_FIELD "ffmpeg."
 const string kBin = FFmpeg_FIELD"bin";
+const string kBinP = FFmpeg_FIELD"binP";
 const string kCmd = FFmpeg_FIELD"cmd";
 const string kLog = FFmpeg_FIELD"log";
 const string kSnap = FFmpeg_FIELD"snap";
 const string kExtract = FFmpeg_FIELD"extract";
+const string kProbe = FFmpeg_FIELD"probe";
 const string kRestartSec = FFmpeg_FIELD"restart_sec";
 const string kDelayCloseSec = FFmpeg_FIELD"delay_close_sec";
 
 onceToken token([]() {
 #ifdef _WIN32
     string ffmpeg_bin = trim(System::execute("where ffmpeg"));
+    string ffprobe_bin = trim(System::execute("where ffprobe"));
 #else
     string ffmpeg_bin = trim(System::execute("which ffmpeg"));
+    string ffprobe_bin = trim(System::execute("which ffprobe"));
 #endif
     // Default ffmpeg command path is the path in the environment variable
     mINI::Instance()[kBin] = ffmpeg_bin.empty() ? "ffmpeg" : ffmpeg_bin;
+    mINI::Instance()[kBinP] = ffprobe_bin.empty() ? "ffprobe" : ffprobe_bin;
     // ffmpeg log save path
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
     mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s";
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s";
+    mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
     mINI::Instance()[kRestartSec] = 0;
     mINI::Instance()[kDelayCloseSec] = 300;
 });
@@ -617,4 +623,116 @@ bool FFmpegExtractor::close() {
     File::delete_file(_src_path);
     File::delete_file(_save_path);
     return true;
+}
+
+static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
+    if (log_string.empty()) {
+        return false;
+    }
+
+    // find json string
+    size_t start_point = log_string.find('{');
+    size_t end_point = log_string.rfind('}');
+
+    if (start_point == std::string::npos || end_point == std::string::npos || end_point < start_point) {
+        DebugL << "Can not find stream information.";
+        return false;
+    }
+
+    auto json_str = log_string.substr(start_point, end_point - start_point + 1);
+
+    // parse json string to json var
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    Json::Value data;
+    std::string errs;
+
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
+        WarnL << "Parse stream json failed: " << errs;
+        return false;
+    }
+
+    // get stream information from json var
+    DebugL << data.toStyledString();
+    if (!data.isMember("streams") || !data["streams"].isArray()) {
+        DebugL << "Can not find stream information..";
+        return false;
+    }
+
+    for (const auto &stream : data["streams"]) {
+        if (!stream.isMember("codec_type")) {
+            continue;
+        }
+        if (stream["codec_type"] == "video") {
+            info.hasVideo = true;
+            if (stream.isMember("codec_name")) {
+                info.vcodec = stream["codec_name"].asString();
+            }
+            if (stream.isMember("width")) {
+                info.width = std::stoi(stream["width"].asString());
+            }
+            if (stream.isMember("height")) {
+                info.height = std::stoi(stream["height"].asString());
+            }
+            if (stream.isMember("avg_frame_rate")) {
+                auto fr = stream["avg_frame_rate"].asString();
+                int num, den;
+                if (sscanf(fr.c_str(), "%d/%d", &num, &den) == 2 && den != 0)
+                    info.fps = float(num) / float(den);
+            }
+            if (stream.isMember("bit_rate")) {
+                info.bitrate = std::stoi(stream["bit_rate"].asString());
+            }
+            if (stream.isMember("avg_quality")) {
+                info.quality = std::stof(stream["avg_quality"].asString());
+            }
+        }
+
+        if (stream["codec_type"] == "audio") {
+            // todo: parse audio codec
+        }
+    }
+    return true;
+}
+
+void FFmpegProbe::makeProbe(const string &play_url, float timeout_sec, const onProbe &cb) {
+    GET_CONFIG(string, ffprobe_bin, FFmpeg::kBinP);
+    GET_CONFIG(string, ffmpeg_probe, FFmpeg::kProbe);
+    GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+    Ticker ticker;
+    WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, cb, ticker]() {
+        ProbeInfo info;
+        info.url = play_url;
+        auto elapsed_ms = ticker.elapsedTime();
+        if (elapsed_ms > timeout_sec * 1000) {
+            // Timeout, the background thread load is too high, it takes too long to start this task
+            cb(false, "wait work poller schedule probe task timeout", info);
+            return;
+        }
+        char cmd[2048] = { 0 };
+        snprintf(cmd, sizeof(cmd), ffmpeg_probe.data(), File::absolutePath("", ffprobe_bin).data(), escape(play_url).data());
+        std::shared_ptr<Process> process = std::make_shared<Process>();
+        auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
+        process->run(cmd, log_file);
+
+        // The timer delay should be reduced by the delay of the background task startup
+        auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
+            (uint64_t)(timeout_sec * 1000 - elapsed_ms), [process, cb, log_file]() {
+                if (process->wait(false)) {
+                    // The FFmpeg process is still running, close it if it times out
+                    process->kill(2000);
+                }
+                return 0;
+            });
+
+        // Wait for the FFmpeg process to exit
+        process->wait(true);
+        // The FFmpeg process has exited, the timer can be canceled
+        delayTask->cancel();
+        // Execute the callback function
+        string log_string = File::loadFile(log_file);
+        bool success = process->exit_code() == 0 && parse_probe_log(info, log_string);
+        cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "", info);
+    });
 }

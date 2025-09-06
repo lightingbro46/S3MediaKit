@@ -4,6 +4,8 @@
 #include <string>
 #include "Util/onceToken.h"
 
+#define GENERIC_RTSP_CAMERA "GENERIC-RTSP"
+
 #define REGISTER_STATIC_VAR_INNER_(var_name, line) var_name##_##line##__
 #define REGISTER_STATIC_VAR_(var_name, line) REGISTER_STATIC_VAR_INNER_(var_name, line)
 
@@ -18,6 +20,8 @@ namespace managerkit {
 std::string replaceIp(const std::string &in_url, const std::string &nat_ip);
 
 std::string replacePort(const std::string &in_url, int nat_port);
+
+std::string replaceCredentials(const std::string &in_url, const std::string &username, const std::string &password);
 
 bool eligibleForPrimaryStream(std::string vcodec, int width, int height, int bitrate, int fps);
 
