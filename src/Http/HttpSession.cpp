@@ -195,15 +195,24 @@ bool HttpSession::checkWebSocket() {
         headerOut["Sec-WebSocket-Protocol"] = _parser["Sec-WebSocket-Protocol"];
     }
 
-    auto res_cb = [this, headerOut]() {
-        _live_over_websocket = true;
-        sendResponse(101, false, nullptr, headerOut, nullptr, true);
+    auto res_cb = [this, headerOut](bool close) {
+        if (!close) {
+            _live_over_websocket = true;
+            sendResponse(101, false, nullptr, headerOut, nullptr, true);
+        } else {
+            sendNotFound(true);
+        }
+        
     };
 
-    auto res_cb_flv = [this, headerOut]() mutable {
-        _live_over_websocket = true;
-        headerOut.emplace("Cache-Control", "no-store");
-        sendResponse(101, false, nullptr, headerOut, nullptr, true);
+    auto res_cb_flv = [this, headerOut](bool close) mutable {
+        if (!close) {
+            _live_over_websocket = true;
+            headerOut.emplace("Cache-Control", "no-store");
+            sendResponse(101, false, nullptr, headerOut, nullptr, true);
+        } else {
+            sendNotFound(true);
+        }
     };
 
     // Determine whether it is websocket-flv
@@ -348,27 +357,21 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
 }
 
 // http-fmp4 link format: http://vhost-url:port/media/app/streamid.live.mp4?key1=value1&key2=value2
-bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
+bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
     auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
     auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
     return checkLiveStream(FMP4_SCHEMA, "/media", ".live.mp4", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
-        if (!cb) {
-            // Found the source, send the http header, and send the load later
-            sendResponse(200, false, HttpFileManager::getContentType(".mp4").data(), KeyValue(), nullptr, true);
-        } else {
-            // Custom send http header
-            cb();
-        }
-
-        // Live streaming sacrifices delay to improve sending performance
-        setSocketFlags();
-        onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
-        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-
+        bool bClose = false;
         if (pos_stamp > 0) {
             Broadcast::SeekInvoker invoker = [&](int64_t offset) {
+                if (offset < 0) {
+                    // not found data at this stamp
+                    bClose = true;
+                    return;
+                }
+                // found data
                 auto iStartTime = 1000 * offset;
                 InfoP(this) << "http-mp4 seekTo(ms):" << iStartTime;
                 fmp4_src->seekTo(iStartTime);
@@ -376,13 +379,25 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
             auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
             if (!flag) {
                 // No one is listening to this event, do not seek by default
+                bClose = true;
             }
         }
-        
         if (pos_stamp == 0 && start_pts > 0) {
             InfoP(this) << "http-mp4 seekTo(ms):" << start_pts;
             fmp4_src->seekTo(start_pts);
         }
+        if (!cb) {
+            // Found the source, send the http header, and send the load later
+            !bClose ? sendResponse(200, false, HttpFileManager::getContentType(".mp4").data(), KeyValue(), nullptr, true) : sendNotFound(true);
+        } else {
+            // Custom send http header
+            cb(bClose);
+        }
+
+        // Live streaming sacrifices delay to improve sending performance
+        setSocketFlags();
+        onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
 
         fmp4_src->pause(false);
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
@@ -413,25 +428,21 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
 }
 
 // http-webm link format: http://vhost-url:port/media/app/streamid.live.webm?key1=value1&key2=value2
-bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
+bool HttpSession::checkLiveStreamWebM(const function<void(bool close)> &cb) {
     auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
     auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
     return checkLiveStream(WEBM_SCHEMA, "/media", ".live.webm", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
         auto webm_src = dynamic_pointer_cast<WebMMediaSource>(src);
         assert(webm_src);
-        if (!cb) {
-            // Found the source, send the http header, and send the load later
-            sendResponse(200, false, HttpFileManager::getContentType(".webm").data(), KeyValue(), nullptr, true);
-        } else {
-            // Custom send http header
-            cb();
-        }
-
-        // Live streaming sacrifices delay to improve sending performance
-        setSocketFlags();
-        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        bool bClose = false;
         if (pos_stamp > 0) {
             Broadcast::SeekInvoker invoker = [&](int64_t offset) {
+                if (offset < 0) {
+                    // not found data at this stamp
+                    bClose = true;
+                    return;
+                }
+                // found data
                 auto iStartTime = 1000 * offset;
                 InfoP(this) << "http-webm seekTo(ms):" << iStartTime;
                 webm_src->seekTo(iStartTime);
@@ -439,13 +450,25 @@ bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
             auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
             if (!flag) {
                 // No one is listening to this event, do not seek by default
+                bClose = true;
             }
         }
-        
+
         if (pos_stamp == 0 && start_pts > 0) {
             InfoP(this) << "http-webm seekTo(ms):" << start_pts;
             webm_src->seekTo(start_pts);
         }
+        if (!cb) {
+            // Found the source, send the http header, and send the load later
+            !bClose ? sendResponse(200, false, HttpFileManager::getContentType(".webm").data(), KeyValue(), nullptr, true) : sendNotFound(true);
+        } else {
+            // Custom send http header
+            cb(bClose);
+        }
+
+        // Live streaming sacrifices delay to improve sending performance
+        setSocketFlags();
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
 
         webm_src->pause(false);
         _webm_reader = webm_src->getRing()->attach(getPoller());
@@ -476,7 +499,7 @@ bool HttpSession::checkLiveStreamWebM(const function<void()> &cb) {
 }
 
 // http-ts link format: http://vhost-url:port/media/app/streamid.live.ts?key1=value1&key2=value2
-bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
+bool HttpSession::checkLiveStreamTS(const function<void(bool close)> &cb) {
     return checkLiveStream(TS_SCHEMA, "/media", ".live.ts", [this, cb](const MediaSource::Ptr &src) {
         auto ts_src = dynamic_pointer_cast<TSMediaSource>(src);
         assert(ts_src);
@@ -485,7 +508,7 @@ bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
             sendResponse(200, false, HttpFileManager::getContentType(".ts").data(), KeyValue(), nullptr, true);
         } else {
             // Custom send http header
-            cb();
+            cb(false);
         }
 
         // Live streaming sacrifices delay to improve sending performance
@@ -520,7 +543,7 @@ bool HttpSession::checkLiveStreamTS(const function<void()> &cb) {
 }
 
 // http-flv link format: http://vhost-url:port/media/app/streamid.live.flv?key1=value1&key2=value2
-bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
+bool HttpSession::checkLiveStreamFlv(const function<void(bool close)> &cb) {
     auto start_pts = atoll(_parser.getUrlArgs()["startPts"].data());
     return checkLiveStream(RTMP_SCHEMA, "/media", ".live.flv", [this, cb, start_pts](const MediaSource::Ptr &src) {
         auto rtmp_src = dynamic_pointer_cast<RtmpMediaSource>(src);
@@ -532,7 +555,7 @@ bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
             sendResponse(200, false, HttpFileManager::getContentType(".flv").data(), headerOut, nullptr, true);
         } else {
             // Custom send http header
-            cb();
+            cb(false);
         }
         // Live streaming sacrifices delay to improve sending performance
         setSocketFlags();

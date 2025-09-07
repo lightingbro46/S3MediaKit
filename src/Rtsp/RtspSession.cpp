@@ -802,8 +802,15 @@ void RtspSession::handleReq_Play(const Parser &parser) {
     auto strParams = Parser::parseArgs(_media_info.params);
     auto pos_stamp = static_cast<uint64_t>(atoll(strParams["pos"].data()));
 
+    bool bClose = false;
     if (pos_stamp > 0) {
-        Broadcast::SeekInvoker invoker = [&](int64_t offset) { 
+        Broadcast::SeekInvoker invoker = [&](int64_t offset) {
+            if (offset < 0) {
+                // not found data at this stamp
+                bClose = true;
+                return;
+            }
+            // found data
             auto iStartTime = 1000 * offset;
             InfoP(this) << "rtsp seekTo(ms):" << iStartTime;
             play_src->seekTo(iStartTime);
@@ -811,9 +818,10 @@ void RtspSession::handleReq_Play(const Parser &parser) {
         auto flag = NOTICE_EMIT(BroadcastMediaSeekedArgs, Broadcast::kBroadcastMediaSeeked, _media_info, pos_stamp, invoker, *this);
         if (!flag) {
             // No one is listening to this event, do not seek by default
+            bClose = true;
         }
     }
-    
+
     if (pos_stamp == 0 && !strRange.empty()) {
         //This is a seek operation
         res_header.emplace("Range", strRange);
@@ -824,6 +832,12 @@ void RtspSession::handleReq_Play(const Parser &parser) {
         auto iStartTime = 1000 * (float) atof(strStart.data());
         use_gop = !play_src->seekTo((uint32_t) iStartTime);
         InfoP(this) << "rtsp seekTo(ms):" << iStartTime;
+    }
+
+    if(bClose){
+        send_StreamNotFound();
+        shutdown(SockException(Err_shutdown,"rtsp stream not found"));
+        return;
     }
 
     vector<TrackType> inited_tracks;

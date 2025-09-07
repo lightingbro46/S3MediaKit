@@ -99,10 +99,10 @@ private:
 
     bool checkLiveStream(const std::string &schema, const std::string &url_prefix, const std::string  &url_suffix, const std::function<void(const MediaSource::Ptr &src)> &cb);
 
-    bool checkLiveStreamFlv(const std::function<void()> &cb = nullptr);
-    bool checkLiveStreamTS(const std::function<void()> &cb = nullptr);
-    bool checkLiveStreamFMP4(const std::function<void()> &fmp4_list = nullptr);
-    bool checkLiveStreamWebM(const std::function<void()> &webm_list = nullptr);
+    bool checkLiveStreamFlv(const std::function<void(bool close)> &cb = nullptr);
+    bool checkLiveStreamTS(const std::function<void(bool close)> &cb = nullptr);
+    bool checkLiveStreamFMP4(const std::function<void(bool close)> &fmp4_list = nullptr);
+    bool checkLiveStreamWebM(const std::function<void(bool close)> &webm_list = nullptr);
     bool checkLiveStreamHls();
 
     bool checkWebSocket();

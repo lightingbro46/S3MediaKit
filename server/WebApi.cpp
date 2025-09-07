@@ -2489,28 +2489,34 @@ void installWebApi() {
         auto pos_str = allArgs["pos"];
 
         MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-        auto query = std::make_shared<TimeQuery>(tuple);
+        TimeQuery::Ptr query;
+        try {
+            query = std::make_shared<TimeQuery>(tuple);
+        } catch(...) {}
+
         string src_path;
         uint64_t pos_time = 0;
-        if (pos_str == "latest") {
-            auto block = query->getLastBlock();
-            if (block) {
-                pos_time = block->start_time();
-                src_path = block->file_path();
-            }
-        } else {
-            pos_time = stoll(pos_str);
-            auto start_time = pos_time - 60;
-            auto end_time = pos_time + 60;
-            query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
-                for (const auto &block : blocks) {
-                    if (block.start_time() > pos_time) {
-                        break;
-                    }
-                    pos_time = block.start_time();
-                    src_path = block.file_path();
+        if (query) {
+            if (pos_str == "latest") {
+                auto block = query->getLastBlock();
+                if (block) {
+                    pos_time = block->start_time();
+                    src_path = block->file_path();
                 }
-            });
+            } else {
+                pos_time = stoll(pos_str);
+                auto start_time = pos_time - 60;
+                auto end_time = pos_time + 60;
+                query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
+                    for (const auto &block : blocks) {
+                        if (block.start_time() > pos_time) {
+                            break;
+                        }
+                        pos_time = block.start_time();
+                        src_path = block.file_path();
+                    }
+                });
+            }
         }
 
         if (src_path.empty() || pos_time == 0) {

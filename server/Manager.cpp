@@ -86,8 +86,27 @@ void installManagerHook () {
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
         auto infos = split(args.stream, "/");
         MediaTuple tuple = { args.vhost, infos[0], infos[1], "" };
-        auto query = make_shared<TimeQuery>(tuple);
-        int64_t offset = query->getOffsetOfDate(stamp);
+        TimeQuery::Ptr query;
+        int64_t offset = -1;
+        try {
+            query = make_shared<TimeQuery>(tuple);
+        } catch(...) {}
+        
+        if (query) {
+            // find data at this stamp
+            bool found = false;
+            query->getRecordedTimePeriod(stamp, stamp + 60, [&](vector<TimeRange> &ret) {
+                for (auto const &p : ret) {
+                    if (p.startTime == stamp) {
+                        found = true;
+                    }
+                }
+            });
+            // find offset duration in date if this stamp has data
+            if (found) {
+                offset = query->getOffsetOfDate(stamp);
+            }   
+        }
         invoker(offset);
     });
 #endif // defined(ENABLE_MP4) || defined(ENABLE_MKV)
