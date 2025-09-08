@@ -127,6 +127,11 @@ using SeekInvoker = std::function <void(int64_t offset)>;
 extern const std::string kBroadcastMediaSeeked;
 #define BroadcastMediaSeekedArgs const MediaInfo &args, const uint64_t &stamp, const Broadcast::SeekInvoker &invoker, SockInfo &sender
 
+using Seek2Invoker = std::function <void(std::vector<std::string>)>;
+// Broadcast for seeking rtsp/rtmp/http-flv events. Control playback seeking through this event.
+extern const std::string kBroadcastMediaSeeked2;
+#define BroadcastMediaSeeked2Args const MediaInfo &args, const uint64_t &stamp, const uint64_t &max_duration, const Broadcast::Seek2Invoker &invoker, SockInfo &sender
+
 // Broadcast for restart server events. Control server restarting through this event.
 extern const std::string kBroadcastRestartServer;
 #define BroadcastRestartServerArgs void

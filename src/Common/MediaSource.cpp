@@ -354,7 +354,7 @@ static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, con
         // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
         ret = MediaSource::createFromMP4(schema, vhost, app, id);
     }
-     if(!ret && from_mkv && schema != HLS_SCHEMA){
+    if(!ret && from_mkv && schema != HLS_SCHEMA){
         // If the media source is not found, read mkv to create one
         // Playing hls does not trigger mkv on-demand (because HLS can also be used for recording, not purely live)
         ret = MediaSource::createFromMKV(schema, vhost, app, id);
