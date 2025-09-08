@@ -40,6 +40,7 @@ void SsdpSession::onRecv(const Buffer::Ptr &buffer) {
          */
         InfoL << "M-SEARCH request detected!";
         sendResponse();
+        shutdown();
     } else {
         // WarnL<< "ingore  data";
     }
