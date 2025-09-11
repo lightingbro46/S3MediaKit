@@ -40,4 +40,10 @@ void getServerUsageJson(const std::function<void(Json::Value &data)> &cb);
 
 void loadServerStartedConfigJson(const Json::Value &data);
 
+Json::Value makeSystemStatisticJson();
+
+Json::Value makeSystemStorageJson();
+
+Json::Value makeStorageStatisticJson();
+
 #endif // S3MANAGERKIT_MANAGER_H

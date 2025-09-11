@@ -159,6 +159,7 @@ static void fromJson(CameraInfo &info, const Json::Value &data) {
 static void fromJson(CameraOption &option, const Json::Value &data) {
     bool enable_camera = data["is_enable"].asBool();
     bool enable_recording = data["enable_recording"].asBool();
+    string record_scheduler = data["record_scheduler"].asString();
     bool do_not_record_primary_stream = data["do_not_record_primary_stream"].asBool();
     bool do_not_record_secondary_stream = data["do_not_record_secondary_stream"].asBool();
     bool keep_archived_min_for_auto = data["keep_archived_min_for_auto"].asBool();
@@ -171,6 +172,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     
     option.enableActive = enable_camera;
     option.enableRecord = enable_recording;
+    option.recordScheduler = record_scheduler;
     option.doNotRecordPrimaryStream = do_not_record_primary_stream;
     option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
     option.keepArchivedMinForAuto = keep_archived_min_for_auto;
@@ -194,6 +196,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     // }
     // option.enableActive = enable_camera;
     // option.enableRecord = enable_recording_;
+    // option.recordScheduler = "";
     // option.doNotRecordPrimaryStream = false;
     // option.doNotRecordSecondaryStream = false;
     // option.keepArchivedMinForAuto = true;
@@ -470,21 +473,59 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
     cb(data);
 }
 
-static Json::Value makeDeviceStorageJson(DeviceSource &device) {
-    Json::Value data;
+struct DeviceStorage {
+    std::string name;
+    int bytesSpeed = 0;
+    uint64_t oldestTimeBlock = 0;
+    uint64_t usedStorage = 0;
+    bool isFailover = false;
+};
+
+static DeviceStorage makeDeviceStorageJson(DeviceSource &device, bool &isFailover) {
+    DeviceStorage storage;
     // todo: 
-    data["bytesSpeed"] = 0;
-    data["oldestTimeBlock"] = 0;
-    data["volumeSize"] = 0;
-    return data;
+    
+    return storage;
 }
 
-void getStorageStatisticJson(const function<void(Json::Value &data)> &cb) {
-    Json::Value data = Json::arrayValue;
+Json::Value makeStorageStatisticJson() {
+    Json::Value data ;
+    data["mainDevices"] = Json::arrayValue;
+    data["failoverDevices"] = Json::arrayValue;
+    size_t totalMainDevice = 0;
+    size_t totalMainBitrate = 0;
+    size_t totalMainUsedStorage = 0;
+    size_t totalFailoverDevice = 0;
+    size_t totalFailoverBitrate = 0;
+    size_t totalFailoverUsedStorage = 0;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        data.append(makeDeviceStorageJson(*device));
+        bool isFailover = false;
+        auto storage = makeDeviceStorageJson(*device, isFailover);
+        Json::Value device_json;
+        device_json["name"] = storage.name;
+        device_json["bitrate"] = storage.bytesSpeed;
+        device_json["oldestTimeBlock"] = storage.oldestTimeBlock;
+        device_json["usedStorage"] = storage.usedStorage;
+        device_json["isFailover"] = storage.isFailover;
+        if (!storage.isFailover) {
+            data["mainDevices"].append(device_json);
+            totalMainDevice++;
+            totalMainBitrate += storage.bytesSpeed;
+            totalMainUsedStorage += storage.usedStorage;
+        } else {
+            data["failoverDevices"].append(device_json);
+            totalFailoverDevice++;
+            totalFailoverBitrate += storage.bytesSpeed;
+            totalFailoverUsedStorage += storage.usedStorage;
+        }
     });
-    cb(data);
+    data["totalMainDevice"] = totalMainDevice;
+    data["totalMainBitrate"] = totalMainBitrate;
+    data["totalMainUsedStorage"] = totalMainUsedStorage;
+    data["totalFailoverDevice"] = totalFailoverDevice;
+    data["totalFailoverBitrate"] = totalFailoverBitrate;
+    data["totalFailoverUsedStorage"] = totalFailoverUsedStorage;
+    return data;
 }
 
 void loadServerStartedConfigJson(const Json::Value &data) {
@@ -505,4 +546,78 @@ void loadServerStartedConfigJson(const Json::Value &data) {
         NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
         ini.dumpFile(g_ini_file);
     }
+}
+
+Json::Value makeSystemStatisticJson() {
+    Json::Value val;
+    auto osinfo = GlobalMonitor::Instance().getOsInfo();
+    val["osInfo"]["platform"] = osinfo.platform;
+    val["osInfo"]["variant"] = osinfo.variant;
+    val["osInfo"]["variant_verison"] = osinfo.variant_version;
+
+    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
+    val["cpu"]["cores"] = cpu_usage.cores;
+    val["cpu"]["usage_pct"] = sanitize_for_json(cpu_usage.usagePct);
+    val["cpu"]["proc_usage_pct"] = sanitize_for_json(cpu_usage.procUsagePct);
+
+    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
+    val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
+    val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
+    val["ram"]["usage_pct"] = sanitize_for_json(mem_usage.usagePct);
+    val["ram"]["proc_usage_pct"] = sanitize_for_json(mem_usage.procUsagePct);
+
+    val["nets"] = Json::arrayValue;
+    auto net_usage = GlobalMonitor::Instance().getNetUsage();
+    for (const auto &n : net_usage) {
+        Json::Value net_val;
+        net_val["name"] = n.name;
+        net_val["ipv4"] = n.ipv4;
+        net_val["ipv6"] = n.ipv6;
+        net_val["mac"] = n.mac_address;
+        net_val["rx_mbps"] = sanitize_for_json(n.rx_mbps);
+        net_val["tx_mbps"] = sanitize_for_json(n.tx_mbps);
+        net_val["speed_mbps"] = n.speed_mbps;
+        val["nets"].append(net_val);
+    }
+   
+    val["disks"] = Json::arrayValue;
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    for (const auto &d : hdd_usage) {
+        Json::Value disk;
+        disk["name"] = d.device;
+        disk["mount"] = d.mount_point;
+        disk["used"] = (Json::UInt64)d.used_bytes;
+        disk["total"] = (Json::UInt64)d.total_bytes;
+        disk["used_pct"] = sanitize_for_json(d.usage_pct);
+        val["disks"].append(disk);
+    }
+
+    auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
+    val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
+    val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
+    auto mem_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::MEMORY);
+    val["threshold"]["ram_levelLow"] = mem_threshold.first;
+    val["threshold"]["ram_levelMedium"] = mem_threshold.second;
+    auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
+    val["threshold"]["disk_levelLow"] = hdd_threshold.first;
+    val["threshold"]["disk_levelMedium"] = hdd_threshold.second;
+    
+    return val;
+}
+
+Json::Value makeSystemStorageJson() {
+    Json::Value val = Json::arrayValue;
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    auto main_mount_point = StorageManager::Instance().getMainStorageMountPoint();
+    for (const auto &d : hdd_usage) {
+        Json::Value disk;
+        disk["name"] = d.device;
+        disk["mount"] = d.mount_point;
+        disk["used"] = (Json::UInt64)d.used_bytes;
+        disk["total"] = (Json::UInt64)d.total_bytes;
+        disk["isMainStorage"] = main_mount_point == d.mount_point;
+        disk["enableConfigure"] = false;
+        val.append(disk);
+    }
+    return val;
 }

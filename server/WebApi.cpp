@@ -806,60 +806,6 @@ void addStreamPusherProxy(const string &schema,
     pusher->publish(url);
 }
 
-Value makeSystemStatisticJson() {
-    Value val;
-    auto osinfo = GlobalMonitor::Instance().getOsInfo();
-    val["osInfo"]["platform"] = osinfo.platform;
-    val["osInfo"]["variant"] = osinfo.variant;
-    val["osInfo"]["variant_verison"] = osinfo.variant_version;
-
-    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
-    val["cpu"]["cores"] = cpu_usage.cores;
-    val["cpu"]["usage_pct"] = sanitize_for_json(cpu_usage.usagePct);
-    val["cpu"]["proc_usage_pct"] = sanitize_for_json(cpu_usage.procUsagePct);
-
-    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
-    val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
-    val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
-    val["ram"]["usage_pct"] = sanitize_for_json(mem_usage.usagePct);
-    val["ram"]["proc_usage_pct"] = sanitize_for_json(mem_usage.procUsagePct);
-
-    auto net_usage = GlobalMonitor::Instance().getNetUsage();
-    for (const auto &n : net_usage) {
-        Value net_val;
-        net_val["name"] = n.name;
-        net_val["ipv4"] = n.ipv4;
-        net_val["ipv6"] = n.ipv6;
-        net_val["mac"] = n.mac_address;
-        net_val["rx_mbps"] = sanitize_for_json(n.rx_mbps);
-        net_val["tx_mbps"] = sanitize_for_json(n.tx_mbps);
-        net_val["speed_mbps"] = n.speed_mbps;
-        val["nets"].append(net_val);
-    }
-   
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    for (const auto &d : hdd_usage) {
-        Value disk;
-        disk["mount"] = d.mount_point;
-        disk["used"] = (Json::UInt64)d.used_bytes;
-        disk["total"] = (Json::UInt64)d.total_bytes;
-        disk["used_pct"] = sanitize_for_json(d.usage_pct);
-        val["disks"].append(disk);
-    }
-
-    auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
-    val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
-    val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
-    auto mem_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::MEMORY);
-    val["threshold"]["ram_levelLow"] = mem_threshold.first;
-    val["threshold"]["ram_levelMedium"] = mem_threshold.second;
-    auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
-    val["threshold"]["disk_levelLow"] = hdd_threshold.first;
-    val["threshold"]["disk_levelMedium"] = hdd_threshold.second;
-    
-    return val;
-}
-
 /**
  * Install api interface
  * All apis support GET and POST methods
@@ -3118,6 +3064,32 @@ void installWebApi() {
                 invoker(200, headerOut, val.toStyledString());
             }
         });
+    });
+
+    api_regist("/media/mserver/storage/list", [](API_ARGS_MAP) {
+        //CHECK_TOKEN
+        CHECK_ARGS("mediaServerId");
+        string id = allArgs["mediaServerId"];
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (id != mediaServerId) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Notfound";
+            return;
+        }
+        val["data"] = makeSystemStorageJson();
+    });
+
+    api_regist("/media/mserver/device/storage", [](API_ARGS_MAP) {
+        //CHECK_TOKEN
+        CHECK_ARGS("mediaServerId");
+        string id = allArgs["mediaServerId"];
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (id != mediaServerId) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Notfound";
+            return;
+        }
+        val["data"] = makeStorageStatisticJson();
     });
 }
 

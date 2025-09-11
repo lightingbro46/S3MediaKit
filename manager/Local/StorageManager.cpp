@@ -86,6 +86,22 @@ static bool findMountPoint(const std::string& path, double &usage_pct, size_t &u
     return !best_match.empty();
 }
 
+static string findMountPoint(const string& path) {
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    string best_match;
+    for (const auto& disk : hdd_usage) {
+        string mp = disk.mount_point;
+        if (start_with(path, mp)) { // path starts with mp
+            if (best_match.empty() || mp.size() > best_match.size()) {
+                best_match = mp;
+            }
+        }
+    }
+    TraceL << "Found mountpoint: " << best_match;
+    return best_match;
+}
+
+
 static size_t estimateSpaceToReclaim() {
     size_t space_reclaim = 0;
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
@@ -248,6 +264,13 @@ void StorageManager::start() {
             return true;
         },
         _poller);
+}
+
+string StorageManager::getMainStorageMountPoint() {
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
+    GET_CONFIG(string, app_name, Record::kAppName);
+    string record_path = File::absolutePath(app_name, mp4_save_path);
+    return findMountPoint(record_path);
 }
 
 void StorageManager::getMainStorageUsage(size_t &used_bytes, size_t &total_bytes) {

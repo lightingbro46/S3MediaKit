@@ -19,6 +19,8 @@ public:
 
     void start();
 
+    std::string getMainStorageMountPoint();
+
     void getMainStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
     void getBackUpStorageUsage(size_t &used_bytes, size_t &total_bytes);
