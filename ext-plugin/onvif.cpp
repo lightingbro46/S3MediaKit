@@ -72,7 +72,7 @@ bool OnvifController::getDeviceInformation() {
     thread_local string strDeviceUrl;
     strDeviceUrl = "http://" + _strDeviceIp + "/onvif/device_service";
     _proxyDevice->soap_endpoint = strDeviceUrl.c_str();
-    DebugL << "Onvif device url: " << _proxyDevice->soap_endpoint;
+    TraceL << "Onvif device url: " << _proxyDevice->soap_endpoint;
     _tds__GetDeviceInformation *GetDeviceInformation = soap_new__tds__GetDeviceInformation(_m_soap);
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
     if (!setCredentials()) {
@@ -128,7 +128,7 @@ bool OnvifController::getDeviceCapabilities() {
             strUrl.erase(0, indexFooter);
             strUrl.insert(0, "http://" + _strDeviceIp);
         }
-        DebugL << "Media XAddr:  " << strUrl;
+        TraceL << "Media XAddr:  " << strUrl;
         _proxyMedia = new MediaBindingProxy(_m_soap);
         _proxyMedia->soap_endpoint = strUrl.c_str();
     }
@@ -142,7 +142,7 @@ bool OnvifController::getDeviceCapabilities() {
             strUrl.erase(0, indexFooter);
             strUrl.insert(0, "http://" + _strDeviceIp);
         }
-        DebugL << "Imaging XAddr:  " << strUrl << endl;
+        TraceL << "Imaging XAddr:  " << strUrl << endl;
         _proxyImaging = new ImagingBindingProxy(_m_soap);
         _proxyImaging->soap_endpoint = strUrl.c_str();
     }
@@ -156,7 +156,7 @@ bool OnvifController::getDeviceCapabilities() {
             strUrl.erase(0, indexFooter);
             strUrl.insert(0, "http://" + _strDeviceIp);
         }
-        DebugL << "PTZ XAddr:  " << strUrl << endl;
+        TraceL << "PTZ XAddr:  " << strUrl << endl;
 
         _proxyPTZ = new PTZBindingProxy(_m_soap);
         _proxyPTZ->soap_endpoint = strUrl.c_str();
@@ -263,13 +263,13 @@ bool OnvifController::getMediaProfiles() {
             _profile.hasVideo = true;
 
             // get video configuration in profile
-            DebugL << profile->VideoEncoderConfiguration->Encoding;
-            DebugL << profile->VideoEncoderConfiguration->Resolution->Width;
-            DebugL << profile->VideoEncoderConfiguration->Resolution->Height;
-            DebugL << profile->VideoEncoderConfiguration->RateControl->BitrateLimit;
-            DebugL << profile->VideoEncoderConfiguration->RateControl->FrameRateLimit;
-            DebugL << profile->VideoEncoderConfiguration->RateControl->EncodingInterval;
-            DebugL << profile->VideoEncoderConfiguration->Quality;
+            TraceL << profile->VideoEncoderConfiguration->Encoding;
+            TraceL << profile->VideoEncoderConfiguration->Resolution->Width;
+            TraceL << profile->VideoEncoderConfiguration->Resolution->Height;
+            TraceL << profile->VideoEncoderConfiguration->RateControl->BitrateLimit;
+            TraceL << profile->VideoEncoderConfiguration->RateControl->FrameRateLimit;
+            TraceL << profile->VideoEncoderConfiguration->RateControl->EncodingInterval;
+            TraceL << profile->VideoEncoderConfiguration->Quality;
             //todo: using ext-codec function
             switch (profile->VideoEncoderConfiguration->Encoding) {
                 case tt__VideoEncoding__JPEG: _profile.vcodec = "JPEG"; break;

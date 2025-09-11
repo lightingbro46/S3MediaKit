@@ -23,23 +23,17 @@ CertificateImp::CertificateImp(const std::string &path) : _save_path(path) {
         GET_CONFIG(string, cert_save_path, Manager::kCertSavePath)
         _save_path = File::absolutePath("",  cert_save_path);    
     }
-
-    File::scanDir(_save_path, [&](const string &path, bool isDir) {
-        if (!isDir && end_with(path, ".pem")) {
-            auto filename = findSubString(path.data() + _save_path.size() + 1, nullptr, ".pem");
-            int file_index = std::stoi(filename);
-            if (file_index > _last_index) {
-                _last_index = file_index;
-            }
-        }
-        return true;
-    });
 }
 
-bool CertificateImp::certExist(const string &pem) {
+bool CertificateImp::certExist(const std::string &filename, const string &pem) {
     bool isExist = false;
+    auto fullname = filename;
+    if (!end_with(fullname, ".pem")) {
+        fullname += ".pem";
+    }
+    auto file_path = File::absolutePath(fullname, _save_path);
     File::scanDir(_save_path, [&](const string &path, bool isDir) {
-        if (!isDir && end_with(path, ".pem")) {
+        if (!isDir && path == file_path) {
             auto content = File::loadFile(path);
             if (content == pem) {
                 isExist = true;
@@ -51,14 +45,22 @@ bool CertificateImp::certExist(const string &pem) {
     return isExist;
 }
 
-void CertificateImp::saveCert(const string &pem) {
-    string filename = to_string(++_last_index) + ".pem";
-    auto file_path = File::absolutePath(filename, _save_path);
+void CertificateImp::saveCert(const std::string &filename, const string &pem) {
+    auto fullname = filename;
+    if (!end_with(fullname, ".pem")) {
+        fullname += ".pem";
+    }
+    auto file_path = File::absolutePath(fullname, _save_path);
+    if (File::fileExist(file_path)) {
+        File::delete_file(file_path);
+        DebugL << "Removed old file cert: " << fullname;
+    }
+
     File::create_file(file_path, "wb");
     if (!File::saveFile(pem, file_path)) {
-        throw std::runtime_error(string("Failed to write the file:") + file_path);
+        throw std::runtime_error(string("Failed to write the file cert:") + file_path);
     }
-    DebugL << "Saved file cert: " << filename;
+    DebugL << "Saved file cert: " << fullname;
 }
 
 } // namespace managerkit

@@ -13,6 +13,7 @@
 #include "Local/StorageManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Camera/CameraManager.h"
+#include "Extension/Benchmark.h"
 #include "Manager.h"
 
 using namespace std;
@@ -26,6 +27,7 @@ namespace Manager {
 #define MANAGER_FIELD "manager."
 const string kMediaServerDomain = MANAGER_FIELD"mediaServerDomain";
 const string kMaxAllowedDevices = MANAGER_FIELD"maxAllowedDevices";
+const string kMaxAvailableDevices = MANAGER_FIELD"maxAvailableDevices";
 const string kServerLocationId = MANAGER_FIELD"serverLocationId";
 const string kEnableFailover = MANAGER_FIELD"enableFailover";
 const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
@@ -33,7 +35,8 @@ const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
-    mINI::Instance()[kMaxAllowedDevices] = 256;
+    mINI::Instance()[kMaxAllowedDevices] = 0;
+    mINI::Instance()[kMaxAvailableDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
     mINI::Instance()[kEnableAuthorize] = false;
@@ -620,4 +623,32 @@ Json::Value makeSystemStorageJson() {
         val.append(disk);
     }
     return val;
+}
+
+int estimateMaxAvailableDevice() {
+    auto &ini = mINI::Instance();
+    int maxAvailableDevice = ini[Manager::kMaxAvailableDevices];
+    if (maxAvailableDevice != 0) {
+        return maxAvailableDevice;
+    }
+    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
+    int cpu_core = cpu_usage.cores;
+    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
+    uint64_t mem_cap = mem_usage.totalMemory / 1024 / 1024; // byte -> Megabyte
+    auto net_usage = GlobalMonitor::Instance().getNetUsage();
+    uint64_t net_cap = 0;
+    for (const auto &net : net_usage) {
+        if (net_cap == 0 || net_cap < net.speed_mbps) {
+            net_cap = net.speed_mbps;
+        }
+    }
+    uint64_t disk_cap = 200;
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    // estimate max available camera that can be run on server hardware
+    maxAvailableDevice = Benchmark::estimateAvailableDevice(net_cap, disk_cap, cpu_core, mem_cap);
+    // save param to file
+    ini[Manager::kMaxAvailableDevices] = maxAvailableDevice;
+    ini.dumpFile(g_ini_file);
+
+    return maxAvailableDevice;
 }

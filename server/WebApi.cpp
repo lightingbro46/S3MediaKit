@@ -2827,6 +2827,7 @@ void installWebApi() {
         info["httpPort"] =  static_cast<int>(mINI::Instance()["http.port"]);
         info["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
         info["clientUseSsl"] = false;
+        info["maxDevice"] =  estimateMaxAvailableDevice();
         val["data"] = info;
     });
 
@@ -2880,8 +2881,8 @@ void installWebApi() {
             
             {
                 auto imp = std::make_shared<CertificateImp>();
-                if (!imp->certExist(mediaServerCert)) {
-                    imp->saveCert(mediaServerCert);
+                if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
+                    imp->saveCert(mediaServerDomain, mediaServerCert);
                     ++changed;
                 }
             }
@@ -3040,7 +3041,7 @@ void installWebApi() {
 
         auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
         if (!ret) {
-            val["code"] = API::Exception;
+            val["code"] = API::NotFound;
             val["msg"] = "Device not found";
             invoker(400, headerOut, val.toStyledString());
             return;
@@ -3048,7 +3049,7 @@ void installWebApi() {
 
         auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
         if (!ptr) {
-            val["code"] = API::Exception;
+            val["code"] = API::NotFound;
             val["msg"] = "Device not found";
             invoker(400, headerOut, val.toStyledString());
             return;

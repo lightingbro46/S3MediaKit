@@ -12,6 +12,8 @@ namespace Manager {
 extern const std::string kMediaServerDomain;
 // Maximum number of devices that service operation normally
 extern const std::string kMaxAllowedDevices;
+// Maximum number of devices that service determined by the system CPU
+extern const std::string kMaxAvailableDevices;
 // Enable user authorization when user want to access device data
 extern const std::string kEnableAuthorize;
 // Server location id, servers with the same one are considered to be in the same cluster
@@ -45,5 +47,7 @@ Json::Value makeSystemStatisticJson();
 Json::Value makeSystemStorageJson();
 
 Json::Value makeStorageStatisticJson();
+
+int estimateMaxAvailableDevice();
 
 #endif // S3MANAGERKIT_MANAGER_H
