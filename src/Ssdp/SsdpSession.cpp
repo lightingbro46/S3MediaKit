@@ -60,7 +60,7 @@ void SsdpSession::onManager() {
 
 static string getSystemPlatform() {
     auto osinfo = managerkit::GlobalMonitor::Instance().getOsInfo(); 
-    return StrPrinter << osinfo.variant << "/" << osinfo.variant_version;
+    return StrPrinter << osinfo.platform << "/" << osinfo.variant << "/" << osinfo.variant_version;
 }
 
 string getSystemLocation(const string &if_ip) {

@@ -77,7 +77,6 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
-    mINI::Instance()[kOnServerKeepalive] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -325,6 +324,11 @@ static void reportServerStarted() {
         body[pr.first] = (string &)pr.second;
     }
 #endif
+    body["version"] = kServerName;
+    auto osinfo = GlobalMonitor::Instance().getOsInfo();
+    body["osInfo"]["platform"] = osinfo.platform;
+    body["osInfo"]["variant"] = osinfo.variant;
+    body["osInfo"]["variantVerison"] = osinfo.variant_version;
     body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
     body["ip"] = GlobalMonitor::Instance().getLocalIps();
     body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
