@@ -41,7 +41,7 @@ private:
     std::recursive_mutex _mtx_control;
     CameraInfo _info;
     bool _controller_ready = false;
-    toolkit::Timer::Ptr _timer;
+    toolkit::Timer::Ptr _timer_ctr;
     DeviceController::Ptr _controller;
 };
 

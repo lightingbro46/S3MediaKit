@@ -2,6 +2,8 @@
 #define CAMERA_STREAMSINK_H
 
 #include "StreamSource.h"
+#include "Local/TimeScheduler.h"
+#include "Local/RecordStrategy.h"
 
 namespace managerkit {
 
@@ -33,6 +35,12 @@ public:
 
     virtual void onAllStreamReady() {};
 
+    void setupScheduler(const std::string &schedule_str);
+
+    RecordMode getRecordModeActive();
+
+    virtual void onChangeRecordMode(RecordMode &mode) {};
+
 private:
     bool onStreamReady(int type);
 
@@ -41,9 +49,12 @@ private:
     void emitAllStreamReady();
 
 private:
+    std::recursive_mutex _mtx_sink;
     bool _all_stream_ready = false;
     std::unordered_map<int, std::pair<StreamTuple, bool>> _stream_map;
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
+    RecordMode _record_mode = RecordMode::NoRecord;
+    TimeScheduler<RecordMode, RecordModeHelper>::Ptr _scheduler;
 };
 
 } // namespace managerkit

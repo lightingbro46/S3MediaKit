@@ -59,6 +59,9 @@ public:
     // rtp transport method when using rtsp protocol
     int rtpTransport = kRtpTransportAuto;
 
+    // recording scheduler, include 168 characters
+    std::string recordScheduler;
+
     // Add more options if need
 };
 

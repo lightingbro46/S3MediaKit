@@ -37,7 +37,7 @@ void CameraController::setupController() {
         WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
     }
 
-    _timer = std::make_shared<Timer>(
+    _timer_ctr = std::make_shared<Timer>(
         10.0f,
         [&]() {
             onManager();
@@ -51,7 +51,7 @@ void CameraController::stopController() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     _controller_ready = false;
     _controller = nullptr;
-    _timer = nullptr;
+    _timer_ctr = nullptr;
 }
 
 void CameraController::onManager() {

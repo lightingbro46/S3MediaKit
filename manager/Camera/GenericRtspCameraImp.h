@@ -7,7 +7,7 @@
 
 namespace managerkit {
     
-class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController{
+class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController {
 public:
     using Ptr = std::shared_ptr<GenericRtspCameraImp>;
 
@@ -20,6 +20,8 @@ public:
     bool isEnabled() { return _enabled; }
 
     void onAllStreamReady() override;
+
+    void onChangeRecordMode(RecordMode &mode) override;
 
 private:
     bool _enabled = false;

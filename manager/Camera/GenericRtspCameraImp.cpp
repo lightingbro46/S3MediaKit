@@ -15,6 +15,8 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
     int rtp_type = _option.rtpTransport == _option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
     int media_port = _option.autoMediaPort ? 0 :  _option.mediaPort;
 
+    setupScheduler(_option.recordScheduler);
+
     if (!_enabled) {
         if (hasStreamTuple(PrimaryStream)) {
             stopMonitor(PrimaryStream);
@@ -26,12 +28,12 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
     }
 
     if (hasStreamTuple(PrimaryStream)) {
-        bool enable_record = _option.enableRecord && !_option.doNotRecordPrimaryStream;
+        bool enable_record = _option.enableRecord && !_option.doNotRecordPrimaryStream && getRecordModeActive() == RecordMode::RecordAlways;
         setupMonitor(PrimaryStream, enable_record, rtp_type, media_port);
     }
 
     if (hasStreamTuple(SecondaryStream)) { 
-        bool enable_record = _option.enableRecord && !_option.doNotRecordSecondaryStream;
+        bool enable_record = _option.enableRecord && !_option.doNotRecordSecondaryStream && getRecordModeActive() == RecordMode::RecordAlways;
         setupMonitor(SecondaryStream, enable_record, rtp_type, media_port);
     }
 
@@ -41,6 +43,10 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption &option) {
 void GenericRtspCameraImp::onAllStreamReady() {
     // regist device source after all stream ready
     regist();
+}
+
+void GenericRtspCameraImp::onChangeRecordMode(RecordMode &mode) {
+
 }
 
 } // namespace managerkit

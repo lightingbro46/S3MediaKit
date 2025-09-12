@@ -13,6 +13,7 @@ StreamSink::StreamSink(const std::unordered_map<int, StreamTuple> &stream_map) {
 }
 
 bool StreamSink::onStreamReady(int type) {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
     auto it = _stream_map.find(type);
     if (it != _stream_map.end()) {
         if (!it->second.second) {
@@ -47,11 +48,12 @@ void StreamSink::emitAllStreamReady() {
 }
 
 void StreamSink::setupMonitor(int type, bool start_record, int rtp_type, int media_port) {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
     auto tuple = getStreamTuple(type);
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
-            DebugL << "Stream " << tuple.shortUrl() << " config do not change. Ignore";
+            TraceL << "Stream " << tuple.shortUrl() << " config do not change. Ignore";
             return;
         }
         _monitor_map.erase(type);
@@ -65,6 +67,7 @@ void StreamSink::setupMonitor(int type, bool start_record, int rtp_type, int med
 }
 
 void StreamSink::stopMonitor(int type) {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         _monitor_map.erase(type);
@@ -74,6 +77,7 @@ void StreamSink::stopMonitor(int type) {
 }
 
 bool StreamSink::isStreamLive(int type) {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
     bool live = false;
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
@@ -83,12 +87,41 @@ bool StreamSink::isStreamLive(int type) {
 }
 
 string StreamSink::getStreamStatus(int type) {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
     string status;
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         status = it->second->getStatus();
     }
     return status;
+}
+
+void StreamSink::setupScheduler(const std::string &schedule_str) {
+    auto _tmp_str = schedule_str;
+    if (_tmp_str.empty()) {
+        // input empty, set default value;
+        string s(168, RecordModeHelper::toChar(RecordMode::RecordAlways));
+        _tmp_str = s;
+    }
+    // compare config and recreate if config change
+    if (_scheduler && _scheduler->getSchedulerString() == _tmp_str) {
+        return;
+    }
+
+    _scheduler = std::make_shared<TimeScheduler<RecordMode, RecordModeHelper>>(_tmp_str);
+    _scheduler->setOnChangeMode([&](RecordMode &mode) {
+        if (_record_mode != mode) {
+            DebugL << "Record mode change from " << RecordModeHelper::toString(_record_mode) << " to " << RecordModeHelper::toString(mode);
+            _record_mode = mode;
+            onChangeRecordMode(mode);
+        }
+    });
+    _scheduler->start();
+}
+
+RecordMode StreamSink::getRecordModeActive() {
+    lock_guard<recursive_mutex> lck(_mtx_sink);
+    return _scheduler->getModeActive();
 }
 
 } // namespace managerkit
