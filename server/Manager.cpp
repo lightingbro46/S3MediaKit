@@ -15,6 +15,7 @@
 #include "Camera/CameraManager.h"
 #include "Extension/Benchmark.h"
 #include "Manager.h"
+#include "Server/ClusterManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -32,6 +33,7 @@ const string kServerLocationId = MANAGER_FIELD"serverLocationId";
 const string kEnableFailover = MANAGER_FIELD"enableFailover";
 const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
 const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
+const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
@@ -39,8 +41,9 @@ static onceToken token([]() {
     mINI::Instance()[kMaxAvailableDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
-    mINI::Instance()[kEnableAuthorize] = false;
+    mINI::Instance()[kEnableAuthorize] = true;
     mINI::Instance()[kJwtPublicKey] = "";
+    mINI::Instance()[kSessionExpiryDays] = 180;
 });
 } // namespace Manager
 
@@ -271,7 +274,10 @@ static void loadServerConfigFromJson(const Json::Value &data) {
 }
 
 static void loadServerClusterFromJson(const Json::Value &data) {
-    //todo: cấu hình cluster
+    ClusterManager::Instance().clearAllMediaServer();
+    for (const auto &server_info : data) {
+        ClusterManager::Instance().addMediaServer(server_info);
+    }
 }
 
 static Json::Value exampleJson() {

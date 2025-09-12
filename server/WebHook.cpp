@@ -13,6 +13,8 @@
 #include "WebApi.h"
 #include "Manager.h"
 #include "User/UserAuthorManager.h"
+#include "Storage/Bookmark.h"
+#include "Server/ClusterManager.h"
 
 using namespace std;
 using namespace Json;
@@ -56,7 +58,7 @@ const string kRetryDelay = HOOK_FIELD "retry_delay";
 
 static onceToken token([]() {
     mINI::Instance()[kEnable] = true;
-    mINI::Instance()[kTimeoutSec] = 10;
+    mINI::Instance()[kTimeoutSec] = 3;
     // Default hook address is set to empty, using default behavior (e.g. no authentication)
     mINI::Instance()[kOnPublish] = "";
     mINI::Instance()[kOnPlay] = "/api/camera/check-camera-of-user";
@@ -342,7 +344,7 @@ static void reportServerStarted() {
             // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
             InfoL << "Report server started success";
             loadServerStartedConfigJson(obj);
-        } else{
+        } else {
             DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
             WarnL << "Report server started failed:" << err;
         }
@@ -413,7 +415,7 @@ static void reportServerStatistic() {
                 InfoL << "Load server config success";
                 // Load server config success
                 loadServerConfigJson(obj);
-
+                // Set timer to report server statistic 
                 EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
                     getServerStatisticJson([](const Value &data) mutable {
                         ArgsType body;
@@ -582,10 +584,10 @@ void installWebHook() {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
 
-        auto cache =  UserAuthorManager::Instance().getAuthCache(args, jwt_token);
-        if (cache) {
+        auto permit =  UserAuthorManager::Instance().getAuthorCache(args, jwt_token);
+        if (permit != UserAuthorPermit::UNKNOWN) {
             // User auth cache has still been expired. Check user permission
-            invoker(cache->hasLicensed() ? "" : "Unauthorized");
+            invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
             return;
         }
 
@@ -607,7 +609,7 @@ void installWebHook() {
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [args, jwt_token, invoker](const Value &obj, const string &err) {
-            UserAuthorManager::Instance().addAuthCache(args, jwt_token, err.empty()); 
+            UserAuthorManager::Instance().addAuthorCache(args, jwt_token, err.empty()); 
             invoker(!err.empty() ? "Unauthorized" : "");
         }, 0);
     });
@@ -993,6 +995,7 @@ void installWebHook() {
 
     // Report server usage
     reportServerUsage();
+
 }
 
 void unInstallWebHook() {

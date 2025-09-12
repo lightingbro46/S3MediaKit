@@ -9,6 +9,8 @@
 #include "Camera/GenericRtspCamera.h"
 #include "Server/GlobalMonitor.h"
 #include "StorageManager.h"
+#include "server/Manager.h"
+#include "Storage/UserSession.h"
 
 using namespace std;
 using namespace toolkit;
@@ -261,6 +263,7 @@ void StorageManager::start() {
                 return false;
             }
             strong_self->enforceStoragePolicy();
+            strong_self->deleteExpiredUserSession();
             return true;
         },
         _poller);
@@ -287,6 +290,18 @@ void StorageManager::getBackUpStorageUsage(size_t &used_bytes, size_t &total_byt
     used_bytes = 0;
     total_bytes = 0;
     // todo:
+}
+
+void StorageManager::deleteExpiredUserSession() {
+    GET_CONFIG(int, sessionExpiryDays, Manager::kSessionExpiryDays);
+    int64_t time_threshold = std::time(nullptr) - (sessionExpiryDays * 24 * 3600);
+    DebugL << " Delete expire user session before: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold);
+    auto imp = make_shared<UserSessionImp>();
+    if (imp->removeByStamp(time_threshold)) {
+        DebugL << "Deleted expire user session success";
+    } else {
+        DebugL << "Deleted expire user session failed";
+    };
 }
 
 } // namespace managerkit

@@ -105,6 +105,24 @@ std::string getValue(const mediakit::Parser &parser, Args &args, const First &fi
     return getValue(parser, first);
 }
 
+template<typename Args, typename First>
+std::string& getMapRef(Args &args, const First &first){
+    return args[first];
+} 
+
+// Purpose: overload for string -> must not use
+template<typename First>
+std::string& getMapRef(std::string& args, const First&) {
+    return args;
+}
+
+// purpose overload cho json::value-> must not use
+template<typename First>
+std::string&  getMapRef(Json::Value&  args, const First& first) {
+    std::string emptyString = args[first].asString();
+    return emptyString; // ref to cache
+}
+
 template<typename Args>
 class HttpAllArgs {
     mediakit::Parser* _parser = nullptr;
@@ -130,6 +148,11 @@ public:
     template<typename Key>
     toolkit::variant operator[](const Key &key) const {
         return (toolkit::variant)getValue(parser, args, key);
+    }
+
+    template<typename Key>
+    std::string& getRef(const Key &key) const {
+        return  getMapRef(args,key);
     }
 };
 

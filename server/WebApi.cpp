@@ -41,6 +41,7 @@
 #include "Player/PlayerProxy.h"
 #include "Pusher/PusherProxy.h"
 #include "Rtp/RtpProcess.h"
+#include "User/UserAuthorManager.h"
 #include "Record/MP4Reader.h"
 #include "Record/MKVReader.h"
 
@@ -94,7 +95,7 @@ static onceToken token([]() {
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
     mINI::Instance()[kDownloadRoot] = "./www";
 });
-}//namespace API
+} // namespace API
 
 using HttpApi = function<void(const Parser &parser, const HttpSession::HttpResponseInvoker &invoker, SockInfo &sender)>;
 // http api list
@@ -202,11 +203,11 @@ void api_regist(const string &api_path, const function<void(API_ARGS_JSON_ASYNC)
     s_map_api.emplace(api_path, toApi(func));
 }
 
-void api_regist(const string &api_path, const function<void(API_ARGS_STRING)> &func){
+void api_regist(const string &api_path, const function<void(API_ARGS_STRING)> &func) {
     s_map_api.emplace(api_path, toApi(func));
 }
 
-void api_regist(const string &api_path, const function<void(API_ARGS_STRING_ASYNC)> &func){
+void api_regist(const string &api_path, const function<void(API_ARGS_STRING_ASYNC)> &func) {
     s_map_api.emplace(api_path, toApi(func));
 }
 
@@ -234,7 +235,7 @@ static ApiArgsType getAllArgs(const Parser &parser) {
         WarnL << "invalid Content-Type:" << parser["Content-Type"];
     }
 
-    for (auto &pr :  parser.getUrlArgs()) {
+    for (auto &pr : parser.getUrlArgs()) {
         allArgs[pr.first] = pr.second;
     }
     return allArgs;
@@ -247,13 +248,17 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     string host = allArgs["Host"];                                                                                                                             \
     string camera_id = allArgs["cameraId"];                                                                                                                    \
     string stream_id = allArgs["streamId"];                                                                                                                    \
+    allArgs["_token"] = jwt_token;                                                                                                                             \
     string url = (StrPrinter << "http://" << host << "/" << camera_id << "/" << stream_id << "?token=" << jwt_token);                                          \
     MediaInfo media_info(url);                                                                                                                                 \
-    Broadcast::AuthInvoker auth_invoker = [&](const string &err) {                                                                                             \
+    Broadcast::AuthInvoker auth_invoker = [&sender, headerOut, allArgs, val, invoker, cb, media_info, jwt_token](const string &err) mutable {                  \
         if (!err.empty()) {                                                                                                                                    \
             invoker(401, StrCaseMap {}, err);                                                                                                                  \
             return;                                                                                                                                            \
         }                                                                                                                                                      \
+        auto cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                                   \
+        allArgs.getRef("_user_id") = cache->getUid();                                                                                                           \
+        allArgs.getRef("_user_name") = cache->getUserName();                                                                                                    \
         XX                                                                                                                                                     \
     };                                                                                                                                                         \
     bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);                                     \
@@ -265,42 +270,30 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     cb(API_ARGS_VALUE);                                                                                                                                        \
     invoker(200, headerOut, val.toStyledString());
 
-#define USER_AUTH_CALLBACK_ASYNC  cb(API_ARGS_VALUE, invoker);
+#define USER_AUTH_CALLBACK_ASYNC cb(API_ARGS_VALUE, invoker);
 
 static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP_ASYNC)> &cb) {
-    return [cb](API_ARGS_MAP_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
-    };
+    return [cb](API_ARGS_MAP_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
 }
 
 static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP)> &cb) {
-    return [cb](API_ARGS_MAP_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
-    };
+    return [cb](API_ARGS_MAP_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
 }
 
 static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
-    return [cb](API_ARGS_JSON_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
-    };
+    return [cb](API_ARGS_JSON_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
 }
 
 static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON)> &cb) {
-    return [cb](API_ARGS_JSON_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
-    };
+    return [cb](API_ARGS_JSON_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
 }
 
 static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING_ASYNC)> &cb) {
-    return [cb](API_ARGS_STRING_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC)
-    };
+    return [cb](API_ARGS_STRING_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
 }
 
 static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING)> &cb) {
-    return [cb](API_ARGS_STRING_ASYNC) {
-        CHECK_USER_AUTH(USER_AUTH_CALLBACK)
-    };
+    return [cb](API_ARGS_STRING_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
 }
 
 extern uint64_t getTotalMemUsage();
@@ -309,11 +302,11 @@ extern uint64_t getThisThreadMemUsage();
 extern uint64_t getThisThreadMemBlock();
 extern std::vector<size_t> getBlockTypeSize();
 extern uint64_t getTotalMemBlockByType(int type);
-extern uint64_t getThisThreadMemBlockByType(int type) ;
+extern uint64_t getThisThreadMemBlockByType(int type);
 
 static void *web_api_tag = nullptr;
 
-static inline void addHttpListener(){
+static inline void addHttpListener() {
     GET_CONFIG(bool, api_debug, API::kApiDebug);
     // Register to listen for the kBroadcastHttpRequest event
     NoticeCenter::Instance().addListener(&web_api_tag, Broadcast::kBroadcastHttpRequest, [](BroadcastHttpRequestArgs) {
@@ -324,7 +317,7 @@ static inline void addHttpListener(){
         // This API has been consumed
         consumed = true;
 
-        if(api_debug){
+        if (api_debug) {
             auto newInvoker = [invoker, parser](int code, const HttpSession::KeyValue &headerOut, const HttpBody::Ptr &body) {
                 // The body is empty by default
                 ssize_t size = 0;
@@ -353,7 +346,7 @@ static inline void addHttpListener(){
                     invoker(code, headerOut, body);
                 }
             };
-            ((HttpSession::HttpResponseInvoker &) invoker) = newInvoker;
+            ((HttpSession::HttpResponseInvoker &)invoker) = newInvoker;
         }
         auto helper = static_cast<SocketHelper &>(sender).shared_from_this();
         // The next event loop of this poller thread, executes the http API to prevent the locks that occupy the NoticeCenter
@@ -401,7 +394,7 @@ public:
         return _map.erase(key);
     }
 
-    size_t size() { 
+    size_t size() {
         std::lock_guard<std::recursive_mutex> lck(_mtx);
         return _map.size();
     }
@@ -415,7 +408,7 @@ public:
         return it->second;
     }
 
-    void for_each(const std::function<void(const std::string&, const Pointer&)>& cb) {
+    void for_each(const std::function<void(const std::string &, const Pointer &)> &cb) {
         std::lock_guard<std::recursive_mutex> lck(_mtx);
         auto it = _map.begin();
         while (it != _map.end()) {
@@ -424,8 +417,8 @@ public:
         }
     }
 
-    template<class ..._Args>
-    Pointer make(const std::string &key, _Args&& ...__args) {
+    template <class... _Args>
+    Pointer make(const std::string &key, _Args &&...__args) {
         // assert(!find(key));
 
         auto server = std::make_shared<Type>(std::forward<_Args>(__args)...);
@@ -435,8 +428,8 @@ public:
         return server;
     }
 
-    template<class ..._Args>
-    Pointer makeWithAction(const std::string &key, function<void(Pointer)> action, _Args&& ...__args) {
+    template <class... _Args>
+    Pointer makeWithAction(const std::string &key, function<void(Pointer)> action, _Args &&...__args) {
         // assert(!find(key));
 
         auto server = std::make_shared<Type>(std::forward<_Args>(__args)...);
@@ -465,13 +458,11 @@ static ServiceController<FFmpegExtractor> s_ffmpeg_extractor;
 static ServiceController<RtpServer> s_rtp_server;
 #endif
 
-
-static inline string getPusherKey(const string &schema, const string &vhost, const string &app, const string &stream,
-                                  const string &dst_url) {
+static inline string getPusherKey(const string &schema, const string &vhost, const string &app, const string &stream, const string &dst_url) {
     return schema + "/" + vhost + "/" + app + "/" + stream + "/" + MD5(dst_url).hexdigest();
 }
 
-static void fillSockInfo(Value& val, SockInfo* info) {
+static void fillSockInfo(Value &val, SockInfo *info) {
     val["peer_ip"] = info->get_peer_ip();
     val["peer_port"] = info->get_peer_port();
     val["local_port"] = info->get_local_port();
@@ -479,14 +470,14 @@ static void fillSockInfo(Value& val, SockInfo* info) {
     val["identifier"] = info->getIdentifier();
 }
 
-void dumpMediaTuple(const MediaTuple &tuple, Json::Value& item) {
+void dumpMediaTuple(const MediaTuple &tuple, Json::Value &item) {
     item[VHOST_KEY] = tuple.vhost;
     item["app"] = tuple.app;
     item["stream"] = tuple.stream;
     item["params"] = tuple.params;
 }
 
-Value ToJson(const PusherProxy::Ptr& p) {
+Value ToJson(const PusherProxy::Ptr &p) {
     Value item;
     item["url"] = p->getUrl();
     item["status"] = p->getStatus();
@@ -498,7 +489,7 @@ Value ToJson(const PusherProxy::Ptr& p) {
     return item;
 }
 
-Value ToJson(const PlayerProxy::Ptr& p) {
+Value ToJson(const PlayerProxy::Ptr &p) {
     Value item;
     item["url"] = p->getUrl();
     item["status"] = p->getStatus();
@@ -509,16 +500,16 @@ Value ToJson(const PlayerProxy::Ptr& p) {
     return item;
 }
 
-Value makeMediaSourceJson(MediaSource &media){
+Value makeMediaSourceJson(MediaSource &media) {
     Value item;
     item["schema"] = media.getSchema();
     dumpMediaTuple(media.getMediaTuple(), item);
-    item["createStamp"] = (Json::UInt64) media.getCreateStamp();
-    item["aliveSecond"] = (Json::UInt64) media.getAliveSecond();
+    item["createStamp"] = (Json::UInt64)media.getCreateStamp();
+    item["aliveSecond"] = (Json::UInt64)media.getAliveSecond();
     item["bytesSpeed"] = media.getBytesSpeed();
     item["readerCount"] = media.readerCount();
     item["totalReaderCount"] = media.totalReaderCount();
-    item["originType"] = (int) media.getOriginType();
+    item["originType"] = (int)media.getOriginType();
     item["originTypeStr"] = getOriginTypeString(media.getOriginType());
     item["originUrl"] = media.getOriginUrl();
     item["isRecordingMP4"] = media.isRecording(Recorder::type_mp4);
@@ -534,7 +525,7 @@ Value makeMediaSourceJson(MediaSource &media){
     auto current_thread = false;
     try { current_thread = media.getOwnerPoller()->isCurrentThread();} catch (...) {}
     float last_loss = -1;
-    for(auto &track : media.getTracks(false)){
+    for (auto &track : media.getTracks(false)) {
         Value obj;
         auto codec_type = track->getTrackType();
         obj["codec_id"] = track->getCodecId();
@@ -542,7 +533,8 @@ Value makeMediaSourceJson(MediaSource &media){
         obj["ready"] = track->ready();
         obj["codec_type"] = codec_type;
         if (current_thread) {
-            // RTP push stream has only one statistics, but may have multiple tracks. If you get the interval packet loss rate multiple times in a short time, the second time will get -1
+            // RTP push stream has only one statistics, but may have multiple tracks. If you get the interval packet loss rate multiple times in a short time,
+            // the second time will get -1
             auto loss = media.getLossRate(codec_type);
             if (loss == -1) {
                 loss = last_loss;
@@ -553,15 +545,15 @@ Value makeMediaSourceJson(MediaSource &media){
         }
         obj["frames"] = track->getFrames();
         obj["duration"] = track->getDuration();
-        switch(codec_type){
-            case TrackAudio : {
+        switch (codec_type) {
+            case TrackAudio: {
                 auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
                 obj["sample_rate"] = audio_track->getAudioSampleRate();
                 obj["channels"] = audio_track->getAudioChannel();
                 obj["sample_bit"] = audio_track->getAudioSampleBit();
                 break;
             }
-            case TrackVideo : {
+            case TrackVideo: {
                 auto video_track = dynamic_pointer_cast<VideoTrack>(track);
                 obj["width"] = video_track->getVideoWidth();
                 obj["height"] = video_track->getVideoHeight();
@@ -577,8 +569,7 @@ Value makeMediaSourceJson(MediaSource &media){
                 obj["gop_interval_ms"] = gop_interval_ms;
                 break;
             }
-            default:
-                break;
+            default: break;
         }
         item["tracks"].append(obj);
     }
@@ -632,9 +623,9 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
     val["RtmpPacket"] = (Json::UInt64)(ObjectStatistic<RtmpPacket>::count());
 #ifdef ENABLE_MEM_DEBUG
     auto bytes = getTotalMemUsage();
-    val["totalMemUsage"] = (Json::UInt64) bytes;
-    val["totalMemUsageMB"] = (int) (bytes >> 20);
-    val["totalMemBlock"] = (Json::UInt64) getTotalMemBlock();
+    val["totalMemUsage"] = (Json::UInt64)bytes;
+    val["totalMemUsageMB"] = (int)(bytes >> 20);
+    val["totalMemBlock"] = (Json::UInt64)getTotalMemBlock();
     static auto block_type_size = getBlockTypeSize();
     {
         int i = 0;
@@ -649,7 +640,7 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
     }
 
     auto thread_size = EventPollerPool::Instance().getExecutorSize() + WorkThreadPool::Instance().getExecutorSize();
-    std::shared_ptr<vector<Value> > thread_mem_info = std::make_shared<vector<Value> >(thread_size);
+    std::shared_ptr<vector<Value>> thread_mem_info = std::make_shared<vector<Value>>(thread_size);
 
     shared_ptr<void> finished(nullptr, [thread_mem_info, cb, obj](void *) {
         for (auto &val : *thread_mem_info) {
@@ -665,9 +656,9 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
         executor.async([finished, &val]() {
             auto bytes = getThisThreadMemUsage();
             val["threadName"] = getThreadName();
-            val["threadMemUsage"] = (Json::UInt64) bytes;
-            val["threadMemUsageMB"] = (Json::UInt64) (bytes >> 20);
-            val["threadMemBlock"] = (Json::UInt64) getThisThreadMemBlock();
+            val["threadMemUsage"] = (Json::UInt64)bytes;
+            val["threadMemUsageMB"] = (Json::UInt64)(bytes >> 20);
+            val["threadMemBlock"] = (Json::UInt64)getThisThreadMemBlock();
             {
                 int i = 0;
                 string str;
@@ -813,7 +804,7 @@ void addStreamPusherProxy(const string &schema,
  */
 void installWebApi() {
     addHttpListener();
-    GET_CONFIG(string,api_secret,API::kSecret);
+    GET_CONFIG(string, api_secret, API::kSecret);
 
     // Get thread load
     // Test url http://127.0.0.1/index/api/getThreadsLoad
@@ -855,11 +846,11 @@ void installWebApi() {
 
     // Get server configuration
     // Test url http://127.0.0.1/index/api/getServerConfig
-    api_regist("/index/api/getServerConfig",[](API_ARGS_MAP){
+    api_regist("/index/api/getServerConfig", [](API_ARGS_MAP) {
         CHECK_SECRET();
         Value obj;
         for (auto &pr : mINI::Instance()) {
-            obj[pr.first] = (string &) pr.second;
+            obj[pr.first] = (string &)pr.second;
         }
         val["data"].append(obj);
     });
@@ -867,7 +858,7 @@ void installWebApi() {
     // Set server configuration
     // Test url (e.g. disable http api debugging) http://127.0.0.1/index/api/setServerConfig?api.apiDebug=0
     // You can also pass parameters through http post method, you can pass parameters through application/x-www-form-urlencoded or application/json methods
-    api_regist("/index/api/setServerConfig",[](API_ARGS_MAP){
+    api_regist("/index/api/setServerConfig", [](API_ARGS_MAP) {
         CHECK_SECRET();
         auto &ini = mINI::Instance();
         int changed = API::Success;
@@ -901,10 +892,9 @@ void installWebApi() {
         val["changed"] = changed;
     });
 
-
-    static auto s_get_api_list = [](API_ARGS_MAP){
+    static auto s_get_api_list = [](API_ARGS_MAP) {
         CHECK_SECRET();
-        for(auto &pr : s_map_api){
+        for (auto &pr : s_map_api) {
             val["data"].append(pr.first);
         }
     };
@@ -924,14 +914,14 @@ void installWebApi() {
 #if !defined(_WIN32)
     // Restart server, only Daemon mode can restart, otherwise it will be closed directly!
     // Test url http://127.0.0.1/index/api/restartServer
-    api_regist("/index/api/restartServer",[](API_ARGS_MAP){
+    api_regist("/index/api/restartServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        EventPollerPool::Instance().getPoller()->doDelayTask(1000,[](){
+        EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
             // Try to exit normally
             ::kill(getpid(), SIGINT);
 
             // Force exit after 3 seconds
-            EventPollerPool::Instance().getPoller()->doDelayTask(3000,[](){
+            EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
                 exit(0);
                 return 0;
             });
@@ -954,7 +944,7 @@ void installWebApi() {
             char fname[_MAX_FNAME] = { 0 };
             char ext[_MAX_EXT] = { 0 };
             char exeName[_MAX_FNAME] = { 0 };
-            GetModuleFileNameA(NULL, szExeName, 1024); //Get the full path of the process
+            GetModuleFileNameA(NULL, szExeName, 1024); // Get the full path of the process
             _splitpath(szExeName, drive, dir, fname, ext);
             strcpy(exeName, fname);
             strcat(exeName, ext);
@@ -993,13 +983,13 @@ void installWebApi() {
             val["code"] = API::OtherFailed;
         }
     });
-#endif//#if !defined(_WIN32)
+#endif // #if !defined(_WIN32)
 
     // Get stream list, optional filtering parameters
     // Test url0 (get all streams) http://127.0.0.1/index/api/getMediaList
     // Test url1 (get streams with virtual host "__defaultVost__") http://127.0.0.1/index/api/getMediaList?vhost=__defaultVost__
     // Test url2 (get rtsp type streams) http://127.0.0.1/index/api/getMediaList?schema=rtsp
-    api_regist("/index/api/getMediaList",[](API_ARGS_MAP){
+    api_regist("/index/api/getMediaList", [](API_ARGS_MAP) {
         CHECK_SECRET();
         // Get all MediaSource lists
         MediaSource::for_each_media([&](const MediaSource::Ptr &media) {
@@ -1008,7 +998,7 @@ void installWebApi() {
     });
 
     // Test url http://127.0.0.1/index/api/isMediaOnline?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
-    api_regist("/index/api/isMediaOnline",[](API_ARGS_MAP){
+    api_regist("/index/api/isMediaOnline", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("schema","vhost","app","stream");
         val["online"] = (bool) (MediaSource::find(allArgs["schema"],allArgs["vhost"],allArgs["app"],allArgs["stream"]));
@@ -1016,7 +1006,7 @@ void installWebApi() {
 
     // Get media stream player list
     // Test url http://127.0.0.1/index/api/getMediaPlayerList?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
-    api_regist("/index/api/getMediaPlayerList",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/getMediaPlayerList", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("schema", "vhost", "app", "stream");
         auto src = MediaSource::find(allArgs["schema"], allArgs["vhost"], allArgs["app"], allArgs["stream"]);
@@ -1059,11 +1049,11 @@ void installWebApi() {
     });
 
     // Test url http://127.0.0.1/index/api/getMediaInfo?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs
-    api_regist("/index/api/getMediaInfo",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/getMediaInfo", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("schema","vhost","app","stream");
-        auto src = MediaSource::find(allArgs["schema"],allArgs["vhost"],allArgs["app"],allArgs["stream"]);
-        if(!src){
+        CHECK_ARGS("schema", "vhost", "app", "stream");
+        auto src = MediaSource::find(allArgs["schema"], allArgs["vhost"], allArgs["app"], allArgs["stream"]);
+        if (!src) {
             throw ApiRetException("can not find the stream", API::NotFound);
         }
         src->getOwnerPoller()->async([=]() mutable {
@@ -1075,9 +1065,9 @@ void installWebApi() {
 
     // Actively close the stream, including closing the pull stream and push stream
     // Test url http://127.0.0.1/index/api/close_stream?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1
-    api_regist("/index/api/close_stream",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/close_stream", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("schema","vhost","app","stream");
+        CHECK_ARGS("schema", "vhost", "app", "stream");
         // Kick out the pusher
         auto src = MediaSource::find(allArgs["schema"],
                                      allArgs["vhost"],
@@ -1099,7 +1089,7 @@ void installWebApi() {
 
     // Batch actively close the stream, including closing the pull stream and push stream
     // Test url http://127.0.0.1/index/api/close_streams?schema=rtsp&vhost=__defaultVhost__&app=live&stream=obs&force=1
-    api_regist("/index/api/close_streams",[](API_ARGS_MAP){
+    api_regist("/index/api/close_streams", [](API_ARGS_MAP) {
         CHECK_SECRET();
         // Filter hit count
         int count_hit = 0;
@@ -1123,17 +1113,17 @@ void installWebApi() {
     // Get all Session list information
     // You can filter by local port and remote ip
     // Test url (filter tcp session under a certain port) http://127.0.0.1/index/api/getAllSession?local_port=1935
-    api_regist("/index/api/getAllSession",[](API_ARGS_MAP){
+    api_regist("/index/api/getAllSession", [](API_ARGS_MAP) {
         CHECK_SECRET();
         Value jsession;
         uint16_t local_port = allArgs["local_port"].as<uint16_t>();
         string peer_ip = allArgs["peer_ip"];
 
-        SessionMap::Instance().for_each_session([&](const string &id,const Session::Ptr &session){
-            if(local_port != 0 && local_port != session->get_local_port()){
+        SessionMap::Instance().for_each_session([&](const string &id, const Session::Ptr &session) {
+            if (local_port != 0 && local_port != session->get_local_port()) {
                 return;
             }
-            if(!peer_ip.empty() && peer_ip != session->get_peer_ip()){
+            if (!peer_ip.empty() && peer_ip != session->get_peer_ip()) {
                 return;
             }
             fillSockInfo(jsession, session.get());
@@ -1145,17 +1135,16 @@ void installWebApi() {
 
     // Disconnect the tcp connection, for example, you can disconnect the rtsp, rtmp player, etc.
     // Test url http://127.0.0.1/index/api/kick_session?id=123456
-    api_regist("/index/api/kick_session",[](API_ARGS_MAP){
+    api_regist("/index/api/kick_session", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("id");
         // Kick out the tcp session
         auto session = SessionMap::Instance().get(allArgs["id"]);
-        if(!session){
-            throw ApiRetException("can not find the target",API::OtherFailed);
+        if (!session) {
+            throw ApiRetException("can not find the target", API::OtherFailed);
         }
         session->safeShutdown();
     });
-
 
     // Batch disconnect tcp connections, for example, you can disconnect rtsp, rtmp players, etc.
     // Test url http://127.0.0.1/index/api/kick_sessions?local_port=1935
@@ -1230,7 +1219,7 @@ void installWebApi() {
     });
     api_regist("/index/api/listStreamPusherProxy", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        s_pusher_proxy.for_each([&val](const std::string& key, const PusherProxy::Ptr& p) {
+        s_pusher_proxy.for_each([&val](const std::string &key, const PusherProxy::Ptr &p) {
             Json::Value item = ToJson(p);
             item["key"] = key;
             val["data"].append(item);
@@ -1238,7 +1227,7 @@ void installWebApi() {
     });
     api_regist("/index/api/listStreamProxy", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        s_player_proxy.for_each([&val](const std::string& key, const PlayerProxy::Ptr& p) {
+        s_player_proxy.for_each([&val](const std::string &key, const PlayerProxy::Ptr &p) {
             Json::Value item = ToJson(p);
             item["key"] = key;
             val["data"].append(item);
@@ -1246,9 +1235,9 @@ void installWebApi() {
     });
     // Dynamically add rtsp/rtmp pull stream proxy
     // Test url http://127.0.0.1/index/api/addStreamProxy?vhost=__defaultVhost__&app=proxy&enable_rtsp=1&enable_rtmp=1&stream=0&url=rtmp://127.0.0.1/live/obs
-    api_regist("/index/api/addStreamProxy",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/addStreamProxy", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("vhost","app","stream","url");
+        CHECK_ARGS("vhost", "app", "stream", "url");
 
         mINI args;
         for (auto &pr : allArgs.args) {
@@ -1256,7 +1245,7 @@ void installWebApi() {
         }
 
         ProtocolOption option(allArgs);
-        auto retry_count = allArgs["retry_count"].empty()? -1: allArgs["retry_count"].as<int>();
+        auto retry_count = allArgs["retry_count"].empty() ? -1 : allArgs["retry_count"].as<int>();
 
         std::string vhost = DEFAULT_VHOST;
         if (!allArgs["vhost"].empty()) {
@@ -1283,7 +1272,7 @@ void installWebApi() {
 
     // Close the pull stream proxy
     // Test url http://127.0.0.1/index/api/delStreamProxy?key=__defaultVhost__/proxy/0
-    api_regist("/index/api/delStreamProxy",[](API_ARGS_MAP){
+    api_regist("/index/api/delStreamProxy", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("key");
         val["data"]["flag"] = s_player_proxy.erase(allArgs["key"]) == 1;
@@ -1318,10 +1307,10 @@ void installWebApi() {
     };
 
     // Dynamically add rtsp/rtmp pull stream proxy
-    // // Test url http://127.0.0.1/index/api/addFFmpegSource?src_url=http://live.hkstv.hk.lxdns.com/live/hks2/playlist.m3u8&dst_url=rtmp://127.0.0.1/live/hks2&timeout_ms=10000
+    // Test url http://127.0.0.1/index/api/addFFmpegSource?src_url=http://live.hkstv.hk.lxdns.com/live/hks2/playlist.m3u8&dst_url=rtmp://127.0.0.1/live/hks2&timeout_ms=10000
     api_regist("/index/api/addFFmpegSource",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
-        CHECK_ARGS("src_url","dst_url","timeout_ms");
+        CHECK_ARGS("src_url", "dst_url", "timeout_ms");
         auto src_url = allArgs["src_url"];
         auto dst_url = allArgs["dst_url"];
         int timeout_ms = allArgs["timeout_ms"];
@@ -1342,14 +1331,14 @@ void installWebApi() {
 
     // Close the pull stream proxy
     // Test url http://127.0.0.1/index/api/delFFmepgSource?key=key
-    api_regist("/index/api/delFFmpegSource",[](API_ARGS_MAP){
+    api_regist("/index/api/delFFmpegSource", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("key");
         val["data"]["flag"] = s_ffmpeg_src.erase(allArgs["key"]) == 1;
     });
     api_regist("/index/api/listFFmpegSource", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        s_ffmpeg_src.for_each([&val](const std::string& key, const FFmpegSource::Ptr& src) {
+        s_ffmpeg_src.for_each([&val](const std::string &key, const FFmpegSource::Ptr &src) {
             Json::Value item;
             item["src_url"] = src->getSrcUrl();
             item["dst_url"] = src->getDstUrl();
@@ -1361,13 +1350,13 @@ void installWebApi() {
     });
     // Add a new http api to download executable files
     // Test url http://127.0.0.1/index/api/downloadBin
-    api_regist("/index/api/downloadBin",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/downloadBin", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         invoker.responseFile(allArgs.parser.getHeader(), StrCaseMap(), exePath());
     });
 
 #if defined(ENABLE_RTPPROXY)
-    api_regist("/index/api/getRtpInfo",[](API_ARGS_MAP){
+    api_regist("/index/api/getRtpInfo", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("stream_id");
         std::string vhost = DEFAULT_VHOST;
@@ -1388,7 +1377,7 @@ void installWebApi() {
         fillSockInfo(val, process.get());
     });
 
-    api_regist("/index/api/openRtpServer",[](API_ARGS_MAP){
+    api_regist("/index/api/openRtpServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("port", "stream_id");
         std::string vhost = DEFAULT_VHOST;
@@ -1489,7 +1478,7 @@ void installWebApi() {
         server->connectToServer(allArgs["dst_url"], allArgs["dst_port"], cb);
     });
 
-    api_regist("/index/api/closeRtpServer",[](API_ARGS_MAP){
+    api_regist("/index/api/closeRtpServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("stream_id");
 
@@ -1510,7 +1499,7 @@ void installWebApi() {
         val["hit"] = 1;
     });
 
-    api_regist("/index/api/updateRtpServerSSRC",[](API_ARGS_MAP){
+    api_regist("/index/api/updateRtpServerSSRC", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("stream_id", "ssrc");
 
@@ -1531,7 +1520,7 @@ void installWebApi() {
         server->updateSSRC(allArgs["ssrc"]);
     });
 
-    api_regist("/index/api/listRtpServer",[](API_ARGS_MAP){
+    api_regist("/index/api/listRtpServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
 
         std::lock_guard<std::recursive_mutex> lck(s_rtp_server._mtx);
@@ -1541,7 +1530,7 @@ void installWebApi() {
             obj["vhost"] = vec[0];
             obj["app"] = vec[1];
             obj["stream_id"] = vec[2];
-            auto& rtps = pr.second;
+            auto &rtps = pr.second;
             obj["port"] = rtps->getPort();
             obj["ssrc"] = rtps->getSSRC();
             obj["tcp_mode"] = rtps->getTcpMode();
@@ -1550,7 +1539,7 @@ void installWebApi() {
         }
     });
 
-    static auto start_send_rtp = [] (bool passive, API_ARGS_MAP_ASYNC) {
+    static auto start_send_rtp = [](bool passive, API_ARGS_MAP_ASYNC) {
         auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"], allArgs["from_mp4"].as<int>());
         if (!src) {
             throw ApiRetException("can not find the source stream", API::NotFound);
@@ -1598,19 +1587,19 @@ void installWebApi() {
         });
     };
 
-    api_regist("/index/api/startSendRtp",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/startSendRtp", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream", "ssrc", "dst_url", "dst_port", "is_udp");
         start_send_rtp(false, API_ARGS_VALUE, invoker);
     });
 
-    api_regist("/index/api/startSendRtpPassive",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/startSendRtpPassive", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream", "ssrc");
         start_send_rtp(true, API_ARGS_VALUE, invoker);
     });
 
-    api_regist("/index/api/startSendRtpTalk",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/startSendRtpTalk", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream", "ssrc", "recv_stream_id");
         auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"], allArgs["from_mp4"].as<int>());
@@ -1645,7 +1634,7 @@ void installWebApi() {
         });
     });
 
-    api_regist("/index/api/listRtpSender",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/listRtpSender", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream");
 
@@ -1665,7 +1654,7 @@ void installWebApi() {
         });
     });
 
-    api_regist("/index/api/stopSendRtp",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/stopSendRtp", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream");
 
@@ -1727,14 +1716,14 @@ void installWebApi() {
         }
     });
 
-#endif//ENABLE_RTPPROXY
+#endif // ENABLE_RTPPROXY
 
     // Start recording hls or MP4
-    api_regist("/index/api/startRecord",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/startRecord", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("type","vhost","app","stream");
+        CHECK_ARGS("type", "vhost", "app", "stream");
 
-        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"] );
+        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
         if (!src) {
             throw ApiRetException("can not find the stream", API::NotFound);
         }
@@ -1743,7 +1732,7 @@ void installWebApi() {
             auto result = src->setupRecord((Recorder::type)allArgs["type"].as<int>(), true, allArgs["customized_path"], allArgs["max_second"].as<size_t>());
             val["result"] = result;
             val["code"] = result ? API::Success : API::OtherFailed;
-            val["msg"] = result ? "success" :  "start record failed";
+            val["msg"] = result ? "success" : "start record failed";
             invoker(200, headerOut, val.toStyledString());
         });
     });
@@ -1792,11 +1781,11 @@ void installWebApi() {
     });
 
     // Stop recording hls or MP4
-    api_regist("/index/api/stopRecord",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/stopRecord", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("type","vhost","app","stream");
+        CHECK_ARGS("type", "vhost", "app", "stream");
 
-        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"] );
+        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
         if (!src) {
             throw ApiRetException("can not find the stream", API::NotFound);
         }
@@ -1812,9 +1801,9 @@ void installWebApi() {
     });
 
     // Get the recording status of hls or MP4
-    api_regist("/index/api/isRecording",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/isRecording", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        CHECK_ARGS("type","vhost","app","stream");
+        CHECK_ARGS("type", "vhost", "app", "stream");
 
         auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
         if (!src) {
@@ -1857,7 +1846,7 @@ void installWebApi() {
     api_regist("/index/api/deleteRecordDirectory", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream", "period");
-        auto tuple = MediaTuple{allArgs["vhost"], allArgs["app"], allArgs["stream"], ""};
+        auto tuple = MediaTuple { allArgs["vhost"], allArgs["app"], allArgs["stream"], "" };
         auto record_path = Recorder::getRecordPath(Recorder::type_mp4, tuple, allArgs["customized_path"]);
         auto period = allArgs["period"];
         record_path = record_path + period + "/";
@@ -1894,11 +1883,11 @@ void installWebApi() {
     });
 
     // Get the list of recording folders or mp4 files
-    //http://127.0.0.1/index/api/getMP4RecordFile?vhost=__defaultVhost__&app=live&stream=ss&period=2020-01
-    api_regist("/index/api/getMP4RecordFile", [](API_ARGS_MAP){
+    // http://127.0.0.1/index/api/getMP4RecordFile?vhost=__defaultVhost__&app=live&stream=ss&period=2020-01
+    api_regist("/index/api/getMP4RecordFile", [](API_ARGS_MAP) {
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream");
-        auto tuple = MediaTuple{allArgs["vhost"], allArgs["app"], allArgs["stream"], ""};
+        auto tuple = MediaTuple { allArgs["vhost"], allArgs["app"], allArgs["stream"], "" };
         auto record_path = Recorder::getRecordPath(Recorder::type_mp4, tuple, allArgs["customized_path"]);
         auto period = allArgs["period"];
 
@@ -1964,8 +1953,8 @@ void installWebApi() {
     };
 
     // Get screenshot cache or real-time screenshot
-    //http://127.0.0.1/index/api/getSnap?url=rtmp://127.0.0.1/record/robot.mp4&timeout_sec=10&expire_sec=3
-    api_regist("/index/api/getSnap", [](API_ARGS_MAP_ASYNC){
+    // http://127.0.0.1/index/api/getSnap?url=rtmp://127.0.0.1/record/robot.mp4&timeout_sec=10&expire_sec=3
+    api_regist("/index/api/getSnap", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("url", "timeout_sec", "expire_sec");
         GET_CONFIG(string, snap_root, API::kSnapRoot);
@@ -2005,7 +1994,8 @@ void installWebApi() {
         // No screenshot or screenshot has expired
         if (!have_old_snap) {
             // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
-            // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
+            // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg
+            // screenshot generation process
             auto file = File::create_file(new_snap, "wb");
             if (file) {
                 fclose(file);
@@ -2027,9 +2017,9 @@ void installWebApi() {
         });
     });
 
-    api_regist("/index/api/getStatistic",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/getStatistic", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
-        getStatisticJson([headerOut, val, invoker](const Value &data) mutable{
+        getStatisticJson([headerOut, val, invoker](const Value &data) mutable {
             val["data"] = data;
             invoker(200, headerOut, val.toStyledString());
         });
@@ -2051,7 +2041,7 @@ void installWebApi() {
         }
 
     private:
-        string getUrl() const{
+        string getUrl() const {
             auto &allArgs = _args;
             CHECK_ARGS("app", "stream");
 
@@ -2065,13 +2055,13 @@ void installWebApi() {
         std::string _session_id;
     };
 
-    api_regist("/index/api/webrtc",[](API_ARGS_STRING_ASYNC){
+    api_regist("/index/api/webrtc", [](API_ARGS_STRING_ASYNC) {
         CHECK_ARGS("type");
         auto type = allArgs["type"];
         auto offer = allArgs.args;
         CHECK(!offer.empty(), "http body(webrtc offer sdp) is empty");
 
-        auto &session = static_cast<Session&>(sender);
+        auto &session = static_cast<Session &>(sender);
         auto args = std::make_shared<WebRtcArgsImp>(allArgs, sender.getIdentifier());
         WebRtcPluginManager::Instance().negotiateSdp(session, type, *args, [invoker, val, offer, headerOut](const WebRtcInterface &exchanger) mutable {
             auto &handler = const_cast<WebRtcInterface &>(exchanger);
@@ -2088,12 +2078,12 @@ void installWebApi() {
         });
     });
 
-    static constexpr char delete_webrtc_url [] = "/index/api/delete_webrtc";
+    static constexpr char delete_webrtc_url[] = "/index/api/delete_webrtc";
     static auto whip_whep_func = [](const char *type, API_ARGS_STRING_ASYNC) {
         auto offer = allArgs.args;
         CHECK(!offer.empty(), "http body(webrtc offer sdp) is empty");
 
-        auto &session = static_cast<Session&>(sender);
+        auto &session = static_cast<Session &>(sender);
         auto location = std::string(session.overSsl() ? "https://" : "http://") + allArgs["host"] + delete_webrtc_url;
         auto args = std::make_shared<WebRtcArgsImp>(allArgs, sender.getIdentifier());
         WebRtcPluginManager::Instance().negotiateSdp(session, type, *args, [invoker, offer, headerOut, location](const WebRtcInterface &exchanger) mutable {
@@ -2131,7 +2121,7 @@ void installWebApi() {
 #endif
 
 #if defined(ENABLE_VERSION)
-    api_regist("/index/api/version",[](API_ARGS_MAP_ASYNC){
+    api_regist("/index/api/version", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         Value ver;
         ver["buildTime"] = BUILD_TIME;
@@ -2157,7 +2147,7 @@ void installWebApi() {
         option.load(allArgs);
         // Force automatic shutdown when no one is watching
         option.auto_close = true;
-        auto tuple = MediaTuple{allArgs["vhost"], allArgs["app"], allArgs["stream"], ""};
+        auto tuple = MediaTuple { allArgs["vhost"], allArgs["app"], allArgs["stream"], "" };
         auto reader = std::make_shared<MP4Reader>(tuple, allArgs["file_path"], option);
         // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing, then force it to be enabled
         reader->startReadMP4(0, true, allArgs["file_repeat"]);
@@ -2179,7 +2169,7 @@ void installWebApi() {
         option.load(allArgs);
         // Force automatic shutdown when no one is watching
         option.auto_close = true;
-        auto tuple = MediaTuple{allArgs["vhost"], allArgs["app"], allArgs["stream"], ""};
+        auto tuple = MediaTuple { allArgs["vhost"], allArgs["app"], allArgs["stream"], "" };
         auto reader = std::make_shared<MKVReader>(tuple, allArgs["file_path"], option);
         // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing, then force it to be enabled
         reader->startReadMKV(0, true, allArgs["file_repeat"]);
@@ -2201,7 +2191,7 @@ void installWebApi() {
         auto file_path = allArgs["file_path"];
 
         if (file_path.find("..") != std::string::npos) {
-            invoker(401, StrCaseMap{}, "You can not access parent directory");
+            invoker(401, StrCaseMap {}, "You can not access parent directory");
             return;
         }
         bool safe = false;
@@ -2212,14 +2202,14 @@ void installWebApi() {
             }
         }
         if (!safe) {
-            invoker(401, StrCaseMap{}, "You can not download files outside the root directory");
+            invoker(401, StrCaseMap {}, "You can not download files outside the root directory");
             return;
         }
 
         // File download authentication is completed through on_http_access. Please make sure that the access authentication URL parameters and the access file path are legal
         HttpSession::HttpAccessPathInvoker file_invoker = [allArgs, invoker](const string &err_msg, const string &cookie_path_in, int life_second) mutable {
             if (!err_msg.empty()) {
-                invoker(401, StrCaseMap{}, err_msg);
+                invoker(401, StrCaseMap {}, err_msg);
             } else {
                 StrCaseMap res_header;
                 auto save_name = allArgs["save_name"];
@@ -2343,7 +2333,7 @@ void installWebApi() {
                                 auto it_hour = hour_set.find(i);
                                 result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
                             }
-                        }   
+                        }
                     });
                 }
             } else {
@@ -2428,7 +2418,7 @@ void installWebApi() {
     });
 
     // Get screenshot cache or real-time screenshot
-    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC){
+    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("cameraId", "streamId", "pos");
         auto camera_id = allArgs["cameraId"];
         auto stream_id = allArgs["streamId"];
@@ -2533,20 +2523,17 @@ void installWebApi() {
     });
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
-        auto full_key = tuple.shortUrl() + "/" +
-                        to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
+        auto full_key = tuple.shortUrl() + "/" + to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
         auto key = MD5(full_key).hexdigest();
         if (s_ffmpeg_extractor.find(key)) {
             // Already create
             cb(SockException(Err_success), key);
             return;
         }
- 
+
         auto ffmpeg = s_ffmpeg_extractor.make(key, tuple, options);
 
-        ffmpeg->setOnClose([key]() {
-            s_ffmpeg_extractor.erase(key);
-        });
+        ffmpeg->setOnClose([key]() { s_ffmpeg_extractor.erase(key); });
 
         GET_CONFIG(string, extract_path, API::kExtractRoot)
         ffmpeg->makeExtract(key, extract_path, [cb, key](const SockException &ex) {
@@ -2556,7 +2543,7 @@ void installWebApi() {
             cb(ex, key);
         });
     };
-    api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/extractArchived/create", withUserAuth([](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
 
@@ -2566,6 +2553,8 @@ void installWebApi() {
         auto end_time = allArgs["endTime"];
         auto filename = allArgs["filename"];
         auto description = allArgs["description"];
+        auto user_id = allArgs["_user_id"];
+        auto user_name = allArgs["_user_name"];
 
         if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
             val["code"] = API::InvalidArgs;
@@ -2574,20 +2563,20 @@ void installWebApi() {
             return;
         }
 
-        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, ""};
-        ExtractOptions options = {start_time, end_time, filename, description, "", ""};
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+        ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
 
         addFFmpegExtractor(tuple, options, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
-                if (ex) {
-                    val["code"] = API::OtherFailed;
-                    val["msg"] = ex.what();
-                    invoker(400, headerOut, val.toStyledString());
-                } else {
-                    val["data"]["key"] = key;
-                    invoker(201, headerOut, val.toStyledString());
-                }
-            });
-    });
+            if (ex) {
+                val["code"] = API::OtherFailed;
+                val["msg"] = ex.what();
+                invoker(400, headerOut, val.toStyledString());
+            } else {
+                val["data"]["key"] = key;
+                invoker(201, headerOut, val.toStyledString());
+            }
+        });
+    }));
 
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
@@ -2620,7 +2609,7 @@ void installWebApi() {
             val["msg"] = "Key not found";
             invoker(404, headerOut, val.toStyledString());
             return;
-        } 
+        }
 
         StrCaseMap res_header;
         auto save_name = ffmpeg->getFilename();
@@ -2684,16 +2673,16 @@ void installWebApi() {
             val["data"].append(b_json);
         }
 
-        auto total =  imp->count(start_time, end_time, camera_id, search);
+        auto total = imp->count(start_time, end_time, camera_id, search);
         val["currentPage"] = page;
         val["totalItems"] = total;
-        val["totalPages"] = static_cast<int>(std::ceil(static_cast<double>(total)/ size));
+        val["totalPages"] = static_cast<int>(std::ceil(static_cast<double>(total) / size));
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/bookmark/create", withUserAuth([](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("camera_id", "start_time", "duration");
+        CHECK_ARGS("name", "camera_id", "start_time", "duration");
 
         string name = allArgs["name"];
         string description = allArgs["description"];
@@ -2710,8 +2699,7 @@ void installWebApi() {
         bm.start_time = start_time;
         bm.end_time = end_time;
         bm.duration = duration;
-        bm.creator_guid = format_guid("99cbc715539b4bfe856f799b45b69b1e");
-        // todo: record username
+        bm.creator_guid = allArgs["_user_id"];
         bm.created = time(nullptr);
 
         auto imp = std::make_shared<BookmarkImp>();
@@ -2719,7 +2707,7 @@ void installWebApi() {
 
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
-    });
+    }));
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
@@ -2755,9 +2743,9 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) { 
+    api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("id"); 
+        CHECK_ARGS("id");
         auto id = allArgs["id"];
 
         auto imp = std::make_shared<BookmarkImp>();
@@ -2766,9 +2754,9 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) { 
+    api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
-        CHECK_ARGS("size"); 
+        CHECK_ARGS("size");
         int size = allArgs["size"];
         if (size < 0) size = 1;
         
@@ -2833,7 +2821,7 @@ void installWebApi() {
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("mediaServerId", "domain", "ip", "httpPort", "httpsPort", "preferSSL")
-        
+
         string mediaServerId_ = allArgs["mediaServerId"];
         string apiDomain = allArgs["domain"];
         string apiIp = allArgs["ip"];
@@ -2904,7 +2892,7 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
-        //CHECK_TOKEN
+        // CHECK_TOKEN
         val["data"] = makeSystemStatisticJson();
     });
 
@@ -3108,4 +3096,3 @@ void unInstallWebApi(){
 
     NoticeCenter::Instance().delListener(&web_api_tag);
 }
-

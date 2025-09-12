@@ -22,6 +22,9 @@ extern const std::string kServerLocationId;
 extern const std::string kEnableFailover;
 // Store public key to validate jwt token
 extern const std::string kJwtPublicKey;
+// User session expiration time (6 months)
+extern const std::string kSessionExpiryDays;
+
 } // namespace Manager
 
 } // namespace managerkit

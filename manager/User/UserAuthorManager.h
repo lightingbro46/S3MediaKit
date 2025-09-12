@@ -12,16 +12,10 @@ namespace managerkit {
 /**
  * Authorization cache of user with device, default max elapsed is 60 seconds
  */
-class UserAuthorCache : public toolkit::noncopyable {
+class UserSessionCache : public toolkit::noncopyable {
 public:
-    using Ptr = std::shared_ptr<UserAuthorCache>;
-    UserAuthorCache(std::string user_id = "", std::string device_id = "", bool permit = false, uint64_t max_elapsed = 60)
-        : _uid(user_id)
-        , _device_id(device_id)
-        , _is_permit(permit) {
-        _created_at = time(nullptr);
-        _expired_at = _created_at + max_elapsed;
-    }
+    using Ptr = std::shared_ptr<UserSessionCache>;
+    UserSessionCache(const std::string &token);
 
     /**
      * get created at timestamp, unit: second
@@ -32,18 +26,33 @@ public:
      * get expired at timestamp, unit: second
      */
     uint64_t getExpiredAt() { return _expired_at; }
+    /**
+     * get user id in cache
+     */
+    std::string getUid() { return _user_id; }
 
     /**
-     * user has permission to access device data
+     *  get user name in cache
      */
-    bool hasLicensed() { return _is_permit; }
+    std::string getUserName() { return _user_name; }
+
+    /**
+     *  save user session into database
+     */
+    void saveUserSession();
 
 private:
-    std::string _uid;
-    std::string _device_id;
+    std::string _user_id;
+    std::string _user_name;
     uint64_t _created_at;
     uint64_t _expired_at;
-    bool _is_permit;
+    std::string _token;
+};
+
+enum class UserAuthorPermit : uint8_t {
+    UNKNOWN = 0,
+    ACCEPT = 1,
+    REJECT= 2
 };
 
 /**
@@ -52,54 +61,64 @@ private:
 class UserAuthorManager : public std::enable_shared_from_this<UserAuthorManager> {
 public:
     using Ptr = std::shared_ptr<UserAuthorManager>;
-    using UserAuthorInvoker = std::function<void(const std::string &errMsg)>;
 
     /**
      * Get singleton
      */
     static UserAuthorManager &Instance();
+
+    /**
+     * Desconstructor
+     */
     ~UserAuthorManager();
 
     /**
-     * find cache
+     *  get user-device author cache
      */
-    UserAuthorCache::Ptr findCache(const std::string &uid, const std::string &deviceId);
+    UserSessionCache::Ptr getTokenCache(const std::string &jwt_token);
 
     /**
-     *  get cache
+     *  get user-device author cache
      */
-    UserAuthorCache::Ptr getAuthCache(const mediakit::MediaInfo &args, const std::string &jwt_token);
+    UserAuthorPermit getAuthorCache(const mediakit::MediaInfo &args, const std::string &jwt_token);
 
     /**
      * Add cache
      */
-    void addAuthCache(const mediakit::MediaInfo &args, const std::string &jwt_token, bool permit);
+    void addAuthorCache(const mediakit::MediaInfo &args, const std::string &jwt_token, bool permit);
 
 private:
-    UserAuthorManager();
+    /*
+     * Constructor
+     */
+    UserAuthorManager(uint64_t max_elapsed = 300);
+
+    /**
+     * find user-device author cache
+     */
+    UserAuthorPermit findAuthorCache(const std::string &jwt_token, const std::string &device_id);
 
     /**
      * Timer to clear blocked
-     *
      */
     void onManager();
 
     /**
-     * Traver all user who has been blocked and release block if can
-     *
+     * Traver all token-device author cache expired
      */
-    void cleanExpiredCache();
+    void cleanExpiredAuthorCache();
 
     /**
-     * verify JWT token
-     *
+     * Traver all token expired
      */
-    bool verifyJwtToken(std::string &user_id, const std::string &jwt_token);
+    void cleanExpiredTokenCache();
 
 private:
-    std::unordered_map<std::string /*uid*/, std::unordered_map<std::string /*deviceId*/, UserAuthorCache::Ptr>> _map_uid_cache;
+    std::unordered_map<std::string /*token*/, UserSessionCache::Ptr> _map_token_cache;
+    std::unordered_map<std::string /*token*/, std::unordered_map<std::string /*deviceId*/, std::pair<bool /*permit*/, uint64_t /*create_time*/>>> _map_token_device;
     std::recursive_mutex _mtx;
     toolkit::Timer::Ptr _timer;
+    uint64_t _max_elapsed;
 };
 
 } // namespace managerkit
