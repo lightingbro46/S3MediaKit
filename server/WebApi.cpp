@@ -65,6 +65,7 @@
 
 #include "Local/TimeQuery.h"
 #include "Storage/Bookmark.h"
+#include "Storage/UserEntity.h"
 #include "Storage/Certification.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
@@ -2664,10 +2665,10 @@ void installWebApi() {
 
         auto imp = std::make_shared<BookmarkImp>();
         auto ret = imp->search(start_time, end_time, camera_id, search, page, size, sort);
+        auto user_imp = std::make_shared<UserEntityImp>();
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
-            auto tags = imp->findTagsByBookmark(b.guid);
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -2677,9 +2678,16 @@ void installWebApi() {
             b_json["end_time"] = b.end_time ? b.end_time.value() : -1;
             b_json["description"] = b.description ? b.description.value() : "";
             b_json["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
-            // todo: search username
-            b_json["creator"] = "admin";
+            string username;
+            if (b.creator_guid) {
+                auto users = user_imp->findById(b.creator_guid.value());
+                if (users.size() > 0) {
+                    username = users[0].userName ? users[0].userName.value() : "";
+                }
+            }
+            b_json["creator"] = username;
             b_json["created"] = b.created ? b.created.value() : -1;
+            auto tags = imp->findTagsByBookmark(b.guid);
             b_json["tags"] = tags;
             val["data"].append(b_json);
         }
@@ -2793,10 +2801,10 @@ void installWebApi() {
         
         auto imp = std::make_shared<BookmarkImp>();
         auto ret =  imp->findRecentById(camera_id, size, sort);
+        auto user_imp = std::make_shared<UserEntityImp>();
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
-            auto tags = imp->findTagsByBookmark(b.guid);
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -2806,9 +2814,16 @@ void installWebApi() {
             b_json["end_time"] = b.end_time ? b.end_time.value() : -1;
             b_json["description"] = b.description ? b.description.value() : "";
             b_json["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
-            // todo: search username
-            b_json["creator"] = "admin";
+            string username;
+            if (b.creator_guid) {
+                auto users = user_imp->findById(b.creator_guid.value());
+                if (users.size() > 0) {
+                    username = users[0].userName ? users[0].userName.value() : "";
+                }
+            }
+            b_json["creator"] = username;
             b_json["created"] = b.created ? b.created.value() : -1;
+            auto tags = imp->findTagsByBookmark(b.guid);
             b_json["tags"] = tags;
             val["data"].append(b_json);
         }
