@@ -48,7 +48,7 @@ public:
     }
 
     ~TimeScheduler() {
-        _timer_scheduler = nullptr;
+        _timer_scheduler.reset();
     }
 
     Type getModeActive(uint64_t stamp = time(nullptr)) {

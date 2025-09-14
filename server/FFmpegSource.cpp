@@ -494,17 +494,17 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
 
     // judge whether it is successful by judging whether the FFmpeg process is online
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
-    _timer = std::make_shared<Timer>(_timeout_ms / 1000.0f, [weakSelf, cb]() {
+    _poller->doDelayTask(_timeout_ms, [weakSelf, cb]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             // Self has been destroyed
-            return false;
+            return 0;
         }
         // FFmpeg is still online, so we think the extract stream is successful
         if (strongSelf->_process.wait(false)) {
             cb(SockException());
             strongSelf->startTimer();
-            return false;
+            return 0;
         }
         // ffmpeg process has exited
         strongSelf->_finished = true;
@@ -516,18 +516,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
             cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));            
         }
         // close after process finished
-        GET_CONFIG(uint64_t, delay_close_sec, FFmpeg::kDelayCloseSec);
-        EventPollerPool::Instance().getPoller()->doDelayTask((uint64_t)(delay_close_sec * 1000), [weakSelf]() {
-            auto strongSelf = weakSelf.lock();
-            if (!strongSelf) {
-                // Self has been destroyed
-                return 0;
-            }
-            strongSelf->close();
-            return 0;
-        });
-        return false;
-    }, _poller);
+        strongSelf->closeAfterDelaySec();
+        return 0;
+    });
 }
 
 /**
@@ -539,21 +530,31 @@ float trackFFmpegProgress(const std::string &log_path, const float &total_durati
     if (!log_path.empty() && File::fileExist(log_path)) {
         auto line = File::loadFile(log_path);
         string pid;
-        size_t pos_pid = line.find("pid=");
-        if (pos_pid != std::string::npos) {
-            pid = line.substr(pos_pid + 4, 9);
+        string pid_key = "pid=";
+        size_t start_pos_pid = line.find(pid_key);
+        if (start_pos_pid != std::string::npos) {
+            start_pos_pid += pid_key.size();
+            size_t end_pos_pid = line.find(",", start_pos_pid);
+            if (end_pos_pid != std::string::npos) { 
+                pid = line.substr(start_pos_pid, end_pos_pid - start_pos_pid);
+            }
         }
 
-        size_t pos = line.find_last_of("time=");
-        if (pos != std::string::npos) {
-            auto time_str = line.substr(pos + 5, 11);
-            int hour = stoi(time_str.substr(0, 2));
-            int minute = stoi(time_str.substr(3, 2));
-            float second = stof(time_str.substr(6));
-            duration  = hour * 3600 + minute * 60 + second;
-            progress = duration > 0 && total_duration > 0 ? (duration / total_duration) * 100.0f : 0.0f;
-            if (progress >= 100.0f) {
-                progress = 99.9f;
+        string time_key = "time=";
+        size_t start_pos_time = line.rfind(time_key);
+        if (start_pos_time != std::string::npos) {
+            start_pos_time += time_key.size();
+            size_t end_pos_time = line.find(" ", start_pos_time);
+            if (end_pos_time != std::string::npos) {
+                auto time_str = line.substr(start_pos_time, end_pos_time - start_pos_time);
+                int hour = stoi(time_str.substr(0, 2));
+                int minute = stoi(time_str.substr(3, 2));
+                float second = stof(time_str.substr(6));
+                duration  = hour * 3600 + minute * 60 + second;
+                progress = duration > 0 && total_duration > 0 ? (duration / total_duration) * 100.0f : 0.0f;
+                if (progress >= 100.0f) {
+                    progress = 99.9f;
+                }
             }
         }
         char buf[1024];
@@ -597,16 +598,7 @@ void FFmpegExtractor::startTimer() {
             strongSelf->_err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
 
             // close after process finished
-            GET_CONFIG(uint64_t, delay_close_sec, FFmpeg::kDelayCloseSec);
-            EventPollerPool::Instance().getPoller()->doDelayTask((uint64_t)(delay_close_sec * 1000), [weakSelf]() {
-                auto strongSelf = weakSelf.lock();
-                if (!strongSelf) {
-                    // Self has been destroyed
-                    return 0;
-                }
-                strongSelf->close();
-                return 0;
-            });
+            strongSelf->closeAfterDelaySec();
             return false;
         }
     }, _poller);
@@ -614,6 +606,20 @@ void FFmpegExtractor::startTimer() {
 
 void FFmpegExtractor::setOnClose(const function<void()> &cb){
     _onClose = cb;
+}
+
+void FFmpegExtractor::closeAfterDelaySec() {
+    GET_CONFIG(uint64_t, delay_close_sec, FFmpeg::kDelayCloseSec);
+    weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
+    _poller->doDelayTask((uint64_t)(delay_close_sec * 1000), [weakSelf]() {
+        auto strongSelf = weakSelf.lock();
+        if (!strongSelf) {
+            // Self has been destroyed
+            return 0;
+        }
+        strongSelf->close();
+        return 0;
+    });
 }
 
 bool FFmpegExtractor::close() {

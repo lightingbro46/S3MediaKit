@@ -110,7 +110,7 @@ public:
     using Ptr = std::shared_ptr<FFmpegExtractor>;
     using onExtract = std::function<void(const toolkit::SockException &ex)>;
     
-    FFmpegExtractor(mediakit::MediaTuple &tuple, ExtractOptions &options, int timeout_ms = 2000, toolkit::EventPoller::Ptr poller = nullptr);
+    FFmpegExtractor(mediakit::MediaTuple &tuple, ExtractOptions &options, int timeout_ms = 500, toolkit::EventPoller::Ptr poller = nullptr);
     ~FFmpegExtractor();
 
     /**
@@ -133,6 +133,8 @@ private:
     void create_src_path(std::string &src_path);
     // create Timer to check ffmpeg status
     void startTimer();
+    // create delay task to close process
+    void closeAfterDelaySec();
     // Close
     bool close();
 
