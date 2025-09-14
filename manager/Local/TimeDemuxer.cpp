@@ -93,7 +93,8 @@ int64_t TimeDemuxer::seekTo(uint64_t stamp_sec) {
     if (_maker) {
         // find with index file
         BlockListIndexEntry entry;
-        if (!_maker->findLowerBound(entry, stamp_sec)) {
+        auto block_minute = getStartOfMinute(stamp_sec);
+        if (!_maker->findLowerBound(entry, block_minute)) {
             return 0;
         }
         if (_reader->seek(entry.offset) < 0) {
