@@ -7,6 +7,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Network/sockutil.h"
 #include "Local/TimeQuery.h"
+#include <iomanip>
 
 using namespace std;
 using namespace toolkit;
@@ -39,7 +40,7 @@ onceToken token([]() {
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
     mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s";
-    mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s";
+    mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s";
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
     mINI::Instance()[kRestartSec] = 0;
     mINI::Instance()[kDelayCloseSec] = 300;
@@ -412,9 +413,9 @@ FFmpegExtractor::~FFmpegExtractor() {
 }
 
 static void makeIndexFile(string &file_path, string &camera_id, string &stream_id, uint64_t start_time, uint64_t end_time,
-        const function<void(const string &err, uint32_t &duration)> &cb) {
-    uint32_t file_duration = 0;
-
+        const function<void(const string &err, uint32_t &duration_start, uint32_t &duration_end)> &cb) {
+    uint32_t duration_start = 0;
+    uint32_t duration_end = 0;
     auto file_ptr = std::shared_ptr<FILE>(File::create_file(file_path, "wb"), [](FILE *fp) {
         if (fp) {
             fflush(fp);
@@ -423,20 +424,30 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
     });
     if (!file_ptr) {
         string err = (StrPrinter << "Failed to open the file:" << file_path);
-        return cb(err, file_duration);
+        return cb(err, duration_start, duration_end);
     }
 
     MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
     auto query = std::make_shared<TimeQuery>(tuple);
-    query->getRecordedTimePeriod(start_time, end_time, [&file_duration, file_ptr](const vector<TimeBlock> &ret) {
+    query->getRecordedTimePeriod(start_time, end_time, [&duration_start, &duration_end, start_time, end_time, file_ptr](const vector<TimeBlock> &ret) {
         for (const auto &block : ret) {
+            uint64_t start_pos = block.start_time();
+            uint64_t end_pos = block.start_time() + block.time_len();
+            if (start_pos < start_time) {
+                duration_start += start_time - start_pos;
+                duration_end += duration_start;
+                start_pos = start_time;
+            }
+            if (end_pos > end_time) {
+                end_pos = end_time;
+            }
+            duration_end += end_pos - start_pos;
             auto line = "file '" + block.file_path() + "'\n";
             fwrite(line.c_str(), line.size(), 1, file_ptr.get());
-            file_duration += block.time_len();
         }
     });
 
-    return cb(file_duration == 0 ? "No data in time period" : "", file_duration);
+    return cb((duration_end - duration_start) == 0 ? "No data in time period" : "", duration_start, duration_end);
 }
 
 static std::string getFileExtension(const std::string &filename) {
@@ -462,26 +473,45 @@ static std::string escape(const char* str) {
     return escape(std::string(str));
 }
 
+static std::string formatDuration(int64_t total_seconds) {
+    int64_t seconds = total_seconds % 60;
+    int64_t total_minutes = total_seconds / 60;
+    int64_t minutes = total_minutes % 60;
+    int64_t hours = total_minutes / 60;
+
+    _StrPrinter oss;
+    oss << std::setw(2) << std::setfill('0') << hours << ":"
+        << std::setw(2) << std::setfill('0') << minutes << ":"
+        << std::setw(2) << std::setfill('0') << seconds;
+    return oss;
+}
+
 void FFmpegExtractor::makeExtract(const string &key, const string &root_path, const onExtract &cb) {
     GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
     GET_CONFIG(string, ffmpeg_extract, FFmpeg::kExtract);
     GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
 
+    uint32_t duration_start = 0;
+    uint32_t duration_end = 0;
     _src_path = File::absolutePath(key + ".txt", root_path);
-    makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const string &err, uint32_t &duration) {
+    makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const string &err, uint32_t &start, uint32_t &end) {
         if (!err.empty()) {
             cb(SockException(Err_other, err));
             return;
         }
-        _duration = duration;
+        _duration = end - start;
+        duration_start = start;
+        duration_end = end;
     });
-
+    DebugL << duration_start << " " << duration_end;
     auto save_format = getFileExtension(_options.filename);
     _save_path = File::absolutePath(key + "." + save_format, root_path);
 
     char cmd[2048] = { 0 };
     snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
-            _src_path.data(), 
+            _src_path.data(),
+            formatDuration(duration_start).data(),
+            formatDuration(duration_end).data(),
             escape(_options.filename).data(),
             escape(_options.description + " -- By -- " + _options.username).data(),
             escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
