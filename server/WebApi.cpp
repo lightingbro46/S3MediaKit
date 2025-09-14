@@ -241,14 +241,39 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     return allArgs;
 }
 
+static string getCameraId(const ArgsMap &allArgs) {
+    if (!allArgs["cameraId"].empty()) {
+        return allArgs["cameraId"];
+    }
+    if (!allArgs["camera_id"].empty()) {
+        return allArgs["camera_id"];
+    }
+    if (!allArgs["deviceId"].empty()) {
+        return allArgs["deviceId"];
+    }
+    if (!allArgs["device_id"].empty()) {
+        return allArgs["device_id"];
+    }
+    return "";
+}
+
+static string getStreamId(const ArgsMap &allArgs) {
+    if (!allArgs["streamId"].empty()) {
+        return allArgs["streamId"];
+    }
+    if (!allArgs["stream_id"].empty()) {
+        return allArgs["stream_id"];
+    }
+    return "";
+}
+
 #define CHECK_USER_AUTH(XX)                                                                                                                                    \
     CHECK_ARGS("Authorization");                                                                                                                               \
     string bearer_token = allArgs["Authorization"];                                                                                                            \
     string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                            \
     string host = allArgs["Host"];                                                                                                                             \
-    string camera_id = allArgs["cameraId"];                                                                                                                    \
-    string stream_id = allArgs["streamId"];                                                                                                                    \
-    allArgs["_token"] = jwt_token;                                                                                                                             \
+    string camera_id = getCameraId(allArgs);                                                                                                                   \
+    string stream_id = getStreamId(allArgs);                                                                                                                   \
     string url = (StrPrinter << "http://" << host << "/" << camera_id << "/" << stream_id << "?token=" << jwt_token);                                          \
     MediaInfo media_info(url);                                                                                                                                 \
     Broadcast::AuthInvoker auth_invoker = [&sender, headerOut, allArgs, val, invoker, cb, media_info, jwt_token](const string &err) mutable {                  \
@@ -257,8 +282,10 @@ static ApiArgsType getAllArgs(const Parser &parser) {
             return;                                                                                                                                            \
         }                                                                                                                                                      \
         auto cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                                   \
-        allArgs.getRef("_user_id") = cache->getUid();                                                                                                           \
-        allArgs.getRef("_user_name") = cache->getUserName();                                                                                                    \
+        if (cache) {                                                                                                                                           \
+            allArgs.args["_user_id"] = cache->getUid();                                                                                                        \
+            allArgs.args["_user_name"] = cache->getUserName();                                                                                                 \
+        }                                                                                                                                                      \
         XX                                                                                                                                                     \
     };                                                                                                                                                         \
     bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);                                     \
@@ -278,22 +305,6 @@ static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void
 
 static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP)> &cb) {
     return [cb](API_ARGS_MAP_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
-}
-
-static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
-    return [cb](API_ARGS_JSON_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
-}
-
-static const function<void(API_ARGS_JSON_ASYNC)> withUserAuth(const function<void(API_ARGS_JSON)> &cb) {
-    return [cb](API_ARGS_JSON_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
-}
-
-static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING_ASYNC)> &cb) {
-    return [cb](API_ARGS_STRING_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
-}
-
-static const function<void(API_ARGS_STRING_ASYNC)> withUserAuth(const function<void(API_ARGS_STRING)> &cb) {
-    return [cb](API_ARGS_STRING_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
 }
 
 extern uint64_t getTotalMemUsage();

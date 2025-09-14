@@ -86,7 +86,7 @@ void UserAuthorManager::cleanExpiredAuthorCache() {
             auto &info = devIt->second;
             uint64_t create_time = info.second;
             if (create_time < time_threshold) {
-                deviceMap.erase(devIt);
+                devIt = deviceMap.erase(devIt);
             } else {
                 ++devIt;
             }
@@ -102,7 +102,7 @@ void UserAuthorManager::cleanExpiredTokenCache() {
         uint64_t expired_time = tokenCache->getExpiredAt();
         if (expired_time < (uint64_t)time_now) {
             _map_token_device.erase(tokenIt->first);
-            _map_token_cache.erase(tokenIt);
+            tokenIt = _map_token_cache.erase(tokenIt);
         } else {
             ++tokenIt;
         }

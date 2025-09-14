@@ -576,11 +576,6 @@ void installWebHook() {
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
-        if (!enable_authorize) {
-            invoker("");
-            return;                                                                                                                                                
-        } 
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
 
@@ -590,6 +585,13 @@ void installWebHook() {
             invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
             return;
         }
+
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
+        if (!enable_authorize) {
+            UserAuthorManager::Instance().addAuthorCache(args, jwt_token, true); 
+            invoker("");
+            return;                                                                                                                                                
+        } 
 
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
