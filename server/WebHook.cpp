@@ -578,17 +578,21 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
-
-        auto permit =  UserAuthorManager::Instance().getAuthorCache(args, jwt_token);
-        if (permit != UserAuthorPermit::UNKNOWN) {
-            // User auth cache has still been expired. Check user permission
-            invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
-            return;
+        // todo: require jwt token after handling media url
+        if (!jwt_token.empty()) {
+            auto permit =  UserAuthorManager::Instance().getAuthorCache(args, jwt_token);
+            if (permit != UserAuthorPermit::UNKNOWN) {
+                // User auth cache has still been expired. Check user permission
+                invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
+                return;
+            }
         }
 
         GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
         if (!enable_authorize) {
-            UserAuthorManager::Instance().addAuthorCache(args, jwt_token, true); 
+            if (!jwt_token.empty()) {
+                UserAuthorManager::Instance().addAuthorCache(args, jwt_token, true); 
+            }
             invoker("");
             return;                                                                                                                                                
         } 
