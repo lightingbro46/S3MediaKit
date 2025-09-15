@@ -126,6 +126,31 @@ protected:
         }
         return ret;
     }
+
+    std::vector<Bookmark> findByTimeRange(int64_t start_time, int64_t end_time, const std::string &camera_guid) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        whereClause << "start_time BETWEEN ? AND ?";
+        whereParams.push_back(std::to_string(start_time));
+        whereParams.push_back(std::to_string(end_time));
+
+        if (!camera_guid.empty()) {
+            whereClause << " AND camera_guid = ?";
+            whereParams.push_back(camera_guid);
+        }
+
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<Bookmark>::getColumns())
+                         .from(EntityTraits<Bookmark>::tableName())
+                         .where(whereClause.str(), whereParams);
+        auto rows = _executor->executeRaw(query);
+        std::vector<Bookmark> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<Bookmark>::fromRow(row));
+        }
+        return ret;
+    }
 };
 
 class BookmarkImp : public BookmarkRepository {
@@ -200,6 +225,16 @@ public:
         }
         std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
         return findByTimeCreated(_camera_guids, size, _sort);
+    }
+
+    int removeByTimeRange(uint64_t start_time, uint64_t end_time, const std::string &camera_guid) {
+        int removed_count = 0;
+        auto ret = findByTimeRange(start_time, end_time, camera_guid);
+        for (const auto& b : ret) {
+            remove(b.guid);
+            removed_count++;
+        }
+        return removed_count;
     }
 
 private:

@@ -6,11 +6,12 @@
 #include "Common/Parser.h"
 #include "Thread/WorkThreadPool.h"
 #include "TimeRecorder.h"
-#include "Camera/GenericRtspCamera.h"
+#include "Common/DeviceSource.h"
 #include "Server/GlobalMonitor.h"
 #include "StorageManager.h"
 #include "server/Manager.h"
 #include "Storage/UserSession.h"
+#include "Storage/Bookmark.h"
 
 using namespace std;
 using namespace toolkit;
@@ -56,7 +57,9 @@ void StorageManager::cleanupTemporaryFiles() {
     InfoL << "Remove temporary files. Finished. " << formatDuration(_ticker.elapsedTime()) << " elapsed" ;
 }
 
-static size_t recreateTimeFile(TimeRebuilder::KeepTimeMap &map, size_t space_reclaim) {
+using KeepTimeMap = TimeRebuilder::KeepTimeMap;
+
+static size_t recreateTimeFile(KeepTimeMap &map, size_t space_reclaim) {
     try {
         auto self = TimeRecorder::Instance().shared_from_this();
         auto rebuilder = std::make_shared<TimeRebuilder>(self);
@@ -189,12 +192,77 @@ static size_t removeExpiredSegment(const string &stream_path, uint64_t time_thre
     return removed_bytes;
 }
 
+static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
+    // todo: Execution time exceeds period time, default 10 minutes
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, appName, Record::kAppName)
+    GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
+    auto record_path = File::absolutePath(appName, mp4_save_path);
+    unordered_map<string, uint64_t> path_threshold;
+    File::scanDir(record_path, [&](const string path, bool isDir) {
+        if (isDir) {
+            auto sub_path = findSubString(path.data() + record_path.size(), "/", nullptr);
+            auto tuples = split(sub_path, "/");
+            if (tuples.size() == 2) {
+                string camera_id = tuples[0];
+                string stream_id = tuples[1];
+                string key = (StrPrinter << camera_id << "/" << stream_id);
+                uint64_t threshold = time(nullptr) - s_max_second;
+                auto it = keep_time_map.find(key);
+                if (it != keep_time_map.end()) {
+                    threshold = it->second;
+                    DebugL << "Stream " << key << " threshold: " << threshold;
+                } else {
+                    DebugL << "Stream " << key << " use current time for threshold: " << threshold;
+                }
+                path_threshold.emplace(path, threshold);
+            }
+        }
+        return true;
+    }, true);
+    size_t removed_volume_bytes = 0;
+    for (const auto &it : path_threshold) {
+        auto bytes = removeExpiredSegment(it.first, it.second);
+        DebugL << "Remove expired file: " << it.first << ". Threshold: " << (it.second ? getTimeStr("%Y-%m-%d %H:%M:%S", it.second) : 0) << ". Removed bytes: " << format_bytes_human_readable(bytes);
+        removed_volume_bytes += bytes;
+    }
+    return removed_volume_bytes;
+}
+
+static KeepTimeMap getKeepTimeMapByDevice(const KeepTimeMap &path_map) {
+    KeepTimeMap camera_map;
+    for (const auto &it : path_map) {
+        auto info = split(it.first, "/");
+        auto &ret = camera_map[info[0]];
+        if (!ret || ret > it.second) {
+            ret = it.second;
+        }
+    }
+    return camera_map;
+}
+
+static void removeExpiredBookmark(const KeepTimeMap &keep_time_map) {
+    auto device_time_map = getKeepTimeMapByDevice(keep_time_map);
+    auto imp = std::make_shared<BookmarkImp>();
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto tuple = src->getDeviceTuple();
+        auto it = device_time_map.find(tuple.device_id);
+        auto time_threshold = time(nullptr);
+        if (it != device_time_map.end()) {
+            time_threshold = it->second;
+        }
+        auto ret = imp->removeByTimeRange(0, time_threshold, tuple.device_id);
+        DebugL << "Remove expired bookmark: " << tuple.device_id << ". Threshold: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold) << ". Removed count: " << ret;
+    }, CAMERA_SCHEMA);
+    InfoL << "Remove expired bookmark. Finished";
+}
+
 void StorageManager::enforceStoragePolicy() {
     // estimate removed space need to reclaim
     size_t space_reclaim = estimateSpaceToReclaim();
 
     // rewrite time file with time rebuilder
-    TimeRebuilder::KeepTimeMap keep_time_map;
+    KeepTimeMap keep_time_map;
     size_t removed_bytes = recreateTimeFile(keep_time_map, space_reclaim);
     if (!removed_bytes) {
         return;
@@ -211,40 +279,11 @@ void StorageManager::enforceStoragePolicy() {
         // Reset a timer to track the operation time of a cycle
         strong_self->_ticker.resetTime();
 
-        // todo: Execution time exceeds 30 minutes
-        GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
-        GET_CONFIG(string, appName, Record::kAppName)
-        GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
-        auto record_path = File::absolutePath(appName, mp4_save_path);
-        unordered_map<string, uint64_t> path_threshold;
-        File::scanDir(record_path, [&](const string path, bool isDir) {
-            if (isDir) {
-                auto sub_path = findSubString(path.data() + record_path.size(), "/", nullptr);
-                auto tuples = split(sub_path, "/");
-                if (tuples.size() == 2) {
-                    string camera_id = tuples[0];
-                    string stream_id = tuples[1];
-                    string key = (StrPrinter << camera_id << "/" << stream_id);
-                    uint64_t threshold = time(nullptr) - s_max_second;
-                    auto it = keep_time_map.find(key);
-                    if (it != keep_time_map.end()) {
-                        threshold = it->second;
-                        DebugL << "Stream " << key << " threshold: " << threshold;
-                    } else {
-                        DebugL << "Stream " << key << " use current time for threshold: " << threshold;
-                    }
-                    path_threshold.emplace(path, threshold);
-                }
-            }
-            return true;
-        }, true);
-        size_t removed_volume_bytes = 0;
-        for (const auto &it : path_threshold) {
-            auto bytes = removeExpiredSegment(it.first, it.second);
-            DebugL << "Remove expired file: " << it.first << ". Threshold: " << (it.second ? getTimeStr("%Y-%m-%d %H:%M:%S", it.second) : 0) << ". Removed bytes: " << format_bytes_human_readable(bytes);
-            removed_volume_bytes += bytes;
-        }
+        auto removed_volume_bytes = removeExpiredSegment(keep_time_map);
         InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_volume_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
+
+        // remove expired items associated with media segment
+        removeExpiredBookmark(keep_time_map);
     });
 }
 
@@ -263,7 +302,7 @@ void StorageManager::start() {
                 return false;
             }
             strong_self->enforceStoragePolicy();
-            strong_self->deleteExpiredUserSession();
+            strong_self->removeExpiredUserSession();
             return true;
         },
         _poller);
@@ -292,15 +331,15 @@ void StorageManager::getBackUpStorageUsage(size_t &used_bytes, size_t &total_byt
     // todo:
 }
 
-void StorageManager::deleteExpiredUserSession() {
+void StorageManager::removeExpiredUserSession() {
     GET_CONFIG(int, sessionExpiryDays, Manager::kSessionExpiryDays);
     int64_t time_threshold = std::time(nullptr) - (sessionExpiryDays * 24 * 3600);
-    DebugL << " Delete expire user session before: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold);
+    DebugL << " Remove expire user session before: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold);
     auto imp = make_shared<UserSessionImp>();
     if (imp->removeByStamp(time_threshold)) {
-        DebugL << "Deleted expire user session success";
+        InfoL<< "Removed expire user session success";
     } else {
-        DebugL << "Deleted expire user session failed";
+        WarnL << "Remove expire user session failed";
     };
 }
 

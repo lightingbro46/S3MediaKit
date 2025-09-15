@@ -32,7 +32,7 @@ private:
 
     void enforceStoragePolicy();
 
-    void deleteExpiredUserSession();
+    void removeExpiredUserSession();
 
 private:
     toolkit::EventPoller::Ptr _poller;
