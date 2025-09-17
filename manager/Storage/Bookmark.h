@@ -7,6 +7,7 @@
 #include "Util/util.h"
 
 namespace managerkit {
+
 struct Bookmark {
     std::string guid;
     std::string camera_guid;

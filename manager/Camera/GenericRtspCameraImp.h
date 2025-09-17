@@ -4,10 +4,11 @@
 #include "GenericRtspCamera.h"
 #include "StreamSink.h"
 #include "CameraController.h"
+#include "Local/RecordStrategy.h"
 
 namespace managerkit {
     
-class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController {
+class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController, public RecordStrategy {
 public:
     using Ptr = std::shared_ptr<GenericRtspCameraImp>;
 
@@ -19,9 +20,14 @@ public:
 
     bool isEnabled() { return _enabled; }
 
+private:
     void onAllStreamReady() override;
 
-    void onChangeRecordMode(RecordMode &mode) override;
+    void onRecordModeChange(RecordMode mode) override;
+
+    void setupRecordStream(RecordMode mode);
+
+    void stopRecordStream();
 
 private:
     bool _enabled = false;

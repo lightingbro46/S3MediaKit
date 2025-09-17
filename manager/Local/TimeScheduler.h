@@ -45,6 +45,7 @@ public:
         }
 
         parse_schedule_str<Type, Helper>(schedule_str, _scheduler_map);
+        _mode = getModeActive();
     }
 
     ~TimeScheduler() {
@@ -73,9 +74,14 @@ public:
                 if (!strong_self) {
                     return false;
                 }
-                if (strong_self->_on_change_mode) {
-                    auto mode = strong_self->getModeActive();
-                    strong_self->_on_change_mode(mode);
+                auto previous_mode = strong_self->_mode;
+                strong_self->_mode = strong_self->getModeActive();
+
+                if (previous_mode != strong_self->_mode) {
+                    // call callback when mode change
+                    if (strong_self->_on_change_mode) {
+                        strong_self->_on_change_mode(strong_self->_mode);
+                    }
                 }
                 return true;
             },
@@ -87,6 +93,7 @@ private:
     std::string _schedule_str;
     std::unordered_map<int, std::unordered_map<int, Type>> _scheduler_map;
     toolkit::Timer::Ptr _timer_scheduler;
+    Type _mode;
     onChangeMode _on_change_mode = nullptr;
 };
 

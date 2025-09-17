@@ -2,7 +2,7 @@
 #define LOCAL_RECORDSTRATEGY_H
 
 #include <string>
-#include "Camera/StreamSource.h"
+#include "Local/TimeScheduler.h"
 
 namespace managerkit {
     
@@ -42,6 +42,24 @@ public:
     static int count() {
         return static_cast<int>(RecordMode::RecordMax);
     }
+};
+
+class RecordStrategy {
+public:
+    RecordStrategy();
+    ~RecordStrategy();
+
+    void setupScheduler(const std::string &schedule_str);
+    
+    void stopScheduler();
+
+    RecordMode getRecordModeActive();
+
+protected:
+    virtual void onRecordModeChange(RecordMode mode) {}
+
+private:
+    TimeScheduler<RecordMode, RecordModeHelper>::Ptr _scheduler;
 };
 
 } // namespace managerkit
