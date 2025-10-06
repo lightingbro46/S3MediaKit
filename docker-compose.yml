@@ -2,6 +2,7 @@ services:
   3spro-mserver:
     image: 3spro/3spro-mserver:latest
     container_name: 3spro-mserver
+    init: true
     restart: always
     privileged: true
     shm_size: 2g 
