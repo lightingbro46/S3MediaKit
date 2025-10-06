@@ -124,11 +124,6 @@ typedef struct {
      */
     void (API_CALL *on_mk_record_mp4)(const mk_record_info mp4);
 
-    /**
-     * Broadcast after recording mkv fragment file successfully
-     */
-    void (API_CALL *on_mk_record_mkv)(const mk_record_info mkv);
-
      /**
       * Broadcast after recording ts fragment file successfully
      */

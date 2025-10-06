@@ -204,10 +204,6 @@ public:
     bool enable_ts;
     // Whether to enable conversion to http-fmp4/ws-fmp4
     bool enable_fmp4;
-    // Whether to enable MKV recording
-    bool enable_mkv;
-    // Whether to enable conversion to http-webm/ws-webm
-    bool enable_webm;
 
     // Whether to generate hls protocol on demand, if hls.segNum is configured to 0 (meaning hls recording), then hls will always be generated (regardless of this switch)
     bool hls_demand;
@@ -219,8 +215,6 @@ public:
     bool ts_demand;
     // Whether to generate http[s]-fmp4、ws[s]-fmp4 protocol on demand
     bool fmp4_demand;
-    // Whether to generate http[s]-webm, ws[s]-webm protocol on demand
-    bool webm_demand;
 
     // Whether to treat mp4 recording as a viewer
     bool mp4_as_player;
@@ -228,13 +222,6 @@ public:
     size_t mp4_max_second;
     // MP4 recording save path
     std::string mp4_save_path;
-
-    // Whether to treat mkv recording as a viewer
-    bool mkv_as_player;
-    // MKV slice size, in seconds
-    size_t mkv_max_second;
-    // MKV recording save path
-    std::string mkv_save_path;
 
     // HLS recording save path
     std::string hls_save_path;
@@ -267,8 +254,6 @@ public:
         GET_OPT_VALUE(enable_rtmp);
         GET_OPT_VALUE(enable_ts);
         GET_OPT_VALUE(enable_fmp4);
-        GET_OPT_VALUE(enable_mkv);
-        GET_OPT_VALUE(enable_webm);
 
         GET_OPT_VALUE(hls_demand);
         GET_OPT_VALUE(rtsp_demand);
@@ -279,10 +264,6 @@ public:
         GET_OPT_VALUE(mp4_max_second);
         GET_OPT_VALUE(mp4_as_player);
         GET_OPT_VALUE(mp4_save_path);
-
-        GET_OPT_VALUE(mkv_max_second);
-        GET_OPT_VALUE(mkv_as_player);
-        GET_OPT_VALUE(mkv_save_path);
 
         GET_OPT_VALUE(hls_save_path);
         GET_OPT_VALUE(stream_replace);
@@ -440,13 +421,13 @@ public:
     // //////////////static methods, find or generate MediaSource////////////////
 
     // Synchronously find the stream
-    static Ptr find(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &id, bool from_mp4 = false, bool from_mkv = false);
-    static Ptr find(const MediaInfo &info, bool from_mp4 = false, bool from_mkv = false) {
-        return find(info.schema, info.vhost, info.app, info.stream, from_mp4, from_mkv);
+    static Ptr find(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &id, bool from_mp4 = false);
+    static Ptr find(const MediaInfo &info, bool from_mp4 = false) {
+        return find(info.schema, info.vhost, info.app, info.stream, from_mp4);
     }
 
     // Ignore schema, synchronously find the stream, may return rtmp/rtsp/hls type
-    static Ptr find(const std::string &vhost, const std::string &app, const std::string &stream_id, bool from_mp4 = false, bool from_mkv = false);
+    static Ptr find(const std::string &vhost, const std::string &app, const std::string &stream_id, bool from_mp4 = false);
 
     // Asynchronously find the stream
     static void findAsync(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, const std::function<void(const Ptr &src)> &cb);
@@ -454,8 +435,6 @@ public:
     static void for_each_media(const std::function<void(const Ptr &src)> &cb, const std::string &schema = "", const std::string &vhost = "", const std::string &app = "", const std::string &stream = "");
     // Generate MediaSource from mp4 file
     static MediaSource::Ptr createFromMP4(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &file_path = "", bool check_app = true);
-    // Generate MediaSource from mkv file
-    static MediaSource::Ptr createFromMKV(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &file_path = "", bool check_app = true);
 
 protected:
     // Media registration

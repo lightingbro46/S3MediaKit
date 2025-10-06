@@ -33,7 +33,6 @@ bool loadIniConfig(const char *ini_path) {
 namespace Broadcast {
 const string kBroadcastMediaChanged = "kBroadcastMediaChanged";
 const string kBroadcastRecordMP4 = "kBroadcastRecordMP4";
-const string kBroadcastRecordMKV = "kBroadcastRecordMKV";
 const string kBroadcastRecordTs = "kBroadcastRecordTs";
 const string kBroadcastHttpRequest = "kBroadcastHttpRequest";
 const string kBroadcastHttpAccess = "kBroadcastHttpAccess";
@@ -117,16 +116,10 @@ const string kEnableRtsp = string(kFieldName) + "enable_rtsp";
 const string kEnableRtmp = string(kFieldName) + "enable_rtmp";
 const string kEnableTS = string(kFieldName) + "enable_ts";
 const string kEnableFMP4 = string(kFieldName) + "enable_fmp4";
-const string kEnableMKV = string(kFieldName) + "enable_mkv";
-const string kEnableWebM = string(kFieldName) + "enable_webm";
 
 const string kMP4AsPlayer = string(kFieldName) + "mp4_as_player";
 const string kMP4MaxSecond = string(kFieldName) + "mp4_max_second";
 const string kMP4SavePath = string(kFieldName) + "mp4_save_path";
-
-const string kMKVAsPlayer = string(kFieldName) + "mkv_as_player";
-const string kMKVMaxSecond = string(kFieldName) + "mkv_max_second";
-const string kMKVSavePath = string(kFieldName) + "mkv_save_path";
 
 const string kHlsSavePath = string(kFieldName) + "hls_save_path";
 
@@ -135,7 +128,6 @@ const string kRtspDemand = string(kFieldName) + "rtsp_demand";
 const string kRtmpDemand = string(kFieldName) + "rtmp_demand";
 const string kTSDemand = string(kFieldName) + "ts_demand";
 const string kFMP4Demand = string(kFieldName) + "fmp4_demand";
-const string kWebMDemand = string(kFieldName) + "webm_demand";
 const string kAppName = string(kFieldName) + "appName";
 
 static onceToken token([]() {
@@ -153,16 +145,10 @@ static onceToken token([]() {
     mINI::Instance()[kEnableRtmp] = 0;
     mINI::Instance()[kEnableTS] = 0;
     mINI::Instance()[kEnableFMP4] = 1;
-    mINI::Instance()[kEnableMKV] = 0;
-    mINI::Instance()[kEnableWebM] = 0;
 
     mINI::Instance()[kMP4AsPlayer] = 0;
     mINI::Instance()[kMP4MaxSecond] = 60;
     mINI::Instance()[kMP4SavePath] = "./www";
-
-    mINI::Instance()[kMKVAsPlayer] = 0;
-    mINI::Instance()[kMKVMaxSecond] = 60;
-    mINI::Instance()[kMKVSavePath] = "./www";
 
 #ifdef _linux_
     mINI::Instance()[kHlsSavePath] = "/dev/shm/live";
@@ -175,7 +161,6 @@ static onceToken token([]() {
     mINI::Instance()[kRtmpDemand] = 0;
     mINI::Instance()[kTSDemand] = 0;
     mINI::Instance()[kFMP4Demand] = 0;
-    mINI::Instance()[kWebMDemand] = 0;
     mINI::Instance()[kAppName] = "live";
 });
 } // !Protocol
@@ -314,7 +299,6 @@ const string kFileBufSize = RECORD_FIELD "fileBufSize";
 const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
-const string kEnableWebM = RECORD_FIELD "enableWebM";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -323,7 +307,6 @@ static onceToken token([]() {
     mINI::Instance()[kFastStart] = false;
     mINI::Instance()[kFileRepeat] = false;
     mINI::Instance()[kEnableFmp4] = false;
-    mINI::Instance()[kEnableWebM] = false;
 });
 } // namespace Record
 

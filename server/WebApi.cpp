@@ -43,7 +43,6 @@
 #include "Rtp/RtpProcess.h"
 #include "User/UserAuthorManager.h"
 #include "Record/MP4Reader.h"
-#include "Record/MKVReader.h"
 
 #if defined(ENABLE_RTPPROXY)
 #include "Rtp/RtpServer.h"
@@ -2152,10 +2151,9 @@ void installWebApi() {
         ProtocolOption option;
         // mp4 supports multiple tracks
         option.max_track = 16;
-        // By default, demultiplexing mp4 does not generate mp4, mkv
+        // By default, demultiplexing mp4 does not generate mp4
         option.enable_mp4 = false;
-        option.enable_mkv = false;
-        // But if the parameter explicitly specifies to enable mp4, mkv then it is also allowed
+        // But if the parameter explicitly specifies to enable mp4 then it is also allowed
         option.load(allArgs);
         // Force automatic shutdown when no one is watching
         option.auto_close = true;
@@ -2163,28 +2161,6 @@ void installWebApi() {
         auto reader = std::make_shared<MP4Reader>(tuple, allArgs["file_path"], option);
         // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing, then force it to be enabled
         reader->startReadMP4(0, true, allArgs["file_repeat"]);
-    });
-#endif
-
-#if ENABLE_MKV
-    api_regist("/index/api/loadMKVFile", [](API_ARGS_MAP) {
-        CHECK_SECRET();
-        CHECK_ARGS("vhost", "app", "stream", "file_path");
-
-        ProtocolOption option;
-        // mp4 supports multiple tracks
-        option.max_track = 16;
-        // By default, demultiplexing mkv does not generate mkv, mp4
-        option.enable_mkv = false;
-        option.enable_mp4 = false;
-        // But if the parameter explicitly specifies to enable mp4, mkv then it is also allowed
-        option.load(allArgs);
-        // Force automatic shutdown when no one is watching
-        option.auto_close = true;
-        auto tuple = MediaTuple { allArgs["vhost"], allArgs["app"], allArgs["stream"], "" };
-        auto reader = std::make_shared<MKVReader>(tuple, allArgs["file_path"], option);
-        // sample_ms is set to 0, loaded from the configuration file; file_repeat can be specified, if the configuration file also specifies loop demultiplexing, then force it to be enabled
-        reader->startReadMKV(0, true, allArgs["file_repeat"]);
     });
 #endif
 

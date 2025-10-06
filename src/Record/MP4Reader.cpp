@@ -13,12 +13,10 @@ namespace mediakit {
 MP4Reader::MP4Reader(const MediaTuple &tuple, const string &file_path,
                      toolkit::EventPoller::Ptr poller) {
     ProtocolOption option;
-    // Read mp4 file and stream it, do not regenerate mp4/hls/mkv/webm file repeatedly
+    // Read mp4 file and stream it, do not regenerate mp4/hls file repeatedly
     option.enable_mp4 = false;
     option.enable_hls = false;
     option.enable_hls_fmp4 = false;
-    option.enable_mkv = false;
-    option.enable_webm = false;
     // mp4 supports multiple tracks
     option.max_track = 16;
     setup(tuple, file_path, option, std::move(poller));

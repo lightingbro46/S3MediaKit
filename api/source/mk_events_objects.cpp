@@ -358,11 +358,10 @@ API_EXPORT void API_CALL mk_media_source_find(const char *schema,
                                               const char *app,
                                               const char *stream,
                                               int from_mp4,
-                                              int from_mkv,
                                               void *user_data,
                                               on_mk_media_source_find_cb cb) {
     assert(schema && vhost && app && stream && cb);
-    auto src = MediaSource::find(schema, vhost, app, stream, from_mp4, from_mkv);
+    auto src = MediaSource::find(schema, vhost, app, stream, from_mp4);
     cb(user_data, (mk_media_source)src.get());
 }
 
@@ -370,10 +369,9 @@ API_EXPORT mk_media_source API_CALL mk_media_source_find2(const char *schema,
                                                           const char *vhost,
                                                           const char *app,
                                                           const char *stream,
-                                                          int from_mp4,
-                                                          int from_mkv) {
+                                                          int from_mp4) {
     assert(schema && vhost && app && stream);
-    auto src = MediaSource::find(schema, vhost, app, stream, from_mp4, from_mkv);
+    auto src = MediaSource::find(schema, vhost, app, stream, from_mp4);
     return (mk_media_source)src.get();
 }
 

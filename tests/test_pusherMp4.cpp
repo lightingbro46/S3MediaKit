@@ -26,8 +26,6 @@ int domain(const string &file, const string &url) {
     mINI::Instance()[Protocol::kEnableTS] = 0;
     mINI::Instance()[Protocol::kEnableRtsp] = 0;
     mINI::Instance()[Protocol::kEnableRtmp] = 0;
-    mINI::Instance()[Protocol::kEnableMKV] = 0;
-    mINI::Instance()[Protocol::kEnableWebM] = 0;
 
     // Get the media protocol type based on the URL, note the case
     auto schema = strToLower(findSubString(url.data(), nullptr, "://").substr(0, 4));

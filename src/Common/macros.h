@@ -58,7 +58,6 @@
 #define FMP4_SCHEMA "fmp4"
 #define HLS_SCHEMA "hls"
 #define HLS_FMP4_SCHEMA "hls.fmp4"
-#define WEBM_SCHEMA "webm"
 
 #define VHOST_KEY "vhost"
 #define DEFAULT_VHOST "__defaultVhost__"

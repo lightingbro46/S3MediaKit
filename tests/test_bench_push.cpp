@@ -136,7 +136,6 @@ int main(int argc, char *argv[]) {
     ProtocolOption option;
     option.enable_hls = false;
     option.enable_mp4 = false;
-    option.enable_mkv = false;
     MediaSource::Ptr src = nullptr;
     PlayerProxy::Ptr proxy = nullptr;;
 

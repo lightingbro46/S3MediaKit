@@ -6,8 +6,6 @@
 #include "HlsRecorder.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
-#include "MKVRecorder.h"
-#include "WebM/WebMMediaSourceMuxer.h"
 
 using namespace std;
 using namespace toolkit;
@@ -112,23 +110,6 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             return std::make_shared<TSMediaSourceMuxer>(tuple, option);
 #else
             throw std::invalid_argument("mpegts related functions are not turned on. Please enable the ENABLE_HLS or ENABLE_RTPPROXY macro and then compile and test it");
-#endif
-        }
-
-        case Recorder::type_mkv: {
-#if defined(ENABLE_MKV)
-            auto path = Recorder::getRecordPath(type, tuple, option.mkv_save_path);
-            return std::make_shared<MKVRecorder>(tuple, path, option.mkv_max_second);
-#else
-            throw std::invalid_argument("The mkv-related functions are not turned on, please enable the ENABLE_MKV macro and compile and test it again.");
-#endif
-        }
-
-        case Recorder::type_webm: {
-#if defined(ENABLE_MKV)
-            return std::make_shared<WebMMediaSourceMuxer>(tuple, option);
-#else
-            throw std::invalid_argument("webm related functions are not turned on. Please enable the ENABLE_MKV macro and then compile and test it");
 #endif
         }
 

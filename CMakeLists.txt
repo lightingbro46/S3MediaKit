@@ -19,7 +19,6 @@ option(ENABLE_JEMALLOC_STATIC "Enable static linking to the jemalloc library" OF
 option(ENABLE_JEMALLOC_DUMP "Enable jemalloc to dump malloc statistics" OFF)
 option(ENABLE_MEM_DEBUG "Enable Memory Debug" OFF)
 option(ENABLE_MP4 "Enable MP4" ON)
-option(ENABLE_MKV "Enable MKV" ON)
 option(ENABLE_MSVC_MT "Enable MSVC Mt/Mtd lib" OFF)
 option(ENABLE_MYSQL "Enable MySQL" OFF)
 option(ENABLE_SQLITE "Enable Sqlite" ON)

@@ -82,24 +82,7 @@ void installManagerHook () {
             GenericRtspCameraImp::addCameraArchiveSize(block, true);
         }
     });
-#endif // ENABLE_MP4
 
-#ifdef ENABLE_MKV
-    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMKV, [](BroadcastRecordMKVArgs) {
-        TraceL << "Record mkv file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.file_path;
-        TimeBlock block;
-        block.set_app(info.app);
-        block.set_stream(info.stream);
-        block.set_start_time(info.start_time);
-        block.set_time_len(round(info.time_len));
-        block.set_file_size(info.file_size);
-        block.set_file_path(info.file_path);
-
-        TimeRecorder::Instance().inputBlock(block);
-    });
-#endif // ENABLE_MKV
-
-#if defined(ENABLE_MP4) || defined(ENABLE_MKV)
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaSeeked, [](BroadcastMediaSeekedArgs) {
         auto infos = split(args.stream, "/");
         MediaTuple tuple = { args.vhost, infos[0], infos[1], "" };
@@ -126,7 +109,7 @@ void installManagerHook () {
         }
         invoker(offset);
     });
-#endif // defined(ENABLE_MP4) || defined(ENABLE_MKV)
+#endif // ENABLE_MP4
 
     enforceStoragePolicy();
 
