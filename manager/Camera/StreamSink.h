@@ -11,6 +11,8 @@ public:
 
     StreamSink(const std::unordered_map<int, StreamTuple> &stream_map);
 
+    ~StreamSink();
+
     bool hasStreamTuple(int type) { 
         return _stream_map.find(type) != _stream_map.end(); 
     }
@@ -27,6 +29,8 @@ public:
 
     std::string getStreamStatus(int type);
 
+    mediakit::TranslationInfo getStreamInfo(int type);
+
     void setupMonitor(int type, bool start_record, int rtp_type, int media_port);
 
     void stopMonitor(int type);
@@ -40,11 +44,16 @@ private:
 
     virtual void onAllStreamReady() {};
 
+    virtual void onStreamChange(int type) {};
+
+    void onManager();
+
 private:
     std::recursive_mutex _mtx_sink;
     bool _all_stream_ready = false;
     std::unordered_map<int, std::pair<StreamTuple, bool>> _stream_map;
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
+    toolkit::Timer::Ptr _timer_sink;
 };
 
 } // namespace managerkit

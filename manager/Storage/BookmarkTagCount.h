@@ -46,15 +46,21 @@ public:
         BookmargTagCount tagCountFind = { tag, 0 };
         auto tagCounts = findById(tagCountFind);
         if (tagCounts.empty()) {
-            BookmargTagCount tagCountInsert = { tag, 1 };
-            save(tagCountInsert, true);
+            if (amount > 0) {
+                BookmargTagCount tagCountInsert = { tag, amount };
+                save(tagCountInsert, true);
+            } else {
+                WarnL << "Invalid bookmark tag count increasing amount: " << amount;
+            }
         } else {
             auto tagCount = tagCounts.begin();
             tagCount->count += amount;
             if (tagCount->count < 0) {
+                updateById(*tagCount);
+            } else {
                 tagCount->count = 0;
+                remove(tag);
             }
-            updateById(*tagCount);
         }
     }
 
@@ -65,6 +71,12 @@ public:
             ret.push_back(entity.tag);
         }
         return ret;
+    }
+
+private:
+    void remove(const std::string &tag) {
+        BookmargTagCount tagCount = { tag, 0 };
+        removeById(tagCount);
     }
 };
 

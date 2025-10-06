@@ -4,7 +4,9 @@
 #include <string>
 #include "DbStorage.h"
 #include "BookmarkTag.h"
+#include "BookmarkStats.h"
 #include "Util/util.h"
+#include "Camera/GenericRtspCameraImp.h"
 
 namespace managerkit {
 
@@ -41,7 +43,7 @@ public:
 
 protected:
     std::vector<Bookmark> findByTimeRange(int64_t start_time, int64_t end_time, const std::vector<std::string> &camera_guids,
-                                        int offset, int limit, std::string &sort) {
+                                        int offset, int limit, std::string &sort, const std::string& search_term = "") {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
@@ -57,6 +59,12 @@ protected:
                 whereParams.push_back(camera_guids[i]);
             }
             whereClause << ")";
+        }
+
+        if (!search_term.empty()){
+            whereClause << " AND guid IN (SELECT guid FROM bookmark_fts WHERE bookmark_fts MATCH ? UNION SELECT bookmark_guid FROM bookmark_tag_fts WHERE bookmark_tag_fts MATCH ? ) ";
+            whereParams.push_back(search_term);
+            whereParams.push_back(search_term);
         }
 
         auto query = toolkit::QueryBuilder()
@@ -159,6 +167,7 @@ public:
     using Ptr = std::shared_ptr<BookmarkImp>;
     BookmarkImp() : BookmarkRepository() {
         _bTag = std::make_shared<BookmarkTagImp>();
+        _bStats = std::make_shared<BookmarkStatsImp>();
     }
 
     void add(Bookmark &bm, const std::string &tags) { 
@@ -168,6 +177,8 @@ public:
         }
         save(bm, true);
         _bTag->add(bm.guid, tags);
+        _bStats->add(bm.camera_guid, 1);
+        GenericRtspCameraImp::addCameraBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, true);
     }
 
     void update(Bookmark &bm, const std::string &tags) { 
@@ -175,11 +186,15 @@ public:
         _bTag->add(bm.guid, tags, true);
     }
 
-    void remove(const std::string &guid) { 
-        Bookmark bm;
-        bm.guid = guid;
-        removeById(bm);
-        _bTag->remove(guid);
+    void remove(const std::string &guid) {
+        auto ret = findById(guid);
+        if (ret.size()) {
+            Bookmark bm = ret[0];
+            removeById(bm);
+            _bTag->remove(guid);
+            _bStats->add(bm.camera_guid, -1);
+            GenericRtspCameraImp::addCameraBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, false);
+        }
     }
 
     std::vector<Bookmark> findById(std::string id) {
@@ -195,8 +210,9 @@ public:
             _camera_guids = toolkit::split(camera_guids, ",");
         }
         std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
-        int offset = (page - 1) * size;
-        return findByTimeRange(start_time, end_time, _camera_guids, offset, size, _sort);
+        int offset = page * size;
+        toolkit::trim(const_cast<std::string&>(search));
+        return findByTimeRange(start_time, end_time, _camera_guids, offset, size, _sort, search);
     }
 
     int count(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &search) {
@@ -240,6 +256,7 @@ public:
 
 private:
     BookmarkTagImp::Ptr _bTag;
+    BookmarkStatsImp::Ptr _bStats;
 };
 
 } // namespace managerkit 

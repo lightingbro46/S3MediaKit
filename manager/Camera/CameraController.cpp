@@ -9,6 +9,10 @@ namespace managerkit {
 
 CameraController::CameraController(const CameraInfo &info) : _info(info) {}
 
+CameraController::~CameraController() {
+    _timer_ctr.reset();
+}
+
 void CameraController::setupController() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     if (_controller) {
@@ -50,8 +54,8 @@ void CameraController::setupController() {
 void CameraController::stopController() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     _controller_ready = false;
-    _controller = nullptr;
-    _timer_ctr = nullptr;
+    _controller.reset();
+    _timer_ctr.reset();
 }
 
 void CameraController::onManager() {

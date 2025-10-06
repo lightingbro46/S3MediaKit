@@ -127,40 +127,91 @@ static size_t estimateSpaceToReclaim() {
     return space_reclaim;
 }
 
-static uint64_t findStartTime(const string &time_path) {
-    // time_path ví dụ: "2025-07-16/14-38-34-1"
+static uint64_t findTimestampPath(const string &time_path) {
+    // Hỗ trợ các định dạng:
+    // 1. "YYYY-MM-DD/HH-MM-SS[-anything]" (định dạng cũ, ví dụ: 2025-07-16/14-38-34-1)
+    // 2. "YYYY-MM-DD" (mới: trả về mốc 00:00:00 local time của ngày đó)
+    // 3. (mở rộng nhẹ) "YYYY-MM-DD HH:MM:SS" nếu xuất hiện (dùng dấu cách)
+
+    if (time_path.empty()) {
+        return 0;
+    }
+
+    auto isDate = [](const std::string &s) -> bool {
+        // YYYY-MM-DD
+        if (s.size() != 10) return false;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (i == 4 || i == 7) {
+                if (s[i] != '-') return false;
+            } else if (!isdigit(static_cast<unsigned char>(s[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     std::tm tm = {};
-    
-    // Tách ngày và giờ
+    tm.tm_isdst = -1; // let mktime determine DST
+
+    // Trường hợp chỉ có ngày: "YYYY-MM-DD"
+    if (isDate(time_path)) {
+        std::istringstream ds(time_path + " 00:00:00");
+        ds >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+        if (ds.fail()) return 0;
+        time_t t = mktime(&tm);
+        return t > 0 ? static_cast<uint64_t>(t) : 0;
+    }
+
+    // Nếu chứa dấu cách và có vẻ là dạng "YYYY-MM-DD HH:MM:SS"
+    if (time_path.size() >= 19 && time_path[10] == ' ') {
+        std::istringstream fs(time_path);
+        fs >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+        if (fs.fail()) return 0;
+        time_t t = mktime(&tm);
+        return t > 0 ? static_cast<uint64_t>(t) : 0;
+    }
+
+    // Định dạng cũ: "YYYY-MM-DD/HH-MM-SS(-extra)"
     size_t pos = time_path.find('/');
-    if (pos == std::string::npos) return 0; // không hợp lệ
+    if (pos == std::string::npos) {
+        // Không phù hợp định dạng nào
+        return 0;
+    }
 
-    std::string datePart = time_path.substr(0, pos);       // "2025-07-16"
-    std::string timePart = time_path.substr(pos + 1);      // "14-38-34-1"
+    std::string datePart = time_path.substr(0, pos);       // YYYY-MM-DD
+    std::string timePart = time_path.substr(pos + 1);      // HH-MM-SS(-extra?)
 
-    // Loại bỏ phần đầu "." nếu có
+    if (!isDate(datePart)) {
+        return 0;
+    }
+
+    // Loại bỏ phần đầu '.' nếu có
     if (start_with(timePart, ".")) {
         timePart.erase(0, 1);
     }
 
-    // Loại bỏ phần cuối "-1" nếu có
-    size_t extraPos = timePart.rfind('-');
-    if (extraPos != std::string::npos) {
-        timePart = timePart.substr(0, extraPos); // "14-38-34"
+    // Cắt bỏ phần hậu tố không thuộc HH-MM-SS (ví dụ '-1')
+    // Chiến lược: lấy đúng 3 nhóm đầu tiên ngăn cách bởi '-'
+    {
+        auto parts = split(timePart, "-");
+        if (parts.size() >= 3) {
+            timePart = parts[0] + "-" + parts[1] + "-" + parts[2];
+        } else {
+            return 0;
+        }
     }
 
-    // Ghép thành định dạng "YYYY-MM-DD HH:MM:SS"
+    // Ghép sang định dạng parse: YYYY-MM-DD HH:MM:SS
     std::string full = datePart + " " + timePart;
-    std::replace(full.begin() + 11, full.end(), '-', ':'); // đổi '-' sau giờ thành ':'
+    // Đổi dấu '-' trong phần giờ thành ':'
+    std::replace(full.begin() + 11, full.end(), '-', ':');
 
-    // Parse với std::get_time
     std::istringstream ss(full);
     ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
     if (ss.fail()) return 0;
 
-    // Chuyển sang timestamp
     time_t t = mktime(&tm);
-    return static_cast<uint64_t>(t);
+    return t > 0 ? static_cast<uint64_t>(t) : 0;
 }
 
 static size_t removeExpiredSegment(const string &stream_path, uint64_t time_threshold) {
@@ -169,10 +220,15 @@ static size_t removeExpiredSegment(const string &stream_path, uint64_t time_thre
     unordered_map<string, size_t> remove_files;
     File::scanDir(stream_path, [&remove_files, time_threshold, stream_path](const string date_path, bool isDir) {
         if (isDir) {
+            string date_string = findSubString(date_path.data() + stream_path.size(),"/", nullptr);
+            auto date_time = findTimestampPath(date_string);
+            if (time_threshold <= date_time) {
+                return true;
+            }
             File::scanDir(date_path, [&remove_files, time_threshold, stream_path](const string path, bool isDir) {
                 if (!isDir && end_with(path, ".mp4")) {
                     string relative_path = findSubString(path.data() + stream_path.size(), "/", ".mp4");
-                    auto start_time = findStartTime(relative_path);
+                    auto start_time = findTimestampPath(relative_path);
                     if (time_threshold <= start_time) {
                         return true;
                     }
@@ -243,17 +299,20 @@ static KeepTimeMap getKeepTimeMapByDevice(const KeepTimeMap &path_map) {
 
 static void removeExpiredBookmark(const KeepTimeMap &keep_time_map) {
     auto device_time_map = getKeepTimeMapByDevice(keep_time_map);
-    auto imp = std::make_shared<BookmarkImp>();
-    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
-        auto tuple = src->getDeviceTuple();
-        auto it = device_time_map.find(tuple.device_id);
-        auto time_threshold = time(nullptr);
-        if (it != device_time_map.end()) {
-            time_threshold = it->second;
+    auto imp = std::make_shared<BookmarkStatsImp>();
+    auto ret = imp->findAll();
+    if (ret.size() > 0) {
+        auto imp = std::make_shared<BookmarkImp>();
+        for (const auto &it : ret) {
+            string device_id = it.device_id;
+            auto time_threshold = time(nullptr);
+            if (device_time_map.find(device_id) != device_time_map.end()) {
+                time_threshold = device_time_map[device_id];
+            }
+            auto count = imp->removeByTimeRange(0, time_threshold, device_id);
+            DebugL << "Remove expired bookmark: " << device_id << ". Threshold: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold) << ". Removed count: " << count;
         }
-        auto ret = imp->removeByTimeRange(0, time_threshold, tuple.device_id);
-        DebugL << "Remove expired bookmark: " << tuple.device_id << ". Threshold: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold) << ". Removed count: " << ret;
-    }, CAMERA_SCHEMA);
+    }
     InfoL << "Remove expired bookmark. Finished";
 }
 

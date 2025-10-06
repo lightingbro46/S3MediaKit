@@ -51,6 +51,11 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
 
 bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
+    if (!_ready) {
+        WarnL << "Camera manager has not been ready";
+        return false;
+    }
+
     auto it = _gcImp.find(info.shortUrl());
     if  (it != _gcImp.end()) {
         // device tuple already exist
@@ -73,6 +78,12 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
 }
 
 bool CameraManager::delCamera(const string &key) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    if (!_ready) {
+        WarnL << "Camera manager has not been ready";
+        return false;
+    }
+
     auto it_gc = _gcImp.find(key);
     if (it_gc != _gcImp.end()) {
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -96,16 +107,63 @@ bool CameraManager::delCamera(const string &key) {
     return false;
 }
 
-void CameraManager::clear() {
+void CameraManager::release(bool continuous) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    for (const auto &it : _gcImp) {
+        auto ptr = it.second;
+        ptr->stop();
+    }
+    _ready = continuous;
+}
+
+void CameraManager::clear(bool continuous) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
     _gcImp.clear();
+    _ready = continuous;
 }
 
 vector<string> CameraManager::getCameraKeys() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
     vector<string> ret;
     for (const auto &it : _gcImp ) {
         ret.push_back(it.first);
     }
     return ret;
+}
+
+void CameraManager::loadSavedCameraInfo() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    // reset ticker to elapse time
+    Ticker ticker;
+
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    string record_path = File::absolutePath(app_name, mp4_save_path);
+
+    auto invoker = [&](const string &path) {
+        auto file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(path);
+        if (!file->empty()) {
+            CameraStatistic stats;
+            if (file->load(stats)) {
+                addCamera(stats.info, stats.option, stats.stream_map);
+                DebugL << "Added saved info: " << stats.info.shortUrl();
+                return;
+            }
+        }
+        WarnL << "Saved file empty or invalid format: " << path << ". Ignore";
+    };
+
+    File::scanDir(record_path, [&](const string &path, bool isDir) {
+        if (isDir) {
+            auto saved_path = path + "/info.txt";
+            if (File::fileExist(saved_path)) {
+                DebugL << "Found saved file: " << saved_path << ". Loading camera info...";
+                invoker(saved_path);
+            }
+        }
+        return true;
+    });
+    InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
 }
 
 } // namespace managerkit

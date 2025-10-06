@@ -49,9 +49,17 @@ static onceToken token([]() {
 
 } // namespace managerkit
 
-void enforceStoragePolicy() {
-    StorageManager::Instance().start();
+static void enforceStoragePolicy() {
     DebugL << "Storage manager has been started monitoring";
+    StorageManager::Instance().start();
+}
+
+static void loadSavedDeviceInfo() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
+        DebugL << "Camera manager has been started loading saved camera";
+        CameraManager::Instance().loadSavedCameraInfo();
+        return 0;
+    });
 }
 
 static void *manager_hook_tag = nullptr;
@@ -69,7 +77,10 @@ void installManagerHook () {
         block.set_file_size(info.file_size);
         block.set_file_path(info.file_path);
 
-        TimeRecorder::Instance().inputBlock(block);
+        auto ret = TimeRecorder::Instance().inputBlock(block);
+        if (ret) {
+            GenericRtspCameraImp::addCameraArchiveSize(block, true);
+        }
     });
 #endif // ENABLE_MP4
 
@@ -118,14 +129,22 @@ void installManagerHook () {
 #endif // defined(ENABLE_MP4) || defined(ENABLE_MKV)
 
     enforceStoragePolicy();
+
+    loadSavedDeviceInfo();
+}
+
+static void releaseAllDevice() {
+    // release all camera
+    CameraManager::Instance().release();
+    // sleep for 3 second before uninstall hook, to prevent resource release order errors
+    sleep(3);
+    CameraManager::Instance().clear();
 }
 
 void unInstallManagerHook() {
-    // turn off and clear all camera
-    CameraManager::Instance().clear();
-
+    releaseAllDevice();
     // Note: Comment the following code in order to save last segments when program exit
-    // NoticeCenter::Instance().delListener(&manager_hook_tag);
+    NoticeCenter::Instance().delListener(&manager_hook_tag);
 }
 
 void migrateDatabase() {
@@ -143,7 +162,8 @@ void migrateDatabase() {
 static void fromJson(CameraInfo &info, const Json::Value &data) {
     string project_id = data["project_id"].asString();
     string device_id = data["device_id"].asString();
-    string name = data["name_device"].asString();
+    // string name = data["name_device"].asString();
+    string name = data["device_name"].asString();
     string manufacturer = data["manufacturer"].asString();
     string model = data["model"].asString();
     string username = data["username"].asString();
@@ -175,7 +195,8 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     int media_port = data["media_port"].asInt();
     bool media_port_auto = data["media_port_auto"].asBool();
     int rtp_transport = data["rtp_transport"].asInt();
-    
+    string prefered_media_server = data["pri_media_server"].asString();
+
     option.enableActive = enable_camera;
     option.enableRecord = enable_recording;
     option.recordScheduler = record_scheduler;
@@ -188,6 +209,9 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     option.mediaPort = media_port;
     option.autoMediaPort = media_port_auto;
     option.rtpTransport = rtp_transport;
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    option.enableFailover = prefered_media_server != mediaServerId;
+    option.preferedMediaServer = prefered_media_server;
     // bool enable_recording_ = false;
     // uint64_t retention_ = 0;
     // for (const auto &stream : data["streams"]) {
@@ -212,6 +236,9 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     // option.mediaPort = 0;
     // option.autoMediaPort = false;
     // option.rtpTransport = 0;
+    // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    // option.enableFailover = prefered_media_server != mediaServerId;
+    // option.preferedMediaServer = prefered_media_server;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -285,6 +312,7 @@ static Json::Value exampleJson() {
     data["devices"] = Json::arrayValue;
     Json::Value device;
     device["device_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+    device["device_name"] = "Camera HPG";
     device["username"] = "admin";
     device["password"] = "Haiphong2025";
     device["manufacturer"] = "Hikivision";
@@ -352,67 +380,50 @@ void loadServerConfigJson(const Json::Value &data1) {
 
 static Json::Value makeMediaSourceJson(MediaSource &media) {
     Json::Value item;
-    // auto media_tuple = media.getMediaTuple();
-    // item["deviceId"] = media_tuple.app;
-    // item["streamId"] = media_tuple.stream;
-    // item["status"] = media.getTracks(true).size() > 0;
-    // for (auto &track : media.getTracks(false)) {
-    //     auto codec_type = track->getTrackType();
-    //     if (codec_type == TrackAudio) {
-    //         auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
-    //         item["acodec"] = track->getCodecName();
-    //         item["channels"] = audio_track->getAudioChannel();
-    //         item["sample_rate"] = audio_track->getAudioSampleRate();
-    //         item["sample_bit"] = audio_track->getAudioSampleBit();
-    //     }
-    //     if (codec_type == TrackVideo) {
-    //         auto video_track = dynamic_pointer_cast<VideoTrack>(track);
-    //         item["vcodec"] = track->getCodecName();
-    //         item["width"] = video_track->getVideoWidth();
-    //         item["height"] = video_track->getVideoHeight();
-    //         item["bitrate"] = video_track->getBitRate();
-    //         int gop_size = video_track->getVideoGopSize();
-    //         int gop_interval_ms = video_track->getVideoGopInterval();
-    //         float fps = video_track->getVideoFps();
-    //         if (fps <= 1 && gop_interval_ms) {
-    //             fps = gop_size * 1000.0 / gop_interval_ms;
-    //         }
-    //         item["fps"] = round(fps);
-    //         item["gop_size"] = gop_size;
-    //         item["gop_interval_ms"] = gop_interval_ms;
-    //     }
-    // }
-    
-    item["channelId"] = media.getMediaTuple().stream;
-    item["status"] = media.getTracks(true).size() > 0 ? 1 : 0;
+    auto media_tuple = media.getMediaTuple();
+    item["deviceId"] = media_tuple.app;
+    item["streamId"] = media_tuple.stream;
+    item["status"] = media.getTracks(true).size() > 0;
     for (auto &track : media.getTracks(false)) {
         auto codec_type = track->getTrackType();
+        if (codec_type == TrackAudio) {
+            auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
+            item["acodec"] = track->getCodecName();
+            item["channels"] = audio_track->getAudioChannel();
+            item["sample_rate"] = audio_track->getAudioSampleRate();
+            item["sample_bit"] = audio_track->getAudioSampleBit();
+        }
         if (codec_type == TrackVideo) {
             auto video_track = dynamic_pointer_cast<VideoTrack>(track);
-            item["codec"] = track->getCodecName();
+            item["vcodec"] = track->getCodecName();
             item["width"] = video_track->getVideoWidth();
             item["height"] = video_track->getVideoHeight();
+            item["bitrate"] = video_track->getBitRate();
+            int gop_size = video_track->getVideoGopSize();
+            int gop_interval_ms = video_track->getVideoGopInterval();
+            float fps = video_track->getVideoFps();
+            if (fps <= 1 && gop_interval_ms) {
+                fps = gop_size * 1000.0 / gop_interval_ms;
+            }
+            item["fps"] = round(fps);
+            item["gop_size"] = gop_size;
+            item["gop_interval_ms"] = gop_interval_ms;
         }
     }
-    item["volumeSize"] = 0;
-    item["volumeRate"] = 0;
-    item["oldestTenMinutesBlock"] = 0;
     return item;
 }
 
 static Json::Value makeStreamStatisticJson(GenericRtspCameraImp::Ptr &camera, int type) {
     auto tuple = camera->getStreamTuple(type);
-    auto src = MediaSource::find(tuple.vhost, tuple.device_id, tuple.stream_id);
-    if (src) {
-        return makeMediaSourceJson(*src);
-    }
+    auto params = camera->getParams();
+    auto info = params.sinfo_map[type];
     Json::Value item;
+    // todo: change new format with more information
     item["channelId"] = tuple.stream_id;
-    // item["streamId"] = tuple.stream_id;
-    item["status"] = 0;
-    item["codec"] = "";
-    item["width"] = 0;
-    item["height"] = 0;
+    item["status"] = info.live ? 1 : 0;
+    item["codec"] = info.vcodec;
+    item["width"] = info.width;
+    item["height"] = info.height;
     item["volumeSize"] = 0;
     item["volumeRate"] = 0;
     item["oldestTenMinutesBlock"] = 0;
@@ -437,6 +448,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
             data.append(item);
         }
     });
+    DebugL << data.toStyledString();
     cb(data);
 }
 
@@ -482,18 +494,50 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
     cb(data);
 }
 
-struct DeviceStorage {
+struct DeviceStorageStatistic {
     std::string name;
     int bytesSpeed = 0;
+    int desiredBytesSpeed = 0;
     uint64_t oldestTimeBlock = 0;
+    uint64_t desiredTimeBlock = 0;
     uint64_t usedStorage = 0;
     bool isFailover = false;
 };
 
-static DeviceStorage makeDeviceStorageJson(DeviceSource &device, bool &isFailover) {
-    DeviceStorage storage;
-    // todo: 
-    
+static DeviceStorageStatistic makeDeviceStorageJson(const DeviceSource::Ptr& device) {
+    DeviceStorageStatistic storage;
+    auto ptr = std::dynamic_pointer_cast<GenericRtspCameraImp>(device);
+    if (ptr) {
+        auto stats = ptr->getParams();
+        storage.name = stats.info.name;
+        int bytes_speed = 0;
+        int desired_bytes_speed = 0;
+        for (const auto &it : stats.sinfo_map) {
+            if (it.second.live) {
+                bytes_speed += it.second.byte_speed;
+            }
+            desired_bytes_speed += it.second.byte_speed;
+        }
+        storage.bytesSpeed = bytes_speed;
+        storage.desiredBytesSpeed = desired_bytes_speed;
+        uint64_t oldest_time_block = 0;
+        uint64_t used_storage = 0;
+        for (const auto &it : stats.storage_map) {
+            if (oldest_time_block == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < oldest_time_block)) {
+                oldest_time_block = it.second.archiveStartTime;
+            }
+            used_storage += it.second.archiveSizeB;
+        }
+        storage.oldestTimeBlock = oldest_time_block;
+        uint64_t desired_time_block = oldest_time_block;
+        if (!stats.option.keepArchivedMaxForAuto) {
+            desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
+        }
+        storage.desiredTimeBlock = desired_time_block;
+        storage.usedStorage = used_storage;
+        storage.isFailover = stats.option.enableFailover;
+    }
+
     return storage;
 }
 
@@ -508,12 +552,13 @@ Json::Value makeStorageStatisticJson() {
     size_t totalFailoverBitrate = 0;
     size_t totalFailoverUsedStorage = 0;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        bool isFailover = false;
-        auto storage = makeDeviceStorageJson(*device, isFailover);
+        auto storage = makeDeviceStorageJson(device);
         Json::Value device_json;
         device_json["name"] = storage.name;
         device_json["bitrate"] = storage.bytesSpeed;
+        device_json["desiredBitrate"] = storage.desiredBytesSpeed;
         device_json["oldestTimeBlock"] = storage.oldestTimeBlock;
+        device_json["desiredTimeBlock"] = storage.desiredTimeBlock;
         device_json["usedStorage"] = storage.usedStorage;
         device_json["isFailover"] = storage.isFailover;
         if (!storage.isFailover) {
@@ -527,7 +572,7 @@ Json::Value makeStorageStatisticJson() {
             totalFailoverBitrate += storage.bytesSpeed;
             totalFailoverUsedStorage += storage.usedStorage;
         }
-    });
+    }, CAMERA_SCHEMA);
     data["totalMainDevice"] = totalMainDevice;
     data["totalMainBitrate"] = totalMainBitrate;
     data["totalMainUsedStorage"] = totalMainUsedStorage;

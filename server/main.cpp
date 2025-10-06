@@ -127,7 +127,11 @@ public:
         (*_parser) << Option('l',/*This option is abbreviated, if it is \x00, it means there is no abbreviation*/
                              "level",/*The full name of this option, each option must have a full name; it must not be null or empty string*/
                              Option::ArgRequired,/*This option must be followed by a value*/
+#ifdef ENABLE_DEBUG
                              to_string(LDebug).data(),/*This option must be followed by a value*/
+#else
+                             to_string(LInfo).data(),/*This option must be followed by a value*/
+#endif
                              false,/*Whether this option must be assigned a value, if there is no default value and is ArgRequired, the user must provide this parameter otherwise an exception will be thrown*/
                              "Log Level,LTrace~LError(0~4)",/*This option description*/
                              nullptr);

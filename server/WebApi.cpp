@@ -71,7 +71,7 @@
 #include "Manager.h"
 #include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
-#include "Camera/CameraManager.h"
+#include "Camera/GenericRtspCameraImp.h"
 
 using namespace std;
 using namespace Json;
@@ -2284,6 +2284,13 @@ void installWebApi() {
     });
 #endif
     /////////////////////////S3MediaKit - MediaServer////////////////////////////
+    static auto findDeviceSource = [](const string &device_id) {
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = device_id;
+        return DeviceSource::find(tuple.vhost, tuple.device_id);
+    };
+
     static auto findTimePeriod = [](MediaTuple &tuple, uint64_t start_time, uint64_t end_time, int period_type, int detail,
                                     const function<void(const SockException&, const Value&)> &cb) {
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -2401,7 +2408,7 @@ void installWebApi() {
         return cb(SockException(Err_success), result);
     };
 
-    api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/recordedTimePeriod", withUserAuth([](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
 
@@ -2427,10 +2434,10 @@ void installWebApi() {
                 invoker(200, headerOut, val.toStyledString());
             }
         });
-    });
+    }));
 
     // Get screenshot cache or real-time screenshot
-    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/recordedThumnail", withUserAuth([](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("cameraId", "streamId", "pos");
         auto camera_id = allArgs["cameraId"];
         auto stream_id = allArgs["streamId"];
@@ -2532,7 +2539,7 @@ void installWebApi() {
             }
             responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
         });
-    });
+    }));
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
         auto full_key = tuple.shortUrl() + "/" + to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
@@ -2567,6 +2574,13 @@ void installWebApi() {
         auto description = allArgs["description"];
         auto user_id = allArgs["_user_id"];
         auto user_name = allArgs["_user_name"];
+
+        if (!findDeviceSource(camera_id)) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Camera not found";
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
 
         if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
             val["code"] = API::InvalidArgs;
@@ -2711,6 +2725,15 @@ void installWebApi() {
         int64_t duration = allArgs["duration"];
         string tags = allArgs["tags"];
 
+        auto ret = findDeviceSource(camera_id);
+        if (!ret) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Camera not found";
+            val["data"]["flag"] = false;
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
+
         Bookmark bm;
         bm.name = name;
         bm.description = description;
@@ -2728,7 +2751,7 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     }));
 
-    api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/bookmark/update", withUserAuth([](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
         CHECK_ARGS("id", "camera_id", "start_time", "duration");
 
@@ -2744,6 +2767,7 @@ void installWebApi() {
         auto imp = std::make_shared<BookmarkImp>();
         auto ret = imp->findById(id);
         if (!ret.size()) {
+            WarnL << "Bookmark " << id << " not found";
             val["data"]["flag"] = false;
             invoker(404, headerOut, val.toStyledString());
             return;
@@ -2756,11 +2780,13 @@ void installWebApi() {
         bm.start_time = start_time;
         bm.end_time = end_time;
         bm.duration = duration;
+        bm.creator_guid = allArgs["_user_id"];
+        bm.created = time(nullptr);
 
         imp->update(bm, tags);
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
-    });
+    }));
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
         // CHECK_TOKEN();
@@ -3043,17 +3069,13 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/device/ptz_control", withUserAuth([](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("deviceId", "direct", "speed");
         string deviceId = allArgs["deviceId"];
         string strDirect = allArgs["direct"];
         int speed = allArgs["speed"];
 
-        DeviceTuple tuple;
-        tuple.vhost = DEFAULT_VHOST;
-        tuple.device_id = deviceId;
-
-        auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
+        auto ret = findDeviceSource(deviceId);
         if (!ret) {
             val["code"] = API::NotFound;
             val["msg"] = "Device not found";
@@ -3079,7 +3101,7 @@ void installWebApi() {
                 invoker(200, headerOut, val.toStyledString());
             }
         });
-    });
+    }));
 
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP) {
         //CHECK_TOKEN

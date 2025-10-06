@@ -44,9 +44,13 @@ public:
 
     void setOnStreamReady(const std::function<void()> &cb) { _on_ready = std::move(cb); };
 
+    void setOnStreamChange(const std::function<void()> &cb) { _on_change = std::move(cb); };
+
     bool isLive() { return _live.load(); }
 
     std::string getStatus() { return _status; }
+
+    mediakit::TranslationInfo getTranslationInfo();
 
 private:
     void createPlayer();
@@ -64,6 +68,7 @@ private:
     std::string _status;
     mediakit::TranslationInfo _info;
     std::function<void()> _on_ready;
+    std::function<void()> _on_change;
     std::weak_ptr<mediakit::PlayerProxy> _player;
 };
 

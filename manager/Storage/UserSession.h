@@ -1,14 +1,12 @@
 #ifndef S3MANAGERKIT_USERSESSION_H
 #define S3MANAGERKIT_USERSESSION_H
 
-#include <string>
 #include "DbStorage.h"
 #include "Util/util.h"
 #include "UserEntity.h"
 
 using namespace std;
 using namespace toolkit;
-using namespace mediakit;
 
 namespace managerkit {
 
@@ -30,6 +28,25 @@ public:
     UserSessionRepository() : SqliteRepository<UserSession>(Database::kMediaServerDb) {}
 
 protected:
+    std::vector<UserSession> findByCreateTime(uint64_t stamp) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        whereClause << " creationTimeS < ? ";
+        whereParams.push_back(std::to_string(stamp));
+
+        auto query = toolkit::QueryBuilder()
+                            .select(EntityTraits<UserSession>::getColumns())
+                            .from(EntityTraits<UserSession>::tableName())
+                            .where(whereClause.str(), whereParams);
+        auto rows = _executor->executeRaw(query);
+        std::vector<UserSession> ret;
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<UserSession>::fromRow(row));
+        }
+        return ret;
+    }
+
     bool removeByCreateTime(uint64_t stamp) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -47,8 +64,7 @@ protected:
 class UserSessionImp : public UserSessionRepository {
 public:
     using Ptr = std::shared_ptr<UserSessionImp>;
-    UserSessionImp()
-        : UserSessionRepository() {}
+    UserSessionImp() : UserSessionRepository() {}
 
     void add(UserSession &session, const std::string &username) {
         auto sessions = findById(session.token);
@@ -58,7 +74,7 @@ public:
             if (!username.empty()) {
                 UserEntity user;
                 user.userId = session.userId;
-                user.userName= username;
+                user.userName = username;
                 auto imp = std::make_shared<UserEntityImp>();
                 imp->add(user);
             }
@@ -80,6 +96,10 @@ public:
     }
 
     bool removeByStamp(uint64_t stamp) {
+        auto ret = findByCreateTime(stamp);
+        if (!ret.size()) {
+            return true;
+        }
         return removeByCreateTime(stamp);
     }
 };

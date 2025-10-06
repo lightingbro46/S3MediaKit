@@ -70,9 +70,11 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
+            strong_self->_live = !ex ? true : false;
             strong_self->_status = ex.what();
+            TraceL << "setPlayCallbackOnce: live=" << strong_self->_live << " status=" << strong_self->_status;
 
-            if (strong_self->_on_ready){
+            if (strong_self->_on_ready) {
                 strong_self->_on_ready();
             }
         });
@@ -82,17 +84,32 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
-            strong_self->_live = true;
+            if (!strong_self->_live) {
+                strong_self->_live = true;
+                strong_self->_status = "play rtsp success";
+            }
             strong_self->_info = info;
-            strong_self->_status.clear();
+            TraceL << "setOnConnect: live=" << strong_self->_live << " status=" << strong_self->_status;
+            
+            if (strong_self->_on_change) {
+                strong_self->_on_change();
+            }
         });
 
         player->setOnDisconnect([weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
-            }   
-            strong_self->_live = false;
+            }
+            if (strong_self->_live) {
+                strong_self->_live = false;
+                strong_self->_status = "rtsp self-disconnect";
+            }
+            TraceL << "setOnDisconnect: live=" << strong_self->_live << " status=" << strong_self->_status;
+
+            if (strong_self->_on_change) {
+                strong_self->_on_change();
+            }
         });
 
         player->setOnClose([weak_self](const SockException &ex) {
@@ -100,7 +117,9 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
+            strong_self->_live = !ex ? true : false;
             strong_self->_status = ex.what();
+            TraceL << "setOnClose: live=" << strong_self->_live << " status=" << strong_self->_status;
         });
 
         player->play(strong_self->_tuple.full_url);
@@ -121,6 +140,15 @@ void StreamSource::closePlayer() {
     delStreamProxy(tuple);
     _player.reset();
     DebugL << "Close stream player proxy: " << _tuple.shortUrl();
+}
+
+TranslationInfo StreamSource::getTranslationInfo() {
+    auto strong_player = _player.lock();
+    if (strong_player) {
+        auto ret = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
+        _info.byte_speed = ret ? ret->getBytesSpeed() : 0;
+    }
+    return _info;
 }
 
 } // namespace managerkit

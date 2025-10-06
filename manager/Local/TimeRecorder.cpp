@@ -14,6 +14,8 @@ using namespace managerkit;
 
 namespace mediakit {
 
+///////////////////// TimeRecorder ///////////////////////////
+
 static onceToken token(
     []() { 
         GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -310,6 +312,8 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
         query->query(start_time, last_time, [this, keep_block](const TimeBlock &block) {
             if (keep_block(block)) {
                 _writer->inputBlock(block);
+            } else {
+                GenericRtspCameraImp::addCameraArchiveSize(block, false);
             }
         });
 

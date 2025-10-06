@@ -661,6 +661,24 @@ bool FFmpegExtractor::close() {
     return true;
 }
 
+static bool parseJsonString(const std::string &json_str, Json::Value &out) {
+    // parse json string to json var
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    Json::Value data;
+    std::string errs;
+
+    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
+        WarnL << "Parse json string failed: " << errs;
+        return false;
+    }
+    // get stream information from json var
+    TraceL << "Json data: " << data.toStyledString();
+    out = data;
+    return true;
+}
+
 static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
     if (log_string.empty()) {
         return false;
@@ -677,18 +695,10 @@ static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
 
     auto json_str = log_string.substr(start_point, end_point - start_point + 1);
 
-    // parse json string to json var
-    Json::CharReaderBuilder builder;
-    builder["collectComments"] = false;
     Json::Value data;
-    std::string errs;
-
-    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
-        WarnL << "Parse stream json failed: " << errs;
+    if (!parseJsonString(json_str, data)) {
         return false;
     }
-
     // get stream information from json var
     DebugL << data.toStyledString();
     if (!data.isMember("streams") || !data["streams"].isArray()) {

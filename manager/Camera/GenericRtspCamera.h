@@ -46,7 +46,7 @@ public:
     bool enableActive = false;
 
     // use other media port instead of defaunt port of stream url
-    bool mediaPort = 0;
+    int mediaPort = 0;
 
     // whether to use other media port
     bool autoMediaPort = true;
@@ -61,6 +61,12 @@ public:
 
     // recording scheduler, include 168 characters
     std::string recordScheduler;
+
+    // whether to enable failover mode
+    bool enableFailover;
+
+    // media server id, which camera belong to
+    std::string preferedMediaServer;
 
     // Add more options if need
 };

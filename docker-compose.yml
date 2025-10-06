@@ -4,9 +4,11 @@ services:
     container_name: 3spro-mserver
     restart: always
     privileged: true
+    shm_size: 2g 
     port:
     network_mode: host
     volumes:
       - ./store/media/record/:/opt/media/bin/www/record/
       - ./store/media/db/:/opt/media/bin/www/db/
       - ./store/media/conf/:/opt/media/conf/
+      - ./store/media/certs/:/opt/media/bin/certs/

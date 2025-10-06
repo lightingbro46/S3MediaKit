@@ -25,6 +25,9 @@ public:
 
     bool inputData(uint64_t &block_time, size_t &block_size);
 
+    /**
+     * find last block that has a start_time less than the search value
+     */
     bool findLowerBound(BlockListIndexEntry &entry, uint64_t &stamp);
 
     uint64_t getFirstStamp() { return _first_minute; }

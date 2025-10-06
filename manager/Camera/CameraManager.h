@@ -16,9 +16,13 @@ public:
 
     bool delCamera(const std::string &key);
 
-    void clear();
+    void release(bool continuous = false);
+
+    void clear(bool continuous = false);
 
     std::vector<std::string> getCameraKeys();
+
+    void loadSavedCameraInfo();
 
 private:
     CameraManager();
@@ -27,6 +31,7 @@ private:
 
 private:
     std::recursive_mutex _mtx;
+    bool _ready = true; // ready for receive new camera
     toolkit::Timer::Ptr _timer;
     std::unordered_map<std::string, GenericRtspCameraImp::Ptr> _gcImp;
 };

@@ -22,6 +22,8 @@ public:
 
     CameraController(const CameraInfo &info);
 
+    ~CameraController();
+    
     bool isControlReady() { return _controller_ready; }
 
     void setupController();

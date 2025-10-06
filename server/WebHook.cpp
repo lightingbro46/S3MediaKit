@@ -313,6 +313,8 @@ static ArgsType make_json(const MediaInfo &args) {
     return body;
 }
 
+static Timer::Ptr g_started_timer;
+static bool report_started = false;
 static void reportServerStarted() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
@@ -320,35 +322,40 @@ static void reportServerStarted() {
     if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
         return;
     }
-    ArgsType body;
+    GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
+    g_started_timer = std::make_shared<Timer>(alive_interval,[]() {
+        ArgsType body;
 #if 0    
-    for (auto &pr : mINI::Instance()) {
-        body[pr.first] = (string &)pr.second;
-    }
-#endif
-    body["version"] = kServerName;
-    auto osinfo = GlobalMonitor::Instance().getOsInfo();
-    body["osInfo"]["platform"] = osinfo.platform;
-    body["osInfo"]["variant"] = osinfo.variant;
-    body["osInfo"]["variantVerison"] = osinfo.variant_version;
-    body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
-    body["ip"] = GlobalMonitor::Instance().getLocalIps();
-    body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
-    body["rtspPort"] = static_cast<int>(mINI::Instance()["rtsp.port"]);
-    body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
-    body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
-    body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
-    // Execute hook
-    do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) mutable {
-        if (err.empty()) {
-            // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
-            InfoL << "Report server started success";
-            loadServerStartedConfigJson(obj);
-        } else {
-            DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
-            WarnL << "Report server started failed:" << err;
+        for (auto &pr : mINI::Instance()) {
+            body[pr.first] = (string &)pr.second;
         }
-    });
+#endif
+        body["version"] = kServerName;
+        auto osinfo = GlobalMonitor::Instance().getOsInfo();
+        body["osInfo"]["platform"] = osinfo.platform;
+        body["osInfo"]["variant"] = osinfo.variant;
+        body["osInfo"]["variantVerison"] = osinfo.variant_version;
+        body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
+        body["ip"] = GlobalMonitor::Instance().getLocalIps();
+        body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
+        body["rtspPort"] = static_cast<int>(mINI::Instance()["rtsp.port"]);
+        body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
+        body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
+        body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
+        // Execute hook
+        do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) mutable {
+            if (err.empty()) {
+                // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
+                InfoL << "Report server started success";
+                loadServerStartedConfigJson(obj);
+                report_started = true;
+            } else {
+                DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
+                WarnL << "Report server started failed:" << err;
+            }
+        });
+        return !report_started;
+    }, nullptr);
 }
 
 static void reportServerExited() {
@@ -379,6 +386,9 @@ static void reportServerKeepalive() {
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_keepalive_timer = std::make_shared<Timer>(alive_interval,[]() {
+        if (!report_started) {
+            return true;
+        }
 #if 0 
         getStatisticJson([](const Value &data) mutable {
             ArgsType body;
@@ -408,6 +418,14 @@ static void reportServerStatistic() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
+        if (!report_started) {
+            // If the start API has not been completed, do not call the API to get the configuration in delay task. Waiting for timer to call API to get the configuration
+            if (report_first) {
+                report_first = false;
+                return false;
+            }
+            return true;
+        }
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
@@ -432,7 +450,6 @@ static void reportServerStatistic() {
                         //         WarnL << "Report server statistic failed:" << err;
                         //     }
                         // });
-                        //todo: update to db
                     });
                     return 0;
                 });

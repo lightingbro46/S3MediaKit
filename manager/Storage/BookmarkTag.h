@@ -74,7 +74,7 @@ public:
         auto tagsAdded = findTagsByBookmark(bmGuid);
         removeByBookmarkGuid(bmGuid);
         for (const auto &tag : tagsAdded) {
-             _bTagCount->add(tag, -1);
+            _bTagCount->add(tag, -1);
         }
     }
 

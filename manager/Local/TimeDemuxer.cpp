@@ -92,17 +92,22 @@ void TimeDemuxer::closeFile() {
 int64_t TimeDemuxer::seekTo(uint64_t stamp_sec) {
     if (_maker) {
         // find with index file
+        uint64_t offset_bytes = 0;
+        uint64_t offset_time = getFirstStamp();
+        // get last block that has start_time less than search value or first block in timeline
         BlockListIndexEntry entry;
         auto block_minute = getStartOfMinute(stamp_sec);
-        if (!_maker->findLowerBound(entry, block_minute)) {
-            return 0;
+        if (_maker->findLowerBound(entry, block_minute)) {
+            offset_bytes = entry.offset;
+            offset_time = entry.start_time;
         }
-        if (_reader->seek(entry.offset) < 0) {
+        if (_reader->seek(offset_bytes) < 0) {
             return -1;
         }
-        return entry.start_time;
+        return offset_time;
     }
 
+    // find without index file, by scanning timeline
     return TimerDemuxerInterface::seekTo(stamp_sec);
 }
 

@@ -48,6 +48,10 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "")
   set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  add_definitions(-DENABLE_DEBUG)
+endif()
+
 message(STATUS "Compilation type: ${CMAKE_BUILD_TYPE}")
 
 # To facilitate the troubleshooting of compilation problems, you need to FORCE CACHE, otherwise you need to set it on the command line to take effect
