@@ -162,8 +162,8 @@ void migrateDatabase() {
 static void fromJson(CameraInfo &info, const Json::Value &data) {
     string project_id = data["project_id"].asString();
     string device_id = data["device_id"].asString();
-    // string name = data["name_device"].asString();
-    string name = data["device_name"].asString();
+    string name = data["name_device"].asString();
+    // string name = data["device_name"].asString();
     string manufacturer = data["manufacturer"].asString();
     string model = data["model"].asString();
     string username = data["username"].asString();
@@ -197,48 +197,48 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     int rtp_transport = data["rtp_transport"].asInt();
     string prefered_media_server = data["pri_media_server"].asString();
 
-    option.enableActive = enable_camera;
-    option.enableRecord = enable_recording;
-    option.recordScheduler = record_scheduler;
-    option.doNotRecordPrimaryStream = do_not_record_primary_stream;
-    option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
-    option.keepArchivedMinForAuto = keep_archived_min_for_auto;
-    option.keepArchivedMinFor = keep_archived_min_for;
-    option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
-    option.keepArchivedMaxFor = keep_archived_max_for;
-    option.mediaPort = media_port;
-    option.autoMediaPort = media_port_auto;
-    option.rtpTransport = rtp_transport;
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    option.enableFailover = prefered_media_server != mediaServerId;
-    option.preferedMediaServer = prefered_media_server;
-    // bool enable_recording_ = false;
-    // uint64_t retention_ = 0;
-    // for (const auto &stream : data["streams"]) {
-    //     if (stream["is_storing"].asBool()) {
-    //         enable_recording_ = true;
-    //     }
-    //     uint64_t stream_retention = stream["retention_time"].asUInt64();
-    //     auto retention = stream_retention * 3600;
-    //     if (retention_ == 0 || retention < retention_) {
-    //         retention_ = retention;
-    //     }
-    // }
     // option.enableActive = enable_camera;
-    // option.enableRecord = enable_recording_;
-    // option.recordScheduler = "";
-    // option.doNotRecordPrimaryStream = false;
-    // option.doNotRecordSecondaryStream = false;
-    // option.keepArchivedMinForAuto = true;
-    // option.keepArchivedMinFor = 0;
-    // option.keepArchivedMaxForAuto = false;
-    // option.keepArchivedMaxFor = retention_;
-    // option.mediaPort = 0;
-    // option.autoMediaPort = false;
-    // option.rtpTransport = 0;
+    // option.enableRecord = enable_recording;
+    // option.recordScheduler = record_scheduler;
+    // option.doNotRecordPrimaryStream = do_not_record_primary_stream;
+    // option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
+    // option.keepArchivedMinForAuto = keep_archived_min_for_auto;
+    // option.keepArchivedMinFor = keep_archived_min_for;
+    // option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
+    // option.keepArchivedMaxFor = keep_archived_max_for;
+    // option.mediaPort = media_port;
+    // option.autoMediaPort = media_port_auto;
+    // option.rtpTransport = rtp_transport;
     // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     // option.enableFailover = prefered_media_server != mediaServerId;
     // option.preferedMediaServer = prefered_media_server;
+    bool enable_recording_ = false;
+    uint64_t retention_ = 0;
+    for (const auto &stream : data["streams"]) {
+        if (stream["is_storing"].asBool()) {
+            enable_recording_ = true;
+        }
+        uint64_t stream_retention = stream["retention_time"].asUInt64();
+        auto retention = stream_retention * 3600;
+        if (retention_ == 0 || retention < retention_) {
+            retention_ = retention;
+        }
+    }
+    option.enableActive = enable_camera;
+    option.enableRecord = enable_recording_;
+    option.recordScheduler = "";
+    option.doNotRecordPrimaryStream = false;
+    option.doNotRecordSecondaryStream = false;
+    option.keepArchivedMinForAuto = true;
+    option.keepArchivedMinFor = 0;
+    option.keepArchivedMaxForAuto = false;
+    option.keepArchivedMaxFor = retention_;
+    option.mediaPort = 0;
+    option.autoMediaPort = false;
+    option.rtpTransport = 0;
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    option.enableFailover = prefered_media_server != mediaServerId;
+    option.preferedMediaServer = prefered_media_server;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -307,42 +307,7 @@ static void loadServerClusterFromJson(const Json::Value &data) {
     }
 }
 
-static Json::Value exampleJson() {
-    Json::Value data;
-    data["devices"] = Json::arrayValue;
-    Json::Value device;
-    device["device_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
-    device["device_name"] = "Camera HPG";
-    device["username"] = "admin";
-    device["password"] = "Haiphong2025";
-    device["manufacturer"] = "Hikivision";
-    device["model"] = "DS-2CD2347G1-L";
-    device["enable"] = true;
-    device["address"] = "27.72.173.71";
-    device["http_port"] = 80;
-    device["is_enable"] = true;
-    device["enable_recording"] = true;
-    device["keep_archived_min_for_auto"] = true;
-    device["keep_archived_min_for"] = 0;
-    device["keep_archived_max_for_auto"] = false;
-    device["keep_archived_max_for"] = 10 * 60;
-    device["rtp_transport"] = 0;
-    device["streams"] = Json::arrayValue;
-    Json::Value channel_1;
-    channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
-    device["streams"].append(channel_1);
-    Json::Value channel_2;
-    channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-    channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    device["streams"].append(channel_2);
-
-    data["devices"].append(device);
-    return data;
-}
-
-void loadServerConfigJson(const Json::Value &data1) {
-    auto data = exampleJson();
+void loadServerConfigJson(const Json::Value &data) {
     if (data.isMember("mediaServer")) {
         loadServerConfigFromJson(data["mediaServer"]);
     }
@@ -448,7 +413,6 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
             data.append(item);
         }
     });
-    DebugL << data.toStyledString();
     cb(data);
 }
 

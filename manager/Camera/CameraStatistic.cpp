@@ -273,14 +273,12 @@ CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_
     setup();
 }
 
-CameraStatisticImp::~CameraStatisticImp() {
-    save();
-}
+CameraStatisticImp::~CameraStatisticImp() {}
 
 void CameraStatisticImp::setup() {
-    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
-    GET_CONFIG(string, appName, Record::kAppName)
-    recordPath = File::absolutePath(appName, recordPath);
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    auto recordPath = File::absolutePath(app_name, mp4_save_path);
     auto file_path = recordPath + "/" + info.device_id + "/info.txt";
     _file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(file_path);
     _file->empty() ? save() : load();

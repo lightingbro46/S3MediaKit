@@ -83,7 +83,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
     mINI::Instance()[kReportInterval] = 60.0;
-    mINI::Instance()[kRetry] = 1;
+    mINI::Instance()[kRetry] = 0;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
     mINI::Instance()[kApiUrl] = "";
@@ -439,17 +439,17 @@ static void reportServerStatistic() {
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
-                        // do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
-                        //     if (err.empty()) {
-                        //         // Report server statistic succeeded
-                        //         // DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                        //         InfoL << "Report server statistic success";
-                        //     } else {
-                        //         // Load server config failed
-                        //         DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                        //         WarnL << "Report server statistic failed:" << err;
-                        //     }
-                        // });
+                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
+                            if (err.empty()) {
+                                // Report server statistic succeeded
+                                // DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                                InfoL << "Report server statistic success";
+                            } else {
+                                // Load server config failed
+                                DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                                WarnL << "Report server statistic failed:" << err;
+                            }
+                        });
                     });
                     return 0;
                 });
@@ -595,6 +595,7 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
+
         // todo: require jwt token after handling media url
         if (!jwt_token.empty()) {
             auto permit =  UserAuthorManager::Instance().getAuthorCache(args, jwt_token);
