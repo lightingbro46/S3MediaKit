@@ -5,16 +5,16 @@
 
 namespace managerkit {
 
-class CameraManager {
+class CameraManager : public std::enable_shared_from_this<CameraManager> {
 public:
     using Ptr = std::shared_ptr<CameraManager>;
 
     static CameraManager& Instance();
     ~CameraManager() = default;
 
-    bool addCamera(CameraInfo &info, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map);
+    bool addCamera(CameraInfo &info, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map, bool force = false);
 
-    bool delCamera(const std::string &key);
+    bool delCamera(const std::string &key, bool force = false);
 
     void release(bool continuous = false);
 
@@ -24,6 +24,10 @@ public:
 
     void loadSavedCameraInfo();
 
+    void setReady(bool ready);
+
+    bool isReady();
+
 private:
     CameraManager();
 
@@ -31,7 +35,7 @@ private:
 
 private:
     std::recursive_mutex _mtx;
-    bool _ready = true; // ready for receive new camera
+    bool _ready = false; // ready for receive new camera
     toolkit::Timer::Ptr _timer;
     std::unordered_map<std::string, GenericRtspCameraImp::Ptr> _gcImp;
 };

@@ -15,6 +15,7 @@
 #include "User/UserAuthorManager.h"
 #include "Storage/Bookmark.h"
 #include "Server/ClusterManager.h"
+#include "Camera/CameraManager.h"
 
 using namespace std;
 using namespace Json;
@@ -83,7 +84,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
     mINI::Instance()[kReportInterval] = 60.0;
-    mINI::Instance()[kRetry] = 1;
+    mINI::Instance()[kRetry] = 0;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
     mINI::Instance()[kApiUrl] = "";
@@ -418,8 +419,9 @@ static void reportServerStatistic() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
-        if (!report_started) {
+         if (!report_started || !CameraManager::Instance().isReady()) {
             // If the start API has not been completed, do not call the API to get the configuration in delay task. Waiting for timer to call API to get the configuration
+            WarnL << "Pending call api to load server config";
             if (report_first) {
                 report_first = false;
                 return false;

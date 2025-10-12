@@ -9,7 +9,8 @@ services:
     port:
     network_mode: host
     volumes:
+      - ./logs/media/:/opt/media/bin/log/
       - ./store/media/record/:/opt/media/bin/www/record/
-      - ./store/media/db/:/opt/media/bin/www/db/
+      - ./store/media/db/:/opt/media/bin/db/
       - ./store/media/conf/:/opt/media/conf/
       - ./store/media/certs/:/opt/media/bin/certs/

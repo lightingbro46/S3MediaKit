@@ -418,8 +418,13 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
         auto camera = dynamic_pointer_cast<GenericRtspCameraImp>(device);
         if (camera) {
-            Json::Value item;
             auto tuple = camera->getCameraInfo();
+            auto option = camera->getCameraOption();
+            if (option.enableFailover && !camera->isEnabled()) {
+                // this camera run in failover mode and actual camera connection run on prefered media server
+                return;
+            }
+            Json::Value item;
             item["cameraId"] = tuple.device_id;
             item["channels"] = Json::arrayValue;
             if (camera->hasStreamTuple(PrimaryStream)) {

@@ -235,6 +235,8 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["autoMediaPort"] = stats.option.autoMediaPort;
     root["mediaPort"] = stats.option.mediaPort;
     root["recordScheduler"] = stats.option.recordScheduler;
+    root["enableFailover"] = stats.option.enableFailover;
+    root["preferedMediaServer"] = stats.option.preferedMediaServer;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;
@@ -273,15 +275,13 @@ CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_
     setup();
 }
 
-CameraStatisticImp::~CameraStatisticImp() {
-    save();
-}
+CameraStatisticImp::~CameraStatisticImp() {}
 
 void CameraStatisticImp::setup() {
-    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
-    GET_CONFIG(string, appName, Record::kAppName)
-    recordPath = File::absolutePath(appName, recordPath);
-    auto file_path = recordPath + "/" + info.device_id + "/info.txt";
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    auto record_path = File::absolutePath(app_name, mp4_save_path);
+    auto file_path = record_path + "/" + info.device_id + "/info.txt";
     _file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(file_path);
     _file->empty() ? save() : load();
 }

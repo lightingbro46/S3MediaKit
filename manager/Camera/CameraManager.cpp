@@ -1,5 +1,6 @@
 #include "CameraManager.h"
 #include "Util/util.h"
+#include "Thread/WorkThreadPool.h"
 #include <algorithm>
 
 using namespace std;
@@ -49,9 +50,9 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
     return true;
 }
 
-bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
+bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map, bool force) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready) {
+    if (!_ready && !force) {
         WarnL << "Camera manager has not been ready";
         return false;
     }
@@ -77,30 +78,27 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
     return true;
 }
 
-bool CameraManager::delCamera(const string &key) {
+bool CameraManager::delCamera(const string &key, bool force) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready) {
+    if (!_ready && !force) {
         WarnL << "Camera manager has not been ready";
         return false;
     }
 
-    auto it_gc = _gcImp.find(key);
-    if (it_gc != _gcImp.end()) {
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        GET_CONFIG(bool, enableVHost, General::kEnableVhost)
-        if (enableVHost) {
-            auto imp = it_gc->second;
-            if (imp->getCameraInfo().vhost != mediaServerId) {
-                if (imp->isEnabled()) {
-                    //disable device in failover mode
-                    CameraOption option = imp->getCameraOption();
-                    option.enableActive = false;
-                    imp->setCameraOption(option);
-                }
-                return true;
+    auto it = _gcImp.find(key);
+    if (it != _gcImp.end()) {
+        auto imp = it->second;
+        auto option = imp->getCameraOption();
+        if (option.enableFailover) {
+            if (imp->isEnabled()) {
+                // disable device in failover mode
+                option.enableActive = false;
+                imp->setCameraOption(option);
             }
+            return true;
         }
         // remove device out of list
+        // todo: handle case that remove camera or move camera to other media server
         _gcImp.erase(key);
         return true;
     }
@@ -133,37 +131,56 @@ vector<string> CameraManager::getCameraKeys() {
 
 void CameraManager::loadSavedCameraInfo() {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    // reset ticker to elapse time
-    Ticker ticker;
+    std::weak_ptr<CameraManager> weak_self = shared_from_this();
 
-    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
-    GET_CONFIG(string, app_name, Record::kAppName)
-    string record_path = File::absolutePath(app_name, mp4_save_path);
-
-    auto invoker = [&](const string &path) {
-        auto file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(path);
-        if (!file->empty()) {
-            CameraStatistic stats;
-            if (file->load(stats)) {
-                addCamera(stats.info, stats.option, stats.stream_map);
-                DebugL << "Added saved info: " << stats.info.shortUrl();
-                return;
-            }
+    WorkThreadPool::Instance().getExecutor()->async([weak_self]() { 
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
         }
-        WarnL << "Saved file empty or invalid format: " << path << ". Ignore";
-    };
+        // reset ticker to elapse time
+        Ticker ticker;
+    
+        GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+        GET_CONFIG(string, app_name, Record::kAppName)
+        string record_path = File::absolutePath(app_name, mp4_save_path);
 
-    File::scanDir(record_path, [&](const string &path, bool isDir) {
-        if (isDir) {
-            auto saved_path = path + "/info.txt";
-            if (File::fileExist(saved_path)) {
-                DebugL << "Found saved file: " << saved_path << ". Loading camera info...";
-                invoker(saved_path);
+        auto invoker = [&](const string &path) {
+            auto file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(path);
+            if (!file->empty()) {
+                CameraStatistic stats;
+                if (file->load(stats)) {
+                    strong_self->addCamera(stats.info, stats.option, stats.stream_map, true);
+                    DebugL << "Added saved info: " << stats.info.shortUrl();
+                    return;
+                }
             }
-        }
-        return true;
+            WarnL << "Saved file empty or invalid format: " << path << ". Ignore";
+        };
+
+        File::scanDir(record_path, [&](const string &path, bool isDir) {
+            if (isDir) {
+                auto saved_path = path + "/info.txt";
+                if (File::fileExist(saved_path)) {
+                    DebugL << "Found saved file: " << saved_path << ". Loading...";
+                    invoker(saved_path);
+                }
+            }
+            return true;
+        });
+        InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
+        strong_self->setReady(true);
     });
-    InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
+}
+
+void CameraManager::setReady(bool ready) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    _ready = ready;
+}
+
+bool CameraManager::isReady() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    return _ready;
 }
 
 } // namespace managerkit
