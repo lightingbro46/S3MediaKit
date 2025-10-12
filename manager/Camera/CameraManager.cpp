@@ -51,10 +51,6 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
 
 bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready) {
-        WarnL << "Camera manager has not been ready";
-        return false;
-    }
 
     auto it = _gcImp.find(info.shortUrl());
     if  (it != _gcImp.end()) {
@@ -79,28 +75,21 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
 
 bool CameraManager::delCamera(const string &key) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready) {
-        WarnL << "Camera manager has not been ready";
-        return false;
-    }
 
-    auto it_gc = _gcImp.find(key);
-    if (it_gc != _gcImp.end()) {
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        GET_CONFIG(bool, enableVHost, General::kEnableVhost)
-        if (enableVHost) {
-            auto imp = it_gc->second;
-            if (imp->getCameraInfo().vhost != mediaServerId) {
-                if (imp->isEnabled()) {
-                    //disable device in failover mode
-                    CameraOption option = imp->getCameraOption();
-                    option.enableActive = false;
-                    imp->setCameraOption(option);
-                }
-                return true;
+    auto it = _gcImp.find(key);
+    if (it != _gcImp.end()) {
+        auto imp = it->second;
+        auto option = imp->getCameraOption();
+        if (option.enableFailover) {
+            if (imp->isEnabled()) {
+                // disable device in failover mode
+                option.enableActive = false;
+                imp->setCameraOption(option);
             }
+            return true;
         }
         // remove device out of list
+        // todo: handle case that remove camera or move camera to other media server
         _gcImp.erase(key);
         return true;
     }
@@ -164,6 +153,12 @@ void CameraManager::loadSavedCameraInfo() {
         return true;
     });
     InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
+    _ready = true;
+}
+
+bool CameraManager::isReady() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    return _ready;
 }
 
 } // namespace managerkit

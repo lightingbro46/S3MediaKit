@@ -24,6 +24,8 @@ public:
 
     void loadSavedCameraInfo();
 
+    bool isReady();
+
 private:
     CameraManager();
 
@@ -31,7 +33,7 @@ private:
 
 private:
     std::recursive_mutex _mtx;
-    bool _ready = true; // ready for receive new camera
+    bool _ready = false; // ready for receive new camera
     toolkit::Timer::Ptr _timer;
     std::unordered_map<std::string, GenericRtspCameraImp::Ptr> _gcImp;
 };

@@ -15,6 +15,7 @@
 #include "User/UserAuthorManager.h"
 #include "Storage/Bookmark.h"
 #include "Server/ClusterManager.h"
+#include "Camera/CameraManager.h"
 
 using namespace std;
 using namespace Json;
@@ -418,7 +419,8 @@ static void reportServerStatistic() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
-        if (!report_started) {
+        if (!report_started || !CameraManager::Instance().isReady()) {
+            WarnL << "Pending call api to load server config";
             // If the start API has not been completed, do not call the API to get the configuration in delay task. Waiting for timer to call API to get the configuration
             if (report_first) {
                 report_first = false;

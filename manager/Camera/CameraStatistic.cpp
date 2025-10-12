@@ -235,6 +235,8 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["autoMediaPort"] = stats.option.autoMediaPort;
     root["mediaPort"] = stats.option.mediaPort;
     root["recordScheduler"] = stats.option.recordScheduler;
+    root["enableFailover"] = stats.option.enableFailover;
+    root["preferedMediaServer"] = stats.option.preferedMediaServer;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;
