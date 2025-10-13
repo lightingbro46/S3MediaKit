@@ -103,7 +103,7 @@ void StreamSource::createPlayer() {
             }
             if (strong_self->_live) {
                 strong_self->_live = false;
-                strong_self->_status = "rtsp self-disconnect";
+                strong_self->_status = "self-disconnect";
             }
             TraceL << "setOnDisconnect: live=" << strong_self->_live << " status=" << strong_self->_status;
 
@@ -120,6 +120,10 @@ void StreamSource::createPlayer() {
             strong_self->_live = !ex ? true : false;
             strong_self->_status = ex.what();
             TraceL << "setOnClose: live=" << strong_self->_live << " status=" << strong_self->_status;
+            
+            if (strong_self->_on_change) {
+                strong_self->_on_change();
+            }
         });
 
         player->play(strong_self->_tuple.full_url);

@@ -51,9 +51,11 @@ void GenericRtspCameraImp::setupRecordStream(RecordMode mode, const CameraOption
 void GenericRtspCameraImp::stopRecordStream() {
     if (hasStreamTuple(PrimaryStream)) {
         stopMonitor(PrimaryStream);
+        onStreamChange(PrimaryStream);
     }
     if (hasStreamTuple(SecondaryStream)) {
         stopMonitor(SecondaryStream);
+        onStreamChange(SecondaryStream);
     }
 }
 

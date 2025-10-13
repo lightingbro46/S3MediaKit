@@ -103,7 +103,7 @@ bool StreamSink::isStreamLive(int type) {
 
 string StreamSink::getStreamStatus(int type) {
     lock_guard<recursive_mutex> lck(_mtx_sink);
-    string status;
+    string status = "self-closed";
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         status = it->second->getStatus();
