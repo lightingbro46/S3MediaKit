@@ -2429,6 +2429,7 @@ void installWebApi() {
         uint64_t pos_time = 0;
         if (query) {
             if (pos_str == "latest") {
+                // todo: get latest jpeg record
                 auto ret = findDeviceSource(tuple.app);
                 if (ret) {
                     auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);

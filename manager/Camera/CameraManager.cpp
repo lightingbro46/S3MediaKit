@@ -89,17 +89,31 @@ bool CameraManager::delCamera(const string &key, bool force) {
     if (it != _gcImp.end()) {
         auto imp = it->second;
         auto option = imp->getCameraOption();
-        if (option.enableFailover) {
+        auto params = imp->getParams();
+        size_t total_storage_size = 0;
+        total_storage_size += params.bm.recordAverageSizeB;
+        for (const auto &it : params.storage_map) {
+            total_storage_size += it.second.archiveSizeB;
+        }
+
+        if (total_storage_size > 0) {
+            // device still have data in storage
             if (imp->isEnabled()) {
-                // disable device in failover mode
+                // In cases of camera deletion, camera relocation, or camera failover returning to the main server, the failover mode is always enabled.
+                DebugL << "Device still have remain data. Enable failover mode";
+                option.enableFailover = true;
                 option.enableActive = false;
                 imp->setCameraOption(option);
             }
-            return true;
+        } else {
+            // device do not have any data in storage
+            // remove saved file before
+            DebugL << "Device have no data. Remove device out of list";
+            imp->remove();
+            // remove device out of list 
+            _gcImp.erase(key);
         }
-        // remove device out of list
-        // todo: handle case that remove camera or move camera to other media server
-        _gcImp.erase(key);
+
         return true;
     }
     return false;

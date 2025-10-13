@@ -488,4 +488,12 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
     }
 }
 
+void CameraStatisticImp::remove() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    if (_file) {
+        _file->remove();
+        DebugL << "Removed file recorder success: " << info.shortUrl();
+    }
+}
+
 } // namespace managerkit

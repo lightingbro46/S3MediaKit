@@ -84,6 +84,8 @@ public:
 
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
+    void remove();
+
     CameraStatistic getParams();
 
     static void addCameraArchiveSize(const TimeBlock &block, bool add = true);
