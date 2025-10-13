@@ -56,6 +56,7 @@ const string kBroadcastRtcSctpSend = "kBroadcastRtcSctpSend";
 const string kBroadcastRtcSctpReceived = "kBroadcastRtcSctpReceived";
 const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
 const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
+const string kBroadcastMediaSeeked2 = "kBroadcastMediaSeeked2";
 const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
 const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";

@@ -6,6 +6,7 @@
 #include "MP4.h"
 #include "Extension/Track.h"
 #include "Util/ResourcePool.h"
+#include "Common/MediaSource.h"
 
 namespace mediakit {
 
@@ -68,6 +69,14 @@ private:
     toolkit::ResourcePool<toolkit::BufferRaw> _buffer_pool;
 };
 
+struct SegmentStats {
+    MediaTuple tuple;
+    uint64_t start_time = 0;
+    uint64_t total_dur = 0;
+    uint64_t next_time = 0;
+    uint64_t first_time = 0;
+};
+
 class MultiMP4Demuxer : public TrackSource {
 public:
     using Ptr = std::shared_ptr<MultiMP4Demuxer>;
@@ -114,9 +123,20 @@ public:
     uint64_t getDurationMS() const;
 
 private:
+    void openMP4WithTimeline(const std::string &files);
+
+    int64_t findNextSegment(bool first_segment = false, uint64_t max_duration = 600);
+
+    int64_t seekToWithTimeline(int64_t stamp_ms);
+
+    Frame::Ptr readFrameWithTimeline(bool &keyFrame, bool &eof);
+
+private:
     std::map<int, Track::Ptr> _tracks;
     std::map<uint64_t, MP4Demuxer::Ptr>::iterator _it;
     std::map<uint64_t, MP4Demuxer::Ptr> _demuxers;
+    bool _use_timeline = false;
+    SegmentStats _stats;
 };
 
 }//namespace mediakit

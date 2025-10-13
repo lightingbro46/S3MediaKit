@@ -24,7 +24,7 @@ RtspPlayer::RtspPlayer(const EventPoller::Ptr &poller)
     : TcpClient(poller) {}
 
 RtspPlayer::~RtspPlayer(void) {
-    DebugL;
+    TraceL;
 }
 
 void RtspPlayer::sendTeardown() {
@@ -79,7 +79,7 @@ void RtspPlayer::play(const string &strUrl) {
     _beat_type = (*this)[Client::kRtspBeatType].as<int>();
     _beat_interval_ms = (*this)[Client::kBeatIntervalMS].as<int>();
     _speed = (*this)[Client::kRtspSpeed].as<float>();
-    DebugL << url._url << " " << (url._user.size() ? url._user : "null") << " " << (url._passwd.size() ? url._passwd : "null") << " " << _rtp_type;
+    TraceL << url._url << " " << (url._user.size() ? url._user : "null") << " " << (url._passwd.size() ? url._passwd : "null") << " " << _rtp_type;
 
     weak_ptr<RtspPlayer> weakSelf = static_pointer_cast<RtspPlayer>(shared_from_this());
     float playTimeOutSec = (*this)[Client::kTimeoutMS].as<int>() / 1000.0f;

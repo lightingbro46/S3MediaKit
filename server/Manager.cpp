@@ -109,6 +109,39 @@ void installManagerHook () {
         }
         invoker(offset);
     });
+
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaSeeked2, [](BroadcastMediaSeeked2Args) {
+        TimeQuery::Ptr query;
+        uint64_t duration = 0;
+        std::map<uint64_t, std::string> files;
+        try {
+            query = make_shared<TimeQuery>(args);
+        } catch(...) {}
+        
+        if (query) {
+            // find data at this stamp
+            bool found = false;
+            TimeRange first_range;
+            query->getRecordedTimePeriod(stamp, stamp + max_duration, [&](vector<TimeRange> &ret) {
+                for (auto const &p : ret) {
+                    if (p.startTime == stamp) {
+                        found = true;
+                        first_range = p;
+                    }
+                }
+            });
+            // find offset duration in date if this stamp has data
+            if (found) {
+                query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
+                    for (const auto &block : ret) {
+                        duration += block.time_len();
+                        files.emplace(block.start_time(), block.file_path());
+                    }
+                });
+            }
+        }
+        invoker(duration, files);
+    });
 #endif // ENABLE_MP4
 
     enforceStoragePolicy();
@@ -326,6 +359,8 @@ static Json::Value exampleJson() {
 
 void loadServerConfigJson(const Json::Value &data1) {
     auto data = exampleJson();
+    TraceL << "Server configuration loaded: " << data.toStyledString();
+
     if (data.isMember("mediaServer")) {
         loadServerConfigFromJson(data["mediaServer"]);
     }
@@ -436,7 +471,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
             data.append(item);
         }
     });
-    DebugL << data.toStyledString();
+    TraceL << "Server statistic report: " << data.toStyledString();
     cb(data);
 }
 

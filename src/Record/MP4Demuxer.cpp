@@ -5,6 +5,8 @@
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Extension/Factory.h"
+#include "Common/config.h"
+#include "Common/Parser.h"
 
 using namespace std;
 using namespace toolkit;
@@ -185,6 +187,12 @@ uint64_t MP4Demuxer::getDurationMS() const {
 /////////////////////////////////////////////////////////////////////////////////
 
 void MultiMP4Demuxer::openMP4(const string &files_string) {
+    if (files_string.find("/vod/") != string::npos) {
+        _use_timeline = true;
+        openMP4WithTimeline(files_string);
+        return;
+    }
+
     std::vector<std::string> files;
     if (File::is_dir(files_string)) {
         File::scanDir(files_string, [&](const string &path, bool is_dir) {
@@ -213,6 +221,9 @@ void MultiMP4Demuxer::openMP4(const string &files_string) {
 }
 
 uint64_t MultiMP4Demuxer::getDurationMS() const {
+    if (_use_timeline) {
+        return _stats.total_dur * 1000;
+    }
     return _demuxers.empty() ? 0 : _demuxers.rbegin()->first + _demuxers.rbegin()->second->getDurationMS();
 }
 
@@ -223,6 +234,9 @@ void MultiMP4Demuxer::closeMP4() {
 }
 
 int64_t MultiMP4Demuxer::seekTo(int64_t stamp_ms) {
+    if (_use_timeline) {
+        return seekToWithTimeline(stamp_ms);
+    }
     if (stamp_ms >= (int64_t)getDurationMS()) {
         return -1;
     }
@@ -231,6 +245,9 @@ int64_t MultiMP4Demuxer::seekTo(int64_t stamp_ms) {
 }
 
 Frame::Ptr MultiMP4Demuxer::readFrame(bool &keyFrame, bool &eof) {
+    if (_use_timeline) {
+        return readFrameWithTimeline(keyFrame, eof);
+    }
     for (;;) {
         auto ret = _it->second->readFrame(keyFrame, eof);
         if (ret) {
@@ -265,6 +282,150 @@ std::vector<Track::Ptr> MultiMP4Demuxer::getTracks(bool trackReady) const {
         }
     }
     return ret;
+}
+
+static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 600) {
+    uint64_t duration = 0;
+    Broadcast::Seek2Invoker invoker = [&](const uint64_t &duration_, const map<uint64_t, string> &ret) {
+        duration = duration_;
+        files = ret;
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
+    if (!flag) {
+        // No one is listening to this event
+    }
+    return duration;
+}
+
+static uint64_t findSegmentDuration(const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 86400) {
+    uint64_t duration = 0;
+    Broadcast::Seek2Invoker invoker = [&](const uint64_t &ret, const map<uint64_t, string> &) {
+        duration = ret;
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
+    if (!flag) {
+        // No one is listening to this event
+    }
+    return duration;
+}
+
+void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
+    auto prefix_path = findSubString(file_path.data(), nullptr, "/vod");
+    auto suffix_path = findSubString(file_path.data(), "vod/", nullptr);
+
+    auto tmp = split(prefix_path, "/");
+    MediaTuple tuple = { DEFAULT_VHOST, tmp[tmp.size() - 2], tmp[tmp.size() - 1], "" };
+    uint64_t start_time = stoll(suffix_path.data());
+
+    auto total_duration = findSegmentDuration(tuple, start_time);
+    int64_t offset = 0;
+
+    if (total_duration > 0) {
+        _stats.tuple = tuple;
+        _stats.start_time = start_time;
+        _stats.total_dur = total_duration;
+        offset = findNextSegment(true);
+    }
+
+    CHECK(!_demuxers.empty());
+    _it = _demuxers.begin();
+    for (auto &track : _it->second->getTracks(false)) {
+        _tracks.emplace(track->getIndex(), track->clone());
+    }
+
+    if (offset >= 0) {
+        _it->second->seekTo(offset * 1000);
+    }
+}
+
+int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_duration) {
+    // clear map
+    if (_demuxers.size()) {
+        _demuxers.clear();
+        _it = _demuxers.end();
+    }
+    
+    uint64_t start_segment = first_segment ? _stats.start_time : _stats.next_time;
+    uint64_t next_time = 0;
+
+    if (start_segment <= 0) {
+        return -1;
+    }
+
+    map<uint64_t, string> files;
+    auto duration = findSegmentFiles(files, _stats.tuple, start_segment, max_duration * 2);
+    if (duration <= 0) {
+        return -1;
+    }
+    uint64_t offset = 0;
+    uint64_t duration_ms = 0;
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        if (it == files.begin()) {
+            offset = start_segment - it->first;
+            if (first_segment) {
+                _stats.first_time = it->first;
+            } else {    
+                duration_ms = (it->first - _stats.first_time) * 1000;
+            }
+        } else if (it->first - start_segment >= max_duration) {
+            next_time = it->first;
+            break;
+        }
+        auto demuxer = std::make_shared<MP4Demuxer>();
+        demuxer->openMP4(it->second);
+        _demuxers.emplace(duration_ms, demuxer);
+        duration_ms += demuxer->getDurationMS();
+    }
+    
+    _stats.next_time = next_time;
+    return offset;
+}
+
+int64_t MultiMP4Demuxer::seekToWithTimeline(int64_t stamp_ms) {
+    if (stamp_ms >= (int64_t)getDurationMS()) {
+        return -1;
+    }
+    _stats.next_time = _stats.start_time + stamp_ms / 1000;
+    auto offset = findNextSegment();
+    if (offset < 0) {
+        return -1;
+    }
+    _it = _demuxers.begin();
+    auto diff_time_ms = (_stats.start_time - _stats.first_time) * 1000;
+    auto offset_ms = offset * 1000;
+    return _it->first - diff_time_ms +_it->second->seekTo(offset_ms);
+}
+
+Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
+    for (;;) {
+        auto ret = _it->second->readFrame(keyFrame, eof);
+        if (ret) {
+            auto it = _tracks.find(ret->getIndex());
+            if (it != _tracks.end()) {
+                auto ret2 = std::make_shared<FrameStamp>(ret);
+                ret2->setStamp(_it->first + ret->dts(), _it->first + ret->pts());
+                ret = std::move(ret2);
+                it->second->inputFrame(ret);
+            } 
+        }
+        if (eof && _it != _demuxers.end()) {
+            // Switch to the next file
+            if (++_it == _demuxers.end()) {
+                // Find next segment
+                auto offset = findNextSegment();
+                if (offset < 0) {
+                    // It's the last file
+                    eof = true;
+                    return nullptr;
+                }
+                _it = _demuxers.begin();
+            }
+            // The next file starts from scratch
+            _it->second->seekTo(0);
+            continue;
+        }
+        return ret;
+    }
 }
 
 }//namespace mediakit
