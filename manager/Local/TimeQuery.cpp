@@ -271,9 +271,9 @@ int64_t TimeQuery::getOffsetOfDate(uint64_t pos_time) {
     return ret;
 }
 
-std::shared_ptr<TimeBlock> TimeQuery::getLastBlock(uint32_t interval_sec) {
+std::shared_ptr<TimeBlock> TimeQuery::getLastBlock(uint64_t last_archived_time, uint32_t interval_sec) {
     lock_guard<recursive_mutex> lck(_mtx);
-    uint64_t pos = time(nullptr);
+    uint64_t pos = last_archived_time ? last_archived_time : time(nullptr);
     bool has_block = false;
     std::shared_ptr<TimeBlock> last_block;
     try {
@@ -293,13 +293,13 @@ std::shared_ptr<TimeBlock> TimeQuery::getLastBlock(uint32_t interval_sec) {
     return has_block ? last_block : nullptr;
 }
 
-std::shared_ptr<TimeBlock> TimeQuery::getFirstBlock(uint32_t interval_sec) {
+std::shared_ptr<TimeBlock> TimeQuery::getFirstBlock(uint64_t first_archived_time, uint32_t interval_sec) {
     lock_guard<recursive_mutex> lck(_mtx);
     uint64_t last_time = time(nullptr);
     bool has_block = false;
     std::shared_ptr<TimeBlock> first_block;
     try {
-        uint64_t pos = _demuxer->getFirstStamp();
+        uint64_t pos = first_archived_time ? first_archived_time : _demuxer->getFirstStamp();
         while (!has_block && pos > last_time) {
             auto end_pos = pos + interval_sec;
             query(pos, end_pos, [&](const TimeBlock &block) {

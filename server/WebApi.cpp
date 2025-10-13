@@ -2429,10 +2429,26 @@ void installWebApi() {
         uint64_t pos_time = 0;
         if (query) {
             if (pos_str == "latest") {
-                auto block = query->getLastBlock();
-                if (block) {
-                    pos_time = block->start_time();
-                    src_path = block->file_path();
+                auto ret = findDeviceSource(tuple.app);
+                if (ret) {
+                    auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
+                    auto params = ptr->getParams();
+                    auto stream_type = StreamMax;
+                    for (const auto &it : params.stream_map) {
+                        if (it.second.stream_id == tuple.stream) {
+                            stream_type = static_cast<managerkit::StreamType>(it.first);
+                        }
+                    }
+                    if (params.storage_map.find(stream_type) != params.storage_map.end()) {
+                        auto last_archived_time = params.storage_map[stream_type].archiveEndTime;
+                        if (last_archived_time > 0) {
+                            auto block = query->getLastBlock(last_archived_time);
+                            if (block) {
+                                pos_time = block->start_time();
+                                src_path = block->file_path();
+                            }
+                        }
+                    }
                 }
             } else {
                 pos_time = stoll(pos_str);

@@ -46,9 +46,9 @@ public:
 
     int64_t getOffsetOfDate(uint64_t pos_time);
 
-    std::shared_ptr<TimeBlock> getLastBlock(uint32_t interval_sec = 600);
+    std::shared_ptr<TimeBlock> getLastBlock(uint64_t last_archived_time = 0, uint32_t interval_sec = 600);
 
-    std::shared_ptr<TimeBlock> getFirstBlock(uint32_t interval_sec = 600);
+    std::shared_ptr<TimeBlock> getFirstBlock(uint64_t first_archived_time = 0, uint32_t interval_sec = 600);
 
 private:
     /**
