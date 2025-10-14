@@ -442,7 +442,6 @@ static Json::Value makeStreamStatisticJson(GenericRtspCameraImp::Ptr &camera, in
     item["codec"] = info.vcodec;
     item["width"] = info.width;
     item["height"] = info.height;
-    item["isPtz"] = camera->enablePTZ();
     item["volumeSize"] = 0;
     item["volumeRate"] = 0;
     item["oldestTenMinutesBlock"] = 0;
@@ -462,6 +461,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
             }
             Json::Value item;
             item["cameraId"] = tuple.device_id;
+            item["isPtz"] = camera->enablePTZ();
             item["channels"] = Json::arrayValue;
             if (camera->hasStreamTuple(PrimaryStream)) {
                 item["channels"].append(makeStreamStatisticJson(camera, PrimaryStream));
