@@ -442,6 +442,7 @@ static Json::Value makeStreamStatisticJson(GenericRtspCameraImp::Ptr &camera, in
     item["codec"] = info.vcodec;
     item["width"] = info.width;
     item["height"] = info.height;
+    item["isPtz"] = camera->enablePTZ();
     item["volumeSize"] = 0;
     item["volumeRate"] = 0;
     item["oldestTenMinutesBlock"] = 0;

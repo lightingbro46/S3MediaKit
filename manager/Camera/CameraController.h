@@ -29,6 +29,8 @@ public:
     void setupController();
 
     void stopController();
+
+    bool enablePTZ();
     
     void PTZMove(std::string &strDirect, int &speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 

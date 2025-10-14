@@ -186,6 +186,18 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
     }
 }
 
+bool CameraController::enablePTZ() {
+    bool enable_ptz = false;
+    if (_controller && _controller_ready) {
+        auto ptr = dynamic_pointer_cast<OnvifController>(_controller);
+        if (ptr) {
+            enable_ptz = ptr->enablePTZ();
+        }
+    }
+
+    return enable_ptz;
+}
+
 void CameraController::PTZMove(std::string &strDirect, int &speed, const function<void(const SockException &ex)> &cb) {
     // convert direction string to PTZ_DIRECT
     PTZ_DIRECT direct;
