@@ -32,6 +32,8 @@ private:
 
     void onSetCameraOption(const CameraOption &option) override;
 
+    void onControllerReady() override; 
+
 private:
     bool _enabled = false;
 };

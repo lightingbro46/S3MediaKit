@@ -68,6 +68,9 @@ public:
     // media server id, which camera belong to
     std::string preferedMediaServer;
 
+    // media server id, which camera belong to
+    bool enablePTZControl;
+
     // Add more options if need
 };
 

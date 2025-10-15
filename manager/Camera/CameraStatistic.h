@@ -39,6 +39,10 @@ struct StreamStatistic {
     int sample_bit = 0;
 };
 
+struct DeviceCapabilities {
+    bool ptzCapabilities = false;
+};
+
 struct CameraStatistic;
 class CameraStatisticHelper {
 public:
@@ -54,6 +58,7 @@ struct CameraStatistic {
     BookmarkStats bm;
     std::unordered_map<int, StreamStorageStats> storage_map;
     std::unordered_map<int, StreamStatistic> sinfo_map;
+    DeviceCapabilities device_caps;
     uint64_t created_at;
     uint64_t updated_at;
 
@@ -84,6 +89,8 @@ public:
 
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
+    void addDeviceCapabilities(bool enable_ptz);
+    
     void remove();
 
     CameraStatistic getParams();

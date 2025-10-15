@@ -74,4 +74,9 @@ void GenericRtspCameraImp::onStreamChange(int stream_type) {
     }
 }
 
+void GenericRtspCameraImp::onControllerReady() {
+    bool enable_ptz = enablePTZ();
+    addDeviceCapabilities(enable_ptz);
+}
+
 } // namespace managerkit

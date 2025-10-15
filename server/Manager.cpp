@@ -212,6 +212,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     bool media_port_auto = data["media_port_auto"].asBool();
     int rtp_transport = data["rtp_transport"].asInt();
     string prefered_media_server = data["pri_media_server"].asString();
+    bool enable_ptz_control = data["enable_ptz_control"].asBool();
 
     option.enableActive = enable_camera;
     option.enableRecord = enable_recording;
@@ -228,6 +229,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     option.enableFailover = prefered_media_server != mediaServerId;
     option.preferedMediaServer = prefered_media_server;
+    option.enablePTZControl = enable_ptz_control;
     // bool enable_recording_ = false;
     // uint64_t retention_ = 0;
     // for (const auto &stream : data["streams"]) {
@@ -255,6 +257,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     // option.enableFailover = prefered_media_server != mediaServerId;
     // option.preferedMediaServer = prefered_media_server;
+    // option.enablePTZControl = true;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -335,9 +338,10 @@ static Json::Value exampleJson() {
     device["model"] = "DS-2CD2347G1-L";
     device["enable"] = true;
     device["address"] = "27.72.173.71";
-    device["http_port"] = 80;
+    device["http_port"] = 8080;
     device["is_enable"] = true;
     device["enable_recording"] = true;
+    device["enable_ptz_control"] = true;
     device["keep_archived_min_for_auto"] = true;
     device["keep_archived_min_for"] = 0;
     device["keep_archived_max_for_auto"] = false;

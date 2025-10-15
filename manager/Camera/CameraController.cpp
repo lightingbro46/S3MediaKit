@@ -13,6 +13,11 @@ CameraController::~CameraController() {
     _timer_ctr.reset();
 }
 
+bool CameraController::isControlReady() {
+    lock_guard<recursive_mutex> lck(_mtx_control);
+    return _controller_ready; 
+}
+
 void CameraController::setupController() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     if (_controller) {
@@ -37,6 +42,7 @@ void CameraController::setupController() {
     if (_controller->initControl()) {
         _controller_ready = true;
         InfoL << "Onvif controller " << _info.shortUrl() << " connected";
+        onControllerReady();
     } else {
         WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
     }
@@ -69,6 +75,7 @@ void CameraController::onManager() {
         if (_controller->initControl()) {
             _controller_ready = true;
             InfoL << "Onvif controller " << _info.shortUrl() << " connected";
+            onControllerReady();
         }
     }
 

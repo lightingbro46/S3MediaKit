@@ -3071,7 +3071,7 @@ void installWebApi() {
         auto ret = findDeviceSource(deviceId);
         if (!ret) {
             val["code"] = API::NotFound;
-            val["msg"] = "Device not found";
+            val["msg"] = "Not found";
             invoker(400, headerOut, val.toStyledString());
             return;
         }
@@ -3079,7 +3079,15 @@ void installWebApi() {
         auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
         if (!ptr) {
             val["code"] = API::NotFound;
-            val["msg"] = "Device not found";
+            val["msg"] = "Not found";
+            invoker(400, headerOut, val.toStyledString());
+            return;
+        }
+
+        auto option = ptr->getCameraOption();
+        if (!option.enablePTZControl) {
+            val["code"] = API::NotFound;
+            val["msg"] = "No permission";
             invoker(400, headerOut, val.toStyledString());
             return;
         }

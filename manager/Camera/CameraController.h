@@ -23,8 +23,8 @@ public:
     CameraController(const CameraInfo &info);
 
     ~CameraController();
-    
-    bool isControlReady() { return _controller_ready; }
+
+    bool isControlReady();
 
     void setupController();
 
@@ -36,6 +36,8 @@ public:
 
 private:
     void onManager();
+
+    virtual void onControllerReady() {};
 
     void getMediaProfile();
 

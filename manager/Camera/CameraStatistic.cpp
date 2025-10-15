@@ -117,6 +117,19 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
     return stats;
 }
 
+// DeviceCapabilities
+static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities stats) {
+    Json::Value ret = Json::objectValue;
+    ret["ptzCapabilities"] = stats.ptzCapabilities;
+    return ret;
+}
+
+static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
+    DeviceCapabilities stats;
+    stats.ptzCapabilities = data["ptzCapabilities"].asBool();
+    return stats;
+}
+
 // StreamTuple
 static Json::Value makeStreamTupleJson(unordered_map<int, StreamTuple> stream_map, int stream_type) {
     Json::Value ret = Json::objectValue;
@@ -172,6 +185,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.recordScheduler = ret["recordScheduler"].asString();
     option.enableFailover = ret["enableFailover"].asBool();
     option.preferedMediaServer = ret["preferedMediaServer"].asString();
+    option.enablePTZControl = ret["enablePTZControl"].asBool();
     stats.option = option;
 
     // stream tuple map
@@ -199,6 +213,10 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
             readJsonString(it["value"].asString(), stream_stats_json);
             stats.sinfo_map[PrimaryStream] = getStreamStatistic(stream_stats_json[PrimaryStream]);
             stats.sinfo_map[SecondaryStream] = getStreamStatistic(stream_stats_json[SecondaryStream]);
+        } else if (it["name"] == "deviceCapabilities") {
+            Json::Value device_caps_json;
+            readJsonString(it["value"].asString(), device_caps_json);
+            stats.device_caps = getDeviceCapabilities(device_caps_json);
         }
     }
 
@@ -237,6 +255,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["recordScheduler"] = stats.option.recordScheduler;
     root["enableFailover"] = stats.option.enableFailover;
     root["preferedMediaServer"] = stats.option.preferedMediaServer;
+    root["enablePTZControl"] = stats.option.enablePTZControl;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;
@@ -257,6 +276,9 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     stream_stats_json.append(makeStreamStatisticJson(stats.sinfo_map, PrimaryStream));
     stream_stats_json.append(makeStreamStatisticJson(stats.sinfo_map, SecondaryStream));
     params.append(makeJsonKeyValue("streamStatisticInfos", writeJsonString(stream_stats_json)));
+
+    Json::Value device_caps_json = makeDeviceCapabilitiesJson(stats.device_caps);
+    params.append(makeJsonKeyValue("deviceCapabilities", writeJsonString(device_caps_json)));
 
     root["addParams"] = params;
 
@@ -494,6 +516,12 @@ void CameraStatisticImp::remove() {
         _file->remove();
         DebugL << "Removed file recorder success: " << info.shortUrl();
     }
+}
+
+void CameraStatisticImp::addDeviceCapabilities(bool enable_ptz) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    device_caps.ptzCapabilities = enable_ptz;
+    DebugL << "Device capabilities: PTZ=" << device_caps.ptzCapabilities;
 }
 
 } // namespace managerkit
