@@ -93,7 +93,7 @@ bool CameraManager::delCamera(const string &key, bool force) {
         size_t total_storage_size = 0;
         total_storage_size += params.bm.recordAverageSizeB;
         for (const auto &it : params.storage_map) {
-            total_storage_size += it.second.archiveSizeB;
+            total_storage_size += it.second.archiveIndexRecordCount > 0 ? it.second.archiveSizeB : 0;
         }
 
         if (total_storage_size > 0 || imp->isEnabled()) {

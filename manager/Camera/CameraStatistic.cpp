@@ -374,7 +374,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t size, uint64_t 
                 storage.archiveStartTime = archived_start_time;
             }
             storage.archiveEndTime = archived_end_time;
-            DebugL << "Add archived size: " << format_bytes_human_readable(size)
+            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " add archived size: " << format_bytes_human_readable(size)
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
                    << ". Last archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveEndTime);
@@ -395,7 +395,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t size, uint64_t 
                 // Note: Use the end time block for approximate statistics, not completely accurate. Use the TimeQuery::getFirstBlock function to get the exact number.
                 storage.archiveStartTime = archived_end_time;
             }
-            DebugL << "Subtract archived size: " << format_bytes_human_readable(size)
+            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " subtract archived size: " << format_bytes_human_readable(size)
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
                    << ". Last archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveEndTime);
@@ -416,7 +416,7 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
     if (add) {
         bm.recordCount ++;
         bm.recordAverageSizeB += size;
-        DebugL << "Add bookmark count: 1. Total bookmark count: " << bm.recordCount;
+        DebugL << "Device " << info.shortUrl() << " add bookmark count: 1. Total bookmark count: " << bm.recordCount;
 
     } else {
         if (bm.recordCount > 0) {
@@ -427,7 +427,7 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
         } else {
             bm.recordAverageSizeB = 0;
         }
-        DebugL << "Subtract bookmark count: 1. Total bookmark count: " << bm.recordCount;
+        DebugL << "Device " << info.shortUrl() << "subtract bookmark count: 1. Total bookmark count: " << bm.recordCount;
     }
     save();
 }
@@ -474,15 +474,15 @@ void CameraStatisticImp::addCameraBookmarkCount(const std::string &camera_id, ui
     WarnL << "Device not found: " << tuple.shortUrl();
 }
 
-void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string status, const TranslationInfo *info) {
+void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string status, const TranslationInfo *info_) {
     std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
     if (sinfo_map.find(stream_type) != sinfo_map.end()) {
         auto &sinfo = sinfo_map[stream_type];
         sinfo.live = live;
         sinfo.status = status;
-        sinfo.byte_speed = live && info ? info->byte_speed : 0;
-        if (live && info) {
-            for (const auto &it : info->stream_info) {
+        sinfo.byte_speed = live && info_ ? info_->byte_speed : 0;
+        if (live && info_) {
+            for (const auto &it : info_->stream_info) {
                 switch(it.codec_type) {
                     case TrackVideo: 
                         sinfo.has_video = true;
@@ -504,9 +504,9 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
                 }
             }
         }
-        DebugL << "Stream statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
+        DebugL << "Stream " << stream_map[stream_type].shortUrl() << " statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
     } else {
-        WarnL << "Stream statistic do not have stream type: " << stream_type;
+        WarnL << "Device " << info.shortUrl() << " do not have stream type: " << stream_type << ". Ignore statistic";
     }
 }
 
@@ -521,7 +521,7 @@ void CameraStatisticImp::remove() {
 void CameraStatisticImp::addDeviceCapabilities(bool enable_ptz) {
     std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
     device_caps.ptzCapabilities = enable_ptz;
-    DebugL << "Device capabilities: PTZ=" << device_caps.ptzCapabilities;
+    DebugL << "Device " << info.shortUrl() << " capabilities: PTZ=" << device_caps.ptzCapabilities;
 }
 
 } // namespace managerkit
