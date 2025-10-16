@@ -81,6 +81,7 @@ static Json::Value makeStreamStatisticJson(unordered_map<int, StreamStatistic> s
     Json::Value ret = Json::objectValue;
     if (stats_map.find(stream_type) != stats_map.end()) {
         ret["live"] = stats_map[stream_type].live;
+        ret["last_change_status"] = stats_map[stream_type].last_change_status;
         ret["status"] = stats_map[stream_type].status;
         ret["byte_speed"] = stats_map[stream_type].byte_speed;
         ret["has_video"] = stats_map[stream_type].has_video;
@@ -101,6 +102,7 @@ static Json::Value makeStreamStatisticJson(unordered_map<int, StreamStatistic> s
 static StreamStatistic getStreamStatistic(const Json::Value &data) {
     StreamStatistic stats;
     stats.live = data["live"].asBool();
+    stats.last_change_status = data["last_change_status"].asUInt64();
     stats.status = data["status"].asString();
     stats.byte_speed = data["byte_speed"].asInt();
     stats.has_video = data["has_video"].asBool();
@@ -478,6 +480,9 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
     std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
     if (sinfo_map.find(stream_type) != sinfo_map.end()) {
         auto &sinfo = sinfo_map[stream_type];
+        if (!sinfo.last_change_status || sinfo.live != live) {
+            sinfo.last_change_status = time(nullptr);
+        }
         sinfo.live = live;
         sinfo.status = status;
         sinfo.byte_speed = live && info_ ? info_->byte_speed : 0;

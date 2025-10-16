@@ -24,6 +24,7 @@ struct StreamStorageStats {
 
 struct StreamStatistic {
     bool live = false;
+    uint64_t last_change_status = 0;
     std::string status;
     int byte_speed = 0;
     bool has_video = false;
