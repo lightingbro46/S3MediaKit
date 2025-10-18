@@ -27,6 +27,7 @@ namespace managerkit {
 namespace Manager {
 #define MANAGER_FIELD "manager."
 const string kMediaServerDomain = MANAGER_FIELD"mediaServerDomain";
+const string kMediaServerProjectId = MANAGER_FIELD"mediaServerProjectId";
 const string kMaxAllowedDevices = MANAGER_FIELD"maxAllowedDevices";
 const string kMaxAvailableDevices = MANAGER_FIELD"maxAvailableDevices";
 const string kServerLocationId = MANAGER_FIELD"serverLocationId";
@@ -37,6 +38,7 @@ const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
+    mINI::Instance()[kMediaServerProjectId] = "";
     mINI::Instance()[kMaxAllowedDevices] = 0;
     mINI::Instance()[kMaxAvailableDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;

@@ -60,7 +60,7 @@ const string kBroadcastMediaSeeked2 = "kBroadcastMediaSeeked2";
 const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
 const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
-
+const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 } // namespace Broadcast
 
 // General Configuration Items

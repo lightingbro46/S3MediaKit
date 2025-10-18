@@ -287,6 +287,14 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         url += _parser.params();
     }
 
+    // Url with header Authorization
+    auto headers = _parser.getHeader(); 
+    if (!headers["Authorization"].empty()) {
+        auto jwt_token = trim(findSubString(headers["Authorization"].data(), "Bearer", nullptr));
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "token=" << jwt_token;
+    }
+
     // Parse the complete url with protocol + parameters
     _media_info.parse(schema + "://" + _parser["Host"] + url);
 
@@ -549,6 +557,14 @@ bool HttpSession::checkLiveStreamHls() {
     if (!_parser.params().empty()) {
         url += "?";
         url += _parser.params();
+    }
+
+    // Url with header Authorization
+    auto headers = _parser.getHeader(); 
+    if (!headers["Authorization"].empty()) {
+        auto jwt_token = trim(findSubString(headers["Authorization"].data(), "Bearer", nullptr));
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "token=" << jwt_token;
     }
 
     string schema;

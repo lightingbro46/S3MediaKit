@@ -42,27 +42,30 @@ extern const std::string kSecret;
 
 class ApiRetException: public std::runtime_error {
 public:
-    ApiRetException(const char *str = "success" ,int code = API::Success):runtime_error(str){
+    ApiRetException(const char *str = "success" , int code = API::Success, int status_code = 200) : runtime_error(str) {
         _code = code;
+        _status_code = status_code;
     }
-    int code(){ return _code; }
+    int code() { return _code; }
+    int status_code() { return _status_code; }
 private:
     int _code;
+    int _status_code;
 };
 
 class AuthException : public ApiRetException {
 public:
-    AuthException(const char *str):ApiRetException(str,API::AuthFailed){}
+    AuthException(const char *str) : ApiRetException(str, API::AuthFailed, 401) {}
 };
 
 class InvalidArgsException: public ApiRetException {
 public:
-    InvalidArgsException(const char *str):ApiRetException(str,API::InvalidArgs){}
+    InvalidArgsException(const char *str) : ApiRetException(str, API::InvalidArgs, 400) {}
 };
 
 class SuccessException: public ApiRetException {
 public:
-    SuccessException():ApiRetException("success",API::Success){}
+    SuccessException() : ApiRetException("success", API::Success, 200) {}
 };
 
 using ApiArgsType = std::map<std::string, std::string, mediakit::StrCaseCompare>;
@@ -189,6 +192,29 @@ bool checkArgs(Args &args, const First &first, const KeyTypes &...keys) {
             throw AuthException("Incorrect secret"); \
         } \
     } while(false);
+
+#define CHECK_AUTH_TOKEN()                                                                                                                                     \
+    CHECK_ARGS("Authorization");                                                                                                                               \
+    string bearer_token = allArgs["Authorization"];                                                                                                            \
+    string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                            \
+    auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                                 \
+    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             \
+    if (!token_cache->hasAccess() && enable_authorize) {                                                                                                       \
+        throw AuthException("Unauthorized");                                                                                                                   \
+    }                                                                                                                                                          \
+    allArgs.args["_user_id"] = token_cache->getUid();                                                                                                          \
+    allArgs.args["_user_name"] = token_cache->getUserName();                                                                                                   \
+    allArgs.args["_project_id"] = token_cache->getProjectId();
+
+#define CHECK_USER_AUTHOR(resource_id)                                                                                                                         \
+    if (!checkUserAuthor(resource_id, jwt_token)) {                                                                                                            \
+        throw AuthException("Unauthorized");                                                                                                                   \
+    }
+
+#define CHECK_USER_DEVICE_AUTHOR(device_id)                                                                                                                    \
+    if (!checkUserDeviceAuthor(device_id, jwt_token)) {                                                                                                        \
+        throw AuthException("Unauthorized");                                                                                                                   \
+    }
 
 void installWebApi();
 void unInstallWebApi();

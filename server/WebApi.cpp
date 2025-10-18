@@ -101,18 +101,18 @@ using HttpApi = function<void(const Parser &parser, const HttpSession::HttpRespo
 // http api list
 static map<string, HttpApi, StrCaseCompare> s_map_api;
 
-static void responseApi(const Json::Value &res, const HttpSession::HttpResponseInvoker &invoker){
+static void responseApi(const Json::Value &res, int status_code, const HttpSession::HttpResponseInvoker &invoker) {
     GET_CONFIG(string, charSet, Http::kCharSet);
     HttpSession::KeyValue headerOut;
     headerOut["Content-Type"] = string("application/json; charset=") + charSet;
-    invoker(200, headerOut, res.toStyledString());
+    invoker(status_code, headerOut, res.toStyledString());
 };
 
-static void responseApi(int code, const string &msg, const HttpSession::HttpResponseInvoker &invoker){
+static void responseApi(int code, const string &msg, int status_code, const HttpSession::HttpResponseInvoker &invoker) {
     Json::Value res;
     res["code"] = code;
     res["msg"] = msg;
-    responseApi(res, invoker);
+    responseApi(res, status_code, invoker);
 }
 
 static ApiArgsType getAllArgs(const Parser &parser);
@@ -241,70 +241,16 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     return allArgs;
 }
 
-static string getCameraId(const ArgsMap &allArgs) {
-    if (!allArgs["cameraId"].empty()) {
-        return allArgs["cameraId"];
-    }
-    if (!allArgs["camera_id"].empty()) {
-        return allArgs["camera_id"];
-    }
-    if (!allArgs["deviceId"].empty()) {
-        return allArgs["deviceId"];
-    }
-    if (!allArgs["device_id"].empty()) {
-        return allArgs["device_id"];
-    }
-    return "";
+static bool checkUserDeviceAuthor(const string &device_id, const string &jwt_token) {
+    auto permit = false;
+    Broadcast::AuthInvoker auth_invoker = [&permit](const string &err) { permit = err.empty(); };
+    NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);
+    return permit;
 }
 
-static string getStreamId(const ArgsMap &allArgs) {
-    if (!allArgs["streamId"].empty()) {
-        return allArgs["streamId"];
-    }
-    if (!allArgs["stream_id"].empty()) {
-        return allArgs["stream_id"];
-    }
-    return "";
-}
-
-#define CHECK_USER_AUTH(XX)                                                                                                                                    \
-    CHECK_ARGS("Authorization");                                                                                                                               \
-    string bearer_token = allArgs["Authorization"];                                                                                                            \
-    string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                            \
-    string host = allArgs["Host"];                                                                                                                             \
-    string camera_id = getCameraId(allArgs);                                                                                                                   \
-    string stream_id = getStreamId(allArgs);                                                                                                                   \
-    string url = (StrPrinter << "http://" << host << "/" << camera_id << "/" << stream_id << "?token=" << jwt_token);                                          \
-    MediaInfo media_info(url);                                                                                                                                 \
-    Broadcast::AuthInvoker auth_invoker = [&sender, headerOut, allArgs, val, invoker, cb, media_info, jwt_token](const string &err) mutable {                  \
-        if (!err.empty()) {                                                                                                                                    \
-            invoker(401, StrCaseMap {}, err);                                                                                                                  \
-            return;                                                                                                                                            \
-        }                                                                                                                                                      \
-        auto cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                                   \
-        if (cache) {                                                                                                                                           \
-            allArgs.args["_user_id"] = cache->getUid();                                                                                                        \
-            allArgs.args["_user_name"] = cache->getUserName();                                                                                                 \
-        }                                                                                                                                                      \
-        XX                                                                                                                                                     \
-    };                                                                                                                                                         \
-    bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);                                     \
-    if (!flag) {                                                                                                                                               \
-        auth_invoker("Unauthorized");                                                                                                                          \
-    }
-
-#define USER_AUTH_CALLBACK                                                                                                                                     \
-    cb(API_ARGS_VALUE);                                                                                                                                        \
-    invoker(200, headerOut, val.toStyledString());
-
-#define USER_AUTH_CALLBACK_ASYNC cb(API_ARGS_VALUE, invoker);
-
-static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP_ASYNC)> &cb) {
-    return [cb](API_ARGS_MAP_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK_ASYNC) };
-}
-
-static const function<void(API_ARGS_MAP_ASYNC)> withUserAuth(const function<void(API_ARGS_MAP)> &cb) {
-    return [cb](API_ARGS_MAP_ASYNC) { CHECK_USER_AUTH(USER_AUTH_CALLBACK) };
+static bool checkUserAuthor(const string &resource_id, const string &jwt_token) {
+    auto permit = UserAuthorManager::Instance().getAuthorCache(resource_id, jwt_token);
+    return permit == UserAuthorPermit::ACCEPT;
 }
 
 extern uint64_t getTotalMemUsage();
@@ -365,21 +311,21 @@ static inline void addHttpListener() {
             try {
                 it->second(parser, invoker, *helper);
             } catch (ApiRetException &ex) {
-                responseApi(ex.code(), ex.what(), invoker);
+                responseApi(ex.code(), ex.what(), ex.status_code(), invoker);
                 helper->getPoller()->async([helper, ex]() { helper->shutdown(SockException(Err_shutdown, ex.what())); }, false);
             }
 #ifdef ENABLE_MYSQL
             catch (SqlException &ex) {
-                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), invoker);
+                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), 500, invoker);
             }
 #endif // ENABLE_MYSQL
 #ifdef ENABLE_SQLITE
             catch (SqliteException &ex) {
-                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), invoker);
+                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), 500, invoker);
             }
 #endif // ENABLE_SQLITE
             catch (std::exception &ex) {
-                responseApi(API::Exception, ex.what(), invoker);
+                responseApi(API::Exception, ex.what(), 500, invoker);
             }
         },false);
     });
@@ -2384,9 +2330,10 @@ void installWebApi() {
         return cb(SockException(Err_success), result);
     };
 
-    api_regist("/media/esc/recordedTimePeriod", withUserAuth([](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+    api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
 
         auto camera_id = allArgs["cameraId"];
         auto start_time = allArgs["startTime"];
@@ -2410,11 +2357,14 @@ void installWebApi() {
                 invoker(200, headerOut, val.toStyledString());
             }
         });
-    }));
+    });
 
     // Get screenshot cache or real-time screenshot
-    api_regist("/media/esc/recordedThumnail", withUserAuth([](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "pos");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
+
         auto camera_id = allArgs["cameraId"];
         auto stream_id = allArgs["streamId"];
         auto pos_str = allArgs["pos"];
@@ -2532,7 +2482,7 @@ void installWebApi() {
             }
             responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
         });
-    }));
+    });
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
         auto full_key = tuple.shortUrl() + "/" + to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
@@ -2555,9 +2505,10 @@ void installWebApi() {
             cb(ex, key);
         });
     };
-    api_regist("/media/esc/extractArchived/create", withUserAuth([](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+    api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
 
         auto camera_id = allArgs["cameraId"];
         auto stream_id = allArgs["streamId"];
@@ -2585,21 +2536,24 @@ void installWebApi() {
         MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
         ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
 
-        addFFmpegExtractor(tuple, options, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
+        addFFmpegExtractor(tuple, options, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
             if (ex) {
                 val["code"] = API::OtherFailed;
                 val["msg"] = ex.what();
                 invoker(400, headerOut, val.toStyledString());
             } else {
+                UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
                 val["data"]["key"] = key;
                 invoker(201, headerOut, val.toStyledString());
             }
         });
-    }));
+    });
 
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("key");
+        CHECK_USER_AUTHOR(allArgs["key"]);
+
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
         if (!ffmpeg) {
             val["code"] = API::NotFound;
@@ -2619,8 +2573,10 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("key");
+        CHECK_USER_AUTHOR(allArgs["key"]);
+
         auto key = allArgs["key"];
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
         if (!ffmpeg || !ffmpeg->finished() || !ffmpeg->success()) {
@@ -2640,14 +2596,20 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("key");
+        CHECK_USER_AUTHOR(allArgs["key"]);
+
         val["data"]["flag"] = s_ffmpeg_extractor.erase(allArgs["key"]) == 1;
     });
 
     api_regist("/media/esc/extractArchived/list", [](API_ARGS_MAP) {
-        // CHECK_TOKEN();
-        s_ffmpeg_extractor.for_each([&val](const std::string &key, const FFmpegExtractor::Ptr &src) {
+        CHECK_AUTH_TOKEN();
+
+        s_ffmpeg_extractor.for_each([&](const std::string &key, const FFmpegExtractor::Ptr &src) {
+            if (!checkUserAuthor(key, jwt_token)) {
+                return;
+            }
             Json::Value item;
             item["key"] = key;
             item["progress"] = src->progress();
@@ -2657,7 +2619,7 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/bookmark/search", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("start_time", "end_time", "page", "size", "sort");
 
         string camera_id = allArgs["camera_id"];
@@ -2676,6 +2638,9 @@ void installWebApi() {
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
+            if (!checkUserDeviceAuthor(b.camera_guid, jwt_token)) {
+                continue;
+            }
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -2706,9 +2671,10 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/esc/bookmark/create", withUserAuth([](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+    api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("name", "camera_id", "start_time", "duration");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["camera_id"]);
 
         string name = allArgs["name"];
         string description = allArgs["description"];
@@ -2742,11 +2708,12 @@ void installWebApi() {
 
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
-    }));
+    });
 
-    api_regist("/media/esc/bookmark/update", withUserAuth([](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+    api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("id", "camera_id", "start_time", "duration");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["camera_id"]);
 
         string id = allArgs["id"];
         string name = allArgs["name"];
@@ -2779,22 +2746,33 @@ void installWebApi() {
         imp->update(bm, tags);
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
-    }));
+    });
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("id");
+
         auto id = allArgs["id"];
 
         auto imp = std::make_shared<BookmarkImp>();
+        auto ret = imp->findById(id);
+        if (!ret.size()) {
+            WarnL << "Bookmark " << id << " not found";
+            val["data"]["flag"] = false;
+            invoker(404, headerOut, val.toStyledString());
+            return;
+        }
+        CHECK_USER_DEVICE_AUTHOR(ret[0].camera_guid);
+
         imp->remove(id);
         val["data"]["flag"] = true;
         invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) {
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("size");
+
         int size = allArgs["size"];
         if (size < 0) size = 1;
         
@@ -2809,8 +2787,9 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/bookmark/recent", [](API_ARGS_MAP_ASYNC) { 
-        // CHECK_TOKEN();
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("size", "sort"); 
+
         string camera_id = allArgs["camera_id"];
         int size = allArgs["size"];
         string sort = allArgs["sort"];
@@ -2824,6 +2803,9 @@ void installWebApi() {
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
+            if (!checkUserDeviceAuthor(b.camera_guid, jwt_token)) {
+                continue;
+            }
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -2937,7 +2919,15 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
-        // CHECK_TOKEN
+        CHECK_AUTH_TOKEN();
+
+        // string id = allArgs["mediaServerId"];
+        // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        // if (id != mediaServerId) {
+        //     val["code"] = API::NotFound;
+        //     val["msg"] = "Notfound";
+        //     return;
+        // }
         val["data"] = makeSystemStatisticJson();
     });
 
@@ -3015,7 +3005,9 @@ void installWebApi() {
     };
 
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("address","port", "defaultPort");
+
         string address = allArgs["address"];
         int port = allArgs["port"];
         bool defaultPort = allArgs["defaultPort"];
@@ -3035,7 +3027,9 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("startIp", "endIp", "port", "defaultPort");
+
         string startIp = allArgs["startIp"];
         string endIp = allArgs["endIp"];
         int port = allArgs["port"];
@@ -3062,8 +3056,11 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/ptz_control", withUserAuth([](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("deviceId", "direct", "speed");
+        CHECK_USER_DEVICE_AUTHOR(allArgs["deviceId"]);
+
         string deviceId = allArgs["deviceId"];
         string strDirect = allArgs["direct"];
         int speed = allArgs["speed"];
@@ -3102,11 +3099,12 @@ void installWebApi() {
                 invoker(200, headerOut, val.toStyledString());
             }
         });
-    }));
+    });
 
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP) {
-        //CHECK_TOKEN
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("mediaServerId");
+
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {
@@ -3118,8 +3116,9 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/device/storage", [](API_ARGS_MAP) {
-        //CHECK_TOKEN
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("mediaServerId");
+
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {

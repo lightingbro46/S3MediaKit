@@ -140,6 +140,10 @@ extern const std::string kBroadcastSystemAlert;
 extern const std::string kBroadcastDeviceChanged;
 #define BroadcastDeviceChangedArgs const bool &bRegist, DeviceSource &sender
 
+// Broadcast for accessing device data. Control device authentication through this event.
+extern const std::string kBroadcastDeviceAccess;
+#define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const Broadcast::AuthInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

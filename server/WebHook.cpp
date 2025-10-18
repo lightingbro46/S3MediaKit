@@ -597,21 +597,21 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
-        // todo: require jwt token after handling media url
-        if (!jwt_token.empty()) {
-            auto permit =  UserAuthorManager::Instance().getAuthorCache(args, jwt_token);
-            if (permit != UserAuthorPermit::UNKNOWN) {
-                // User auth cache has still been expired. Check user permission
-                invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
-                return;
-            }
+        auto device_id = args.app;
+        GET_CONFIG(string, app_name, Record::kAppName);
+        if (args.app == app_name) {
+            device_id = split(args.stream, "/")[1];
+        }
+        auto permit = UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
+        if (permit != UserAuthorPermit::UNKNOWN) {
+            // User auth cache has still been expired. Check user permission
+            invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
+            return;
         }
 
         GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
         if (!enable_authorize) {
-            if (!jwt_token.empty()) {
-                UserAuthorManager::Instance().addAuthorCache(args, jwt_token, true); 
-            }
+            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true);
             invoker("");
             return;                                                                                                                                                
         } 
@@ -633,8 +633,46 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [args, jwt_token, invoker](const Value &obj, const string &err) {
-            UserAuthorManager::Instance().addAuthorCache(args, jwt_token, err.empty()); 
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) {
+            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
+            invoker(!err.empty() ? "Unauthorized" : "");
+        }, 0);
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceAccess, [](BroadcastDeviceAccessArgs) {
+        auto permit =  UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
+        if (permit != UserAuthorPermit::UNKNOWN) {
+            // User auth cache has still been expired. Check user permission
+            invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
+            return;
+        }
+
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
+        if (!enable_authorize) {
+            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true); 
+            invoker("");
+            return;                                                                                                                                                
+        }
+
+        GET_CONFIG(string, hook_play, Hook::kOnPlay);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_play.empty() || hook_api_url.empty() ) {
+            invoker("Unauthorized");
+            return;
+        }
+#if 0
+        auto body = make_json(args);
+        body["ip"] = sender.get_peer_ip();
+        body["port"] = sender.get_peer_port();
+        body["id"] = sender.getIdentifier();
+#endif
+        ArgsType body;
+        body["data"] = device_id;
+        HeaderType header;
+        header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
+        // Execute hook
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) {
+            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             invoker(!err.empty() ? "Unauthorized" : "");
         }, 0);
     });

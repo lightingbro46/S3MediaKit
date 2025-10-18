@@ -1,0 +1,82 @@
+#ifndef USER_USERSESSION_H
+#define USER_USERSESSION_H
+
+#include <string>
+#include <json/json.h>
+
+namespace managerkit {
+
+class UserSessionHelper {
+public:
+    /**
+     * Verify a JWT for syntactic correctness, signature validity and policy compliance.
+    */
+    static bool verifyJwtToken(const std::string &jwt_token);
+
+    /**
+     * Decode and validate a JSON Web Token (JWT) and update the user session cache.
+    */
+    static bool decodeJwtToken(Json::Value &decoded_payload, const std::string &jwt_token);
+};
+
+/**
+ * Authorization cache of user with device, default max elapsed is 60 seconds
+ */
+class UserSessionCache {
+public:
+    using Ptr = std::shared_ptr<UserSessionCache>;
+
+    UserSessionCache(const std::string &token);
+
+    /**
+     * get created at timestamp, unit: second
+     */
+    uint64_t getCreatedAt() { return _created_at; }
+
+    /**
+     * get expired at timestamp, unit: second
+     */
+    uint64_t getExpiredAt() { return _expired_at; }
+
+    /**
+     * get user id in cache
+     */
+    std::string getUid() { return _user_id; }
+
+    /**
+     *  get user name in cache
+     */
+    std::string getUserName() { return _user_name; }
+
+    /**
+     * get project id in cache
+     */
+    std::string getProjectId() { return _project_id; }
+
+    /**
+     * return permisstion to access this project
+     */
+    bool hasAccess() { return _has_access; }
+
+private:
+    /**
+     *  save user session into database
+     */
+    void saveUserSession();
+
+private:
+    std::string _user_id;
+    std::string _user_name;
+    uint64_t _created_at;
+    uint64_t _expired_at;
+    std::string _token;
+    std::vector<std::string> _permissions;
+    std::string _project_id;
+    int _level;
+    std::string _session_id;
+    bool _has_access = false;
+};
+
+} // namespace managerkit
+
+#endif // USER_USERSESSION_H

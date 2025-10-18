@@ -10,6 +10,8 @@ namespace managerkit {
 namespace Manager {
 // Media server domain that management system regist for 
 extern const std::string kMediaServerDomain;
+// Media server project id that management system regist for 
+extern const std::string kMediaServerProjectId;
 // Maximum number of devices that service operation normally
 extern const std::string kMaxAllowedDevices;
 // Maximum number of devices that service determined by the system CPU
