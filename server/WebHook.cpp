@@ -629,7 +629,7 @@ void installWebHook() {
         body["id"] = sender.getIdentifier();
 #endif
         ArgsType body;
-        body["data"] = args.app;
+        body["data"] = device_id;
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
