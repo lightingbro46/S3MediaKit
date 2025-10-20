@@ -302,6 +302,12 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         ini[Manager::kServerLocationId] = serverLocationId;
         change++;
     }
+    string mediaServerProjectId = data["projectId"].asString();
+    string currentMediaServerProjectId = ini[Manager::kMediaServerProjectId];
+    if (currentMediaServerProjectId != mediaServerProjectId) {
+        ini[Manager::kMediaServerProjectId] = mediaServerProjectId;
+        change++;
+    }
 
     //todo: cấu hình lưu bookmark, cấu hình lưu video push, số lượng thiết bị tối đa cho phép
 
