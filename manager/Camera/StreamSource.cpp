@@ -147,11 +147,40 @@ void StreamSource::closePlayer() {
 }
 
 TranslationInfo StreamSource::getTranslationInfo() {
-    auto strong_player = _player.lock();
-    if (strong_player) {
-        auto ret = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
-        _info.byte_speed = ret ? ret->getBytesSpeed() : 0;
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
+    if (media_src) {
+        _info.byte_speed = media_src->getBytesSpeed();
+        _info.start_time_stamp = media_src->getCreateStamp();
+        _info.stream_info.clear();
+        auto tracks = media_src->getTracks();
+        for (auto &track : tracks) {
+            track->update();
+            _info.stream_info.emplace_back();
+            auto &back = _info.stream_info.back();
+            back.bitrate = track->getBitRate();
+            back.codec_type = track->getTrackType();
+            back.codec_name = track->getCodecName();
+            switch (back.codec_type) {
+                case TrackAudio : {
+                    auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
+                    back.audio_sample_rate = audio_track->getAudioSampleRate();
+                    back.audio_channel = audio_track->getAudioChannel();
+                    back.audio_sample_bit = audio_track->getAudioSampleBit();
+                    break;
+                }
+                case TrackVideo : {
+                    auto video_track = dynamic_pointer_cast<VideoTrack>(track);
+                    back.video_width = video_track->getVideoWidth();
+                    back.video_height = video_track->getVideoHeight();
+                    back.video_fps = video_track->getVideoFps();
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
     }
+    
     return _info;
 }
 
