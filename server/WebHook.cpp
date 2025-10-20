@@ -600,7 +600,7 @@ void installWebHook() {
         auto device_id = args.app;
         GET_CONFIG(string, app_name, Record::kAppName);
         if (args.app == app_name) {
-            device_id = split(args.stream, "/")[1];
+            device_id = split(args.stream, "/")[0];
         }
         auto permit = UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
         if (permit != UserAuthorPermit::UNKNOWN) {
@@ -633,7 +633,7 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             invoker(!err.empty() ? "Unauthorized" : "");
         }, 0);
