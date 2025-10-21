@@ -254,6 +254,7 @@ bool OnvifController::getMediaProfiles() {
         if (!profile || profile->token.empty()) {
             continue;
         }
+        DebugL << "========================================";
         DebugL << "Read a profile with MediaProfile token: " << profile->token;
 
         OnvifMediaProfile _profile;
@@ -263,13 +264,6 @@ bool OnvifController::getMediaProfiles() {
             _profile.hasVideo = true;
 
             // get video configuration in profile
-            TraceL << profile->VideoEncoderConfiguration->Encoding;
-            TraceL << profile->VideoEncoderConfiguration->Resolution->Width;
-            TraceL << profile->VideoEncoderConfiguration->Resolution->Height;
-            TraceL << profile->VideoEncoderConfiguration->RateControl->BitrateLimit;
-            TraceL << profile->VideoEncoderConfiguration->RateControl->FrameRateLimit;
-            TraceL << profile->VideoEncoderConfiguration->RateControl->EncodingInterval;
-            TraceL << profile->VideoEncoderConfiguration->Quality;
             //todo: using ext-codec function
             switch (profile->VideoEncoderConfiguration->Encoding) {
                 case tt__VideoEncoding__JPEG: _profile.vcodec = "JPEG"; break;
@@ -279,15 +273,24 @@ bool OnvifController::getMediaProfiles() {
             }
 
             if (_profile.vcodec == "UNKNOWN") {
+                WarnL << "Unsupported video codec: " << profile->VideoEncoderConfiguration->Encoding << ". Ignore";
                 continue;
             }
-            _profile.bitrate = profile->VideoEncoderConfiguration->RateControl->BitrateLimit;
-            int framerate_limit = profile->VideoEncoderConfiguration->RateControl->FrameRateLimit;
-            int encoding_interval = profile->VideoEncoderConfiguration->RateControl->EncodingInterval;
-            _profile.fps = framerate_limit / encoding_interval;
-            _profile.width = profile->VideoEncoderConfiguration->Resolution->Width;
-            _profile.height = profile->VideoEncoderConfiguration->Resolution->Height;
-            _profile.quality = profile->VideoEncoderConfiguration->Quality;
+
+            DebugL << "Video Codec: " << profile->VideoEncoderConfiguration->Encoding;
+            _profile.bitrate = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->BitrateLimit : 0;
+            DebugL << "Bitrate Limit: " << _profile.bitrate;
+            int framerate_limit = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
+            DebugL << "Frame Rate Limit: " << framerate_limit;
+            int encoding_interval = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->EncodingInterval : 0;
+            DebugL << "Encoding Interval: " << encoding_interval;
+            _profile.fps = encoding_interval ? framerate_limit / encoding_interval : 0.0f;
+            _profile.width = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Width : 0;
+            DebugL << "Width: " << _profile.width;
+            _profile.height = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Height : 0;
+            DebugL << "Height: " << _profile.height;
+            _profile.quality = profile->VideoEncoderConfiguration->Quality ? profile->VideoEncoderConfiguration->Quality : 0.0f;
+            DebugL << "Quality: " << _profile.quality;
 
             // get video configuration option in profile
             // _trt__GetVideoEncoderConfigurationOptions* GetVideoConfigOptions = soap_new__trt__GetVideoEncoderConfigurationOptions(_m_soap);
@@ -329,7 +332,7 @@ bool OnvifController::getMediaProfiles() {
                 destroyControl();
                 return false;
             }
-            DebugL << GetStreamUriResponse.MediaUri->Uri;
+            DebugL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
             _profile.url = GetStreamUriResponse.MediaUri->Uri;
             if (_profile.url.empty()) {
                 continue;
