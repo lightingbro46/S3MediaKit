@@ -597,6 +597,16 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
+        if (jwt_token.empty()) {
+            invoker("Unauthorized");
+            return;
+        }
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
+        if (!token_cache->hasAccess() && enable_authorize) {
+            invoker("Unauthorized");
+            return;
+        }
         auto device_id = args.app;
         GET_CONFIG(string, app_name, Record::kAppName);
         if (args.app == app_name) {
@@ -608,8 +618,6 @@ void installWebHook() {
             invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
             return;
         }
-
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
         if (!enable_authorize) {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true);
             invoker("");
