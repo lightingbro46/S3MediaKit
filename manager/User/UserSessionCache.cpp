@@ -28,7 +28,10 @@ bool UserSessionHelper::verifyJwtToken(const string &jwt_token) {
         auto decoded_public_key = decodeBase64(public_key);
 
         // step 3. verify jwt token
-        jwt::verify<traits>().allow_algorithm(jwt::algorithm::rs256(decoded_public_key)).verify(decoded);
+        jwt::verify<traits>()
+            .allow_algorithm(jwt::algorithm::rs256(decoded_public_key)) // allow RS256 algorithm
+            .leeway(300) // 5 minutes leeway for nbf, iat, exp
+            .verify(decoded); // verify token
 
     } catch (exception &ex) {
         WarnL << "Verify jwt token failed: " << ex.what();
