@@ -228,6 +228,35 @@ void TimeRebuilder::commitTempFile() {
     removeSrcFile(_src_path);
 }
 
+struct ArchivedChanges {
+    size_t archived_size = 0;
+    size_t archived_count = 0;
+    uint64_t archived_start_time = 0;
+    uint64_t archived_end_time = 0;
+};
+using StreamArchivedChanges = unordered_map<string /*stream_id*/, ArchivedChanges>;
+using CameraArchivedChanges = unordered_map<string /*camera_id*/, StreamArchivedChanges>;
+
+static void addTempArchivedChanges(CameraArchivedChanges &tmp_map, const TimeBlock &block) {
+    auto &changes = tmp_map[block.app()][block.stream()];
+    changes.archived_size += block.file_size();
+    changes.archived_count++;
+    changes.archived_start_time = changes.archived_start_time > 0 ? min(changes.archived_start_time, block.start_time()) : block.start_time();
+    changes.archived_end_time = max(changes.archived_end_time, block.start_time() + block.time_len());
+}
+
+static void commitArchivedChanges(CameraArchivedChanges &tmp_map) {
+    for (const auto &camera_archived : tmp_map) {
+        const auto &camera_id = camera_archived.first;
+        const auto &stream_archived = camera_archived.second;
+        for (const auto &stream_change : stream_archived) {
+            const auto &stream_id = stream_change.first;
+            const auto &change = stream_change.second;
+            GenericRtspCameraImp::addCameraArchiveSize(camera_id, stream_id, change.archived_count, change.archived_size, change.archived_start_time, change.archived_end_time, false);
+        }
+    }
+} 
+
 using RecordProfiles = unordered_map<string /*camera_id/stream_id*/, pair<uint64_t /*min_value*/, uint64_t /*max_value*/>>;
 
 static RecordProfiles getRecordProfiles() {
@@ -275,8 +304,9 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
     size_t removed_bytes = 0;
     double keep_percent = 100.0;
     auto record_profiles = getRecordProfiles();
+    CameraArchivedChanges archived_changes;
 
-    auto keep_block = [&removed_bytes, &map](const TimeBlock &block) -> bool { 
+    auto keep_block = [&removed_bytes, &map, &archived_changes](const TimeBlock &block) -> bool { 
         string key = (StrPrinter << block.app() << "/" << block.stream()); 
         auto it = map.find(key);
         if (it != map.end()) {
@@ -288,6 +318,7 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
         TraceL << "Remove time block: " << key << " " << block.start_time();
         removed_bytes += block.file_size();
         TraceL << "Increase: " << format_bytes_human_readable(block.file_size()) << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
+        addTempArchivedChanges(archived_changes, block);
         return false;
     };
     
@@ -312,8 +343,6 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
         query->query(start_time, last_time, [this, keep_block](const TimeBlock &block) {
             if (keep_block(block)) {
                 _writer->inputBlock(block);
-            } else {
-                GenericRtspCameraImp::addCameraArchiveSize(block, false);
             }
         });
 
@@ -339,6 +368,7 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
             if (removed_bytes >= space_reclaim) {
                 // if remove enough bytes, rename tmp file to original , or delete tmp file and rebuild timefile
                 commitTempFile();
+                commitArchivedChanges(archived_changes);
             }
         };
 
@@ -349,6 +379,9 @@ size_t TimeRebuilder::rebuildTimeLine(KeepTimeMap &map, size_t space_reclaim) {
             // todo: auto select keep_percent by read/write speed
             keep_percent += (-5.0);
             TraceL << "Decrease keep percent: " << format_double_2f(keep_percent) << "%";
+            // reset archived changes and removed bytes for next loop
+            archived_changes.clear();
+            removed_bytes = 0;
         }
         // only enforce storage policy once if space_reclaim equal 0 byte
         if (space_reclaim == 0) {

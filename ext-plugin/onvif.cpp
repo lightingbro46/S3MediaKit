@@ -254,8 +254,8 @@ bool OnvifController::getMediaProfiles() {
         if (!profile || profile->token.empty()) {
             continue;
         }
-        DebugL << "========================================";
-        DebugL << "Read a profile with MediaProfile token: " << profile->token;
+        TraceL << "========================================";
+        TraceL << "Read a profile with MediaProfile token: " << profile->token;
 
         OnvifMediaProfile _profile;
         _profile.token = profile->token;
@@ -277,20 +277,20 @@ bool OnvifController::getMediaProfiles() {
                 continue;
             }
 
-            DebugL << "Video Codec: " << profile->VideoEncoderConfiguration->Encoding;
+            TraceL << "Video Codec: " << profile->VideoEncoderConfiguration->Encoding;
             _profile.bitrate = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->BitrateLimit : 0;
-            DebugL << "Bitrate Limit: " << _profile.bitrate;
+            TraceL << "Bitrate Limit: " << _profile.bitrate;
             int framerate_limit = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
-            DebugL << "Frame Rate Limit: " << framerate_limit;
+            TraceL << "Frame Rate Limit: " << framerate_limit;
             int encoding_interval = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->EncodingInterval : 0;
-            DebugL << "Encoding Interval: " << encoding_interval;
+            TraceL << "Encoding Interval: " << encoding_interval;
             _profile.fps = encoding_interval ? framerate_limit / encoding_interval : 0.0f;
             _profile.width = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Width : 0;
-            DebugL << "Width: " << _profile.width;
+            TraceL << "Width: " << _profile.width;
             _profile.height = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Height : 0;
-            DebugL << "Height: " << _profile.height;
+            TraceL << "Height: " << _profile.height;
             _profile.quality = profile->VideoEncoderConfiguration->Quality ? profile->VideoEncoderConfiguration->Quality : 0.0f;
-            DebugL << "Quality: " << _profile.quality;
+            TraceL << "Quality: " << _profile.quality;
 
             // get video configuration option in profile
             // _trt__GetVideoEncoderConfigurationOptions* GetVideoConfigOptions = soap_new__trt__GetVideoEncoderConfigurationOptions(_m_soap);
@@ -332,7 +332,7 @@ bool OnvifController::getMediaProfiles() {
                 destroyControl();
                 return false;
             }
-            DebugL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
+            TraceL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
             _profile.url = GetStreamUriResponse.MediaUri->Uri;
             if (_profile.url.empty()) {
                 continue;

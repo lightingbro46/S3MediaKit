@@ -354,7 +354,7 @@ const CameraOption &CameraStatisticImp::getCameraOption() {
     return option;
 }
 
-void CameraStatisticImp::addArchiveSize(string stream_id, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {
+void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {
     std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
     // Do not process time blocks with an end time earlier than the info file creation time, so that old media data does not need to be re-aggregated
     if (archived_end_time <= created_at) {
@@ -371,24 +371,19 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t size, uint64_t 
         auto &storage = storage_map[stream_type];
         if (add) {
             storage.archiveSizeB += size;
-            storage.archiveIndexRecordCount++;
+            storage.archiveIndexRecordCount += count;
             if (storage.archiveStartTime == 0) {
                 storage.archiveStartTime = archived_start_time;
             }
             storage.archiveEndTime = archived_end_time;
-            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " add archived size: " << format_bytes_human_readable(size)
+            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " add archived size: " << format_bytes_human_readable(size) << ", count: " << count
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
+                   << ". Total archived count: " << storage.archiveIndexRecordCount
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
                    << ". Last archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveEndTime);
         } else {
-            if (storage.archiveSizeB >= size) {
-                storage.archiveSizeB -= size;
-            } else {
-                storage.archiveSizeB = 0;
-            }
-            if (storage.archiveIndexRecordCount > 0) {
-                storage.archiveIndexRecordCount--;
-            }
+            storage.archiveSizeB = storage.archiveSizeB >= size ? (storage.archiveSizeB - size) : 0;
+            storage.archiveIndexRecordCount = storage.archiveIndexRecordCount >= count ? (storage.archiveIndexRecordCount - count) : 0;
             if (storage.archiveIndexRecordCount == 0) {
                 // record count is equal 0, reset archiveStartTime and archiveEndTime equal 0 to indicate no data
                 storage.archiveStartTime = 0;
@@ -397,8 +392,9 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t size, uint64_t 
                 // Note: Use the end time block for approximate statistics, not completely accurate. Use the TimeQuery::getFirstBlock function to get the exact number.
                 storage.archiveStartTime = archived_end_time;
             }
-            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " subtract archived size: " << format_bytes_human_readable(size)
+            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " subtract archived size: " << format_bytes_human_readable(size) << ", count: " << count
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
+                   << ". Total archived count: " << storage.archiveIndexRecordCount
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
                    << ". Last archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveEndTime);
         }
@@ -439,21 +435,16 @@ CameraStatistic CameraStatisticImp::getParams() {
     return static_cast<const CameraStatistic &>(*this);
 }
 
-void CameraStatisticImp::addCameraArchiveSize(const TimeBlock &block, bool add) {
+void CameraStatisticImp::addCameraArchiveSize(const string &camera_id, const string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add) {
     DeviceTuple tuple;
     tuple.vhost = DEFAULT_VHOST;
-    tuple.device_id = block.app();
-
-    string stream_id = block.stream();
-    size_t block_size = block.file_size();
-    uint64_t start_stamp = block.start_time();
-    uint64_t end_stamp = block.start_time() + block.time_len();
+    tuple.device_id = camera_id;
 
     auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
     if (ret) {
-        auto ptr = dynamic_pointer_cast<CameraStatisticImp>(ret);
+        auto ptr = std::dynamic_pointer_cast<CameraStatisticImp>(ret);
         if (ptr) {
-            ptr->addArchiveSize(stream_id, block_size, start_stamp, end_stamp, add);
+            ptr->addArchiveSize(stream_id, count, size, archive_start_time, archive_end_time, add);
             return;
         }
     }

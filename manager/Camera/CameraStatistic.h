@@ -6,7 +6,6 @@
 #include "Local/FileRecorder.h"
 #include "StreamSource.h"
 #include "GenericRtspCamera.h"
-#include "proto/timeblock.pb.h"
 
 namespace managerkit {
 
@@ -84,7 +83,7 @@ public:
 
     const CameraOption &getCameraOption();
 
-    void addArchiveSize(std::string stream_id, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
+    void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
     
     void addBookmarkCount(uint64_t bm_created_at,  size_t size, bool add = true);
 
@@ -96,7 +95,7 @@ public:
 
     CameraStatistic getParams();
 
-    static void addCameraArchiveSize(const TimeBlock &block, bool add = true);
+    static void addCameraArchiveSize(const std::string &camera_id, const std::string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add = true);
 
     static void addCameraBookmarkCount(const std::string &camera_id, uint64_t created_at, bool add = true);
 

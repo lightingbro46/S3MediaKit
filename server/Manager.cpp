@@ -81,7 +81,7 @@ void installManagerHook () {
 
         auto ret = TimeRecorder::Instance().inputBlock(block);
         if (ret) {
-            GenericRtspCameraImp::addCameraArchiveSize(block, true);
+            GenericRtspCameraImp::addCameraArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
         }
     });
 

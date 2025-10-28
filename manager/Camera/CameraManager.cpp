@@ -66,9 +66,27 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
                 gc->setCameraOption(option);
                 return true;
             }
-            // delete ptr if config change
-            _gcImp.erase(info.shortUrl());
-        }   
+            // stop device before remove old one to store last media file if config change
+            gc->stop();
+
+            // set delay task to remove old one and create new one
+            weak_ptr<CameraManager> weak_self = shared_from_this();
+            EventPollerPool::Instance().getPoller()->doDelayTask(3000, [weak_self, info, stream_map, option]() {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) {
+                    return false;
+                }
+                // remove old one
+                strong_self->_gcImp.erase(info.shortUrl());
+                // create new one
+                auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map);
+                imp->setCameraOption(option);
+                strong_self->_gcImp.emplace(info.shortUrl(), imp);
+                return false;
+            });
+
+            return true;
+        }
     }
 
     // create new one
