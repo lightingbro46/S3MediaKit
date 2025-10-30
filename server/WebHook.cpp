@@ -679,7 +679,7 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             invoker(!err.empty() ? "Unauthorized" : "");
         }, 0);

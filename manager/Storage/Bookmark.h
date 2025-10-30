@@ -42,7 +42,7 @@ public:
     BookmarkRepository() : SqliteRepository<Bookmark>(Database::kMediaServerDb) {}
 
 protected:
-    std::vector<Bookmark> findByTimeRange(int64_t start_time, int64_t end_time, const std::vector<std::string> &camera_guids,
+    std::vector<Bookmark> findByTimeRange(int64_t start_time, int64_t end_time, const std::vector<std::string> &camera_guids, const std::string &user_id,
                                         int offset, int limit, std::string &sort, const std::string& search_term = "") {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -59,6 +59,11 @@ protected:
                 whereParams.push_back(camera_guids[i]);
             }
             whereClause << ")";
+        }
+
+        if (!user_id.empty()){
+            whereClause << " AND creator_guid = ?";
+            whereParams.push_back(user_id);
         }
 
         if (!search_term.empty()){
@@ -82,7 +87,7 @@ protected:
         return ret;
     }
 
-    int countByTimeRange(int64_t start_time, int64_t end_time, const std::vector<std::string> &camera_guids) {
+    int countByTimeRange(int64_t start_time, int64_t end_time, const std::vector<std::string> &camera_guids, const std::string &user_id, const std::string& search_term = "") {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
@@ -100,6 +105,17 @@ protected:
             whereClause << ")";
         }
 
+        if (!user_id.empty()){
+            whereClause << " AND creator_guid = ?";
+            whereParams.push_back(user_id);
+        }
+
+        if (!search_term.empty()){
+            whereClause << " AND guid IN (SELECT guid FROM bookmark_fts WHERE bookmark_fts MATCH ? UNION SELECT bookmark_guid FROM bookmark_tag_fts WHERE bookmark_tag_fts MATCH ? ) ";
+            whereParams.push_back(search_term);
+            whereParams.push_back(search_term);
+        }
+
         auto query = toolkit::QueryBuilder()
                          .select({ "COUNT(*) AS total" })
                          .from(EntityTraits<Bookmark>::tableName())
@@ -108,7 +124,7 @@ protected:
         return rows.empty() ? 0 : std::stoi(rows[0][0].c_str());
     }
 
-    std::vector<Bookmark> findByTimeCreated(const std::vector<std::string> &camera_guids, int limit, std::string &sort) {
+    std::vector<Bookmark> findByTimeCreated(const std::vector<std::string> &camera_guids, const std::string &user_id, int limit, std::string &sort) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
@@ -120,6 +136,14 @@ protected:
                 whereParams.push_back(camera_guids[i]);
             }
             whereClause << ")";
+        }
+
+        if (!user_id.empty()) {
+            if (!whereClause.str().empty()) {
+                whereClause << " AND ";
+            }
+            whereClause << " user_id = ?";
+            whereParams.push_back(user_id);
         }
 
         auto query = toolkit::QueryBuilder()
@@ -204,7 +228,7 @@ public:
     }
 
     std::vector<Bookmark> search(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &search,
-                                int page, int size, std::string sort) {
+                                const std::string &user_id, int page, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {
             _camera_guids = toolkit::split(camera_guids, ",");
@@ -212,15 +236,15 @@ public:
         std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
         int offset = page * size;
         toolkit::trim(const_cast<std::string&>(search));
-        return findByTimeRange(start_time, end_time, _camera_guids, offset, size, _sort, search);
+        return findByTimeRange(start_time, end_time, _camera_guids, user_id, offset, size, _sort, search);
     }
 
-    int count(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &search) {
+    int count(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &user_id, const std::string &search) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {
             _camera_guids = toolkit::split(camera_guids, ",");
         }
-        return countByTimeRange(start_time, end_time, _camera_guids);
+        return countByTimeRange(start_time, end_time, _camera_guids, user_id, search);
     }
 
     std::string findTagsByBookmark(const std::string &guid) { 
@@ -235,13 +259,13 @@ public:
         return oss.str();
     }
 
-    std::vector<Bookmark> findRecentById(const std::string &camera_guids, int size, std::string sort) {
+    std::vector<Bookmark> findRecentById(const std::string &camera_guids, const std::string &user_id, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {
             _camera_guids = toolkit::split(camera_guids, ",");
         }
         std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
-        return findByTimeCreated(_camera_guids, size, _sort);
+        return findByTimeCreated(_camera_guids, user_id, size, _sort);
     }
 
     int removeByTimeRange(uint64_t start_time, uint64_t end_time, const std::string &camera_guid) {

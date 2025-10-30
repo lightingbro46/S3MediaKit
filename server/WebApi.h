@@ -9,7 +9,7 @@
 #include "Http/HttpSession.h"
 #include "Common/MultiMediaSourceMuxer.h"
 #include "Player/PlayerProxy.h"
-
+#include "FFmpegSource.h"
 
 // Configuration file path
 extern std::string g_ini_file;
@@ -211,10 +211,7 @@ bool checkArgs(Args &args, const First &first, const KeyTypes &...keys) {
         throw AuthException("Unauthorized");                                                                                                                   \
     }
 
-#define CHECK_USER_DEVICE_AUTHOR(device_id)                                                                                                                    \
-    if (!checkUserDeviceAuthor(device_id, jwt_token)) {                                                                                                        \
-        throw AuthException("Unauthorized");                                                                                                                   \
-    }
+#define CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, cb) checkUserDeviceAuthor((device_id), jwt_token, (cb));
 
 void installWebApi();
 void unInstallWebApi();
@@ -231,5 +228,7 @@ void addStreamProxy(const mediakit::MediaTuple &tuple, const std::string &url, i
 void addStreamProxy(const mediakit::MediaTuple &tuple, const mediakit::ProtocolOption &option,
                     const std::function<void(const std::string &err, const mediakit::PlayerProxy::Ptr &ptr)> &cb);
 void delStreamProxy(const mediakit::MediaTuple &tuple);
+void addFFmpegSource(const std::string &dst_url, const std::function<void(const std::string &err, const FFmpegSource::Ptr &player)> &cb);
+void delFFmpegSource(const std::string &dst_url);
 
 #endif //S3MEDIAKIT_WEBAPI_H

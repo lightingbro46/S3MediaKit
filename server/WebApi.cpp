@@ -32,7 +32,6 @@
 
 #include "WebApi.h"
 #include "WebHook.h"
-#include "FFmpegSource.h"
 
 #include "Common/config.h"
 #include "Common/MediaSource.h"
@@ -241,11 +240,18 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     return allArgs;
 }
 
-static bool checkUserDeviceAuthor(const string &device_id, const string &jwt_token) {
-    auto permit = false;
-    Broadcast::AuthInvoker auth_invoker = [&permit](const string &err) { permit = err.empty(); };
-    NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);
-    return permit;
+static void checkUserDeviceAuthor(const string &device_id, const string &jwt_token, const function<void()> &cb) {
+    Broadcast::AuthInvoker auth_invoker = [cb](const string &err) {
+        if (!err.empty()) {
+            throw AuthException(err.data());
+        }
+        cb();
+    };
+    
+    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);
+    if (!flag) {
+        auth_invoker("Unauthorized");
+    }
 }
 
 static bool checkUserAuthor(const string &resource_id, const string &jwt_token) {
@@ -696,6 +702,26 @@ void delStreamProxy(const MediaTuple &tuple) {
     auto player_proxy = s_player_proxy.find(key);
     if (player_proxy) {
         s_player_proxy.erase(key);
+    }
+}
+
+void addFFmpegSource(const std::string &dst_url, const std::function<void(const string &err, const FFmpegSource::Ptr &player)> &cb) {
+    auto key = MD5(dst_url).hexdigest();
+    if (s_ffmpeg_src.find(key)) {
+        // Already pulling stream
+        cb("This stream already exists", nullptr);
+        return;
+    }
+    // Add pull ffmpeg source
+    auto ffmpeg = s_ffmpeg_src.make(key);
+    cb("", ffmpeg);
+};
+
+void delFFmpegSource(const std::string &dst_url) {
+    auto key = MD5(dst_url).hexdigest();
+    auto ffmpeg_src = s_ffmpeg_src.find(key);
+    if (ffmpeg_src) {
+        s_ffmpeg_src.erase(key);
     }
 }
 
@@ -2333,155 +2359,161 @@ void installWebApi() {
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
 
-        auto camera_id = allArgs["cameraId"];
-        auto start_time = allArgs["startTime"];
-        auto end_time = allArgs["endTime"];
-        auto period_type = allArgs["periodType"];
-        auto detail = allArgs["detail"];
+        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+            string camera_id = allArgs["cameraId"];
+            uint64_t start_time = allArgs["startTime"];
+            uint64_t end_time = allArgs["endTime"];
+            int period_type = allArgs["periodType"];
+            int detail = allArgs["detail"];
 
-        if (end_time == "now") {
-            end_time = time(nullptr);
-        }
-
-        MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-        findTimePeriod(tuple, start_time, end_time, period_type, detail, [&](const SockException &ex, const Value &data) {
-            if (ex) {
-                val["code"] = API::OtherFailed;
-                val["msg"] = ex.what();
-                invoker(400, headerOut, val.toStyledString());
-            } else {
-                val["data"] = data;
-                InfoL << "Get recorded time period success";
-                invoker(200, headerOut, val.toStyledString());
+            if (!end_time) {
+                end_time = time(nullptr);
             }
-        });
+
+            MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
+            findTimePeriod(tuple, start_time, end_time, period_type, detail, [&](const SockException &ex, const Value &data) {
+                if (ex) {
+                    val["code"] = API::OtherFailed;
+                    val["msg"] = ex.what();
+                    invoker(400, headerOut, val.toStyledString());
+                } else {
+                    val["data"] = data;
+                    InfoL << "Get recorded time period success";
+                    invoker(200, headerOut, val.toStyledString());
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
     });
 
     // Get screenshot cache or real-time screenshot
     api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "pos");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
 
-        auto camera_id = allArgs["cameraId"];
-        auto stream_id = allArgs["streamId"];
-        auto pos_str = allArgs["pos"];
+        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+            string camera_id = allArgs["cameraId"];
+            string stream_id = allArgs["streamId"];
+            string pos_str = allArgs["pos"];
 
-        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-        TimeQuery::Ptr query;
-        try {
-            query = std::make_shared<TimeQuery>(tuple);
-        } catch(...) {}
+            MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+            TimeQuery::Ptr query;
+            try {
+                query = std::make_shared<TimeQuery>(tuple);
+            } catch(...) {}
 
-        string src_path;
-        uint64_t pos_time = 0;
-        if (query) {
-            if (pos_str == "latest") {
-                // todo: get latest jpeg record
-                auto ret = findDeviceSource(tuple.app);
-                if (ret) {
-                    auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
-                    auto params = ptr->getParams();
-                    auto stream_type = StreamMax;
-                    for (const auto &it : params.stream_map) {
-                        if (it.second.stream_id == tuple.stream) {
-                            stream_type = static_cast<managerkit::StreamType>(it.first);
+            string src_path;
+            uint64_t pos_time = 0;
+            if (query) {
+                if (pos_str == "latest") {
+                    // todo: get latest jpeg record
+                    auto ret = findDeviceSource(tuple.app);
+                    if (ret) {
+                        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
+                        auto params = ptr->getParams();
+                        auto stream_type = StreamMax;
+                        for (const auto &it : params.stream_map) {
+                            if (it.second.stream_id == tuple.stream) {
+                                stream_type = static_cast<managerkit::StreamType>(it.first);
+                            }
                         }
-                    }
-                    if (params.storage_map.find(stream_type) != params.storage_map.end()) {
-                        auto last_archived_time = params.storage_map[stream_type].archiveEndTime;
-                        if (last_archived_time > 0) {
-                            auto block = query->getLastBlock(last_archived_time);
-                            if (block) {
-                                pos_time = block->start_time();
-                                src_path = block->file_path();
+                        if (params.storage_map.find(stream_type) != params.storage_map.end()) {
+                            auto last_archived_time = params.storage_map[stream_type].archiveEndTime;
+                            if (last_archived_time > 0) {
+                                auto block = query->getLastBlock(last_archived_time);
+                                if (block) {
+                                    pos_time = block->start_time();
+                                    src_path = block->file_path();
+                                }
                             }
                         }
                     }
-                }
-            } else {
-                pos_time = stoll(pos_str);
-                auto start_time = pos_time - 60;
-                auto end_time = pos_time + 60;
-                query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
-                    for (const auto &block : blocks) {
-                        if (block.start_time() > pos_time) {
-                            break;
+                } else {
+                    pos_time = stoll(pos_str);
+                    auto start_time = pos_time - 60;
+                    auto end_time = pos_time + 60;
+                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
+                        for (const auto &block : blocks) {
+                            if (block.start_time() > pos_time) {
+                                break;
+                            }
+                            pos_time = block.start_time();
+                            src_path = block.file_path();
                         }
-                        pos_time = block.start_time();
-                        src_path = block.file_path();
-                    }
-                });
-            }
-        }
-
-        if (src_path.empty() || pos_time == 0) {
-            val["code"] = API::NotFound;
-            val["msg"] = "No data in period";
-            invoker(404, headerOut, val.toStyledString());
-            return;
-        }
-
-        GET_CONFIG(string, snap_root, API::kSnapRoot);
-        int expire_sec = 60;
-
-        bool have_old_snap = false, res_old_snap = false;
-        auto path = camera_id + "/" + stream_id;
-        auto scan_path = File::absolutePath(path, snap_root) + "/";
-        string new_snap = StrPrinter << scan_path << pos_time << ".jpeg";
-
-        File::scanDir(scan_path, [&](const string &path, bool isDir) {
-            if (isDir || !end_with(path, ".jpeg")) {
-                // Ignore folders or other types of files
-                return true;
+                    });
+                }
             }
 
-            // Find screenshot
-            auto tm = findSubString(path.data() + scan_path.size(), nullptr, ".jpeg");
-            if (atoll(tm.data()) + expire_sec < time(NULL)) {
-                // Screenshot has expired, rename it so that it can be returned when requested again
-                rename(path.data(), new_snap.data());
-                have_old_snap = true;
-                return true;
+            if (src_path.empty() || pos_time == 0) {
+                val["code"] = API::NotFound;
+                val["msg"] = "No data in period";
+                invoker(404, headerOut, val.toStyledString());
+                return;
             }
 
-            // Screenshot exists and has not expired, so return it
-            res_old_snap = true;
-            responseSnap(path, allArgs.parser.getHeader(), invoker);
-            // Interrupt traversal
-            return false;
-        });
+            GET_CONFIG(string, snap_root, API::kSnapRoot);
+            int expire_sec = 60;
 
-        if (res_old_snap) {
-            // Old screenshot has been replied
-            return;
-        }
+            bool have_old_snap = false, res_old_snap = false;
+            auto path = camera_id + "/" + stream_id;
+            auto scan_path = File::absolutePath(path, snap_root) + "/";
+            string new_snap = StrPrinter << scan_path << pos_time << ".jpeg";
 
-        // No screenshot or screenshot has expired
-        if (!have_old_snap) {
-            // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
-            // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
-            auto file = File::create_file(new_snap, "wb");
-            if (file) {
-                fclose(file);
+            File::scanDir(scan_path, [&](const string &path, bool isDir) {
+                if (isDir || !end_with(path, ".jpeg")) {
+                    // Ignore folders or other types of files
+                    return true;
+                }
+
+                // Find screenshot
+                auto tm = findSubString(path.data() + scan_path.size(), nullptr, ".jpeg");
+                if (atoll(tm.data()) + expire_sec < time(NULL)) {
+                    // Screenshot has expired, rename it so that it can be returned when requested again
+                    rename(path.data(), new_snap.data());
+                    have_old_snap = true;
+                    return true;
+                }
+
+                // Screenshot exists and has not expired, so return it
+                res_old_snap = true;
+                responseSnap(path, allArgs.parser.getHeader(), invoker);
+                // Interrupt traversal
+                return false;
+            });
+
+            if (res_old_snap) {
+                // Old screenshot has been replied
+                return;
             }
-        }
 
-        // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
-        auto new_snap_tmp = new_snap + ".tmp";
-        FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
-            if (!success) {
-                // Screenshot generation failed, there may be residual empty files
-                File::delete_file(new_snap_tmp);
-            } else {
-                // Temporary file changed to formal file
-                File::delete_file(new_snap);
-                rename(new_snap_tmp.data(), new_snap.data());
+            // No screenshot or screenshot has expired
+            if (!have_old_snap) {
+                // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
+                // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
+                auto file = File::create_file(new_snap, "wb");
+                if (file) {
+                    fclose(file);
+                }
             }
-            responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
-        });
+
+            // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
+            auto new_snap_tmp = new_snap + ".tmp";
+            FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+                if (!success) {
+                    // Screenshot generation failed, there may be residual empty files
+                    File::delete_file(new_snap_tmp);
+                } else {
+                    // Temporary file changed to formal file
+                    File::delete_file(new_snap);
+                    rename(new_snap_tmp.data(), new_snap.data());
+                }
+                responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
     });
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
@@ -2508,45 +2540,48 @@ void installWebApi() {
     api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["cameraId"]);
 
-        auto camera_id = allArgs["cameraId"];
-        auto stream_id = allArgs["streamId"];
-        auto start_time = allArgs["startTime"];
-        auto end_time = allArgs["endTime"];
-        auto filename = allArgs["filename"];
-        auto description = allArgs["description"];
-        auto user_id = allArgs["_user_id"];
-        auto user_name = allArgs["_user_name"];
+        auto onRes = [allArgs, val, invoker, headerOut, jwt_token]() mutable {
+            auto camera_id = allArgs["cameraId"];
+            auto stream_id = allArgs["streamId"];
+            auto start_time = allArgs["startTime"];
+            auto end_time = allArgs["endTime"];
+            auto filename = allArgs["filename"];
+            auto description = allArgs["description"];
+            auto user_id = allArgs["_user_id"];
+            auto user_name = allArgs["_user_name"];
 
-        if (!findDeviceSource(camera_id)) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Camera not found";
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
-
-        if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
-            val["code"] = API::InvalidArgs;
-            val["msg"] = "Extension filename do not support";
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
-
-        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-        ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
-
-        addFFmpegExtractor(tuple, options, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
-            if (ex) {
-                val["code"] = API::OtherFailed;
-                val["msg"] = ex.what();
+            if (!findDeviceSource(camera_id)) {
+                val["code"] = API::NotFound;
+                val["msg"] = "Camera not found";
                 invoker(400, headerOut, val.toStyledString());
-            } else {
-                UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
-                val["data"]["key"] = key;
-                invoker(201, headerOut, val.toStyledString());
+                return;
             }
-        });
+
+            if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
+                val["code"] = API::InvalidArgs;
+                val["msg"] = "Extension filename do not support";
+                invoker(400, headerOut, val.toStyledString());
+                return;
+            }
+
+            MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+            ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
+
+            addFFmpegExtractor(tuple, options, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
+                if (ex) {
+                    val["code"] = API::OtherFailed;
+                    val["msg"] = ex.what();
+                    invoker(400, headerOut, val.toStyledString());
+                } else {
+                    UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
+                    val["data"]["key"] = key;
+                    invoker(201, headerOut, val.toStyledString());
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
     });
 
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
@@ -2629,18 +2664,16 @@ void installWebApi() {
         int page = allArgs["page"];
         int size = allArgs["size"];
         string sort = allArgs["sort"];
+        string user_id = allArgs["_user_id"];
 
         if (size <= 0) size = 1;
 
         auto imp = std::make_shared<BookmarkImp>();
-        auto ret = imp->search(start_time, end_time, camera_id, search, page, size, sort);
+        auto ret = imp->search(start_time, end_time, camera_id, user_id, search, page, size, sort);
         auto user_imp = std::make_shared<UserEntityImp>();
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
-            if (!checkUserDeviceAuthor(b.camera_guid, jwt_token)) {
-                continue;
-            }
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -2664,7 +2697,7 @@ void installWebApi() {
             val["data"].append(b_json);
         }
 
-        auto total = imp->count(start_time, end_time, camera_id, search);
+        auto total = imp->count(start_time, end_time, camera_id, user_id, search);
         val["currentPage"] = page;
         val["totalItems"] = total;
         val["totalPages"] = static_cast<int>(std::ceil(static_cast<double>(total) / size));
@@ -2674,78 +2707,84 @@ void installWebApi() {
     api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("name", "camera_id", "start_time", "duration");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["camera_id"]);
 
-        string name = allArgs["name"];
-        string description = allArgs["description"];
-        string camera_id = allArgs["camera_id"];
-        int64_t start_time = allArgs["start_time"];
-        int64_t end_time = allArgs["end_time"];
-        int64_t duration = allArgs["duration"];
-        string tags = allArgs["tags"];
+        auto onRes = [allArgs, &val, &invoker, &headerOut]() {
+            string name = allArgs["name"];
+            string description = allArgs["description"];
+            string camera_id = allArgs["camera_id"];
+            int64_t start_time = allArgs["start_time"];
+            int64_t end_time = allArgs["end_time"];
+            int64_t duration = allArgs["duration"];
+            string tags = allArgs["tags"];
 
-        auto ret = findDeviceSource(camera_id);
-        if (!ret) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Camera not found";
-            val["data"]["flag"] = false;
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
+            auto ret = findDeviceSource(camera_id);
+            if (!ret) {
+                val["code"] = API::NotFound;
+                val["msg"] = "Camera not found";
+                val["data"]["flag"] = false;
+                invoker(400, headerOut, val.toStyledString());
+                return;
+            }
 
-        Bookmark bm;
-        bm.name = name;
-        bm.description = description;
-        bm.camera_guid = camera_id;
-        bm.start_time = start_time;
-        bm.end_time = end_time;
-        bm.duration = duration;
-        bm.creator_guid = allArgs["_user_id"];
-        bm.created = time(nullptr);
+            Bookmark bm;
+            bm.name = name;
+            bm.description = description;
+            bm.camera_guid = camera_id;
+            bm.start_time = start_time;
+            bm.end_time = end_time;
+            bm.duration = duration;
+            bm.creator_guid = allArgs["_user_id"];
+            bm.created = time(nullptr);
 
-        auto imp = std::make_shared<BookmarkImp>();
-        imp->add(bm, tags);
+            auto imp = std::make_shared<BookmarkImp>();
+            imp->add(bm, tags);
 
-        val["data"]["flag"] = true;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"]["flag"] = true;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], onRes);
     });
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("id", "camera_id", "start_time", "duration");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["camera_id"]);
 
-        string id = allArgs["id"];
-        string name = allArgs["name"];
-        string description = allArgs["description"];
-        string camera_id = allArgs["camera_id"];
-        int64_t start_time = allArgs["start_time"];
-        int64_t end_time = allArgs["end_time"];
-        int64_t duration = allArgs["duration"];
-        string tags = allArgs["tags"];
+        auto onRes = [allArgs, &val, &invoker, &headerOut]() {
+            string id = allArgs["id"];
+            string name = allArgs["name"];
+            string description = allArgs["description"];
+            string camera_id = allArgs["camera_id"];
+            int64_t start_time = allArgs["start_time"];
+            int64_t end_time = allArgs["end_time"];
+            int64_t duration = allArgs["duration"];
+            string tags = allArgs["tags"];
 
-        auto imp = std::make_shared<BookmarkImp>();
-        auto ret = imp->findById(id);
-        if (!ret.size()) {
-            WarnL << "Bookmark " << id << " not found";
-            val["data"]["flag"] = false;
-            invoker(404, headerOut, val.toStyledString());
-            return;
-        }
+            auto imp = std::make_shared<BookmarkImp>();
+            auto ret = imp->findById(id);
+            if (!ret.size()) {
+                WarnL << "Bookmark " << id << " not found";
+                val["data"]["flag"] = false;
+                invoker(404, headerOut, val.toStyledString());
+                return;
+            }
 
-        Bookmark bm = ret[0];
-        bm.name = name;
-        bm.description = description;
-        bm.camera_guid = camera_id;
-        bm.start_time = start_time;
-        bm.end_time = end_time;
-        bm.duration = duration;
-        bm.creator_guid = allArgs["_user_id"];
-        bm.created = time(nullptr);
+            Bookmark bm = ret[0];
+            bm.name = name;
+            bm.description = description;
+            bm.camera_guid = camera_id;
+            bm.start_time = start_time;
+            bm.end_time = end_time;
+            bm.duration = duration;
+            bm.creator_guid = allArgs["_user_id"];
+            bm.created = time(nullptr);
 
-        imp->update(bm, tags);
-        val["data"]["flag"] = true;
-        invoker(200, headerOut, val.toStyledString());
+            imp->update(bm, tags);
+            val["data"]["flag"] = true;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], onRes);
     });
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
@@ -2762,11 +2801,14 @@ void installWebApi() {
             invoker(404, headerOut, val.toStyledString());
             return;
         }
-        CHECK_USER_DEVICE_AUTHOR(ret[0].camera_guid);
 
-        imp->remove(id);
-        val["data"]["flag"] = true;
-        invoker(200, headerOut, val.toStyledString());
+        auto onRes = [&val, &invoker, &headerOut, imp, id]() {
+            imp->remove(id);
+            val["data"]["flag"] = true;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(ret[0].camera_guid, onRes);
     });
 
     api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) {
@@ -2793,19 +2835,16 @@ void installWebApi() {
         string camera_id = allArgs["camera_id"];
         int size = allArgs["size"];
         string sort = allArgs["sort"];
-        
+        string user_id = allArgs["_user_id"];
         if (size < 0) size = 1;
         if (size > 50) size = 50;
         
         auto imp = std::make_shared<BookmarkImp>();
-        auto ret =  imp->findRecentById(camera_id, size, sort);
+        auto ret =  imp->findRecentById(camera_id, user_id, size, sort);
         auto user_imp = std::make_shared<UserEntityImp>();
 
         val["data"] = arrayValue;
         for (const Bookmark &b : ret) {
-            if (!checkUserDeviceAuthor(b.camera_guid, jwt_token)) {
-                continue;
-            }
             Value b_json;
             b_json["id"] = b.guid;
             b_json["camera_id"] = b.camera_guid;
@@ -3059,46 +3098,49 @@ void installWebApi() {
     api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("deviceId", "direct", "speed");
-        CHECK_USER_DEVICE_AUTHOR(allArgs["deviceId"]);
 
-        string deviceId = allArgs["deviceId"];
-        string strDirect = allArgs["direct"];
-        int speed = allArgs["speed"];
+        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            string strDirect = allArgs["direct"];
+            int speed = allArgs["speed"];
 
-        auto ret = findDeviceSource(deviceId);
-        if (!ret) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Not found";
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
-
-        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
-        if (!ptr) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Not found";
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
-
-        auto option = ptr->getCameraOption();
-        if (!option.enablePTZControl) {
-            val["code"] = API::NotFound;
-            val["msg"] = "No permission";
-            invoker(400, headerOut, val.toStyledString());
-            return;
-        }
-
-        ptr->PTZMove(strDirect, speed, [&](const SockException &ex) {
-            if (ex) {
-                val["code"] = API::Exception;
-                val["msg"] = ex.what();
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                val["code"] = API::NotFound;
+                val["msg"] = "Not found";
                 invoker(400, headerOut, val.toStyledString());
-            } else {
-                val["msg"] = ex.what();
-                invoker(200, headerOut, val.toStyledString());
+                return;
             }
-        });
+
+            auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
+            if (!ptr) {
+                val["code"] = API::NotFound;
+                val["msg"] = "Not found";
+                invoker(400, headerOut, val.toStyledString());
+                return;
+            }
+
+            auto option = ptr->getCameraOption();
+            if (!option.enablePTZControl) {
+                val["code"] = API::NotFound;
+                val["msg"] = "No permission";
+                invoker(400, headerOut, val.toStyledString());
+                return;
+            }
+
+            ptr->PTZMove(strDirect, speed, [&](const SockException &ex) {
+                if (ex) {
+                    val["code"] = API::Exception;
+                    val["msg"] = ex.what();
+                    invoker(400, headerOut, val.toStyledString());
+                } else {
+                    val["msg"] = ex.what();
+                    invoker(200, headerOut, val.toStyledString());
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], onRes);
     });
 
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP) {
