@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <regex>
 #include "Util/MD5.h"
+#include "Util/base64.h"
 #include "Util/util.h"
 #include "Util/File.h"
 #include "Util/logger.h"
@@ -2425,7 +2426,7 @@ void installWebApi() {
                                 auto block = query->getLastBlock(last_archived_time);
                                 if (block) {
                                     pos_time = block->start_time();
-                                    src_path = block->file_path();
+                                    src_path = decodeBase64(block->file_path());
                                 }
                             }
                         }
@@ -2440,7 +2441,7 @@ void installWebApi() {
                                 break;
                             }
                             pos_time = block.start_time();
-                            src_path = block.file_path();
+                            src_path = decodeBase64(block.file_path());
                         }
                     });
                 }

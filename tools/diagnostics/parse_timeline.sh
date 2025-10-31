@@ -19,6 +19,20 @@ while [ $offset -lt $filesize ]; do
     # Đọc protobuf data
     dd if="$file" bs=1 skip=$offset count=$len 2>/dev/null > /tmp/timeblock.bin
     echo "---- TimeBlock at offset $((offset-4)) (length $len) ----"
-    protoc --decode_raw < /tmp/timeblock.bin
+    protoc --decode_raw < /tmp/timeblock.bin | while IFS= read -r line; do
+        # Nếu dòng bắt đầu bằng "6:"
+        if echo "$line" | grep -qE '^[[:space:]]*6:'; then
+            value=$(echo "$line" | sed -n 's/^[[:space:]]*6:[[:space:]]*\(.*\)/\1/p' | xargs)
+            decoded=$(echo "$value" | base64 --decode 2>/dev/null)
+            if [ $? -eq 0 ] && [ -n "$decoded" ]; then
+                echo "$line"
+                echo "    → Base64 decoded: $decoded"
+            else
+                echo "$line"
+            fi
+        else
+            echo "$line"
+        fi
+    done
     offset=$((offset + len))
 done

@@ -54,6 +54,9 @@ size_t TimeMuxer::save(const TimeBlock &block) {
 size_t TimeMuxerInterface::save(const TimeBlock &block) {
     string data = block.SerializeAsString();
     uint32_t size = data.size();
+    if (size == 0) {
+        throw std::runtime_error("Serialize time block to string failed");
+    }
     if (!_writer) {
         _writer = createWriter();
     }

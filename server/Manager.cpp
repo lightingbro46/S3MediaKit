@@ -77,7 +77,8 @@ void installManagerHook () {
         block.set_start_time(info.start_time);
         block.set_time_len(round(info.time_len));
         block.set_file_size(info.file_size);
-        block.set_file_path(info.file_path);
+        auto encoded_path = encodeBase64(info.file_path);
+        block.set_file_path(encoded_path);
 
         auto ret = TimeRecorder::Instance().inputBlock(block);
         if (ret) {
@@ -137,7 +138,7 @@ void installManagerHook () {
                 query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
                     for (const auto &block : ret) {
                         duration += block.time_len();
-                        files.emplace(block.start_time(), block.file_path());
+                        files.emplace(block.start_time(), decodeBase64(block.file_path()));
                     }
                 });
             }

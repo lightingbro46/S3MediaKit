@@ -2,6 +2,7 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Common/MultiMediaSourceMuxer.h"
+#include "Util/base64.h"
 #include "Util/File.h"
 #include "System.h"
 #include "Thread/WorkThreadPool.h"
@@ -442,7 +443,7 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
                 end_pos = end_time;
             }
             duration_end += end_pos - start_pos;
-            auto line = "file '" + block.file_path() + "'\n";
+            auto line = "file '" + decodeBase64(block.file_path()) + "'\n";
             fwrite(line.c_str(), line.size(), 1, file_ptr.get());
         }
     });
