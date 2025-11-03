@@ -227,8 +227,8 @@ public:
         return BookmarkRepository::findById(bm_search);
     }
 
-    std::vector<Bookmark> search(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &search,
-                                const std::string &user_id, int page, int size, std::string sort) {
+    std::vector<Bookmark> search(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &user_id, 
+                                const std::string &search, int page, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {
             _camera_guids = toolkit::split(camera_guids, ",");
