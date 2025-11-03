@@ -195,8 +195,14 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     auto streamUrlsString = ret["streamUrls"].asString();
     Json::Value streamUrlsJson;
     readJsonString(streamUrlsString, streamUrlsJson);
-    stream_map[PrimaryStream] = getStreamTuple(streamUrlsJson[PrimaryStream], info);
-    stream_map[SecondaryStream] = getStreamTuple(streamUrlsJson[SecondaryStream], info);
+    auto primary_stream = getStreamTuple(streamUrlsJson[PrimaryStream], info);
+    if (!primary_stream.stream_id.empty() && !primary_stream.full_url.empty()) {
+        stream_map[PrimaryStream] = primary_stream;
+    }
+    auto secondary_stream = getStreamTuple(streamUrlsJson[SecondaryStream], info);
+    if (!secondary_stream.stream_id.empty() && !secondary_stream.full_url.empty()) {
+        stream_map[SecondaryStream] = secondary_stream;
+    }
     stats.stream_map = stream_map;
 
     // add params
@@ -293,10 +299,30 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 
 // ################### CameraStatisticImp ###########################
 
+static bool isStreamChange(unordered_map<int, StreamTuple> &new_stream_map, unordered_map<int, StreamTuple> &saved_stream_map, int stream_type) {
+    if (new_stream_map.find(stream_type) == new_stream_map.end()) {
+        return true;
+    }
+    if (new_stream_map[stream_type].stream_id != saved_stream_map[stream_type].stream_id) {
+        return true;
+    }
+    return false;
+}
+
 CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_map<int, StreamTuple> &stream_map_) {
+    setup();
+    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, PrimaryStream)) {
+        // Clear statistic if stream type do not exist
+        storage_map[PrimaryStream] = StreamStorageStats();
+        sinfo_map[PrimaryStream] = StreamStatistic();
+    }
+    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, SecondaryStream)) {
+        // Clear statistic if stream type do not exist
+        storage_map[SecondaryStream] = StreamStorageStats();
+        sinfo_map[SecondaryStream] = StreamStatistic();
+    }
     info = info_;
     stream_map = stream_map_;
-    setup();
 }
 
 CameraStatisticImp::~CameraStatisticImp() {}
@@ -313,24 +339,15 @@ void CameraStatisticImp::setup() {
 void CameraStatisticImp::load() {
     CameraStatistic saved_stats;
     if (_file->load(saved_stats)) {
-        // Manually assign fields from stats to this, except camera_info and stream_map
+        // Manually assign fields from stats to this, include camera_info and stream_map
+        info = saved_stats.info;
+        stream_map = saved_stats.stream_map;
         option = saved_stats.option;
         bm = saved_stats.bm;
         storage_map = saved_stats.storage_map;
         sinfo_map = saved_stats.sinfo_map;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
-
-        if (stream_map.find(PrimaryStream) == stream_map.end()) {
-            // Clear statistic if stream type do not exist
-            storage_map[PrimaryStream] = StreamStorageStats();
-            sinfo_map[PrimaryStream] = StreamStatistic();
-        }
-        if (stream_map.find(SecondaryStream) == stream_map.end()) {
-            // Clear statistic if stream type do not exist
-            storage_map[SecondaryStream] = StreamStorageStats();
-            sinfo_map[SecondaryStream] = StreamStatistic();
-        }
     }
 }
 
