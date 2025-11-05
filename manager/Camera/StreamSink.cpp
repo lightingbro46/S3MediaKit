@@ -70,7 +70,7 @@ void StreamSink::setupMonitor(int type, bool start_record, int rtp_type, int med
         }
         _monitor_map.erase(type);
     }
-    auto monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port, 10.0f);
+    auto monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port);
     monitor->setOnStreamReady([type, this]() { 
         onStreamReady(type); 
     });

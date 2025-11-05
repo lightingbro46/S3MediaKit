@@ -30,7 +30,7 @@ class StreamSource : public std::enable_shared_from_this<StreamSource> {
 public:
     using Ptr = std::shared_ptr<StreamSource>;
 
-    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0, float timeout_sec = 2.0f);
+    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0, float timeout_sec = 0.0f);
 
     ~StreamSource();
 

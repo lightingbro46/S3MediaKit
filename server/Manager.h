@@ -26,6 +26,8 @@ extern const std::string kEnableFailover;
 extern const std::string kJwtPublicKey;
 // User session expiration time (6 months)
 extern const std::string kSessionExpiryDays;
+// Maximum stream timeout seconds when connecting to device
+extern const std::string kMaxStreamTimeoutSec;
 
 } // namespace Manager
 
