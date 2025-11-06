@@ -596,6 +596,12 @@ void installWebHook() {
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
+        GET_CONFIG(string, bypass_auth, Manager::kBypassAuthRealm);
+        if (!bypass_auth.empty() && params["realm"] == bypass_auth) {
+            // Bypass authentication realm, directly allow access
+            invoker("");
+            return;
+        }
         string jwt_token = params["token"];
         if (jwt_token.empty()) {
             invoker("Unauthorized");

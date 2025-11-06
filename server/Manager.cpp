@@ -36,6 +36,7 @@ const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
 const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 const string kMaxStreamTimeoutSec = MANAGER_FIELD"maxStreamTimeoutSec";
+const string kBypassAuthRealm = MANAGER_FIELD"bypassAuthRealm";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
@@ -48,6 +49,7 @@ static onceToken token([]() {
     mINI::Instance()[kJwtPublicKey] = "";
     mINI::Instance()[kSessionExpiryDays] = 180;
     mINI::Instance()[kMaxStreamTimeoutSec] = 10.0f;
+    mINI::Instance()[kBypassAuthRealm] = "";
 });
 } // namespace Manager
 

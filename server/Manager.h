@@ -28,7 +28,8 @@ extern const std::string kJwtPublicKey;
 extern const std::string kSessionExpiryDays;
 // Maximum stream timeout seconds when connecting to device
 extern const std::string kMaxStreamTimeoutSec;
-
+// Bypass authentication realm, directly allow access
+extern const std::string kBypassAuthRealm;
 } // namespace Manager
 
 } // namespace managerkit
