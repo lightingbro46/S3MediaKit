@@ -310,7 +310,8 @@ static bool isStreamChange(unordered_map<int, StreamTuple> &new_stream_map, unor
 }
 
 CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_map<int, StreamTuple> &stream_map_) {
-    setup();
+    setup(info_);
+    // todo: alway have two stream and record stream update time
     if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, PrimaryStream)) {
         // Clear statistic if stream type do not exist
         storage_map[PrimaryStream] = StreamStorageStats();
@@ -327,11 +328,11 @@ CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_
 
 CameraStatisticImp::~CameraStatisticImp() {}
 
-void CameraStatisticImp::setup() {
+void CameraStatisticImp::setup(const CameraInfo &info_) {
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
     GET_CONFIG(string, app_name, Record::kAppName)
     auto record_path = File::absolutePath(app_name, mp4_save_path);
-    auto file_path = record_path + "/" + info.device_id + "/info.txt";
+    auto file_path = record_path + "/" + info_.device_id + "/info.txt";
     _file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(file_path);
     _file->empty() ? save() : load();
 }

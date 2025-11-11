@@ -100,7 +100,7 @@ public:
     static void addCameraBookmarkCount(const std::string &camera_id, uint64_t created_at, bool add = true);
 
 private:
-    void setup();
+    void setup(const CameraInfo &info_);
 
     void load();
 
