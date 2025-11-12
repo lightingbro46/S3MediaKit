@@ -427,27 +427,28 @@ static void reportServerStatistic() {
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
-                TraceL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
+                DebugL << "hook " << hook_api_url + hook_server_load << " success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
                 InfoL << "Load server config success";
                 // Load server config success
                 loadServerConfigJson(obj);
                 // Set timer to report server statistic 
                 EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
                     getServerStatisticJson([](const Value &data) mutable {
+                        DebugL << "Report server statistic data: " << data.size() << " devices";
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
-                        // do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
-                        //     if (err.empty()) {
-                        //         // Report server statistic success
-                        //         TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                        //         InfoL << "Report server statistic success";
-                        //     } else {
-                        //         // Load server config failed
-                        //         DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                        //         WarnL << "Report server statistic failed:" << err;
-                        //     }
-                        // });
+                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
+                            if (err.empty()) {
+                                // Report server statistic success
+                                DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                                InfoL << "Report server statistic success";
+                            } else {
+                                // Load server config failed
+                                DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                                WarnL << "Report server statistic failed:" << err;
+                            }
+                        });
                     });
                     return 0;
                 });
