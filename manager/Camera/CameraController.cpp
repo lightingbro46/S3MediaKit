@@ -25,9 +25,9 @@ void CameraController::setupController() {
     }
 
     // create new controller
-    if (_info.manufacturer.empty() || _info.manufacturer == GENERIC_RTSP_CAMERA) {
-        return;
-    }
+    // if (_info.manufacturer.empty() || _info.manufacturer == GENERIC_RTSP_CAMERA) {
+    //     return;
+    // }
 
     if (_info.ip.empty() || _info.port == 0) {
         return;
@@ -46,6 +46,7 @@ void CameraController::setupController() {
     } else {
         WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
     }
+    _last_reconnect_time = time(nullptr);
 
     _timer_ctr = std::make_shared<Timer>(
         10.0f,
@@ -70,13 +71,18 @@ void CameraController::onManager() {
         return;
     }
 
-    if (!_controller_ready) {
+    if (!_controller_ready && time(nullptr) - _last_reconnect_time > 60) {
         // reconnect to get profile
         if (_controller->initControl()) {
             _controller_ready = true;
             InfoL << "Onvif controller " << _info.shortUrl() << " connected";
             onControllerReady();
         }
+        _last_reconnect_time = time(nullptr);   
+    }
+
+    if (!_controller_ready) {
+        return;
     }
 
     //todo: get media profile
