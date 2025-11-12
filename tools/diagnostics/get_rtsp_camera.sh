@@ -39,22 +39,42 @@ if ! echo "$camera_response" | jq -e . >/dev/null 2>&1; then
   exit 1
 fi
 
+camera_ids=($(echo "$camera_response" | jq -r '.data[].id'))
+
 echo
-echo "=== Bước 3: In danh sách camera/stream ==="
-echo "$camera_response" | jq -r '.data[] | . as $cam | .streams[]? | "rtsp://anat.vtscloud.vn:554/\($cam.id)/\(.id)"'
+echo "=== Bước 3: Lấy chi tiết từng camera (lat/lon) ==="
 
+result="[]"
 
-echo "=== Bước 3: Xuất JSON gồm tên camera + luồng stream ==="
-result=$(echo "$camera_response" | jq -r '
-  .data | map(
-  . as $cam |
-  {
-    cameraName: .name,
-    cameraId: .id,
-    streams: (
-      (.streams // []) | map("rtsp://anat.vtscloud.vn:554/\($cam.id)/\(.id)")
-    )
-  })
-')
+for cam_id in "${camera_ids[@]}"; do
+  cam_name=$(echo "$camera_response" | jq -r --arg id "$cam_id" '.data[] | select(.id == $id) | .name')
+  streams=$(echo "$camera_response" | jq --arg id "$cam_id" \
+    '.data[] | select(.id == $id) | (.streams // []) | map("rtsp://vms:Vms@2025@10.49.100.187:8554/\($id)/\(.id)?realm=vms")')
 
+  if [ -z "$streams" ]; then
+    streams="[]"
+  fi
+
+  # Gọi API lấy chi tiết camera
+  detail_response=$(curl -s -X GET "$API_BASE/camera/detail/$cam_id" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $access_token")
+
+  lat=$(echo "$detail_response" | jq '.lat')
+  lon=$(echo "$detail_response" | jq '.lon')
+
+  # Ghép vào mảng kết quả
+  item=$(jq -n \
+    --arg name "$cam_name" \
+    --arg id "$cam_id" \
+    --argjson streams "$(echo "$streams" | jq '.')" \
+    --argjson lat "$lat" \
+    --argjson lon "$lon" \
+    '{cameraName: $name, cameraId: $id, lat: $lat, lon: $lon, streams: $streams}')
+
+  result=$(echo "$result" | jq --argjson new "$item" '. += [$new]')
+done
+
+echo
+echo "=== Bước 4: Kết quả JSON gồm tên camera + lat/lon + streams ==="
 echo "$result" | jq .
