@@ -31,7 +31,7 @@ StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, 
         _full_url = replacePort(tuple.full_url, _media_port);
     }
 
-    if (_timeout_sec == 0.0f) {
+    if (!_timeout_sec) {
         GET_CONFIG(float, timeoutSec, Manager::kMaxStreamTimeoutSec);
         _timeout_sec = timeoutSec;
     }

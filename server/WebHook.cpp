@@ -315,7 +315,7 @@ static ArgsType make_json(const MediaInfo &args) {
 }
 
 static Timer::Ptr g_started_timer;
-static bool report_started = false;
+static atomic<bool> s_report_started { false };
 static void reportServerStarted() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
@@ -325,6 +325,9 @@ static void reportServerStarted() {
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_started_timer = std::make_shared<Timer>(alive_interval,[]() {
+        if (s_report_started) {
+            return false;
+        }
         ArgsType body;
 #if 0    
         for (auto &pr : mINI::Instance()) {
@@ -349,13 +352,13 @@ static void reportServerStarted() {
                 // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
                 InfoL << "Report server started success";
                 loadServerStartedConfigJson(obj);
-                report_started = true;
+                s_report_started = true;
             } else {
                 DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
             }
         });
-        return !report_started;
+        return true;
     }, nullptr);
 }
 
@@ -387,9 +390,6 @@ static void reportServerKeepalive() {
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_keepalive_timer = std::make_shared<Timer>(alive_interval,[]() {
-        if (!report_started) {
-            return true;
-        }
 #if 0 
         getStatisticJson([](const Value &data) mutable {
             ArgsType body;
@@ -407,7 +407,6 @@ static void reportServerKeepalive() {
 
 // Server report statistics
 static Timer::Ptr g_report_timer;
-static bool report_first = true;
 static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -418,20 +417,17 @@ static void reportServerStatistic() {
     }
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
-    auto report_callback = []() {
-         if (!report_started || !CameraManager::Instance().isReady()) {
-            // If the start API has not been completed, do not call the API to get the configuration in delay task. Waiting for timer to call API to get the configuration
-            WarnL << "Pending call api to load server config";
-            if (report_first) {
-                report_first = false;
-                return false;
-            }
+    auto report_callback = []() -> bool {
+        if (!s_report_started) {
+            // If the start API has not been completed, do not call the API to get the configuration in delay task. 
+            // Waiting for timer to call API to get the configuration
+            TraceL << "Server has not reported started, skip report server statistic";
             return true;
         }
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
             if (err.empty()) {
-                // DebugL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
+                DebugL << "hook " << hook_api_url + hook_server_load << " success:" << obj.toStyledString();
                 InfoL << "Load server config success";
                 // Load server config success
                 loadServerConfigJson(obj);
@@ -443,8 +439,8 @@ static void reportServerStatistic() {
                         // Execute hook
                         // do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
                         //     if (err.empty()) {
-                        //         // Report server statistic succeeded
-                        //         // DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                        //         // Report server statistic success
+                        //         DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
                         //         InfoL << "Report server statistic success";
                         //     } else {
                         //         // Load server config failed
@@ -460,20 +456,20 @@ static void reportServerStatistic() {
                 // Load server config failed
                 DebugL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                 WarnL << "Load server config failed:" << err;
-                // todo: load from db
             }
         });
-
-        if (report_first) {
-            report_first = false;
-            return false;
-        }
         return true;
     };
 
-    g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
+    g_report_timer = std::make_shared<Timer>(report_interval, [&]() {
+        report_callback();
+        return true;
+    }, nullptr);
 
-    EventPollerPool::Instance().getPoller()->doDelayTask(10000, report_callback);
+    EventPollerPool::Instance().getPoller()->doDelayTask(10000, [&]() {
+        report_callback();
+        return 0;
+    });
 }
 
 // Server report usage
@@ -650,7 +646,7 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             invoker(!err.empty() ? "Unauthorized" : "");
-        }, 0);
+        });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceAccess, [](BroadcastDeviceAccessArgs) {
@@ -688,7 +684,7 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             invoker(!err.empty() ? "Unauthorized" : "");
-        }, 0);
+        });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {

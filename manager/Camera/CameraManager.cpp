@@ -52,8 +52,8 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
 
 bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map, bool force) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready && !force) {
-        WarnL << "Camera manager has not been ready";
+    if (!isReady() && !force) {
+        TraceL << "Camera manager has not been ready";
         return false;
     }
 
@@ -98,8 +98,8 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
 
 bool CameraManager::delCamera(const string &key, bool force) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!_ready && !force) {
-        WarnL << "Camera manager has not been ready";
+    if (!isReady() && !force) {
+        TraceL << "Camera manager has not been ready";
         return false;
     }
 

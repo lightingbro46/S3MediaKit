@@ -48,7 +48,7 @@ static onceToken token([]() {
     mINI::Instance()[kEnableAuthorize] = true;
     mINI::Instance()[kJwtPublicKey] = "";
     mINI::Instance()[kSessionExpiryDays] = 180;
-    mINI::Instance()[kMaxStreamTimeoutSec] = 10.0f;
+    mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
     mINI::Instance()[kBypassAuthRealm] = "";
 });
 } // namespace Manager
