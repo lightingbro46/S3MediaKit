@@ -321,6 +321,7 @@ static void reportServerStarted() {
     GET_CONFIG(string, hook_server_started, Hook::kOnServerStarted);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     if (!hook_enable || hook_server_started.empty() || hook_api_url.empty()) {
+        WarnL << "Report server started skipped, hook_api_url or hook_server_started is empty";
         return;
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
@@ -367,6 +368,7 @@ static void reportServerExited() {
     GET_CONFIG(string, hook_server_exited, Hook::kOnServerExited);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     if (!hook_enable || hook_server_exited.empty() || hook_api_url.empty()) {
+        WarnL << "Report server exited skipped, hook_api_url or hook_server_exited is empty";
         return;
     }
     ArgsType body;
@@ -386,6 +388,7 @@ static void reportServerKeepalive() {
     GET_CONFIG(string, hook_server_keepalive, Hook::kOnServerKeepalive);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     if (!hook_enable || hook_server_keepalive.empty() || hook_api_url.empty()) {
+        WarnL << "Report server keepalive skipped, hook_api_url or hook_server_keepalive is empty";
         return;
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
@@ -411,13 +414,13 @@ static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
-    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
-    if (!hook_enable || hook_server_report.empty() || hook_server_load.empty() || hook_api_url.empty()) {
+    if (!hook_enable || hook_server_load.empty() || hook_api_url.empty()) {
+        WarnL << "Load server configuration skipped, hook_api_url or hook_server_load is empty";
         return;
     }
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
-    auto report_callback = []() -> bool {
+    auto report_callback = []() {
         if (!s_report_started) {
             // If the start API has not been completed, do not call the API to get the configuration in delay task. 
             // Waiting for timer to call API to get the configuration
@@ -429,12 +432,21 @@ static void reportServerStatistic() {
             if (err.empty()) {
                 DebugL << "hook " << hook_api_url + hook_server_load << " success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
                 InfoL << "Load server config success";
+
                 // Load server config success
                 loadServerConfigJson(obj);
+
                 // Set timer to report server statistic 
-                EventPollerPool::Instance().getPoller()->doDelayTask(5000, []() {
+                EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() mutable {
                     getServerStatisticJson([](const Value &data) mutable {
                         DebugL << "Report server statistic data: " << data.size() << " devices";
+                        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+                        GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+                        if (hook_server_report.empty() || hook_api_url.empty()) {
+                            WarnL << "Report server statistic skipped, hook_api_url or hook_server_report is empty";
+                            return;
+                        }
+
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
@@ -462,12 +474,9 @@ static void reportServerStatistic() {
         return true;
     };
 
-    g_report_timer = std::make_shared<Timer>(report_interval, [&]() {
-        report_callback();
-        return true;
-    }, nullptr);
+    g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
 
-    EventPollerPool::Instance().getPoller()->doDelayTask(10000, [&]() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(10000, [report_callback]() {
         report_callback();
         return 0;
     });
@@ -480,6 +489,7 @@ static void reportServerUsage() {
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     GET_CONFIG(string, hook_server_report_usage, Hook::kOnServerReportUsage);
     if (!hook_enable || hook_server_report_usage.empty() || hook_api_url.empty()) {
+        WarnL << "Report server usage skipped, hook_api_url or hook_server_report_usage is empty";
         return;
     }
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
