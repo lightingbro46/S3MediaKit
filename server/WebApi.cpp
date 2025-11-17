@@ -2994,6 +2994,7 @@ void installWebApi() {
                     ret["hardwareId"] = "";
                     ret["macAddress"] = "";
                     ret["isPtz"] = false;
+                    ret["isNewDevice"] = true;
                     ret["profiles"] = arrayValue;
                     Value stream;
                     stream["vcodec"] = info.vcodec;
@@ -3026,6 +3027,8 @@ void installWebApi() {
             ret["hardwareId"] = info.hardwareId;
             ret["macAddress"] = info.macAddress;
             ret["isPtz"] = onvif->enablePTZ();
+            //todo: check is new device or not
+            ret["isNewDevice"] = true;
             ret["profiles"] = arrayValue;
             auto profiles = onvif->selectStreamUrls();
             for (const auto &it : profiles) {
