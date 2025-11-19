@@ -21,6 +21,7 @@ bool CameraController::isControlReady() {
 void CameraController::setupController() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     if (_controller) {
+        DebugL << "Controller already exists: " << _info.shortUrl();
         return;
     }
 
@@ -39,14 +40,6 @@ void CameraController::setupController() {
     }
     // todo: create plugin from manufactor and model
     _controller = std::make_shared<OnvifController>(address, _info.username, _info.password);
-    if (_controller->initControl()) {
-        _controller_ready = true;
-        InfoL << "Onvif controller " << _info.shortUrl() << " connected";
-        onControllerReady();
-    } else {
-        WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
-    }
-    _last_reconnect_time = time(nullptr);
 
     _timer_ctr = std::make_shared<Timer>(
         10.0f,
@@ -58,7 +51,7 @@ void CameraController::setupController() {
     );
 }
 
-void CameraController::stopController() {
+void CameraController::stopController() {  
     lock_guard<recursive_mutex> lck(_mtx_control);
     _controller_ready = false;
     _controller.reset();
@@ -68,6 +61,7 @@ void CameraController::stopController() {
 void CameraController::onManager() {
     lock_guard<recursive_mutex> lck(_mtx_control);
     if (!_controller) {
+        WarnL << "Controller does not exist: " << _info.shortUrl();
         return;
     }
 
@@ -77,6 +71,8 @@ void CameraController::onManager() {
             _controller_ready = true;
             InfoL << "Onvif controller " << _info.shortUrl() << " connected";
             onControllerReady();
+        } else {
+            WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
         }
         _last_reconnect_time = time(nullptr);   
     }

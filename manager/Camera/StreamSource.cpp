@@ -79,10 +79,6 @@ void StreamSource::createPlayer() {
             strong_self->_live = !ex ? true : false;
             strong_self->_status = ex.what();
             TraceL << "setPlayCallbackOnce: live=" << strong_self->_live << " status=" << strong_self->_status;
-
-            if (strong_self->_on_ready) {
-                strong_self->_on_ready();
-            }
         });
 
         player->setOnConnect([weak_self](const TranslationInfo &info) {
@@ -135,6 +131,9 @@ void StreamSource::createPlayer() {
         player->play(strong_self->_tuple.full_url);
         strong_self->_player = player;
         DebugL << "Create stream player proxy: " << strong_self->_tuple.shortUrl();
+        if (strong_self->_on_ready) {
+            strong_self->_on_ready();
+        }
     };
 
     addStreamProxy(tuple, option, setup_player);
