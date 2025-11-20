@@ -3174,6 +3174,76 @@ void installWebApi() {
         }
         val["data"] = makeStorageStatisticJson();
     });
+
+    static auto findPlaybackStream = [](MediaSource::Ptr &ret, const string &url_in) {
+        MediaInfo info_in;
+        info_in.parse(url_in);
+        string url = StrPrinter << "/" << info_in.app << "/" << info_in.stream;
+
+        string url_prefix = "/media";
+        string ts_suffix = ".live.ts";
+        string flv_suffix = ".live.flv";
+        string fmp4_suffix = ".live.mp4"; 
+        auto prefix_size = url_prefix.size();
+        if (prefix_size > 0) {
+            if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
+                // Prefix not found
+                return false;
+            }
+            // Remove special prefix from url
+            url.erase(0, prefix_size);
+        }
+        string schema;
+        if (end_with(url, fmp4_suffix)) {
+            schema = FMP4_SCHEMA;
+            url.erase(url.size() - fmp4_suffix.size());
+        } else if (end_with(url, ts_suffix)) {
+            schema = TS_SCHEMA;
+            url.erase(url.size() - ts_suffix.size());
+        } else if (end_with(url, flv_suffix)) {
+            schema = RTMP_SCHEMA;
+            url.erase(url.size() - flv_suffix.size());
+        } else {
+            // Suffix not found
+            return false;
+        }
+
+        MediaInfo media_info(schema + "://" + DEFAULT_VHOST + url);
+        if (media_info.app.empty() || media_info.stream.empty()) {
+            // URL is invalid
+            return false;
+        }
+
+        ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, media_info.stream);
+        return ret != nullptr;
+    };
+
+    api_regist("/media/mserver/playback/speed", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ARGS("url", "speed");
+        string url = allArgs["url"];
+
+        MediaSource::Ptr src;
+        if (!findPlaybackStream(src, url)) {
+            throw ApiRetException("Playback stream not found", API::NotFound);
+        }
+        auto tuple = src->getMediaTuple();
+        auto stream = tuple.stream;
+        string device_id = split(stream, "/").front();
+
+        auto onRes = [allArgs, val, invoker, headerOut, src]() mutable {
+            auto speed = allArgs["speed"].as<float>();
+            src->getOwnerPoller()->async([=]() mutable {
+                bool flag = src->speed(speed);
+                val["code"] = flag ? API::Success : API::OtherFailed;
+                val["msg"] = flag ? "Success" : "Failed";
+                val["result"] = flag ? 0 : -1;                                                                                                                                                                                                                                                                                                
+                invoker(200, headerOut, val.toStyledString());
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, onRes);
+    });
 }
 
 void unInstallWebApi(){
