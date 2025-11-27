@@ -22,6 +22,10 @@ struct StreamTuple : public DeviceTuple {
     std::string shortUrl() const { 
         return vhost + '/' + device_id + '/' + stream_id; 
     }
+
+    bool empty() const {
+        return stream_id.empty() && full_url.empty();
+    }
 };
 
 bool equalStreamTuple(const StreamTuple &a, const StreamTuple &b);

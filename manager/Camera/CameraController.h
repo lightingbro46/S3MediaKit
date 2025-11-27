@@ -26,7 +26,7 @@ public:
 
     bool isControlReady();
 
-    void setupController();
+    void setupController(const CameraOption &option);
 
     void stopController();
 

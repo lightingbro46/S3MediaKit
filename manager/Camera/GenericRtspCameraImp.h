@@ -15,27 +15,29 @@ public:
 
     GenericRtspCameraImp(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map);
 
-    bool isEnabled() { return _enabled; }
+    void setCameraOptionImp(const CameraOption &option);
+
+    bool isEnabled() { return _enabled.load(); }
 
     void stop();
 
 private:
-    void onAllStreamReady() override;
+    void onAllStreamReady();
 
     void onStreamChange(int stream_type) override;
 
     void onRecordModeChange(RecordMode mode) override;
 
-    void setupRecordStream(RecordMode mode, const CameraOption &option);
+    void setupRecordStream(RecordMode mode);
 
     void stopRecordStream();
 
-    void onSetCameraOption(const CameraOption &option) override;
+    void onSetCameraOption(const CameraOption &option);
 
     void onControllerReady() override; 
 
 private:
-    bool _enabled = false;
+    std::atomic<bool> _enabled {false};
 };
 
 } // namespace managerkit

@@ -79,9 +79,7 @@ public:
     CameraStatisticImp(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map);
     ~CameraStatisticImp();
 
-    void setCameraOption(const CameraOption &option);
-
-    const CameraOption &getCameraOption();
+    void saveCameraOption(const CameraOption &option);
 
     void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
     

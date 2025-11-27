@@ -18,7 +18,7 @@ bool CameraController::isControlReady() {
     return _controller_ready; 
 }
 
-void CameraController::setupController() {
+void CameraController::setupController(const CameraOption &option) {
     lock_guard<recursive_mutex> lck(_mtx_control);
     if (_controller) {
         DebugL << "Controller already exists: " << _info.shortUrl();
@@ -59,31 +59,35 @@ void CameraController::stopController() {
 }
 
 void CameraController::onManager() {
-    lock_guard<recursive_mutex> lck(_mtx_control);
-    if (!_controller) {
-        WarnL << "Controller does not exist: " << _info.shortUrl();
-        return;
-    }
-
-    if (!_controller_ready && time(nullptr) - _last_reconnect_time > 60) {
-        // reconnect to get profile
-        if (_controller->initControl()) {
-            _controller_ready = true;
-            InfoL << "Onvif controller " << _info.shortUrl() << " connected";
-            onControllerReady();
-        } else {
-            WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
+    bool should_call_ready = false;
+    {
+        lock_guard<recursive_mutex> lck(_mtx_control);
+        if (!_controller) {
+            WarnL << "Controller does not exist: " << _info.shortUrl();
+            return;
         }
-        _last_reconnect_time = time(nullptr);   
+
+        if (!_controller_ready && time(nullptr) - _last_reconnect_time > 60) {
+            // reconnect to get profile
+            if (_controller->initControl()) {
+                _controller_ready = true;
+                InfoL << "Onvif controller " << _info.shortUrl() << " connected";
+                should_call_ready = true;
+            } else {
+                WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
+            }
+            _last_reconnect_time = time(nullptr);   
+        }
+    }
+    
+    // Call virtual method outside lock to prevent deadlock
+    if (should_call_ready) {
+        onControllerReady();
     }
 
-    if (!_controller_ready) {
-        return;
-    }
-
+    // Additional operations can be added here if controller is ready
     //todo: get media profile
     //todo: set media profile if need
-
 }
 
 static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {

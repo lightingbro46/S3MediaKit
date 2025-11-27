@@ -360,16 +360,10 @@ void CameraStatisticImp::save() {
     _file->save(static_cast<const CameraStatistic &>(*this));
 }
 
-void CameraStatisticImp::setCameraOption(const CameraOption &option_) {
+void CameraStatisticImp::saveCameraOption(const CameraOption &option_) {
     std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
     option = option_;
     save();
-    onSetCameraOption(option_);
-}
-
-const CameraOption &CameraStatisticImp::getCameraOption() {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
-    return option;
 }
 
 void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {

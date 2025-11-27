@@ -85,12 +85,36 @@ class GenericRtspCamera : public DeviceSource {
 public:
     using Ptr = std::shared_ptr<GenericRtspCamera>;
 
-    GenericRtspCamera(const CameraInfo &info) : DeviceSource(CAMERA_SCHEMA, info), _info(std::move(info)) {}
+    GenericRtspCamera(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map) : DeviceSource(CAMERA_SCHEMA, info), _info(std::move(info)), _stream_map(std::move(stream_map)) {}
 
     const CameraInfo getCameraInfo() const { return _info; }
 
+    bool hasStreamTuple(int type) const {
+        return _stream_map.find(type) != _stream_map.end() && !_stream_map.at(type).empty();
+    }
+ 
+    StreamTuple getStreamTuple(int type) const {
+        auto it = _stream_map.find(type);
+        if (it == _stream_map.end()) {
+            throw std::runtime_error("No stream at index " + std::to_string(type));
+        }
+        return it->second;
+    }
+
+    const CameraOption &getCameraOption() const { return _option; }
+
+    bool setCameraOption(const CameraOption &option) {
+        if (equalCameraOption(_option, option)) {
+            return false;
+        }
+        _option = option; 
+        return true;
+    }
+
 private:
     CameraInfo _info;
+    CameraOption _option;
+    std::unordered_map<int, StreamTuple> _stream_map;
 };
 
 } // namespace managerkit

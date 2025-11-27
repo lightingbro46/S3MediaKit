@@ -63,7 +63,7 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
         auto gc = it->second;
         if (gc) {
             if (equalCameraConfig(gc, info, stream_map)) {
-                gc->setCameraOption(option);
+                gc->setCameraOptionImp(option);
                 return true;
             }
             // stop device before remove old one to store last media file if config change

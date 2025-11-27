@@ -243,7 +243,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     //     if (stream["is_storing"].asBool()) {
     //         enable_recording_ = true;
     //     }
-    //     uint64_t stream_retention = stream["retention_time"].asUInt64();
+    //     uint64_t stream_retention = stream["retention_time"].isNull() ? 0 : static_cast<uint64_t>(stream["retention_time"].asFloat());
     //     auto retention = stream_retention * 3600;
     //     if (retention_ == 0 || retention < retention_) {
     //         retention_ = retention;
@@ -361,10 +361,10 @@ static Json::Value exampleJson() {
     device["keep_archived_max_for"] = 10 * 60;
     device["rtp_transport"] = 0;
     device["streams"] = Json::arrayValue;
-    Json::Value channel_1;
-    channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
-    channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp";
-    device["streams"].append(channel_1);
+    // Json::Value channel_1;
+    // channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
+    // channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp";
+    // device["streams"].append(channel_1);
     Json::Value channel_2;
     channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
@@ -374,8 +374,8 @@ static Json::Value exampleJson() {
     return data;
 }
 
-void loadServerConfigJson(const Json::Value &data1) {
-    auto data = exampleJson();
+void loadServerConfigJson(const Json::Value &data) {
+    // auto data = exampleJson();
     TraceL << "Server configuration loaded: " << data.toStyledString();
 
     if (data.isMember("mediaServer")) {

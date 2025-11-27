@@ -414,8 +414,9 @@ static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
     GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
-    if (!hook_enable || hook_server_load.empty() || hook_api_url.empty()) {
-        WarnL << "Load server configuration skipped, hook_api_url or hook_server_load is empty";
+    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+    if (!hook_enable || hook_server_load.empty() || hook_server_report.empty() || hook_api_url.empty()) {
+        WarnL << "Load server configuration skipped, hook_api_url or hook_server_load or hook_server_report is empty";
         return;
     }
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
@@ -428,7 +429,7 @@ static void reportServerStatistic() {
             return true;
         }
         ArgsType body;
-        do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
                 DebugL << "hook " << hook_api_url + hook_server_load << " success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
                 InfoL << "Load server config success";
@@ -440,17 +441,10 @@ static void reportServerStatistic() {
                 EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() mutable {
                     getServerStatisticJson([](const Value &data) mutable {
                         DebugL << "Report server statistic data: " << data.size() << " devices";
-                        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
-                        GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
-                        if (hook_server_report.empty() || hook_api_url.empty()) {
-                            WarnL << "Report server statistic skipped, hook_api_url or hook_server_report is empty";
-                            return;
-                        }
-
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
-                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) mutable {
+                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
                             if (err.empty()) {
                                 // Report server statistic success
                                 DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
@@ -513,7 +507,7 @@ static void reportServerUsage() {
         return true;
     };
 
-    g_report_usage_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
+    g_report_usage_timer = std::make_shared<Timer>(report_interval * 3, report_callback, nullptr);
 }
 
 static const string kEdgeServerParam = "edge=1";
