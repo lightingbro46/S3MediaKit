@@ -91,7 +91,7 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
 
     // create new one
     auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map);
-    imp->setCameraOption(option);
+    imp->setCameraOptionImp(option);
     _gcImp.emplace(info.shortUrl(), imp);
     return true;
 }
@@ -121,7 +121,7 @@ bool CameraManager::delCamera(const string &key, bool force) {
                    << ". Enable failover mode";
             option.enableFailover = true;
             option.enableActive = false;
-            imp->setCameraOption(option);
+            imp->setCameraOptionImp(option);
         } else {
             // device do not have any data in storage and disable active
             // remove saved file before

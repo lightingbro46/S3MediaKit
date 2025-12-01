@@ -36,7 +36,7 @@ bool equalCameraOption(const CameraOption &a, const CameraOption& b) {
     EQUAL_OPTION_PROPERTY(autoMediaPort)
     EQUAL_OPTION_PROPERTY(rtpTransport)
 
-    return false;
+    return true;
 }
 
 } // namespace managerkit
