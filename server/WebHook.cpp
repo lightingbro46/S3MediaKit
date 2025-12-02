@@ -447,11 +447,11 @@ static void reportServerStatistic() {
                         do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
                             if (err.empty()) {
                                 // Report server statistic success
-                                DebugL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                                TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
                                 InfoL << "Report server statistic success";
                             } else {
                                 // Load server config failed
-                                DebugL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                                TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
                                 WarnL << "Report server statistic failed:" << err;
                             }
                         });
@@ -495,11 +495,11 @@ static void reportServerUsage() {
             do_http_hook(hook_api_url + hook_server_report_usage, body, [](const Value &obj, const string &err) mutable {
                 if (err.empty()) {
                     // Report server usage succeeded
-                    DebugL << "hook " << hook_api_url + hook_server_report_usage << " success:" << obj.toStyledString();
+                    TraceL << "hook " << hook_api_url + hook_server_report_usage << " success:" << obj.toStyledString();
                     InfoL << "Report server usage success";
                 } else {
                     // Load server config failed
-                    DebugL << "hook " <<  hook_api_url + hook_server_report_usage << " failed:" << err;
+                    TraceL << "hook " <<  hook_api_url + hook_server_report_usage << " failed:" << err;
                     WarnL << "Report server usage failed:" << err;
                 }
             });

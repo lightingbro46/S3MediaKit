@@ -7,7 +7,7 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Record/Recorder.h"
-#include "Local/TimeRecorder.h"
+#include "Local/TimeRecorderManager.h"
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
 #include "Local/StorageManager.h"
@@ -84,7 +84,7 @@ void installManagerHook () {
         auto encoded_path = encodeBase64(info.file_path);
         block.set_file_path(encoded_path);
 
-        auto ret = TimeRecorder::Instance().inputBlock(block);
+        auto ret = TimeRecorderManager::Instance().addBlock(block);
         if (ret) {
             GenericRtspCameraImp::addCameraArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
         }

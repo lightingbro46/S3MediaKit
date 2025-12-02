@@ -1,5 +1,5 @@
 #include "UserSessionCache.h"
-#include "../../server/Manager.h"
+#include "server/Manager.h"
 #include "Common/config.h"
 #include "Storage/UserSession.h"
 #include "Util/base64.h"

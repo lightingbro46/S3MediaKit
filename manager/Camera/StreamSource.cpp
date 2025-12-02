@@ -1,7 +1,7 @@
 #include "StreamSource.h"
 #include "Extension/Plugin.h"
-#include "../../server/WebApi.h"
-#include "../../server/Manager.h"
+#include "server/WebApi.h"
+#include "server/Manager.h"
 
 using namespace std;
 using namespace toolkit;

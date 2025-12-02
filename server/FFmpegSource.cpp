@@ -9,6 +9,7 @@
 #include "Network/sockutil.h"
 #include "Local/TimeQuery.h"
 #include <iomanip>
+#include "json/json.h"
 
 using namespace std;
 using namespace toolkit;

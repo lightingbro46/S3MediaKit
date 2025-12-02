@@ -319,7 +319,6 @@ uint8_t RtpExt::getAudioLevel(bool *vad) const{
 }
 
 //http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
-// Wire format: 1-byte extension, 3 bytes of data. total 4 bytes extra per packet (plus shared 4 bytes for all extensions present: 2 byte magic word 0xBEDE, 2 byte # of extensions). Will in practice replace the “toffset” extension so we should see no long term increase in traffic as a result.  [AUTO-TRANSLATED:178290be]
 // Wire format: 1-byte extension, 3 bytes of data. total 4 bytes extra per packet (plus shared 4 bytes for all extensions present: 2 byte magic word 0xBEDE, 2 byte # of extensions). Will in practice replace the “toffset” extension so we should see no long term increase in traffic as a result.
 //
 //Encoding: Timestamp is in seconds, 24 bit 6.18 fixed point, yielding 64s wraparound and 3.8us resolution (one increment for each 477 bytes going out on a 1Gbps interface).
@@ -365,7 +364,6 @@ string RtpExt::getSdesMid() const {
 
 
 //https://tools.ietf.org/html/draft-ietf-avtext-rid-06
-// 用于simulcast  [AUTO-TRANSLATED:59b2682f]
 // Used for simulcast
 //3.1.  RTCP 'RtpStreamId' SDES Extension
 //

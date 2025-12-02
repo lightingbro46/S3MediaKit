@@ -5,13 +5,15 @@
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "Thread/WorkThreadPool.h"
-#include "TimeRecorder.h"
+#include "TimeRecorderManager.h"
+#include "TimeRebuilder.h"
 #include "Common/DeviceSource.h"
 #include "Server/GlobalMonitor.h"
 #include "StorageManager.h"
 #include "server/Manager.h"
 #include "Storage/UserSession.h"
 #include "Storage/Bookmark.h"
+#include "Common/strTime.h"
 
 using namespace std;
 using namespace toolkit;
@@ -59,15 +61,33 @@ void StorageManager::cleanupTemporaryFiles() {
 
 using KeepTimeMap = TimeRebuilder::KeepTimeMap;
 
-static size_t recreateTimeFile(KeepTimeMap &map, size_t space_reclaim) {
-    try {
-        auto self = TimeRecorder::Instance().shared_from_this();
-        auto rebuilder = std::make_shared<TimeRebuilder>(self);
-        return rebuilder->rebuildTimeLine(map, space_reclaim);
-    } catch (exception &ex) {
-        WarnL << ex.what();
-        return 0;
+static size_t recreateTimeFile(const KeepTimeMap &map) {
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, appName, Record::kAppName)
+    auto record_path = File::absolutePath(appName, mp4_save_path);
+
+    vector<string> device_record_map;
+
+    File::scanDir(record_path, [&](const string path, bool isDir) {
+        if (isDir) {
+            device_record_map.push_back(path);
+        }
+        return true;
+    });
+
+    size_t removed_timefile_bytes = 0;
+    for (const auto &src_path : device_record_map) {
+        try {
+            auto rebuilder = std::make_shared<MultiTimeRebuilder>(src_path);
+            size_t removed_bytes = rebuilder->rebuildTimeLine(map);
+            removed_timefile_bytes += removed_bytes;
+            DebugL << "Recreated time file: " << src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
+        } catch (std::exception &ex) {
+            WarnL << "Failed to recreate time file: " << src_path << ". " << ex.what();
+        }
     }
+    DebugL << "Recreated all time files. Removed total bytes: " << format_bytes_human_readable(removed_timefile_bytes);
+    return removed_timefile_bytes;
 }
 
 static bool findMountPoint(const std::string& path, double &usage_pct, size_t &used_bytes, size_t &total_bytes) {
@@ -106,7 +126,6 @@ static string findMountPoint(const string& path) {
     return best_match;
 }
 
-
 static size_t estimateSpaceToReclaim() {
     size_t space_reclaim = 0;
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
@@ -127,91 +146,42 @@ static size_t estimateSpaceToReclaim() {
     return space_reclaim;
 }
 
-static uint64_t findTimestampPath(const string &time_path) {
-    // Hỗ trợ các định dạng:
-    // 1. "YYYY-MM-DD/HH-MM-SS[-anything]" (định dạng cũ, ví dụ: 2025-07-16/14-38-34-1)
-    // 2. "YYYY-MM-DD" (mới: trả về mốc 00:00:00 local time của ngày đó)
-    // 3. (mở rộng nhẹ) "YYYY-MM-DD HH:MM:SS" nếu xuất hiện (dùng dấu cách)
+using RecordProfiles = unordered_map<string /*camera_id/stream_id*/, pair<uint64_t /*min_value*/, uint64_t /*max_value*/>>;
 
-    if (time_path.empty()) {
-        return 0;
-    }
+static RecordProfiles getRecordProfiles() {
+    RecordProfiles profiles;
+    time_t current_time = time(nullptr);
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(src);
+        if (ptr) {
+            auto option = ptr->getCameraOption();
+            uint64_t min_value = 0;
+            uint64_t max_value = 0;
+            if (option.keepArchivedMinForAuto) {
+                min_value = current_time;
+            } else {
+                min_value = current_time - option.keepArchivedMinFor;
+            }
 
-    auto isDate = [](const std::string &s) -> bool {
-        // YYYY-MM-DD
-        if (s.size() != 10) return false;
-        for (size_t i = 0; i < s.size(); ++i) {
-            if (i == 4 || i == 7) {
-                if (s[i] != '-') return false;
-            } else if (!isdigit(static_cast<unsigned char>(s[i]))) {
-                return false;
+            if (option.keepArchivedMaxForAuto) {
+                //todo: get first block from any stream proxy
+            } else {
+                max_value = current_time - option.keepArchivedMaxFor;
+            }
+
+            if (ptr->hasStreamTuple(PrimaryStream)) {
+                auto tuple = ptr->getStreamTuple(PrimaryStream);
+                string key_primary = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
+                profiles.emplace(key_primary, make_pair(min_value, max_value));
+            }
+            if (ptr->hasStreamTuple(SecondaryStream)) {
+                auto tuple = ptr->getStreamTuple(SecondaryStream);
+                string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
+                profiles.emplace(key_second, make_pair(min_value, max_value));
             }
         }
-        return true;
-    };
-
-    std::tm tm = {};
-    tm.tm_isdst = -1; // let mktime determine DST
-
-    // Trường hợp chỉ có ngày: "YYYY-MM-DD"
-    if (isDate(time_path)) {
-        std::istringstream ds(time_path + " 00:00:00");
-        ds >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-        if (ds.fail()) return 0;
-        time_t t = mktime(&tm);
-        return t > 0 ? static_cast<uint64_t>(t) : 0;
-    }
-
-    // Nếu chứa dấu cách và có vẻ là dạng "YYYY-MM-DD HH:MM:SS"
-    if (time_path.size() >= 19 && time_path[10] == ' ') {
-        std::istringstream fs(time_path);
-        fs >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-        if (fs.fail()) return 0;
-        time_t t = mktime(&tm);
-        return t > 0 ? static_cast<uint64_t>(t) : 0;
-    }
-
-    // Định dạng cũ: "YYYY-MM-DD/HH-MM-SS(-extra)"
-    size_t pos = time_path.find('/');
-    if (pos == std::string::npos) {
-        // Không phù hợp định dạng nào
-        return 0;
-    }
-
-    std::string datePart = time_path.substr(0, pos);       // YYYY-MM-DD
-    std::string timePart = time_path.substr(pos + 1);      // HH-MM-SS(-extra?)
-
-    if (!isDate(datePart)) {
-        return 0;
-    }
-
-    // Loại bỏ phần đầu '.' nếu có
-    if (start_with(timePart, ".")) {
-        timePart.erase(0, 1);
-    }
-
-    // Cắt bỏ phần hậu tố không thuộc HH-MM-SS (ví dụ '-1')
-    // Chiến lược: lấy đúng 3 nhóm đầu tiên ngăn cách bởi '-'
-    {
-        auto parts = split(timePart, "-");
-        if (parts.size() >= 3) {
-            timePart = parts[0] + "-" + parts[1] + "-" + parts[2];
-        } else {
-            return 0;
-        }
-    }
-
-    // Ghép sang định dạng parse: YYYY-MM-DD HH:MM:SS
-    std::string full = datePart + " " + timePart;
-    // Đổi dấu '-' trong phần giờ thành ':'
-    std::replace(full.begin() + 11, full.end(), '-', ':');
-
-    std::istringstream ss(full);
-    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-    if (ss.fail()) return 0;
-
-    time_t t = mktime(&tm);
-    return t > 0 ? static_cast<uint64_t>(t) : 0;
+    });
+    return profiles;
 }
 
 static size_t removeExpiredSegment(const string &stream_path, uint64_t time_threshold) {
@@ -221,14 +191,14 @@ static size_t removeExpiredSegment(const string &stream_path, uint64_t time_thre
     File::scanDir(stream_path, [&remove_files, time_threshold, stream_path](const string date_path, bool isDir) {
         if (isDir) {
             string date_string = findSubString(date_path.data() + stream_path.size(),"/", nullptr);
-            auto date_time = findTimestampPath(date_string);
+            auto date_time = findTimestampFromPath(date_string);
             if (time_threshold <= date_time) {
                 return true;
             }
             File::scanDir(date_path, [&remove_files, time_threshold, stream_path](const string path, bool isDir) {
                 if (!isDir && end_with(path, ".mp4")) {
                     string relative_path = findSubString(path.data() + stream_path.size(), "/", ".mp4");
-                    auto start_time = findTimestampPath(relative_path);
+                    auto start_time = findTimestampFromPath(relative_path);
                     if (time_threshold <= start_time) {
                         return true;
                     }
@@ -255,6 +225,7 @@ static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
     GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
     auto record_path = File::absolutePath(appName, mp4_save_path);
     unordered_map<string, uint64_t> path_threshold;
+    Ticker ticket;
     File::scanDir(record_path, [&](const string path, bool isDir) {
         if (isDir) {
             auto sub_path = findSubString(path.data() + record_path.size(), "/", nullptr);
@@ -279,7 +250,8 @@ static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
     size_t removed_volume_bytes = 0;
     for (const auto &it : path_threshold) {
         auto bytes = removeExpiredSegment(it.first, it.second);
-        DebugL << "Remove expired file: " << it.first << ". Threshold: " << (it.second ? getTimeStr("%Y-%m-%d %H:%M:%S", it.second) : 0) << ". Removed bytes: " << format_bytes_human_readable(bytes);
+        DebugL << "Remove expired file: " << it.first << ". Threshold: " << (it.second ? getTimeStr("%Y-%m-%d %H:%M:%S", it.second) : 0) 
+                << ". Removed bytes: " << format_bytes_human_readable(bytes) << ". Elapsed: " << formatDuration(ticket.elapsedTime());
         removed_volume_bytes += bytes;
     }
     return removed_volume_bytes;
@@ -317,29 +289,64 @@ static void removeExpiredBookmark(const KeepTimeMap &keep_time_map) {
 }
 
 void StorageManager::enforceStoragePolicy() {
-    // estimate removed space need to reclaim
-    size_t space_reclaim = estimateSpaceToReclaim();
-
-    // rewrite time file with time rebuilder
-    KeepTimeMap keep_time_map;
-    size_t removed_bytes = recreateTimeFile(keep_time_map, space_reclaim);
-    if (!removed_bytes) {
-        return;
-    }
-
     // asynchronous delete expired segment by scanning folder and removing file which start time over threshold
     weak_ptr<StorageManager> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self, keep_time_map]() {
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
         // Switch back to your own thread
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
+
         // Reset a timer to track the operation time of a cycle
         strong_self->_ticker.resetTime();
 
-        auto removed_volume_bytes = removeExpiredSegment(keep_time_map);
-        InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_volume_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
+        // estimate removed space need to reclaim
+        size_t space_reclaim = estimateSpaceToReclaim();
+
+        KeepTimeMap keep_time_map;
+        auto record_profiles = getRecordProfiles();
+        double keep_percent = 100.0;
+        size_t removed_bytes = 0;
+
+        while (keep_percent > 0 && (space_reclaim == 0 || removed_bytes < space_reclaim)) {
+            // step 1: estimate keep time map with new keep_percent value
+            for (const auto &p : record_profiles) {
+                auto keep_pair = p.second;
+                keep_time_map[p.first] = keep_pair.first - round((keep_pair.first - keep_pair.second) * keep_percent / 100);
+            }
+
+            // step 2: remove expired segment and get keep time map
+            auto removed_volume_bytes = removeExpiredSegment(keep_time_map);
+            removed_bytes += removed_volume_bytes;
+
+            // step 3: decrease keep_percent to estimate removed bytes again in next loop if removed_bytes is not enough
+            if (removed_bytes < space_reclaim) {
+                // todo: auto select keep_percent by read/write speed
+                keep_percent += (-5.0);
+                TraceL << "Decrease keep percent: " << format_double_2f(keep_percent) << "%";
+            }
+
+            // only enforce storage policy once if space_reclaim equal 0 byte
+            if (space_reclaim == 0) {
+                break;
+            }
+        }
+
+        if (keep_percent == 0 && removed_bytes < space_reclaim) {
+            WarnL << "Cannot reclaim enough space: " << format_bytes_human_readable(removed_bytes)
+                  << " , expect: " << format_bytes_human_readable(space_reclaim);
+        }
+
+        if (removed_bytes == 0) {
+            InfoL << "No expired segment need to remove. Finished enforcing storage policy. Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
+            return;
+        }
+
+        // recreate time file according to keep time map
+        recreateTimeFile(keep_time_map);
+
+        InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
 
         // remove expired items associated with media segment
         removeExpiredBookmark(keep_time_map);
@@ -354,7 +361,7 @@ void StorageManager::start() {
 
     weak_ptr<StorageManager> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
-        600.0f,
+        300.0f,
         [weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
