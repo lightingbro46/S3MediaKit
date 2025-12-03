@@ -66,24 +66,25 @@ static size_t recreateTimeFile(const KeepTimeMap &map) {
     GET_CONFIG(string, appName, Record::kAppName)
     auto record_path = File::absolutePath(appName, mp4_save_path);
 
-    vector<string> device_record_map;
+    std::unordered_map<string, string> device_record_map;
 
     File::scanDir(record_path, [&](const string path, bool isDir) {
         if (isDir) {
-            device_record_map.push_back(path);
+            auto device_id = findSubString(path.data() + record_path.size(), "/", nullptr);
+            device_record_map.emplace(device_id, path);
         }
         return true;
     });
 
     size_t removed_timefile_bytes = 0;
-    for (const auto &src_path : device_record_map) {
-        try {
+    for (const auto &it : device_record_map) {
+        auto &device_id = it.first;
+        auto &src_path = it.second;
+        {
             auto rebuilder = std::make_shared<MultiTimeRebuilder>(src_path);
             size_t removed_bytes = rebuilder->rebuildTimeLine(map);
             removed_timefile_bytes += removed_bytes;
-            DebugL << "Recreated time file: " << src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
-        } catch (std::exception &ex) {
-            WarnL << "Failed to recreate time file: " << src_path << ". " << ex.what();
+            DebugL << "Recreated time file for device: " << device_id << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
         }
     }
     DebugL << "Recreated all time files. Removed total bytes: " << format_bytes_human_readable(removed_timefile_bytes);

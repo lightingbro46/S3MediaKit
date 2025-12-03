@@ -21,6 +21,7 @@ TimeRecorder::TimeRecorder(const string &path) {
 }
 
 TimeRecorder::~TimeRecorder() {
+    TraceL << "Destroy TimeRecorder for path: " << _full_path;
     try {
         closeFile();
     } catch (std::exception &ex) {
@@ -32,8 +33,10 @@ void TimeRecorder::createFile() {
     closeFile();
 
     if (File::is_dir(_path)) {
-        auto date_str = getTimeStr("%Y-%m-%d");
+        uint64_t now = time(nullptr);
+        auto date_str = getTimeStr("%Y-%m-%d", now);
         _full_path = StrPrinter << _path << "/" << date_str << ".s3db";
+        _next_open_time = getStartOfDay(now) + 86400; // close file after one day
     } else {
         _full_path = _path;
     }

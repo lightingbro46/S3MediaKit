@@ -21,9 +21,9 @@ public:
     bool inputBlock(const TimeBlock &block);
 
     /**
-     * Get current file path to store timeline
+     * Get close time of current file
      */
-    std::string getFilePath() { return _full_path; }
+    uint64_t getNextOpenTime() { return _next_open_time; }
 
     /**
      * Flush buffer in muxer and trigger record both file and memory
@@ -58,6 +58,7 @@ private:
     std::string _full_path;
     TimeMuxer::Ptr _muxer;
     TimeMuxerMemory::Ptr _mem_muxer;
+    uint64_t _next_open_time = 0;
 };
 
 } // namespace mediakit

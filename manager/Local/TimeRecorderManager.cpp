@@ -32,18 +32,13 @@ bool TimeRecorderManager::addBlock(const TimeBlock &block) {
         return false;
     }
 
-    TimeRecorder::Ptr recorder;
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        if (_recorders.find(device_id) != _recorders.end()) {
-            recorder = _recorders[device_id];
-        }
+    TimeRecorder::Ptr recorder = getRecorder(device_id);
+    auto next_open_time = recorder->getNextOpenTime();
+    if (next_open_time > 0 && next_open_time <= block.start_time()) {
+        // Create new time file if needed
+        recorder = addRecorder(device_id);
     }
 
-    if (!recorder) {
-        recorder = addRecorder(device_id);
-        TraceL << "Created TimeRecorder for device_id: " << device_id;
-    }
     // Input time block
     return recorder->inputBlock(block);
 }
@@ -69,6 +64,7 @@ TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id) {
     }
 
     auto recorder = make_shared<TimeRecorder>(full_path);
+    TraceL << "Created TimeRecorder for device_id: " << device_id;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _recorders.emplace(device_id, recorder);
@@ -86,11 +82,11 @@ bool TimeRecorderManager::removeRecorder(const string &device_id) {
         recorder = _recorders[device_id];
     }
     // todo:  remove files associated with this time recorder
-
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _recorders.erase(device_id);
     }
+    TraceL << "Removed TimeRecorder for device_id: " << device_id;
     return true;
 }
 

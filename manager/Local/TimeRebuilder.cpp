@@ -221,7 +221,7 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
         commitArchivedChanges(tmp_changes);
     }
 
-    DebugL << "Recreated time file: " << _src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes)
+    TraceL << "Recreated time file: " << _src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes)
            << ". Elapsed: " << formatDuration(ticket.elapsedTime());
 
     return removed_bytes;    
@@ -270,7 +270,6 @@ static uint64_t findMinKeepTime(const string &src_path, const TimeRebuilder::Kee
 }
 
 size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
-    Ticker ticket;
     size_t total_removed_bytes = 0;
     if (_timefiles_map.empty()) {
         WarnL << "No time files found under path: " << _src_path;
