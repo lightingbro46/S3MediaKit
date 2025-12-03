@@ -126,9 +126,8 @@ uint64_t TimeDemuxer::findFirstStamp() {
 void MultiTimeDemuxer::openFile(const string &files_string) {
     std::vector<std::string> files;
     if (File::is_dir(files_string)) {
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         File::scanDir(files_string, [&](const string &path, bool is_dir) {
-            if (!is_dir && path.find("/" + mediaServerId) != string::npos && end_with(path, ".s3db")) {
+            if (!is_dir && end_with(path, ".s3db")) {
                 files.emplace_back(path);
             }
             return true;

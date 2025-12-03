@@ -4,7 +4,6 @@
 #include <vector>
 #include <unordered_map>
 #include <set>
-#include "json/json.h"
 #include "TimeDemuxer.h"
 #include "Record/Recorder.h"
 
@@ -15,15 +14,13 @@ struct TimeRange {
     uint32_t duration;
 };
 
-class TimeRebuilder;
 class TimeQuery final {
 public:
-    friend class TimeRebuilder;
     using Ptr = std::shared_ptr<TimeQuery>;
     using TimeBlockListPtr = std::shared_ptr<TimeQuery>;
     using TimeBlockImp = std::function<void(const TimeBlock &block)>;
 
-    TimeQuery(const MediaTuple &tuple, const std::string file_path = "");
+    TimeQuery(const MediaTuple &tuple, const std::string &file_path = "");
 
     ~TimeQuery();
 

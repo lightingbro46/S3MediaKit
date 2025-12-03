@@ -7,12 +7,14 @@ using namespace toolkit;
 
 namespace mediakit {
 
-TimeQuery::TimeQuery(const MediaTuple &tuple, const string path) {
+TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path) {
     _file_path = path;
     if (_file_path.empty()) {
         GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
         GET_CONFIG(string, appName, Record::kAppName)
         _file_path = File::absolutePath(appName, recordPath);
+        CHECK(!tuple.app.empty(), "Device id empty!");
+        _file_path += "/" + tuple.app;
     }
 
     _demuxer = std::make_shared<MultiTimeDemuxer>();
