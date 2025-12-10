@@ -598,10 +598,20 @@ void installWebHook() {
         });
     });
 
+    GET_CONFIG_FUNC(set<string>, bypass_realms, Manager::kBypassAuthRealm, [](const string &str) {
+        set<string> ret;
+        for (auto &item : split(str, ",")) {
+            trim(item);
+            if (!item.empty()) {
+                ret.emplace(item);
+            }
+        }
+        return ret;
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto params = Parser::parseArgs(args.params);
-        GET_CONFIG(string, bypass_auth, Manager::kBypassAuthRealm);
-        if (!bypass_auth.empty() && params["realm"] == bypass_auth) {
+        if (!bypass_realms.empty() && bypass_realms.find(params["realm"]) != bypass_realms.end()) {
             // Bypass authentication realm, directly allow access
             invoker("");
             return;
