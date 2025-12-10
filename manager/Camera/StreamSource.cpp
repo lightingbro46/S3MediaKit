@@ -114,6 +114,7 @@ void StreamSource::createPlayer() {
             }
         });
 
+        // Note: onClose is called when the player proxy is closed itself
         player->setOnClose([weak_self](const SockException &ex) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
@@ -145,7 +146,10 @@ void StreamSource::closePlayer() {
     };
     delStreamProxy(tuple);
     _player.reset();
-    DebugL << "Close stream player proxy: " << _tuple.shortUrl();
+    DebugL << "Closed stream player proxy: " << _tuple.shortUrl();
+    if (_on_update) {
+        _on_update(false, "self-closed", nullptr);
+    }
 }
 
 TranslationInfo StreamSource::getTranslationInfo() {
