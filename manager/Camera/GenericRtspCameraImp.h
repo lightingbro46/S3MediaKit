@@ -2,42 +2,53 @@
 #define CAMERA_GENERICRTSPCAMERAIMP_H
 
 #include "GenericRtspCamera.h"
-#include "StreamSink.h"
 #include "CameraController.h"
-#include "Local/RecordStrategy.h"
-#include "CameraStatistic.h"
+#include "StreamSink.h"
+#include "Local/StatisticRecorder.h"
 
 namespace managerkit {
-    
-class GenericRtspCameraImp : public GenericRtspCamera, public StreamSink, public CameraController, public RecordStrategy , public CameraStatisticImp {
+
+class GenericRtspCameraImp final : public GenericRtspCamera {
 public:
     using Ptr = std::shared_ptr<GenericRtspCameraImp>;
 
-    GenericRtspCameraImp(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map);
+    GenericRtspCameraImp(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map, const CameraStatisticImp::Ptr &statistic);
 
-    void setCameraOptionImp(const CameraOption &option);
+    ~GenericRtspCameraImp() override;
 
-    bool isEnabled() { return _enabled.load(); }
+    bool isEnabled() const {
+        return _enabled.load();
+    }
+
+    void setCameraOption(const CameraOption &option);
+
+    const CameraOption& getCameraOption() const {
+        return _option;
+    }
 
     void stop();
+
+    void PTZMove(std::string &strDirect, int &speed, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    CameraStatisticImp::Ptr getCameraStatisticImp();
 
 private:
     void onAllStreamReady();
 
-    void onStreamChange(int stream_type) override;
+    void setupController();
 
-    void onRecordModeChange(RecordMode mode) override;
+    void setupStreamSink();
 
-    void setupRecordStream(RecordMode mode);
-
-    void stopRecordStream();
-
-    void onSetCameraOption(const CameraOption &option);
-
-    void onControllerReady() override; 
+    void saveCameraOption(const CameraOption &option);
 
 private:
-    std::atomic<bool> _enabled {false};
+    toolkit::EventPoller::Ptr _poller;
+    bool _all_stream_ready = false;
+    std::atomic<bool> _enabled { false };
+    CameraOption _option;
+    CameraController::Ptr _controller;
+    StreamSink::Ptr _sink;
+    std::weak_ptr<CameraStatisticImp> _statistic;
 };
 
 } // namespace managerkit

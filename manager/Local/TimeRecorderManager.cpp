@@ -16,9 +16,7 @@ static onceToken token(
 
 INSTANCE_IMP(TimeRecorderManager)
 
-TimeRecorderManager::TimeRecorderManager(const EventPoller::Ptr &poller) {
-    _poller = poller ? poller : EventPollerPool::Instance().getPoller();
-}
+TimeRecorderManager::TimeRecorderManager() {}
 
 TimeRecorderManager::~TimeRecorderManager() {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -43,7 +41,7 @@ bool TimeRecorderManager::addBlock(const TimeBlock &block) {
     return recorder->inputBlock(block);
 }
 
-TimeRecorder::Ptr TimeRecorderManager::getRecorder(const std::string &device_id) {
+TimeRecorder::Ptr TimeRecorderManager::getRecorder(const string &device_id) {
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_recorders.find(device_id) != _recorders.end()) {
@@ -64,7 +62,7 @@ TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id) {
     }
 
     auto recorder = make_shared<TimeRecorder>(full_path);
-    TraceL << "Created TimeRecorder for device_id: " << device_id;
+    TraceL << "Created TimeRecorder for device: " << device_id;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _recorders.emplace(device_id, recorder);
@@ -86,7 +84,7 @@ bool TimeRecorderManager::removeRecorder(const string &device_id) {
         std::lock_guard<std::mutex> lock(_mutex);
         _recorders.erase(device_id);
     }
-    TraceL << "Removed TimeRecorder for device_id: " << device_id;
+    TraceL << "Removed TimeRecorder for device: " << device_id;
     return true;
 }
 

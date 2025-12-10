@@ -6,50 +6,45 @@
 
 namespace managerkit {
 
-enum class PTZ_DIRECT {
-    Up = 1,
-    Down,
-    Left,
-    Right,
-    ZoomIn,
-    ZoomOut,
-    Home
-};
-
-class CameraController {
+class CameraController : public std::enable_shared_from_this<CameraController>  {
 public:
     using Ptr = std::shared_ptr<CameraController>;
+    using OnControllerReady = std::function<void(bool enablePTZ)>;
 
-    CameraController(const CameraInfo &info);
+    CameraController(const toolkit::EventPoller::Ptr &poller);
 
     ~CameraController();
 
-    bool isControlReady();
+    void start();
 
-    void setupController(const CameraOption &option);
+    void setOnControllerReady(const OnControllerReady &cb) { _on_ready = std::move(cb); }
+
+    bool isControlReady() const;
+
+    void setupController(const CameraInfo &info, const CameraOption &option);
 
     void stopController();
-
-    bool enablePTZ();
     
     void PTZMove(std::string &strDirect, int &speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
 private:
-    void onManager();
+    bool enablePTZ();
 
-    virtual void onControllerReady() {};
+    void onManager();
 
     void getMediaProfile();
 
     void setMediaProfile();
 
 private:
-    std::recursive_mutex _mtx_control;
-    CameraInfo _info;
-    bool _controller_ready = false;
+    std::mutex _mtx_ctr;
+    toolkit::EventPoller::Ptr _poller;
+    std::atomic<bool> _ready { false };
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
     DeviceController::Ptr _controller;
+    OnControllerReady _on_ready;
+    
 };
 
 } // namespace managerkit

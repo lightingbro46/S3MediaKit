@@ -348,14 +348,14 @@ static void reportServerStarted() {
         body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
         body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
         // Execute hook
-        do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
-                // DebugL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
+                TraceL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
                 InfoL << "Report server started success";
                 loadServerStartedConfigJson(obj);
                 s_report_started = true;
             } else {
-                DebugL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
+                TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
             }
         });
@@ -425,22 +425,25 @@ static void reportServerStatistic() {
         if (!s_report_started) {
             // If the start API has not been completed, do not call the API to get the configuration in delay task. 
             // Waiting for timer to call API to get the configuration
-            TraceL << "Server has not reported started, skip report server statistic";
+            WarnL << "Server has not reported started, skip report server statistic";
             return true;
         }
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
-                DebugL << "hook " << hook_api_url + hook_server_load << " success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
-                InfoL << "Load server config success";
+                TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
+                InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
 
                 // Load server config success
                 loadServerConfigJson(obj);
 
-                // Set timer to report server statistic 
-                EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() mutable {
-                    getServerStatisticJson([](const Value &data) mutable {
-                        DebugL << "Report server statistic data: " << data.size() << " devices";
+                // Set timer to report server statistic
+                EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() {
+                    getServerStatisticJson([](const Value &data) {
+                        int online_count = 0, offline_count = 0;
+                        countDeviceStatusJson(data, online_count, offline_count);
+                        DebugL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
+
                         ArgsType body;
                         body["data"] = data;
                         // Execute hook
@@ -461,7 +464,7 @@ static void reportServerStatistic() {
 
             } else {
                 // Load server config failed
-                DebugL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+                TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                 WarnL << "Load server config failed:" << err;
             }
         });

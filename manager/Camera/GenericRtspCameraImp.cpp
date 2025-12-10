@@ -2,92 +2,126 @@
 
 using namespace std;
 using namespace toolkit;
-using namespace mediakit;
 
 namespace managerkit {
 
-GenericRtspCameraImp::GenericRtspCameraImp(const CameraInfo &info, const unordered_map<int, StreamTuple> &stream_map)
-    : GenericRtspCamera(info, stream_map), StreamSink(), CameraController(info), RecordStrategy(), CameraStatisticImp(info, stream_map) {
+GenericRtspCameraImp::GenericRtspCameraImp(const CameraInfo& info, const std::unordered_map<int, StreamTuple>& stream_map, const CameraStatisticImp::Ptr& statistic)
+    : GenericRtspCamera(info, stream_map), _statistic(statistic) {
+    _poller = EventPollerPool::Instance().getPoller();
+    statistic->setCameraInfo(info);
+    statistic->setStreamTuples(stream_map);
 }
 
-void GenericRtspCameraImp::setCameraOptionImp(const CameraOption &option) {
-    if (setCameraOption(option)) {
-        onSetCameraOption(option);
+GenericRtspCameraImp::~GenericRtspCameraImp() {
+    stop();
+}
+
+void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
+    if (equalCameraOption(const_cast<const CameraOption&>(_option), const_cast<const CameraOption&>(option))) {
+        return; // No change
     }
-}
-
-void GenericRtspCameraImp::onAllStreamReady() {
-    regist();
-}
-
-void GenericRtspCameraImp::onSetCameraOption(const CameraOption &option) {
-    _enabled = option.enableActive;
+    _option = option;
+    saveCameraOption(option);
     
-    if (!_enabled) {
+    if (!_option.enableActive) {
         stop();
         return;
     }
 
-    saveCameraOption(option);
-    setupController(option);
-    setupScheduler(option.recordScheduler);
-    setupRecordStream(getRecordModeActive());
+    setupController();
+    setupStreamSink();
 }
 
-void GenericRtspCameraImp::onRecordModeChange(RecordMode mode) {
-    DebugL << "Camera " << _tuple.device_id << " has already change record mode: " << RecordModeHelper::toString(mode);
-    setupRecordStream(mode);
+void GenericRtspCameraImp::onAllStreamReady() {
+    if (_all_stream_ready) {
+        return;
+    }
+    _all_stream_ready = true;
+    regist();
 }
 
-void GenericRtspCameraImp::setupRecordStream(RecordMode mode) {
-    auto option = getCameraOption();
-    int rtp_type = option.rtpTransport == option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
-    int media_port = option.autoMediaPort ? 0 :  option.mediaPort;
+void GenericRtspCameraImp::setupController() {
+    if (!_controller) {
+        _controller = std::make_shared<CameraController>(_poller);
+        _controller->setOnControllerReady([this](bool enablePTZ) {
+            auto strong_statistic = _statistic.lock();
+            if (!strong_statistic) {
+                WarnL << "Camera statistic has been released. Ignore device capabilities update";
+                return;
+            }
+            strong_statistic->addDeviceCapabilities(enablePTZ);
+        });
+        _controller->start();
+    }
+    auto info = getCameraInfo();
+    _controller->setupController(info, _option);
+}
 
+void GenericRtspCameraImp::setupStreamSink() {
+    if (!_sink) {
+        _sink = std::make_shared<StreamSink>(_poller);
+        _sink->setOnStreamUpdate([this](int type, bool live, const std::string &status, const mediakit::TranslationInfo *info) {
+            auto strong_statistic = _statistic.lock();
+            if (!strong_statistic) {
+                WarnL << "Camera statistic has been released. Ignore stream statistics update";
+                return;
+            }
+            strong_statistic->addStreamStatistic(type, live, status, info);
+        });
+        _sink->start();
+    }
     if (hasStreamTuple(PrimaryStream)) {
         auto tuple = getStreamTuple(PrimaryStream);
-        bool enable_record = option.enableRecord && !option.doNotRecordPrimaryStream && mode != RecordMode::NoRecord;
-        setupMonitor(PrimaryStream, tuple, enable_record, rtp_type, media_port);
+        _sink->setupMonitor(PrimaryStream, tuple, _option);
     }
 
     if (hasStreamTuple(SecondaryStream)) { 
         auto tuple = getStreamTuple(SecondaryStream);
-        bool enable_record = option.enableRecord && !option.doNotRecordSecondaryStream  && mode != RecordMode::NoRecord;
-        setupMonitor(SecondaryStream, tuple, enable_record, rtp_type, media_port);
+        _sink->setupMonitor(SecondaryStream, tuple, _option);
     }
 
     onAllStreamReady();
 }
 
-void GenericRtspCameraImp::stopRecordStream() {
-    if (hasStreamTuple(PrimaryStream)) {
-        stopMonitor(PrimaryStream);
-        onStreamChange(PrimaryStream);
-    }
-    if (hasStreamTuple(SecondaryStream)) {
-        stopMonitor(SecondaryStream);
-        onStreamChange(SecondaryStream);
-    }
-}
-
 void GenericRtspCameraImp::stop() {
-    stopScheduler();
-    stopRecordStream();
-    stopController();
-}
-
-void GenericRtspCameraImp::onStreamChange(int stream_type) {
-    if (hasStreamTuple(stream_type)) {
-        bool live = isStreamLive(stream_type);
-        string status = getStreamStatus(stream_type);
-        TranslationInfo info = getStreamInfo(stream_type);
-        addStreamStatistic(stream_type, live, status, &info);
+    if (_controller) {
+        _controller->stopController();
+    }
+    if (_sink) {
+        if (hasStreamTuple(PrimaryStream)) {
+            _sink->stopMonitor(PrimaryStream);
+        }
+        if (hasStreamTuple(SecondaryStream)) {
+            _sink->stopMonitor(SecondaryStream);
+        }
     }
 }
 
-void GenericRtspCameraImp::onControllerReady() {
-    bool enable_ptz = enablePTZ();
-    addDeviceCapabilities(enable_ptz);
+void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std::function<void(const SockException &ex)> &cb) {
+    //todo: only one session to control ptz
+    if (_controller) {
+        _controller->PTZMove(strDirect, speed, cb);
+    } else {
+        cb(SockException(Err_other, "PTZ controller is not ready"));
+    }
 }
+
+CameraStatisticImp::Ptr GenericRtspCameraImp::getCameraStatisticImp() {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera statistic has been released. Ignore get statistic request";
+        return nullptr;
+    }
+    return strong_statistic;
+}
+
+void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera statistic has been released. Ignore camera option save";
+        return;
+    }
+    strong_statistic->setCameraOption(option);
+}   
 
 } // namespace managerkit

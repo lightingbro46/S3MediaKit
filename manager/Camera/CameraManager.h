@@ -12,13 +12,13 @@ public:
     static CameraManager& Instance();
     ~CameraManager() = default;
 
-    bool addCamera(CameraInfo &info, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map, bool force = false);
+    bool addCamera(CameraInfo &info, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map);
 
-    bool delCamera(const std::string &key, bool force = false);
+    bool addCamera(CameraStatisticImp::Ptr &stats);
 
-    void release(bool continuous = false);
+    bool delCamera(const std::string &key);
 
-    void clear(bool continuous = false);
+    void clear();
 
     std::vector<std::string> getCameraKeys();
 

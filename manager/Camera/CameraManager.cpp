@@ -1,7 +1,8 @@
+#include <algorithm>
 #include "CameraManager.h"
 #include "Util/util.h"
 #include "Thread/WorkThreadPool.h"
-#include <algorithm>
+#include "Local/StatisticRecorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -50,9 +51,9 @@ static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, 
     return true;
 }
 
-bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map, bool force) {
+bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!isReady() && !force) {
+    if (!isReady()) {
         TraceL << "Camera manager has not been ready";
         return false;
     }
@@ -63,92 +64,91 @@ bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_
         auto gc = it->second;
         if (gc) {
             if (equalCameraConfig(gc, info, stream_map)) {
-                gc->setCameraOptionImp(option);
+                gc->setCameraOption(option);
                 return true;
             }
-            // stop device before remove old one to store last media file if config change
-            gc->stop();
-
-            // set delay task to remove old one and create new one
-            weak_ptr<CameraManager> weak_self = shared_from_this();
-            EventPollerPool::Instance().getPoller()->doDelayTask(3000, [weak_self, info, stream_map, option]() {
-                auto strong_self = weak_self.lock();
-                if (!strong_self) {
-                    return false;
-                }
-                // remove old one
-                strong_self->_gcImp.erase(info.shortUrl());
-                // create new one
-                auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map);
-                imp->setCameraOption(option);
-                strong_self->_gcImp.emplace(info.shortUrl(), imp);
-                return false;
-            });
-
-            return true;
+            // configuration changed, remove old one
+            _gcImp.erase(info.shortUrl());
         }
     }
 
     // create new one
-    auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map);
-    imp->setCameraOptionImp(option);
+    auto stats_imp = StatisticRecorder::Instance().getRecorder(info.device_id);
+    auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map, stats_imp);
+    imp->setCameraOption(option);
     _gcImp.emplace(info.shortUrl(), imp);
     return true;
 }
 
-bool CameraManager::delCamera(const string &key, bool force) {
+bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
-    if (!isReady() && !force) {
+    auto params = stats->getParams();
+    auto info = params.info;
+    auto stream_map = params.stream_map;
+    auto option = params.option;
+    auto it = _gcImp.find(info.shortUrl());
+    if  (it != _gcImp.end()) {
+        WarnL << "Camera " << info.shortUrl() << " already exist. Ignore add camera from statistics";
+        return false;
+    }
+
+    // create new one
+    auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map, stats);
+    imp->setCameraOption(option);
+    _gcImp.emplace(info.shortUrl(), imp);
+    return true;
+}
+
+bool CameraManager::delCamera(const string &key) {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    if (!isReady()) {
         TraceL << "Camera manager has not been ready";
         return false;
     }
 
+    //todo: check device active status
     auto it = _gcImp.find(key);
     if (it != _gcImp.end()) {
         auto imp = it->second;
         auto option = imp->getCameraOption();
-        auto params = imp->getParams();
-        size_t total_storage_size = 0;
-        total_storage_size += params.bm.recordAverageSizeB;
-        for (const auto &it : params.storage_map) {
-            total_storage_size += it.second.archiveIndexRecordCount > 0 ? it.second.archiveSizeB : 0;
-        }
-
-        if (total_storage_size > 0 || imp->isEnabled()) {
-            // device still have data in storage or enable active
-            // In cases of camera deletion, camera relocation, or camera failover returning to the main server, the failover mode is always enabled.
-            DebugL << "Device still have remain data: " << format_bytes_human_readable(total_storage_size) << " or enable active: " << imp->isEnabled()
-                   << ". Enable failover mode";
+        if (imp->isEnabled()) {
+            // Device still enable active
+            // Note: In cases of camera deletion, camera relocation, or camera failover returning to the main server, the failover mode is always enabled first.
+            DebugL << "Device " << key << " is active: " << imp->isEnabled() << ". Enable failover mode";
             option.enableFailover = true;
             option.enableActive = false;
-            imp->setCameraOptionImp(option);
+            imp->setCameraOption(option);
         } else {
-            // device do not have any data in storage and disable active
-            // remove saved file before
-            DebugL << "Device have no data and disable active. Remove device out of list";
-            imp->remove();
-            // remove device out of list 
+            // Device disable active, check whether to keep device in list
+            auto stats_imp = imp->getCameraStatisticImp();
+            if (stats_imp) {
+                if (option.enableFailover) {
+                    DebugL << "Device " << key << " is not active and failover mode is enabled. Check storage data to decide whether to keep device";
+                    auto params = stats_imp->getParams();
+                    size_t total_archive_size = 0;
+                    for (const auto &it : params.storage_map) {
+                        total_archive_size += it.second.archiveSizeB;
+                    }
+                    if (total_archive_size > 0) {
+                        DebugL << "Device " << key << " has archived data: " << format_bytes_human_readable(total_archive_size) << " bytes. Keep device in list";
+                        return false;
+                    }
+                }
+            }
+           
+            // Device disable active and disable failover mode, remove it out of list
+            DebugL << "Device " << key << " is not active and has no archived data. Remove device out of list";
+            stats_imp->remove();
             _gcImp.erase(key);
         }
-
         return true;
     }
     return false;
 }
 
-void CameraManager::release(bool continuous) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx);
-    for (const auto &it : _gcImp) {
-        auto ptr = it.second;
-        ptr->stop();
-    }
-    _ready = continuous;
-}
-
-void CameraManager::clear(bool continuous) {
+void CameraManager::clear() {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
     _gcImp.clear();
-    _ready = continuous;
 }
 
 vector<string> CameraManager::getCameraKeys() {
@@ -172,33 +172,18 @@ void CameraManager::loadSavedCameraInfo() {
         // reset ticker to elapse time
         Ticker ticker;
     
-        GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
-        GET_CONFIG(string, app_name, Record::kAppName)
-        string record_path = File::absolutePath(app_name, mp4_save_path);
-
-        auto invoker = [&](const string &path) {
-            auto file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(path);
-            if (!file->empty()) {
-                CameraStatistic stats;
-                if (file->load(stats)) {
-                    strong_self->addCamera(stats.info, stats.option, stats.stream_map, true);
-                    DebugL << "Added saved info: " << stats.info.shortUrl();
-                    return;
-                }
+        auto invoker = [weak_self](CameraStatisticImp::Ptr &stats) {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return;
             }
-            WarnL << "Saved file empty or invalid format: " << path << ". Ignore";
+            strong_self->addCamera(stats);
+            DebugL << "Added saved info: " << stats->getParams().info.shortUrl();
+            return;
         };
 
-        File::scanDir(record_path, [&](const string &path, bool isDir) {
-            if (isDir) {
-                auto saved_path = path + "/info.txt";
-                if (File::fileExist(saved_path)) {
-                    DebugL << "Found saved file: " << saved_path << ". Loading...";
-                    invoker(saved_path);
-                }
-            }
-            return true;
-        });
+        StatisticRecorder::Instance().loadSavedCameraStatistics(invoker);
+
         InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
         strong_self->setReady(true);
     });

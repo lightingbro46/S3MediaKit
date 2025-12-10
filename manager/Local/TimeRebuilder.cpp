@@ -2,7 +2,7 @@
 #include "Common/Parser.h"
 #include "Common/strTime.h"
 #include "TimeDemuxer.h"
-#include "Camera/GenericRtspCameraImp.h"
+#include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
 
 using namespace std;
@@ -137,7 +137,7 @@ static void commitArchivedChanges(CameraArchivedChanges &camera_changes) {
         for (const auto &stream_change : stream_changes) {
             const auto &stream_id = stream_change.first;
             const auto &changes = stream_change.second;
-            GenericRtspCameraImp::addCameraArchiveSize(camera_id, stream_id, changes.archived_count, changes.archived_size, changes.archived_start_time, changes.archived_end_time, false);
+            StatisticRecorder::Instance().addArchiveSize(camera_id, stream_id, changes.archived_count, changes.archived_size, changes.archived_start_time, changes.archived_end_time, false);
         }
     }
 }

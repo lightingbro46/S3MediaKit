@@ -6,7 +6,7 @@
 #include "BookmarkTag.h"
 #include "BookmarkStats.h"
 #include "Util/util.h"
-#include "Camera/GenericRtspCameraImp.h"
+#include "Local/StatisticRecorder.h"
 
 namespace managerkit {
 
@@ -202,7 +202,7 @@ public:
         save(bm, true);
         _bTag->add(bm.guid, tags);
         _bStats->add(bm.camera_guid, 1);
-        GenericRtspCameraImp::addCameraBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, true);
+        StatisticRecorder::Instance().addBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, true);
     }
 
     void update(Bookmark &bm, const std::string &tags) { 
@@ -217,7 +217,7 @@ public:
             removeById(bm);
             _bTag->remove(guid);
             _bStats->add(bm.camera_guid, -1);
-            GenericRtspCameraImp::addCameraBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, false);
+            StatisticRecorder::Instance().addBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, false);
         }
     }
 

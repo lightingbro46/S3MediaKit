@@ -1,8 +1,6 @@
 #ifndef S3MEDIAKIT_TIMERECORDERMANAGER_H_
 #define S3MEDIAKIT_TIMERECORDERMANAGER_H_
 
-#include <unordered_map>
-#include <mutex>
 #include "TimeRecorder.h"
 
 using namespace mediakit;
@@ -25,7 +23,7 @@ public:
     TimeRecorder::Ptr getRecorder(const std::string &device_id);
 
 private:
-    TimeRecorderManager(const toolkit::EventPoller::Ptr &poller = nullptr);
+    TimeRecorderManager();
 
     TimeRecorder::Ptr addRecorder(const std::string &device_id);
 
@@ -34,7 +32,6 @@ private:
 private:
     std::mutex _mutex;
     std::unordered_map<std::string, mediakit::TimeRecorder::Ptr> _recorders;
-    toolkit::EventPoller::Ptr _poller;
 };
 
 } // namespace managerkit

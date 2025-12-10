@@ -15,11 +15,23 @@ struct CameraInfo : public DeviceTuple {
     std::string password;
 };
 
-bool equalCameraInfo(const CameraInfo &a, const CameraInfo &b);
+inline bool equalCameraInfo(const CameraInfo &a, const CameraInfo &b) {
+    #define EQUAL_INFO_PROPERTY(name) if (a.name != b.name) return false;
+    EQUAL_INFO_PROPERTY(ip)
+    EQUAL_INFO_PROPERTY(port)
+    EQUAL_INFO_PROPERTY(username)
+    EQUAL_INFO_PROPERTY(password)
+    EQUAL_INFO_PROPERTY(manufacturer)
+    EQUAL_INFO_PROPERTY(model)
+
+    return true;
+}
 
 class CameraOption {
 public:
-    CameraOption();
+    CameraOption() {
+        // todo: load default value from database
+    }
 
     // whether to disable primary secondary stream
     bool doNotRecordPrimaryStream = false;
@@ -74,7 +86,26 @@ public:
     // Add more options if need
 };
 
-bool equalCameraOption(const CameraOption &a, const CameraOption &b);
+inline bool equalCameraOption(const CameraOption &a, const CameraOption& b) {
+    #define EQUAL_OPTION_PROPERTY(name) if (a.name != b.name) return false;
+    EQUAL_OPTION_PROPERTY(doNotRecordPrimaryStream)
+    EQUAL_OPTION_PROPERTY(doNotRecordSecondaryStream)
+    EQUAL_OPTION_PROPERTY(enableRecord)
+    EQUAL_OPTION_PROPERTY(keepArchivedMinForAuto)
+    EQUAL_OPTION_PROPERTY(keepArchivedMinFor)
+    EQUAL_OPTION_PROPERTY(keepArchivedMaxForAuto)
+    EQUAL_OPTION_PROPERTY(keepArchivedMaxFor)
+    EQUAL_OPTION_PROPERTY(enableActive)
+    EQUAL_OPTION_PROPERTY(mediaPort)
+    EQUAL_OPTION_PROPERTY(autoMediaPort)
+    EQUAL_OPTION_PROPERTY(rtpTransport)
+    EQUAL_OPTION_PROPERTY(recordScheduler)
+    EQUAL_OPTION_PROPERTY(enableFailover)
+    EQUAL_OPTION_PROPERTY(preferedMediaServer)
+    EQUAL_OPTION_PROPERTY(enablePTZControl)
+
+    return true;
+}
 
 /**
  * Data abstraction of generic camera source
@@ -85,15 +116,17 @@ class GenericRtspCamera : public DeviceSource {
 public:
     using Ptr = std::shared_ptr<GenericRtspCamera>;
 
-    GenericRtspCamera(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map) : DeviceSource(CAMERA_SCHEMA, info), _info(std::move(info)), _stream_map(std::move(stream_map)) {}
+    GenericRtspCamera(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map)
+        : DeviceSource(CAMERA_SCHEMA, info), _info(info), _stream_map(stream_map) {}
 
-    const CameraInfo getCameraInfo() const { return _info; }
+    const CameraInfo& getCameraInfo() const { return _info; }
 
-    bool hasStreamTuple(int type) const {
-        return _stream_map.find(type) != _stream_map.end() && !_stream_map.at(type).empty();
+    bool hasStreamTuple(int type) const { 
+        auto it = _stream_map.find(type);
+        return it != _stream_map.end() && !it->second.empty();
     }
- 
-    StreamTuple getStreamTuple(int type) const {
+
+    const StreamTuple& getStreamTuple(int type) const {
         auto it = _stream_map.find(type);
         if (it == _stream_map.end()) {
             throw std::runtime_error("No stream at index " + std::to_string(type));
@@ -101,19 +134,8 @@ public:
         return it->second;
     }
 
-    const CameraOption &getCameraOption() const { return _option; }
-
-    bool setCameraOption(const CameraOption &option) {
-        if (equalCameraOption(_option, option)) {
-            return false;
-        }
-        _option = option; 
-        return true;
-    }
-
-private:
+protected:
     CameraInfo _info;
-    CameraOption _option;
     std::unordered_map<int, StreamTuple> _stream_map;
 };
 

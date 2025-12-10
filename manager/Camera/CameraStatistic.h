@@ -2,9 +2,7 @@
 #define CAMERA_CAMERASTATISTIC_H
 
 #include <mutex>
-#include "Util/TimeTicker.h"
 #include "Local/FileRecorder.h"
-#include "StreamSource.h"
 #include "GenericRtspCamera.h"
 
 namespace managerkit {
@@ -72,43 +70,46 @@ struct CameraStatistic {
     }
 };
 
-class CameraStatisticImp : public CameraStatistic {
+class CameraStatisticImp : private CameraStatistic {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;
 
-    CameraStatisticImp(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map);
+    CameraStatisticImp(const std::string &src_path);
+    
     ~CameraStatisticImp();
 
-    void saveCameraOption(const CameraOption &option);
+    void setOnRemove(const std::function<void(const std::string&)> &cb) { _on_remove = std::move(cb); }
+
+    void setCameraInfo(const CameraInfo &info_);
+
+    void setStreamTuples(const std::unordered_map<int, StreamTuple> &stream_map_);
+
+    void setCameraOption(const CameraOption &option_);
 
     void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
-    
+
     void addBookmarkCount(uint64_t bm_created_at,  size_t size, bool add = true);
 
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
     void addDeviceCapabilities(bool enable_ptz);
-    
-    void remove();
 
+public:
     CameraStatistic getParams();
 
-    static void addCameraArchiveSize(const std::string &camera_id, const std::string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add = true);
-
-    static void addCameraBookmarkCount(const std::string &camera_id, uint64_t created_at, bool add = true);
+    void remove();
 
 private:
-    void setup(const CameraInfo &info_);
+    void setup(const std::string &src_path);
 
     void load();
 
-    void save() ;
-
-    virtual void onSetCameraOption(const CameraOption &option) {}
+    void save();
 
 private:
-    std::recursive_mutex _mtx_stats;
+    std::mutex _mtx;
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
+    std::function<void(const std::string&)> _on_remove;
 };
 
 } // namespace managerkit

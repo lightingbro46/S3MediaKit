@@ -299,42 +299,22 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 
 // ################### CameraStatisticImp ###########################
 
-static bool isStreamChange(unordered_map<int, StreamTuple> &new_stream_map, unordered_map<int, StreamTuple> &saved_stream_map, int stream_type) {
-    if (new_stream_map.find(stream_type) == new_stream_map.end()) {
-        return true;
-    }
-    if (new_stream_map[stream_type].stream_id != saved_stream_map[stream_type].stream_id) {
-        return true;
-    }
-    return false;
-}
-
-CameraStatisticImp::CameraStatisticImp(const CameraInfo &info_, const unordered_map<int, StreamTuple> &stream_map_) {
-    setup(info_);
-    // todo: alway have two stream and record stream update time
-    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, PrimaryStream)) {
-        // Clear statistic if stream type do not exist
-        storage_map[PrimaryStream] = StreamStorageStats();
-        sinfo_map[PrimaryStream] = StreamStatistic();
-    }
-    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, SecondaryStream)) {
-        // Clear statistic if stream type do not exist
-        storage_map[SecondaryStream] = StreamStorageStats();
-        sinfo_map[SecondaryStream] = StreamStatistic();
-    }
-    info = info_;
-    stream_map = stream_map_;
+CameraStatisticImp::CameraStatisticImp(const std::string &src_path) {
+    CHECK(!src_path.empty(), "Source path cannot be empty");
+    setup(src_path);
 }
 
 CameraStatisticImp::~CameraStatisticImp() {}
 
-void CameraStatisticImp::setup(const CameraInfo &info_) {
-    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
-    GET_CONFIG(string, app_name, Record::kAppName)
-    auto record_path = File::absolutePath(app_name, mp4_save_path);
-    auto file_path = record_path + "/" + info_.device_id + "/info.txt";
+void CameraStatisticImp::setup(const string &src_path) {
+    auto file_path = src_path;
+    if (!end_with(file_path, "/info.txt")) {
+        file_path += "/info.txt";
+    }
     _file = std::make_shared<FileRecorder<CameraStatistic, CameraStatisticHelper>>(file_path);
-    _file->empty() ? save() : load();
+    if (!_file->empty()) {
+        load();
+    }
 }
 
 void CameraStatisticImp::load() {
@@ -360,14 +340,47 @@ void CameraStatisticImp::save() {
     _file->save(static_cast<const CameraStatistic &>(*this));
 }
 
-void CameraStatisticImp::saveCameraOption(const CameraOption &option_) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+void CameraStatisticImp::setCameraInfo(const CameraInfo &info_) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    info = info_;
+    save();
+}
+
+static bool isStreamChange(unordered_map<int, StreamTuple> &new_stream_map, unordered_map<int, StreamTuple> &saved_stream_map, int stream_type) {
+    if (new_stream_map.find(stream_type) == new_stream_map.end()) {
+        return true;
+    }
+    if (new_stream_map[stream_type].stream_id != saved_stream_map[stream_type].stream_id) {
+        return true;
+    }
+    return false;
+}
+
+void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTuple> &stream_map_) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    // todo: alway have two stream and record stream update time
+    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, PrimaryStream)) {
+        // Clear statistic if stream type do not exist
+        storage_map[PrimaryStream] = StreamStorageStats();
+        sinfo_map[PrimaryStream] = StreamStatistic();
+    }
+    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, SecondaryStream)) {
+        // Clear statistic if stream type do not exist
+        storage_map[SecondaryStream] = StreamStorageStats();
+        sinfo_map[SecondaryStream] = StreamStatistic();
+    }
+    stream_map = stream_map_;
+    save();
+}
+
+void CameraStatisticImp::setCameraOption(const CameraOption &option_) {
+    std::lock_guard<std::mutex> lck(_mtx);
     option = option_;
     save();
 }
 
 void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    std::lock_guard<std::mutex> lck(_mtx);
     // Do not process time blocks with an end time earlier than the info file creation time, so that old media data does not need to be re-aggregated
     if (archived_end_time <= created_at) {
         DebugL << "Time block has end time (" << archived_end_time << ") less than or equal created_at of file ("<< created_at <<"). Ignore" ;
@@ -417,7 +430,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
 }
 
 void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, bool add) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    std::lock_guard<std::mutex> lck(_mtx);
     // Do not process bookmark with an creation time earlier than the info file creation time, so that old media data does not need to be re-aggregated
     if (bm_created_at <= created_at) {
         DebugL << "Bookmark has creation time (" << bm_created_at << ") less than or equal created_at of file ("<< created_at <<"). Ignore" ;
@@ -443,44 +456,12 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
 }
 
 CameraStatistic CameraStatisticImp::getParams() {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    std::lock_guard<std::mutex> lck(_mtx);
     return static_cast<const CameraStatistic &>(*this);
 }
 
-void CameraStatisticImp::addCameraArchiveSize(const string &camera_id, const string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add) {
-    DeviceTuple tuple;
-    tuple.vhost = DEFAULT_VHOST;
-    tuple.device_id = camera_id;
-
-    auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
-    if (ret) {
-        auto ptr = std::dynamic_pointer_cast<CameraStatisticImp>(ret);
-        if (ptr) {
-            ptr->addArchiveSize(stream_id, count, size, archive_start_time, archive_end_time, add);
-            return;
-        }
-    }
-    WarnL << "Device not found: " << tuple.shortUrl();
-}
-
-void CameraStatisticImp::addCameraBookmarkCount(const std::string &camera_id, uint64_t created_at, bool add) {
-    DeviceTuple tuple;
-    tuple.vhost = DEFAULT_VHOST;
-    tuple.device_id = camera_id;
-
-    auto ret = DeviceSource::find(CAMERA_SCHEMA, tuple.vhost, tuple.device_id);
-    if (ret) {
-        auto ptr = std::dynamic_pointer_cast<CameraStatisticImp>(ret);
-        if (ptr) {
-            ptr->addBookmarkCount(created_at, 0, add);
-            return;
-        }
-    }
-    WarnL << "Device not found: " << tuple.shortUrl();
-}
-
 void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string status, const TranslationInfo *info_) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    std::lock_guard<std::mutex> lck(_mtx);
     if (sinfo_map.find(stream_type) != sinfo_map.end()) {
         auto &sinfo = sinfo_map[stream_type];
         if (!sinfo.last_change_status || sinfo.live != live) {
@@ -519,15 +500,22 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
 }
 
 void CameraStatisticImp::remove() {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
-    if (_file) {
-        _file->remove();
-        DebugL << "Removed file recorder success: " << info.shortUrl();
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        if (_file) {
+            _file->remove();
+            DebugL << "Removed file recorder success: " << info.shortUrl();
+            removed = true;
+        }
+    }
+    if (_on_remove && removed) {
+        _on_remove(info.device_id);
     }
 }
 
 void CameraStatisticImp::addDeviceCapabilities(bool enable_ptz) {
-    std::lock_guard<std::recursive_mutex> lck(_mtx_stats);
+    std::lock_guard<std::mutex> lck(_mtx);
     device_caps.ptzCapabilities = enable_ptz;
     DebugL << "Device " << info.shortUrl() << " capabilities: PTZ=" << device_caps.ptzCapabilities;
 }

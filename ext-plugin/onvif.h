@@ -76,6 +76,8 @@ public:
 
     bool initControl() override;
 
+    const std::string& getDeviceIp() const { return _strDeviceIp; }
+
     /**
      * Get onvif device info
      */

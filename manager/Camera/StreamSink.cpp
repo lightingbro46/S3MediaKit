@@ -6,24 +6,40 @@ using namespace mediakit;
 
 namespace managerkit {
     
-StreamSink::StreamSink() {
-    _timer_sink = std::make_shared<Timer>(
-        60.0f,
-        [&]() {
-            onManager();
-            return true;
-        },
-        nullptr);
-}
+StreamSink::StreamSink(const toolkit::EventPoller::Ptr &poller) : _poller(poller) {}
 
 StreamSink::~StreamSink() {
+    lock_guard<mutex> lck(_mtx_sink);
     _timer_sink.reset();
+    _monitor_map.clear();
 }
 
-void StreamSink::setupMonitor(int type, const StreamTuple &tuple, bool start_record, int rtp_type, int media_port) {
-    bool need_recreate = false;
+void StreamSink::start() {
+    weak_ptr<StreamSink> weak_self = shared_from_this();
+    _timer_sink = std::make_shared<Timer>(
+        60.0f,
+        [weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return false;
+            }
+            strong_self->onManager();
+            return true;
+        },
+        _poller);
+}
+
+void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option) {
+    bool start_record = option.enableRecord;
+    if ((type == PrimaryStream && option.doNotRecordPrimaryStream) || (type == SecondaryStream && option.doNotRecordSecondaryStream)) {
+        start_record = false;
+    }
+    int rtp_type = option.rtpTransport == option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
+    int media_port = option.autoMediaPort ? 0 :  option.mediaPort;
+
+    StreamSource::Ptr monitor;
     {
-        lock_guard<recursive_mutex> lck(_mtx_sink);
+        lock_guard<mutex> lck(_mtx_sink);
         auto it = _monitor_map.find(type);
         if (it != _monitor_map.end()) {
             if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
@@ -32,78 +48,53 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, bool start_rec
             }
             _monitor_map.erase(type);
         }
-        need_recreate = true;
+
+        monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port);
+        _monitor_map.emplace(type, monitor);
     }
     
-    if (need_recreate) {
-        // Create and configure monitor outside lock to avoid blocking other operations
-        auto monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port);
-        monitor->setOnStreamChange([type, this]() { 
-            onStreamChange(type);
-        });
-        monitor->start();
-        
-        // Only update map under lock
-        {
-            lock_guard<recursive_mutex> lck(_mtx_sink);
-            _monitor_map[type] = monitor;
+    weak_ptr<StreamSink> weak_self = shared_from_this();
+    monitor->setOnStreamUpdate([type, weak_self](bool live, const std::string &status, const mediakit::TranslationInfo *info) {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
         }
-    }
+        if (strong_self->_on_stream_update) {
+            strong_self->_on_stream_update(type, live, status, info);
+        }
+    });
+    monitor->start();
 }
 
 void StreamSink::stopMonitor(int type) {
-    lock_guard<recursive_mutex> lck(_mtx_sink);
+    lock_guard<mutex> lck(_mtx_sink);
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
         _monitor_map.erase(type);
     }
 }
 
-bool StreamSink::isStreamLive(int type) {
-    lock_guard<recursive_mutex> lck(_mtx_sink);
-    bool live = false;
-    auto it = _monitor_map.find(type);
-    if (it != _monitor_map.end()) {
-        live = it->second->isLive();
-    }
-    return live;
-}
-
-string StreamSink::getStreamStatus(int type) {
-    lock_guard<recursive_mutex> lck(_mtx_sink);
-    string status = "no-monitor";
-    auto it = _monitor_map.find(type);
-    if (it != _monitor_map.end()) {
-        status = it->second->getStatus();
-    }
-    return status;
-}
-
-TranslationInfo StreamSink::getStreamInfo(int type) {
-    lock_guard<recursive_mutex> lck(_mtx_sink);
-    TranslationInfo info;
-    auto it = _monitor_map.find(type);
-    if (it != _monitor_map.end()) {
-        info = it->second->getTranslationInfo();
-    }
-    return info;
-}
-
 void StreamSink::onManager() {
-    //todo:
-    vector<int> live_streams;
+    unordered_map<int, StreamSource::Ptr> monitor_list;
     {
-        lock_guard<recursive_mutex> lck(_mtx_sink);
+        lock_guard<mutex> lck(_mtx_sink);
         for (const auto &it : _monitor_map) {
             if (it.second->isLive()) {
-                live_streams.push_back(it.first);
+                monitor_list.emplace(it.first, it.second);
             }
         }
     }
     
-    // Call virtual method outside lock to prevent deadlock
-    for (int stream_type : live_streams) {
-        onStreamChange(stream_type);
+    for (const auto &it : monitor_list) {
+        auto type = it.first;
+        auto monitor = it.second;
+        // update stream statistic if stream is live, because only live stream has valid translation info
+        if (_on_stream_update) {
+            auto live = monitor->isLive();
+            auto status = monitor->getStatus();
+            auto info = monitor->getTranslationInfo();
+            _on_stream_update(type, live, status, &info);
+        }
     }
 }
 

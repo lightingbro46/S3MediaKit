@@ -16,6 +16,7 @@
 #include "Extension/Benchmark.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
+#include "Local/StatisticRecorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -86,7 +87,7 @@ void installManagerHook () {
 
         auto ret = TimeRecorderManager::Instance().addBlock(block);
         if (ret) {
-            GenericRtspCameraImp::addCameraArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
+            StatisticRecorder::Instance().addArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
         }
     });
 
@@ -158,10 +159,9 @@ void installManagerHook () {
 
 static void releaseAllDevice() {
     // release all camera
-    CameraManager::Instance().release();
+    CameraManager::Instance().clear();
     // sleep for 3 second before uninstall hook, to prevent resource release order errors
     sleep(3);
-    CameraManager::Instance().clear();
 }
 
 void unInstallManagerHook() {
@@ -360,6 +360,7 @@ static Json::Value exampleJson() {
     device["keep_archived_max_for_auto"] = false;
     device["keep_archived_max_for"] = 10 * 60;
     device["rtp_transport"] = 0;
+    device["pri_media_server"] = mINI::Instance()[General::kMediaServerId];
     device["streams"] = Json::arrayValue;
     // Json::Value channel_1;
     // channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
@@ -448,9 +449,8 @@ static Json::Value makeMediaSourceJson(MediaSource &media) {
     return item;
 }
 
-static Json::Value makeStreamStatisticJson(GenericRtspCameraImp::Ptr &camera, int type) {
-    auto tuple = camera->getStreamTuple(type);
-    auto params = camera->getParams();
+static Json::Value makeStreamStatisticJson(CameraStatistic &params, int type) {
+    auto tuple = params.stream_map[type];
     auto info = params.sinfo_map[type];
     Json::Value item;
     // todo: change new format with more information
@@ -470,23 +470,26 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
         auto camera = dynamic_pointer_cast<GenericRtspCameraImp>(device);
         if (camera) {
-            auto tuple = camera->getCameraInfo();
-            auto option = camera->getCameraOption();
-            if (option.enableFailover && !camera->isEnabled()) {
-                // this camera run in failover mode and actual camera connection run on prefered media server
-                return;
+            auto stats_imp = camera->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                auto option = params.option;
+                if (option.enableFailover && !camera->isEnabled()) {
+                    // this camera run in failover mode and actual camera connection run on prefered media server
+                    return;
+                }
+                Json::Value item;
+                item["cameraId"] = params.info.device_id;
+                item["isPtz"] = params.device_caps.ptzCapabilities;
+                item["channels"] = Json::arrayValue;
+                if (camera->hasStreamTuple(PrimaryStream)) {
+                    item["channels"].append(makeStreamStatisticJson(params, PrimaryStream));
+                }
+                if (camera->hasStreamTuple(SecondaryStream)) {
+                    item["channels"].append(makeStreamStatisticJson(params, SecondaryStream));
+                }
+                data.append(item);
             }
-            Json::Value item;
-            item["cameraId"] = tuple.device_id;
-            item["isPtz"] = camera->enablePTZ();
-            item["channels"] = Json::arrayValue;
-            if (camera->hasStreamTuple(PrimaryStream)) {
-                item["channels"].append(makeStreamStatisticJson(camera, PrimaryStream));
-            }
-            if (camera->hasStreamTuple(SecondaryStream)) {
-                item["channels"].append(makeStreamStatisticJson(camera, SecondaryStream));
-            }
-            data.append(item);
         }
     });
     TraceL << "Server statistic report: " << data.toStyledString();
@@ -549,34 +552,37 @@ static DeviceStorageStatistic makeDeviceStorageJson(const DeviceSource::Ptr& dev
     DeviceStorageStatistic storage;
     auto ptr = std::dynamic_pointer_cast<GenericRtspCameraImp>(device);
     if (ptr) {
-        auto stats = ptr->getParams();
-        storage.name = stats.info.name;
-        int bytes_speed = 0;
-        int desired_bytes_speed = 0;
-        for (const auto &it : stats.sinfo_map) {
-            if (it.second.live) {
-                bytes_speed += it.second.byte_speed;
+        auto stats_imp = ptr->getCameraStatisticImp();
+        if (stats_imp) {
+            auto stats = stats_imp->getParams();
+            storage.name = stats.info.name;
+            int bytes_speed = 0;
+            int desired_bytes_speed = 0;
+            for (const auto &it : stats.sinfo_map) {
+                if (it.second.live) {
+                    bytes_speed += it.second.byte_speed;
+                }
+                desired_bytes_speed += it.second.byte_speed;
             }
-            desired_bytes_speed += it.second.byte_speed;
-        }
-        storage.bytesSpeed = bytes_speed;
-        storage.desiredBytesSpeed = desired_bytes_speed;
-        uint64_t oldest_time_block = 0;
-        uint64_t used_storage = 0;
-        for (const auto &it : stats.storage_map) {
-            if (oldest_time_block == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < oldest_time_block)) {
-                oldest_time_block = it.second.archiveStartTime;
+            storage.bytesSpeed = bytes_speed;
+            storage.desiredBytesSpeed = desired_bytes_speed;
+            uint64_t oldest_time_block = 0;
+            uint64_t used_storage = 0;
+            for (const auto &it : stats.storage_map) {
+                if (oldest_time_block == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < oldest_time_block)) {
+                    oldest_time_block = it.second.archiveStartTime;
+                }
+                used_storage += it.second.archiveSizeB;
             }
-            used_storage += it.second.archiveSizeB;
+            storage.oldestTimeBlock = oldest_time_block;
+            uint64_t desired_time_block = oldest_time_block;
+            if (!stats.option.keepArchivedMaxForAuto) {
+                desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
+            }
+            storage.desiredTimeBlock = desired_time_block;
+            storage.usedStorage = used_storage;
+            storage.isFailover = stats.option.enableFailover;
         }
-        storage.oldestTimeBlock = oldest_time_block;
-        uint64_t desired_time_block = oldest_time_block;
-        if (!stats.option.keepArchivedMaxForAuto) {
-            desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
-        }
-        storage.desiredTimeBlock = desired_time_block;
-        storage.usedStorage = used_storage;
-        storage.isFailover = stats.option.enableFailover;
     }
 
     return storage;
@@ -743,4 +749,22 @@ int estimateMaxAvailableDevice() {
     ini.dumpFile(g_ini_file);
 
     return maxAvailableDevice;
+}
+
+void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
+    online = 0;
+    offline = 0;
+    for (const auto &device : data) {
+        bool is_online = false;
+        for (const auto &stream : device["channels"]) {
+            if (stream["status"].asInt() == 1) {
+                is_online = true;
+            }
+        }
+        if (is_online) {
+            online++;
+        } else {
+            offline++;
+        }
+    }
 }

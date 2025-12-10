@@ -58,4 +58,6 @@ Json::Value makeStorageStatisticJson();
 
 int estimateMaxAvailableDevice();
 
+void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
+
 #endif // S3MANAGERKIT_MANAGER_H

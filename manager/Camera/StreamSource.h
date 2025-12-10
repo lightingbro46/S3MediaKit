@@ -24,7 +24,7 @@ struct StreamTuple : public DeviceTuple {
     }
 
     bool empty() const {
-        return stream_id.empty() && full_url.empty();
+        return stream_id.empty() || full_url.empty();
     }
 };
 
@@ -33,6 +33,7 @@ bool equalStreamTuple(const StreamTuple &a, const StreamTuple &b);
 class StreamSource : public std::enable_shared_from_this<StreamSource> {
 public:
     using Ptr = std::shared_ptr<StreamSource>;
+    using OnStreamUpdate = std::function<void(bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
 
     StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0, float timeout_sec = 0.0f);
 
@@ -46,9 +47,7 @@ public:
 
     int getMediaPort() { return _media_port; }
 
-    void setOnStreamReady(const std::function<void()> &cb) { _on_ready = std::move(cb); };
-
-    void setOnStreamChange(const std::function<void()> &cb) { _on_change = std::move(cb); };
+    void setOnStreamUpdate(const OnStreamUpdate &cb) { _on_update = std::move(cb); };
 
     bool isLive() { return _live.load(); }
 
@@ -71,8 +70,7 @@ private:
     std::atomic_bool _live {false};
     std::string _status;
     mediakit::TranslationInfo _info;
-    std::function<void()> _on_ready;
-    std::function<void()> _on_change;
+    OnStreamUpdate _on_update;
     std::weak_ptr<mediakit::PlayerProxy> _player;
 };
 

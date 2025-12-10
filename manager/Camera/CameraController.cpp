@@ -1,27 +1,43 @@
 #include "CameraController.h"
 #include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace managerkit {
 
-CameraController::CameraController(const CameraInfo &info) : _info(info) {}
+CameraController::CameraController(const toolkit::EventPoller::Ptr &poller) : _poller(poller) {}
 
 CameraController::~CameraController() {
-    _timer_ctr.reset();
+    stopController();
 }
 
-bool CameraController::isControlReady() {
-    lock_guard<recursive_mutex> lck(_mtx_control);
-    return _controller_ready; 
+void CameraController::start() {
+    weak_ptr<CameraController> weak_self = shared_from_this();
+    _timer_ctr = std::make_shared<Timer>(
+        10.0f,
+        [weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return false;
+            }
+            strong_self->onManager();
+            return true;
+        },
+        _poller
+    );
 }
 
-void CameraController::setupController(const CameraOption &option) {
-    lock_guard<recursive_mutex> lck(_mtx_control);
+bool CameraController::isControlReady() const {
+    return _ready.load(); 
+}
+
+void CameraController::setupController(const CameraInfo &info, const CameraOption &option) {
+    lock_guard<mutex> lck(_mtx_ctr);
     if (_controller) {
-        DebugL << "Controller already exists: " << _info.shortUrl();
+        DebugL << "Controller already exists: " << info.shortUrl();
         return;
     }
 
@@ -30,68 +46,70 @@ void CameraController::setupController(const CameraOption &option) {
     //     return;
     // }
 
-    if (_info.ip.empty() || _info.port == 0) {
+    if (info.ip.empty() || info.port == 0) {
         return;
     }
 
-    string address = _info.ip;
-    if (_info.port > 0) {
-        address += ":" + to_string(_info.port);
+    string address = info.ip;
+    if (info.port > 0) {
+        address += ":" + to_string(info.port);
     }
-    // todo: create plugin from manufactor and model
-    _controller = std::make_shared<OnvifController>(address, _info.username, _info.password);
 
-    _timer_ctr = std::make_shared<Timer>(
-        10.0f,
-        [&]() {
-            onManager();
-            return true;
-        },
-        nullptr
-    );
+    // todo: create plugin from manufactor and model
+    _controller = std::make_shared<OnvifController>(address, info.username, info.password);
+    DebugL << "Created Onvif controller for device: " << info.shortUrl();
 }
 
 void CameraController::stopController() {  
-    lock_guard<recursive_mutex> lck(_mtx_control);
-    _controller_ready = false;
+    lock_guard<mutex> lck(_mtx_ctr);
+    _ready = false;
     _controller.reset();
     _timer_ctr.reset();
 }
 
 void CameraController::onManager() {
-    bool should_call_ready = false;
+    bool call_on_ready = false;
     {
-        lock_guard<recursive_mutex> lck(_mtx_control);
+        lock_guard<mutex> lck(_mtx_ctr);
         if (!_controller) {
-            WarnL << "Controller does not exist: " << _info.shortUrl();
             return;
         }
 
-        if (!_controller_ready && time(nullptr) - _last_reconnect_time > 60) {
-            // reconnect to get profile
-            if (_controller->initControl()) {
-                _controller_ready = true;
-                InfoL << "Onvif controller " << _info.shortUrl() << " connected";
-                should_call_ready = true;
-            } else {
-                WarnL << "Onvif controller " << _info.shortUrl() << " connect failed";
+        if (!_ready && time(nullptr) - _last_reconnect_time >= 60) {
+            auto ptr = dynamic_pointer_cast<OnvifController>(_controller);
+            if (ptr) {
+                // reconnect to device
+                if (ptr->initControl()) {
+                    _ready = true;
+                    InfoL << "Onvif controller " << ptr->getDeviceIp() << " connected";
+                    call_on_ready = true;
+                } else {
+                    WarnL << "Onvif controller " << ptr->getDeviceIp() << " connect failed: " << ptr->getSoapErrMsg();
+                }
             }
-            _last_reconnect_time = time(nullptr);   
+            _last_reconnect_time = time(nullptr);
         }
     }
     
-    // Call virtual method outside lock to prevent deadlock
-    if (should_call_ready) {
-        onControllerReady();
+    if (!_ready) {
+        return;
     }
 
-    // Additional operations can be added here if controller is ready
-    //todo: get media profile
-    //todo: set media profile if need
+    // Call virtual method outside lock to prevent deadlock
+    if (call_on_ready && _on_ready) {
+        auto enable_ptz = enablePTZ();
+        _on_ready(enable_ptz);
+    }
+
+    // WorkThreadPool::Instance().getPoller()->async([this]() {
+    //     // Additional operations can be added here if controller is ready
+    //     //todo: get media profile
+    //     //todo: set media profile if need
+    //     return 0;
+    // });
 }
 
 static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
-    //todo: only one session to control ptz
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device do not support PTZ"));
         return;
@@ -201,8 +219,15 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
 
 bool CameraController::enablePTZ() {
     bool enable_ptz = false;
-    if (_controller && _controller_ready) {
-        auto ptr = dynamic_pointer_cast<OnvifController>(_controller);
+
+    DeviceController::Ptr controller;
+    {
+        lock_guard<mutex> lck(_mtx_ctr);
+        controller = _controller;
+    }
+
+    if (controller && _ready) {
+        auto ptr = dynamic_pointer_cast<OnvifController>(controller);
         if (ptr) {
             enable_ptz = ptr->enablePTZ();
         }
@@ -230,8 +255,14 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
         direct = PTZ_DIRECT::Home;
 
     // find controller
-    if (_controller && _controller_ready) {
-        auto ptr = dynamic_pointer_cast<OnvifController>(_controller);
+    DeviceController::Ptr controller;
+    {
+        lock_guard<mutex> lck(_mtx_ctr);
+        controller = _controller;
+    }
+
+    if (controller && _ready) {
+        auto ptr = dynamic_pointer_cast<OnvifController>(controller);
         if (ptr) {
             onvifPTZMove(ptr, direct, speed, cb);
             return;
@@ -239,7 +270,7 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
         // todo: add more ptz function from manufacturer sdk
     }
 
-    return cb(SockException(Err_other, "Device do not support PTZ"));
+    return cb(SockException(Err_other, "Device controller is not ready"));
 }
 
 void CameraController::getMediaProfile() {

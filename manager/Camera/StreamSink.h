@@ -1,37 +1,40 @@
 #ifndef CAMERA_STREAMSINK_H
 #define CAMERA_STREAMSINK_H
 
+#include "GenericRtspCamera.h"
 #include "StreamSource.h"
+#include "Local/RecordStrategy.h"
 
 namespace managerkit {
 
-class StreamSink {
+class StreamSink : public std::enable_shared_from_this<StreamSink> {
 public:
     using Ptr = std::shared_ptr<StreamSink>;
-
-    StreamSink();
+    using OnStreamUpdate = std::function<void(int type, bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
+    
+    StreamSink(const toolkit::EventPoller::Ptr &poller);
 
     ~StreamSink();
 
-    bool isStreamLive(int type);
+    void start();
 
-    std::string getStreamStatus(int type);
+    void setOnStreamUpdate(const OnStreamUpdate &cb) {
+        _on_stream_update = std::move(cb);
+    }
 
-    mediakit::TranslationInfo getStreamInfo(int type);
-
-    void setupMonitor(int type, const StreamTuple &tuple, bool start_record, int rtp_type, int media_port);
+    void setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option);
 
     void stopMonitor(int type);
 
 private:
-    virtual void onStreamChange(int type) = 0;
-
     void onManager();
 
 private:
-    std::recursive_mutex _mtx_sink;
+    std::mutex _mtx_sink;
+    toolkit::EventPoller::Ptr _poller;
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
     toolkit::Timer::Ptr _timer_sink;
+    OnStreamUpdate _on_stream_update;
 };
 
 } // namespace managerkit

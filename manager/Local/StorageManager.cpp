@@ -7,7 +7,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "TimeRecorderManager.h"
 #include "TimeRebuilder.h"
-#include "Common/DeviceSource.h"
+#include "Camera/GenericRtspCameraImp.h"
 #include "Server/GlobalMonitor.h"
 #include "StorageManager.h"
 #include "server/Manager.h"

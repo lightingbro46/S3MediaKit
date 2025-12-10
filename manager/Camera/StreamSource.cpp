@@ -93,8 +93,8 @@ void StreamSource::createPlayer() {
             strong_self->_info = info;
             TraceL << "setOnConnect: live=" << strong_self->_live << " status=" << strong_self->_status;
             
-            if (strong_self->_on_change) {
-                strong_self->_on_change();
+            if (strong_self->_on_update) {
+                strong_self->_on_update(strong_self->_live, strong_self->_status, &strong_self->_info);
             }
         });
 
@@ -109,8 +109,8 @@ void StreamSource::createPlayer() {
             }
             TraceL << "setOnDisconnect: live=" << strong_self->_live << " status=" << strong_self->_status;
 
-            if (strong_self->_on_change) {
-                strong_self->_on_change();
+            if (strong_self->_on_update) {
+                strong_self->_on_update(strong_self->_live, strong_self->_status, nullptr);
             }
         });
 
@@ -123,17 +123,14 @@ void StreamSource::createPlayer() {
             strong_self->_status = ex.what();
             TraceL << "setOnClose: live=" << strong_self->_live << " status=" << strong_self->_status;
             
-            if (strong_self->_on_change) {
-                strong_self->_on_change();
+            if (strong_self->_on_update) {
+                strong_self->_on_update(strong_self->_live, strong_self->_status, nullptr);
             }
         });
 
         player->play(strong_self->_tuple.full_url);
         strong_self->_player = player;
-        DebugL << "Create stream player proxy: " << strong_self->_tuple.shortUrl();
-        if (strong_self->_on_ready) {
-            strong_self->_on_ready();
-        }
+        DebugL << "Created stream player proxy: " << strong_self->_tuple.shortUrl();
     };
 
     addStreamProxy(tuple, option, setup_player);
