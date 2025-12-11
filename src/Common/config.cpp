@@ -61,6 +61,8 @@ const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
 const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
+const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
+
 } // namespace Broadcast
 
 // General Configuration Items

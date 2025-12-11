@@ -326,7 +326,7 @@ static void reportServerStarted() {
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_started_timer = std::make_shared<Timer>(alive_interval,[]() {
-        if (s_report_started) {
+        if (s_report_started.load()) {
             return false;
         }
         ArgsType body;
@@ -410,6 +410,8 @@ static void reportServerKeepalive() {
 
 // Server report statistics
 static Timer::Ptr g_report_timer;
+static atomic<bool> s_report_config_loaded { false };
+static atomic<uint64_t> s_last_report_time { 0 };
 static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -422,12 +424,23 @@ static void reportServerStatistic() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
-        if (!s_report_started) {
+        if (!s_report_started.load()) {
             // If the start API has not been completed, do not call the API to get the configuration in delay task. 
             // Waiting for timer to call API to get the configuration
             WarnL << "Server has not reported started, skip report server statistic";
             return true;
         }
+
+        auto now = time(nullptr);
+        auto last_time = s_last_report_time.load();
+        if (s_report_config_loaded.load() && now - last_time < report_interval) {
+            TraceL << "Report server statistic skipped, last report time:" << getTimeStr("%Y-%m-%d %H:%M:%S", last_time) << ", now:" << getTimeStr("%Y-%m-%d %H:%M:%S", now);
+            return true;
+        }
+
+        s_last_report_time = now;
+        s_report_config_loaded = true;
+
         ArgsType body;
         do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
@@ -442,7 +455,7 @@ static void reportServerStatistic() {
                     getServerStatisticJson([](const Value &data) {
                         int online_count = 0, offline_count = 0;
                         countDeviceStatusJson(data, online_count, offline_count);
-                        DebugL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
+                        InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
 
                         ArgsType body;
                         body["data"] = data;
@@ -471,12 +484,7 @@ static void reportServerStatistic() {
         return true;
     };
 
-    g_report_timer = std::make_shared<Timer>(report_interval, report_callback, nullptr);
-
-    EventPollerPool::Instance().getPoller()->doDelayTask(10000, [report_callback]() {
-        report_callback();
-        return 0;
-    });
+    g_report_timer = std::make_shared<Timer>(10.0f, report_callback, nullptr);
 }
 
 // Server report usage
@@ -1075,11 +1083,17 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    // Listen to reload api config event
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastReloadApiConfig, [](BroadcastReloadApiConfigArgs) {
+        DebugL << "Reset report config loaded flag on reload api config event";
+        s_report_config_loaded = false;
+    });
+
     // Report server restart
     reportServerStarted();
 
     // Report keep-alive regularly
-    reportServerKeepalive();
+    // reportServerKeepalive();
 
     // Report server statistics
     reportServerStatistic();

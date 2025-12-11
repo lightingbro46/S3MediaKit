@@ -3249,6 +3249,28 @@ void installWebApi() {
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, onRes);
     });
+
+    api_regist("/media/mserver/healthcheck", [](API_ARGS_MAP) {
+        Value data;
+        data["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
+        val["data"] = data;
+    });
+
+    api_regist("/media/mserver/incur", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("mediaServerId");
+
+        string id = allArgs["mediaServerId"];
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (id != mediaServerId) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Not found";
+            invoker(404, headerOut, val.toStyledString());
+            return;
+        }
+
+        NOTICE_EMIT(BroadcastReloadApiConfigArgs, Broadcast::kBroadcastReloadApiConfig);
+        invoker(200, headerOut, val.toStyledString());
+    });
 }
 
 void unInstallWebApi(){

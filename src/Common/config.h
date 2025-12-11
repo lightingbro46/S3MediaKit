@@ -144,6 +144,9 @@ extern const std::string kBroadcastDeviceChanged;
 extern const std::string kBroadcastDeviceAccess;
 #define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const Broadcast::AuthInvoker &invoker
 
+extern const std::string kBroadcastReloadApiConfig;
+#define BroadcastReloadApiConfigArgs void
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
