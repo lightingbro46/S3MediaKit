@@ -221,50 +221,50 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     string prefered_media_server = data["pri_media_server"].asString();
     bool enable_ptz_control = data["enable_ptz_control"].asBool();
 
-    option.enableActive = enable_camera;
-    option.enableRecord = enable_recording;
-    option.recordScheduler = record_scheduler;
-    option.doNotRecordPrimaryStream = do_not_record_primary_stream;
-    option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
-    option.keepArchivedMinForAuto = keep_archived_min_for_auto;
-    option.keepArchivedMinFor = keep_archived_min_for;
-    option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
-    option.keepArchivedMaxFor = keep_archived_max_for;
-    option.mediaPort = media_port;
-    option.autoMediaPort = media_port_auto;
-    option.rtpTransport = rtp_transport;
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    option.enableFailover = prefered_media_server != mediaServerId;
-    option.preferedMediaServer = prefered_media_server;
-    option.enablePTZControl = enable_ptz_control;
-    // bool enable_recording_ = false;
-    // uint64_t retention_ = 0;
-    // for (const auto &stream : data["streams"]) {
-    //     if (stream["is_storing"].asBool()) {
-    //         enable_recording_ = true;
-    //     }
-    //     uint64_t stream_retention = stream["retention_time"].isNull() ? 0 : static_cast<uint64_t>(stream["retention_time"].asFloat());
-    //     auto retention = stream_retention * 3600;
-    //     if (retention_ == 0 || retention < retention_) {
-    //         retention_ = retention;
-    //     }
-    // }
     // option.enableActive = enable_camera;
-    // option.enableRecord = enable_recording_;
-    // option.recordScheduler = "";
-    // option.doNotRecordPrimaryStream = false;
-    // option.doNotRecordSecondaryStream = false;
-    // option.keepArchivedMinForAuto = true;
-    // option.keepArchivedMinFor = 0;
-    // option.keepArchivedMaxForAuto = false;
-    // option.keepArchivedMaxFor = retention_;
-    // option.mediaPort = 0;
-    // option.autoMediaPort = false;
-    // option.rtpTransport = 0;
+    // option.enableRecord = enable_recording;
+    // option.recordScheduler = record_scheduler;
+    // option.doNotRecordPrimaryStream = do_not_record_primary_stream;
+    // option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
+    // option.keepArchivedMinForAuto = keep_archived_min_for_auto;
+    // option.keepArchivedMinFor = keep_archived_min_for;
+    // option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
+    // option.keepArchivedMaxFor = keep_archived_max_for;
+    // option.mediaPort = media_port;
+    // option.autoMediaPort = media_port_auto;
+    // option.rtpTransport = rtp_transport;
     // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     // option.enableFailover = prefered_media_server != mediaServerId;
     // option.preferedMediaServer = prefered_media_server;
-    // option.enablePTZControl = true;
+    // option.enablePTZControl = enable_ptz_control;
+    bool enable_recording_ = false;
+    uint64_t retention_ = 0;
+    for (const auto &stream : data["streams"]) {
+        if (stream["is_storing"].asBool()) {
+            enable_recording_ = true;
+        }
+        uint64_t stream_retention = stream["retention_time"].isNull() ? 0 : static_cast<uint64_t>(stream["retention_time"].asFloat());
+        auto retention = stream_retention * 3600;
+        if (retention_ == 0 || retention < retention_) {
+            retention_ = retention;
+        }
+    }
+    option.enableActive = enable_camera;
+    option.enableRecord = enable_recording_;
+    option.recordScheduler = "";
+    option.doNotRecordPrimaryStream = false;
+    option.doNotRecordSecondaryStream = false;
+    option.keepArchivedMinForAuto = true;
+    option.keepArchivedMinFor = 0;
+    option.keepArchivedMaxForAuto = false;
+    option.keepArchivedMaxFor = retention_;
+    option.mediaPort = 0;
+    option.autoMediaPort = false;
+    option.rtpTransport = 0;
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    option.enableFailover = prefered_media_server != mediaServerId;
+    option.preferedMediaServer = prefered_media_server;
+    option.enablePTZControl = true;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -378,6 +378,7 @@ static Json::Value exampleJson() {
 void loadServerConfigJson(const Json::Value &data) {
     // auto data = exampleJson();
     TraceL << "Server configuration loaded: " << data.toStyledString();
+    Ticker _ticker;
 
     if (data.isMember("mediaServer")) {
         loadServerConfigFromJson(data["mediaServer"]);
@@ -412,6 +413,7 @@ void loadServerConfigJson(const Json::Value &data) {
             CameraManager::Instance().delCamera(key);
         }
     }
+    DebugL << "Server configuration loaded completed, took " << _ticker.elapsedTime() << " ms";
 }
 
 static Json::Value makeMediaSourceJson(MediaSource &media) {
