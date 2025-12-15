@@ -104,6 +104,7 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
                 return true;
             }
             WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
+            File::delete_file(saved_path, true);
         }
         return true;
     });
