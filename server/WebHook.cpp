@@ -337,37 +337,35 @@ static void reportServerStarted() {
         }
         s_last_report_started_time = now;
 
-        WorkThreadPool::Instance().getExecutor()->async([]() {
-            ArgsType body;
+        ArgsType body;
 #if 0    
-            for (auto &pr : mINI::Instance()) {
-                body[pr.first] = (string &)pr.second;
-            }
+        for (auto &pr : mINI::Instance()) {
+            body[pr.first] = (string &)pr.second;
+        }
 #endif
-            body["version"] = kServerName;
-            auto osinfo = GlobalMonitor::Instance().getOsInfo();
-            body["osInfo"]["platform"] = osinfo.platform;
-            body["osInfo"]["variant"] = osinfo.variant;
-            body["osInfo"]["variantVerison"] = osinfo.variant_version;
-            body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
-            body["ip"] = GlobalMonitor::Instance().getLocalIps();
-            body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
-            body["rtspPort"] = static_cast<int>(mINI::Instance()["rtsp.port"]);
-            body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
-            body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
-            body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
-            // Execute hook
-            do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) {
-                if (err.empty()) {
-                    TraceL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
-                    InfoL << "Report server started success";
-                    loadServerStartedConfigJson(obj);
-                    s_report_started = true;
-                } else {
-                    TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
-                    WarnL << "Report server started failed:" << err;
-                }
-            });
+        body["version"] = kServerName;
+        auto osinfo = GlobalMonitor::Instance().getOsInfo();
+        body["osInfo"]["platform"] = osinfo.platform;
+        body["osInfo"]["variant"] = osinfo.variant;
+        body["osInfo"]["variantVerison"] = osinfo.variant_version;
+        body["domain"] = mINI::Instance()[Manager::kMediaServerDomain];
+        body["ip"] = GlobalMonitor::Instance().getLocalIps();
+        body["macAddress"] = GlobalMonitor::Instance().getMacAddresses();
+        body["rtspPort"] = static_cast<int>(mINI::Instance()["rtsp.port"]);
+        body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
+        body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
+        body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
+        // Execute hook
+        do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) {
+            if (err.empty()) {
+                TraceL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
+                InfoL << "Report server started success";
+                loadServerStartedConfigJson(obj);
+                s_report_started = true;
+            } else {
+                TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
+                WarnL << "Report server started failed:" << err;
+            }
         });
         return true;
     }, nullptr);
@@ -411,11 +409,9 @@ static void reportServerKeepalive() {
             do_http_hook(hook_server_keepalive, body, nullptr);
         });
 #endif
-        WorkThreadPool::Instance().getExecutor()->async([]() {
-            ArgsType body;
-            // Execute hook
-            do_http_hook(hook_api_url + hook_server_keepalive, body, nullptr);
-        });
+        ArgsType body;
+        // Execute hook
+        do_http_hook(hook_api_url + hook_server_keepalive, body, nullptr);
         return true;
     }, nullptr);
 }
@@ -453,54 +449,50 @@ static void reportServerStatistic() {
         s_last_report_time = now;
         s_report_config_loaded = true;
 
-        WorkThreadPool::Instance().getExecutor()->async([]() {
-            ArgsType body;
-            do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
-                if (err.empty()) {
-                    TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
-                    InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
+        ArgsType body;
+        do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
+            if (err.empty()) {
+                TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
+                InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
 
-                    // Load server config success
-                    loadServerConfigJson(obj);
+                // Load server config success
+                loadServerConfigJson(obj);
 
-                    // Set timer to report server statistic
-                    EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() {
-                        getServerStatisticJson([](const Value &data) {
-                            WorkThreadPool::Instance().getExecutor()->async([data]() {
-                                int online_count = 0, offline_count = 0;
-                                countDeviceStatusJson(data, online_count, offline_count);
-                                InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
+                // Set timer to report server statistic
+                EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() {
+                    getServerStatisticJson([](const Value &data) {
+                        int online_count = 0, offline_count = 0;
+                        countDeviceStatusJson(data, online_count, offline_count);
+                        InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
 
-                                ArgsType body;
-                                body["data"] = data;
-                                // Execute hook
-                                do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
-                                    if (err.empty()) {
-                                        // Report server statistic success
-                                        TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                                        InfoL << "Report server statistic success";
-                                    } else {
-                                        // Load server config failed
-                                        TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                                        WarnL << "Report server statistic failed:" << err;
-                                    }
-                                });
-                            });
+                        ArgsType body;
+                        body["data"] = data;
+                        // Execute hook
+                        do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
+                            if (err.empty()) {
+                                // Report server statistic success
+                                TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                                InfoL << "Report server statistic success";
+                            } else {
+                                // Load server config failed
+                                TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                                WarnL << "Report server statistic failed:" << err;
+                            }
                         });
-                        return 0;
                     });
+                    return 0;
+                });
 
-                } else {
-                    // Load server config failed
-                    TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
-                    WarnL << "Load server config failed:" << err;
-                }
-            });
+            } else {
+                // Load server config failed
+                TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+                WarnL << "Load server config failed:" << err;
+            }
         });
         return true;
     };
 
-    g_report_timer = std::make_shared<Timer>(20.0f, report_callback, nullptr);
+    g_report_timer = std::make_shared<Timer>(10.0f, report_callback, nullptr);
 }
 
 // Server report usage
@@ -517,12 +509,10 @@ static void reportServerUsage() {
 
     auto report_callback = []() {
         getServerUsageJson([](const Value &data) {
-            WorkThreadPool::Instance().getExecutor()->async([data]() {
-                InfoL << "Report server usage data: " << data.toStyledString();
-                ArgsType body = data;
-                // Execute hook
-                do_http_hook(hook_api_url + hook_server_report_usage, body, nullptr);
-            });
+            InfoL << "Report server usage data: " << data.toStyledString();
+            ArgsType body = data;
+            // Execute hook
+            do_http_hook(hook_api_url + hook_server_report_usage, body, nullptr);
         });
         return true;
     };
