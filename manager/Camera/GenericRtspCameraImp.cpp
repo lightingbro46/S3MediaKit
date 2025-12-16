@@ -43,13 +43,13 @@ void GenericRtspCameraImp::onAllStreamReady() {
 void GenericRtspCameraImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<CameraController>(_poller);
-        _controller->setOnControllerReady([this](bool enablePTZ) {
+        _controller->setOnControllerReady([this](bool connect, const std::string &status, bool enablePTZ) {
             auto strong_statistic = _statistic.lock();
             if (!strong_statistic) {
                 WarnL << "Camera statistic has been released. Ignore device capabilities update";
                 return;
             }
-            strong_statistic->addDeviceCapabilities(enablePTZ);
+            strong_statistic->addDeviceCapabilities(connect, status, enablePTZ);
         });
         _controller->start();
     }

@@ -38,6 +38,8 @@ struct StreamStatistic {
 };
 
 struct DeviceCapabilities {
+    bool connect = false;
+    std::string status;
     bool ptzCapabilities = false;
 };
 
@@ -92,7 +94,7 @@ public:
 
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
-    void addDeviceCapabilities(bool enable_ptz);
+    void addDeviceCapabilities(bool connect, std::string status, bool enable_ptz = false);
 
 public:
     CameraStatistic getParams();

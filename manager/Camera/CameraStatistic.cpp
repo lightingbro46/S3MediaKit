@@ -122,12 +122,16 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
 // DeviceCapabilities
 static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities stats) {
     Json::Value ret = Json::objectValue;
+    ret["connect"] = stats.connect;
+    ret["status"] = stats.status;
     ret["ptzCapabilities"] = stats.ptzCapabilities;
     return ret;
 }
 
 static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     DeviceCapabilities stats;
+    stats.connect = data["connect"].asBool();
+    stats.status = data["status"].asString();
     stats.ptzCapabilities = data["ptzCapabilities"].asBool();
     return stats;
 }
@@ -327,6 +331,7 @@ void CameraStatisticImp::load() {
         bm = saved_stats.bm;
         storage_map = saved_stats.storage_map;
         sinfo_map = saved_stats.sinfo_map;
+        device_caps = saved_stats.device_caps;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
     }
@@ -494,6 +499,7 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
             }
         }
         DebugL << "Stream " << stream_map[stream_type].shortUrl() << " statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
+        save();
     } else {
         WarnL << "Device " << info.shortUrl() << " do not have stream type: " << stream_type << ". Ignore statistic";
     }
@@ -514,10 +520,13 @@ void CameraStatisticImp::remove() {
     }
 }
 
-void CameraStatisticImp::addDeviceCapabilities(bool enable_ptz) {
+void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, bool enable_ptz) {
     std::lock_guard<std::mutex> lck(_mtx);
+    device_caps.connect = connect;
+    device_caps.status = status;
     device_caps.ptzCapabilities = enable_ptz;
-    DebugL << "Device " << info.shortUrl() << " capabilities: PTZ=" << device_caps.ptzCapabilities;
+    DebugL << "Device " << info.shortUrl() << " capabilities: Connected=" << device_caps.connect << ", Status=" << device_caps.status << ", PTZ=" << device_caps.ptzCapabilities;
+    save();
 }
 
 } // namespace managerkit

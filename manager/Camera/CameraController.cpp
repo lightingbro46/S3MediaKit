@@ -61,10 +61,16 @@ void CameraController::setupController(const CameraInfo &info, const CameraOptio
 }
 
 void CameraController::stopController() {  
-    lock_guard<mutex> lck(_mtx_ctr);
-    _ready = false;
-    _controller.reset();
-    _timer_ctr.reset();
+    if (_on_ready) {
+        auto enable_ptz = enablePTZ();
+        _on_ready(false, "disconnected", enable_ptz);
+    }
+    {
+        lock_guard<mutex> lck(_mtx_ctr);
+        _ready = false;
+        _controller.reset();
+        _timer_ctr.reset();
+    }
 }
 
 void CameraController::onManager() {
@@ -81,24 +87,23 @@ void CameraController::onManager() {
                 // reconnect to device
                 if (ptr->initControl()) {
                     _ready = true;
+                    _err_msg = "connected";
                     InfoL << "Onvif controller " << ptr->getDeviceIp() << " connected";
-                    call_on_ready = true;
                 } else {
-                    WarnL << "Onvif controller " << ptr->getDeviceIp() << " connect failed: " << ptr->getSoapErrMsg();
+                    _ready = false;
+                    _err_msg = ptr->getSoapErrMsg();
+                    WarnL << "Onvif controller " << ptr->getDeviceIp() << " connect failed: " << _err_msg;
                 }
+                call_on_ready = true;
             }
             _last_reconnect_time = time(nullptr);
         }
-    }
-    
-    if (!_ready) {
-        return;
     }
 
     // Call virtual method outside lock to prevent deadlock
     if (call_on_ready && _on_ready) {
         auto enable_ptz = enablePTZ();
-        _on_ready(enable_ptz);
+        _on_ready(_ready, _err_msg, enable_ptz);
     }
 
     // WorkThreadPool::Instance().getPoller()->async([this]() {
@@ -234,6 +239,10 @@ bool CameraController::enablePTZ() {
     }
 
     return enable_ptz;
+}
+
+const std::string CameraController::getErrMsg() const {
+    return _err_msg;
 }
 
 void CameraController::PTZMove(std::string &strDirect, int &speed, const function<void(const SockException &ex)> &cb) {

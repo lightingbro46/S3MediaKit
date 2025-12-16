@@ -9,7 +9,7 @@ namespace managerkit {
 class CameraController : public std::enable_shared_from_this<CameraController>  {
 public:
     using Ptr = std::shared_ptr<CameraController>;
-    using OnControllerReady = std::function<void(bool enablePTZ)>;
+    using OnControllerReady = std::function<void(bool connect, const std::string &status, bool enablePTZ)>;
 
     CameraController(const toolkit::EventPoller::Ptr &poller);
 
@@ -30,6 +30,8 @@ public:
 private:
     bool enablePTZ();
 
+    const std::string getErrMsg() const;
+
     void onManager();
 
     void getMediaProfile();
@@ -40,6 +42,7 @@ private:
     std::mutex _mtx_ctr;
     toolkit::EventPoller::Ptr _poller;
     std::atomic<bool> _ready { false };
+    std::string _err_msg;
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
     DeviceController::Ptr _controller;
