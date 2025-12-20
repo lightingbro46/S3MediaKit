@@ -93,13 +93,14 @@ bool RtpProcess::inputRtp(bool is_udp, const Socket::Ptr &sock, const char *data
     if (!_auth_err.empty()) {
         throw toolkit::SockException(toolkit::Err_other, _auth_err);
     }
+    auto header = (RtpHeader *) data;
     if (_sock != sock) {
         // First time running this function
         bool first = !_sock;
         _sock = sock;
         _addr.reset(new sockaddr_storage(*((sockaddr_storage *)addr)));
         if (first) {
-            emitOnPublish();
+            emitOnPublish(ntohl(header->ssrc));
             _cache_ticker.resetTime();
         }
     }
@@ -116,8 +117,7 @@ bool RtpProcess::inputRtp(bool is_udp, const Socket::Ptr &sock, const char *data
         _process = std::make_shared<GB28181Process>(_media_info, this);
     }
 
-    auto header = (RtpHeader *) data;
-    onRtp(ntohs(header->seq), ntohl(header->stamp), 0/*Sr is not sent, so it can be set to 0*/ , 90000/*ps/ts stream timestamps are based on 90K sampling rate*/, len);
+    onRtp(ntohs(header->seq), ntohl(header->stamp),0/*Do not send sr, so it can be set to 0*/, 90000/*ps/ts stream timestamp according to 90K sampling rate*/, len);
 
     GET_CONFIG(string, dump_dir, RtpProxy::kDumpDir);
     if (_muxer && !_muxer->isEnabled() && !dts_out && dump_dir.empty()) {
@@ -187,26 +187,24 @@ void RtpProcess::doCachedFunc() {
 }
 
 bool RtpProcess::alive() {
-    if (_stop_rtp_check.load()) {
-        if(_last_check_alive.elapsedTime() > 5 * 60 * 1000){
-            // Pause the RTP timeout detection for a maximum of 5 minutes, because the NAT mapping validity period is generally not very long.
-            _stop_rtp_check = false;
-        } else {
+    if (_pause_timeout) {
+        if (_last_check_alive.elapsedTime() < _pause_seconds * 1000) {
             return true;
         }
+        // Pause rtp timeout detection for up to _pause_seconds seconds, because the NAT mapping validity period is generally not too long
+        _pause_timeout = false;
     }
 
     _last_check_alive.resetTime();
     GET_CONFIG(uint64_t, timeoutSec, RtpProxy::kTimeoutSec)
-    if (_last_frame_time.elapsedTime() / 1000 < timeoutSec) {
-        return true;
-    }
-    return false;
+    return _last_frame_time.elapsedTime() < timeoutSec * 1000;
 }
 
-void RtpProcess::setStopCheckRtp(bool is_check){
-    _stop_rtp_check = is_check;
-    if (!is_check) {
+void RtpProcess::pauseRtpTimeout(bool pause, uint32_t pause_seconds) {
+    _pause_timeout = pause;
+    // The default is 5 minutes to resume timeout monitoring
+    _pause_seconds = pause_seconds ? pause_seconds : 300;
+    if (!pause) {
         _last_frame_time.resetTime();
     }
 }
@@ -254,15 +252,15 @@ string RtpProcess::getIdentifier() const {
     return _media_info.stream;
 }
 
-void RtpProcess::emitOnPublish() {
+void RtpProcess::emitOnPublish(uint32_t ssrc) {
     weak_ptr<RtpProcess> weak_self = shared_from_this();
-    Broadcast::PublishAuthInvoker invoker = [weak_self](const string &err, const ProtocolOption &option) {
+    Broadcast::PublishAuthInvoker invoker = [weak_self, ssrc](const string &err, const ProtocolOption &option) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
         auto poller = strong_self->getOwnerPoller(MediaSource::NullMediaSource());
-        poller->async([weak_self, err, option]() {
+        poller->async([weak_self, err, option, ssrc]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
@@ -276,7 +274,7 @@ void RtpProcess::emitOnPublish() {
                 }
                 strong_self->_muxer->setMediaListener(strong_self);
                 strong_self->doCachedFunc();
-                InfoP(strong_self) << "Allow RTP push streaming";
+                InfoP(strong_self) << "Allow RTP push streaming, ssrc: " << printSSRC(ssrc);
             } else {
                 strong_self->_auth_err = err;
                 WarnP(strong_self) << "Disable RTP push flow:" << err;

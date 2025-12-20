@@ -77,42 +77,46 @@ public:
      * @param custom_path Specify a custom path when recording is enabled
      * @return Whether the setting is successful
      */
-    bool setupRecord(MediaSource &sender, Recorder::type type, bool start, const std::string &custom_path, size_t max_second) override;
+    bool setupRecord(Recorder::type type, bool start, const std::string &custom_path, size_t max_second);
+
+    /**
+     * Start recording mp4
+     * @param file_path mp4 relative path
+     * @param back_time_ms Rewind recording duration
+     * @param forward_time_ms Subsequent recording duration
+     * @return Recording file absolute path
+     */
+    std::string startRecord(const std::string &file_path, uint32_t back_time_ms, uint32_t forward_time_ms);
 
     /**
      * Get recording status
      * @param type Recording type
      * @return Recording status
      */
-    bool isRecording(MediaSource &sender, Recorder::type type) override;
+    bool isRecording(Recorder::type type);
 
     /**
-     * Start sending ps-rtp stream
-     * @param dst_url Target ip or domain name
-     * @param dst_port Target port
-     * @param ssrc rtp's ssrc
-     * @param is_udp Whether it is udp
-     * @param cb Start success or failure callback
+     *Start sending ps-rtp stream
+     *@param cb startup success or failure callback
      */
-    void startSendRtp(MediaSource &sender, const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) override;
+    void startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb);
 
     /**
      * Stop ps-rtp sending
      * @return Whether it is successful
      */
-    bool stopSendRtp(MediaSource &sender, const std::string &ssrc) override;
-
-    /**
-     * Get all Tracks
-     * @param trackReady Whether to filter out unready tracks
-     * @return All Tracks
-     */
-    std::vector<Track::Ptr> getMediaTracks(MediaSource &sender, bool trackReady = true) const override;
+    bool stopSendRtp(const std::string &ssrc);
 
     /**
      * Get the thread it belongs to
      */
     toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
+    
+    /**
+    *Close the stream
+     *@return whether successful
+     */
+    bool close(MediaSource &sender) override;
 
     /**
      * Get this object
@@ -122,9 +126,9 @@ public:
     const ProtocolOption &getOption() const;
     const MediaTuple &getMediaTuple() const;
     std::string shortUrl() const;
-
-    void forEachRtpSender(const std::function<void(const std::string &ssrc)> &cb) const;
-
+#if defined(ENABLE_RTPPROXY)
+    void forEachRtpSender(const std::function<void(const std::string &ssrc, const RtpSender &sender)> &cb) const;
+#endif // ENABLE_RTPPROXY
 protected:
     /////////////////////////////////MediaSink override/////////////////////////////////
 
@@ -149,7 +153,7 @@ protected:
 
 private:
     void createGopCacheIfNeed(size_t gop_count);
-    std::shared_ptr<MediaSinkInterface> makeRecorder(MediaSource &sender, Recorder::type type);
+    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type);
 
 private:
     bool _is_enable = false;
@@ -162,7 +166,9 @@ private:
     toolkit::Ticker _last_check;
     std::unordered_map<int, Stamp> _stamps;
     std::weak_ptr<Listener> _track_listener;
-    std::unordered_multimap<std::string, RingType::RingReader::Ptr> _rtp_sender;
+#if defined(ENABLE_RTPPROXY)
+    std::unordered_multimap<std::string, std::tuple<RingType::RingReader::Ptr, std::weak_ptr<RtpSender>>> _rtp_sender;
+#endif // ENABLE_RTPPROXY
     FMP4MediaSourceMuxer::Ptr _fmp4;
     RtmpMediaSourceMuxer::Ptr _rtmp;
     RtspMediaSourceMuxer::Ptr _rtsp;

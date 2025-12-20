@@ -46,7 +46,7 @@ void StreamSource::start() {
 }
 
 void StreamSource::createPlayer() {
-    MediaTuple tuple = { .vhost = DEFAULT_VHOST, .app = _tuple.device_id, .stream = _tuple.stream_id, .params = "" };
+    MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
 
     ProtocolOption option;
     option.enable_mp4 = _record;
@@ -138,12 +138,7 @@ void StreamSource::createPlayer() {
 }
 
 void StreamSource::closePlayer() {
-    MediaTuple tuple = {
-        .vhost = DEFAULT_VHOST,
-        .app = _tuple.device_id,
-        .stream = _tuple.stream_id,
-        .params = ""
-    };
+    MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
     delStreamProxy(tuple);
     _player.reset();
     DebugL << "Closed stream player proxy: " << _tuple.shortUrl();

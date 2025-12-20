@@ -14,9 +14,10 @@ public:
     using Ptr = std::shared_ptr<G711Track>;
     G711Track(CodecId codecId, int sample_rate, int channels, int sample_bit) : AudioTrackImp(codecId, 8000, 1, 16) {}
 
+    toolkit::Buffer::Ptr getExtraData() const override;
+    void setExtraData(const uint8_t *data, size_t size) override;
 private:
-    Sdp::Ptr getSdp(uint8_t payload_type) const override;
-    Track::Ptr clone() const override;
+    Track::Ptr clone() const override { return std::make_shared<G711Track>(*this); }
 };
 
 }//namespace mediakit

@@ -230,16 +230,9 @@ void PlayerProxy::rePlay(const string &strUrl, int iFailedCnt) {
 
 bool PlayerProxy::close(MediaSource &sender) {
     // Notify it to stop pushing the stream
-    weak_ptr<PlayerProxy> weakSelf = dynamic_pointer_cast<PlayerProxy>(shared_from_this());
-    getPoller()->async_first([weakSelf]() {
-        auto strongSelf = weakSelf.lock();
-        if (!strongSelf) {
-            return;
-        }
-        strongSelf->_muxer.reset();
-        strongSelf->setMediaSource(nullptr);
-        strongSelf->teardown();
-    });
+    _muxer = nullptr;
+    setMediaSource(nullptr);
+    teardown();
     _on_close(SockException(Err_shutdown, "closed by user"));
     WarnL << "close media: " << sender.getUrl();
     return true;
@@ -267,6 +260,10 @@ std::shared_ptr<SockInfo> PlayerProxy::getOriginSock(MediaSource &sender) const 
 
 float PlayerProxy::getLossRate(MediaSource &sender, TrackType type) {
     return getPacketLossRate(type);
+}
+
+toolkit::EventPoller::Ptr PlayerProxy::getOwnerPoller(MediaSource &sender) { 
+    return getPoller();
 }
 
 TranslationInfo PlayerProxy::getTranslationInfo() {

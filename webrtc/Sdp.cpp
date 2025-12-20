@@ -1,4 +1,4 @@
-﻿#include "Sdp.h"
+#include "Sdp.h"
 #include "Rtsp/Rtsp.h"
 #include "Common/config.h"
 #include <cinttypes>
@@ -164,7 +164,7 @@ string RtcSdpBase::toString() const {
     for (auto &item : items) {
         printer << item->getKey() << "=" << item->toString() << "\r\n";
     }
-    return std::move(printer);
+    return printer;
 }
 
 RtpDirection RtcSdpBase::getDirection() const {
@@ -297,12 +297,12 @@ string RtcSessionSdp::toString() const {
         printer << media.toString();
     }
 
-    return std::move(printer);
+    return printer;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
-#define CHECK_SDP(exp) CHECK(exp, "parse sdp ", getKey(), " Field failed:", str)
+#define CHECK_SDP(exp) CHECK(exp, "解析sdp ", getKey(), " 字段失败:", str)
 
 void SdpTime::parse(const string &str) {
     CHECK_SDP(sscanf(str.data(), "%" SCNu64 " %" SCNu64, &start, &stop) == 2);
@@ -907,14 +907,14 @@ void RtcSession::loadFrom(const string &str) {
 
         for (auto &rtpmap : rtpmap_arr) {
             // Add failed, there are multiple
-            CHECK(rtpmap_map.emplace(rtpmap.pt, rtpmap).second, "There are multiple lines of this pt a=rtpmap:", (int)rtpmap.pt);
+            CHECK(rtpmap_map.emplace(rtpmap.pt, rtpmap).second, "There are multiple pts a=rtpmap:", (int)rtpmap.pt);
         }
         for (auto &rtpfb : rtcpfb_arr) {
             rtcpfb_map.emplace(rtpfb.pt, rtpfb);
         }
         for (auto &fmtp : fmtp_aar) {
             // Add failed, there are multiple
-            CHECK(fmtp_map.emplace(fmtp.pt, fmtp).second, "There are multiple lines of a=fmtp in this pt:", (int)fmtp.pt);
+            CHECK(fmtp_map.emplace(fmtp.pt, fmtp).second, "There are multiple pts a=fmtp:", (int)fmtp.pt);
         }
         for (auto &item : mline.fmts) {
             auto pt = atoi(item.c_str());
@@ -1055,6 +1055,7 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const {
         sdp.addItem(std::make_shared<SdpConnection>(connection));
     }
     sdp.addAttr(std::make_shared<SdpAttrGroup>(group));
+    sdp.addAttr(std::make_shared<SdpAttrExtmapAllowMixed>());
     sdp.addAttr(std::make_shared<SdpAttrMsidSemantic>(msid_semantic));
 
     bool ice_lite = false;
@@ -1291,6 +1292,10 @@ void RtcMedia::checkValid() const {
     if (!supportSimulcast()) {
         // When not simulcast, check if the RTP SSRC is specified
         CHECK(!rtp_rtx_ssrc.empty() || !send_rtp);
+
+        for (auto ssrc : rtp_rtx_ssrc) {
+            InfoL << "ssrc:" << ssrc.cname << "," << ssrc.msid;
+        }
     }
 
 #if 0
@@ -1528,6 +1533,25 @@ void RtcConfigure::enableREMB(bool enable, TrackType type) {
     }
 }
 
+shared_ptr<RtcSession> RtcConfigure::createOffer() const {
+    shared_ptr<RtcSession> ret = std::make_shared<RtcSession>();
+    ret->version = 0;
+    ret->origin.session_id = std::to_string(makeRandNum());
+    ret->origin.session_version = std::to_string(1);
+    ret->session_name = "-";
+
+    createMediaOffer(ret);
+    // Set audio and video port multiplexing
+    for (auto &m : ret->media) {
+        // The remote end has rejected (port 0) the m-section, so it should not be putting its mid in the group attribute.
+        if (m.port) {
+            ret->group.mids.emplace_back(m.mid);
+        }
+    }
+
+    return ret;
+}
+
 shared_ptr<RtcSession> RtcConfigure::createAnswer(const RtcSession &offer) const {
     shared_ptr<RtcSession> ret = std::make_shared<RtcSession>();
     ret->version = offer.version;
@@ -1583,6 +1607,155 @@ static DtlsRole mathDtlsRole(DtlsRole role) {
         case DtlsRole::passive: return DtlsRole::active;
         default: CHECK(0, "invalid role:", getDtlsRoleString(role)); return DtlsRole::passive;
     }
+}
+
+void RtcConfigure::createMediaOffer(const std::shared_ptr<RtcSession> &ret) const {
+    int index = 0;
+    if (video.direction != RtpDirection::sendonly || _rtsp_video_plan)  {
+        createMediaOfferEach(ret, TrackVideo, index++);
+    }
+
+    if (audio.direction != RtpDirection::sendonly || _rtsp_audio_plan)  {
+        createMediaOfferEach(ret, TrackAudio, index++);
+    }
+    // createMediaOfferEach(ret, TrackApplication, index++);
+}
+
+void RtcConfigure::createMediaOfferEach(const std::shared_ptr<RtcSession> &ret, TrackType type, int index) const {
+    // rtpmap
+    static std::multimap<CodecId, RtpMap::Ptr> audio_list_ref, video_list_ref;
+    static toolkit::onceToken token([]() {
+        audio_list_ref.emplace(CodecG711U, make_shared<AudioRtpMap>("PCMU", 0, 8000));
+        audio_list_ref.emplace(CodecG711A, make_shared<AudioRtpMap>("PCMA", 8, 8000));
+        audio_list_ref.emplace(CodecOpus, make_shared<AudioRtpMap>("opus", 111, 48000));
+        audio_list_ref.emplace(CodecAAC, make_shared<AudioRtpMap>("mpeg4-generic", 96, 48000));
+
+        video_list_ref.emplace(CodecH264, make_shared<H264RtpMap>(102, 90000, PROFILE_H264_BASELINE));
+        video_list_ref.emplace(CodecH264, make_shared<H264RtpMap>(104, 90000, PROFILE_H264_MAIN));
+        video_list_ref.emplace(CodecH264, make_shared<H264RtpMap>(106, 90000, PROFILE_H264_HIGH));
+        video_list_ref.emplace(CodecH265, make_shared<H265RtpMap>(120, 90000, PROFILE_H265_MAIN));
+        video_list_ref.emplace(CodecH265, make_shared<H265RtpMap>(124, 90000, PROFILE_H265_MAIN10));
+        video_list_ref.emplace(CodecH265, make_shared<H265RtpMap>(126, 90000, PROFILE_H265_SCREEN));
+        video_list_ref.emplace(CodecAV1, make_shared<AV1RtpMap>(35, 90000, 0));
+        video_list_ref.emplace(CodecVP8, make_shared<VideoRtpMap>("VP8", 96, 90000));
+        video_list_ref.emplace(CodecVP9, make_shared<VP9RtpMap>(98, 90000, 0));
+        video_list_ref.emplace(CodecVP9, make_shared<VP9RtpMap>(100, 90000, 2));
+    });
+
+    bool check_profile = true;
+    bool check_codec = true;
+    const RtcTrackConfigure *cfg_ptr = nullptr;
+    std::multimap<CodecId, RtpMap::Ptr>* rtpMap = nullptr; 
+    switch (type) {
+        case TrackAudio: cfg_ptr = &audio; rtpMap = &audio_list_ref; break;
+        case TrackVideo: cfg_ptr = &video; rtpMap = &video_list_ref; break;
+        case TrackApplication: cfg_ptr = &application; break;
+        default: return;
+    }
+    auto &configure = *cfg_ptr;
+
+    if (type == TrackApplication) {
+        RtcMedia media;
+        media.role = DtlsRole::active;
+        media.ice_ufrag = configure.ice_ufrag;
+        media.ice_pwd = configure.ice_pwd;
+        media.fingerprint = configure.fingerprint;
+        // media.ice_lite = configure.ice_lite;
+        media.ice_lite = false;
+#ifdef ENABLE_SCTP
+        media.candidate = configure.candidate;
+#else
+        media.port = 9; //Placeholder for subsequent negotiated allocations
+        WarnL << "answer sdp ignores application mline, please install usrsctp before testing the datachannel function";
+#endif
+        ret->media.emplace_back(media);
+        return;
+    }
+
+    RtcMedia media;
+    media.type = type;
+    media.mid = to_string(index);
+    media.proto = "UDP/TLS/RTP/SAVPF";
+    media.port = 9;//Placeholder for subsequent negotiated allocations
+    // media.addr = ;
+    // media.bandwidth = ;
+    // media.rtcp_addr = ;
+    media.rtcp_mux = true;
+    media.rtcp_rsize = true;
+    media.ice_trickle = true;
+    media.ice_renomination = configure.ice_renomination;
+    media.ice_ufrag = configure.ice_ufrag;
+    media.ice_pwd = configure.ice_pwd;
+    media.fingerprint = configure.fingerprint;
+    // media.ice_lite = configure.ice_lite;
+    media.ice_lite = false;
+    // The candidate offer does not generate a candidate, which is wrong anyway.
+    // media.candidate = configure.candidate;
+    // copy simulicast setting
+    // media.rtp_rids =;
+    // media.rtp_ssrc_sim = ;
+
+    media.role = DtlsRole::active;
+
+    // If the codec matching fails, then disable the track
+    media.direction = configure.direction;
+
+    //extmap
+    for (auto extmap : cfg_ptr->extmap) {
+#if 0
+        if (extmap.second != media.direction) {
+            continue;
+        }
+#endif
+        SdpAttrExtmap attrExtmap;
+        attrExtmap.direction = extmap.second;
+        attrExtmap.id = (uint8_t)extmap.first;
+        attrExtmap.ext = RtpExt::getExtUrl(extmap.first);
+
+        media.extmap.push_back(attrExtmap);
+    }
+
+    //rtpmap
+    for (auto codec : cfg_ptr->preferred_codec) {
+        if (!rtpMap) continue;
+        auto range = rtpMap->equal_range(codec);
+        for (auto it = range.first; it != range.second; ++it) {
+            auto rtpmap = it->second;
+            RtcCodecPlan plan;
+            plan.codec = rtpmap->getCodeName();
+            plan.pt = rtpmap->getPayload();
+            plan.sample_rate = rtpmap->getClockRate();
+            plan.rtcp_fb = cfg_ptr->rtcp_fb;
+            auto fmtp = rtpmap->getFmtp();
+            for (const auto& pair : fmtp) {
+                plan.fmtp.emplace(pair);
+            }
+            media.plan.push_back(plan);
+            // add video rtx plan
+            if (rtpmap->getType() == TrackVideo) {
+                // a=rtpmap:108 rtx/90000
+                // a=fmtp:108 apt=107
+                RtcCodecPlan rtx;
+                rtx.codec = "rtx";
+                rtx.pt = rtpmap->getPayload() + 1;
+                rtx.sample_rate = rtpmap->getClockRate();
+                rtx.fmtp["apt"] = std::to_string(rtpmap->getPayload());
+                media.plan.push_back(rtx);
+            }
+        }
+    }
+
+    //msid
+    if (media.direction != RtpDirection::recvonly) {
+        RtcSSRC ssrc;
+        ssrc.ssrc = (uint32_t)makeRandNum();
+        ssrc.rtx_ssrc = (uint32_t)makeRandNum();
+        ssrc.cname = makeRandStr(16);
+        ssrc.msid = makeRandStr(36) + " " + makeUuidStr();
+        media.rtp_rtx_ssrc.push_back(ssrc);
+    }
+
+    ret->media.emplace_back(media);
 }
 
 void RtcConfigure::matchMedia(const std::shared_ptr<RtcSession> &ret, const RtcMedia &offer_media) const {
@@ -1782,7 +1955,8 @@ void RtcConfigure::setPlayRtspInfo(const string &sdp) {
     }
 }
 
-static const string kProfile { "profile-level-id" };
+static const string kH264Profile { "profile-level-id" };
+static const string kH265Profile { "profile-id" };
 static const string kMode { "packetization-mode" };
 
 bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) const {
@@ -1795,8 +1969,17 @@ bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) 
     }
     if (_rtsp_video_plan && codec == CodecH264 && getCodecId(_rtsp_video_plan->codec) == CodecH264) {
         // When h264, profile-level-id
-        if (strcasecmp(_rtsp_video_plan->fmtp[kProfile].data(), const_cast<RtcCodecPlan &>(plan).fmtp[kProfile].data())) {
+        if (strcasecmp(_rtsp_video_plan->fmtp[kH264Profile].data(), const_cast<RtcCodecPlan &>(plan).fmtp[kH264Profile].data())) {
             // profile-level-id does not match
+            return false;
+        }
+        return true;
+    }
+
+    if (_rtsp_video_plan && codec == CodecH265 && getCodecId(_rtsp_video_plan->codec) == CodecH265) {
+        // h265, profile-id
+        if (strcasecmp(_rtsp_video_plan->fmtp[kH265Profile].data(), const_cast<RtcCodecPlan &>(plan).fmtp[kH265Profile].data())) {
+            // profile-id does not match
             return false;
         }
         return true;
@@ -1806,6 +1989,9 @@ bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) 
 }
 
 /**
+ Single NAI Unit Mode = 0. // Single NAI mode (Only nals from 1-23 are allowed)
+ Non Interleaved Mode = 1，// Non-interleaved Mode: 1-23，24 (STAP-A)，28 (FU-A) are allowed
+ Interleaved Mode = 2,  // 25 (STAP-B)，26 (MTAP16)，27 (MTAP24)，28 (EU-A)，and 29 (EU-B) are allowed.
  Single NAI Unit Mode = 0. // Single NAI mode (Only nals from 1-23 are allowed)
  Non Interleaved Mode = 1，// Non-interleaved Mode: 1-23，24 (STAP-A)，28 (FU-A) are allowed
  Interleaved Mode = 2,  // 25 (STAP-B)，26 (MTAP16)，27 (MTAP24)，28 (EU-A)，and 29 (EU-B) are allowed.

@@ -17,6 +17,8 @@ bool CommonRtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool){
     auto payload_size = rtp->getPayloadSize();
     if (payload_size <= 0) {
         // No actual load
+        // It is necessary to record the sequence number even if there is no actual load, otherwise packet loss will be misjudged.
+        _last_seq = rtp->getSeq();
         return false;
     }
     auto payload = rtp->getPayload();

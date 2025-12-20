@@ -1,4 +1,4 @@
-﻿#ifndef S3MEDIAKIT_SDP_H
+#ifndef S3MEDIAKIT_SDP_H
 #define S3MEDIAKIT_SDP_H
 
 #include <set>
@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 #include "RtpExt.h"
-#include "assert.h"
+#include "RtpMap.h"
 #include "Extension/Frame.h"
 #include "Common/Parser.h"
 
@@ -45,29 +45,29 @@ namespace mediakit {
 //          k=* (encryption key)
 //          a=* (zero or more media attribute lines)
 
-enum class RtpDirection {
+enum class RtpDirection : int8_t {
     invalid = -1,
     // Send only
-    sendonly,
+    sendonly = 1 << 0,
     // Receive only
-    recvonly,
+    recvonly = 1 << 1,
     // Send and receive simultaneously
-    sendrecv,
+    sendrecv = sendonly | recvonly,
     // Prohibit sending data
-    inactive
+    inactive = 0
 };
 
-enum class DtlsRole {
+enum class DtlsRole : int8_t {
     invalid = -1,
     // Client
-    active,
+    active = 1 << 0,
     // Server
-    passive,
+    passive = 1 << 1,
     // Can be used as both client and server
-    actpass,
+    actpass = active | passive,
 };
 
-enum class SdpType { invalid = -1, offer, answer };
+enum class SdpType : int8_t { invalid = -1, offer, answer };
 
 DtlsRole getDtlsRole(const std::string &str);
 const char *getDtlsRoleString(DtlsRole role);
@@ -702,6 +702,7 @@ public:
     void setDefaultSetting(std::string ice_ufrag, std::string ice_pwd, RtpDirection direction, const SdpAttrFingerprint &fingerprint);
     void addCandidate(const SdpAttrCandidate &candidate, TrackType type = TrackInvalid);
 
+    std::shared_ptr<RtcSession> createOffer() const;
     std::shared_ptr<RtcSession> createAnswer(const RtcSession &offer) const;
 
     void setPlayRtspInfo(const std::string &sdp);
@@ -710,6 +711,8 @@ public:
     void enableREMB(bool enable = true, TrackType type = TrackInvalid);
 
 private:
+    void createMediaOffer(const std::shared_ptr<RtcSession> &ret) const;
+    void createMediaOfferEach(const std::shared_ptr<RtcSession> &ret, TrackType type, int index) const;
     void matchMedia(const std::shared_ptr<RtcSession> &ret, const RtcMedia &media) const;
     bool onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) const;
     void onSelectPlan(RtcCodecPlan &plan, CodecId codec) const;

@@ -60,6 +60,25 @@ if(MSVC)
   target_sources(mk_api PRIVATE ${RESOURCE_FILE})
 endif()
 
+#relase Additional debugging information is output when type
+string(TOLOWER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_LOWER)
+if(UNIX AND ENABLE_OBJCOPY)
+  if("${CMAKE_BUILD_TYPE_LOWER}" STREQUAL "release")
+    find_program(OBJCOPY_FOUND objcopy)
+    if (OBJCOPY_FOUND)
+      add_custom_command(TARGET mk_api
+        POST_BUILD
+        COMMAND objcopy --only-keep-debug ${EXECUTABLE_OUTPUT_PATH}/libmk_api.so ${EXECUTABLE_OUTPUT_PATH}/libmk_api.so.debug
+        COMMAND objcopy --strip-all ${EXECUTABLE_OUTPUT_PATH}/libmk_api.so
+        COMMAND objcopy --add-gnu-debuglink=${EXECUTABLE_OUTPUT_PATH}/libmk_api.so.debug ${EXECUTABLE_OUTPUT_PATH}/libmk_api.so
+      )
+      install(FILES ${EXECUTABLE_OUTPUT_PATH}/libmk_api.so.debug DESTINATION ${INSTALL_PATH_RUNTIME})
+    else()
+      message(STATUS "not found objcopy, generate libmk_api.so.debug skip")
+    endif()
+  endif()
+endif()
+
 # IOS Skip the test code
 if(IOS)
   return()

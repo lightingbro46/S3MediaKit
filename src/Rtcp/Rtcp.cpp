@@ -103,7 +103,7 @@ string RtcpHeader::dumpHeader() const {
     printer << "pt:" << rtcpTypeToStr((RtcpType)pt) << "\r\n";
     printer << "size:" << getSize() << "\r\n";
     printer << "--------\r\n";
-    return std::move(printer);
+    return printer;
 }
 
 string RtcpHeader::dumpString() const {
@@ -306,7 +306,7 @@ string RtcpSR::dumpString() const {
         printer << "---- item:" << i++ << " ----\r\n";
         printer << item->dumpString();
     }
-    return std::move(printer);
+    return printer;
 }
 
 #define CHECK_MIN_SIZE(size, kMinSize)                                                                                 \
@@ -366,7 +366,7 @@ string ReportItem::dumpString() const {
     printer << "jitter:" << jitter << "\r\n";
     printer << "last_sr_stamp:" << last_sr_stamp << "\r\n";
     printer << "delay_since_last_sr:" << delay_since_last_sr << "\r\n";
-    return std::move(printer);
+    return printer;
 }
 
 void ReportItem::net2Host() {
@@ -400,7 +400,7 @@ string RtcpRR::dumpString() const {
         printer << "---- item:" << i++ << " ----\r\n";
         printer << item->dumpString();
     }
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpRR::net2Host(size_t size) {
@@ -448,7 +448,7 @@ string SdesChunk::dumpString() const {
     printer << "type:" << sdesTypeToStr((SdesType)type) << "\r\n";
     printer << "txt_len:" << (int)txt_len << "\r\n";
     printer << "text:" << (txt_len ? string(text, txt_len) : "") << "\r\n";
-    return std::move(printer);
+    return printer;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -485,7 +485,7 @@ string RtcpSdes::dumpString() const {
         printer << "---- item:" << i++ << " ----\r\n";
         printer << item->dumpString();
     }
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpSdes::net2Host(size_t size) {
@@ -606,7 +606,7 @@ string RtcpFB::dumpString() const {
         }
         default: /*Unreachable*/ assert(0); break;
     }
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpFB::net2Host(size_t size) {
@@ -663,7 +663,7 @@ string RtcpBye::dumpString() const {
         printer << "ssrc:" << *ssrc << "\r\n";
     }
     printer << "reason:" << getReason();
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpBye::net2Host(size_t size) {
@@ -696,7 +696,7 @@ string RtcpXRRRTR::dumpString() const {
     printer << "block_length : " << block_length << "\r\n";
     printer << "ntp msw : " << ntpmsw << "\r\n";
     printer << "ntp lsw : " << ntplsw << "\r\n";
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpXRRRTR::net2Host(size_t size) {
@@ -720,7 +720,7 @@ string RtcpXRDLRRReportItem::dumpString() const {
     printer << "last RR (lrr) :" << lrr << "\r\n";
     printer << "delay since last RR (dlrr): " << dlrr << "\r\n";
 
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpXRDLRRReportItem::net2Host() {
@@ -751,7 +751,7 @@ string RtcpXRDLRR::dumpString() const {
         printer << "---- item:" << i++ << " ----\r\n";
         printer << item->dumpString();
     }
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpXRDLRR::net2Host(size_t size) {
@@ -786,7 +786,7 @@ string RtcpXRTargetBitrateItem::dumpString() const {
     printer << "Temporal Layer :" << temporal_layer << "\r\n";
     printer << "Target Bitrate: " << target_bitrate << "\r\n";
 
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpXRTargetBitrateItem::net2Host() {
@@ -816,7 +816,7 @@ string RtcpXRTargetBitrate::dumpString() const {
         printer << "---- item:" << i++ << " ----\r\n";
         printer << item->dumpString();
     }
-    return std::move(printer);
+    return printer;
 }
 
 void RtcpXRTargetBitrate::net2Host(size_t size) {

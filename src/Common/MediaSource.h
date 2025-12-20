@@ -72,13 +72,6 @@ public:
     // Get the current thread, this function is generally forced to overload
     virtual toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) { throw NotImplemented(toolkit::demangle(typeid(*this).name()) + "::getOwnerPoller not implemented"); }
 
-    // //////////////////////Only for MultiMediaSourceMuxer object inheritance////////////////////////
-    // Start or stop recording
-    virtual bool setupRecord(MediaSource &sender, Recorder::type type, bool start, const std::string &custom_path, size_t max_second) { return false; };
-    // Get recording status
-    virtual bool isRecording(MediaSource &sender, Recorder::type type) { return false; }
-    // Get all track related information
-    virtual std::vector<Track::Ptr> getMediaTracks(MediaSource &sender, bool trackReady = true) const { return std::vector<Track::Ptr>(); };
     // Get MultiMediaSourceMuxer object
     virtual std::shared_ptr<MultiMediaSourceMuxer> getMuxer(MediaSource &sender) const { return nullptr; }
     // Get RtpProcess object
@@ -134,12 +127,10 @@ public:
 
         std::string recv_stream_app;
         std::string recv_stream_vhost;
-    };
 
-    // Start sending ps-rtp
-    virtual void startSendRtp(MediaSource &sender, const SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) { cb(0, toolkit::SockException(toolkit::Err_other, "not implemented"));};
-    // Stop sending ps-rtp
-    virtual bool stopSendRtp(MediaSource &sender, const std::string &ssrc) {return false; }
+        // When rtp tcp mode is busy when sending, origin receives current limit, which is not enabled by default.
+        bool enable_origin_recv_limit = false;
+    };
 
 private:
     toolkit::Timer::Ptr _async_close_timer;
@@ -288,11 +279,6 @@ public:
     int totalReaderCount(MediaSource &sender) override;
     void onReaderChanged(MediaSource &sender, int size) override;
     void onRegist(MediaSource &sender, bool regist) override;
-    bool setupRecord(MediaSource &sender, Recorder::type type, bool start, const std::string &custom_path, size_t max_second) override;
-    bool isRecording(MediaSource &sender, Recorder::type type) override;
-    std::vector<Track::Ptr> getMediaTracks(MediaSource &sender, bool trackReady = true) const override;
-    void startSendRtp(MediaSource &sender, const SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) override;
-    bool stopSendRtp(MediaSource &sender, const std::string &ssrc) override;
     float getLossRate(MediaSource &sender, TrackType type) override;
     toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
     std::shared_ptr<MultiMediaSourceMuxer> getMuxer(MediaSource &sender) const override;
@@ -358,7 +344,9 @@ public:
     virtual void setTimeStamp(uint32_t stamp) {};
 
     // Get data rate, unit bytes/s
-    int getBytesSpeed(TrackType type = TrackInvalid);
+    size_t getBytesSpeed(TrackType type = TrackInvalid);
+    size_t getTotalBytes(TrackType type = TrackInvalid);
+
     // Get the stream creation GMT unix timestamp, unit seconds
     uint64_t getCreateStamp() const { return _create_stamp; }
     // Get the stream online time, unit seconds

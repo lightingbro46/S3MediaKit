@@ -1,5 +1,6 @@
 ﻿#include <limits.h>
 #include <sys/stat.h>
+#include "ShellParser.h"
 #ifndef _WIN32
 #include <sys/resource.h>
 #include <unistd.h>
@@ -37,37 +38,6 @@ static void setupChildProcess() {
     signal(SIGABRT, SIG_DFL);
 }
 
-std::vector<std::string> splitCommandLine(const std::string& cmd) {
-    std::vector<std::string> args;
-    std::string current;
-    bool in_single_quote = false, in_double_quote = false, escape = false;
-
-    for (size_t i = 0; i < cmd.size(); ++i) {
-        char c = cmd[i];
-        if (escape) {
-            current += c;
-            escape = false;
-        } else if (c == '\\') {
-            escape = true;
-        } else if (c == '"' && !in_single_quote) {
-            in_double_quote = !in_double_quote;
-        } else if (c == '\'' && !in_double_quote) {
-            in_single_quote = !in_single_quote;
-        } else if (isspace(c) && !in_single_quote && !in_double_quote) {
-            if (!current.empty()) {
-                args.push_back(current);
-                current.clear();
-            }
-        } else {
-            current += c;
-        }
-    }
-    if (!current.empty()) {
-        args.push_back(current);
-    }
-    return args;
-}
-
 /* Start function for cloned child */
 static int runChildProcess(string cmd, string log_file) {
     setupChildProcess();
@@ -101,20 +71,22 @@ static int runChildProcess(string cmd, string log_file) {
         // Close log file.
         ::fclose(fp);
     }
-    fprintf(stderr, "\r\n\r\n#### pid=%d,cmd=%s #####\r\n\r\n", getpid(), cmd.data());
+    fprintf(stderr, "\r\n#### pid=%d,cmd=%s #####\r\n", getpid(), cmd.data());
 
-    auto params = splitCommandLine(cmd);
-    // memory leak in child process, it's ok.
-    char **charpv_params = new char *[params.size() + 1];
-    for (int i = 0; i < (int)params.size(); i++) {
-        std::string &p = params[i];
-        charpv_params[i] = (char *)p.data();
+    auto result = parse_shell_like(cmd);
+    if (!result.ok) {
+        fprintf(stderr, "parse cmd line failed: %s, pos: %ld", result.error_msg.data(), result.error_pos);
+        return -1;
     }
-    // EOF: NULL
-    charpv_params[params.size()] = NULL;
-    // TODO: execv or execvp
-    auto ret = execv(params[0].c_str(), charpv_params);
-    delete[] charpv_params;
+    auto argv = make_argv(result.args);
+    auto argc = 0u;
+    fprintf(stderr, "\r\n#### args #####\r\n");
+    for (auto &arg : argv) {
+        fprintf(stderr, "arg[%d]: %s\r\n", argc++, arg ? arg : "null");
+    }
+
+    fprintf(stderr, "\r\n#### process log #####\r\n");
+    auto ret = execv(argv[0], (char * const *)(argv.data()));
 
     if (ret < 0) {
         fprintf(stderr, "execv process failed:%d(%s)\r\n", get_uv_error(), get_uv_errmsg());

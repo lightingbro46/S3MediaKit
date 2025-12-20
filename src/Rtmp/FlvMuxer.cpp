@@ -3,7 +3,6 @@
 #include "Rtmp/utils.h"
 #include "Http/HttpSession.h"
 
-#define FILE_BUF_SIZE (64 * 1024)
 
 using namespace std;
 using namespace toolkit;
@@ -38,7 +37,7 @@ void FlvMuxer::start(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr 
     _ring_reader = media->getRing()->attach(poller);
     _ring_reader->setGetInfoCB([weak_self]() {
         Any ret;
-        ret.set(dynamic_pointer_cast<SockInfo>(weak_self.lock()));
+        ret.set(dynamic_pointer_cast<Session>(weak_self.lock()));
         return ret;
     });
     _ring_reader->setDetachCB([weak_self]() {
@@ -155,10 +154,11 @@ void FlvRecorder::startRecord(const EventPoller::Ptr &poller, const string &vhos
 
 void FlvRecorder::startRecord(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr &media,
                               const string &file_path) {
+    GET_CONFIG(uint32_t, flvBufSize, Record::kFileBufSize);
     stop();
     lock_guard<recursive_mutex> lck(_file_mtx);
     // Allocate file write cache.
-    std::shared_ptr<char> fileBuf(new char[FILE_BUF_SIZE], [](char *ptr) {
+    std::shared_ptr<char> fileBuf(new char[flvBufSize], [](char *ptr) {
         if (ptr) {
             delete[] ptr;
         }
@@ -175,7 +175,7 @@ void FlvRecorder::startRecord(const EventPoller::Ptr &poller, const RtmpMediaSou
     }
 
     // Set the file write cache.
-    setvbuf(_file.get(), fileBuf.get(), _IOFBF, FILE_BUF_SIZE);
+    setvbuf(_file.get(), fileBuf.get(), _IOFBF, flvBufSize);
     start(poller, media);
 }
 

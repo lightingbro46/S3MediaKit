@@ -24,7 +24,7 @@ public:
      * @param args Sending parameters
      * @param cb Callback for whether the connection to the target port is successful
      */
-    void startSend(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t local_port, const toolkit::SockException &ex)> &cb);
+    void startSend(const MediaSourceEvent &sender, const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t local_port, const toolkit::SockException &ex)> &cb);
 
     /**
      * Input frame data
@@ -58,6 +58,11 @@ public:
      */
     void setOnClose(std::function<void(const toolkit::SockException &ex)> on_close);
 
+    size_t getSendSpeed() const;
+    size_t getRecvSpeed() const;
+    size_t getRecvTotalBytes() const;
+    size_t getSendTotalBytes() const;
+
 private:
     // Merge write output
     void onFlushRtpList(std::shared_ptr<toolkit::List<toolkit::Buffer::Ptr> > rtp_list);
@@ -72,6 +77,7 @@ private:
 
 private:
     bool _is_connect = false;
+    toolkit::Socket::Ptr _origin_socket;
     MediaSourceEvent::SendRtpArgs _args;
     toolkit::Socket::Ptr _socket_rtp;
     toolkit::Socket::Ptr _socket_rtcp;

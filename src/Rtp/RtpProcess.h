@@ -43,9 +43,11 @@ public:
     void setOnDetach(onDetachCB cb);
 
     /**
-     * Set onDetach event callback, false checks RTP timeout, true stops
+     *Pause or resume rtp timeout monitoring
+     *@param pause whether to pause timeout detection
+     *@param pause_seconds The maximum time for pausing timeout detection (in seconds). After this time, timeout detection will be resumed; when set to 0, the default is 300
      */
-    void setStopCheckRtp(bool is_check=false);
+    void pauseRtpTimeout(bool pause, uint32_t pause_seconds = 0);
 
     /**
      * Set to single track, single audio/single video can speed up media registration
@@ -85,17 +87,19 @@ protected:
 private:
     RtpProcess(const MediaTuple &tuple);
 
-    void emitOnPublish();
+    void emitOnPublish(uint32_t ssrc);
     void doCachedFunc();
     bool alive();
     void onManager();
     void createTimer();
 
 private:
-    OnlyTrack _only_track = kAll;
-    std::string _auth_err;
+    bool _pause_timeout = false;
+    uint32_t _pause_seconds = 5 * 60;
     uint64_t _dts = 0;
     uint64_t _total_bytes = 0;
+    OnlyTrack _only_track = kAll;
+    std::string _auth_err;
     std::unique_ptr<sockaddr_storage> _addr;
     toolkit::Socket::Ptr _sock;
     MediaInfo _media_info;
@@ -105,7 +109,6 @@ private:
     std::shared_ptr<FILE> _save_file_video;
     ProcessInterface::Ptr _process;
     MultiMediaSourceMuxer::Ptr _muxer;
-    std::atomic_bool _stop_rtp_check{false};
     toolkit::Timer::Ptr _timer;
     toolkit::Ticker _last_check_alive;
     std::recursive_mutex _func_mtx;

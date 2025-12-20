@@ -70,13 +70,13 @@ void Stamp::setPlayBack(bool playback) {
     _playback = playback;
 }
 
-void Stamp::syncTo(Stamp &other) {
-    _need_sync = true;
+void Stamp::syncTo(Stamp &other, int count) {
+    _need_sync += count;
     _sync_master = &other;
 }
 
 void Stamp::needSync() {
-    _need_sync = true;
+    ++_need_sync;
 }
 
 void Stamp::enableRollback(bool flag) {
@@ -121,22 +121,40 @@ void Stamp::revise_l(int64_t dts, int64_t pts, int64_t &dts_out, int64_t &pts_ou
     if (_sync_master && _sync_master->_last_dts_in && (_need_sync || _sync_master->_need_sync)) {
         // Audio and video dts current time difference
         int64_t dts_diff = _last_dts_in - _sync_master->_last_dts_in;
-        if (ABS(dts_diff) < 5000) {
+        if (ABS(dts_diff) < 5000 || _need_sync > 3) {
+            // The difference between the two timestamps must not be greater than 300ms.
+            dts_diff = _relative_stamp - _sync_master->_relative_stamp;
+            // Force synchronization of audio and video
+            if (dts_diff > 300) {
+                dts_diff = 0;
+            } else if (dts_diff < -300) {
+                dts_diff = 0;
+            }
             // If the absolute timestamp is less than 5 seconds, then it means that their starting timestamps are consistent, then force synchronization
             auto target_stamp = _sync_master->_relative_stamp + dts_diff;
             if (target_stamp > _relative_stamp || _enable_rollback) {
                 // After forced synchronization, the timestamp increases jump, or allows rollback
+                if (_relative_stamp == target_stamp) {
+                    return;
+                }
                 TraceL << "Relative stamp changed: " << _relative_stamp << " -> " << target_stamp;
                 _relative_stamp = target_stamp;
             } else {
                 // Not allowed to rollback, then let the timestamp of the other Track increase
                 target_stamp = _relative_stamp - dts_diff;
+                if (_sync_master->_relative_stamp == target_stamp) {
+                    return;
+                }
                 TraceL << "Relative stamp changed: " << _sync_master->_relative_stamp << " -> " << target_stamp;
                 _sync_master->_relative_stamp = target_stamp;
             }
         }
-        _need_sync = false;
-        _sync_master->_need_sync = false;
+        if (_need_sync) {
+            --_need_sync;
+        }
+        if (_sync_master->_need_sync) {
+            --_sync_master->_need_sync;
+        }
     }
 }
 
@@ -249,7 +267,7 @@ bool DtsGenerator::getDts_l(uint64_t pts, uint64_t &dts) {
     // Put pts into the sorting cache queue, the maximum cache queue is equal to the number of consecutive B frames
     _pts_sorter.emplace(pts);
 
-    if (_sorter_max_size && _pts_sorter.size() > _sorter_max_size) {
+    if (_sorter_max_size > 1 && _pts_sorter.size() > _sorter_max_size) {
         // If pts sorting is enabled (meaning there are B frames), and the length of the pts sorting cache queue is greater than the number of consecutive B frames,
         // It means that the subsequent pts will be larger than the earliest pts, which means that the earliest pts can be taken out, and this pts will be used as the dts baseline for this frame
         auto it = _pts_sorter.begin();

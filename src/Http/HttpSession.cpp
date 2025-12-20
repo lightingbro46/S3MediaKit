@@ -195,41 +195,41 @@ bool HttpSession::checkWebSocket() {
         headerOut["Sec-WebSocket-Protocol"] = _parser["Sec-WebSocket-Protocol"];
     }
 
-    auto res_cb = [this, headerOut](bool close) {
-        if (!close) {
-            _live_over_websocket = true;
-            sendResponse(101, false, nullptr, headerOut, nullptr, true);
-        } else {
+    auto res_cb = [this](bool close) {
+        //Change to reply http header mode first to solve the websocket request pending problem in on-demand playback scenarios: #4553
+        if (close) {
             sendNotFound(true);
         }
-        
     };
 
-    auto res_cb_flv = [this, headerOut](bool close) mutable {
+    auto res_immediately = [this, headerOut](bool close = false) mutable {
         if (!close) {
-            _live_over_websocket = true;
             headerOut.emplace("Cache-Control", "no-store");
             sendResponse(101, false, nullptr, headerOut, nullptr, true);
+            _live_over_websocket = true;
         } else {
             sendNotFound(true);
         }
     };
 
     // Determine whether it is websocket-flv
-    if (checkLiveStreamFlv(res_cb_flv)) {
+    if (checkLiveStreamFlv(res_cb)) {
         // This is a websocket-flv live request
+        res_immediately();
         return true;
     }
 
     // Determine whether it is websocket-ts
     if (checkLiveStreamTS(res_cb)) {
         // This is a websocket-ts live request
+        res_immediately();
         return true;
     }
 
     // Determine whether it is websocket-fmp4
     if (checkLiveStreamFMP4(res_cb)) {
         // This is a websocket-fmp4 live request
+        res_immediately();
         return true;
     }
 
@@ -346,14 +346,14 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
 
     Broadcast::AuthInvoker invoker = [weak_self, onRes](const string &err) {
         if (auto strong_self = weak_self.lock()) {
-            strong_self->async([onRes, err]() { onRes(err); });
+            strong_self->async([onRes, err]() { onRes(err); }, false);
         }
     };
 
     auto flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, _media_info, invoker, *this);
     if (!flag) {
         // No one is listening to this event, no authentication by default
-        onRes("");
+        invoker("");
     }
     return true;
 }
@@ -405,7 +405,7 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
         _fmp4_reader->setGetInfoCB([weak_self]() {
             Any ret;
-            ret.set(static_pointer_cast<SockInfo>(weak_self.lock()));
+            ret.set(static_pointer_cast<Session>(weak_self.lock()));
             return ret;
         });
         _fmp4_reader->setDetachCB([weak_self]() {
@@ -449,7 +449,7 @@ bool HttpSession::checkLiveStreamTS(const function<void(bool close)> &cb) {
         _ts_reader = ts_src->getRing()->attach(getPoller());
         _ts_reader->setGetInfoCB([weak_self]() {
             Any ret;
-            ret.set(static_pointer_cast<SockInfo>(weak_self.lock()));
+            ret.set(static_pointer_cast<Session>(weak_self.lock()));
             return ret;
         });
         _ts_reader->setDetachCB([weak_self]() {
@@ -727,6 +727,23 @@ void HttpSession::sendResponse(int code,
                                const HttpSession::KeyValue &header,
                                const HttpBody::Ptr &body,
                                bool no_content_length) {
+    if (_live_over_websocket) {
+        WebSocketHeader ws_header;
+        ws_header._fin = true;
+        ws_header._reserved = 0;
+        ws_header._opcode = WebSocketHeader::CLOSE;
+        ws_header._mask_flag = false;
+        uint16_t why = htons(0xFFFF & code);
+        std::string buffer;
+        buffer.append(reinterpret_cast<char *>(&why), 2);
+        if (body && code != 404) {
+            buffer.append(body->readData(body->remainSize())->toString());
+        } else {
+            buffer.append("unknown reason");
+        }
+        WebSocketSplitter::encode(ws_header, std::make_shared<BufferString>(std::move(buffer)));
+        return;
+    }
     GET_CONFIG(string, charSet, Http::kCharSet);
     GET_CONFIG(uint32_t, keepAliveSec, Http::kKeepAliveSecond);
 

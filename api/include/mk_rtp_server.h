@@ -11,10 +11,12 @@ typedef struct mk_rtp_server_t *mk_rtp_server;
  * @param port Listening port, 0 for random
  * @param tcp_mode tcp mode (0: not listening to port 1: listening to port 2: actively connect to the server)
  * @param stream_id Stream id bound to this port
+ * @param multiple Multiplexed RTP server 1: Enabled 0: Disabled
  * @return
  */
 API_EXPORT mk_rtp_server API_CALL mk_rtp_server_create(uint16_t port, int tcp_mode, const char *stream_id);
 API_EXPORT mk_rtp_server API_CALL mk_rtp_server_create2(uint16_t port, int tcp_mode, const char *vhost, const char *app, const char *stream_id);
+API_EXPORT mk_rtp_server API_CALL mk_rtp_server_create3(uint16_t port, int tcp_mode, const char *vhost, const char *app, const char *stream_id, int multiplex);
 
 /**
  * Callback for whether the connection to the server is successful in TCP active mode
@@ -60,6 +62,53 @@ typedef void(API_CALL *on_mk_rtp_server_detach)(void *user_data);
  */
 API_EXPORT void API_CALL mk_rtp_server_set_on_detach(mk_rtp_server ctx, on_mk_rtp_server_detach cb, void *user_data);
 API_EXPORT void API_CALL mk_rtp_server_set_on_detach2(mk_rtp_server ctx, on_mk_rtp_server_detach cb, void *user_data, on_user_data_free user_data_free);
+
+/**
+*Update RTP server filtering SSRC
+ *@param ctx server object
+ *@param ssrc decimal ssrc
+ * 
+ */
+API_EXPORT void API_CALL mk_rtp_server_update_ssrc(mk_rtp_server ctx, uint32_t ssrc);
+
+
+/**
+*RTP information acquisition callback
+ *@param exist RTP information exists 0: does not exist 1: exists
+ *@param peer_ip connection ip
+ *@param peer_port connection port
+ *@param local_ip local ip
+ *@param local_port local port
+ *@param identifier identity information
+ * 
+ */
+typedef void(API_CALL *on_mk_rtp_get_info)(int exist, const char *peer_ip, uint16_t peer_port, const char *local_ip, uint16_t local_port, const char *identifier);
+
+/**
+*Get rtp push information
+ *@param app application name
+ *@param stream stream id
+ *@param cb rtp information acquisition callback
+ *
+ */
+API_EXPORT void API_CALL mk_rtp_get_info(const char *app, const char *stream, on_mk_rtp_get_info cb);
+
+
+/**
+*Pause RTP timeout check
+ *@param app application name
+ *@param stream stream id
+ *
+ */
+API_EXPORT void API_CALL mk_rtp_pause_check(const char *app, const char *stream);
+
+/**
+*Restore RTP timeout check
+ *@param app application name
+ *@param stream stream id
+ *
+ */
+API_EXPORT void API_CALL mk_rtp_resume_check(const char *app, const char *stream);
 
 #ifdef __cplusplus
 }

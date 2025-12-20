@@ -1,4 +1,4 @@
-﻿#ifndef S3MEDIAKIT_SRT_SESSION_H
+#ifndef S3MEDIAKIT_SRT_SESSION_H
 #define S3MEDIAKIT_SRT_SESSION_H
 
 #include "Network/Session.h"

@@ -529,7 +529,7 @@ static string getPullUrl(const string &origin_fmt, const MediaInfo &info) {
         return "";
     }
     // Inform the origin station that this is a pull stream request from the edge station, if the stream is not found, please return the pull stream failure immediately
-    return string(url) + '?' + kEdgeServerParam + '&' + VHOST_KEY + '=' + info.vhost + '&' + info.params;
+    return string(url) + (strchr(url, '?') ? '&' : '?') + kEdgeServerParam + '&' + VHOST_KEY + '=' + info.vhost + '&' + info.params;
 }
 
 static void pullStreamFromOrigin(const vector<string> &urls, size_t index, size_t failed_cnt, const MediaInfo &args, const function<void()> &closePlayer) {
@@ -565,6 +565,10 @@ static mINI jsonToMini(const Value &obj) {
     mINI ret;
     if (obj.isObject()) {
         for (auto it = obj.begin(); it != obj.end(); ++it) {
+            if (it->isNull()) {
+                //Ignore null and fix the problem of wvp passing null to overwrite the Protocol configuration.
+                continue;
+            }
             try {
                 auto str = (*it).asString();
                 ret[it.name()] = std::move(str);
@@ -922,12 +926,24 @@ void installWebHook() {
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastStreamNoneReader, [](BroadcastStreamNoneReaderArgs) {
+        auto auto_close = false;
+        auto muxer = sender.getMuxer();
+        if (muxer && muxer->getOption().auto_close) {
+            auto_close = true;
+        }
+
         if (!origin_urls.empty() && sender.getOriginType() == MediaOriginType::pull) {
             // If no one is watching at the edge station, stop tracing immediately if it is pulling
-            sender.close(false);
-            WarnL << "Actively close stream without watching:" << sender.getOriginUrl();
+            if (!auto_close) {
+                auto ptr = sender.shared_from_this();
+                sender.getOwnerPoller()->async([ptr]() {
+                    ptr->close(false);
+                });
+                WarnL << "Auto close stream when none reader: " << sender.getOriginUrl();
+            }
             return;
         }
+
         GET_CONFIG(string, hook_stream_none_reader, Hook::kOnStreamNoneReader);
         if (!hook_enable || hook_stream_none_reader.empty()) {
             return;
@@ -938,13 +954,17 @@ void installWebHook() {
         dumpMediaTuple(sender.getMediaTuple(), body);
         weak_ptr<MediaSource> weakSrc = sender.shared_from_this();
         // Execute hook
-        do_http_hook(hook_stream_none_reader, body, [weakSrc](const Value &obj, const string &err) {
+        do_http_hook(hook_stream_none_reader, body, [weakSrc, auto_close](const Value &obj, const string &err) {
+            if (auto_close) {
+                // It's closed on the upper level
+                return;
+            }
             bool flag = obj["close"].asBool();
             auto strongSrc = weakSrc.lock();
             if (!flag || !err.empty() || !strongSrc) {
                 return;
             }
-            strongSrc->close(false);
+            strongSrc->getOwnerPoller()->async([strongSrc]() { strongSrc->close(false); });
             WarnL << "Actively close stream without watching:" << strongSrc->getOriginUrl();
         });
     });

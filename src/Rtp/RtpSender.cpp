@@ -25,7 +25,16 @@ RtpSender::~RtpSender() {
     }
 }
 
-void RtpSender::startSend(const MediaSourceEvent::SendRtpArgs &args, const function<void(uint16_t local_port, const SockException &ex)> &cb){
+void RtpSender::startSend(const MediaSourceEvent &sender, const MediaSourceEvent::SendRtpArgs &args, const function<void(uint16_t local_port, const SockException &ex)> &cb){
+    auto origin_socket = sender.getOriginSock(MediaSource::NullMediaSource());
+    _origin_socket = dynamic_pointer_cast<Socket>(origin_socket);
+    if (!_origin_socket) {
+        auto process = dynamic_pointer_cast<RtpProcess>(origin_socket);
+        if (process) {
+            _origin_socket = process->getSock();
+        }
+    }
+
     _args = args;
     if (!_interface) {
         // Do not recreate the object when reconnecting
@@ -278,6 +287,15 @@ void RtpSender::onConnect() {
             }
         });
     }
+
+    if (_socket_rtp->sockType() == toolkit::SockNum::Sock_TCP && _origin_socket) {
+        // The rtp port is a TCP port, and the forwarding speed should control the traffic collection speed.
+        auto origin_socket = _origin_socket;
+        _socket_rtp->setOnFlush([origin_socket]() {
+            origin_socket->enableRecv(true);
+            return true;
+        });
+    }
     InfoL << "startSend rtp success: " << _socket_rtp->get_peer_ip() << ":" << _socket_rtp->get_peer_port() << ", data_type: " << _args.data_type << ", con_type: " << _args.con_type;
 }
 
@@ -386,6 +404,9 @@ void RtpSender::onFlushRtpList(shared_ptr<List<Buffer::Ptr>> rtp_list) {
                 }
                 default: CHECK(0);
             }
+            if (_args.enable_origin_recv_limit && _socket_rtp->sockType() == toolkit::SockNum::Sock_TCP && _socket_rtp->isSocketBusy() && _origin_socket) {
+                _origin_socket->enableRecv(false);
+            }
         });
     };
     if (_args.con_type != MediaSourceEvent::SendRtpArgs::kVoiceTalk) {
@@ -408,6 +429,50 @@ void RtpSender::onErr(const SockException &ex) {
 
 void RtpSender::setOnClose(std::function<void(const toolkit::SockException &ex)> on_close) {
     _on_close = std::move(on_close);
+}
+
+size_t RtpSender::getSendSpeed() const {
+    size_t ret = 0;
+    if (_socket_rtp) {
+        ret += _socket_rtp->getSendSpeed();
+    }
+    if (_socket_rtcp) {
+        ret += _socket_rtcp->getSendSpeed();
+    }
+    return ret;
+}
+
+size_t RtpSender::getRecvSpeed() const {
+    size_t ret = 0;
+    if (_socket_rtp) {
+        ret += _socket_rtp->getRecvSpeed();
+    }
+    if (_socket_rtcp) {
+        ret += _socket_rtcp->getRecvSpeed();
+    }
+    return ret;
+}
+
+size_t RtpSender::getRecvTotalBytes() const {
+    size_t ret = 0;
+    if (_socket_rtp) {
+        ret += _socket_rtp->getRecvTotalBytes();
+    }
+    if (_socket_rtcp) {
+        ret += _socket_rtcp->getRecvTotalBytes();
+    }
+    return ret;
+}
+
+size_t RtpSender::getSendTotalBytes() const {
+    size_t ret = 0;
+    if (_socket_rtp) {
+        ret += _socket_rtp->getSendTotalBytes();
+    }
+    if (_socket_rtcp) {
+        ret += _socket_rtcp->getSendTotalBytes();
+    }
+    return ret;
 }
 
 } // namespace mediakit

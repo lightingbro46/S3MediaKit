@@ -1,28 +1,26 @@
-﻿#include "WebRtcSession.h"
+#include "WebRtcSession.h"
 #include "Util/util.h"
 #include "Network/TcpServer.h"
 #include "Common/config.h"
-#include "IceServer.hpp"
+#include "IceTransport.hpp"
 #include "WebRtcTransport.h"
 
 using namespace std;
+using namespace toolkit;
 
 namespace mediakit {
 
 static string getUserName(const char *buf, size_t len) {
-    if (!RTC::StunPacket::IsStun((const uint8_t *) buf, len)) {
+    if (!RTC::StunPacket::isStun((const uint8_t *) buf, len)) {
         return "";
     }
-    std::unique_ptr<RTC::StunPacket> packet(RTC::StunPacket::Parse((const uint8_t *) buf, len));
+    auto packet = RTC::StunPacket::parse((const uint8_t *) buf, len);
     if (!packet) {
         return "";
     }
-    if (packet->GetClass() != RTC::StunPacket::Class::REQUEST ||
-        packet->GetMethod() != RTC::StunPacket::Method::BINDING) {
-        return "";
-    }
+
     // Received binding request
-    auto vec = split(packet->GetUsername(), ":");
+    auto vec = split(packet->getUsername(), ":");
     return vec[0];
 }
 
@@ -57,10 +55,11 @@ void WebRtcSession::onRecv_l(const char *data, size_t len) {
         if (!transport->getPoller()->isCurrentThread()) {
             auto sock = Socket::createSocket(transport->getPoller(), false);
             // 1. Clone socket (fd remains unchanged), switch poller thread to the thread where WebRtcTransport is located
-            sock->cloneSocket(*(getSock()));
+            auto on_complete = sock->cloneSocket(*(getSock()));
             auto server = _server;
             std::string str(data, len);
-            sock->getPoller()->async([sock, server, str](){
+            // on_complete is destroyed only after the WebRtcSession is created (before network event monitoring starts)
+            sock->getPoller()->async([sock, server, str, on_complete](){
                 auto strong_server = server.lock();
                 if (strong_server) {
                     auto session = static_pointer_cast<WebRtcSession>(strong_server->createSession(sock));
@@ -76,7 +75,8 @@ void WebRtcSession::onRecv_l(const char *data, size_t len) {
     }
     _ticker.resetTime();
     CHECK(_transport);
-    _transport->inputSockData((char *)data, len, this);
+    auto self = static_pointer_cast<WebRtcSession>(shared_from_this());
+    _transport->inputSockData(data, len, self);
 }
 
 void WebRtcSession::onRecv(const Buffer::Ptr &buffer) {
@@ -100,7 +100,7 @@ void WebRtcSession::onError(const SockException &err) {
     auto transport = std::move(_transport);
     getPoller()->async([transport, self]() mutable {
         // Delay decrementing the reference count to prevent the object from being destroyed when using the transport object
-        transport->removeTuple(self.get());
+        transport->removePair(self.get());
         // Ensure that the transport is destroyed before the Session object to prevent WebRtcTransport::onDestory() from not being able to get the Session object
         transport = nullptr;
     }, false);
@@ -138,5 +138,3 @@ const char *WebRtcSession::onSearchPacketTail(const char *data, size_t len) {
 }
 
 }// namespace mediakit
-
-

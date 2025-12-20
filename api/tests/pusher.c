@@ -54,7 +54,8 @@ void API_CALL on_mk_push_event_func(void *user_data,int err_code,const char *err
 void API_CALL on_mk_media_source_regist_func(void *user_data, mk_media_source sender, int regist){
     Context *ctx = (Context *) user_data;
     const char *schema = mk_media_source_get_schema(sender);
-    if (strncmp(schema, ctx->push_url, strlen(schema)) == 0) {
+    if (strncmp(schema, ctx->push_url, strlen(schema)) == 0 ||
+        (!strncmp(ctx->push_url, "webrtc", 5) && !strcmp(schema, "rtsp")) ) {
         // Determine if it is a stream registration or deregistration event related to the streaming protocol
         release_pusher(&(ctx->pusher));
         if (regist) {

@@ -1,4 +1,4 @@
-﻿#include "RtpExt.h"
+#include "RtpExt.h"
 #include "Sdp.h"
 
 #pragma pack(push, 1)
@@ -203,7 +203,7 @@ RtpExtType RtpExt::getExtType(const string &url) {
 const string &RtpExt::getExtUrl(RtpExtType type) {
     auto it = s_type_to_url.find(type);
     if (it == s_type_to_url.end()) {
-        throw std::invalid_argument(string("Unrecognized rtp ext type:") + to_string((int) type));
+        throw std::invalid_argument(string("unrecognized rtp ext type:") + to_string((int) type));
     }
     return it->second;
 }
@@ -287,7 +287,7 @@ string RtpExt::dumpString() const {
             break;
         }
     }
-    return std::move(printer);
+    return printer;
 }
 
 //https://tools.ietf.org/html/rfc6464
@@ -319,6 +319,7 @@ uint8_t RtpExt::getAudioLevel(bool *vad) const{
 }
 
 //http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time
+// Wire format: 1-byte extension, 3 bytes of data. total 4 bytes extra per packet (plus shared 4 bytes for all extensions present: 2 byte magic word 0xBEDE, 2 byte # of extensions). Will in practice replace the “toffset” extension so we should see no long term increase in traffic as a result.  [AUTO-TRANSLATED:178290be]
 // Wire format: 1-byte extension, 3 bytes of data. total 4 bytes extra per packet (plus shared 4 bytes for all extensions present: 2 byte magic word 0xBEDE, 2 byte # of extensions). Will in practice replace the “toffset” extension so we should see no long term increase in traffic as a result.
 //
 //Encoding: Timestamp is in seconds, 24 bit 6.18 fixed point, yielding 64s wraparound and 3.8us resolution (one increment for each 477 bytes going out on a 1Gbps interface).
@@ -364,6 +365,7 @@ string RtpExt::getSdesMid() const {
 
 
 //https://tools.ietf.org/html/draft-ietf-avtext-rid-06
+// 用于simulcast  [AUTO-TRANSLATED:59b2682f]
 // Used for simulcast
 //3.1.  RTCP 'RtpStreamId' SDES Extension
 //
@@ -453,7 +455,7 @@ void RtpExt::getVideoTiming(uint8_t &flags,
 //Values:
 //0x00: Unspecified. Default value. Treated the same as an absence of an extension.
 //0x01: Screenshare. Video stream is of a screenshare type.
-//0x02: Camera?
+// 0x02: Camera?
 //Notes: Extension shoud be present only in the last packet of key-frames.
 // If attached to other packets it should be ignored.
 // If extension is absent, Unspecified value is assumed.

@@ -143,6 +143,8 @@ API_EXPORT uint64_t API_CALL mk_media_source_get_alive_second(const mk_media_sou
 API_EXPORT int API_CALL mk_media_source_close(const mk_media_source ctx,int force);
 //MediaSource::seekTo()
 API_EXPORT int API_CALL mk_media_source_seek_to(const mk_media_source ctx,uint32_t stamp);
+// MediaSource::setSpeed()
+API_EXPORT void API_CALL mk_media_source_set_speed(const mk_media_source ctx, float speed);
 
 /**
  * Callback for whether rtp push stream is successful or not (after the first success, it will keep retrying)

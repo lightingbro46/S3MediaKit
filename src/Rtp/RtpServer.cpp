@@ -52,7 +52,12 @@ public:
     RtpProcess::Ptr getProcess() const { return _process; }
 
     void onRecvRtp(const Socket::Ptr &sock, const Buffer::Ptr &buf, struct sockaddr *addr) {
-        _process->inputRtp(true, sock, buf->data(), buf->size(), addr);
+        try {
+            _process->inputRtp(true, sock, buf->data(), buf->size(), addr);
+        } catch (std::exception &ex) {
+            _process->onDetach(SockException(Err_shutdown, ex.what()));
+            return;
+        }
         // Count RTP reception status, used to send RR packets
         auto header = (RtpHeader *)buf->data();
         sendRtcp(ntohl(header->ssrc), addr);
@@ -175,7 +180,7 @@ void RtpServer::start(uint16_t local_port, const char *local_ip, const MediaTupl
     TcpServer::Ptr tcp_server;
     if (tcp_mode == PASSIVE || tcp_mode == ACTIVE) {
         auto processor = helper ? helper->getProcess() : nullptr;
-        // If the same processor object is shared, then the TCP server Shenzhen is in single-threaded mode to ensure thread safety
+        // If the same processor object is shared, declare the TCP server in single-threaded mode to ensure thread safety.
         tcp_server = std::make_shared<TcpServer>(processor ? poller : nullptr);
         (*tcp_server)[RtpSession::kVhost] = tuple.vhost;
         (*tcp_server)[RtpSession::kApp] = tuple.app;

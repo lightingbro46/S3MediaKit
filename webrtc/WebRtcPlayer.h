@@ -1,13 +1,13 @@
-﻿#ifndef S3MEDIAKIT_WEBRTCPLAYER_H
+#ifndef S3MEDIAKIT_WEBRTCPLAYER_H
 #define S3MEDIAKIT_WEBRTCPLAYER_H
 
-#include "Rtsp/RtspMediaSource.h"
 #include "WebRtcTransport.h"
+#include "Rtsp/RtspMediaSource.h"
 
 namespace mediakit {
 /**
- * @brief H.264 B frame filter
- * Used to remove B frames from H.264 RTP stream
+ * @brief H.264 B-frame filter
+ * Used to remove B-frames from H.264 RTP streams
  */
 class H264BFrameFilter {
 public:
@@ -41,67 +41,67 @@ public:
     ~H264BFrameFilter() = default;
 
     /**
-     * @brief Processing a single RTP packet, removing B-frames
-     * @param packet input RTP package
-     * @return If it is not a B frame, it returns the original packet, otherwise it returns nullptr
+     * @brief Process a single RTP packet, remove B frames
+     * @param packet input RTP packet
+     * @return If it is not a B frame, return the original packet, otherwise return nullptr
      */
     RtpPacket::Ptr processPacket(const RtpPacket::Ptr &packet);
 
 private:
     /**
-     * @brief determines whether the RTP packet contains the B frame of H.264
-     * @param packet RTP package
-     * @return Return true if it is B frame, otherwise return false
+     * @brief Determine if the RTP packet contains H.264 B-frames
+     * @param packet RTP packet
+     * @return Returns true if it is a B-frame, otherwise returns false
      */
     bool isH264BFrame(const RtpPacket::Ptr &packet) const;
 
     /**
-     * @brief determines whether it is a B-frame based on the NAL type and data
+     * @brief Determine if it is a B-frame based on NAL type and data
      * @param nal_type NAL unit type
-     * @param data NAL unit data (excluding NAL headers)
+     * @param data NAL unit data (excluding NAL header)
      * @param size Data size
-     * @return Return true if it is B frame, otherwise return false
+     * @return Returns true if it is a B-frame, otherwise returns false
      */
     bool isBFrameByNalType(uint8_t nal_type, const uint8_t *data, size_t size) const;
 
     /**
-     * @brief parsing index Columbus encoding
-     * @param data data buffer
+     * @brief Decode Exp-Golomb code
+     * @param data Data buffer
      * @param size Buffer size
-     * @param bits_offset bit offset
-     * @return parsed value
+     * @param bits_offset Bit offset
+     * @return Decoded value
      */
     int decodeExpGolomb(const uint8_t *data, size_t size, size_t &bitPos) const;
 
     /**
-     * @brief read bits from bitstream
-     * @param data data buffer
+     * @brief Read a bit from the bitstream
+     * @param data Data buffer
      * @param size Buffer size
-     * @return Read bit value (0 or 1)
+     * @return The bit value read (0 or 1)
      */
     int getBit(const uint8_t *data, size_t size) const;
 
     /**
      * @brief Extract slice type value
-     * @param data data buffer
+     * @param data Data buffer
      * @param size Buffer size
      * @return Slice type value
      */
     uint8_t extractSliceType(const uint8_t *data, size_t size) const;
 
     /**
-     * @brief Processing FU-A sharding
+     * @brief Handle FU-A fragments
      * @param payload Data buffer
-     * @param payload_size buffer size
-     * @return Return true if it is B frame, otherwise return false
+     * @param payload_size Buffer size
+     * @return Returns true if it is a B-frame, otherwise returns false
      */
     bool handleFua(const uint8_t *payload, size_t payload_size) const;
 
     /**
-    * @brief handles STAP-A combination package
-    * @param payload Data buffer
-    * @param payload_size buffer size
-    * @return Return true if it is B frame, otherwise return false
+   * @brief Handle STAP-A aggregation packets
+   * @param payload Data buffer
+   * @param payload_size Buffer size
+   * @return Returns true if it is a B-frame, otherwise returns false
    */
     bool handleStapA(const uint8_t *payload, size_t payload_size) const;
 
@@ -109,13 +109,14 @@ private:
 private:
     uint16_t _last_seq; // Maintain the serial number of the output stream
     uint32_t _last_stamp; // Maintain the timestamp of the output stream
-    bool _first_packet; // Is it the first package marker
+    bool _first_packet; // Flag indicating if it is the first packet
 };
 
 class WebRtcPlayer : public WebRtcTransportImp {
 public:
     using Ptr = std::shared_ptr<WebRtcPlayer>;
-    static Ptr create(const EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info);
+    static Ptr create(const toolkit::EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info,
+                      WebRtcTransport::Role role, WebRtcTransport::SignalingProtocols signaling_protocols);
     MediaInfo getMediaInfo() { return _media_info; }
 
 protected:
@@ -125,7 +126,7 @@ protected:
     void onRtcConfigure(RtcConfigure &configure) const override;
 
 private:
-    WebRtcPlayer(const EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info);
+    WebRtcPlayer(const toolkit::EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info);
 
     void sendConfigFrames(uint32_t before_seq, uint32_t sample_rate, uint32_t timestamp, uint64_t ntp_timestamp);
 

@@ -31,6 +31,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstanc, LPSTR lpCmdLine,
     freopen_s(&stream, "CON", "r", stdin);//Redirecting the input stream
     freopen_s(&stream, "CON", "w", stdout);//Redirecting the input stream
 
+   
+    //Clear the stream buffer. Text still cannot be output on win11. You need to add the following code
+    std::cin.clear();
+    std::cout.clear();
+
     //3. If we need to use the console window handle, we can call FindWindow to get it：
     HWND _consoleHwnd;
     SetConsoleTitleA("test_player");//Set the window name
@@ -46,8 +51,8 @@ int main(int argc, char *argv[]) {
         Logger::Instance().add(std::make_shared<ConsoleChannel>());
         Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
 
-        if (argc < 3) {
-            ErrorL << "\r\nTest Method：./test_player rtxp_url rtp_type\r\n"
+        if (argc < 2) {
+            ErrorL << "\r\nTest method:./test_player rtxp_url [rtp_type] [play_track]\r\n"
                    << "For example: ./test_player rtsp://admin:123456@127.0.0.1/live/0 0\r\n";
             return 0;
         }
@@ -86,18 +91,15 @@ int main(int argc, char *argv[]) {
                 FFmpegSwr::Ptr swr;
 
                 decoder->setOnDecode([audio_player, swr](const FFmpegFrame::Ptr &frame) mutable {
-                    int chs = 0;
                     if (!swr) {
 # if LIBAVCODEC_VERSION_INT >= FF_CODEC_VER_7_1
                         swr = std::make_shared<FFmpegSwr>(AV_SAMPLE_FMT_S16, &(frame->get()->ch_layout), frame->get()->sample_rate);
-                        chs = (&frame->get()->ch_layout)->nb_channels;
 #else
                         swr = std::make_shared<FFmpegSwr>(AV_SAMPLE_FMT_S16, frame->get()->channels, frame->get()->channel_layout, frame->get()->sample_rate);
-                        chs = frame->get()->channels;
 #endif
                     }
                     auto pcm = swr->inputFrame(frame);
-                    auto len = pcm->get()->nb_samples * chs * av_get_bytes_per_sample((enum AVSampleFormat)pcm->get()->format);
+                    auto len = pcm->get()->nb_samples * pcm->getChannels() * av_get_bytes_per_sample((enum AVSampleFormat)pcm->get()->format);
                     audio_player->playPCM((const char *)(pcm->get()->data[0]), MIN(len, frame->get()->linesize[0]));
                 });
                 audioTrack->addDelegate([decoder](const Frame::Ptr &frame) { return decoder->inputFrame(frame, false, true); });
@@ -105,10 +107,11 @@ int main(int argc, char *argv[]) {
         });
 
         player->setOnShutdown([](const SockException &ex) { WarnL << "play shutdown: " << ex.what(); });
-
-        (*player)[Client::kRtpType] = atoi(argv[2]);
-        // Don't wait for track ready to callback and playback successfully, which can speed up the second opening speed
+        //Do not wait for track ready before calling back the playback success event, which can speed up the start-up speed.
         (*player)[Client::kWaitTrackReady] = false;
+        if (argc > 2) {
+            (*player)[Client::kRtpType] = atoi(argv[2]);
+        }
         if (argc > 3) {
             (*player)[Client::kPlayTrack] = atoi(argv[3]);
         }
