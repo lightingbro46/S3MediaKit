@@ -311,6 +311,53 @@
 			"response": []
 		},
 		{
+			"name": "Delete screenshot(deleteSnapDirectory)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/deleteSnapDirectory?secret={{S3MediaKit_secret}}&vhost={{defaultVhost}}&app=live&stream=test&file=71_1740828613.jpg",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"deleteSnapDirectory"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}",
+							"description": "API operation key (configuration file configuration)"
+						},
+						{
+							"key": "vhost",
+							"value": "{{defaultVhost}}",
+							"description": "Filter virtual hosts, such as __defaultVhost__"
+						},
+						{
+							"key": "app",
+							"value": "live",
+							"description": "Filter the application name, such as live"
+						},
+						{
+							"key": "stream",
+							"value": "test",
+							"description": "Filter the stream id, e.g. test"
+						},
+						{
+							"key": "file",
+							"value": "",
+							"disabled": true,
+							"description": "File name, optional"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
 			"name": "Turn off a single stream(close_stream)",
 			"request": {
 				"method": "GET",
@@ -522,7 +569,7 @@
 			"response": []
 		},
 		{
-			"name": "Add rtsp/rtmp/hls/srt stream pull proxy(addStreamProxy)",
+			"name": "Add streaming agent(addStreamProxy)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -560,7 +607,7 @@
 						{
 							"key": "url",
 							"value": "rtmp://live.hkstv.hk.lxdns.com/live/hks2",
-							"description": "Pull the stream address, e.g. rtmp://live.hkstv.hk.lxdns.com/live/hks2"
+							"description": "Stream pulling address, supporting rtsp/rtmp/hls/srt/http-flv/http-ts protocols"
 						},
 						{
 							"key": "rtp_type",
@@ -1334,7 +1381,63 @@
 			"response": []
 		},
 		{
-			"name": "Set the recording speed(setRecordSpeed)",
+			"name": "Start event video recording(startRecordTask)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/startRecordTask?secret={{S3MediaKit_secret}}&vhost={{defaultVhost}}&app=live&stream=test&path=1.mp4&back_ms=10000&forward_ms=10000",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"startRecordTask"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}",
+							"description": "API operation key(Configuration file configuration)"
+						},
+						{
+							"key": "vhost",
+							"value": "{{defaultVhost}}",
+							"description": "Virtual host, e.g. __defaultVhost__"
+						},
+						{
+							"key": "app",
+							"value": "live",
+							"description": "Application name, e.g. live"
+						},
+						{
+							"key": "stream",
+							"value": "test",
+							"description": "Stream id, e.g. obs"
+						},
+						{
+							"key": "path",
+							"value": "1.mp4",
+							"description": "Recording file save relative path, including name"
+						},
+						{
+							"key": "back_ms",
+							"value": "10000",
+							"description": "Recording duration to look back"
+						},
+						{
+							"key": "forward_ms",
+							"value": "10000",
+							"description": "Recording duration to look forward"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Set recording speed(setRecordSpeed)",
 			"request": {
 				"method": "GET",
 				"header": [],
@@ -1916,6 +2019,12 @@
 							"key": "stream_id",
 							"value": "test",
 							"description": "The stream id bound to this port"
+						},
+						{
+							"key": "pause_seconds",
+							"value": "300",
+							"description": "After pausing timeout monitoring, it will resume after pause_seconds time",
+							"disabled": true
 						}
 					]
 				}
@@ -2092,6 +2201,12 @@
 							"value": "",
 							"description": "Send RTP to receive at the same time, which is generally used for bidirectional language intercom. If it is not empty, it means that the reception is enabled and the value is the id of the receiving stream.",
 							"disabled": true
+						},
+						{
+							"key": "enable_origin_recv_limit",
+							"value": "1",
+							"description": "When forwarding rtp (tcp mode), if it cannot be sent out, whether to limit the source end's traffic collection speed. This parameter is more important when forwarding multi-speed rtp.",
+							"disabled": true
 						}
 					]
 				}
@@ -2186,6 +2301,12 @@
 							"value": "5000",
 							"description": "Wait for tcp connection timeout time, unit milliseconds, default 5000 milliseconds",
 							"disabled": true
+						},
+						{
+							"key": "enable_origin_recv_limit",
+							"value": "1",
+							"description": "When forwarding rtp (tcp mode), if it cannot be sent out, whether to limit the source end's traffic collection speed. This parameter is more important when forwarding multi-speed rtp.",
+							"disabled": true
 						}
 					]
 				}
@@ -2260,6 +2381,12 @@
 							"key": "only_audio",
 							"value": "1",
 							"description": "When packaging in RTP ES, is it necessary to package only audio?",
+							"disabled": true
+						},
+						{
+							"key": "enable_origin_recv_limit",
+							"value": "1",
+							"description": "When forwarding rtp (tcp mode), if it cannot be sent out, whether to limit the source end's traffic collection speed. This parameter is more important when forwarding multi-speed rtp.",
 							"disabled": true
 						}
 					]
@@ -2486,6 +2613,18 @@
 							"disabled": true
 						},
 						{
+							"key": "seek_ms",
+							"value": "0",
+							"description": "On-demand seek to a specific location, in milliseconds",
+							"disabled": true
+						},
+						{
+							"key": "speed",
+							"value": "1.0",
+							"description": "Playback speed, float type",
+							"disabled": true
+						},
+						{
 							"key": "enable_hls",
 							"value": "",
 							"description": "Whether to convert hls-ts",
@@ -2600,6 +2739,154 @@
 							"value": "test",
 							"description": "Save the file name after the browser downloads the file; optional parameters",
 							"disabled": true
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "WebRTC-Register to signaling server (addWebrtcRoomKeeper)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/addWebrtcRoomKeeper?secret={{S3MediaKit_secret}}&server_host=127.0.0.1&server_port=3000&room_id=peer_1",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"addWebrtcRoomKeeper"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}"
+						},
+						{
+							"key": "server_host",
+							"value": "127.0.0.1",
+							"description": "The signaling server address to register to"
+						},
+						{
+							"key": "server_port",
+							"value": "3000",
+							"description": "The signaling server port to register to"
+						},
+						{
+							"key": "room_id",
+							"value": "peer_1",
+							"description": "roomid to be registered"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "WebRTC -Logout from signaling server (delWebrtcRoomKeeper)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/delWebrtcRoomKeeper?secret={{S3MediaKit_secret}}&room_key=",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"delWebrtcRoomKeeper"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}"
+						},
+						{
+							"key": "room_key",
+							"value": ""
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "WebRTC-Peer View registration information (listWebrtcRoomKeepers)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/listWebrtcRoomKeepers?secret={{S3MediaKit_secret}}",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"listWebrtcRoomKeepers"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "WebRTC-Signaling server views registration information (listWebrtcRooms)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/listWebrtcRooms?secret={{S3MediaKit_secret}}",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"listWebrtcRooms"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "WebRTC-View WebRTCProxyPlayer connection information (getWebrtcProxyPlayerInfo)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{S3MediaKit_URL}}/index/api/getWebrtcProxyPlayerInfo?secret={{S3MediaKit_secret}}&key=__defaultVhost__/live/test",
+					"host": [
+						"{{S3MediaKit_URL}}"
+					],
+					"path": [
+						"index",
+						"api",
+						"getWebrtcProxyPlayerInfo"
+					],
+					"query": [
+						{
+							"key": "secret",
+							"value": "{{S3MediaKit_secret}}"
+						},
+						{
+							"key": "key",
+							"value": "__defaultVhost__/live/test"
 						}
 					]
 				}

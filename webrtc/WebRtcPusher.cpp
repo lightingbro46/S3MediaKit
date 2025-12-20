@@ -1,8 +1,9 @@
-﻿#include "WebRtcPusher.h"
+#include "WebRtcPusher.h"
 #include "Common/config.h"
 #include "Rtsp/RtspMediaSourceImp.h"
 
 using namespace std;
+using namespace toolkit;
 
 namespace mediakit {
 
@@ -10,13 +11,18 @@ WebRtcPusher::Ptr WebRtcPusher::create(const EventPoller::Ptr &poller,
                                        const RtspMediaSource::Ptr &src,
                                        const std::shared_ptr<void> &ownership,
                                        const MediaInfo &info,
-                                       const ProtocolOption &option) {
-    WebRtcPusher::Ptr ret(new WebRtcPusher(poller, src, ownership, info, option), [](WebRtcPusher *ptr) {
+                                       const ProtocolOption &option,
+                                       WebRtcTransport::Role role,
+                                       WebRtcTransport::SignalingProtocols signaling_protocols) {
+    WebRtcPusher::Ptr pusher(new WebRtcPusher(poller, src, ownership, info, option), [](WebRtcPusher *ptr) {
         ptr->onDestory();
         delete ptr;
     });
-    ret->onCreate();
-    return ret;
+
+    pusher->setRole(role);
+    pusher->setSignalingProtocols(signaling_protocols);
+    pusher->onCreate();
+    return pusher;
 }
 
 WebRtcPusher::WebRtcPusher(const EventPoller::Ptr &poller,
@@ -32,17 +38,9 @@ WebRtcPusher::WebRtcPusher(const EventPoller::Ptr &poller,
 }
 
 bool WebRtcPusher::close(MediaSource &sender) {
-    // This callback is triggered in another thread
-    string err = StrPrinter << "close media: " << sender.getUrl();
-    weak_ptr<WebRtcPusher> weak_self = static_pointer_cast<WebRtcPusher>(shared_from_this());
-    getPoller()->async([weak_self, err]() {
-        auto strong_self = weak_self.lock();
-        if (strong_self) {
-            strong_self->onShutdown(SockException(Err_shutdown, err));
-            // Actively close the stream, then do not delay the logout
-            strong_self->_push_src = nullptr;
-        }
-    });
+    onShutdown(SockException(Err_shutdown, "close media: " + sender.getUrl()));
+    // Actively close the stream, then do not delay the logout
+    _push_src = nullptr;
     return true;
 }
 
@@ -115,7 +113,7 @@ void WebRtcPusher::onDestory() {
     GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
 
     if (getSession()) {
-        WarnL << "RTC stream pusher (" << _media_info.shortUrl() << ") end of push flow, time-consuming(s):" << duration;
+        WarnL << "RTC stream pusher(" << _media_info.shortUrl() << ")End of push flow, time-consuming(s):" << duration;
         if (bytes_usage >= iFlowThreshold * 1024) {
             NOTICE_EMIT(BroadcastFlowReportArgs, Broadcast::kBroadcastFlowReport, _media_info, bytes_usage, duration, false, *getSession());
         }
@@ -154,6 +152,62 @@ void WebRtcPusher::onRtcpBye() {
 void WebRtcPusher::onShutdown(const SockException &ex) {
      _push_src = nullptr;
      WebRtcTransportImp::onShutdown(ex);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+WebRtcPlayerClient::Ptr WebRtcPlayerClient::create(const EventPoller::Ptr &poller, WebRtcTransport::Role role,
+                                                   WebRtcTransport::SignalingProtocols signaling_protocols) {
+    WebRtcPlayerClient::Ptr pusher(new WebRtcPlayerClient(poller), [](WebRtcPlayerClient *ptr) {
+        ptr->onDestory();
+        delete ptr;
+    });
+
+    pusher->setRole(role);
+    pusher->setSignalingProtocols(signaling_protocols);
+    pusher->onCreate();
+    return pusher;
+}
+
+WebRtcPlayerClient::WebRtcPlayerClient(const EventPoller::Ptr &poller)
+    : WebRtcTransportImp(poller) {
+    _demuxer = std::make_shared<RtspDemuxer>();
+}
+
+void WebRtcPlayerClient::onRecvRtp(MediaTrack &track, const string &rid, RtpPacket::Ptr rtp) {
+    auto key_pos = _demuxer->inputRtp(rtp);
+    if (_push_src) {
+        _push_src->onWrite(rtp, key_pos);
+    }
+}
+
+void WebRtcPlayerClient::onStartWebRTC() {
+    WebRtcTransportImp::onStartWebRTC();
+    CHECK(!_answer_sdp->supportSimulcast());
+    auto sdp = _answer_sdp->toRtspSdp();
+    if (canRecvRtp()) {
+        if (_push_src) {
+            _push_src->setSdp(sdp);
+        }
+        _demuxer->loadSdp(sdp);
+    }
+}
+
+void WebRtcPlayerClient::onRtcConfigure(RtcConfigure &configure) const {
+    WebRtcTransportImp::onRtcConfigure(configure);
+    // This is just pushing the stream
+    configure.audio.direction = configure.video.direction = RtpDirection::recvonly;
+}
+
+vector<Track::Ptr> WebRtcPlayerClient::getTracks(bool ready) const {
+    return _demuxer->getTracks(ready);
+}
+
+void WebRtcPlayerClient::setMediaSource(RtspMediaSource::Ptr src) {
+    _push_src = std::move(src);
+    if (_push_src && canRecvRtp()) {
+        _push_src->setSdp(_answer_sdp->toRtspSdp());
+    }
 }
 
 }// namespace mediakit

@@ -24,10 +24,10 @@ public:
                             if (!media) {
                                 break;
                             }
-                            if (!media->close(true)) {
-                                break;
-                            }
-                            (*stream) << "\tKicked successfully:" << media->getUrl() << "\r\n";
+                            media->getOwnerPoller()->async([media]() {
+                                media->close(true);
+                            });
+                            (*stream) << "\tKicked out successfully:" << media->getUrl() << "\r\n";
                             return;
                         } while (0);
                         (*stream) << "\tKicked out failed:" << media->getUrl() << "\r\n";

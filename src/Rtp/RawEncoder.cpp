@@ -3,7 +3,7 @@
 #include "RawEncoder.h"
 #include "Extension/Factory.h"
 #include "Rtsp/RtspMuxer.h"
-#include "Common//config.h"
+#include "Common/config.h"
 
 using namespace toolkit;
 

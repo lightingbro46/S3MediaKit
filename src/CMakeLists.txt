@@ -3,14 +3,6 @@ file(GLOB MediaKit_SRC_LIST
   ${CMAKE_CURRENT_SOURCE_DIR}/*/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/*/*.h)
 
-if(NOT ENABLE_SRT)
-    file(GLOB SRT_SRC_LIST
-        ${CMAKE_CURRENT_SOURCE_DIR}/Srt/*.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/Srt/*.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Srt/*.h)
-    list(REMOVE_ITEM MediaKit_SRC_LIST ${SRT_SRC_LIST})
-endif()
-
 if(USE_SOLUTION_FOLDERS AND (NOT GROUP_BY_EXPLORER))
   # Group files in the IDE, separate source files and header files
   set_file_group("${CMAKE_CURRENT_SOURCE_DIR}" ${MediaKit_SRC_LIST})
@@ -43,18 +35,10 @@ update_cached_list(MK_LINK_LIBRARIES S3MediaKit::MediaKit)
 # Not in use
 if(ENABLE_CXX_API)
   # Keep directory structure
-  if(ENABLE_SRT)
-    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
       DESTINATION ${INSTALL_PATH_INCLUDE}/S3MediaKit
       FILES_MATCHING
         PATTERN "*.h")
-  else()
-    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
-      DESTINATION ${INSTALL_PATH_INCLUDE}/S3MediaKit
-      FILES_MATCHING 
-        REGEX ".*/Srt.*" EXCLUDE
-        PATTERN "*.h")
-  endif()
   install(TARGETS s3mediakit
     DESTINATION ${INSTALL_PATH_LIB})
 endif ()

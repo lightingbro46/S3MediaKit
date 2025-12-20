@@ -1,13 +1,6 @@
 # Acknowledgements and statements
 Some files under this folder are extracted from [MediaSoup](https://github.com/versatica/mediasoup) and are:
 
-- ice related functions:
-  - IceServer.cpp
-  - IceServer.hpp
-  - StunPacket.cpp
-  - StunPacket.hpp
-  - Utils.hpp
-  
 - dtls related functions:
    - DtlsTransport.cpp
    - DtlsTransport.hpp

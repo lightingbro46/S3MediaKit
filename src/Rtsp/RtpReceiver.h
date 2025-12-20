@@ -154,8 +154,14 @@ private:
     }
 
     iterator popIterator(iterator it) {
-        output(it->first, std::move(it->second));
-        return _pkt_sort_cache_map.erase(it);
+        try {
+            output(it->first, std::move(it->second));
+            return _pkt_sort_cache_map.erase(it);
+        } catch (...) {
+            // To prevent exceptions from being thrown, the iterator is not removed, causing the rtp package to be empty.
+            _pkt_sort_cache_map.erase(it);
+            throw;
+        }
     }
 
     void output(SEQ seq, T packet) {

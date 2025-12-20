@@ -243,12 +243,12 @@ void H265RtpEncoder::packRtpFu(const char *ptr, size_t len, uint64_t pts, bool i
     auto nal_type = H265_TYPE(ptr[0]); //Get the 5bit frame type of NALU
     unsigned char s_e_flags;
     bool fu_start = true;
-    bool mark_bit = false;
+    bool fu_end = false;
     size_t offset = 2;
-    while (!mark_bit) {
+    while (!fu_end) {
         if (len <= offset + max_size) {
             // FU end
-            mark_bit = true;
+            fu_end = true;
             max_size = len - offset;
             s_e_flags = (1 << 6) | nal_type;
         } else if (fu_start) {
@@ -261,6 +261,8 @@ void H265RtpEncoder::packRtpFu(const char *ptr, size_t len, uint64_t pts, bool i
 
         {
             // Pass in nullptr first, do not copy the payload memory
+            // Set the mark bit only when the last fragment of FU and the entire frame need to set the mark
+            bool mark_bit = fu_end && is_mark;
             auto rtp = getRtpInfo().makeRtp(TrackVideo, nullptr, max_size + 3, mark_bit, pts);
             // rtp payload load part
             uint8_t *payload = rtp->getPayload();

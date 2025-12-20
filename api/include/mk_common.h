@@ -170,22 +170,24 @@ API_EXPORT uint16_t API_CALL mk_rtp_server_start(uint16_t port);
  */
 API_EXPORT uint16_t API_CALL mk_rtc_server_start(uint16_t port);
 
-// Get webrtc answer sdp callback function
-typedef void(API_CALL *on_mk_webrtc_get_answer_sdp)(void *user_data, const char *answer, const char *err);
 
 /**
- * webrtc exchange sdp, generate answer sdp based on offer sdp
- * @param user_data Callback user pointer
- * @param cb Callback function
- * @param type webrtc plugin type, supports echo, play, push
- * @param offer webrtc offer sdp
- * @param url rtc url, for example rtc://__defaultVhost/app/stream?key1=val1&key2=val2
+*Create websocket[s] signaling server
+ *@param port websocket listening port
+ *@param ssl whether it is an ssl type server
+ *@return 0: failure, non-0: port number
+ * 
  */
-API_EXPORT void API_CALL mk_webrtc_get_answer_sdp(void *user_data, on_mk_webrtc_get_answer_sdp cb, const char *type,
-                                                  const char *offer, const char *url);
+API_EXPORT uint16_t API_CALL mk_signaling_server_start(uint16_t port, int ssl);
 
-API_EXPORT void API_CALL mk_webrtc_get_answer_sdp2(void *user_data, on_user_data_free user_data_free, on_mk_webrtc_get_answer_sdp cb, const char *type,
-                                                  const char *offer, const char *url);
+/**
+*Create webrtc-ice[s] server
+ *@param port websocket listening port
+ *@return 0: failure, non-0: port number
+ *
+ */
+API_EXPORT uint16_t API_CALL mk_ice_server_start(uint16_t port);
+
 
 /**
  * Create srt server

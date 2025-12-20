@@ -434,6 +434,8 @@ extern const std::string kGopCache;
 extern const std::string kRtpG711DurMs;
 // udp recv socket buffer size
 extern const std::string kUdpRecvSocketBuffer;
+// Wait for the next frame after ps/ts parsing to determine whether the frame is complete. After turning it on, it will improve compatibility, but it may increase the delay.
+extern const std::string kMergeFrame;
 } // namespace RtpProxy
 
 /**
@@ -477,6 +479,8 @@ extern const std::string kRtspSpeed;
 extern const std::string kLatency;
 // Set SRT PassPhrase
 extern const std::string kPassPhrase;
+// Custom rtsp/http header
+extern const std::string kCustomHeader;
 } // namespace Client
 
 // //////////SSDP configuration///////////

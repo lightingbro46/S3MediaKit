@@ -74,7 +74,7 @@ public:
      * Used for audio and video synchronization, audio should be synchronized with video (only modify audio timestamp)
      * Because modifying the audio timestamp does not affect the playback speed
      */
-    void syncTo(Stamp &other);
+    void syncTo(Stamp &other, int count = 1);
 
     /**
      * Whether to allow timestamp rollback
@@ -97,7 +97,7 @@ private:
 
 private:
     bool _playback = false;
-    bool _need_sync = false;
+    int _need_sync = 0;
     // Default does not allow timestamp rollback
     bool _enable_rollback = false;
     int64_t _relative_stamp = 0;

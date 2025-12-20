@@ -142,7 +142,7 @@ string FCI_REMB::dumpString() const {
     for (auto &ssrc : ((FCI_REMB *)this)->getSSRC()) {
         printer << ssrc << " ";
     }
-    return std::move(printer);
+    return printer;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -196,7 +196,7 @@ string FCI_NACK::dumpString() const {
         }
         ++pid;
     }
-    return std::move(printer);
+    return printer;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -248,7 +248,7 @@ uint16_t RunLengthChunk::getRunLength() const {
 string RunLengthChunk::dumpString() const {
     _StrPrinter printer;
     printer << "run length chunk, symbol:" << (int)symbol << ", run length:" << getRunLength();
-    return std::move(printer);
+    return printer;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -333,7 +333,7 @@ string StatusVecChunk::dumpString() const {
     for (auto &item : vec) {
         printer << (int)item << " ";
     }
-    return std::move(printer);
+    return printer;
 }
 
 ///////////////////////////////////////////////////////
@@ -463,7 +463,7 @@ string FCI_TWCC::dumpString(size_t total_size) const {
         printer << "rtp seq:" << pr.first << ", packet status:" << (int)(pr.second.first)
                 << ", delta:" << pr.second.second << "\n";
     }
-    return std::move(printer);
+    return printer;
 }
 
 static void appendDeltaString(string &delta_str, FCI_TWCC::TwccPacketStatus &status, int count) {

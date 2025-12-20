@@ -1,4 +1,4 @@
-﻿#ifndef S3MEDIAKIT_NACK_H
+#ifndef S3MEDIAKIT_NACK_H
 #define S3MEDIAKIT_NACK_H
 
 #include <set>

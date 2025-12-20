@@ -15,6 +15,9 @@ public:
      */
     void play(const std::string &url) override;
 
+    size_t getRecvSpeed() override;
+    size_t getRecvTotalBytes() override;
+
     /**
      * Stop playing
      */

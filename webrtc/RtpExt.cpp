@@ -1,4 +1,4 @@
-﻿#include "RtpExt.h"
+#include "RtpExt.h"
 #include "Sdp.h"
 
 #pragma pack(push, 1)
@@ -203,7 +203,7 @@ RtpExtType RtpExt::getExtType(const string &url) {
 const string &RtpExt::getExtUrl(RtpExtType type) {
     auto it = s_type_to_url.find(type);
     if (it == s_type_to_url.end()) {
-        throw std::invalid_argument(string("Unrecognized rtp ext type:") + to_string((int) type));
+        throw std::invalid_argument(string("unrecognized rtp ext type:") + to_string((int) type));
     }
     return it->second;
 }
@@ -287,7 +287,7 @@ string RtpExt::dumpString() const {
             break;
         }
     }
-    return std::move(printer);
+    return printer;
 }
 
 //https://tools.ietf.org/html/rfc6464
@@ -455,7 +455,7 @@ void RtpExt::getVideoTiming(uint8_t &flags,
 //Values:
 //0x00: Unspecified. Default value. Treated the same as an absence of an extension.
 //0x01: Screenshare. Video stream is of a screenshare type.
-//0x02: Camera?
+// 0x02: Camera?
 //Notes: Extension shoud be present only in the last packet of key-frames.
 // If attached to other packets it should be ignored.
 // If extension is absent, Unspecified value is assumed.

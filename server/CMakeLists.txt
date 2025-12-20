@@ -43,3 +43,23 @@ else()
 endif()
 
 install(TARGETS MediaServer DESTINATION ${INSTALL_PATH_RUNTIME})
+
+#Additional debugging information is output when the release type is used.
+string(TOLOWER ${CMAKE_BUILD_TYPE} CMAKE_BUILD_TYPE_LOWER)
+if(UNIX AND ENABLE_OBJCOPY)
+  if("${CMAKE_BUILD_TYPE_LOWER}" STREQUAL "release")
+    find_program(OBJCOPY_FOUND objcopy)
+    if (OBJCOPY_FOUND)
+      add_custom_command(TARGET MediaServer
+        POST_BUILD
+        COMMAND objcopy --only-keep-debug ${EXECUTABLE_OUTPUT_PATH}/MediaServer ${EXECUTABLE_OUTPUT_PATH}/MediaServer.debug
+        COMMAND objcopy --strip-all ${EXECUTABLE_OUTPUT_PATH}/MediaServer
+        COMMAND objcopy --add-gnu-debuglink=${EXECUTABLE_OUTPUT_PATH}/MediaServer.debug ${EXECUTABLE_OUTPUT_PATH}/MediaServer
+      )
+      install(FILES ${EXECUTABLE_OUTPUT_PATH}/MediaServer.debug DESTINATION ${INSTALL_PATH_RUNTIME})
+    else()
+      message(STATUS "not found objcopy, generate MediaServer.debug skip")
+    endif()
+  endif()
+endif()
+

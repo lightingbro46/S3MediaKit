@@ -147,7 +147,7 @@ static std::shared_ptr<char> getSharedMmap(const string &file_path, int64_t &fil
 
     if (addr_ == nullptr) {
         mmap_close(hfile, hmapping, addr_);
-		WarnL << "MapViewOfFile() " << file_path << " failed:";
+        WarnL << "MapViewOfFile() " << file_path << " failed:";
         return nullptr;
     }
 
@@ -177,6 +177,13 @@ static std::shared_ptr<char> getSharedMmap(const string &file_path, int64_t &fil
 }
 
 HttpFileBody::HttpFileBody(const string &file_path, bool use_mmap) {
+
+    // Determine whether it is a directory to avoid mmap operations on the directory, which may cause the program to crash.
+    if (File::is_dir(file_path)) {
+        _read_to = -1;
+        return;
+    }
+
     if (use_mmap ) {
         _map_addr = getSharedMmap(file_path, _read_to);       
     }
@@ -264,7 +271,7 @@ Buffer::Ptr HttpFileBody::readData(size_t size) {
             // Data is read
             ret->setSize(iRead);
             _file_offset += iRead;
-            return std::move(ret);
+            return ret;
         }
         // File reading exception, the actual length of the file is less than the declared length
         _file_offset = _read_to;
@@ -350,7 +357,7 @@ string HttpMultiFormBody::multiFormBodyPrefix(const HttpArgs &args, const string
          << "file"
          << "\"; filename=\"" << fileName << "\"\r\n";
     body << "Content-Type: application/octet-stream\r\n\r\n";
-    return std::move(body);
+    return body;
 }
 
 HttpBufferBody::HttpBufferBody(Buffer::Ptr buffer) {

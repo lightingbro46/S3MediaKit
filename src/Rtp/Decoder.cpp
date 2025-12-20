@@ -1,6 +1,7 @@
 ﻿#include "Decoder.h"
 #include "PSDecoder.h"
 #include "TSDecoder.h"
+#include "Common/config.h"
 #include "Extension/Factory.h"
 
 #if defined(ENABLE_RTPPROXY) || defined(ENABLE_HLS)
@@ -110,11 +111,18 @@ void DecoderImp::onDecode(int stream, int codecid, int flags, int64_t pts, int64
         WarnL << "Unsupported codec :" << getCodecName(codec);
         return;
     }
+    GET_CONFIG(bool, merge_frame, RtpProxy::kMergeFrame)
     auto frame = Factory::getFrameFromPtr(codec, (char *)data, bytes, dts, pts);
-    if (getTrackType(codec) != TrackVideo) {
+    if (getTrackType(codec) != TrackVideo || !merge_frame) {
         onFrame(stream, frame);
+        if (_last_is_keyframe && _video_merge) {
+            // The last time was a key frame. After receiving the audio, it means that the frames have been collected.
+            _video_merge->flush();
+        }
         return;
     }
+    _last_is_keyframe = frame->keyFrame() || frame->configFrame();
+    _video_merge = &ref.second;
     ref.second.inputFrame(frame, [this, stream, codec](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool) {
         onFrame(stream, Factory::getFrameFromBuffer(codec, buffer, dts, pts));
     });
@@ -131,7 +139,7 @@ void DecoderImp::onTrack(int index, const Track::Ptr &track) {
     track->setIndex(index);
     auto &ref = _tracks[index];
     if (ref.first) {
-        WarnL << "Already existed a same track: " << index << ", codec: " << track->getCodecName();
+        // WarnL << "Already existed a same track: " << index << ", codec: " << track->getCodecName();
         return;
     }
     ref.first = track;

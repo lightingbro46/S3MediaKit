@@ -114,127 +114,20 @@ endif()
 ##############################################################################
 
 # toolkit
-# TODO:Rebuild toolkit for direct reference
-
-include(CheckStructHasMember)
-include(CheckSymbolExists)
-
-# Check sendmmsg-related dependencies and set the corresponding macros, configure _GNU_SOURCE to enable the GNU extension feature
-list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
-check_struct_has_member("struct mmsghdr" msg_hdr sys/socket.h HAVE_MMSG_HDR)
-check_symbol_exists(sendmmsg sys/socket.h HAVE_SENDMMSG_API)
-check_symbol_exists(recvmmsg sys/socket.h HAVE_RECVMMSG_API)
-
-set(COMPILE_DEFINITIONS)
-# ToolKit depends on ENABLE_OPENSSL and ENABLE_MYSQL, ENABLE_SQLITE
-list(FIND MK_COMPILE_DEFINITIONS ENABLE_OPENSSL ENABLE_OPENSSL_INDEX)
-if(NOT ENABLE_OPENSSL_INDEX EQUAL -1)
-  list(APPEND COMPILE_DEFINITIONS ENABLE_OPENSSL)
-endif()
-list(FIND MK_COMPILE_DEFINITIONS ENABLE_MYSQL   ENABLE_MYSQL_INDEX)
-if(NOT ENABLE_MYSQL_INDEX EQUAL -1)
-  list(APPEND COMPILE_DEFINITIONS ENABLE_MYSQL)
-endif()
-list(FIND MK_COMPILE_DEFINITIONS ENABLE_SQLITE   ENABLE_SQLITE_INDEX)
-if(NOT ENABLE_SQLITE_INDEX EQUAL -1)
-  list(APPEND COMPILE_DEFINITIONS ENABLE_SQLITE)
-endif()
-if(HAVE_MMSG_HDR)
-  list(APPEND COMPILE_DEFINITIONS HAVE_MMSG_HDR)
-endif()
-if(HAVE_SENDMMSG_API)
-  list(APPEND COMPILE_DEFINITIONS HAVE_SENDMMSG_API)
-endif()
-if(HAVE_RECVMMSG_API)
-  list(APPEND COMPILE_DEFINITIONS HAVE_RECVMMSG_API)
-endif()
-
-# check the socket buffer size set by the upper cmake project, if it is set, use the setting of the upper cmake project, otherwise set it to 256K
-# if the socket buffer size is set to 0, it means that the socket buffer size is not set, and the kernel default value is used(just for linux)
-if(DEFINED SOCKET_DEFAULT_BUF_SIZE)
-  if (SOCKET_DEFAULT_BUF_SIZE EQUAL 0)
-    message(STATUS "Socket default buffer size is not set, use the kernel default value")
-  else()
-    message(STATUS "Socket default buffer size is set to ${SOCKET_DEFAULT_BUF_SIZE}")
-  endif ()
-  add_definitions(-DSOCKET_DEFAULT_BUF_SIZE=${SOCKET_DEFAULT_BUF_SIZE})
-endif()
-
-set(ToolKit_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/S3ToolKit)
-# Collect source code
-file(GLOB ToolKit_SRC_LIST
-  ${ToolKit_ROOT}/src/*/*.cpp
-  ${ToolKit_ROOT}/src/*/*.h
-  ${ToolKit_ROOT}/src/*/*.c)
-if(IOS)
-  list(APPEND ToolKit_SRC_LIST
-    ${ToolKit_ROOT}/src/Network/Socket_ios.mm)
-endif()
-
-###################################################################
-# Use wepoll windows iocp to simulate epoll
-if(ENABLE_WEPOLL)
-  if(WIN32)
-    message(STATUS "Enable wepoll")
-    #Add wepoll source files and API parameters compatible files
-    list(APPEND ToolKit_SRC_LIST
-            ${CMAKE_CURRENT_SOURCE_DIR}/wepoll/wepoll.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/wepoll/sys/epoll.cpp)
-    #Add wepoll header file directory
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/wepoll)
-    #Turn on epoll
-    add_definitions(-DHAS_EPOLL)
-  endif()
-endif()
-###################################################################
-
-# Remove win32 adapter code
-if(NOT WIN32)
-  list(REMOVE_ITEM ToolKit_SRC_LIST ${ToolKit_ROOT}/win32/getopt.c)
-else()
-  # Prevent Windows.h from including Winsock.h
-  list(APPEND COMPILE_DEFINITIONS
-    WIN32_LEAN_AND_MEAN MP4V2_NO_STDINT_DEFS
-    # Disable warning
-    _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
-endif()
-
-# Add library
-add_library(s3toolkit STATIC ${ToolKit_SRC_LIST})
-add_library(S3MediaKit::ToolKit ALIAS s3toolkit)
-target_compile_definitions(s3toolkit
-  PUBLIC ${COMPILE_DEFINITIONS})
-target_compile_options(s3toolkit
-  PRIVATE ${COMPILE_OPTIONS_DEFAULT})
-target_include_directories(s3toolkit
-  PRIVATE
-    "$<BUILD_INTERFACE:${ToolKit_ROOT}/src>"
-  PUBLIC
-    "$<BUILD_INTERFACE:${ToolKit_ROOT}>/src")
-
+add_subdirectory(S3ToolKit)
+# Add library alias
+add_library(S3MediaKit::ToolKit ALIAS S3ToolKit)
+# Add dependencies
 update_cached_list(MK_LINK_LIBRARIES S3MediaKit::ToolKit)
 
-if(USE_SOLUTION_FOLDERS AND (NOT GROUP_BY_EXPLORER))
-  # Group files in the IDE, separate source files and header files
-  set_file_group(${ToolKit_ROOT}/src ${ToolKit_SRC_LIST})
-endif()
-
-# Not in use
-if(ENABLE_CXX_API)
-  # Keep directory structure
-  install(DIRECTORY ${ToolKit_ROOT}/
-    DESTINATION ${INSTALL_PATH_INCLUDE}/S3ToolKit
-    REGEX "(.*[.](md|cpp)|win32)$" EXCLUDE)
-  install(TARGETS s3toolkit
-    DESTINATION ${INSTALL_PATH_LIB})
-endif()
-
 ###################################################################
+
 # ONVIF
 add_subdirectory(onvif/core)
 update_cached_list(MK_LINK_LIBRARIES onvifcore)
 
 ###################################################################
+
 # jwt-cpp
 file(GLOB JWTCPP_SRC_LIST
   ${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include/jwt-cpp/*.h

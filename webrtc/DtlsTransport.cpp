@@ -1,4 +1,4 @@
-﻿#define MS_CLASS "RTC::DtlsTransport"
+#define MS_CLASS "RTC::DtlsTransport"
 // #define MS_LOG_DEV_LEVEL 3
 
 #include "DtlsTransport.hpp"
@@ -15,6 +15,7 @@
 #include "Util/SSLUtil.h"
 
 using namespace std;
+using namespace toolkit;
 
 #define LOG_OPENSSL_ERROR(desc)                                                                    \
     do                                                                                               \
@@ -632,6 +633,8 @@ namespace RTC
 
     void DtlsTransport::Run(Role localRole)
     {
+        DebugL << ((localRole == RTC::DtlsTransport::Role::SERVER)? "Server" : "Client");
+
         MS_TRACE();
 
         MS_ASSERT(

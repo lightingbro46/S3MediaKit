@@ -94,7 +94,7 @@ public:
     /**
      * Get the sequence of the corresponding track
      */
-    virtual uint16_t getSeqence(TrackType trackType) {
+    virtual uint16_t getSequence(TrackType trackType) {
         assert(trackType >= 0 && trackType < TrackMax);
         auto &track = _tracks[trackType];
         if (!track) {

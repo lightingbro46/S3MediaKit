@@ -7,6 +7,8 @@ project(S3MediaKit LANGUAGES C CXX)
 
 # Enable C++11
 set(CMAKE_CXX_STANDARD 11)
+# -fPIC
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(ENABLE_API "Enable C API SDK" OFF)
 option(ENABLE_API_STATIC_LIB "Enable mk_api static lib" OFF)
@@ -17,6 +19,7 @@ option(ENABLE_FFMPEG "Enable FFmpeg" OFF)
 option(ENABLE_HLS "Enable HLS" ON)
 option(ENABLE_JEMALLOC_STATIC "Enable static linking to the jemalloc library" OFF)
 option(ENABLE_JEMALLOC_DUMP "Enable jemalloc to dump malloc statistics" OFF)
+option(ENABLE_TCMALLOC "Enable linking to the tcmalloc library" OFF)
 option(ENABLE_MEM_DEBUG "Enable Memory Debug" OFF)
 option(ENABLE_MP4 "Enable MP4" ON)
 option(ENABLE_MSVC_MT "Enable MSVC Mt/Mtd lib" OFF)
@@ -32,12 +35,15 @@ option(ENABLE_TESTS "Enable Tests" OFF)
 option(ENABLE_SCTP "Enable SCTP" OFF)
 option(ENABLE_WEBRTC "Enable WebRTC" OFF)
 option(ENABLE_X264 "Enable x264" OFF)
-option(ENABLE_WEPOLL "Enable wepoll" OFF)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
 option(ENABLE_MANAGER "Enable resource manager" ON)
 option(ENABLE_PLUGIN "Enable plugin manager" ON)
 option(DISABLE_REPORT "Disable report to report.s3mediakit.com" ON)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" OFF)
+option(ENABLE_OBJCOPY "Enable use objcopy to generate debug info file" ON)
+# Compile static library
+option(BUILD_SHARED_LIBS "Build shared instead of static" OFF)
+
 ##############################################################################
 # Set the default buffer size of the socket to 256k. If set to 0, the default buffer size of the socket will not be set,
 # and the system kernel default value will be used (setting to 0 is only valid for linux)
@@ -172,7 +178,10 @@ if(UNIX)
   if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     set(COMPILE_OPTIONS_DEFAULT ${COMPILE_OPTIONS_DEFAULT} "-g3")
   else()
-    set(COMPILE_OPTIONS_DEFAULT ${COMPILE_OPTIONS_DEFAULT} "-g0")
+    find_program(OBJCOPY_FOUND objcopy)
+    if (OBJCOPY_FOUND AND ENABLE_OBJCOPY)
+      set(COMPILE_OPTIONS_DEFAULT ${COMPILE_OPTIONS_DEFAULT} "-g3")
+    endif()
   endif()
 elseif(WIN32)
   if (MSVC)
@@ -220,7 +229,7 @@ endif()
 # Multiple modules depend on ffmpeg related libraries, unified search
 if(ENABLE_FFMPEG)
   find_package(PkgConfig QUIET)
-  # find ffmpeg/libutil installed
+  # find ffmpeg/libavutil installed
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(AVUTIL QUIET IMPORTED_TARGET libavutil)
     if(AVUTIL_FOUND)
@@ -256,7 +265,17 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  # find ffmpeg/libutil installed
+  # find ffmpeg/libavfilter installed
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(AVFILTER QUIET IMPORTED_TARGET libavfilter)
+    if(AVFILTER_FOUND)
+      update_cached_list(MK_LINK_LIBRARIES PkgConfig::AVFILTER)
+      message(STATUS "found library: ${AVFILTER_LIBRARIES}")
+    endif()
+  endif()
+
+
+  # find ffmpeg/libavutil installed
   if(NOT AVUTIL_FOUND)
     find_package(AVUTIL QUIET)
     if(AVUTIL_FOUND)
@@ -296,7 +315,16 @@ if(ENABLE_FFMPEG)
     endif()
   endif()
 
-  if(AVUTIL_FOUND AND AVCODEC_FOUND AND SWSCALE_FOUND AND SWRESAMPLE_FOUND)
+  if(NOT AVFILTER_FOUND)
+    find_package(AVFILTER QUIET)
+    if(AVFILTER_FOUND)
+      include_directories(SYSTEM ${AVFILTER_INCLUDE_DIR})
+      update_cached_list(MK_LINK_LIBRARIES ${AVFILTER_LIBRARIES})
+      message(STATUS "found library: ${AVFILTER_LIBRARIES}")
+    endif()
+  endif()
+
+  if(AVUTIL_FOUND AND AVCODEC_FOUND AND SWSCALE_FOUND AND SWRESAMPLE_FOUND AND AVFILTER_FOUND)
     update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_FFMPEG)
     update_cached_list(MK_LINK_LIBRARIES ${CMAKE_DL_LIBS})
   else()
@@ -352,6 +380,18 @@ if(JEMALLOC_FOUND)
     add_definitions(-DENABLE_JEMALLOC_DUMP)
     message(STATUS "jemalloc will save memory usage statistics when the program exits")
   endif ()
+endif()
+
+# find tcmalloc installed
+if(ENABLE_TCMALLOC)
+  find_package(TCMALLOC QUIET)
+  if(TCMALLOC_FOUND)
+    message(STATUS "Link with tcmalloc library: ${TCMALLOC_LIBRARIES}")
+    update_cached_list(MK_LINK_LIBRARIES ${TCMALLOC_LIBRARIES})
+  else()
+    set(ENABLE_TCMALLOC OFF)
+    message(WARNING "tcmalloc related functions not found")
+  endif()
 endif()
 
 # find openssl installed
@@ -434,6 +474,17 @@ if(ENABLE_SRT)
   update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_SRT)
 endif()
 
+if(ENABLE_WEBRTC)
+  # Find out if srtp is installed
+  find_package(SRTP QUIET)
+  if(SRTP_FOUND AND ENABLE_OPENSSL)
+    message(STATUS "found library: ${SRTP_LIBRARIES}, ENABLE_WEBRTC defined")
+    update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_WEBRTC)
+  else()
+    set(ENABLE_WEBRTC OFF)
+    message(WARNING "srtp not found, WebRTC related functions failed to open")
+  endif()
+endif()
 # ----------------------------------------------------------------------------
 # Solution folders:
 # ----------------------------------------------------------------------------
@@ -520,7 +571,9 @@ endif ()
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/www" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 # file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/config.ini" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/default.pem" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
-
+if (ENABLE_FFMPEG)
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/DejaVuSans.ttf" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+endif ()
 # Copy the default background image used by VideoStack when there is no video stream
 if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/novideo.yuv" DESTINATION ${EXECUTABLE_OUTPUT_PATH})

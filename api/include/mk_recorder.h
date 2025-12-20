@@ -70,6 +70,19 @@ API_EXPORT int API_CALL mk_recorder_start(int type, const char *vhost, const cha
 API_EXPORT int API_CALL mk_recorder_stop(int type, const char *vhost, const char *app, const char *stream);
 
 /**
+ * Start event video recording
+ * @param vhost virtual host
+ * @param app application name
+ * @param stream stream id
+ * @param path relative path to save the video file, including name
+ * @param back_ms Backtracking recording duration
+ * @param forward_ms subsequent recording duration
+ * @return 1: success, 0: failure
+ * */
+API_EXPORT int API_CALL mk_recorder_start_task(const char *vhost, const char *app, const char *stream, const char *path, uint32_t back_ms, uint32_t forward_ms);
+
+
+/**
  * Load mp4 list
  * @param vhost Virtual Host
  * @param app Application name

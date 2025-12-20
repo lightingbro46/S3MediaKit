@@ -5,6 +5,12 @@
 #if !defined(ANDROID)
 #include <execinfo.h>
 #endif//!defined(ANDROID)
+#else
+#include <fcntl.h>
+#include <io.h>
+#include <Windows.h>
+#include <DbgHelp.h>
+#pragma comment(lib, "DbgHelp.lib")
 #endif//!defined(_WIN32)
 
 #include <cstdlib>
@@ -197,6 +203,48 @@ void System::systemSetup(){
     // Ignore the hang up signal
     signal(SIGHUP, SIG_IGN);
 #endif// ANDROID
+#else
+    // Avoid system pop-ups that cause program blocking, and are suitable for interfaceless or background service scenarios.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+
+#if !defined(__MINGW32__)
+    // Output errors during assert and error
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG);
+#endif
+
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0); 
+    std::ios_base::sync_with_stdio(false);
+
+      // Register crash to automatically generate dump (equivalent to core dump)
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS *pException) -> LONG {
+        // Generate dump file name with timestamp
+        char dumpPath[MAX_PATH];
+        std::time_t t = std::time(nullptr);
+        std::tm tm;
+#ifdef _MSC_VER
+        localtime_s(&tm, &t);
+#else
+        tm = *std::localtime(&t);
+#endif
+        std::strftime(dumpPath, sizeof(dumpPath), "crash_%Y%m%d_%H%M%S.dmp", &tm);
+
+        HANDLE hFile = CreateFileA(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mdei;
+            mdei.ThreadId = GetCurrentThreadId();
+            mdei.ExceptionPointers = pException;
+            mdei.ClientPointers = FALSE;
+            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, nullptr, nullptr);
+            CloseHandle(hFile);
+        }
+        return EXCEPTION_EXECUTE_HANDLER;
+    });
 #endif//!defined(_WIN32)
 }
 

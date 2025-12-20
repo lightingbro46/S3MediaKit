@@ -111,6 +111,7 @@ private:
     // Triggered when the general RTSP server fails to open the port
     void send_NotAcceptable();
     // Get the track index
+    int getTrackIndexByPT(int pt) const;
     int getTrackIndexByTrackType(TrackType type);
     int getTrackIndexByControlUrl(const std::string &control_url);
     int getTrackIndexByInterleaved(int interleaved);

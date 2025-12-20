@@ -17,6 +17,9 @@ extern "C" {
 #include "libavutil/audio_fifo.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/frame.h"
+#include "libavfilter/avfilter.h"
+#include "libavfilter/buffersink.h"
+#include "libavfilter/buffersrc.h"
 #ifdef __cplusplus
 }
 #endif
@@ -34,9 +37,11 @@ public:
 
     AVFrame *get() const;
     void fillPicture(AVPixelFormat target_format, int target_width, int target_height);
+    int getChannels() const;
+    void reset();
 
 private:
-    char *_data = nullptr;
+    std::unique_ptr<char[]> _data;
     std::shared_ptr<AVFrame> _frame;
 };
 
@@ -159,9 +164,11 @@ public:
      * @param frame Decoded frames
      * @param filename Save file path
      * @param fmt jpg:AV_PIX_FMT_YUVJ420P，PNG:AV_PIX_FMT_RGB24
+     * @param w h (optional) The size of the cropped image, the default is the same as the input source
+     * @param font_path (optional), default DejaVuSans.ttf
      * @return
      */
-    static std::tuple<bool, std::string> saveFrame(const FFmpegFrame::Ptr &frame, const char *filename, AVPixelFormat fmt = AV_PIX_FMT_YUVJ420P);
+    static std::tuple<bool, std::string> saveFrame(const FFmpegFrame::Ptr &frame, const char *filename, AVPixelFormat fmt = AV_PIX_FMT_YUVJ420P, int w = 0, int h = 0, const char *font_path = nullptr);
 };
 
 }//namespace mediakit

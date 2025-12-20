@@ -28,6 +28,9 @@ public:
     void teardown() override;
     float getPacketLossRate(TrackType type) const override;
 
+    size_t getRecvSpeed() override;
+    size_t getRecvTotalBytes() override;
+
 protected:
     // Derived class callback function
     virtual bool onCheckSDP(const std::string &sdp) = 0;
@@ -79,6 +82,7 @@ protected:
 private:
     void onPlayResult_l(const toolkit::SockException &ex , bool handshake_done);
 
+    int getTrackIndexByPT(int pt) const;
     int getTrackIndexByInterleaved(int interleaved) const;
     int getTrackIndexByTrackType(TrackType track_type) const;
 
@@ -112,14 +116,16 @@ private:
 
     std::string _play_url;
     // Rtsp start speed
-    float _speed= 0.0f;
+    float _speed = 0.0f;
     std::vector<SdpTrack::Ptr> _sdp_track;
     std::function<void(const Parser&)> _on_response;
+ protected:   
     // RTP port, trackid idx is the array subscript
     toolkit::Socket::Ptr _rtp_sock[2];
     // RTCP port, trackid idx is the array subscript
     toolkit::Socket::Ptr _rtcp_sock[2];
 
+private:
     // Rtsp authentication related
     std::string _md5_nonce;
     std::string _realm;
@@ -128,10 +134,15 @@ private:
     uint32_t _cseq_send = 1;
     std::string _content_base;
     std::string _control_url;
+protected:   
     Rtsp::eRtpType _rtp_type = Rtsp::RTP_TCP;
 
+private:
+    // start timestamp
+    uint64_t _first_stamp[2] = {0, 0};
+
     // Current rtp timestamp
-    uint32_t _stamp[2] = {0, 0};
+    uint64_t _stamp[2] = {0, 0};
 
     // Timeout function implementation
     toolkit::Ticker _rtp_recv_ticker;
@@ -144,6 +155,8 @@ private:
     toolkit::Ticker _rtcp_send_ticker[2];
     // Statistics rtp and send rtcp
     std::vector<RtcpContext::Ptr> _rtcp_context;
+    // User-defined rtsp header
+    StrCaseMap _custom_header;
 };
 
 } /* namespace mediakit */

@@ -84,76 +84,82 @@ void FFmpegSource::play(const string &ffmpeg_cmd_key, const string &src_url, con
 
     try {
         _media_info.parse(dst_url);
-    } catch (std::exception &ex) {
-        cb(SockException(Err_other, ex.what()));
-        return;
-    }
 
-    auto ffmpeg_cmd = ffmpeg_cmd_default;
-    if (!ffmpeg_cmd_key.empty()) {
-        auto cmd_it = mINI::Instance().find(ffmpeg_cmd_key);
-        if (cmd_it != mINI::Instance().end()) {
-            ffmpeg_cmd = cmd_it->second;
+        auto ffmpeg_cmd = ffmpeg_cmd_default;
+        if (!ffmpeg_cmd_key.empty()) {
+            auto cmd_it = mINI::Instance().find(ffmpeg_cmd_key);
+            if (cmd_it != mINI::Instance().end()) {
+                ffmpeg_cmd = cmd_it->second;
+            } else {
+                WarnL << "In the configuration file, the ffmpeg command template (" << ffmpeg_cmd_key << ")Does not exist, the default template has been adopted(" << ffmpeg_cmd_default << ")";
+            }
+        }
+        if (!toolkit::start_with(ffmpeg_cmd, "%s")) {
+            throw std::invalid_argument("ffmpeg cmd template must start with '%s'");
+        }
+
+        char cmd[2048] = { 0 };
+        snprintf(cmd, sizeof(cmd), ffmpeg_cmd.data(), File::absolutePath("", ffmpeg_bin).data(), src_url.data(), dst_url.data());
+        auto log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
+        _process.run(cmd, log_file);
+        _cmd = cmd;
+        InfoL << cmd;
+
+        if (is_local_ip(_media_info.host)) {
+            // Push stream to yourself, judge whether the stream is registered to determine whether it is normal
+            if (_media_info.schema != RTSP_SCHEMA && _media_info.schema != RTMP_SCHEMA && _media_info.schema != "srt") {
+                cb(SockException(Err_other, "This service only supports rtmp/rtsp/srt streaming"));
+                return;
+            }
+            weak_ptr<FFmpegSource> weakSelf = shared_from_this();
+            findAsync(timeout_ms, [cb, weakSelf, timeout_ms](const MediaSource::Ptr &src) {
+                auto strongSelf = weakSelf.lock();
+                if (!strongSelf) {
+                    // Self has been destroyed
+                    return;
+                }
+                if (src) {
+                    // Push stream to yourself successfully
+                    cb(SockException());
+                    strongSelf->onGetMediaSource(src);
+                    strongSelf->startTimer(timeout_ms);
+                    return;
+                }
+                // Push stream failed
+                if (!strongSelf->_process.wait(false)) {
+                    // ffmpeg process has exited
+                    cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
+                    return;
+                }
+                // ffmpeg process is still online, but waiting for the stream to timeout
+                cb(SockException(Err_other, "Waiting timed out"));
+            });
         } else {
-            WarnL << "In the configuration file, ffmpeg command template (" << ffmpeg_cmd_key << ") does not exist, the default template has been adopted(" << ffmpeg_cmd_default << ")";
+            // Push stream to other servers, judge whether it is successful by judging whether the FFmpeg process is online
+            weak_ptr<FFmpegSource> weakSelf = shared_from_this();
+            _timer = std::make_shared<Timer>(
+                timeout_ms / 1000.0f,
+                [weakSelf, cb, timeout_ms]() {
+                    auto strongSelf = weakSelf.lock();
+                    if (!strongSelf) {
+                        // Self has been destroyed
+                        return false;
+                    }
+                    // FFmpeg is still online, so we think the push stream is successful
+                    if (strongSelf->_process.wait(false)) {
+                        cb(SockException());
+                        strongSelf->startTimer(timeout_ms);
+                        return false;
+                    }
+                    // ffmpeg process has exited
+                    cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
+                    return false;
+                },
+                _poller);
         }
-    }
-
-    char cmd[2048] = { 0 };
-    snprintf(cmd, sizeof(cmd), ffmpeg_cmd.data(), File::absolutePath("", ffmpeg_bin).data(), src_url.data(), dst_url.data());
-    auto log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
-    _process.run(cmd, log_file);
-    _cmd = cmd;
-    InfoL << cmd;
-
-    if (is_local_ip(_media_info.host)) {
-        // Push stream to yourself, judge whether the stream is registered to determine whether it is normal
-        if (_media_info.schema != RTSP_SCHEMA && _media_info.schema != RTMP_SCHEMA) {
-            cb(SockException(Err_other, "This service only supports rtmp/rtsp push streaming"));
-            return;
-        }
-        weak_ptr<FFmpegSource> weakSelf = shared_from_this();
-        findAsync(timeout_ms, [cb, weakSelf, timeout_ms](const MediaSource::Ptr &src) {
-            auto strongSelf = weakSelf.lock();
-            if (!strongSelf) {
-                // Self has been destroyed
-                return;
-            }
-            if (src) {
-                // Push stream to yourself successfully
-                cb(SockException());
-                strongSelf->onGetMediaSource(src);
-                strongSelf->startTimer(timeout_ms);
-                return;
-            }
-            // Push stream failed
-            if (!strongSelf->_process.wait(false)) {
-                // ffmpeg process has exited
-                cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
-                return;
-            }
-            // ffmpeg process is still online, but waiting for the stream to timeout
-            cb(SockException(Err_other, "Wait for timeout"));
-        });
-    } else{
-        // Push stream to other servers, judge whether it is successful by judging whether the FFmpeg process is online
-        weak_ptr<FFmpegSource> weakSelf = shared_from_this();
-        _timer = std::make_shared<Timer>(timeout_ms / 1000.0f, [weakSelf, cb, timeout_ms]() {
-            auto strongSelf = weakSelf.lock();
-            if (!strongSelf) {
-                // Self has been destroyed
-                return false;
-            }
-            // FFmpeg is still online, so we think the push stream is successful
-            if (strongSelf->_process.wait(false)) {
-                cb(SockException());
-                strongSelf->startTimer(timeout_ms);
-                return false;
-            }
-            // ffmpeg process has exited
-            cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));
-            return false;
-        }, _poller);
+    } catch (std::exception &ex) {
+        WarnL << ex.what();
+        cb(SockException(Err_other, ex.what()));
     }
 }
 
@@ -304,10 +310,14 @@ void FFmpegSource::onGetMediaSource(const MediaSource::Ptr &src) {
         setDelegate(listener);
         muxer->setDelegate(shared_from_this());
         if (_enable_hls) {
-            src->setupRecord(Recorder::type_hls, true, "", 0);
+            src->getOwnerPoller()->async([=]() mutable {
+                 src->setupRecord(Recorder::type_hls, true, "", 0);
+            });
         }
         if (_enable_mp4) {
-            src->setupRecord(Recorder::type_mp4, true, "", 0);
+            src->getOwnerPoller()->async([=]() mutable {
+                src->setupRecord(Recorder::type_mp4, true, "", 0);
+            });
         }
     }
 }

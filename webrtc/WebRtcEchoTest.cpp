@@ -1,5 +1,7 @@
 ﻿#include "WebRtcEchoTest.h"
 
+using namespace toolkit;
+
 namespace mediakit {
 
 WebRtcEchoTest::Ptr WebRtcEchoTest::create(const EventPoller::Ptr &poller) {

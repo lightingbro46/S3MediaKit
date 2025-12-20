@@ -298,7 +298,7 @@ void RtmpSession::sendPlayResponse(const string &err, const RtmpMediaSource::Ptr
     weak_ptr<RtmpSession> weak_self = static_pointer_cast<RtmpSession>(shared_from_this());
     _ring_reader->setGetInfoCB([weak_self]() {
         Any ret;
-        ret.set(static_pointer_cast<SockInfo>(weak_self.lock()));
+        ret.set(static_pointer_cast<Session>(weak_self.lock()));
         return ret;
     });
     _ring_reader->setReadCB([weak_self](const RtmpMediaSource::RingDataType &pkt) {
@@ -581,9 +581,7 @@ void RtmpSession::onSendMedia(const RtmpPacket::Ptr &pkt) {
 }
 
 bool RtmpSession::close(MediaSource &sender) {
-    //This callback is fired on other threads
-    string err = StrPrinter << "close media: " << sender.getUrl();
-    safeShutdown(SockException(Err_shutdown, err));
+    shutdown(SockException(Err_shutdown, "close media: " + sender.getUrl()));
     return true;
 }
 

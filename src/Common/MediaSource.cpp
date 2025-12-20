@@ -99,11 +99,18 @@ std::shared_ptr<void> MediaSource::getOwnership() {
     });
 }
 
-int MediaSource::getBytesSpeed(TrackType type){
+size_t MediaSource::getBytesSpeed(TrackType type) {
     if(type == TrackInvalid || type == TrackMax){
         return _speed[TrackVideo].getSpeed() + _speed[TrackAudio].getSpeed();
     }
     return _speed[type].getSpeed();
+}
+
+size_t MediaSource::getTotalBytes(TrackType type) {
+    if (type == TrackInvalid || type == TrackMax) {
+        return _speed[TrackVideo].getTotalBytes() + _speed[TrackAudio].getTotalBytes();
+    }
+    return _speed[type].getTotalBytes();
 }
 
 uint64_t MediaSource::getAliveSecond() const {
@@ -113,10 +120,10 @@ uint64_t MediaSource::getAliveSecond() const {
 
 vector<Track::Ptr> MediaSource::getTracks(bool ready) const {
     auto listener = _listener.lock();
-    if(!listener){
+    if (!listener) {
         return vector<Track::Ptr>();
     }
-    return listener->getMediaTracks(const_cast<MediaSource &>(*this), ready);
+    return listener->getMuxer(const_cast<MediaSource &>(*this))->getTracks(ready);
 }
 
 void MediaSource::setListener(const std::weak_ptr<MediaSourceEvent> &listener){
@@ -254,7 +261,7 @@ bool MediaSource::setupRecord(Recorder::type type, bool start, const string &cus
         WarnL << "The event listener of MediaSource is not set, setupRecord fails:" << getUrl();
         return false;
     }
-    return listener->setupRecord(*this, type, start, custom_path, max_second);
+    return listener->getMuxer(const_cast<MediaSource &>(*this))->setupRecord(type, start, custom_path, max_second);
 }
 
 bool MediaSource::isRecording(Recorder::type type){
@@ -262,7 +269,7 @@ bool MediaSource::isRecording(Recorder::type type){
     if(!listener){
         return false;
     }
-    return listener->isRecording(*this, type);
+    return listener->getMuxer(const_cast<MediaSource &>(*this))->isRecording(type);
 }
 
 void MediaSource::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {
@@ -271,7 +278,7 @@ void MediaSource::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const 
         cb(0, SockException(Err_other, "No event listener has been set"));
         return;
     }
-    return listener->startSendRtp(*this, args, cb);
+    return listener->getMuxer(const_cast<MediaSource &>(*this))->startSendRtp(args, cb);
 }
 
 bool MediaSource::stopSendRtp(const string &ssrc) {
@@ -279,7 +286,7 @@ bool MediaSource::stopSendRtp(const string &ssrc) {
     if (!listener) {
         return false;
     }
-    return listener->stopSendRtp(*this, ssrc);
+    return listener->getMuxer(const_cast<MediaSource &>(*this))->stopSendRtp(ssrc);
 }
 
 template<typename MAP, typename LIST, typename First, typename ...KeyTypes>
@@ -620,6 +627,14 @@ void MediaSourceEvent::onReaderChanged(MediaSource &sender, int size){
     bool is_mp4_vod = sender.getMediaTuple().app == record_app;
     weak_ptr<MediaSource> weak_sender = sender.shared_from_this();
 
+    EventPoller::Ptr specified_poller;
+    try {
+        specified_poller = this->getOwnerPoller(sender);
+    }
+    catch (std::exception &ex) {
+        //Try to get OwnerPoller, if not implemented, use the default nullptr
+        // WarnL << ex.what();
+    }
     _async_close_timer = std::make_shared<Timer>(stream_none_reader_delay / 1000.0f, [weak_sender, is_mp4_vod]() {
         auto strong_sender = weak_sender.lock();
         if (!strong_sender) {
@@ -633,22 +648,21 @@ void MediaSourceEvent::onReaderChanged(MediaSource &sender, int size){
         }
 
         if (!is_mp4_vod) {
+            // When live streaming, trigger the no-viewer event, allowing developers to choose whether to close it.
+            NOTICE_EMIT(BroadcastStreamNoneReaderArgs, Broadcast::kBroadcastStreamNoneReader, *strong_sender);
             auto muxer = strong_sender->getMuxer();
             if (muxer && muxer->getOption().auto_close) {
                 // This stream is marked as an automatically closed stream with no viewers.
-                WarnL << "Auto cloe stream when none reader: " << strong_sender->getUrl();
-                strong_sender->close(false);
-            } else {
-                // When live streaming, trigger the no-viewer event, allowing developers to choose whether to close it.
-                NOTICE_EMIT(BroadcastStreamNoneReaderArgs, Broadcast::kBroadcastStreamNoneReader, *strong_sender);
+                WarnL << "Auto close stream when none reader: " << strong_sender->getUrl();
+                strong_sender->getOwnerPoller()->async([strong_sender]() { strong_sender->close(false); });
             }
         } else {
             // This is an mp4 on-demand, we automatically close it.
             WarnL << "MP4 on-demand no-one watches, automatically shuts down:" << strong_sender->getUrl();
-            strong_sender->close(false);
+            strong_sender->getOwnerPoller()->async([strong_sender]() { strong_sender->close(false); });
         }
         return false;
-    }, nullptr);
+    }, specified_poller);
 }
 
 string MediaSourceEvent::getOriginUrl(MediaSource &sender) const {
@@ -769,46 +783,6 @@ std::shared_ptr<RtpProcess> MediaSourceEventInterceptor::getRtpProcess(MediaSour
         return MediaSourceEvent::getRtpProcess(sender);
     }
     return listener->getRtpProcess(sender);
-}
-
-bool MediaSourceEventInterceptor::setupRecord(MediaSource &sender, Recorder::type type, bool start, const string &custom_path, size_t max_second) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return MediaSourceEvent::setupRecord(sender, type, start, custom_path, max_second);
-    }
-    return listener->setupRecord(sender, type, start, custom_path, max_second);
-}
-
-bool MediaSourceEventInterceptor::isRecording(MediaSource &sender, Recorder::type type) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return MediaSourceEvent::isRecording(sender, type);
-    }
-    return listener->isRecording(sender, type);
-}
-
-vector<Track::Ptr> MediaSourceEventInterceptor::getMediaTracks(MediaSource &sender, bool trackReady) const {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return MediaSourceEvent::getMediaTracks(sender, trackReady);
-    }
-    return listener->getMediaTracks(sender, trackReady);
-}
-
-void MediaSourceEventInterceptor::startSendRtp(MediaSource &sender, const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return MediaSourceEvent::startSendRtp(sender, args, cb);
-    }
-    listener->startSendRtp(sender, args, cb);
-}
-
-bool MediaSourceEventInterceptor::stopSendRtp(MediaSource &sender, const string &ssrc) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return MediaSourceEvent::stopSendRtp(sender, ssrc);
-    }
-    return listener->stopSendRtp(sender, ssrc);
 }
 
 void MediaSourceEventInterceptor::setDelegate(const std::weak_ptr<MediaSourceEvent> &listener) {

@@ -91,6 +91,8 @@ void HttpClient::clear() {
     _user_set_header.clear();
     _body.reset();
     _method.clear();
+    // Reset proxy connection status
+    _proxy_connected = false;
     clearResponse();
 }
 
@@ -169,6 +171,8 @@ void HttpClient::onConnect_l(const SockException &ex) {
         _path.clear();
     } else {
         printer << "CONNECT " << _last_host << " HTTP/1.1\r\n";
+        printer << "Host: " << _last_host << "\r\n";
+        printer << "User-Agent: " << kServerName << "\r\n";
         printer << "Proxy-Connection: keep-alive\r\n";
         if (!_proxy_auth.empty()) {
             printer << "Proxy-Authorization: Basic " << _proxy_auth << "\r\n";
@@ -242,7 +246,7 @@ ssize_t HttpClient::onRecvHeader(const char *data, size_t len) {
         _total_body_size = -1;
     }
 
-    if (_total_body_size == 0) {
+    if (_total_body_size == 0 || _method == "HEAD") {
         // There is no content afterwards, this http request ends
         onResponseCompleted_l(SockException(Err_success, "The request is successful but has no body"));
         return 0;
@@ -438,9 +442,14 @@ void HttpClient::setProxyUrl(string proxy_url) {
 }
 
 bool HttpClient::checkProxyConnected(const char *data, size_t len) {
-    auto ret = strstr(data, "HTTP/1.1 200 Connection established");
-    _proxy_connected = ret != nullptr;
-    return _proxy_connected;
+    string response(data, len);
+    if (response.find("HTTP/1.1 200") != string::npos || response.find("HTTP/1.0 200") != string::npos) {
+        _proxy_connected = true;
+        return true;
+    }
+
+    _proxy_connected = false;
+    return false;
 }
 
 void HttpClient::setAllowResendRequest(bool allow) {

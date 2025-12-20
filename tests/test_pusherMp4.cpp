@@ -29,6 +29,9 @@ int domain(const string &file, const string &url) {
 
     // Get the media protocol type based on the URL, note the case
     auto schema = strToLower(findSubString(url.data(), nullptr, "://").substr(0, 4));
+    if (schema == "webr") {
+        schema = "rtsp";
+    }
 
     // Only enable the protocol conversion corresponding to the push protocol
     mINI::Instance()["protocol.enable_" + schema] = 1;
