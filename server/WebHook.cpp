@@ -401,6 +401,12 @@ static void reportServerKeepalive() {
     }
     GET_CONFIG(float, alive_interval, Hook::kAliveInterval);
     g_keepalive_timer = std::make_shared<Timer>(alive_interval,[]() {
+        if (!s_report_started.load()) {
+            // If the start API has not been completed, do not call the API to get the configuration in delay task. 
+            // Waiting for timer to call API to get the configuration
+            WarnL << "Server has not reported started, skip report server keepalive";
+            return true;
+        }
 #if 0 
         getStatisticJson([](const Value &data) mutable {
             ArgsType body;
@@ -508,6 +514,12 @@ static void reportServerUsage() {
     GET_CONFIG(float, report_interval, Hook::kReportInterval);
 
     auto report_callback = []() {
+        if (!s_report_started.load()) {
+            // If the start API has not been completed, do not call the API to get the configuration in delay task. 
+            // Waiting for timer to call API to get the configuration
+            WarnL << "Server has not reported started, skip report server usage";
+            return true;
+        }
         getServerUsageJson([](const Value &data) {
             InfoL << "Report server usage data: " << data.toStyledString();
             ArgsType body = data;
