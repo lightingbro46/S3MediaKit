@@ -38,7 +38,7 @@ void GlobalMonitor::start() {
 
     weak_ptr<GlobalMonitor> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
-        600.0f,
+        300.0f,
         [=]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
