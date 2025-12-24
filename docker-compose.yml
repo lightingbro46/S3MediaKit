@@ -6,7 +6,7 @@ services:
     restart: always
     privileged: true
     shm_size: 2g 
-    port:
+    command: ./MediaServer -s default.pem -c ../conf/config.ini -l 1 -d
     network_mode: host
     volumes:
       - ./logs/media/:/opt/media/bin/log/
