@@ -340,13 +340,12 @@ void StorageManager::enforceStoragePolicy() {
                   << " , expect: " << format_bytes_human_readable(space_reclaim);
         }
 
-        if (removed_bytes == 0) {
-            InfoL << "No expired segment need to remove. Finished enforcing storage policy. Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
-            return;
+        if (removed_bytes > 0) {
+            // recreate time file according to keep time map
+            recreateTimeFile(keep_time_map);
+        } else {
+            DebugL << "No expired segment removed, skip recreate time file";
         }
-
-        // recreate time file according to keep time map
-        recreateTimeFile(keep_time_map);
 
         InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
 
