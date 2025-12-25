@@ -102,7 +102,7 @@ void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std
     if (_controller) {
         _controller->PTZMove(strDirect, speed, cb);
     } else {
-        cb(SockException(Err_other, "PTZ controller is not ready"));
+        cb(SockException(Err_other, "Device controller is not ready"));
     }
 }
 

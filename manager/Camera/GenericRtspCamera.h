@@ -23,6 +23,7 @@ inline bool equalCameraInfo(const CameraInfo &a, const CameraInfo &b) {
     EQUAL_INFO_PROPERTY(password)
     EQUAL_INFO_PROPERTY(manufacturer)
     EQUAL_INFO_PROPERTY(model)
+    EQUAL_INFO_PROPERTY(name)
 
     return true;
 }

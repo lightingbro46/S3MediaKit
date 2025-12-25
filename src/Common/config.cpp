@@ -168,7 +168,7 @@ static onceToken token([]() {
     mINI::Instance()[kMP4MaxSecond] = 60;
     mINI::Instance()[kMP4SavePath] = "./www";
 
-#ifdef _linux_
+#if defined(__linux__)
     mINI::Instance()[kHlsSavePath] = "/dev/shm/live";
 #else
     mINI::Instance()[kHlsSavePath] = "./www/live";

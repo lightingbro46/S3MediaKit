@@ -142,7 +142,7 @@ protected:
             if (!whereClause.str().empty()) {
                 whereClause << " AND ";
             }
-            whereClause << " user_id = ?";
+            whereClause << " creator_guid = ?";
             whereParams.push_back(user_id);
         }
 

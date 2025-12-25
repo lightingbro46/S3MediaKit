@@ -130,9 +130,9 @@ static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities stats) {
 
 static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     DeviceCapabilities stats;
-    stats.connect = data["connect"].asBool();
-    stats.status = data["status"].asString();
-    stats.ptzCapabilities = data["ptzCapabilities"].asBool();
+    stats.connect = !data["connect"].empty() ? data["connect"].asBool() : false;
+    stats.status = !data["status"].empty() ? data["status"].asString() : "";
+    stats.ptzCapabilities = !data["ptzCapabilities"].empty() ? data["ptzCapabilities"].asBool() : false;
     return stats;
 }
 
