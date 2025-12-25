@@ -30,6 +30,7 @@ extern const std::string kSessionExpiryDays;
 extern const std::string kMaxStreamTimeoutSec;
 // Bypass authentication realm, directly allow access
 extern const std::string kBypassAuthRealm;
+
 } // namespace Manager
 
 } // namespace managerkit
@@ -61,5 +62,7 @@ int estimateMaxAvailableDevice();
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 
 void installGlobalMonitor();
+
+Json::Value makeAllDeviceStatisticJson();
 
 #endif // S3MANAGERKIT_MANAGER_H

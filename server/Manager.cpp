@@ -626,6 +626,62 @@ Json::Value makeStorageStatisticJson() {
     return data;
 }
 
+static Json::Value makeStreamStatisticJson2(CameraStatistic &params, int type) {
+    Json::Value ret;
+    auto tuple = params.stream_map[type];
+    auto info = params.sinfo_map[type];
+    Json::Value item;
+    ret["id"] = tuple.stream_id;
+    ret["live"] = info.live;
+    ret["status"] = info.status;
+    ret["vcodec"] = info.vcodec;
+    ret["width"] = info.width;
+    ret["height"] = info.height;
+    ret["bitrate"] = info.bitrate;
+    ret["fps"] = info.fps;
+    ret["byteSpeed"] = info.byte_speed;
+    ret["acodec"] = info.acodec;
+    ret["sample_rate"] = info.sample_rate;
+    ret["channel_no"] = info.channel_no;
+    ret["sample_bit"] = info.sample_bit;
+    return ret;
+}
+
+static Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr& device) {
+    Json::Value ret;
+    auto ptr = std::dynamic_pointer_cast<GenericRtspCameraImp>(device);
+    if (ptr) {
+        auto stats_imp = ptr->getCameraStatisticImp();
+        if (stats_imp) {
+            auto stats = stats_imp->getParams();
+            ret["id"] = stats.info.device_id;
+            ret["name"] = stats.info.name;
+            ret["controller"]["connect"] = stats.device_caps.connect;
+            ret["controller"]["status"] = stats.device_caps.status;
+            ret["controller"]["ptz"] = stats.device_caps.ptzCapabilities;
+            ret["streams"] = Json::arrayValue;
+            if (ptr->hasStreamTuple(PrimaryStream)) {
+                ret["streams"].append(makeStreamStatisticJson2(stats, PrimaryStream));
+            }
+            if (ptr->hasStreamTuple(SecondaryStream)) {
+                ret["streams"].append(makeStreamStatisticJson2(stats, SecondaryStream));
+            }
+        }
+    }
+    return ret;
+}
+
+Json::Value makeAllDeviceStatisticJson() {
+    Json::Value data = Json::arrayValue;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
+        auto device_json = makeDeviceStatisticJson(device);
+        if (!device_json.isNull()) {
+            data.append(device_json);
+        }
+    }, CAMERA_SCHEMA);
+    return data;
+}
+
 void loadServerStartedConfigJson(const Json::Value &data) {
     int change = 0;
     auto &ini = mINI::Instance();

@@ -3308,6 +3308,19 @@ void installWebApi() {
         val["data"] = makeStorageStatisticJson();
     });
 
+    api_regist("/media/mserver/device/statistic", [](API_ARGS_MAP) {
+        CHECK_ARGS("mediaServerId");
+
+        string id = allArgs["mediaServerId"];
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (id != mediaServerId) {
+            val["code"] = API::NotFound;
+            val["msg"] = "Notfound";
+            return;
+        }
+        val["data"] = makeAllDeviceStatisticJson();
+    });
+
     static auto findPlaybackStream = [](MediaSource::Ptr &ret, const string &url_in) {
         MediaInfo info_in;
         info_in.parse(url_in);
