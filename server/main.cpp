@@ -267,10 +267,6 @@ int start_main(int argc,char *argv[]) {
 
         InfoL << kServerName;
 
-        // Start monitoring all resource 
-        GlobalMonitor::Instance().start();
-        InfoL << "Global monitor has been started successfully";
-
         // Load configuration file, create one if it doesn't exist
         loadIniConfig(g_ini_file.data());
 
@@ -296,10 +292,6 @@ int start_main(int argc,char *argv[]) {
             WarnL << "The " << General::kMediaServerId << " is invalid, modified it to: " << mediaServerId
                   << ", saved config file: " << g_ini_file;
         }
-
-        // Execute migrating database before running other
-        migrateDatabase();
-        InfoL << "Migrating database has been executed successfully";
 
         auto &cert_folder = mINI::Instance()[Manager::kCertSavePath];
         if (!File::is_dir(ssl_file)) {
@@ -425,13 +417,18 @@ int start_main(int argc,char *argv[]) {
 
         uint16_t srtPort = mINI::Instance()[SRT::kPort];
 #endif //defined(ENABLE_SRT)
-        
+
+        // Execute migrating database before running other
+        migrateDatabase();
+        InfoL << "Migrating database has been executed";
         installWebApi();
         InfoL << "The http API interface has been started";
         installWebHook();
         InfoL << "The http hook interface has been started";
         installManagerHook();
         InfoL << "The manager hook interface has been started";
+        installGlobalMonitor();
+        InfoL << "The global monitor interface has been started";
 
         try {
             // rtsp server, default port 554

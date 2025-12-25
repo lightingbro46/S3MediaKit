@@ -770,3 +770,8 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
         }
     }
 }
+
+void installGlobalMonitor() {
+    // Start monitoring system resource usage
+    GlobalMonitor::Instance().start();
+}

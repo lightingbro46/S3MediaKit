@@ -60,4 +60,6 @@ int estimateMaxAvailableDevice();
 
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 
+void installGlobalMonitor();
+
 #endif // S3MANAGERKIT_MANAGER_H
