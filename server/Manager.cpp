@@ -540,24 +540,24 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
     cb(data);
 }
 
-struct DeviceStorageStatistic {
-    std::string name;
-    int bytesSpeed = 0;
-    int desiredBytesSpeed = 0;
-    uint64_t oldestTimeBlock = 0;
-    uint64_t desiredTimeBlock = 0;
-    uint64_t usedStorage = 0;
-    bool isFailover = false;
+struct ServerStorageStatistic {
+    int totalMainDevice = 0;
+    uint64_t totalMainBitrate = 0;
+    uint64_t totalMainUsedStorage = 0;
+    int totalFailoverDevice = 0;
+    uint64_t totalFailoverBitrate = 0;
+    uint64_t totalFailoverUsedStorage = 0;
 };
 
-static DeviceStorageStatistic makeDeviceStorageJson(const DeviceSource::Ptr& device) {
-    DeviceStorageStatistic storage;
+static Json::Value makeDeviceStorageJson(const DeviceSource::Ptr& device, ServerStorageStatistic &server_stats) {
+    Json::Value ret;
     auto ptr = std::dynamic_pointer_cast<GenericRtspCameraImp>(device);
     if (ptr) {
         auto stats_imp = ptr->getCameraStatisticImp();
         if (stats_imp) {
             auto stats = stats_imp->getParams();
-            storage.name = stats.info.name;
+            ret["id"] = stats.info.device_id;
+            ret["name"] = stats.info.name;
             int bytes_speed = 0;
             int desired_bytes_speed = 0;
             for (const auto &it : stats.sinfo_map) {
@@ -566,8 +566,8 @@ static DeviceStorageStatistic makeDeviceStorageJson(const DeviceSource::Ptr& dev
                 }
                 desired_bytes_speed += it.second.byte_speed;
             }
-            storage.bytesSpeed = bytes_speed;
-            storage.desiredBytesSpeed = desired_bytes_speed;
+            ret["bitrate"] = bytes_speed;
+            ret["desiredBitrate"] = desired_bytes_speed;
             uint64_t oldest_time_block = 0;
             uint64_t used_storage = 0;
             for (const auto &it : stats.storage_map) {
@@ -576,58 +576,53 @@ static DeviceStorageStatistic makeDeviceStorageJson(const DeviceSource::Ptr& dev
                 }
                 used_storage += it.second.archiveSizeB;
             }
-            storage.oldestTimeBlock = oldest_time_block;
+            ret["oldestTimeBlock"] = oldest_time_block;
             uint64_t desired_time_block = oldest_time_block;
             if (!stats.option.keepArchivedMaxForAuto) {
                 desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
             }
-            storage.desiredTimeBlock = desired_time_block;
-            storage.usedStorage = used_storage;
-            storage.isFailover = stats.option.enableFailover;
+            ret["desiredTimeBlock"] = desired_time_block;
+            ret["usedStorage"] = used_storage;
+            auto isFailover = stats.option.enableFailover;
+            if (!isFailover) {
+                server_stats.totalMainDevice++;
+                server_stats.totalMainBitrate += bytes_speed;
+                server_stats.totalMainUsedStorage += used_storage;
+            } else {
+                server_stats.totalFailoverDevice++;
+                server_stats.totalFailoverBitrate += bytes_speed;
+                server_stats.totalFailoverUsedStorage += used_storage;
+            }
+            ret["isFailover"] = isFailover;
         }
     }
 
-    return storage;
+    return ret;
 }
 
 Json::Value makeStorageStatisticJson() {
     Json::Value data ;
     data["mainDevices"] = Json::arrayValue;
     data["failoverDevices"] = Json::arrayValue;
-    size_t totalMainDevice = 0;
-    size_t totalMainBitrate = 0;
-    size_t totalMainUsedStorage = 0;
-    size_t totalFailoverDevice = 0;
-    size_t totalFailoverBitrate = 0;
-    size_t totalFailoverUsedStorage = 0;
+    ServerStorageStatistic server_stats;
+
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        auto storage = makeDeviceStorageJson(device);
-        Json::Value device_json;
-        device_json["name"] = storage.name;
-        device_json["bitrate"] = storage.bytesSpeed;
-        device_json["desiredBitrate"] = storage.desiredBytesSpeed;
-        device_json["oldestTimeBlock"] = storage.oldestTimeBlock;
-        device_json["desiredTimeBlock"] = storage.desiredTimeBlock;
-        device_json["usedStorage"] = storage.usedStorage;
-        device_json["isFailover"] = storage.isFailover;
-        if (!storage.isFailover) {
-            data["mainDevices"].append(device_json);
-            totalMainDevice++;
-            totalMainBitrate += storage.bytesSpeed;
-            totalMainUsedStorage += storage.usedStorage;
-        } else {
-            data["failoverDevices"].append(device_json);
-            totalFailoverDevice++;
-            totalFailoverBitrate += storage.bytesSpeed;
-            totalFailoverUsedStorage += storage.usedStorage;
+        auto storage_json = makeDeviceStorageJson(device, server_stats);
+        if (!storage_json.isNull()) {
+            if (storage_json["isFailover"].asBool()) {
+                data["failoverDevices"].append(storage_json);
+            } else {
+                data["mainDevices"].append(storage_json);
+            }
         }
     }, CAMERA_SCHEMA);
-    data["totalMainDevice"] = totalMainDevice;
-    data["totalMainBitrate"] = totalMainBitrate;
-    data["totalMainUsedStorage"] = totalMainUsedStorage;
-    data["totalFailoverDevice"] = totalFailoverDevice;
-    data["totalFailoverBitrate"] = totalFailoverBitrate;
-    data["totalFailoverUsedStorage"] = totalFailoverUsedStorage;
+
+    data["totalMainDevice"] = server_stats.totalMainDevice;
+    data["totalMainBitrate"] = server_stats.totalMainBitrate;
+    data["totalMainUsedStorage"] = server_stats.totalMainUsedStorage;
+    data["totalFailoverDevice"] = server_stats.totalFailoverDevice;
+    data["totalFailoverBitrate"] = server_stats.totalFailoverBitrate;
+    data["totalFailoverUsedStorage"] = server_stats.totalFailoverUsedStorage;
     return data;
 }
 
