@@ -3265,15 +3265,17 @@ void installWebApi() {
                 return;
             }
 
-            ptr->PTZMove(strDirect, speed, [&](const SockException &ex) {
-                if (ex) {
-                    val["code"] = API::Exception;
-                    val["msg"] = ex.what();
-                    invoker(400, headerOut, val.toStyledString());
-                } else {
-                    val["msg"] = ex.what();
-                    invoker(200, headerOut, val.toStyledString());
-                }
+            ptr->getOwnerPoller()->async([=]() mutable {
+                ptr->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
+                    if (ex) {
+                        val["code"] = API::Exception;
+                        val["msg"] = ex.what();
+                        invoker(400, headerOut, val.toStyledString());
+                    } else {
+                        val["msg"] = ex.what();
+                        invoker(200, headerOut, val.toStyledString());
+                    }
+                });
             });
         };
 

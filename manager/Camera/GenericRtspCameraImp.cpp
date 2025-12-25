@@ -98,7 +98,6 @@ void GenericRtspCameraImp::stop() {
 }
 
 void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std::function<void(const SockException &ex)> &cb) {
-    //todo: only one session to control ptz
     if (_controller) {
         _controller->PTZMove(strDirect, speed, cb);
     } else {
