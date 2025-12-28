@@ -21,9 +21,10 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
         return; // No change
     }
     _option = option;
+    _enabled = option.enableActive;
     saveCameraOption(option);
     
-    if (!_option.enableActive) {
+    if (!_enabled.load()) {
         stop();
         return;
     }

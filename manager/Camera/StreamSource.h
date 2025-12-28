@@ -24,7 +24,7 @@ struct StreamTuple : public DeviceTuple {
     }
 
     bool empty() const {
-        return stream_id.empty() || full_url.empty();
+        return stream_id.empty() && full_url.empty();
     }
 };
 

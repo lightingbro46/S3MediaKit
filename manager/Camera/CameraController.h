@@ -13,7 +13,7 @@ public:
 
     CameraController(const toolkit::EventPoller::Ptr &poller);
 
-    ~CameraController();
+    ~CameraController() = default;
 
     void start();
 

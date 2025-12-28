@@ -10,10 +10,6 @@ namespace managerkit {
 
 CameraController::CameraController(const toolkit::EventPoller::Ptr &poller) : _poller(poller) {}
 
-CameraController::~CameraController() {
-    stopController();
-}
-
 void CameraController::start() {
     weak_ptr<CameraController> weak_self = shared_from_this();
     _timer_ctr = std::make_shared<Timer>(
@@ -64,12 +60,13 @@ void CameraController::stopController() {
     if (_on_ready) {
         auto enable_ptz = enablePTZ();
         _on_ready(false, "disconnected", enable_ptz);
+        _on_ready = nullptr;
     }
     {
         lock_guard<mutex> lck(_mtx_ctr);
-        _ready = false;
-        _controller.reset();
         _timer_ctr.reset();
+        _controller.reset();
+        _ready = false;
     }
 }
 

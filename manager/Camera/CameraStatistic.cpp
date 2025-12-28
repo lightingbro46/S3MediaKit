@@ -56,13 +56,18 @@ static BookmarkStats getBookmarkStats(const Json::Value &data) {
 }
 
 // StreamStorageStats
-static Json::Value makeStreamStorageStatsJson(unordered_map<int, StreamStorageStats> storage_map, int stream_type) {
+static Json::Value makeStreamStorageStatsJson(const unordered_map<string, StreamStorageStats> storage_map, const unordered_map<int, StreamTuple> stream_map, int stream_type) {
     Json::Value ret = Json::objectValue;
-    if (storage_map.find(stream_type) != storage_map.end()) {
-        ret["archiveIndexRecordCount"] = storage_map[stream_type].archiveIndexRecordCount;
-        ret["archiveSizeB"] = storage_map[stream_type].archiveSizeB;
-        ret["archiveStartTime"] = storage_map[stream_type].archiveStartTime;
-        ret["archiveEndTime"] = storage_map[stream_type].archiveEndTime;
+    auto it_stream = stream_map.find(stream_type);
+    if (it_stream != stream_map.end()) {
+        auto stream_id = it_stream->second.stream_id;
+        auto it_storage = storage_map.find(stream_id);
+        if (it_storage != storage_map.end()) {
+            ret["archiveIndexRecordCount"] = it_storage->second.archiveIndexRecordCount;
+            ret["archiveSizeB"] = it_storage->second.archiveSizeB;
+            ret["archiveStartTime"] = it_storage->second.archiveStartTime;
+            ret["archiveEndTime"] = it_storage->second.archiveEndTime;
+        }
     }
     return ret;
 }
@@ -77,24 +82,25 @@ static StreamStorageStats getStreamStorageStats(const Json::Value &data) {
 }
 
 // StreamStatistic
-static Json::Value makeStreamStatisticJson(unordered_map<int, StreamStatistic> stats_map, int stream_type) {
+static Json::Value makeStreamStatisticJson(const unordered_map<int, StreamStatistic> stats_map, int stream_type) {
     Json::Value ret = Json::objectValue;
-    if (stats_map.find(stream_type) != stats_map.end()) {
-        ret["live"] = stats_map[stream_type].live;
-        ret["last_change_status"] = stats_map[stream_type].last_change_status;
-        ret["status"] = stats_map[stream_type].status;
-        ret["byte_speed"] = stats_map[stream_type].byte_speed;
-        ret["has_video"] = stats_map[stream_type].has_video;
-        ret["vcodec"] = stats_map[stream_type].vcodec;
-        ret["width"] = stats_map[stream_type].width;
-        ret["height"] = stats_map[stream_type].height;
-        ret["bitrate"] = stats_map[stream_type].bitrate;
-        ret["fps"] = stats_map[stream_type].fps;
-        ret["has_audio"] = stats_map[stream_type].has_audio;
-        ret["acodec"] = stats_map[stream_type].acodec;
-        ret["sample_rate"] = stats_map[stream_type].sample_rate;
-        ret["channel_no"] = stats_map[stream_type].channel_no;
-        ret["sample_bit"] = stats_map[stream_type].sample_bit;
+    auto it_statistic = stats_map.find(stream_type);
+    if (it_statistic != stats_map.end()) {
+        ret["live"] = it_statistic->second.live;
+        ret["last_change_status"] = it_statistic->second.last_change_status;
+        ret["status"] = it_statistic->second.status;
+        ret["byte_speed"] = it_statistic->second.byte_speed;
+        ret["has_video"] = it_statistic->second.has_video;
+        ret["vcodec"] = it_statistic->second.vcodec;
+        ret["width"] = it_statistic->second.width;
+        ret["height"] = it_statistic->second.height;
+        ret["bitrate"] = it_statistic->second.bitrate;
+        ret["fps"] = it_statistic->second.fps;
+        ret["has_audio"] = it_statistic->second.has_audio;
+        ret["acodec"] = it_statistic->second.acodec;
+        ret["sample_rate"] = it_statistic->second.sample_rate;
+        ret["channel_no"] = it_statistic->second.channel_no;
+        ret["sample_bit"] = it_statistic->second.sample_bit;
     }
     return ret;
 }
@@ -200,11 +206,11 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     Json::Value streamUrlsJson;
     readJsonString(streamUrlsString, streamUrlsJson);
     auto primary_stream = getStreamTuple(streamUrlsJson[PrimaryStream], info);
-    if (!primary_stream.stream_id.empty() && !primary_stream.full_url.empty()) {
+    if (!primary_stream.empty()) {
         stream_map[PrimaryStream] = primary_stream;
     }
     auto secondary_stream = getStreamTuple(streamUrlsJson[SecondaryStream], info);
-    if (!secondary_stream.stream_id.empty() && !secondary_stream.full_url.empty()) {
+    if (!secondary_stream.empty()) {
         stream_map[SecondaryStream] = secondary_stream;
     }
     stats.stream_map = stream_map;
@@ -218,13 +224,23 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
         } else if (it["name"] == "streamStorageInfos") {
             Json::Value storage_json;
             readJsonString(it["value"].asString(), storage_json);
-            stats.storage_map[PrimaryStream] = getStreamStorageStats(storage_json[PrimaryStream]);
-            stats.storage_map[SecondaryStream] = getStreamStorageStats(storage_json[SecondaryStream]);
+            if (!primary_stream.empty()) {
+                auto stream_id = primary_stream.stream_id;
+                stats.storage_map[stream_id] = getStreamStorageStats(storage_json[PrimaryStream]);
+            }
+            if (!secondary_stream.empty()) {
+                auto stream_id = secondary_stream.stream_id;
+                stats.storage_map[stream_id] = getStreamStorageStats(storage_json[SecondaryStream]);
+            }
         } else if (it["name"] == "streamStatisticInfos") {
             Json::Value stream_stats_json;
             readJsonString(it["value"].asString(), stream_stats_json);
-            stats.sinfo_map[PrimaryStream] = getStreamStatistic(stream_stats_json[PrimaryStream]);
-            stats.sinfo_map[SecondaryStream] = getStreamStatistic(stream_stats_json[SecondaryStream]);
+            if (!primary_stream.empty()) {
+                stats.sinfo_map[PrimaryStream] = getStreamStatistic(stream_stats_json[PrimaryStream]);
+            }
+            if (!secondary_stream.empty()) {
+                stats.sinfo_map[SecondaryStream] = getStreamStatistic(stream_stats_json[SecondaryStream]);
+            }
         } else if (it["name"] == "deviceCapabilities") {
             Json::Value device_caps_json;
             readJsonString(it["value"].asString(), device_caps_json);
@@ -280,8 +296,8 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     params.append(makeJsonKeyValue("bookmarkStats", writeJsonString(bm_json)));
 
     Json::Value storage_json = Json::arrayValue;
-    storage_json.append(makeStreamStorageStatsJson(stats.storage_map, PrimaryStream));
-    storage_json.append(makeStreamStorageStatsJson(stats.storage_map, SecondaryStream));
+    storage_json.append(makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, PrimaryStream));
+    storage_json.append(makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, SecondaryStream));
     params.append(makeJsonKeyValue("streamStorageInfos", writeJsonString(storage_json)));
 
     Json::Value stream_stats_json = Json::arrayValue;
@@ -345,42 +361,57 @@ void CameraStatisticImp::save() {
     _file->save(static_cast<const CameraStatistic &>(*this));
 }
 
-void CameraStatisticImp::setCameraInfo(const CameraInfo &info_) {
+void CameraStatisticImp::setCameraInfo(const CameraInfo &input_info) {
     std::lock_guard<std::mutex> lck(_mtx);
-    info = info_;
+    info = input_info;
     save();
 }
 
-static bool isStreamChange(unordered_map<int, StreamTuple> &new_stream_map, unordered_map<int, StreamTuple> &saved_stream_map, int stream_type) {
-    if (new_stream_map.find(stream_type) == new_stream_map.end()) {
-        return true;
-    }
-    if (new_stream_map[stream_type].stream_id != saved_stream_map[stream_type].stream_id) {
-        return true;
-    }
-    return false;
-}
-
-void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTuple> &stream_map_) {
+void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTuple> &input_stream_map) {
     std::lock_guard<std::mutex> lck(_mtx);
-    // todo: alway have two stream and record stream update time
-    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, PrimaryStream)) {
-        // Clear statistic if stream type do not exist
-        storage_map[PrimaryStream] = StreamStorageStats();
-        sinfo_map[PrimaryStream] = StreamStatistic();
+    auto it_primary = input_stream_map.find(PrimaryStream);
+    if (it_primary != input_stream_map.end()) {
+        auto tuple = it_primary->second;
+        if (!tuple.empty()) {
+            // Ensure primary stream exist in storage_map and sinfo_map
+            if (storage_map.find(tuple.stream_id) == storage_map.end()) {
+                storage_map[tuple.stream_id] = StreamStorageStats();
+            }
+            if (sinfo_map.find(PrimaryStream) == sinfo_map.end()) {
+                sinfo_map[PrimaryStream] = StreamStatistic();
+            }
+        } else {
+            WarnL << "Input primary stream is empty";
+        }
+    } else {
+        WarnL << "Input stream map do not have primary stream";
     }
-    if (isStreamChange(const_cast<unordered_map<int, StreamTuple>&>(stream_map_), stream_map, SecondaryStream)) {
-        // Clear statistic if stream type do not exist
-        storage_map[SecondaryStream] = StreamStorageStats();
-        sinfo_map[SecondaryStream] = StreamStatistic();
+
+    auto it_secondary = input_stream_map.find(SecondaryStream);
+    if (it_secondary != input_stream_map.end()) {
+        auto tuple = it_secondary->second;
+        if (!tuple.empty()) {
+            // Ensure secondary stream exist in storage_map and sinfo_map
+            if (storage_map.find(tuple.stream_id) == storage_map.end()) {
+                storage_map[tuple.stream_id] = StreamStorageStats();
+            }
+            if (sinfo_map.find(SecondaryStream) == sinfo_map.end()) {
+                sinfo_map[SecondaryStream] = StreamStatistic();
+            }
+        } else {
+            WarnL << "Input secondary stream is empty";
+        }
+    } else {
+        WarnL << "Input stream map do not have secondary stream";
     }
-    stream_map = stream_map_;
+    
+    stream_map = input_stream_map;
     save();
 }
 
-void CameraStatisticImp::setCameraOption(const CameraOption &option_) {
+void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
     std::lock_guard<std::mutex> lck(_mtx);
-    option = option_;
+    option = input_option;
     save();
 }
 
@@ -391,14 +422,9 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
         DebugL << "Time block has end time (" << archived_end_time << ") less than or equal created_at of file ("<< created_at <<"). Ignore" ;
         return;
     }
-    int stream_type = StreamMax;
-    for (const auto &it : stream_map) {
-        if (it.second.stream_id == stream_id) {
-            stream_type = it.first;
-        }
-    }
-    if (storage_map.find(stream_type) != storage_map.end()) {
-        auto &storage = storage_map[stream_type];
+
+    if (storage_map.find(stream_id) != storage_map.end()) {
+        auto &storage = storage_map[stream_id]; 
         if (add) {
             storage.archiveSizeB += size;
             storage.archiveIndexRecordCount += count;
@@ -406,7 +432,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
                 storage.archiveStartTime = archived_start_time;
             }
             storage.archiveEndTime = archived_end_time;
-            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " add archived size: " << format_bytes_human_readable(size) << ", count: " << count
+            DebugL << "Stream " << info.device_id << "/" << stream_id << " add archived size: " << format_bytes_human_readable(size) << ", count: " << count
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
                    << ". Total archived count: " << storage.archiveIndexRecordCount
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
@@ -422,7 +448,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
                 // Note: Use the end time block for approximate statistics, not completely accurate. Use the TimeQuery::getFirstBlock function to get the exact number.
                 storage.archiveStartTime = archived_end_time;
             }
-            DebugL << "Stream " << stream_map[stream_type].shortUrl() << " subtract archived size: " << format_bytes_human_readable(size) << ", count: " << count
+            DebugL << "Stream " << info.shortUrl() << "/" << stream_id << " subtract archived size: " << format_bytes_human_readable(size) << ", count: " << count
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
                    << ". Total archived count: " << storage.archiveIndexRecordCount
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)
@@ -430,7 +456,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
         }
         save();
     } else {
-        WarnL << "Camera storage do not have stream: " << stream_id;
+        WarnL << "Camera " << info.shortUrl() << " do not have stream: " << stream_id << ". Ignore archive size statistic";
     }
 }
 
@@ -444,7 +470,7 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
     if (add) {
         bm.recordCount ++;
         bm.recordAverageSizeB += size;
-        DebugL << "Device " << info.shortUrl() << " add bookmark count: 1. Total bookmark count: " << bm.recordCount;
+        DebugL << "Camera " << info.shortUrl() << " add bookmark count: 1. Total bookmark count: " << bm.recordCount;
 
     } else {
         if (bm.recordCount > 0) {
@@ -455,7 +481,7 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
         } else {
             bm.recordAverageSizeB = 0;
         }
-        DebugL << "Device " << info.shortUrl() << "subtract bookmark count: 1. Total bookmark count: " << bm.recordCount;
+        DebugL << "Camera " << info.shortUrl() << " subtract bookmark count: 1. Total bookmark count: " << bm.recordCount;
     }
     save();
 }
@@ -501,7 +527,7 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
         DebugL << "Stream " << stream_map[stream_type].shortUrl() << " statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
         save();
     } else {
-        WarnL << "Device " << info.shortUrl() << " do not have stream type: " << stream_type << ". Ignore statistic";
+        WarnL << "Camera " << info.shortUrl() << " do not have stream type: " << stream_type << ". Ignore add stream statistic";
     }
 }
 

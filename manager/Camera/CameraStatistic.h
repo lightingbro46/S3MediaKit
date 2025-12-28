@@ -56,17 +56,13 @@ struct CameraStatistic {
     CameraOption option;
     std::unordered_map<int, StreamTuple> stream_map;
     BookmarkStats bm;
-    std::unordered_map<int, StreamStorageStats> storage_map;
+    std::unordered_map<std::string, StreamStorageStats> storage_map;
     std::unordered_map<int, StreamStatistic> sinfo_map;
     DeviceCapabilities device_caps;
     uint64_t created_at;
     uint64_t updated_at;
 
     CameraStatistic() {
-        storage_map[PrimaryStream];
-        storage_map[SecondaryStream];
-        sinfo_map[PrimaryStream];
-        sinfo_map[SecondaryStream];
         created_at = 0;
         updated_at = 0;
     }
@@ -82,11 +78,11 @@ public:
 
     void setOnRemove(const std::function<void(const std::string&)> &cb) { _on_remove = std::move(cb); }
 
-    void setCameraInfo(const CameraInfo &info_);
+    void setCameraInfo(const CameraInfo &input_info);
 
-    void setStreamTuples(const std::unordered_map<int, StreamTuple> &stream_map_);
+    void setStreamTuples(const std::unordered_map<int, StreamTuple> &input_stream_map);
 
-    void setCameraOption(const CameraOption &option_);
+    void setCameraOption(const CameraOption &input_option);
 
     void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
 

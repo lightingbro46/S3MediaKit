@@ -2545,14 +2545,8 @@ void installWebApi() {
                             auto stats_imp = ptr->getCameraStatisticImp();
                             if (stats_imp) {
                                 auto params = stats_imp->getParams();
-                                auto stream_type = StreamMax;
-                                for (const auto &it : params.stream_map) {
-                                    if (it.second.stream_id == tuple.stream) {
-                                        stream_type = static_cast<managerkit::StreamType>(it.first);
-                                    }
-                                }
-                                if (params.storage_map.find(stream_type) != params.storage_map.end()) {
-                                    auto last_archived_time = params.storage_map[stream_type].archiveEndTime;
+                                if (params.storage_map.find(tuple.stream) != params.storage_map.end()) {
+                                    auto last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
                                     if (last_archived_time > 0) {
                                         auto block = query->getLastBlock(last_archived_time);
                                         if (block) {
