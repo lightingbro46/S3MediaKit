@@ -96,6 +96,7 @@ void GenericRtspCameraImp::stop() {
             _sink->stopMonitor(SecondaryStream);
         }
     }
+    onAllStreamReady();
 }
 
 void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std::function<void(const SockException &ex)> &cb) {
