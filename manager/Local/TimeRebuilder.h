@@ -3,7 +3,7 @@
 
 #include "TimeRecorderManager.h"
 
-namespace mediakit {
+namespace managerkit {
 
 class TimeRebuilder final {
 public:
@@ -64,6 +64,6 @@ private:
     std::map<uint64_t, std::string> _timefiles_map;
 };
 
-} // namespace mediakit
+} // namespace managerkit
 
 #endif //LOCAL_TIMEREBUILDER_H_

@@ -1,15 +1,15 @@
 #include "TimeRebuilder.h"
 #include "Common/Parser.h"
-#include "Common/strTime.h"
 #include "TimeDemuxer.h"
+#include "TimeScheduler.h"
 #include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
-using namespace managerkit;
+using namespace mediakit;
 
-namespace mediakit {
+namespace managerkit {
 
 //////////////////////////////TimeRebuilder////////////////////////////////
 
@@ -300,4 +300,4 @@ size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     return total_removed_bytes;
 }
 
-} // namespace mediakit
+} // namespace managerkit

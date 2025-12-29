@@ -14,6 +14,7 @@
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
+using namespace managerkit;
 
 namespace FFmpeg {
 #define FFmpeg_FIELD "ffmpeg."

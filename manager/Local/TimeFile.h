@@ -6,7 +6,7 @@
 #include "Util/File.h"
 #include "proto/timeblock.pb.h"
 
-namespace mediakit {
+namespace managerkit {
 
 class TimeFileIO;
 
@@ -156,6 +156,6 @@ private:
     std::string _memory;
 };
 
-} // namespace mediakit
+} // namespace managerkit
 
 #endif // LOCAL_TIMEFILE_H

@@ -6,7 +6,7 @@
 #include "TimeFile.h"
 #include "Poller/EventPoller.h"
 
-namespace mediakit {
+namespace managerkit {
 
 uint64_t getStartOfDay(uint64_t seconds);
 
@@ -93,5 +93,5 @@ private:
     TimeReader::Ptr _reader;
 };
 
-} // namespace mediakit
+} // namespace managerkit
 #endif // LOCAL_TIMEMAKER_H

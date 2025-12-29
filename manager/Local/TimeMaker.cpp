@@ -6,7 +6,7 @@
 using namespace std;
 using namespace toolkit;
 
-namespace mediakit {
+namespace managerkit {
 
 uint64_t getStartOfDay(uint64_t seconds) {
     std::time_t t = static_cast<std::time_t>(seconds);
@@ -175,4 +175,4 @@ bool TimeMakerImp::onSeekIndex(uint32_t offset) {
     return false;
 }
 
-} // namespace mediakit
+} // namespace managerkit

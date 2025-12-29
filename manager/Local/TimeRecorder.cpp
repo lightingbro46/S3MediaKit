@@ -6,8 +6,9 @@
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
-namespace mediakit {
+namespace managerkit {
 
 ///////////////////// TimeRecorder ///////////////////////////
 
@@ -113,4 +114,4 @@ void TimeRecorder::getMemoryBlockAndRefresh(const std::function<void(const strin
     on_close();
 }
 
-} // namespace mediakit
+} // namespace managerkit

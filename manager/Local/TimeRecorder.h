@@ -5,7 +5,7 @@
 #include "TimeMuxer.h"
 #include "TimeMaker.h"
 
-namespace mediakit {
+namespace managerkit {
 
 class TimeRecorder final : public std::enable_shared_from_this<TimeRecorder> {
 public:
@@ -61,6 +61,6 @@ private:
     uint64_t _next_open_time = 0;
 };
 
-} // namespace mediakit
+} // namespace managerkit
 
 #endif // S3MEDIAKIT_TIMERECORDER_H_

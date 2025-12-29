@@ -4,8 +4,9 @@
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
-namespace mediakit {
+namespace managerkit {
 
 TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path) {
     _file_path = path;
@@ -319,4 +320,4 @@ std::shared_ptr<TimeBlock> TimeQuery::getFirstBlock(uint64_t first_archived_time
     return has_block ? first_block : nullptr;
 }
 
-} // namespace mediakit
+} // namespace managerkit

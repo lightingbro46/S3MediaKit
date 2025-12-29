@@ -7,7 +7,7 @@
 #include "TimeDemuxer.h"
 #include "Record/Recorder.h"
 
-namespace mediakit {
+namespace managerkit {
 
 struct TimeRange {
     uint64_t startTime;
@@ -20,11 +20,11 @@ public:
     using TimeBlockListPtr = std::shared_ptr<TimeQuery>;
     using TimeBlockImp = std::function<void(const TimeBlock &block)>;
 
-    TimeQuery(const MediaTuple &tuple, const std::string &file_path = "");
+    TimeQuery(const mediakit::MediaTuple &tuple, const std::string &file_path = "");
 
     ~TimeQuery();
 
-    MediaTuple& getMediaTuple() { return _tuple; }
+    mediakit::MediaTuple& getMediaTuple() { return _tuple; }
 
     void getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         const std::function<void(std::vector<TimeRange> &data)> &cb);
@@ -77,13 +77,13 @@ private:
     uint64_t getCurrentStamp() { return _last_time; }
 
 private: 
-    MediaTuple _tuple;
+    mediakit::MediaTuple _tuple;
     uint64_t _last_time = 0;
     std::string _file_path;
     std::recursive_mutex _mtx;
     MultiTimeDemuxer::Ptr _demuxer;
 };
 
-} // namespace mediakit
+} // namespace managerkit
 
 #endif // S3MEDIAKIT_TIMEQUERY_H_

@@ -4,7 +4,7 @@
 using namespace std;
 using namespace toolkit;
 
-namespace mediakit {
+namespace managerkit {
 /////////////////////////TimerDemuxerInterface////////////////////////
 
 int64_t TimerDemuxerInterface::seekTo(uint64_t stamp_sec) {
@@ -184,4 +184,4 @@ TimeMemoryDemuxer::TimeMemoryDemuxer(const string& buf) {
     _first_stamp = findFirstStamp();
 }
 
-} // namespace mediakit
+} // namespace managerkit

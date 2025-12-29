@@ -4,7 +4,7 @@
 #include "TimeFile.h"
 #include "TimeMaker.h"
 
-namespace mediakit {
+namespace managerkit {
 
 class TimerDemuxerInterface {
 public:
@@ -97,6 +97,6 @@ private:
     TimeFileMemory::Ptr _file;
 };
 
-} // namespace mediakit 
+} // namespace managerkit 
 
 #endif // LOCAL_TIMEDEMUXER_H

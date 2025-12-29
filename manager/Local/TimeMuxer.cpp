@@ -4,7 +4,7 @@
 using namespace std;
 using namespace toolkit;
 
-namespace mediakit {
+namespace managerkit {
 
 //////////////////////////// TimeMuxer //////////////////////////
 
@@ -86,4 +86,4 @@ string TimeMuxerMemory::getMemoryBlock() {
     return _memory_file->getAndClearMemory();
 }
 
-} // namespace mediakit
+} // namespace managerkit

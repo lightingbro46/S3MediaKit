@@ -3,8 +3,6 @@
 
 #include "TimeRecorder.h"
 
-using namespace mediakit;
-
 namespace managerkit {
 
 /**
@@ -31,7 +29,7 @@ private:
 
 private:
     std::mutex _mutex;
-    std::unordered_map<std::string, mediakit::TimeRecorder::Ptr> _recorders;
+    std::unordered_map<std::string, TimeRecorder::Ptr> _recorders;
 };
 
 } // namespace managerkit
