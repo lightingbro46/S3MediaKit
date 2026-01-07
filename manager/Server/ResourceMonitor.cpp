@@ -63,6 +63,7 @@ string getResourceTypeString(const ResourceType &type) {
         SWITCH_CASE(MEMORY);
         SWITCH_CASE(NETWORK);
         SWITCH_CASE(HDD);
+        SWITCH_CASE(READER);
         default : return "unknown";
     }
 }
@@ -77,7 +78,7 @@ std::pair<double, double> ResourceMonitor::getThreshold() {
 }
 
 void ResourceMonitor::emitSystemAlert(double usage) {
-    if (_critical_threshold < 0 && _critical_threshold < 0) {
+    if (_critical_threshold < 0 && _warning_threshold < 0) {
         TraceL << "No system " << getResourceTypeString(_type) << " threshold config. Ignore system alert";
         return;
     }

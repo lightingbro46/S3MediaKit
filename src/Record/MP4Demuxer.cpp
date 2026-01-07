@@ -288,7 +288,7 @@ std::vector<Track::Ptr> MultiMP4Demuxer::getTracks(bool trackReady) const {
     return ret;
 }
 
-static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 600) {
+static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 300) {
     uint64_t duration = 0;
     Broadcast::Seek2Invoker invoker = [&](const uint64_t &duration_, const map<uint64_t, string> &ret) {
         duration = duration_;
@@ -301,7 +301,7 @@ static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple 
     return duration;
 }
 
-static uint64_t findSegmentDuration(const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 86400) {
+static uint64_t findSegmentDuration(const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 3600) {
     uint64_t duration = 0;
     Broadcast::Seek2Invoker invoker = [&](const uint64_t &ret, const map<uint64_t, string> &) {
         duration = ret;
@@ -334,7 +334,10 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     CHECK(!_demuxers.empty());
     _it = _demuxers.begin();
     for (auto &track : _it->second->getTracks(false)) {
-        _tracks.emplace(track->getIndex(), track->clone());
+        auto clone_track(track->clone());
+        clone_track->setIndex(clone_track->getTrackType());
+        _tracks.emplace(clone_track->getIndex(), clone_track);
+        DebugL << "track index: " << track->getIndex() << " -> " << clone_track->getIndex();
     }
 
     if (offset >= 0) {

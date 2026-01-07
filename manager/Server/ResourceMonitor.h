@@ -56,7 +56,8 @@ enum class ResourceType : uint8_t {
     CPU = 0,
     MEMORY = 1,
     NETWORK = 2,
-    HDD = 3
+    HDD = 3,
+    READER = 4,
 };
 
 std::string getResourceTypeString(const ResourceType &type);

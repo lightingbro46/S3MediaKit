@@ -36,6 +36,9 @@ void GlobalMonitor::start() {
     _hdd_monitor = std::make_shared<HddMonitor>(_poller);
     DebugL << "Start monitoring Hdd usage";
 
+    _reader_monitor = std::make_shared<ReaderMonitor>(_poller);
+    DebugL << "Start monitoring Stream reader usage";
+
     weak_ptr<GlobalMonitor> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
         300.0f,
@@ -88,6 +91,10 @@ vector<DiskPartition> GlobalMonitor::getHddUsage() {
     return _hdd_monitor->getCurrentUsage();
 }
 
+ReaderCountInfoMap GlobalMonitor::getReaderUsage() {
+    return _reader_monitor->getCurrentUsage();
+}
+
 string GlobalMonitor::getLocalIps() {
     auto net_usage = _net_monitor->getCurrentUsage();
     vector<string> ips;
@@ -137,6 +144,9 @@ void GlobalMonitor::setThreshold(const ResourceType &type, double warning_thresh
     if (type == ResourceType::NETWORK && _net_monitor) {
         monitor = dynamic_pointer_cast<ResourceMonitor>(_net_monitor);
     }
+    if (type == ResourceType::READER && _reader_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_reader_monitor);
+    }
     if (monitor) {
         monitor->setThreshold(warning_threshold, critical_threshold);
     } else {
@@ -158,6 +168,9 @@ std::pair<double, double> GlobalMonitor::getThreshold(const ResourceType &type) 
     if (type == ResourceType::NETWORK && _net_monitor) {
         monitor = dynamic_pointer_cast<ResourceMonitor>(_net_monitor);
     }
+    if (type == ResourceType::READER && _reader_monitor) {
+        monitor = dynamic_pointer_cast<ResourceMonitor>(_reader_monitor);
+    }
     if (monitor) {
         return monitor->getThreshold();
     } else {
@@ -166,4 +179,18 @@ std::pair<double, double> GlobalMonitor::getThreshold(const ResourceType &type) 
     }
 }
 
-} // namespace managerkit 
+void GlobalMonitor::setStreamReaderCount(const string &camera_id, int reader_count, bool record_stream) {
+    if (_reader_monitor) {
+        _reader_monitor->setStreamReaderCount(camera_id, reader_count, record_stream);
+    }
+}
+
+bool GlobalMonitor::isReaderCountLimit(const string &camera_id, bool record_stream) {
+    bool ret = false;
+    if (_reader_monitor) {
+        ret = _reader_monitor->isReaderCountLimit(camera_id, record_stream);
+    }
+    return ret;
+}
+
+} // namespace managerkit

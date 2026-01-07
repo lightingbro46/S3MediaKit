@@ -327,6 +327,12 @@ void RtspSession::emitOnPlay(){
             return;
         }
         if (!err.empty()) {
+            if (err == "MaxRequest") {
+                //Too many connections
+                strong_self->sendRtspResponse("429 Too Many Requests", {"Content-Type", "text/plain"}, "429 Too Many Requests");
+                strong_self->shutdown(SockException(Err_shutdown, StrPrinter << "429 Too Many Requests"));
+                return;
+            }
             //Failed to play url authentication
             strong_self->sendRtspResponse("401 Unauthorized", {"Content-Type", "text/plain"}, err);
             strong_self->shutdown(SockException(Err_shutdown, StrPrinter << "401 Unauthorized:" << err));

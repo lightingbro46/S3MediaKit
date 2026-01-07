@@ -2,9 +2,10 @@
 #define S3MANAGERKIT_GLOBALMONITOR_H
 
 #include "CpuMonitor.h"
+#include "HddMonitor.h"
 #include "MemoryMonitor.h"
 #include "NetworkMonitor.h"
-#include "HddMonitor.h"
+#include "ReaderMonitor.h"
 #include "osInfo.h"
 
 namespace managerkit {
@@ -36,6 +37,12 @@ public:
 
     std::pair<double, double> getThreshold(const ResourceType &type);
 
+    void setStreamReaderCount(const std::string &camera_id, int reader_count, bool record_stream = false);
+
+    bool isReaderCountLimit(const std::string &camera_id, bool record_stream = false);
+
+    ReaderCountInfoMap getReaderUsage();
+
 private:
     GlobalMonitor();
 
@@ -45,6 +52,7 @@ private:
     MemoryMonitor::Ptr _mem_monitor;
     NetworkMonitor::Ptr _net_monitor;
     HddMonitor::Ptr _hdd_monitor;
+    ReaderMonitor::Ptr _reader_monitor;
 
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;

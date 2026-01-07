@@ -321,6 +321,11 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         }
 
         if (!err.empty()) {
+            if (err == "MaxRequest") {
+                // Too many connections
+                strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
             // Playback authentication failed
             strong_self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
             return;

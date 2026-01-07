@@ -432,7 +432,7 @@ void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t s
                 storage.archiveStartTime = archived_start_time;
             }
             storage.archiveEndTime = archived_end_time;
-            DebugL << "Stream " << info.device_id << "/" << stream_id << " add archived size: " << format_bytes_human_readable(size) << ", count: " << count
+            DebugL << "Stream " << info.shortUrl() << "/" << stream_id << " add archived size: " << format_bytes_human_readable(size) << ", count: " << count
                    << ". Total archived size: " << format_bytes_human_readable(storage.archiveSizeB)
                    << ". Total archived count: " << storage.archiveIndexRecordCount
                    << ". First archived time: " << getTimeStr("%Y-%m-%d %H:%M:%S", storage.archiveStartTime)

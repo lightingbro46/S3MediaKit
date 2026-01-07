@@ -252,16 +252,44 @@ static void checkUserDeviceAuthor(const string &device_id, const string &jwt_tok
         if (!err.empty()) {
             throw AuthException(err.data());
         }
-        cb();
+        // Authorized, execute the callback function in the event loop of the poller thread
+        EventPollerPool::Instance().getPoller()->async([cb]() {
+            cb();
+        });
     };
-    
+
+    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+    // If authorization is not enabled, directly pass
+    if (!enable_authorize) {
+        return auth_invoker("");
+    }
+
+    // If there is no token, directly reject
+    if (jwt_token.empty()) {
+        return auth_invoker("Unauthorized");
+    }
+
+    // Broadcast to check device access authorization
     auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);
     if (!flag) {
+        // No one is listening to the event, directly reject
         auth_invoker("Unauthorized");
     }
 }
 
 static bool checkUserAuthor(const string &resource_id, const string &jwt_token) {
+    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+    // If authorization is not enabled, directly pass
+    if (!enable_authorize) {
+        return true;
+    }
+
+    // If there is no token, directly reject
+    if (jwt_token.empty()) {
+        return false;
+    }
+
+    // Check authorization cache
     auto permit = UserAuthorManager::Instance().getAuthorCache(resource_id, jwt_token);
     return permit == UserAuthorPermit::ACCEPT;
 }

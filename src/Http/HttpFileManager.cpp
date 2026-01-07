@@ -441,11 +441,16 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
             return;
         }
         if (!err_msg.empty()) {
-            // File authentication failed
             StrCaseMap headerOut;
             if (cookie) {
                 headerOut["Set-Cookie"] = cookie->getCookie(cookie->getAttach<HttpCookieAttachment>()._path);
             }
+            if (err_msg == "MaxRequest") {
+                // 429 Too Many Requests
+                cb(429, "text/html", headerOut, std::make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            // File authentication failed
             cb(401, "text/html", headerOut, std::make_shared<HttpStringBody>(err_msg));
             return;
         }

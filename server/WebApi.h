@@ -214,17 +214,20 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     } while(false);
 
 #define CHECK_AUTH_TOKEN()                                                                                                                                     \
-    CHECK_ARGS("Authorization");                                                                                                                               \
-    string bearer_token = allArgs["Authorization"];                                                                                                            \
-    string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                            \
-    auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                                 \
     GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             \
-    if (!token_cache->hasAccess() && enable_authorize) {                                                                                                       \
-        throw AuthException("Unauthorized");                                                                                                                   \
-    }                                                                                                                                                          \
-    allArgs.args["_user_id"] = token_cache->getUid();                                                                                                          \
-    allArgs.args["_user_name"] = token_cache->getUserName();                                                                                                   \
-    allArgs.args["_project_id"] = token_cache->getProjectId();
+    string jwt_token;                                                                                                                                          \
+    if (enable_authorize) {                                                                                                                                    \
+        CHECK_ARGS("Authorization");                                                                                                                           \
+        string bearer_token = allArgs["Authorization"];                                                                                                        \
+        string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                        \
+        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                             \
+        if (!token_cache->hasAccess() && enable_authorize) {                                                                                                   \
+            throw AuthException("Unauthorized");                                                                                                               \
+        }                                                                                                                                                      \
+        allArgs.args["_user_id"] = token_cache->getUid();                                                                                                      \
+        allArgs.args["_user_name"] = token_cache->getUserName();                                                                                               \
+        allArgs.args["_project_id"] = token_cache->getProjectId();                                                                                             \
+    }
 
 #define CHECK_USER_AUTHOR(resource_id)                                                                                                                         \
     if (!checkUserAuthor(resource_id, jwt_token)) {                                                                                                            \

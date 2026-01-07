@@ -16,6 +16,7 @@
 #include "Storage/Bookmark.h"
 #include "Server/ClusterManager.h"
 #include "Camera/CameraManager.h"
+#include "Server/ReaderMonitor.h"
 
 using namespace std;
 using namespace Json;
@@ -365,7 +366,10 @@ static void reportServerStarted() {
                     g_started_timer.reset();
                 });
                 s_report_started = true;
-                loadServerStartedConfigJson(obj);
+                EventPollerPool::Instance().getPoller()->async([obj]() {
+                    // Load server started config success
+                    loadServerStartedConfigJson(obj);
+                });
             } else {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
@@ -472,8 +476,10 @@ static void reportServerStatistic() {
                     TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
                     InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
 
-                    // Load server config success
-                    loadServerConfigJson(obj);
+                    EventPollerPool::Instance().getPoller()->async([obj]() {
+                        // Load server config success
+                        loadServerConfigJson(obj);
+                    });
                 } else {
                     // Load server config failed
                     TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
@@ -655,40 +661,68 @@ void installWebHook() {
         return ret;
     });
 
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
+        auto device_id = args.app;
+        bool record_stream = false;
+        GET_CONFIG(string, app_name, Record::kAppName);
+        if (args.app == app_name) {
+            device_id = split(args.stream, "/")[0];
+            record_stream = true;
+        }
+        GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
-        auto params = Parser::parseArgs(args.params);
-        if (!bypass_realms.empty() && bypass_realms.find(params["realm"]) != bypass_realms.end()) {
-            // Bypass authentication realm, directly allow access
-            invoker("");
+        auto device_id = args.app;
+        bool record_stream = false;
+        GET_CONFIG(string, app_name, Record::kAppName);
+        if (args.app == app_name) {
+            device_id = split(args.stream, "/")[0];
+            record_stream = true;
+        }
+
+        auto isStreamLimit = [invoker, device_id, record_stream]() {
+            auto stream_limit = GlobalMonitor::Instance().isReaderCountLimit(device_id, record_stream);
+            invoker(stream_limit ? "MaxRequest" : "");
+        };
+
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+        if (!enable_authorize) {
+            // Do not check authorize token, directly allow access, session do not record in database
+            isStreamLimit();
             return;
         }
+
+        auto params = Parser::parseArgs(args.params);
+        if (!bypass_realms.empty() && bypass_realms.find(params["realm"]) != bypass_realms.end()) {
+            // Bypass authentication realm, directly allow access, session do not record in database
+            // todo: record user session with realm
+            isStreamLimit();
+            return;
+        }
+
         string jwt_token = params["token"];
         if (jwt_token.empty()) {
             invoker("Unauthorized");
             return;
         }
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
-        if (!token_cache->hasAccess() && enable_authorize) {
+        if (!token_cache->hasAccess()) {
             invoker("Unauthorized");
             return;
         }
-        auto device_id = args.app;
-        GET_CONFIG(string, app_name, Record::kAppName);
-        if (args.app == app_name) {
-            device_id = split(args.stream, "/")[0];
-        }
+
         auto permit = UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
-        if (permit != UserAuthorPermit::UNKNOWN) {
-            // User auth cache has still been expired. Check user permission
-            invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
+        if (permit == UserAuthorPermit::REJECT) {
+            invoker("Unauthorized");
             return;
         }
-        if (!enable_authorize) {
-            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true);
-            invoker("");
-            return;                                                                                                                                                
-        } 
+
+        if (permit == UserAuthorPermit::ACCEPT) {
+            isStreamLimit();
+            return;
+        }
 
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -707,13 +741,20 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker, isStreamLimit](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            invoker(!err.empty() ? "Unauthorized" : "");
+            !err.empty() ? invoker("Unauthorized") : isStreamLimit();
         });
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceAccess, [](BroadcastDeviceAccessArgs) {
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
+        if (!enable_authorize) {
+            // Do not check authorize token, directly allow access, session do not record in database
+            invoker("");
+            return;                                                                                                                                                
+        }
+
         auto permit =  UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
         if (permit != UserAuthorPermit::UNKNOWN) {
             // User auth cache has still been expired. Check user permission
@@ -721,12 +762,6 @@ void installWebHook() {
             return;
         }
 
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
-        if (!enable_authorize) {
-            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true); 
-            invoker("");
-            return;                                                                                                                                                
-        }
 
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -1116,6 +1151,7 @@ void installWebHook() {
             case ResourceType::MEMORY: eventCode = (StrPrinter << "Ram" << (is_critical ? "Critical" : "Warning")); break;
             case ResourceType::HDD: eventCode = (StrPrinter << "Disk" << (is_critical ? "Critical" : "Warning")); break;
             case ResourceType::NETWORK: eventCode = (StrPrinter << "NetWork" << (is_critical ? "Critical" : "Warning")); break;
+            case ResourceType::READER: eventCode = "LiveStreamLimitExceeded"; break;
             default: eventCode = "Unknown";
         }
         return eventCode;
@@ -1137,6 +1173,23 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastStreamReaderAlert, [](BroadcastStreamReaderAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = "CameraStreamLimitExceeded";
+        body["eventTime"] = std::time(nullptr);
+        body["currentValue"] = usage;
+        body["threshold"] = threshold;
+        body["cameraId"] = camera_id;
+       // Execute hook
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     // Listen to reload api config event
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastReloadApiConfig, [](BroadcastReloadApiConfigArgs) {
         DebugL << "Reset report config loaded flag on reload api config event";
@@ -1154,7 +1207,6 @@ void installWebHook() {
 
     // Report server usage
     reportServerUsage();
-
 }
 
 void unInstallWebHook() {

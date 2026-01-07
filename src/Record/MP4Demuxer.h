@@ -125,7 +125,7 @@ public:
 private:
     void openMP4WithTimeline(const std::string &files);
 
-    int64_t findNextSegment(bool first_segment = false, uint64_t max_duration = 600);
+    int64_t findNextSegment(bool first_segment = false, uint64_t max_duration = 300);
 
     int64_t seekToWithTimeline(int64_t stamp_ms);
 

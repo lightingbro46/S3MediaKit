@@ -74,6 +74,7 @@ const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
 const string kBroadcastMediaSeeked2 = "kBroadcastMediaSeeked2";
 const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
+const string kBroadcastStreamReaderAlert = "kBroadcastStreamReaderAlert";
 const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
@@ -113,7 +114,7 @@ static onceToken token([]() {
     mINI::Instance()[kWaitAudioTrackDataMS] = 1000;
     mINI::Instance()[kWaitAddTrackMS] = 3000;
     mINI::Instance()[kUnreadyFrameCache] = 100;
-    mINI::Instance()[kBroadcastPlayerCountChanged] = 0;
+    mINI::Instance()[kBroadcastPlayerCountChanged] = 1;
     mINI::Instance()[kListenIP] = "::";
 });
 

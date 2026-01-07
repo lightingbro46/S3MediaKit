@@ -136,6 +136,10 @@ extern const std::string kBroadcastRestartServer;
 extern const std::string kBroadcastSystemAlert;
 #define BroadcastSystemAlertArgs uint8_t &type, double &usage, double &threshold, bool &is_critical
 
+// Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
+extern const std::string kBroadcastStreamReaderAlert;
+#define BroadcastStreamReaderAlertArgs const std::string &camera_id, int &usage, int &threshold, bool &is_critical
+
 // Register or unregister DeviceSource event broadcast
 extern const std::string kBroadcastDeviceChanged;
 #define BroadcastDeviceChangedArgs const bool &bRegist, DeviceSource &sender

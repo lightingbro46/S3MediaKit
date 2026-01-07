@@ -237,6 +237,7 @@ void RtmpSession::sendStatus(const std::initializer_list<string> &key_value) {
 
 void RtmpSession::sendPlayResponse(const string &err, const RtmpMediaSource::Ptr &src) {
     bool auth_success = err.empty();
+    bool stream_limit = err == "MaxRequest";
     bool ok = (src.operator bool() && auth_success);
     if (ok) {
         //stream begin
@@ -244,7 +245,7 @@ void RtmpSession::sendPlayResponse(const string &err, const RtmpMediaSource::Ptr
     }
     // onStatus(NetStream.Play.Reset)
     sendStatus({ "level", (ok ? "status" : "error"),
-                 "code", (ok ? "NetStream.Play.Reset" : (auth_success ? "NetStream.Play.StreamNotFound" : "NetStream.Play.BadAuth")),
+                 "code", (ok ? "NetStream.Play.Reset" : (auth_success ? "NetStream.Play.StreamNotFound" : (stream_limit ? "NetStream.Play.StreamLimit" : "NetStream.Play.BadAuth"))),
                  "description", (ok ? "Resetting and playing." : (auth_success ? "No such stream." : err.data())),
                  "details", _media_info.stream,
                  "clientid", "0" });
