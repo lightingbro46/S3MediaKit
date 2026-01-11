@@ -44,7 +44,7 @@ void SoapObject::load(const char *data, size_t len) {
     auto doc = std::make_shared<pugi::xml_document>();
     auto result = doc->load_string(data, len);
     if (!result) {
-        throw std::invalid_argument(string("解析xml失败:") + result.description());
+        throw std::invalid_argument(string("Parsing xml failed:") + result.description());
     }
     _root = std::move(doc);
 }

@@ -302,7 +302,7 @@ string RtcSessionSdp::toString() const {
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
-#define CHECK_SDP(exp) CHECK(exp, "解析sdp ", getKey(), " 字段失败:", str)
+#define CHECK_SDP(exp) CHECK(exp, "parse sdp ", getKey(), " Field failed:", str)
 
 void SdpTime::parse(const string &str) {
     CHECK_SDP(sscanf(str.data(), "%" SCNu64 " %" SCNu64, &start, &stop) == 2);

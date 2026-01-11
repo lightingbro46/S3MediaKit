@@ -84,7 +84,7 @@ static onceToken token([]() {
     mINI::Instance()[kIcePort] = 3478;
     mINI::Instance()[kIceTcpPort] = 3478;
     mINI::Instance()[kEnableTurn] = 1;
-    mINI::Instance()[kIceTransportPolicy] = 0;  // 默认值：不限制(kAll)
+    mINI::Instance()[kIceTransportPolicy] = 0;  // Default value: No limit (kAll)
     mINI::Instance()[kIceUfrag] = "S3MediaKit";
     mINI::Instance()[kIcePwd] = "S3MediaKit";
 });

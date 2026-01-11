@@ -407,6 +407,7 @@ Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
     for (;;) {
         auto ret = _it->second->readFrame(keyFrame, eof);
         if (ret) {
+            ret->setIndex(ret->getTrackType());
             auto it = _tracks.find(ret->getIndex());
             if (it != _tracks.end()) {
                 auto ret2 = std::make_shared<FrameStamp>(ret);
