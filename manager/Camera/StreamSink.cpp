@@ -29,7 +29,7 @@ void StreamSink::start() {
         _poller);
 }
 
-void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option) {
+void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraInfo &info, const CameraOption &option) {
     bool start_record = option.enableRecord;
     if ((type == PrimaryStream && option.doNotRecordPrimaryStream) || (type == SecondaryStream && option.doNotRecordSecondaryStream)) {
         start_record = false;
@@ -49,7 +49,7 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
             _monitor_map.erase(type);
         }
 
-        monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port);
+        monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port, info.username, info.password);
         _monitor_map.emplace(type, monitor);
     }
     

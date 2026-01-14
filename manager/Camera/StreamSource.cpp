@@ -2,6 +2,7 @@
 #include "Extension/Plugin.h"
 #include "server/WebApi.h"
 #include "server/Manager.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -23,12 +24,20 @@ const string getStreamTypeString(int type) {
     }
 }
 
-StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, int media_port, float timeout_sec) 
-    : _tuple(std::move(tuple)), _record(record), _rtp_type(rtp_type), _media_port(media_port), _timeout_sec(timeout_sec) {
+StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, int media_port, string username, string password, float timeout_sec) 
+    : _tuple(std::move(tuple)), _record(record), _rtp_type(rtp_type), _media_port(media_port),
+     _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec) {
 
     _full_url = tuple.full_url;
+
+    if (_full_url.find("@") == string::npos && !_username.empty() && !_password.empty()) {
+        // insert auth info to url if not exist
+        _full_url = UriUtils::replaceCredentials(_full_url, _username, _password);
+    }
+
     if (_media_port) {
-        _full_url = replacePort(tuple.full_url, _media_port);
+        // replace port in url if media_port is specified
+        _full_url = UriUtils::replacePort(_full_url, _media_port);
     }
 
     if (!_timeout_sec) {

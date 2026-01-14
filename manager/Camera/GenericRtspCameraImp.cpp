@@ -71,14 +71,17 @@ void GenericRtspCameraImp::setupStreamSink() {
         });
         _sink->start();
     }
+
+    auto info = getCameraInfo();
+
     if (hasStreamTuple(PrimaryStream)) {
         auto tuple = getStreamTuple(PrimaryStream);
-        _sink->setupMonitor(PrimaryStream, tuple, _option);
+        _sink->setupMonitor(PrimaryStream, tuple, info, _option);
     }
 
     if (hasStreamTuple(SecondaryStream)) { 
         auto tuple = getStreamTuple(SecondaryStream);
-        _sink->setupMonitor(SecondaryStream, tuple, _option);
+        _sink->setupMonitor(SecondaryStream, tuple, info, _option);
     }
 
     onAllStreamReady();

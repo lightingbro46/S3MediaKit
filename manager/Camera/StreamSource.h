@@ -35,7 +35,8 @@ public:
     using Ptr = std::shared_ptr<StreamSource>;
     using OnStreamUpdate = std::function<void(bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
 
-    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0, float timeout_sec = 0.0f);
+    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0,
+                    std::string username = "", std::string password = "", float timeout_sec = 0.0f);
 
     ~StreamSource();
 
@@ -65,6 +66,8 @@ private:
     bool _record;
     int _rtp_type;
     int _media_port;
+    std::string _username;
+    std::string _password;
     float _timeout_sec;
     std::string _full_url;
     std::atomic_bool _live {false};

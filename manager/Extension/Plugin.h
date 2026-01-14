@@ -17,12 +17,6 @@ static toolkit::onceToken REGISTER_STATIC_VAR_(s_token, __LINE__) ([]() { \
 
 namespace managerkit {
 
-std::string replaceIp(const std::string &in_url, const std::string &nat_ip);
-
-std::string replacePort(const std::string &in_url, int nat_port);
-
-std::string replaceCredentials(const std::string &in_url, const std::string &username, const std::string &password);
-
 bool eligibleForPrimaryStream(std::string vcodec, int width, int height, int bitrate, int fps);
 
 bool eligibleForSecondaryStream(std::string vcodec, int width, int height, int bitrate, int fps);
