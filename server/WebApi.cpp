@@ -77,6 +77,8 @@
 #include "Camera/GenericRtspCameraImp.h"
 #include "Onvif/Onvif.h"
 #include "Onvif/SoapUtil.h"
+#include "WebApiErrCode.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace Json;
@@ -245,36 +247,6 @@ static ApiArgsType getAllArgs(const Parser &parser) {
         allArgs[pr.first] = pr.second;
     }
     return allArgs;
-}
-
-static void checkUserDeviceAuthor(const string &device_id, const string &jwt_token, const function<void()> &cb) {
-    Broadcast::AuthInvoker auth_invoker = [cb](const string &err) {
-        if (!err.empty()) {
-            throw AuthException(err.data());
-        }
-        // Authorized, execute the callback function in the event loop of the poller thread
-        EventPollerPool::Instance().getPoller()->async([cb]() {
-            cb();
-        });
-    };
-
-    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
-    // If authorization is not enabled, directly pass
-    if (!enable_authorize) {
-        return auth_invoker("");
-    }
-
-    // If there is no token, directly reject
-    if (jwt_token.empty()) {
-        return auth_invoker("Unauthorized");
-    }
-
-    // Broadcast to check device access authorization
-    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);
-    if (!flag) {
-        // No one is listening to the event, directly reject
-        auth_invoker("Unauthorized");
-    }
 }
 
 static bool checkUserAuthor(const string &resource_id, const string &jwt_token) {
@@ -2517,7 +2489,7 @@ void installWebApi() {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
 
-        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string camera_id = allArgs["cameraId"];
             uint64_t start_time = allArgs["startTime"];
             uint64_t end_time = allArgs["endTime"];
@@ -2531,9 +2503,7 @@ void installWebApi() {
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
             findTimePeriod(tuple, start_time, end_time, period_type, detail, [&](const SockException &ex, const Value &data) {
                 if (ex) {
-                    val["code"] = API::OtherFailed;
-                    val["msg"] = ex.what();
-                    invoker(400, headerOut, val.toStyledString());
+                    RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {
                     val["data"] = data;
                     InfoL << "Get recorded time period success";
@@ -2542,7 +2512,7 @@ void installWebApi() {
             });
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 
     // Get screenshot cache or real-time screenshot
@@ -2550,7 +2520,7 @@ void installWebApi() {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "pos");
 
-        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string camera_id = allArgs["cameraId"];
             string stream_id = allArgs["streamId"];
             string pos_str = allArgs["pos"];
@@ -2603,9 +2573,7 @@ void installWebApi() {
             }
 
             if (src_path.empty() || pos_time == 0) {
-                val["code"] = API::NotFound;
-                val["msg"] = "No data in period";
-                invoker(404, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_TIMELINE_NOT_FOUND, "No data in period");
                 return;
             }
 
@@ -2669,7 +2637,7 @@ void installWebApi() {
             });
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 
     static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
@@ -2697,7 +2665,7 @@ void installWebApi() {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
 
-        auto onRes = [allArgs, val, invoker, headerOut, jwt_token]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             auto camera_id = allArgs["cameraId"];
             auto stream_id = allArgs["streamId"];
             auto start_time = allArgs["startTime"];
@@ -2706,18 +2674,15 @@ void installWebApi() {
             auto description = allArgs["description"];
             auto user_id = allArgs["_user_id"];
             auto user_name = allArgs["_user_name"];
+            auto jwt_token = allArgs["_jwt_token"];
 
             if (!findDeviceSource(camera_id)) {
-                val["code"] = API::NotFound;
-                val["msg"] = "Camera not found";
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
                 return;
             }
 
             if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
-                val["code"] = API::InvalidArgs;
-                val["msg"] = "Extension filename do not support";
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "Only support file extension: .mp4, .mkv, .avi");
                 return;
             }
 
@@ -2726,9 +2691,7 @@ void installWebApi() {
 
             addFFmpegExtractor(tuple, options, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
                 if (ex) {
-                    val["code"] = API::OtherFailed;
-                    val["msg"] = ex.what();
-                    invoker(400, headerOut, val.toStyledString());
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, ex.what());
                 } else {
                     UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
                     val["data"]["key"] = key;
@@ -2737,25 +2700,22 @@ void installWebApi() {
             });
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_ARGS("key");
-        CHECK_USER_AUTHOR(allArgs["key"]);
+        CHECK_USER_AUTHOR("key");
 
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
         if (!ffmpeg) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Key not found";
-            return invoker(404, headerOut, val.toStyledString());
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
+            return;
         }
 
         if (ffmpeg->finished() && !ffmpeg->success()) {
-            val["code"] = API::Exception;
-            val["msg"] = "Extract video failed";
-            return invoker(400, headerOut, val.toStyledString());
+            auto err_detail = "Extract video failed: " + ffmpeg->errMsg();
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, err_detail.data());
+            return;
         }
 
         val["data"]["progress"] = ffmpeg->progress();
@@ -2764,16 +2724,12 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_ARGS("key");
-        CHECK_USER_AUTHOR(allArgs["key"]);
+        CHECK_USER_AUTHOR("key");
 
         auto key = allArgs["key"];
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
         if (!ffmpeg || !ffmpeg->finished() || !ffmpeg->success()) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Key not found";
-            invoker(404, headerOut, val.toStyledString());
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
             return;
         }
 
@@ -2787,15 +2743,14 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP) {
-        CHECK_AUTH_TOKEN();
-        CHECK_ARGS("key");
-        CHECK_USER_AUTHOR(allArgs["key"]);
+        CHECK_USER_AUTHOR("key");
 
         val["data"]["flag"] = s_ffmpeg_extractor.erase(allArgs["key"]) == 1;
     });
 
     api_regist("/media/esc/extractArchived/list", [](API_ARGS_MAP) {
         CHECK_AUTH_TOKEN();
+        auto jwt_token = allArgs["_jwt_token"];
 
         s_ffmpeg_extractor.for_each([&](const std::string &key, const FFmpegExtractor::Ptr &src) {
             if (!checkUserAuthor(key, jwt_token)) {
@@ -2864,7 +2819,7 @@ void installWebApi() {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("name", "camera_id", "start_time", "duration");
 
-        auto onRes = [allArgs, &val, &invoker, &headerOut]() {
+        auto on_access = [allArgs, &val, &invoker, &headerOut]() {
             string name = allArgs["name"];
             string description = allArgs["description"];
             string camera_id = allArgs["camera_id"];
@@ -2875,10 +2830,8 @@ void installWebApi() {
 
             auto ret = findDeviceSource(camera_id);
             if (!ret) {
-                val["code"] = API::NotFound;
-                val["msg"] = "Camera not found";
                 val["data"]["flag"] = false;
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
                 return;
             }
 
@@ -2899,14 +2852,14 @@ void installWebApi() {
             invoker(200, headerOut, val.toStyledString());
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], on_access);
     });
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("id", "camera_id", "start_time", "duration");
 
-        auto onRes = [allArgs, &val, &invoker, &headerOut]() {
+        auto on_access = [allArgs, &val, &invoker, &headerOut]() {
             string id = allArgs["id"];
             string name = allArgs["name"];
             string description = allArgs["description"];
@@ -2921,7 +2874,7 @@ void installWebApi() {
             if (!ret.size()) {
                 WarnL << "Bookmark " << id << " not found";
                 val["data"]["flag"] = false;
-                invoker(404, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_NOT_FOUND, "Bookmark not found");
                 return;
             }
 
@@ -2940,7 +2893,7 @@ void installWebApi() {
             invoker(200, headerOut, val.toStyledString());
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["camera_id"], on_access);
     });
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
@@ -2954,17 +2907,17 @@ void installWebApi() {
         if (!ret.size()) {
             WarnL << "Bookmark " << id << " not found";
             val["data"]["flag"] = false;
-            invoker(404, headerOut, val.toStyledString());
+            RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_NOT_FOUND, "Bookmark not found");
             return;
         }
 
-        auto onRes = [&val, &invoker, &headerOut, imp, id]() {
+        auto on_access = [&val, &invoker, &headerOut, imp, id]() {
             imp->remove(id);
             val["data"]["flag"] = true;
             invoker(200, headerOut, val.toStyledString());
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(ret[0].camera_guid, onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(ret[0].camera_guid, on_access);
     });
 
     api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) {
@@ -3119,28 +3072,28 @@ void installWebApi() {
         // string id = allArgs["mediaServerId"];
         // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         // if (id != mediaServerId) {
-        //     val["code"] = API::NotFound;
-        //     val["msg"] = "Notfound";
+        //     RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
         //     return;
         // }
         val["data"] = makeSystemStatisticJson();
     });
 
-    static auto discovery_device = [](string &address, int &port, bool &defaultPort, string &username, string &password, const function<void(const string &, const Value &)> &cb) {
+    static auto discovery_device = [](string &address, int &port, bool &defaultPort, string &username, string &password, const function<void(const SockException &, const Value &)> &cb) {
         Value ret;
         if (start_with(address, "rtsp://")) {
             // address is rtsp url
             string url = address;
             
-            if (!username.empty() && !password.empty()) {
-                url = replaceCredentials(url, username, password);
+            if (url.find('@') == string::npos && !username.empty() && !password.empty()) {
+                url = UriUtils::replaceCredentials(url, username, password);
             }
+
             if (!defaultPort) {
-                url = replacePort(url, port);
+                url = UriUtils::replacePort(url, port);
             }
             FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
                 if (!success) {
-                    cb("Device Not Found", ret);
+                    cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
                 } else {
                     ret["manufacturer"] = GENERIC_RTSP_CAMERA;
                     ret["model"] = GENERIC_RTSP_CAMERA;
@@ -3157,9 +3110,9 @@ void installWebApi() {
                     stream["height"] = info.height;
                     stream["fps"] = info.fps;
                     stream["bitrate"] = info.bitrate;
-                    stream["url"] = replaceCredentials(url, "", "");
+                    stream["url"] = UriUtils::replaceCredentials(url, "", "");
                     ret["profiles"].append(stream);
-                    cb("", ret);
+                    cb(SockException(Err_success), ret);
                 }
             });
         } else if (isIP(address.data())) {
@@ -3171,7 +3124,8 @@ void installWebApi() {
             string ipAddress = StrPrinter << ip << ":" << port;
             auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
             if (!onvif->initControl()) {
-                return cb("Device Not Found", ret);
+                cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
+                return;
             }
 
             auto info = onvif->getDeviceInfo();
@@ -3193,12 +3147,12 @@ void installWebApi() {
                 stream["height"] = it.height;
                 stream["fps"] = it.fps;
                 stream["bitrate"] = it.bitrate;
-                stream["url"] = replaceIp(it.url, ip);
+                stream["url"] = UriUtils::replaceIp(it.url, ip);
                 ret["profiles"].append(stream);
             }
-            cb("", ret);
+            cb(SockException(Err_success), ret);
         } else {
-            cb("Address must be ip or rtsp url", ret);
+            cb(SockException(Err_other, "Address must be ip or rtsp url", ApiErrCode::CODE_INVALID_ARGS), ret);
         }
     };
 
@@ -3212,11 +3166,9 @@ void installWebApi() {
         string username = allArgs["username"];
         string password = allArgs["password"];
 
-        discovery_device(address, port, defaultPort, username, password, [=](const string &err, const Value &data) mutable {
-            if (!err.empty()) {
-                val["code"] = API::NotFound;
-                val["msg"] = err;
-                invoker(404, headerOut, val.toStyledString());
+        discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const Value &data) mutable {
+            if (ex) {
+                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 return;
             }
             val["data"] = data;
@@ -3236,17 +3188,15 @@ void installWebApi() {
         string password = allArgs["password"];
 
         if (!SockUtil::is_ipv4(startIp.data()) || !SockUtil::is_ipv4(endIp.data())) {
-            val["code"] = API::InvalidArgs;
-            val["msg"] = "startIp or endIp must be a IPv4";
-            invoker(400, headerOut, val.toStyledString());
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "startIp or endIp must be a IPv4");
             return;
         }
 
         val["data"] = arrayValue;
         auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
         for (auto &ip : ip_range) {
-            discovery_device(ip, port, defaultPort, username, password, [&](const string &err, const Json::Value &data) {
-                if (err.empty()) {
+            discovery_device(ip, port, defaultPort, username, password, [&](const SockException &ex, const Json::Value &data) {
+                if (!ex) {
                     val["data"].append(data);
                 }
             });
@@ -3258,41 +3208,33 @@ void installWebApi() {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("deviceId", "direct", "speed");
 
-        auto onRes = [allArgs, val, invoker, headerOut]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string deviceId = allArgs["deviceId"];
             string strDirect = allArgs["direct"];
             int speed = allArgs["speed"];
 
             auto ret = findDeviceSource(deviceId);
             if (!ret) {
-                val["code"] = API::NotFound;
-                val["msg"] = "Not found";
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
                 return;
             }
 
             auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
             if (!ptr) {
-                val["code"] = API::NotFound;
-                val["msg"] = "Not found";
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
                 return;
             }
 
             auto option = ptr->getCameraOption();
             if (!option.enablePTZControl) {
-                val["code"] = API::NotFound;
-                val["msg"] = "No permission";
-                invoker(400, headerOut, val.toStyledString());
+                RETURN_API_RESPONSE(ApiErrCode::CODE_PERMISSION_DENIED, "No permission");
                 return;
             }
 
             ptr->getOwnerPoller()->async([=]() mutable {
                 ptr->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
                     if (ex) {
-                        val["code"] = API::Exception;
-                        val["msg"] = ex.what();
-                        invoker(400, headerOut, val.toStyledString());
+                        RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                     } else {
                         val["msg"] = ex.what();
                         invoker(200, headerOut, val.toStyledString());
@@ -3301,48 +3243,49 @@ void installWebApi() {
             });
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
     });
 
-    api_regist("/media/mserver/storage/list", [](API_ARGS_MAP) {
+    api_regist("/media/mserver/storage/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Notfound";
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
         val["data"] = makeSystemStorageJson();
+        invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/storage", [](API_ARGS_MAP) {
+    api_regist("/media/mserver/device/storage", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Notfound";
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
         val["data"] = makeStorageStatisticJson();
+        invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/statistic", [](API_ARGS_MAP) {
+    api_regist("/media/mserver/device/statistic", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
         CHECK_ARGS("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Notfound";
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
         val["data"] = makeAllDeviceStatisticJson();
+        invoker(200, headerOut, val.toStyledString());
     });
 
     static auto findPlaybackStream = [](MediaSource::Ptr &ret, const string &url_in) {
@@ -3395,30 +3338,29 @@ void installWebApi() {
 
         MediaSource::Ptr src;
         if (!findPlaybackStream(src, url)) {
-            throw ApiRetException("Playback stream not found", API::NotFound);
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STREAM_NOT_FOUND, "Playback stream not found");
+            return;
         }
         auto tuple = src->getMediaTuple();
         auto stream = tuple.stream;
         string device_id = split(stream, "/").front();
 
-        auto onRes = [allArgs, val, invoker, headerOut, src]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut, src]() mutable {
             auto speed = allArgs["speed"].as<float>();
             src->getOwnerPoller()->async([=]() mutable {
                 bool flag = src->speed(speed);
-                val["code"] = flag ? API::Success : API::OtherFailed;
+                val["code"] = flag ? ApiErrCode::CODE_SUCCESS : ApiErrCode::CODE_OTHER_EXCEPTION;
                 val["msg"] = flag ? "Success" : "Failed";
                 val["result"] = flag ? 0 : -1;                                                                                                                                                                                                                                                                                                
                 invoker(200, headerOut, val.toStyledString());
             });
         };
 
-        CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, onRes);
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, on_access);
     });
 
     api_regist("/media/mserver/healthcheck", [](API_ARGS_MAP) {
-        Value data;
-        data["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
-        val["data"] = data;
+        val["data"]["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
     });
 
     api_regist("/media/mserver/incur", [](API_ARGS_MAP_ASYNC) {
@@ -3427,9 +3369,7 @@ void installWebApi() {
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (id != mediaServerId) {
-            val["code"] = API::NotFound;
-            val["msg"] = "Not found";
-            invoker(404, headerOut, val.toStyledString());
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
 

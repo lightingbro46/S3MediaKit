@@ -215,26 +215,64 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
 
 #define CHECK_AUTH_TOKEN()                                                                                                                                     \
     GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             \
-    string jwt_token;                                                                                                                                          \
     if (enable_authorize) {                                                                                                                                    \
-        CHECK_ARGS("Authorization");                                                                                                                           \
-        string bearer_token = allArgs["Authorization"];                                                                                                        \
-        string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                        \
-        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                             \
-        if (!token_cache->hasAccess() && enable_authorize) {                                                                                                   \
+        do {                                                                                                                                                   \
+            CHECK_ARGS("Authorization");                                                                                                                       \
+            string bearer_token = allArgs["Authorization"];                                                                                                    \
+            string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasAccess() && enable_authorize) {                                                                                               \
+                throw AuthException("Unauthorized");                                                                                                           \
+            }                                                                                                                                                  \
+            allArgs.args["_jwt_token"] = jwt_token;                                                                                                            \
+            allArgs.args["_user_id"] = token_cache->getUid();                                                                                                  \
+            allArgs.args["_user_name"] = token_cache->getUserName();                                                                                           \
+            allArgs.args["_project_id"] = token_cache->getProjectId();                                                                                         \
+        } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_USER_AUTHOR(key)                                                                                                                                 \
+    CHECK_AUTH_TOKEN();                                                                                                                                        \
+    do {                                                                                                                                                       \
+        CHECK_ARGS(key);                                                                                                                                       \
+        string resource_id = allArgs[key];                                                                                                                     \
+        string jwt_token = allArgs["_jwt_token"];                                                                                                              \
+        if (!checkUserAuthor(resource_id, jwt_token)) {                                                                                                        \
             throw AuthException("Unauthorized");                                                                                                               \
         }                                                                                                                                                      \
-        allArgs.args["_user_id"] = token_cache->getUid();                                                                                                      \
-        allArgs.args["_user_name"] = token_cache->getUserName();                                                                                               \
-        allArgs.args["_project_id"] = token_cache->getProjectId();                                                                                             \
+    } while (false);
+
+#define CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, cb)                                                                                                          \
+    string jwt_token = allArgs["_jwt_token"];                                                                                                                  \
+    /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                        \
+    Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                                  \
+        if (!err.empty()) {                                                                                                                                    \
+            RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                    \
+            return;                                                                                                                                            \
+        }                                                                                                                                                      \
+        /* Authorized, execute the callback function */                                                                                                        \
+        cb();                                                                                                                                                  \
+    };                                                                                                                                                         \
+    /* If authorization is not enabled, directly pass */                                                                                                       \
+    if (!enable_authorize) {                                                                                                                                   \
+        return auth_invoker("");                                                                                                                               \
+    }                                                                                                                                                          \
+    /* If there is no token, directly reject */                                                                                                                \
+    if (jwt_token.empty()) {                                                                                                                                   \
+        return auth_invoker("Unauthorized");                                                                                                                   \
+    }                                                                                                                                                          \
+    /* Broadcast to check device access authorization asynchronously */                                                                                        \
+    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);                                 \
+    if (!flag) {                                                                                                                                               \
+        /* No one is listening to the event, directly reject */                                                                                                \
+        auth_invoker("Unauthorized");                                                                                                                          \
     }
 
-#define CHECK_USER_AUTHOR(resource_id)                                                                                                                         \
-    if (!checkUserAuthor(resource_id, jwt_token)) {                                                                                                            \
-        throw AuthException("Unauthorized");                                                                                                                   \
-    }
-
-#define CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, cb) checkUserDeviceAuthor((device_id), jwt_token, (cb));
+#define RETURN_API_RESPONSE(code, msg)                                                                                                                         \
+    val["code"] = code;                                                                                                                                        \
+    val["msg"] = !msg ? msg : getDefaultMessage(static_cast<ApiErrCode>(code));                                                                                \
+    auto status_code = getStatusCode(static_cast<ApiErrCode>(code));                                                                                           \
+    invoker(status_code, headerOut, val.toStyledString());
 
 void installWebApi();
 void unInstallWebApi();

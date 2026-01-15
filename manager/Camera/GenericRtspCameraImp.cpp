@@ -1,4 +1,5 @@
 #include "GenericRtspCameraImp.h"
+#include "server/WebApiErrCode.h"
 
 using namespace std;
 using namespace toolkit;
@@ -106,7 +107,7 @@ void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std
     if (_controller) {
         _controller->PTZMove(strDirect, speed, cb);
     } else {
-        cb(SockException(Err_other, "Device controller is not ready"));
+        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
     }
 }
 

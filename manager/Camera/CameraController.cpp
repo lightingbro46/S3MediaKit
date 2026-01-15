@@ -2,6 +2,7 @@
 #include "Extension/Plugin.h"
 #include "ext-plugin/onvif.h"
 #include "Thread/WorkThreadPool.h"
+#include "server/WebApiErrCode.h"
 
 using namespace std;
 using namespace toolkit;
@@ -113,19 +114,19 @@ void CameraController::onManager() {
 
 static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
     if (!ptr->enablePTZ()) {
-        cb(SockException(Err_other, "Device do not support PTZ"));
+        cb(SockException(Err_other, "Device do not support PTZ", ApiErrCode::CODE_DEVICE_NOT_SUPPORT_PTZ));
         return;
     }
 
-    auto invoker = [cb](bool ret, string msg) {
-        if (ret) {
-            InfoL << "Execute PTZ control success: " << msg;
-            cb(SockException(Err_success, msg));
-        } else {
-            WarnL << "Execute PTZ control failed: " << msg;
-            cb(SockException(Err_other, msg));
-        }
-    };
+    // auto invoker = [cb](bool ret, string msg) {
+    //     if (ret) {
+    //         InfoL << "Execute PTZ control success: " << msg;
+    //         cb(SockException(Err_success, msg, ApiErrCode::CODE_SUCCESS));
+    //     } else {
+    //         WarnL << "Execute PTZ control failed: " << msg;
+    //         cb(SockException(Err_other, msg, ApiErrCode::CODE_PTZ_CONTROL_FAILED));
+    //     }
+    // };
 
     auto profile = ptr->getPTZProfile();
     auto clamp = [](float value, float minVal, float maxVal) { return std::max(minVal, std::min(maxVal, value)); };
@@ -135,7 +136,8 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
         float pan, tilt, zoom;
         auto status = ptr->PTZ_GetStatus(pan, tilt, zoom);
         if (status != tt__MoveStatus__IDLE) {
-            invoker(false, "Device is running ptz control or unknown status: " + ptr->getSoapErrMsg());
+            auto err_msg = status == tt__MoveStatus__MOVING ? "Device is running ptz control" : ("Device ptz status unknown: " + ptr->getSoapErrMsg());
+            cb(SockException(Err_other, err_msg, ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ));
             return;
         }
         switch (direct) {
@@ -153,11 +155,11 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
             default: break;
         }
         if (!ptr->PTZ_AbsoluteMove(pan, tilt, zoom, step, step, step)) {
-            invoker(false, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg());
+            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED));
             return;
         }
         // Execute success
-        return invoker(true, "Device execute ptz absolute move success");
+        return cb(SockException(Err_success, "Device execute ptz absolute move success", ApiErrCode::CODE_SUCCESS));
     };
 
     if (profile.isRelMoveEnable) {
@@ -177,11 +179,11 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
             default: break;
         }
         if (!ptr->PTZ_RelativeMove(pan, tilt, zoom , step, step, step)) {
-            invoker(false, "Device execute ptz relative move failed: " + ptr->getSoapErrMsg());
+            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED));
             return;
         }
         // Execute success
-        return invoker(true, "Device execute ptz relative move success");
+        return cb(SockException(Err_success, "Device execute ptz relative move success", ApiErrCode::CODE_SUCCESS));
     } 
     
     if (profile.isConsMoveEnable) {
@@ -203,17 +205,17 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
 
         int timeout_sec = 1;
         if (!ptr->PTZ_ContinuousMove(pan, tilt, zoom, timeout_sec)) {
-            invoker(false, "Device execute ptz continuous move failed: " + ptr->getSoapErrMsg());
+            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
             return;
         }
 
-        EventPollerPool::Instance().getPoller()->doDelayTask(timeout_sec * 1000, [ptr, invoker]() {
+        EventPollerPool::Instance().getPoller()->doDelayTask(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
-                invoker(false, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg());
+                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
                 return 0;
             }
             // Execute success
-            invoker(true, "Device execute ptz continuous move success");
+            cb(SockException(Err_success, "Device execute ptz continuous move success", ApiErrCode::CODE_SUCCESS));
             return 0;
         });
     }
@@ -276,7 +278,7 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
         // todo: add more ptz function from manufacturer sdk
     }
 
-    return cb(SockException(Err_other, "Device controller is not ready"));
+    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
 }
 
 void CameraController::getMediaProfile() {
