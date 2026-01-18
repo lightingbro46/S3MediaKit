@@ -1,122 +1,80 @@
 #ifndef LOCAL_TIMESCHEDULER_H
 #define LOCAL_TIMESCHEDULER_H
 
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <vector>
 #include <string>
 #include <memory>
-#include <unordered_map>
-#include "Poller/Timer.h" 
+#include "Util/logger.h"
 
 namespace managerkit {
 
-/**
- * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD"
- * Chuỗi có định dạng "YYYY-MM-DD" sẽ được hiểu là "YYYY-MM-DD 00:00:00"
- * @param str Chuỗi ngày giờ
- * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
- */
-uint64_t getTsFromDateStr(const std::string &str);
-
-/**
- * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD/HH-MM-SS(-extra)"
- * @param str Chuỗi ngày giờ
- * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
- */
-uint64_t getTsFromDateTimeStr(const std::string &str);
-
-/**
- * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD/YYYY-MM-DD-HH-MM-SS(-extra)"
- * @param str Chuỗi ngày giờ
- * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
- */
-uint64_t getTsFromDateTimeStr2(const std::string &str);
-
-struct WeekTime {
-    int day_of_week; // 0 = Sunday, 1 = Monday, ... 6 = Saturday
-    int hour;        // 0-23
+class IScheduledJob {
+public:
+    virtual ~IScheduledJob() = default;
+    virtual void execute() = 0;
 };
 
-WeekTime getWeekTime(uint64_t stamp);
+std::chrono::system_clock::time_point next_full_hour_sys();
 
-template <typename Type, typename Helper>
-inline void parse_schedule_str(const std::string &input, std::unordered_map<int, std::unordered_map<int, Type>> &output_map) {
-    for (int day = 0; day < 7; ++day) {
-        auto &it_day = output_map[day];
-        for (int hour = 0; hour < 24; ++hour) {
-            char c = input[day * 24 + hour];
-            output_map[day][hour] = Helper::fromChar(c);
-        }
-    }
-}
+std::chrono::steady_clock::time_point to_steady(std::chrono::system_clock::time_point target_sys);
 
 /**
- * Time scheduler
- * Save configuration according to the weekly time,
- * suitable for the mode with reference value from 0 to 9
+ * Hourly scheduler
+ * Save configuration according to the hourly time
  */
-template <typename Type, typename Helper>
-class TimeScheduler : public std::enable_shared_from_this<TimeScheduler<Type, Helper>> {
+class HourlyScheduler {
 public:
-    using Ptr = std::shared_ptr<TimeScheduler<Type, Helper>>;
-    using onChangeMode = std::function<void(Type &)>;
+    
+    HourlyScheduler(IScheduledJob &job) : _job(job), _running(false) {}
 
-    TimeScheduler(const std::string &schedule_str) 
-        : _schedule_str(schedule_str) {
-        if (schedule_str.size() != 24 * 7) {
-            WarnL << "Time scheduler string has invalid size:" << schedule_str.size() << ". Ignore";
+    ~HourlyScheduler() { stop(); }
+
+    void start() {
+        if (_running) {
             return;
         }
-
-        parse_schedule_str<Type, Helper>(schedule_str, _scheduler_map);
-        _mode = getModeActive();
+        _running = true;
+        _worker = std::thread(&HourlyScheduler::loop, this);
     }
 
-    ~TimeScheduler() {
-        _timer_scheduler.reset();
-    }
-
-    Type getModeActive(uint64_t stamp = time(nullptr)) {
-        auto wt = getWeekTime(stamp);
-        return _scheduler_map[wt.day_of_week][wt.hour];
-    }
-
-    std::string getSchedulerString() { return _schedule_str; }
-
-    void setOnChangeMode(const onChangeMode &cb) { _on_change_mode = std::move(cb); }
-
-    void start(double interval_sec = 10.0f) {
-        if (!_scheduler_map.size()) {
-            return;
-        }
-
-        std::weak_ptr<TimeScheduler<Type, Helper>> weak_self = TimeScheduler<Type, Helper>::shared_from_this();
-        _timer_scheduler = std::make_shared<toolkit::Timer>(
-            interval_sec,
-            [weak_self]() {
-                auto strong_self = weak_self.lock();
-                if (!strong_self) {
-                    return false;
-                }
-                auto previous_mode = strong_self->_mode;
-                strong_self->_mode = strong_self->getModeActive();
-
-                if (previous_mode != strong_self->_mode) {
-                    // call callback when mode change
-                    if (strong_self->_on_change_mode) {
-                        strong_self->_on_change_mode(strong_self->_mode);
-                    }
-                }
-                return true;
-            },
-            nullptr);
-        TraceL << "Time scheduler is set";
+    void stop() {
+        _running = false;
+        if (_worker.joinable())
+            _worker.join();  
     }
 
 private:
-    std::string _schedule_str;
-    std::unordered_map<int, std::unordered_map<int, Type>> _scheduler_map;
-    toolkit::Timer::Ptr _timer_scheduler;
-    Type _mode;
-    onChangeMode _on_change_mode = nullptr;
+    void loop() {
+        
+
+        while (_running) {
+            // 1. tính đầu giờ thật (system)
+            auto next_sys = next_full_hour_sys();
+
+            // 2. convert sang steady tại thời điểm hiện tại
+            auto next_steady = to_steady(next_sys);
+
+            // 3. ngủ bằng steady_clock (không drift)
+            std::this_thread::sleep_until(next_steady);
+
+            if (!_running) break;
+
+            try {
+                _job.execute();
+            } catch (...) {
+                WarnL << "HourlyScheduler Job failed";
+            }
+        }
+    }
+
+private:
+    IScheduledJob &_job;
+    std::atomic<bool> _running{false};
+    std::thread _worker;
 };
 
 } // namespace managerkit

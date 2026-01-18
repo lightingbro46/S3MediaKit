@@ -15,6 +15,38 @@ public:
 
 };
 
+class StrTimeUtils {
+public:
+    /**
+     * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD"
+     * Chuỗi có định dạng "YYYY-MM-DD" sẽ được hiểu là "YYYY-MM-DD 00:00:00"
+     * @param str Chuỗi ngày giờ
+     * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
+     */
+    static uint64_t getTsFromDateStr(const std::string &str);
+
+    /**
+     * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD/HH-MM-SS(-extra)"
+     * @param str Chuỗi ngày giờ
+     * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
+     */
+    static uint64_t getTsFromDateTimeStr(const std::string &str);
+
+    /**
+     * Lấy timestamp từ chuỗi ngày giờ định dạng "YYYY-MM-DD/YYYY-MM-DD-HH-MM-SS(-extra)"
+     * @param str Chuỗi ngày giờ
+     * @return Timestamp tương ứng, hoặc 0 nếu không hợp lệ
+     */
+    static uint64_t getTsFromDateTimeStr2(const std::string &str);
+
+    struct WeekTime {
+        int day_of_week; // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+        int hour;        // 0-23
+    };
+
+    static WeekTime getWeekTime(uint64_t stamp);
+};
+
 } // namespace managerkit
 
 #endif // COMMON_STRUTIL_H

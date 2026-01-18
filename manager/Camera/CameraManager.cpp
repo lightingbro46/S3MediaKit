@@ -16,39 +16,22 @@ CameraManager::CameraManager() {}
 
 template <typename Pointer>
 static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTuple> &stream_map) {
-    // if (stream_map.find(type) != stream_map.end()) {
-    //     return ptr->hasStreamTuple(type) && equalStreamTuple(ptr->getStreamTuple(type), stream_map[type]);
-    // } else {
-    //     return !ptr->hasStreamTuple(type);
-    // }
-    if (ptr->hasStreamTuple(type)) {
-        auto tuple = ptr->getStreamTuple(type);
-        auto it = std::find_if(stream_map.begin(), stream_map.end(), [&](const pair<int, StreamTuple> &pair) { return pair.second.stream_id == tuple.stream_id; });
-        if (it != stream_map.end()) {
-            return equalStreamTuple(tuple, it->second);
-        } else {
-            return false;
-        }
+    if (stream_map.find(type) != stream_map.end()) {
+        return ptr->hasStreamTuple(type) && ptr->getStreamTuple(type) == stream_map[type];
     } else {
-        return stream_map.find(type) == stream_map.end();
+        return !ptr->hasStreamTuple(type);
     }
 }
 
 template <typename Pointer>
 static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, StreamTuple> &stream_map) {
-    if (!equalCameraInfo(ptr->getCameraInfo(), info)) {
+    auto _info = ptr->getCameraInfo();
+    if (!(_info == info)) {
         return false;
     }
-
-    if (!equalStreamConfig(ptr, PrimaryStream, stream_map)) {
-        return false;
-    }
-
-    if (!equalStreamConfig(ptr, SecondaryStream, stream_map)) {
-        return false;
-    }
-    
-    return true;
+    return ptr->getCameraInfo() == info && 
+        equalStreamConfig(ptr, PrimaryStream, stream_map) &&
+        equalStreamConfig(ptr, SecondaryStream, stream_map);
 }
 
 bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {

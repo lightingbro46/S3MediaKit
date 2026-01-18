@@ -34,27 +34,32 @@ bool CameraController::isControlReady() const {
 void CameraController::setupController(const CameraInfo &info, const CameraOption &option) {
     lock_guard<mutex> lck(_mtx_ctr);
     if (_controller) {
-        DebugL << "Controller already exists: " << info.shortUrl();
-        return;
+        DebugL << "Controller already exists: " << info.shortUrl() << ". Recreate controller due to configuration changed";
+        _controller.reset();
     }
 
     // create new controller
-    // if (_info.manufacturer.empty() || _info.manufacturer == GENERIC_RTSP_CAMERA) {
-    //     return;
-    // }
+    if (info.manufacturer.empty() || info.manufacturer == GENERIC_RTSP_CAMERA) {
+        return;
+    }
 
     if (info.ip.empty() || info.port == 0) {
         return;
     }
 
     string address = info.ip;
-    if (info.port > 0) {
-        address += ":" + to_string(info.port);
+    if (option.autoWebPort) {
+        address += ":" + (info.port > 0 ? to_string(info.port) : "80");
+    } else {
+        address += ":" + (option.webPort > 0 ? to_string(option.webPort) : "80");
     }
 
     // todo: create plugin from manufactor and model
+    // todo: support PSI controller
     _controller = std::make_shared<OnvifController>(address, info.username, info.password);
     DebugL << "Created Onvif controller for device: " << info.shortUrl();
+
+    _keep_remote_config = option.keepConfigProfileAndStream;
 }
 
 void CameraController::stopController() {  
@@ -117,16 +122,6 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
         cb(SockException(Err_other, "Device do not support PTZ", ApiErrCode::CODE_DEVICE_NOT_SUPPORT_PTZ));
         return;
     }
-
-    // auto invoker = [cb](bool ret, string msg) {
-    //     if (ret) {
-    //         InfoL << "Execute PTZ control success: " << msg;
-    //         cb(SockException(Err_success, msg, ApiErrCode::CODE_SUCCESS));
-    //     } else {
-    //         WarnL << "Execute PTZ control failed: " << msg;
-    //         cb(SockException(Err_other, msg, ApiErrCode::CODE_PTZ_CONTROL_FAILED));
-    //     }
-    // };
 
     auto profile = ptr->getPTZProfile();
     auto clamp = [](float value, float minVal, float maxVal) { return std::max(minVal, std::min(maxVal, value)); };

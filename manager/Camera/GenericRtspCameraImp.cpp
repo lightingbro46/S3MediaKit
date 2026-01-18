@@ -18,7 +18,7 @@ GenericRtspCameraImp::~GenericRtspCameraImp() {
 }
 
 void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
-    if (equalCameraOption(const_cast<const CameraOption&>(_option), const_cast<const CameraOption&>(option))) {
+    if (_option == option) {
         return; // No change
     }
     _option = option;
@@ -76,13 +76,21 @@ void GenericRtspCameraImp::setupStreamSink() {
     auto info = getCameraInfo();
 
     if (hasStreamTuple(PrimaryStream)) {
-        auto tuple = getStreamTuple(PrimaryStream);
-        _sink->setupMonitor(PrimaryStream, tuple, info, _option);
+        if (!_option.disablePrimaryStream) {
+            auto tuple = getStreamTuple(PrimaryStream);
+            _sink->setupMonitor(PrimaryStream, tuple, info, _option);
+        } else {
+            _sink->stopMonitor(PrimaryStream);
+        }
     }
 
-    if (hasStreamTuple(SecondaryStream)) { 
-        auto tuple = getStreamTuple(SecondaryStream);
-        _sink->setupMonitor(SecondaryStream, tuple, info, _option);
+    if (hasStreamTuple(SecondaryStream)) {
+        if (!_option.disableSecondaryStream) {
+            auto tuple = getStreamTuple(SecondaryStream);
+            _sink->setupMonitor(SecondaryStream, tuple, info, _option);
+        } else {
+            _sink->stopMonitor(SecondaryStream);
+        }
     }
 
     onAllStreamReady();
@@ -100,6 +108,7 @@ void GenericRtspCameraImp::stop() {
             _sink->stopMonitor(SecondaryStream);
         }
     }
+
     onAllStreamReady();
 }
 

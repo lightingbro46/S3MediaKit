@@ -3,7 +3,7 @@
 
 #include "GenericRtspCamera.h"
 #include "StreamSource.h"
-#include "Local/RecordStrategy.h"
+#include "Local/RecordingPolicy.h"
 
 namespace managerkit {
 

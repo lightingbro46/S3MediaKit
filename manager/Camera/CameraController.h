@@ -47,7 +47,7 @@ private:
     toolkit::Timer::Ptr _timer_ctr;
     DeviceController::Ptr _controller;
     OnControllerReady _on_ready;
-    
+    bool _keep_remote_config = false;
 };
 
 } // namespace managerkit

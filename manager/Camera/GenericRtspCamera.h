@@ -13,20 +13,17 @@ struct CameraInfo : public DeviceTuple {
     int port = 0;
     std::string username;
     std::string password;
+
+    bool operator==(const CameraInfo& other) const{
+        return ip == other.ip &&
+            port == other.port && 
+            username == other.username &&
+            password == other.password &&
+            manufacturer == other.manufacturer &&
+            model == other.model &&
+            name == other.name;
+    }
 };
-
-inline bool equalCameraInfo(const CameraInfo &a, const CameraInfo &b) {
-    #define EQUAL_INFO_PROPERTY(name) if (a.name != b.name) return false;
-    EQUAL_INFO_PROPERTY(ip)
-    EQUAL_INFO_PROPERTY(port)
-    EQUAL_INFO_PROPERTY(username)
-    EQUAL_INFO_PROPERTY(password)
-    EQUAL_INFO_PROPERTY(manufacturer)
-    EQUAL_INFO_PROPERTY(model)
-    EQUAL_INFO_PROPERTY(name)
-
-    return true;
-}
 
 class CameraOption {
 public:
@@ -34,7 +31,13 @@ public:
         // todo: load default value from database
     }
 
-    // whether to disable primary secondary stream
+    // whether to disable primary stream
+    bool disablePrimaryStream = false;
+
+    // whether to disable secondary stream
+    bool disableSecondaryStream = false;
+
+    // whether to disable recording primary stream
     bool doNotRecordPrimaryStream = false;
 
     // whether to disable recording secondary stream
@@ -67,46 +70,70 @@ public:
     enum { 
         kRtpTransportAuto = 0, // System automatical choose rtp transport method to order to get media source by rtsp protocol, default tcp mode
         kRtpTransportTcp = 1, // System choose tcp protocol in order to get media source by rtsp protocol
-        kRtpTransportUdp = 2 // System choose udp protocol to order to get media source by rtsp protocol
+        kRtpTransportUdp = 2, // System choose udp protocol to order to get media source by rtsp protocol
+        kRtpTransportMultiCast = 3 // System choose multicast protocol to order to get media source by rtsp protocol
     };
     // rtp transport method when using rtsp protocol
     int rtpTransport = kRtpTransportAuto;
 
-    // recording scheduler, include 168 characters
-    std::string recordScheduler;
-
     // whether to enable failover mode
-    bool enableFailover;
+    bool enableFailover = false;
 
     // media server id, which camera belong to
     std::string preferedMediaServer;
 
     // media server id, which camera belong to
-    bool enablePTZControl;
+    bool enablePTZControl = true;
 
-    // Add more options if need
+    // pre-record seconds for motion detection
+    int motionPreRecordSec = 0;
+
+    // post-record seconds for motion detection
+    int motionPostRecordSec = 0;
+
+    // recording schedules, include 168 elements for one week
+    std::string recordSchedules;
+
+    // whether to disable audio
+    bool disableAudio = false;
+
+    // web port for camera web access, use if useDefaultWebPort is false
+    int webPort = 0;
+
+    // whether to use default web port 80
+    bool autoWebPort = true;
+
+    // keep config of profile and stream changed from camera web page
+    bool keepConfigProfileAndStream = false;
+
+    // Note: Add more options if needed and implement operator== to compare whether two options are equal
+
+    bool operator==(const CameraOption& other) const{
+        return disablePrimaryStream == other.disablePrimaryStream &&
+               disableSecondaryStream == other.disableSecondaryStream &&
+               doNotRecordPrimaryStream == other.doNotRecordPrimaryStream &&
+               doNotRecordSecondaryStream == other.doNotRecordSecondaryStream &&
+               enableRecord == other.enableRecord &&
+               keepArchivedMinForAuto == other.keepArchivedMinForAuto &&
+               keepArchivedMinFor == other.keepArchivedMinFor &&
+               keepArchivedMaxForAuto == other.keepArchivedMaxForAuto &&
+               keepArchivedMaxFor == other.keepArchivedMaxFor &&
+               enableActive == other.enableActive &&
+               mediaPort == other.mediaPort &&
+               autoMediaPort == other.autoMediaPort &&
+               rtpTransport == other.rtpTransport &&
+               enableFailover == other.enableFailover &&
+               preferedMediaServer == other.preferedMediaServer &&
+               enablePTZControl == other.enablePTZControl &&
+               motionPreRecordSec == other.motionPreRecordSec &&
+               motionPostRecordSec == other.motionPostRecordSec &&
+               recordSchedules == other.recordSchedules &&
+               disableAudio == other.disableAudio &&
+               webPort == other.webPort &&
+               autoWebPort == other.autoWebPort &&
+               keepConfigProfileAndStream == other.keepConfigProfileAndStream;
+    }
 };
-
-inline bool equalCameraOption(const CameraOption &a, const CameraOption& b) {
-    #define EQUAL_OPTION_PROPERTY(name) if (a.name != b.name) return false;
-    EQUAL_OPTION_PROPERTY(doNotRecordPrimaryStream)
-    EQUAL_OPTION_PROPERTY(doNotRecordSecondaryStream)
-    EQUAL_OPTION_PROPERTY(enableRecord)
-    EQUAL_OPTION_PROPERTY(keepArchivedMinForAuto)
-    EQUAL_OPTION_PROPERTY(keepArchivedMinFor)
-    EQUAL_OPTION_PROPERTY(keepArchivedMaxForAuto)
-    EQUAL_OPTION_PROPERTY(keepArchivedMaxFor)
-    EQUAL_OPTION_PROPERTY(enableActive)
-    EQUAL_OPTION_PROPERTY(mediaPort)
-    EQUAL_OPTION_PROPERTY(autoMediaPort)
-    EQUAL_OPTION_PROPERTY(rtpTransport)
-    EQUAL_OPTION_PROPERTY(recordScheduler)
-    EQUAL_OPTION_PROPERTY(enableFailover)
-    EQUAL_OPTION_PROPERTY(preferedMediaServer)
-    EQUAL_OPTION_PROPERTY(enablePTZControl)
-
-    return true;
-}
 
 /**
  * Data abstraction of generic camera source

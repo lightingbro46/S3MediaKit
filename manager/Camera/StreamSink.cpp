@@ -34,22 +34,24 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraIn
     if ((type == PrimaryStream && option.doNotRecordPrimaryStream) || (type == SecondaryStream && option.doNotRecordSecondaryStream)) {
         start_record = false;
     }
+    // todo: support rtp transport multicast mode 
     int rtp_type = option.rtpTransport == option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
     int media_port = option.autoMediaPort ? 0 :  option.mediaPort;
+    bool record_audio = !option.disableAudio;
 
     StreamSource::Ptr monitor;
     {
         lock_guard<mutex> lck(_mtx_sink);
         auto it = _monitor_map.find(type);
         if (it != _monitor_map.end()) {
-            if (start_record == it->second->isRecording() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
+            if (start_record == it->second->isRecording() && record_audio == it->second->isRecordingAudio() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
                 TraceL << "Stream " << tuple.shortUrl() << " config do not change. Ignore";
                 return;
             }
             _monitor_map.erase(type);
         }
 
-        monitor = std::make_shared<StreamSource>(tuple, start_record, rtp_type, media_port, info.username, info.password);
+        monitor = std::make_shared<StreamSource>(tuple, start_record, record_audio, rtp_type, media_port, info.username, info.password);
         _monitor_map.emplace(type, monitor);
     }
     

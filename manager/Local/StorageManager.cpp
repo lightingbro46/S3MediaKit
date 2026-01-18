@@ -13,6 +13,7 @@
 #include "server/Manager.h"
 #include "Storage/UserSession.h"
 #include "Storage/Bookmark.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -191,15 +192,15 @@ static size_t removeExpiredSegment(const string &stream_path, uint64_t time_thre
     File::scanDir(stream_path, [&remove_files, time_threshold, stream_path](const string date_path, bool isDir) {
         if (isDir) {
             string date_string = findSubString(date_path.data() + stream_path.size(),"/", nullptr);
-            auto date_time = getTsFromDateStr(date_string);
+            auto date_time = StrTimeUtils::getTsFromDateStr(date_string);
             if (time_threshold <= date_time) {
                 return true;
             }
             File::scanDir(date_path, [&remove_files, time_threshold, stream_path](const string path, bool isDir) {
                 if (!isDir && end_with(path, ".mp4")) {
                     string relative_path = findSubString(path.data() + stream_path.size(), "/", ".mp4");
-                    auto start_time = getTsFromDateTimeStr(relative_path);
-                    auto start_time_alt = getTsFromDateTimeStr2(relative_path);
+                    auto start_time = StrTimeUtils::getTsFromDateTimeStr(relative_path);
+                    auto start_time_alt = StrTimeUtils::getTsFromDateTimeStr2(relative_path);
                     if (time_threshold <= start_time || time_threshold <= start_time_alt) {
                         return true;
                     }

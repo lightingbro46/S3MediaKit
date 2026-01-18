@@ -10,11 +10,6 @@ using namespace mediakit;
 
 namespace managerkit {
 
-bool equalStreamTuple(const StreamTuple &a, const StreamTuple &b) {
-    return a.vhost == b.vhost && a.device_id == b.device_id &&
-            a.stream_id == b.stream_id && a.full_url == b.full_url;
-}
-
 const string getStreamTypeString(int type) {
 #define SWITCH_CASE(type) case type : return #type
     switch (type) {
@@ -24,8 +19,8 @@ const string getStreamTypeString(int type) {
     }
 }
 
-StreamSource::StreamSource(const StreamTuple &tuple, bool record, int rtp_type, int media_port, string username, string password, float timeout_sec) 
-    : _tuple(std::move(tuple)), _record(record), _rtp_type(rtp_type), _media_port(media_port),
+StreamSource::StreamSource(const StreamTuple &tuple, bool record_mp4, bool record_audio, int rtp_type, int media_port, string username, string password, float timeout_sec) 
+    : _tuple(std::move(tuple)), _record_mp4(record_mp4), _record_audio(record_audio), _rtp_type(rtp_type), _media_port(media_port),
      _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec) {
 
     _full_url = tuple.full_url;
@@ -58,7 +53,8 @@ void StreamSource::createPlayer() {
     MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
 
     ProtocolOption option;
-    option.enable_mp4 = _record;
+    option.enable_mp4 = _record_mp4;
+    option.enable_audio = _record_audio;
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
     auto setup_player = [weak_self](const string &err, const PlayerProxy::Ptr &player) {

@@ -1,7 +1,7 @@
 #include "TimeRebuilder.h"
 #include "Common/Parser.h"
 #include "TimeDemuxer.h"
-#include "TimeScheduler.h"
+#include "Common/StrUtil.h"
 #include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
 
@@ -237,7 +237,7 @@ void MultiTimeRebuilder::openTimeFiles(const string &src_path) {
     File::scanDir(_src_path, [&](const string &path, bool isDir) {
         if (!isDir && end_with(path, ".s3db")) {
             auto filename = findSubString(path.data() + _src_path.size(), "/", ".s3db");
-            auto stamp = getTsFromDateStr(filename);
+            auto stamp = StrTimeUtils::getTsFromDateStr(filename);
             _timefiles_map.emplace(stamp, path);
         }
         return true;

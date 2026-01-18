@@ -183,6 +183,8 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     stats.info = info;
 
     CameraOption option;
+    option.disablePrimaryStream = ret["disablePrimaryStream"].asBool();
+    option.disableSecondaryStream = ret["disableSecondaryStream"].asBool();
     option.doNotRecordPrimaryStream = ret["doNotRecordPrimaryStream"].asBool();
     option.doNotRecordSecondaryStream = ret["doNotRecordSecondaryStream"].asBool();
     option.enableActive = ret["enableActive"].asBool();
@@ -194,10 +196,16 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.rtpTransport = ret["rtpTransport"].asInt();
     option.autoMediaPort = ret["autoMediaPort"].asBool();
     option.mediaPort = ret["mediaPort"].asInt();
-    option.recordScheduler = ret["recordScheduler"].asString();
     option.enableFailover = ret["enableFailover"].asBool();
     option.preferedMediaServer = ret["preferedMediaServer"].asString();
     option.enablePTZControl = ret["enablePTZControl"].asBool();
+    option.motionPreRecordSec = ret["motionPreRecordSec"].asInt();
+    option.motionPostRecordSec = ret["motionPostRecordSec"].asInt();
+    option.recordSchedules = ret["recordSchedules"].asString();
+    option.disableAudio = ret["disableAudio"].asBool();
+    option.webPort = ret["webPort"].asInt();
+    option.autoWebPort = ret["autoWebPort"].asBool();
+    option.keepConfigProfileAndStream = ret["keepConfigProfileAndStream"].asBool();
     stats.option = option;
 
     // stream tuple map
@@ -269,6 +277,8 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["password"] = stats.info.password;
 
     // camera option
+    root["disablePrimaryStream"] = stats.option.disablePrimaryStream;
+    root["disableSecondaryStream"] = stats.option.disableSecondaryStream;
     root["doNotRecordPrimaryStream"] = stats.option.doNotRecordPrimaryStream;
     root["doNotRecordSecondaryStream"] = stats.option.doNotRecordSecondaryStream;
     root["enableActive"] = stats.option.enableActive;
@@ -280,10 +290,16 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["rtpTransport"] = stats.option.rtpTransport;
     root["autoMediaPort"] = stats.option.autoMediaPort;
     root["mediaPort"] = stats.option.mediaPort;
-    root["recordScheduler"] = stats.option.recordScheduler;
     root["enableFailover"] = stats.option.enableFailover;
     root["preferedMediaServer"] = stats.option.preferedMediaServer;
     root["enablePTZControl"] = stats.option.enablePTZControl;
+    root["motionPreRecordSec"] = stats.option.motionPreRecordSec;
+    root["motionPostRecordSec"] = stats.option.motionPostRecordSec;
+    root["recordSchedules"] = stats.option.recordSchedules;
+    root["disableAudio"] = stats.option.disableAudio;
+    root["webPort"] = stats.option.webPort;
+    root["autoWebPort"] = stats.option.autoWebPort;
+    root["keepConfigProfileAndStream"] = stats.option.keepConfigProfileAndStream;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;

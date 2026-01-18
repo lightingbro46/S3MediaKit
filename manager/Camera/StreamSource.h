@@ -26,23 +26,31 @@ struct StreamTuple : public DeviceTuple {
     bool empty() const {
         return stream_id.empty() && full_url.empty();
     }
-};
 
-bool equalStreamTuple(const StreamTuple &a, const StreamTuple &b);
+    bool operator==(const StreamTuple& other) const{
+        return stream_id == other.stream_id &&
+            full_url == other.full_url &&
+            vhost == other.vhost &&
+            device_id == other.device_id &&
+            name == other.name;
+    }
+};
 
 class StreamSource : public std::enable_shared_from_this<StreamSource> {
 public:
     using Ptr = std::shared_ptr<StreamSource>;
     using OnStreamUpdate = std::function<void(bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
 
-    StreamSource(const StreamTuple &tuple, bool record = false, int rtp_type = 0, int media_port = 0,
+    StreamSource(const StreamTuple &tuple, bool record = false, bool record_audio = true, int rtp_type = 0, int media_port = 0,
                     std::string username = "", std::string password = "", float timeout_sec = 0.0f);
 
     ~StreamSource();
 
     void start();
 
-    bool isRecording() { return _record; }
+    bool isRecording() { return _record_mp4; }
+
+    bool isRecordingAudio() { return _record_audio; }
 
     int getRtpType() { return _rtp_type; }
 
@@ -63,7 +71,8 @@ private:
 
 private:
     StreamTuple _tuple;
-    bool _record;
+    bool _record_mp4;
+    bool _record_audio;
     int _rtp_type;
     int _media_port;
     std::string _username;

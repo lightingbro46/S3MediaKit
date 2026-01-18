@@ -77,7 +77,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerStarted] = "/api/media-server/start";
     mINI::Instance()[kOnServerExited] = "/api/media-server/end";
     mINI::Instance()[kOnServerKeepalive] = "/api/media-server/heartbeat";
-    mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration";
+    mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration-2nd-gen";
     mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";

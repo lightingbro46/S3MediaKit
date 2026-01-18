@@ -182,100 +182,110 @@ void migrateDatabase() {
     escDbMigrate->migrate(escUpdateSavePath);
 }
 
+#define GET_OPTION_PROPERTY(dst, name, src, key)                                                                                                               \
+    if (!src[#key].isNull()) {                                                                                                                                 \
+        dst.name = src[#key].as<decltype(dst.name)>();                                                                                                         \
+    }
+
+#define GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(dst, name, src, key, default_value)                                                                               \
+    if (!src[#key].isNull()) {                                                                                                                                 \
+        dst.name = src[#key].as<decltype(dst.name)>();                                                                                                         \
+    } else {                                                                                                                                                   \
+        dst.name = default_value;                                                                                                                              \
+    }
+
 static void fromJson(CameraInfo &info, const Json::Value &data) {
-    string project_id = data["project_id"].asString();
-    string device_id = data["device_id"].asString();
-    // string name = data["name_device"].asString();
-    string name = data["device_name"].asString();
-    string manufacturer = data["manufacturer"].asString();
-    string model = data["model"].asString();
-    string username = data["username"].asString();
-    string password = data["password"].asString();
-    string ip = data["address"].asString();
-    int port = data["http_port"].asInt();
-    
+    // default vhost is __defaultVhost__
     info.vhost = DEFAULT_VHOST;
-    info.device_id = device_id;
-    info.name = name;
-    info.manufacturer = manufacturer;
-    info.model = model;
-    info.ip = ip;
-    info.port = port;
-    info.username = username;
-    info.password = password;
+
+    GET_OPTION_PROPERTY(info, device_id, data, id)
+    GET_OPTION_PROPERTY(info, name, data, name)
+    GET_OPTION_PROPERTY(info, manufacturer, data, brand)
+    GET_OPTION_PROPERTY(info, model, data, model)
+    GET_OPTION_PROPERTY(info, username, data, username)
+    GET_OPTION_PROPERTY(info, password, data, password)
+    GET_OPTION_PROPERTY(info, ip, data, ip)
+    // http port default 80
+    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(info, port, data, http_port, 80)
 }
 
 static void fromJson(CameraOption &option, const Json::Value &data) {
-    bool enable_camera = data["is_enable"].asBool();
-    bool enable_recording = data["enable_recording"].asBool();
-    string record_scheduler = data["record_scheduler"].asString();
-    bool do_not_record_primary_stream = data["do_not_record_primary_stream"].asBool();
-    bool do_not_record_secondary_stream = data["do_not_record_secondary_stream"].asBool();
-    bool keep_archived_min_for_auto = data["keep_archived_min_for_auto"].asBool();
-    int keep_archived_min_for = data["keep_archived_min_for"].asInt();
-    bool keep_archived_max_for_auto = data["keep_archived_max_for_auto"].asBool();
-    int keep_archived_max_for = data["keep_archived_max_for"].asInt();
-    int media_port = data["media_port"].asInt();
-    bool media_port_auto = data["media_port_auto"].asBool();
-    int rtp_transport = data["rtp_transport"].asInt();
-    string prefered_media_server = data["pri_media_server"].asString();
-    bool enable_ptz_control = data["enable_ptz_control"].asBool();
+    GET_OPTION_PROPERTY(option, enableActive, data, enabled)
+    GET_OPTION_PROPERTY(option, preferedMediaServer, data, priMediaServerId)
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    option.enableFailover = option.preferedMediaServer != mediaServerId;
 
-    // option.enableActive = enable_camera;
-    // option.enableRecord = enable_recording;
-    // option.recordScheduler = record_scheduler;
-    // option.doNotRecordPrimaryStream = do_not_record_primary_stream;
-    // option.doNotRecordSecondaryStream = do_not_record_secondary_stream;
-    // option.keepArchivedMinForAuto = keep_archived_min_for_auto;
-    // option.keepArchivedMinFor = keep_archived_min_for;
-    // option.keepArchivedMaxForAuto = keep_archived_max_for_auto;
-    // option.keepArchivedMaxFor = keep_archived_max_for;
-    // option.mediaPort = media_port;
-    // option.autoMediaPort = media_port_auto;
-    // option.rtpTransport = rtp_transport;
-    // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    // option.enableFailover = prefered_media_server != mediaServerId;
-    // option.preferedMediaServer = prefered_media_server;
-    // option.enablePTZControl = enable_ptz_control;
-    bool enable_recording_ = false;
-    uint64_t retention_ = 0;
-    for (const auto &stream : data["streams"]) {
-        if (stream["is_storing"].asBool()) {
-            enable_recording_ = true;
+    if (data.isMember("recordingConfig") && !data["recordingConfig"].isNull()) {
+        const Json::Value &rc = data["recordingConfig"];
+
+        GET_OPTION_PROPERTY(option, enableRecord, rc, enableRecording)
+        GET_OPTION_PROPERTY(option, recordSchedules, rc, recordingSchedule)
+        GET_OPTION_PROPERTY(option, keepArchivedMinForAuto, rc, keepArchivedMinForAuto)
+        GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, keepArchivedMinFor, rc, keepArchivedMinFor, 0)
+        GET_OPTION_PROPERTY(option, keepArchivedMaxForAuto, rc, keepArchivedMaxForAuto)
+        GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, keepArchivedMaxFor, rc, keepArchivedMaxFor, 0)
+
+        GET_OPTION_PROPERTY(option, motionPreRecordSec, rc, motionPreRecordSec)
+        GET_OPTION_PROPERTY(option, motionPostRecordSec, rc, motionPostRecordSec)
+    }
+
+    if (data.isMember("cameraAdvanceConfig") && !data["cameraAdvanceConfig"].isNull()) {
+        const Json::Value &adv = data["cameraAdvanceConfig"];
+        
+        if (adv.isMember("streamSettings") && !adv["streamSettings"].isNull()) {
+            const Json::Value &ss = adv["streamSettings"];
+
+            GET_OPTION_PROPERTY(option, disablePrimaryStream, ss, disableMainStream)
+            GET_OPTION_PROPERTY(option, disableSecondaryStream, ss, disableSubStream)
+            GET_OPTION_PROPERTY(option, doNotRecordPrimaryStream, ss, notRecordMainStream)
+            GET_OPTION_PROPERTY(option, doNotRecordSecondaryStream, ss, notRecordSubStream)
+            GET_OPTION_PROPERTY(option, disableAudio, ss, disableAudio)
+            GET_OPTION_PROPERTY(option, keepConfigProfileAndStream, ss, keepConfigProfileAndStream)
         }
-        uint64_t stream_retention = stream["retention_time"].isNull() ? 0 : static_cast<uint64_t>(stream["retention_time"].asFloat());
-        auto retention = stream_retention * 3600;
-        if (retention_ == 0 || retention < retention_) {
-            retention_ = retention;
+
+        if (adv.isMember("onvif") && !adv["onvif"].isNull()) {
+            const Json::Value &onvif = adv["onvif"];
+            // todo:
+        }
+
+        if (adv.isMember("mediaStreaming") && !adv["mediaStreaming"].isNull()) {
+            const Json::Value &ms = adv["mediaStreaming"];
+
+            GET_OPTION_PROPERTY(option, mediaPort, ms, mediaPort)
+            GET_OPTION_PROPERTY(option, autoMediaPort, ms, useDefaultMediaPort)
+
+            auto parseRtpTransport = [](const Json::Value &v) {
+                if (v.isNull() || !v.isString())
+                    return CameraOption::kRtpTransportAuto;
+                if (v.asString() == "TCP")
+                    return CameraOption::kRtpTransportTcp;
+                if (v.asString() == "UDP")
+                    return CameraOption::kRtpTransportUdp;
+                if (v.asString() == "MULTI")
+                    return CameraOption::kRtpTransportMultiCast;
+                return CameraOption::kRtpTransportAuto;
+            };
+            option.rtpTransport = parseRtpTransport(ms["rtpTransport"]);
+        }
+
+        if (adv.isMember("webPage") && !adv["webPage"].isNull()) {
+            const Json::Value &wp = adv["webPage"];
+
+            GET_OPTION_PROPERTY(option, webPort, wp, webPort)
+            GET_OPTION_PROPERTY(option, autoWebPort, wp, useDefaultWebPort)
         }
     }
-    option.enableActive = enable_camera;
-    option.enableRecord = enable_recording_;
-    option.recordScheduler = "";
-    option.doNotRecordPrimaryStream = false;
-    option.doNotRecordSecondaryStream = false;
-    option.keepArchivedMinForAuto = true;
-    option.keepArchivedMinFor = 0;
-    option.keepArchivedMaxForAuto = false;
-    option.keepArchivedMaxFor = retention_;
-    option.mediaPort = 0;
-    option.autoMediaPort = false;
-    option.rtpTransport = 0;
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    option.enableFailover = prefered_media_server != mediaServerId;
-    option.preferedMediaServer = prefered_media_server;
-    option.enablePTZControl = true;
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
     ret.clear();
-    string project_id = data["project_id"].asString();
-    string device_id = data["device_id"].asString();
+    string device_id = data["id"].asString();
     int index = 0;
-    for (const auto &st : data["streams"]) {
+    for (const auto &st : data["profiles"]) {
         string stream_id = st["channel_id"].asString();
         string stream_url = st["source_url"].asString();
         StreamTuple tuple;
+        // default vhost is __defaultVhost__
         tuple.vhost = DEFAULT_VHOST;
         tuple.device_id = device_id;
         tuple.stream_id = stream_id;
@@ -295,13 +305,13 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         ini[Manager::kEnableFailover] = enableFailover;
         change++;
     }
-    int maxNumberCamera = data["maxNumberCamera"].asInt();
+    int maxNumberCamera = data["maxConfigCameras"].asInt();
     int currentMaxNumberCamera = ini[Manager::kMaxAllowedDevices];
     if (currentMaxNumberCamera != maxNumberCamera) {
         ini[Manager::kMaxAllowedDevices] = maxNumberCamera;
         change++;
     }
-    int serverLocationId = data["serverLocationId"].asInt();
+    int serverLocationId = data["serverGroupId"].asInt();
     int currentServerLocationId = ini[Manager::kServerLocationId];
     if (currentServerLocationId != serverLocationId) {
         ini[Manager::kServerLocationId] = serverLocationId;
@@ -314,7 +324,7 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         change++;
     }
 
-    //todo: cấu hình lưu bookmark, cấu hình lưu video push, số lượng thiết bị tối đa cho phép
+    //todo: cấu hình lưu video push, số lượng luồng xem media tối đa cho phép
 
     // Reload config and save file 
     if (change > 0) {
@@ -333,50 +343,91 @@ static void loadServerConfigFromJson(const Json::Value &data) {
 }
 
 static void loadServerClusterFromJson(const Json::Value &data) {
-    ClusterManager::Instance().clearAllMediaServer();
-    for (const auto &server_info : data) {
-        ClusterManager::Instance().addMediaServer(server_info);
-    }
+    // std::unordered_set<std::string> new_ids;
+    // GET_CONFIG(std::string, mediaServerId, General::kMediaServerId);
+     
+    // std::vector<string> list_ids = ClusterManager::Instance().getListMediaServerIds(false);
+    // for (const auto &server_info : data) {
+    //     //WarnL << data.toStyledString();
+
+    //     std::string active_id = server_info["id"].asString();
+
+    //     // add active server
+    //     ClusterManager::Instance().addMediaServer(server_info);
+
+    //     // remove active server from list
+    //     list_ids.erase(std::remove(list_ids.begin(), list_ids.end(), active_id), list_ids.end());
+    // }
+
+    // // remove in-active server
+    // for (const auto &id : list_ids) {
+    //     ClusterManager::Instance().delServer(id);
+    // }
+
+    // // Check thông luồng
+    // ClusterManager::Instance().healthCheck();
+
+    // // addMediaServer: thêm vào server
+    // ClusterManager::Instance().saveServerInfoToESC();
+
+    // // Đồng bộ db sau khi có danh sách cluster
+    // //AntiEntropyManager::Instance().pullEscStateFromCluster();
+    // AntiEntropyManager::Instance().checkMultiDiffAndSync();
 }
 
 static Json::Value exampleJson() {
     Json::Value data;
     data["devices"] = Json::arrayValue;
     Json::Value device;
-    device["device_id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
-    device["device_name"] = "Camera HPG";
+    device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+    device["name"] = "Camera HPG";
     device["username"] = "admin";
     device["password"] = "Haiphong2025";
-    device["manufacturer"] = "Hikivision";
+    device["brand"] = "Hikivision";
     device["model"] = "DS-2CD2347G1-L";
-    device["enable"] = true;
-    device["address"] = "27.72.173.71";
-    device["http_port"] = 8080;
-    device["is_enable"] = true;
-    device["enable_recording"] = true;
-    device["enable_ptz_control"] = true;
-    device["keep_archived_min_for_auto"] = true;
-    device["keep_archived_min_for"] = 0;
-    device["keep_archived_max_for_auto"] = false;
-    device["keep_archived_max_for"] = 10 * 60;
-    device["rtp_transport"] = 0;
-    device["pri_media_server"] = mINI::Instance()[General::kMediaServerId];
-    device["streams"] = Json::arrayValue;
+    device["enabled"] = true;
+    device["ip"] = "27.72.173.71";
+    device["recordingConfig"] = Json::objectValue;
+    device["recordingConfig"]["enableRecording"] = true;
+    device["recordingConfig"]["recordingSchedule"] = "";
+    device["recordingConfig"]["keepArchivedMinForAuto"] = true;
+    device["recordingConfig"]["keepArchivedMinFor"] = 0;
+    device["recordingConfig"]["keepArchivedMaxForAuto"] = false;
+    device["recordingConfig"]["keepArchivedMaxFor"] = 10 * 60;
+    device["recordingConfig"]["motionPreRecordSec"] = 5;
+    device["recordingConfig"]["motionPostRecordSec"] = 5;
+    device["cameraAdvanceConfig"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["streamSettings"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["streamSettings"]["keepConfigProfileAndStream"] = false;
+    device["cameraAdvanceConfig"]["streamSettings"]["disableMainStream"] = false;
+    device["cameraAdvanceConfig"]["streamSettings"]["disableSubStream"] = false;
+    device["cameraAdvanceConfig"]["streamSettings"]["notRecordSubStream"] = true;
+    device["cameraAdvanceConfig"]["streamSettings"]["disableAudio"] = false;
+    device["cameraAdvanceConfig"]["onvif"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["mediaStreaming"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["mediaStreaming"]["mediaPort"] = 5555;
+    device["cameraAdvanceConfig"]["mediaStreaming"]["useDefaultMediaPort"] = false;
+    device["cameraAdvanceConfig"]["mediaStreaming"]["rtpTransport"] = "AUTO";
+    device["cameraAdvanceConfig"]["webPage"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["webPage"]["webPort"] = 8080;
+    device["cameraAdvanceConfig"]["webPage"]["useDefaultWebPort"] = false;
+    device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
+    device["profiles"] = Json::arrayValue;
     // Json::Value channel_1;
     // channel_1["channel_id"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // channel_1["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp";
-    // device["streams"].append(channel_1);
+    // device["profiles"].append(channel_1);
     Json::Value channel_2;
     channel_2["channel_id"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     channel_2["source_url"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    device["streams"].append(channel_2);
+    device["profiles"].append(channel_2);
 
     data["devices"].append(device);
     return data;
 }
 
-void loadServerConfigJson(const Json::Value &data) {
-    // auto data = exampleJson();
+void loadServerConfigJson(const Json::Value &data1) {
+    auto data = exampleJson();
     TraceL << "Server configuration loaded: " << data.toStyledString();
     Ticker _ticker;
 
