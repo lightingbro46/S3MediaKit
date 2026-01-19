@@ -2685,7 +2685,7 @@ void installWebApi() {
             }
 
             if (!end_with(filename, ".mp4") && !end_with(filename, ".mkv") && !end_with(filename, ".avi")) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "Only support file extension: .mp4, .mkv, .avi");
+                RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_EXTENSION, "Only support file extension: .mp4, .mkv, .avi");
                 return;
             }
 
@@ -3201,7 +3201,7 @@ void installWebApi() {
         string password = allArgs["password"];
 
         if (!SockUtil::is_ipv4(startIp.data()) || !SockUtil::is_ipv4(endIp.data())) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "startIp or endIp must be a IPv4");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_IP, "startIp or endIp must be a IPv4");
             return;
         }
 
@@ -3241,7 +3241,7 @@ void installWebApi() {
 
             auto option = ptr->getCameraOption();
             if (!option.enablePTZControl) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_PERMISSION_DENIED, "No permission");
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ, "Camera is configured to disable PTZ control");
                 return;
             }
 

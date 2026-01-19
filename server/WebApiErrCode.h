@@ -15,13 +15,12 @@ namespace managerkit {
     /* 100xxx - Authorization errors */                                                              \
     XX(CODE_UNAUTHORIZED,                   "Unauthorized",                     401,         100001) \
     XX(CODE_PERMISSION_DENIED,              "Permission denied",                403,         100002) \
-    XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         100003) \
-    XX(CODE_NO_LIVE_VIEW_PERMISSION,        "No live view permission",          401,         100004) \
-    XX(CODE_NO_PLAYBACK_PERMISSION,         "No playback permission",           401,         100005) \
-    XX(CODE_NO_PTZ_CONTROL_PERMISSION,      "No PTZ control permission",        401,         100006) \
-    XX(CODE_NO_READ_MSERVER_PERMISSION,     "No read media server permission",  401,         100007) \
-    XX(CODE_NO_MODIFY_MSERVER_PERMISSION,   "No modify media server permission",401,         100008) \
-    XX(CODE_NO_ADD_CAMERA_PERMISSION,       "No add camera permission",         401,         100009) \
+    XX(CODE_NO_LIVE_VIEW_PERMISSION,        "No live view permission",          401,         100003) \
+    XX(CODE_NO_PLAYBACK_PERMISSION,         "No playback permission",           401,         100004) \
+    XX(CODE_NO_PTZ_CONTROL_PERMISSION,      "No PTZ control permission",        401,         100005) \
+    XX(CODE_NO_READ_MSERVER_PERMISSION,     "No read media server permission",  401,         100006) \
+    XX(CODE_NO_MODIFY_MSERVER_PERMISSION,   "No modify media server permission",401,         100007) \
+    XX(CODE_NO_ADD_CAMERA_PERMISSION,       "No add camera permission",         401,         100008) \
     /* 200xxx - Resource errors */                                                                  \
     XX(CODE_DEVICE_NOT_FOUND,               "Device not found",                 404,         200001) \
     XX(CODE_STREAM_NOT_FOUND,               "Stream not found",                 404,         200002) \
@@ -39,8 +38,12 @@ namespace managerkit {
     XX(CODE_PTZ_ABSOLUTED_CONTROL_FAILED,   "PTZ Absoluted control failed",     500,         300006) \
     XX(CODE_PTZ_CONTINUOUS_CONTROL_FAILED,  "PTZ Continuous control failed",    500,         300007) \
     XX(CODE_PTZ_RELATIVE_CONTROL_FAILED,    "PTZ Relative control failed",      500,         300008) \
-    XX(CODE_LIVE_VIEW_LIMITED,              "Live view limited",                429,         300009) \
-
+    XX(CODE_DEVICE_CONFIG_DISABLE_PTZ,      "Device is configured to disable PTZ control", 403, 300009) \
+    /* 400xxx - Input errors */                                                                   \
+    XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
+    XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
+    XX(CODE_INVALID_EXTENSION,              "Invalid file extension",           400,         400003) \
+    /* 500xxx - Database esc errors */                                                                   \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,

@@ -715,8 +715,9 @@ void installWebHook() {
 
         bool has_feature_permission = token_cache->hasPermissionCode(record_stream ? PLAYBACK_PERMISSION_CODE : LIVE_VIEW_PERMISSION_CODE);
         if (!has_feature_permission) {
-            WarnL << "Permission denied: no " << (record_stream ? "playback" : "live") << " permission";
-            invoker("No permission");
+            string msg = StrPrinter << "No " << (record_stream ? "playback" : "live") << " permission";
+            WarnL << "Permission denied: " << msg;
+            invoker(msg);
             return;
         }
 
