@@ -6,6 +6,13 @@
 
 namespace managerkit {
 
+#define PTZ_CONTROL_PERMISSION_CODE "1001"
+#define LIVE_VIEW_PERMISSION_CODE "1002"
+#define PLAYBACK_PERMISSION_CODE "1003"
+#define READ_MSERVER_PERMISSION_CODE "150301"
+#define MODIFY_MSERVER_PERMISSION_CODE "150302"
+#define ADD_CAMERA_PERMISSION_CODE "40102"
+
 class UserSessionHelper {
 public:
     /**
@@ -56,7 +63,12 @@ public:
     /**
      * return permisstion to access this project
      */
-    bool hasAccess() { return _has_access; }
+    bool hasProjectAccess() { return _has_access; }
+
+    /**
+     * return permisstion to access feature
+     */
+    bool hasPermissionCode(std::string code);
 
 private:
     /**

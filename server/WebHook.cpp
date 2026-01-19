@@ -708,8 +708,15 @@ void installWebHook() {
         }
 
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
-        if (!token_cache->hasAccess()) {
+        if (!token_cache->hasProjectAccess()) {
             invoker("Unauthorized");
+            return;
+        }
+
+        bool has_feature_permission = token_cache->hasPermissionCode(record_stream ? PLAYBACK_PERMISSION_CODE : LIVE_VIEW_PERMISSION_CODE);
+        if (!has_feature_permission) {
+            WarnL << "Permission denied: no " << (record_stream ? "playback" : "live") << " permission";
+            invoker("No permission");
             return;
         }
 

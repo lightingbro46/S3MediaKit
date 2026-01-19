@@ -59,17 +59,17 @@ private:
 
 class AuthException : public ApiRetException {
 public:
-    AuthException(const char *str) : ApiRetException(str, API::AuthFailed, 401) {}
+    AuthException(const char *str, int code = API::AuthFailed) : ApiRetException(str, code, 401) {}
 };
 
 class InvalidArgsException: public ApiRetException {
 public:
-    InvalidArgsException(const char *str) : ApiRetException(str, API::InvalidArgs, 400) {}
+    InvalidArgsException(const char *str, int code = API::InvalidArgs) : ApiRetException(str, code, 400) {}
 };
 
 class SuccessException: public ApiRetException {
 public:
-    SuccessException() : ApiRetException("success", API::Success, 200) {}
+    SuccessException(int code = API::Success) : ApiRetException("success", code, 200) {}
 };
 
 using ApiArgsType = std::map<std::string, std::string, mediakit::StrCaseCompare>;
@@ -199,6 +199,11 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
         throw InvalidArgsException("Required parameter missed: " #__VA_ARGS__); \
     }
 
+#define CHECK_ARGS_(...)  \
+    if(!checkArgs(allArgs,##__VA_ARGS__)){ \
+        throw InvalidArgsException("Required parameter missed: " #__VA_ARGS__, ApiErrCode::CODE_INVALID_ARGS); \
+    }
+
 // Check whether the http parameters contain the secret key, the ip of 127.0.0.1 does not check the key
 // Check whether it is in the ip whitelist at the same time
 #define CHECK_SECRET() \
@@ -217,12 +222,12 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
-            CHECK_ARGS("Authorization");                                                                                                                       \
+            CHECK_ARGS_("Authorization");                                                                                                                      \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
             auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasAccess() && enable_authorize) {                                                                                               \
-                throw AuthException("Unauthorized");                                                                                                           \
+            if (!token_cache->hasProjectAccess()) {                                                                                                            \
+                throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
             }                                                                                                                                                  \
             allArgs.args["_jwt_token"] = jwt_token;                                                                                                            \
             allArgs.args["_user_id"] = token_cache->getUid();                                                                                                  \
@@ -234,11 +239,11 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
 #define CHECK_USER_AUTHOR(key)                                                                                                                                 \
     CHECK_AUTH_TOKEN();                                                                                                                                        \
     do {                                                                                                                                                       \
-        CHECK_ARGS(key);                                                                                                                                       \
+        CHECK_ARGS_(key);                                                                                                                                      \
         string resource_id = allArgs[key];                                                                                                                     \
         string jwt_token = allArgs["_jwt_token"];                                                                                                              \
         if (!checkUserAuthor(resource_id, jwt_token)) {                                                                                                        \
-            throw AuthException("Unauthorized");                                                                                                               \
+            throw AuthException("No permission on key", ApiErrCode::CODE_PERMISSION_DENIED);                                                                   \
         }                                                                                                                                                      \
     } while (false);
 
@@ -247,7 +252,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                        \
     Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                                  \
         if (!err.empty()) {                                                                                                                                    \
-            RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                    \
+            RETURN_API_RESPONSE(ApiErrCode::CODE_PERMISSION_DENIED, err.data());                                                                               \
             return;                                                                                                                                            \
         }                                                                                                                                                      \
         /* Authorized, execute the callback function */                                                                                                        \
@@ -259,7 +264,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     }                                                                                                                                                          \
     /* If there is no token, directly reject */                                                                                                                \
     if (jwt_token.empty()) {                                                                                                                                   \
-        return auth_invoker("Unauthorized");                                                                                                                   \
+        return auth_invoker("Empty token");                                                                                                                    \
     }                                                                                                                                                          \
     /* Broadcast to check device access authorization asynchronously */                                                                                        \
     auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);                                 \
@@ -273,6 +278,61 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     val["msg"] = !msg ? msg : getDefaultMessage(static_cast<ApiErrCode>(code));                                                                                \
     auto status_code = getStatusCode(static_cast<ApiErrCode>(code));                                                                                           \
     invoker(status_code, headerOut, val.toStyledString());
+
+#define CHECK_PLAYBACK_PERMISSION()                                                                                                                            \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasPermissionCode(PLAYBACK_PERMISSION_CODE)) {                                                                                   \
+                throw AuthException("No playback permission", ApiErrCode::CODE_NO_PLAYBACK_PERMISSION);                                                        \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_PTZ_CONTROL_PERMISSION()                                                                                                                         \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasPermissionCode(PTZ_CONTROL_PERMISSION_CODE)) {                                                                                \
+                throw AuthException("No ptz control permission", ApiErrCode::CODE_NO_PTZ_CONTROL_PERMISSION);                                                  \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_READ_MSERVER_PERMISSION()                                                                                                                        \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasPermissionCode(READ_MSERVER_PERMISSION_CODE)) {                                                                               \
+                throw AuthException("No read media server permission", ApiErrCode::CODE_NO_READ_MSERVER_PERMISSION);                                           \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_MODIFY_MSERVER_PERMISSION()                                                                                                                      \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasPermissionCode(MODIFY_MSERVER_PERMISSION_CODE)) {                                                                             \
+                throw AuthException("No modify media server permission", ApiErrCode::CODE_NO_MODIFY_MSERVER_PERMISSION);                                       \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_ADD_CAMERA_PERMISSION()                                                                                                                          \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            if (!token_cache->hasPermissionCode(ADD_CAMERA_PERMISSION_CODE)) {                                                                                 \
+                throw AuthException("No add camera permission", ApiErrCode::CODE_NO_ADD_CAMERA_PERMISSION);                                                    \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
 
 void installWebApi();
 void unInstallWebApi();

@@ -2487,7 +2487,8 @@ void installWebApi() {
 
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("cameraId", "startTime", "endTime", "periodType", "detail");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("cameraId", "startTime", "endTime", "periodType", "detail");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string camera_id = allArgs["cameraId"];
@@ -2518,7 +2519,8 @@ void installWebApi() {
     // Get screenshot cache or real-time screenshot
     api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("cameraId", "streamId", "pos");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("cameraId", "streamId", "pos");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string camera_id = allArgs["cameraId"];
@@ -2663,7 +2665,8 @@ void installWebApi() {
     };
     api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("cameraId", "streamId", "startTime", "endTime", "filename");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("cameraId", "streamId", "startTime", "endTime", "filename");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             auto camera_id = allArgs["cameraId"];
@@ -2766,7 +2769,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/search", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("start_time", "end_time", "page", "size", "sort");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("start_time", "end_time", "page", "size", "sort");
 
         string camera_id = allArgs["camera_id"];
         int64_t start_time = allArgs["start_time"];
@@ -2817,7 +2821,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/create", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("name", "camera_id", "start_time", "duration");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("name", "camera_id", "start_time", "duration");
 
         auto on_access = [allArgs, &val, &invoker, &headerOut]() {
             string name = allArgs["name"];
@@ -2857,7 +2862,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("id", "camera_id", "start_time", "duration");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("id", "camera_id", "start_time", "duration");
 
         auto on_access = [allArgs, &val, &invoker, &headerOut]() {
             string id = allArgs["id"];
@@ -2898,7 +2904,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/delete", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("id");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("id");
 
         auto id = allArgs["id"];
 
@@ -2922,7 +2929,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/mostUsedTags", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("size");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("size");
 
         int size = allArgs["size"];
         if (size < 0) size = 1;
@@ -2939,7 +2947,8 @@ void installWebApi() {
 
     api_regist("/media/esc/bookmark/recent", [](API_ARGS_MAP_ASYNC) { 
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("size", "sort"); 
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("size", "sort"); 
 
         string camera_id = allArgs["camera_id"];
         int size = allArgs["size"];
@@ -2995,7 +3004,7 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/register", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS("mediaServerId", "domain", "ip", "httpPort", "httpsPort", "preferSSL")
+        CHECK_ARGS_("mediaServerId", "domain", "ip", "httpPort", "httpsPort", "preferSSL")
 
         string mediaServerId_ = allArgs["mediaServerId"];
         string apiDomain = allArgs["domain"];
@@ -3068,7 +3077,7 @@ void installWebApi() {
 
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
         CHECK_AUTH_TOKEN();
-
+        CHECK_READ_MSERVER_PERMISSION();
         // string id = allArgs["mediaServerId"];
         // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         // if (id != mediaServerId) {
@@ -3104,6 +3113,7 @@ void installWebApi() {
                     ret["isPtz"] = false;
                     ret["isNewDevice"] = true;
                     ret["profiles"] = arrayValue;
+                    ret["address"] = "";
                     Value stream;
                     stream["vcodec"] = info.vcodec;
                     stream["width"] = info.width;
@@ -3135,6 +3145,7 @@ void installWebApi() {
             ret["serialNumber"] = info.serialNumber;
             ret["hardwareId"] = info.hardwareId;
             ret["macAddress"] = info.macAddress;
+            ret["address"] = "http:// " + ipAddress; 
             ret["isPtz"] = onvif->enablePTZ();
             //todo: check is new device or not
             ret["isNewDevice"] = true;
@@ -3158,7 +3169,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("address","port", "defaultPort");
+        CHECK_ADD_CAMERA_PERMISSION();
+        CHECK_ARGS_("address","port", "defaultPort");
 
         string address = allArgs["address"];
         int port = allArgs["port"];
@@ -3178,7 +3190,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("startIp", "endIp", "port", "defaultPort");
+        CHECK_ADD_CAMERA_PERMISSION();
+        CHECK_ARGS_("startIp", "endIp", "port", "defaultPort");
 
         string startIp = allArgs["startIp"];
         string endIp = allArgs["endIp"];
@@ -3206,7 +3219,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("deviceId", "direct", "speed");
+        CHECK_PTZ_CONTROL_PERMISSION();
+        CHECK_ARGS_("deviceId", "direct", "speed");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string deviceId = allArgs["deviceId"];
@@ -3248,7 +3262,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("mediaServerId");
+        CHECK_READ_MSERVER_PERMISSION();
+        CHECK_ARGS_("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -3262,7 +3277,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/device/storage", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("mediaServerId");
+        CHECK_READ_MSERVER_PERMISSION();
+        CHECK_ARGS_("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -3276,7 +3292,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/device/statistic", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("mediaServerId");
+        CHECK_READ_MSERVER_PERMISSION();
+        CHECK_ARGS_("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -3333,7 +3350,8 @@ void installWebApi() {
 
     api_regist("/media/mserver/playback/speed", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS("url", "speed");
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("url", "speed");
         string url = allArgs["url"];
 
         MediaSource::Ptr src;
@@ -3364,7 +3382,7 @@ void installWebApi() {
     });
 
     api_regist("/media/mserver/incur", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS("mediaServerId");
+        CHECK_ARGS_("mediaServerId");
 
         string id = allArgs["mediaServerId"];
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)

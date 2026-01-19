@@ -90,6 +90,13 @@ UserSessionCache::UserSessionCache(const string &token) : _token(token) {
     saveUserSession();
 }
 
+bool UserSessionCache::hasPermissionCode(std::string code) {
+    for (string c: _permissions){
+        if (c == code) return true;
+    }
+    return false;
+};
+
 void UserSessionCache::saveUserSession() {
     UserSession session;
     session.token = _token;
