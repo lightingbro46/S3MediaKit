@@ -59,6 +59,7 @@ void CameraController::setupController(const CameraInfo &info, const CameraOptio
     _controller = std::make_shared<OnvifController>(address, info.username, info.password);
     DebugL << "Created Onvif controller for device: " << info.shortUrl();
 
+    _info = info;
     _keep_remote_config = option.keepConfigProfileAndStream;
 }
 
@@ -74,6 +75,7 @@ void CameraController::stopController() {
         _controller.reset();
         _ready = false;
     }
+    DebugL << "Closed camera controller: " << _info.shortUrl();
 }
 
 void CameraController::onManager() {

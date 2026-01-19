@@ -48,6 +48,7 @@ private:
     DeviceController::Ptr _controller;
     OnControllerReady _on_ready;
     bool _keep_remote_config = false;
+    CameraInfo _info;
 };
 
 } // namespace managerkit
