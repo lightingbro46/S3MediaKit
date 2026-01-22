@@ -148,8 +148,14 @@ extern const std::string kBroadcastDeviceChanged;
 extern const std::string kBroadcastDeviceAccess;
 #define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const Broadcast::AuthInvoker &invoker
 
+// Broadcast for reloading API configuration.
 extern const std::string kBroadcastReloadApiConfig;
 #define BroadcastReloadApiConfigArgs void
+
+using HealthInvoker = std::function<void(const std::string&, const int&)>;
+// Healthcheck service event broadcast. Control healthcheck service through this event.
+extern const std::string kBroadcastHealthCheckService;
+#define BroadcastHealthCheckServiceArgs const std::vector<std::string> &origin_urls, const Broadcast::HealthInvoker &invoker
 
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \

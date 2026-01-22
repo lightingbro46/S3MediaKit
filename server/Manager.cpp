@@ -152,6 +152,17 @@ void installManagerHook () {
     });
 #endif // ENABLE_MP4
 
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
+        auto device_id = args.app;
+        bool record_stream = false;
+        GET_CONFIG(string, app_name, Record::kAppName);
+        if (args.app == app_name) {
+            device_id = split(args.stream, "/")[0];
+            record_stream = true;
+        }
+        GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
+    });
+
     enforceStoragePolicy();
 
     loadSavedDeviceInfo();

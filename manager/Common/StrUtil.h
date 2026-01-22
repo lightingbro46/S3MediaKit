@@ -2,6 +2,7 @@
 #define COMMON_STRUTIL_H
 
 #include <string>
+#include <vector>
 
 namespace managerkit {
 
@@ -13,6 +14,7 @@ public:
 
     static std::string replaceCredentials(const std::string &in_url, const std::string &username, const std::string &password);
 
+    static std::vector<std::string> getUriList(const std::string &domain, const std::string &ip, int http_port, int https_port, bool prefer_ssl);
 };
 
 class StrTimeUtils {

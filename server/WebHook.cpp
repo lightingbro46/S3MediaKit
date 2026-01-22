@@ -51,6 +51,7 @@ const string kOnServerReportUsage = HOOK_FIELD "on_server_report_usage";
 const string kOnSystemAlert = HOOK_FIELD "on_system_alert";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
+const string kOnServerHealthCheck = HOOK_FIELD "on_server_health_check";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -81,6 +82,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
+    mINI::Instance()[kOnServerHealthCheck] = "/api/actuator/health";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -600,6 +602,37 @@ static void pullStreamFromOrigin(const vector<string> &urls, size_t index, size_
     });
 }
 
+static void healthCheckServiceFromOrigin(const vector<string> &urls, size_t index, size_t failed_cnt, const function<void(const string &err, const int &idx)> &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "health check origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+
+    HttpArgs param;
+    param["edge"] = "1";
+
+    do_http_hook(url, param, [=](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // Health check success
+            callback("", index % urls.size());
+            return;
+        }
+        // Health check failed
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "health check origin server final failed: " << ss.str();
+            callback("All origin stations have been retried", -1);
+            return;
+        }
+        healthCheckServiceFromOrigin(urls, index + 1, failed_cnt, callback);
+    });
+}
+
 static void *web_hook_tag = nullptr;
 
 static mINI jsonToMini(const Value &obj) {
@@ -659,17 +692,6 @@ void installWebHook() {
             }
         }
         return ret;
-    });
-
-    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
-        auto device_id = args.app;
-        bool record_stream = false;
-        GET_CONFIG(string, app_name, Record::kAppName);
-        if (args.app == app_name) {
-            device_id = split(args.stream, "/")[0];
-            record_stream = true;
-        }
-        GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
@@ -1194,7 +1216,7 @@ void installWebHook() {
         body["currentValue"] = usage;
         body["threshold"] = threshold;
         body["cameraId"] = camera_id;
-       // Execute hook
+        // Execute hook
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
@@ -1202,6 +1224,27 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastReloadApiConfig, [](BroadcastReloadApiConfigArgs) {
         DebugL << "Reset report config loaded flag on reload api config event";
         s_config_loaded = false;
+    });
+
+    // Listen to call health check event
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHealthCheckService, [](BroadcastHealthCheckServiceArgs) {
+        GET_CONFIG(string, hook_server_healthcheck, Hook::kOnServerHealthCheck);
+        if (!hook_enable || hook_server_healthcheck.empty()) {
+            invoker("Health check skipped, hook_server_healthcheck is empty", -1);
+            return;
+        }
+        if (origin_urls.empty()) {
+            invoker("Health check skipped, origin_urls is empty", -1);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : origin_urls) {
+            string full_url = StrPrinter << u << hook_server_healthcheck;
+            urls.push_back(full_url);
+        }
+
+        healthCheckServiceFromOrigin(urls, 0, 0, invoker);
     });
 
     // Report server restart

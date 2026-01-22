@@ -8,8 +8,8 @@ namespace managerkit {
 /**
  * Custom api error code map definition 
  */
-#define API_ERROR_CODE_MAP(XX)                                                                      \
-    /* Success and general errors */                                                                \
+#define API_ERROR_CODE_MAP(XX)                                                                       \
+    /* Success and general errors */                                                                 \
     XX(CODE_SUCCESS,                        "Success",                          200,         0     ) \
     XX(CODE_OTHER_EXCEPTION,                "Internal Server Error",            500,         -1    ) \
     /* 100xxx - Authorization errors */                                                              \
@@ -21,7 +21,7 @@ namespace managerkit {
     XX(CODE_NO_READ_MSERVER_PERMISSION,     "No read media server permission",  401,         100006) \
     XX(CODE_NO_MODIFY_MSERVER_PERMISSION,   "No modify media server permission",401,         100007) \
     XX(CODE_NO_ADD_CAMERA_PERMISSION,       "No add camera permission",         401,         100008) \
-    /* 200xxx - Resource errors */                                                                  \
+    /* 200xxx - Resource errors */                                                                   \
     XX(CODE_DEVICE_NOT_FOUND,               "Device not found",                 404,         200001) \
     XX(CODE_STREAM_NOT_FOUND,               "Stream not found",                 404,         200002) \
     XX(CODE_BOOKMARK_NOT_FOUND,             "Bookmark not found",               404,         200003) \
@@ -39,11 +39,13 @@ namespace managerkit {
     XX(CODE_PTZ_CONTINUOUS_CONTROL_FAILED,  "PTZ Continuous control failed",    500,         300007) \
     XX(CODE_PTZ_RELATIVE_CONTROL_FAILED,    "PTZ Relative control failed",      500,         300008) \
     XX(CODE_DEVICE_CONFIG_DISABLE_PTZ,      "Device is configured to disable PTZ control", 403, 300009) \
-    /* 400xxx - Input errors */                                                                   \
+    XX(CODE_HEALTH_CHECK_API_FAILED,        "Health check api service failed",  500,         300010) \
+    XX(CODE_HEALTH_CHECK_MSERVER_FAILED,    "Health check media server service failed",  500, 300011) \
+    /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
     XX(CODE_INVALID_EXTENSION,              "Invalid file extension",           400,         400003) \
-    /* 500xxx - Database esc errors */                                                                   \
+    /* 500xxx - Database esc errors */                                                               \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,

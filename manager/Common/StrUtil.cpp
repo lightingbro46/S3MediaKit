@@ -54,6 +54,32 @@ string UriUtils::replaceCredentials(const string &in_url, const string &username
     return (StrPrinter << schema << "://" << _middle_url << "/" << path);
 }
 
+vector<string> UriUtils::getUriList(const std::string &domain, const std::string &ip, int http_port, int https_port, bool prefer_ssl) {
+    vector<string> uri_list;
+
+    // add https url with domain if prefer_ssl is true and domain is not empty
+    if (prefer_ssl && !domain.empty()) {
+        string url = StrPrinter << "https://" << domain << ":" << https_port;
+        uri_list.emplace_back(url);
+    }
+
+    // add http url with domain if domain is not empty
+    if (!domain.empty()) {
+        string url = StrPrinter << "http://" << domain << ":" << http_port;
+        uri_list.emplace_back(url);
+    }
+
+    // add http url with ip if ip is not empty
+    if (!ip.empty()) {
+        string url = StrPrinter << "http://" << ip << ":" << http_port;
+        uri_list.emplace_back(url);
+    }
+
+    return uri_list;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+
 static auto isDate = [](const std::string &s) -> bool {
     // YYYY-MM-DD
     if (s.size() != 10) return false;

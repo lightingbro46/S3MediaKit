@@ -78,6 +78,7 @@ const string kBroadcastStreamReaderAlert = "kBroadcastStreamReaderAlert";
 const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
+const string kBroadcastHealthCheckService = "kBroadcastHealthCheckService";
 
 } // namespace Broadcast
 

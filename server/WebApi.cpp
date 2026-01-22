@@ -3022,57 +3022,61 @@ void installWebApi() {
             return;
         }
 
-        int changed = 0;
-        bool need_to_restart = false;
-        auto &ini = mINI::Instance();
-        // get new config and compare to old one of system
-        ostringstream ss;
-        if (preferSSL) {
-            ss << "https://" << apiDomain;
-            if (httpsPort > 0) {
-                ss << ":" << httpsPort;
-            }
-        } else {
-            ss << "http://" << apiIp;
-            if (httpPort > 0) {
-                ss << ":" << httpsPort;
-            }
-        }
-        string apiUrlTmp = ss.str();
-        if (ini[Hook::kApiUrl] != apiUrlTmp) {
-            ini[Hook::kApiUrl] = apiUrlTmp;
-            ++changed;
-            need_to_restart = true;
-        }
+        auto origin_urls = UriUtils::getUriList(apiDomain, apiIp, httpPort, httpsPort, preferSSL);
 
-        if (!mediaServerDomain.empty() && !mediaServerCert.empty()) {
-            if (ini[Manager::kMediaServerDomain] != mediaServerDomain) {
-                ini[Manager::kMediaServerDomain] = mediaServerDomain;
-                ++changed;
+        Broadcast::HealthInvoker on_health_check = [allArgs, origin_urls, mediaServerDomain, mediaServerCert, val, headerOut, invoker](const string& err, const int& idx) mutable {
+            if (!err.empty()) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_HEALTH_CHECK_API_FAILED, err.data());
+                return;
             }
-            
-            {
-                auto imp = std::make_shared<CertificateImp>();
-                if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
-                    imp->saveCert(mediaServerDomain, mediaServerCert);
+
+            auto apiUrlTmp = origin_urls[idx];
+            int changed = 0;
+            bool need_to_restart = false;
+            auto &ini = mINI::Instance();
+
+            // get new config and compare to old one of system
+            if (ini[Hook::kApiUrl] != apiUrlTmp) {
+                ini[Hook::kApiUrl] = apiUrlTmp;
+                ++changed;
+                need_to_restart = true;
+            }
+
+            if (!mediaServerDomain.empty() && !mediaServerCert.empty()) {
+                if (ini[Manager::kMediaServerDomain] != mediaServerDomain) {
+                    ini[Manager::kMediaServerDomain] = mediaServerDomain;
                     ++changed;
                 }
+                
+                {
+                    auto imp = std::make_shared<CertificateImp>();
+                    if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
+                        imp->saveCert(mediaServerDomain, mediaServerCert);
+                        ++changed;
+                    }
+                }
             }
-        }
 
-        if (changed > 0) {
-            // notify to reload config and dump ini file
-            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
-            ini.dumpFile(g_ini_file);
-        }
+            if (changed > 0) {
+                // notify to reload config and dump ini file
+                NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+                ini.dumpFile(g_ini_file);
+            }
 
-        if (need_to_restart) {
-            // notify to restart server
-            NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
-        }
+            if (need_to_restart) {
+                // notify to restart server
+                NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
+            }
 
-        val["data"]["changed"] = changed;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"]["changed"] = changed;
+            invoker(200, headerOut, val.toStyledString());
+        };
+        
+        auto flag = NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls, on_health_check);
+        if (!flag) {
+            // Nobody to handle health check service, just return failed
+            on_health_check("No handler to handle health check api service", -1);
+        }
     });
 
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
