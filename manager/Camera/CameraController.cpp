@@ -122,7 +122,7 @@ void CameraController::onManager() {
     // });
 }
 
-static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
+static void onvifPTZMove(const OnvifController::Ptr &ptr, int ptz_mode, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device do not support PTZ", ApiErrCode::CODE_DEVICE_NOT_SUPPORT_PTZ));
         return;
@@ -132,7 +132,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
     auto clamp = [](float value, float minVal, float maxVal) { return std::max(minVal, std::min(maxVal, value)); };
     float step = speed / 100.0f;
 
-    if (profile.isAbsMoveEnable) {
+    if (profile.isAbsMoveEnable && (ptz_mode == CameraOption::kPTZAbsolutedMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan, tilt, zoom;
         auto status = ptr->PTZ_GetStatus(pan, tilt, zoom);
         if (status != tt__MoveStatus__IDLE) {
@@ -162,7 +162,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
         return cb(SockException(Err_success, "Device execute ptz absolute move success", ApiErrCode::CODE_SUCCESS));
     };
 
-    if (profile.isRelMoveEnable) {
+    if (profile.isRelMoveEnable && (ptz_mode == CameraOption::kPTZRelativeMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan = 0.0, tilt = 0.0, zoom = 0.0;
         switch (direct) {
             case PTZ_DIRECT::Up: tilt = clamp(tilt * step, profile.relMinTilt, profile.relMaxTilt); break;
@@ -186,7 +186,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, PTZ_DIRECT &direct, in
         return cb(SockException(Err_success, "Device execute ptz relative move success", ApiErrCode::CODE_SUCCESS));
     } 
     
-    if (profile.isConsMoveEnable) {
+    if (profile.isConsMoveEnable && (ptz_mode == CameraOption::kPTZContinousMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan = 0.0, tilt = 0.0, zoom = 0.0;
         switch (direct) {
             case PTZ_DIRECT::Up: tilt = clamp(tilt * step, profile.consMinTilt, profile.consMaxTilt); break;
@@ -272,7 +272,7 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
     }
     
     if (onvif_ptr && _ready.load()) {
-        onvifPTZMove(onvif_ptr, direct, speed, cb);
+        onvifPTZMove(onvif_ptr, _option.ptzMode, direct, speed, cb);
         return;
     }
     // todo: add more ptz function from manufacturer sdk

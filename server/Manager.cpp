@@ -277,12 +277,14 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             auto parsePTZMode = [](const Json::Value &v) {
                 if (v.isNull() || !v.isString())
                     return CameraOption::kPTZModeAuto;
-                if (v.asString() == "Absolute")
+                if (v.asString() == "ABSOLUTE")
                     return CameraOption::kPTZAbsolutedMode;
-                if (v.asString() == "Relative")
+                if (v.asString() == "RELATIVE")
                     return CameraOption::kPTZRelativeMode;
-                if (v.asString() == "Continuous")
+                if (v.asString() == "CONTINUOUS")
                     return CameraOption::kPTZContinousMode;
+                if (v.asString() == "AUTO")
+                    return CameraOption::kPTZModeAuto;
                 return CameraOption::kPTZModeAuto;
             };
             option.ptzMode = parsePTZMode(onvif["ptzMode"]);
@@ -647,14 +649,15 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
 
 static Json::Value getPTZModeString(bool isAbsolute, bool isRelative, bool isContinuous) {
     Json::Value ret = Json::arrayValue;
+    ret.append("AUTO");
     if (isAbsolute) {
-        ret.append("Absolute");
+        ret.append("ABSOLUTE");
     }
     if (isRelative) {
-        ret.append("Relative");
+        ret.append("RELATIVE");
     }
     if (isContinuous) {
-        ret.append("Continuous");
+        ret.append("CONTINUOUS");
     }
     return ret;
 }
