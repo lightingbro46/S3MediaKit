@@ -52,6 +52,8 @@ const string kOnSystemAlert = HOOK_FIELD "on_system_alert";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kOnServerHealthCheck = HOOK_FIELD "on_server_health_check";
+const string kOnDeviceChanged = HOOK_FIELD "on_device_changed";
+const string kOnDeviceCapsChanged = HOOK_FIELD "on_device_caps_changed";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -83,6 +85,8 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
     mINI::Instance()[kOnServerHealthCheck] = "/api/actuator/health";
+    mINI::Instance()[kOnDeviceChanged] = "";
+    mINI::Instance()[kOnDeviceCapsChanged] = "/api/media-server/media-device-info";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -1245,6 +1249,36 @@ void installWebHook() {
         }
 
         healthCheckServiceFromOrigin(urls, 0, 0, invoker);
+    });
+
+    // Listen to device registration or deregistration events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceChanged, [](BroadcastDeviceChangedArgs) {
+        GET_CONFIG(string, hook_device_changed, Hook::kOnDeviceChanged);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_device_changed.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["device_id"] = sender.getDeviceTuple().device_id;
+        body["regist"] = bRegist;
+        // Execute hook
+        do_http_hook(hook_api_url + hook_device_changed, body, nullptr);
+    });
+
+    // Listen to device capability change events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceCapsChanged, [](BroadcastDeviceCapsChangedArgs) {
+        GET_CONFIG(string, hook_device_caps_changed, Hook::kOnDeviceCapsChanged);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_device_caps_changed.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        auto device = sender.shared_from_this();
+        ArgsType body = makeDeviceCapabilitiesJson(device, &caps);
+        
+        // Execute hook
+        do_http_hook(hook_api_url + hook_device_caps_changed, body, nullptr);
     });
 
     // Report server restart

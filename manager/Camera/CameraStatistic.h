@@ -4,6 +4,7 @@
 #include <mutex>
 #include "Local/FileRecorder.h"
 #include "GenericRtspCamera.h"
+#include "CameraController.h"
 
 namespace managerkit {
 
@@ -37,10 +38,10 @@ struct StreamStatistic {
     int sample_bit = 0;
 };
 
-struct DeviceCapabilities {
+struct DeviceStatistic {
     bool connect = false;
     std::string status;
-    bool ptzCapabilities = false;
+    DeviceCapabilities device_caps;
 };
 
 struct CameraStatistic;
@@ -58,7 +59,7 @@ struct CameraStatistic {
     BookmarkStats bm;
     std::unordered_map<std::string, StreamStorageStats> storage_map;
     std::unordered_map<int, StreamStatistic> sinfo_map;
-    DeviceCapabilities device_caps;
+    DeviceStatistic device_stats;
     uint64_t created_at;
     uint64_t updated_at;
 
@@ -90,7 +91,7 @@ public:
 
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
-    void addDeviceCapabilities(bool connect, std::string status, bool enable_ptz = false);
+    void addDeviceCapabilities(bool connect, std::string status, const DeviceCapabilities *device_caps = nullptr);
 
 public:
     CameraStatistic getParams();

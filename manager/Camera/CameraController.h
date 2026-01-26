@@ -2,14 +2,25 @@
 #define CAMERA_ONVIFCONTROL_H
 
 #include "GenericRtspCamera.h"
-#include "Common/DeviceController.h"
+#include "ext-plugin/onvif.h"
 
 namespace managerkit {
+
+struct OnvifProfile {
+    std::vector<OnvifMediaProfile> mediaProfiles;
+    OnvifPTZProfile ptzProfile;
+    OnvifDeviceInfo deviceInfo;
+};
+
+struct DeviceCapabilities {
+    bool isOnvifDevice = false;
+    OnvifProfile onvifProfile;
+};
 
 class CameraController : public std::enable_shared_from_this<CameraController>  {
 public:
     using Ptr = std::shared_ptr<CameraController>;
-    using OnControllerReady = std::function<void(bool connect, const std::string &status, bool enablePTZ)>;
+    using OnControllerReady = std::function<void(bool connect, const std::string &status, const DeviceCapabilities *caps)>;
 
     CameraController(const toolkit::EventPoller::Ptr &poller);
 
@@ -45,10 +56,11 @@ private:
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
-    DeviceController::Ptr _controller;
+    OnvifController::Ptr _onvif_ctr;
     OnControllerReady _on_ready;
-    bool _keep_remote_config = false;
+    DeviceCapabilities _device_caps;
     CameraInfo _info;
+    CameraOption _option;
 };
 
 } // namespace managerkit

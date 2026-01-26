@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <json/json.h>
 
 namespace managerkit {
 
@@ -47,6 +48,13 @@ public:
     };
 
     static WeekTime getWeekTime(uint64_t stamp);
+};
+
+class StrJsonUtils {
+public:
+    static bool readJsonString(const std::string &json_str, Json::Value &out);
+
+    static std::string writeJsonString(const Json::Value &in);
 };
 
 } // namespace managerkit

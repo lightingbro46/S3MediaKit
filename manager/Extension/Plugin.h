@@ -4,8 +4,6 @@
 #include <string>
 #include "Util/onceToken.h"
 
-#define GENERIC_RTSP_CAMERA "GENERIC-RTSP"
-
 #define REGISTER_STATIC_VAR_INNER_(var_name, line) var_name##_##line##__
 #define REGISTER_STATIC_VAR_(var_name, line) REGISTER_STATIC_VAR_INNER_(var_name, line)
 

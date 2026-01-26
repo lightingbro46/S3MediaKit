@@ -3243,12 +3243,6 @@ void installWebApi() {
                 return;
             }
 
-            auto option = ptr->getCameraOption();
-            if (!option.enablePTZControl) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ, "Camera is configured to disable PTZ control");
-                return;
-            }
-
             ptr->getOwnerPoller()->async([=]() mutable {
                 ptr->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
                     if (ex) {
@@ -3305,8 +3299,11 @@ void installWebApi() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
-        val["data"] = makeAllDeviceStatisticJson();
-        invoker(200, headerOut, val.toStyledString());
+
+        getServerStatisticJson([=](Json::Value &data) mutable {
+            val["data"] = data;
+            invoker(200, headerOut, val.toStyledString());
+        });
     });
 
     static auto findPlaybackStream = [](MediaSource::Ptr &ret, const string &url_in) {

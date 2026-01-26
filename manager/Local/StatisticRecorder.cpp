@@ -70,9 +70,9 @@ void StatisticRecorder::addBookmarkCount(const string &device_id, uint64_t creat
     recorder->addBookmarkCount(created_at, 0, add);
 }
 
-void StatisticRecorder::addDeviceCapabilities(const string &device_id, bool connected, const string &status, bool enable_ptz) {
+void StatisticRecorder::addDeviceCapabilities(const string &device_id, bool connected, const string &status, const DeviceCapabilities *device_caps) {
     auto recorder = getRecorder(device_id);
-    recorder->addDeviceCapabilities(connected, status, enable_ptz);
+    recorder->addDeviceCapabilities(connected, status, device_caps);
 }
 
 void StatisticRecorder::addStreamStatistic(const string &device_id, int stream_type, bool live, const string &status, const TranslationInfo *info) {

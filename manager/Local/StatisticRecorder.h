@@ -23,7 +23,7 @@ public:
 
     void addBookmarkCount(const std::string &device_id, uint64_t created_at, bool add = true);
 
-    void addDeviceCapabilities(const std::string &device_id, bool connected, const std::string &status, bool enable_ptz);
+    void addDeviceCapabilities(const std::string &device_id, bool connected, const std::string &status, const DeviceCapabilities *device_caps = nullptr);
 
     void addStreamStatistic(const std::string &device_id, int stream_type, bool live, const std::string &status, const mediakit::TranslationInfo *info = nullptr);
 

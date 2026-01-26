@@ -51,6 +51,7 @@ void GlobalMonitor::start() {
             auto mem_usage = strong_self->_mem_monitor->getCurrentUsage();
             auto net_usage = strong_self->_net_monitor->getCurrentUsage();
             auto hdd_usage = strong_self->_hdd_monitor->getCurrentUsage();
+            auto reader_usage = strong_self->_reader_monitor->totalReaderCount();
 
             DebugL << "OS CPU usage: " << format_double_2f(cpu_usage.usagePct) << "%";
             DebugL << "Process CPU usage: " << format_double_2f(cpu_usage.procUsagePct) << "%";
@@ -66,6 +67,7 @@ void GlobalMonitor::start() {
                                                     << ", used " << format_bytes_human_readable(it.used_bytes) 
                                                     << ", usage " << format_double_2f(it.usage_pct) << "%";
             }
+            DebugL << "Total Reader usage: " << reader_usage;
             return true;
         },
         _poller);
@@ -176,6 +178,12 @@ std::pair<double, double> GlobalMonitor::getThreshold(const ResourceType &type) 
     } else {
         WarnL << "Not found " << getResourceTypeString(type) << "monitor. Ignore get threshold";
         return std::make_pair(-1.0, -1.0);
+    }
+}
+
+void GlobalMonitor::setStreamReaderThreshold(int warning_threshold, int critical_threshold) {
+    if (_reader_monitor) {
+        _reader_monitor->setStreamReaderThreshold(warning_threshold, critical_threshold);
     }
 }
 

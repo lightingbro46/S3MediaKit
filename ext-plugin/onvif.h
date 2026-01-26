@@ -56,6 +56,11 @@ struct OnvifMediaProfile {
     int bitrate;
     float fps;
     float quality;
+    bool hasAudio = false;
+    std::string acodec;
+    int channelNo;
+    std::string sampleRate;
+    std::string sampleBit;
 
     struct VideoConfigOption {
         std::pair<int,int> FrameRateRange;
@@ -76,12 +81,15 @@ public:
 
     bool initControl() override;
 
-    const std::string& getDeviceIp() const { return _strDeviceIp; }
-
     /**
      * Get onvif device info
      */
     OnvifDeviceInfo getDeviceInfo() { return _deviceInfo; }
+
+    /**
+     * Get onvif media profiles
+     */
+    OnvifMediaProfileMap getMediaProfilesInfo() { return _mediaProfile; }
 
     /**
      * Select primary/secondary stream in media profile
@@ -89,7 +97,7 @@ public:
     std::vector<OnvifMediaProfile> selectStreamUrls(bool has_secondary = true);
 
     /**
-     * If device has PTZ capacibility
+     * If device has PTZ capability
      */
     bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
 

@@ -250,6 +250,19 @@ bool OnvifController::getMediaProfiles() {
         return false;
     }
 
+    _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
+    _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
+    if (!setCredentials()) {
+        destroyControl();
+        return false;
+    }
+
+    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse)) {
+        reportError();
+        destroyControl();
+        return false;
+    }
+
     for (const auto &profile : GetProfilesResponse.Profiles) {
         if (!profile || profile->token.empty()) {
             continue;
@@ -264,7 +277,6 @@ bool OnvifController::getMediaProfiles() {
             _profile.hasVideo = true;
 
             // get video configuration in profile
-            //todo: using ext-codec function
             switch (profile->VideoEncoderConfiguration->Encoding) {
                 case tt__VideoEncoding__JPEG: _profile.vcodec = "JPEG"; break;
                 case tt__VideoEncoding__MPEG4: _profile.vcodec = "MPEG4"; break;
@@ -310,6 +322,55 @@ bool OnvifController::getMediaProfiles() {
 
             // if (_profile.vcodec == "JPEG") {
             //     // DebugL << GetVideoConfigOptionResponse.Options->H264
+            // }
+        }
+
+        if (profile->AudioSourceConfiguration && profile->AudioEncoderConfiguration) {
+            // profile has audio source
+            _profile.hasAudio = true;
+            
+            // get audio configuration in profile
+            switch (profile->AudioEncoderConfiguration->Encoding) {
+                case tt__AudioEncoding__G711: _profile.acodec = "G711"; break;
+                case tt__AudioEncoding__G726: _profile.acodec = "G726"; break;
+                case tt__AudioEncoding__AAC: _profile.acodec = "AAC"; break;
+                default: _profile.acodec = "UNKNOWN"; break;
+            }
+
+            if (_profile.acodec == "UNKNOWN") {
+                WarnL << "Unsupported audio codec: " << profile->AudioEncoderConfiguration->Encoding << ". Ignore";
+                continue;
+            }
+
+            TraceL << "Audio Codec: " << profile->AudioEncoderConfiguration->Encoding << ">> " << _profile.acodec;
+            _profile.sampleBit = profile->AudioEncoderConfiguration->Bitrate ? profile->AudioEncoderConfiguration->Bitrate : 0;
+            TraceL << "Sample Bit Limit: " << _profile.sampleBit;
+            int sample = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
+            TraceL << "Sample Rate Limit: " << _profile.sampleRate;
+
+            auto sourceToken = profile->AudioSourceConfiguration->SourceToken;
+            for (const auto &audioSource : GetAudioSourcesResponse.AudioSources) {
+                WarnL << "Found audio source token: " << sourceToken << ", " << audioSource->token;
+                if (audioSource->token == sourceToken) {
+                    _profile.channelNo = audioSource->Channels ? audioSource->Channels : 0;
+                    break;
+                }
+            }
+            TraceL << "Channel No: " << _profile.channelNo;
+            // todo: get audio configuration option in profile
+            // _trt__GetAudioEncoderConfigurationOptions* GetAudioConfigOptions = soap_new__trt__GetAudioEncoderConfigurationOptions(_m_soap);
+            // _trt__GetAudioEncoderConfigurationOptionsResponse GetAudioConfigOptionResponse;
+            // GetAudioConfigOptions->ProfileToken = &profile->token;
+            // GetAudioConfigOptions->ConfigurationToken =  &profile->AudioEncoderConfiguration->token;
+            // if (!setCredentials()) {
+            //     destroyControl();
+            //     return false;
+            // }
+
+            // if (_proxyMedia->GetAudioEncoderConfigurationOptions(GetAudioConfigOptions, GetAudioConfigOptionResponse)) {
+            //     reportError();
+            //     destroyControl();
+            //     return false;
             // }
         }
 

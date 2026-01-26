@@ -54,6 +54,9 @@ void StreamSource::createPlayer() {
 
     ProtocolOption option;
     option.enable_mp4 = _record_mp4;
+    option.enable_rtsp = true;
+    option.enable_hls = true;
+    option.enable_jpeg = false;
     option.enable_audio = _record_audio;
 
     weak_ptr<StreamSource> weak_self = shared_from_this();

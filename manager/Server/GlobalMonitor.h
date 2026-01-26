@@ -37,6 +37,8 @@ public:
 
     std::pair<double, double> getThreshold(const ResourceType &type);
 
+    void setStreamReaderThreshold(int warning_threshold = -1, int critical_threshold = -1);
+    
     void setStreamReaderCount(const std::string &camera_id, int reader_count, bool record_stream = false);
 
     bool isReaderCountLimit(const std::string &camera_id, bool record_stream = false);

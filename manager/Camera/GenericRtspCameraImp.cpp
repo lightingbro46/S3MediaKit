@@ -1,8 +1,10 @@
 #include "GenericRtspCameraImp.h"
 #include "server/WebApiErrCode.h"
+#include "Common/config.h"
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
 namespace managerkit {
 
@@ -45,13 +47,18 @@ void GenericRtspCameraImp::onAllStreamReady() {
 void GenericRtspCameraImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<CameraController>(_poller);
-        _controller->setOnControllerReady([this](bool connect, const std::string &status, bool enablePTZ) {
+        _controller->setOnControllerReady([this](bool connect, const std::string &status, const DeviceCapabilities *caps) {
             auto strong_statistic = _statistic.lock();
             if (!strong_statistic) {
                 WarnL << "Camera statistic has been released. Ignore device capabilities update";
                 return;
             }
-            strong_statistic->addDeviceCapabilities(connect, status, enablePTZ);
+            strong_statistic->addDeviceCapabilities(connect, status, caps);
+
+            // update device capabilities if controller is connected
+            if (connect) {
+                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *this, *caps);
+            }
         });
         _controller->start();
     }

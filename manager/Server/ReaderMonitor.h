@@ -26,10 +26,10 @@ public:
 
     void setStreamReaderThreshold(int warning_threshold = -1, int critical_threshold = -1);
 
+    int totalReaderCount();
+
 private:
     void start() override;
-
-    int totalReaderCount();
 
     std::unordered_map<std::string, int> totalEachReaderCount();
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include "json/json.h"
+#include "Camera/CameraManager.h"
 
 namespace managerkit {
 
@@ -51,6 +52,8 @@ void getServerUsageJson(const std::function<void(Json::Value &data)> &cb);
 
 void loadServerStartedConfigJson(const Json::Value &data);
 
+Json::Value makeDeviceCapabilitiesJson(const managerkit::DeviceSource::Ptr &device, const managerkit::DeviceCapabilities* caps);
+
 Json::Value makeSystemStatisticJson();
 
 Json::Value makeSystemStorageJson();
@@ -62,7 +65,5 @@ int estimateMaxAvailableDevice();
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 
 void installGlobalMonitor();
-
-Json::Value makeAllDeviceStatisticJson();
 
 #endif // S3MANAGERKIT_MANAGER_H

@@ -4,6 +4,8 @@
 #include "Common/DeviceSource.h"
 #include "StreamSource.h"
 
+#define GENERIC_RTSP_CAMERA "GENERIC-RTSP"
+
 namespace managerkit {
 
 struct CameraInfo : public DeviceTuple {
@@ -82,9 +84,6 @@ public:
     // media server id, which camera belong to
     std::string preferedMediaServer;
 
-    // media server id, which camera belong to
-    bool enablePTZControl = true;
-
     // pre-record seconds for motion detection
     int motionPreRecordSec = 0;
 
@@ -105,6 +104,30 @@ public:
 
     // keep config of profile and stream changed from camera web page
     bool keepConfigProfileAndStream = false;
+
+    // whether to enable ptz control, default true, permit ptz operation only when this option is true
+    bool enablePTZControl = true;
+
+    // whether to reserve pan axis when ptz operation
+    bool reservePanAxis = false;
+
+    // whether to reserve tilt axis when ptz operation
+    bool reserveTiltAxis = false;
+
+    enum { 
+        kPTZModeAuto = 0, // System automatical choose ptz control mode, default use absoluted mode or relative mode or continous based on camera capability
+        kPTZAbsolutedMode = 1, // System choose choose ptz control with absoluted mode
+        kPTZRelativeMode = 2, // System choose choose ptz control with relative mode
+        kPTZContinousMode = 3 // System choose choose ptz control with continous mode
+    };
+    // ptz mode for ptz control
+    int ptzMode = kPTZModeAuto;
+
+    // onvif main profile token
+    std::string onvifMainProfile; 
+    
+    // onvif sub profile token
+    std::string onvifSubProfile; 
 
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
@@ -131,7 +154,12 @@ public:
                disableAudio == other.disableAudio &&
                webPort == other.webPort &&
                autoWebPort == other.autoWebPort &&
-               keepConfigProfileAndStream == other.keepConfigProfileAndStream;
+               keepConfigProfileAndStream == other.keepConfigProfileAndStream &&
+               ptzMode == other.ptzMode &&
+               reservePanAxis == other.reservePanAxis &&
+               reserveTiltAxis == other.reserveTiltAxis &&
+               onvifMainProfile == other.onvifMainProfile &&
+               onvifSubProfile == other.onvifSubProfile;
     }
 };
 

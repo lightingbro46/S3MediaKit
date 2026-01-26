@@ -1,37 +1,12 @@
 #include "CameraStatistic.h"
 #include "Common/config.h"
-#include "json/json.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
-
-static bool readJsonString(const string &json_str, Json::Value &out) {
-    // parse json string to json var
-    Json::CharReaderBuilder builder;
-    builder["collectComments"] = false;
-    Json::Value data;
-    string errs;
-
-    unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
-        WarnL << "Parse json string failed: " << errs;
-        return false;
-    }
-    // get stream information from json var
-    TraceL << "Json data: " << data.toStyledString();
-    out = data;
-    return true;
-}
-
-static string writeJsonString(const Json::Value &in) {
-    // parse json string to json var
-    Json::StreamWriterBuilder writer;
-    string output = Json::writeString(writer, in);
-    return output;
-}
 
 static Json::Value makeJsonKeyValue(const string &key, const string &value) {
     Json::Value ret;
@@ -126,19 +101,87 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
 }
 
 // DeviceCapabilities
-static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities stats) {
+static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
+    Json::Value ret = Json::objectValue;
+    // mediaProfiles
+    Json::Value mediaProfiles = Json::arrayValue;
+    for (const auto &mp : profile.mediaProfiles) {
+        Json::Value mp_json = Json::objectValue;
+        mp_json["token"] = mp.token;
+        mp_json["url"] = mp.url;
+        mediaProfiles.append(mp_json);
+    }
+    ret["mediaProfiles"] = mediaProfiles;
+    // ptzProfile
+    Json::Value ptzProfile = Json::objectValue;
+    ptzProfile["isAbsMoveEnable"] = profile.ptzProfile.isAbsMoveEnable;
+    ptzProfile["isConsMoveEnable"] = profile.ptzProfile.isConsMoveEnable;
+    ptzProfile["isRelMoveEnable"] = profile.ptzProfile.isRelMoveEnable;
+    ret["ptzProfile"] = ptzProfile;
+    // deviceInfo
+    Json::Value deviceInfo = Json::objectValue;
+    deviceInfo["manufacturer"] = profile.deviceInfo.manufacturer;
+    deviceInfo["model"] = profile.deviceInfo.model;
+    deviceInfo["firmwareVersion"] = profile.deviceInfo.firmwareVersion;
+    deviceInfo["serialNumber"] = profile.deviceInfo.serialNumber;
+    deviceInfo["hardwareId"] = profile.deviceInfo.hardwareId;
+    deviceInfo["macAddress"] = profile.deviceInfo.macAddress;
+    ret["deviceInfo"] = deviceInfo;
+    return ret;
+}
+
+static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities &caps) {
+    Json::Value ret = Json::objectValue;
+    ret["isOnvifDevice"] = caps.isOnvifDevice;
+    ret["onvifProfile"] = makeOnvifProfileJson(caps.onvifProfile);
+    return ret;
+}
+
+static Json::Value makeDeviceStatisticJson(const DeviceStatistic &stats) {
     Json::Value ret = Json::objectValue;
     ret["connect"] = stats.connect;
     ret["status"] = stats.status;
-    ret["ptzCapabilities"] = stats.ptzCapabilities;
+    ret["capabilities"] = makeDeviceCapabilitiesJson(stats.device_caps);
     return ret;
+}
+
+static OnvifProfile getOnvifProfile(const Json::Value &data) {
+    OnvifProfile profile;
+    // mediaProfiles
+    for (const auto &mp_json : data["mediaProfiles"]) {
+        OnvifMediaProfile mp;
+        mp.token = mp_json["token"].asString();
+        mp.url = mp_json["url"].asString();
+        profile.mediaProfiles.push_back(mp);
+    }
+    // ptzProfile
+    profile.ptzProfile.isAbsMoveEnable = data["ptzProfile"]["isAbsMoveEnable"].asBool();
+    profile.ptzProfile.isConsMoveEnable = data["ptzProfile"]["isConsMoveEnable"].asBool();
+    profile.ptzProfile.isRelMoveEnable = data["ptzProfile"]["isRelMoveEnable"].asBool();
+    // deviceInfo
+    profile.deviceInfo.manufacturer = data["deviceInfo"]["manufacturer"].asString();
+    profile.deviceInfo.model = data["deviceInfo"]["model"].asString();
+    profile.deviceInfo.firmwareVersion = data["deviceInfo"]["firmwareVersion"].asString();
+    profile.deviceInfo.serialNumber = data["deviceInfo"]["serialNumber"].asString();
+    profile.deviceInfo.hardwareId = data["deviceInfo"]["hardwareId"].asString();
+    profile.deviceInfo.macAddress = data["deviceInfo"]["macAddress"].asString();
+    return profile;
 }
 
 static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     DeviceCapabilities stats;
+    stats.isOnvifDevice = !data["isOnvifDevice"].empty() ? data["isOnvifDevice"].asBool() : false;
+    stats.onvifProfile = getOnvifProfile(data["onvifProfile"]);
+    return stats;
+}
+
+static DeviceStatistic getDeviceStatistic(const Json::Value &data) {
+    DeviceStatistic stats;
     stats.connect = !data["connect"].empty() ? data["connect"].asBool() : false;
     stats.status = !data["status"].empty() ? data["status"].asString() : "";
-    stats.ptzCapabilities = !data["ptzCapabilities"].empty() ? data["ptzCapabilities"].asBool() : false;
+    if (!data["capabilities"].empty()) {
+        stats.device_caps = getDeviceCapabilities(data["capabilities"]);
+    }
     return stats;
 }
 
@@ -152,21 +195,21 @@ static Json::Value makeStreamTupleJson(unordered_map<int, StreamTuple> stream_ma
     return ret;
 }
 
-static StreamTuple getStreamTuple(const Json::Value &data, const CameraInfo &info) {
+static StreamTuple getStreamTuple(const Json::Value &data, const CameraInfo &info, int stream_type) {
     StreamTuple tuple;
     tuple.vhost = info.vhost;
     tuple.device_id = info.device_id;
+    tuple.name = getStreamTypeString(stream_type);
     tuple.stream_id = data["id"].asString();
     tuple.full_url = data["url"].asString();
     return tuple;
 }
 
-
 // ################### CameraStatisticHelper ###########################
 
 bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &stats) {
     Json::Value ret;
-    if (!readJsonString(json_str, ret)) {
+    if (!StrJsonUtils::readJsonString(json_str, ret)) {
         WarnL << "Parse json string failed";
         return false;
     }
@@ -206,18 +249,23 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.webPort = ret["webPort"].asInt();
     option.autoWebPort = ret["autoWebPort"].asBool();
     option.keepConfigProfileAndStream = ret["keepConfigProfileAndStream"].asBool();
+    option.reservePanAxis = ret["reservePanAxis"].asBool();
+    option.reserveTiltAxis = ret["reserveTiltAxis"].asBool();
+    option.ptzMode = ret["ptzMode"].asInt();
+    option.onvifMainProfile = ret["onvifMainProfile"].asString();
+    option.onvifSubProfile = ret["onvifSubProfile"].asString();
     stats.option = option;
 
     // stream tuple map
     unordered_map<int, StreamTuple> stream_map;
     auto streamUrlsString = ret["streamUrls"].asString();
     Json::Value streamUrlsJson;
-    readJsonString(streamUrlsString, streamUrlsJson);
-    auto primary_stream = getStreamTuple(streamUrlsJson[PrimaryStream], info);
+    StrJsonUtils::readJsonString(streamUrlsString, streamUrlsJson);
+    auto primary_stream = getStreamTuple(streamUrlsJson[PrimaryStream], info, PrimaryStream);
     if (!primary_stream.empty()) {
         stream_map[PrimaryStream] = primary_stream;
     }
-    auto secondary_stream = getStreamTuple(streamUrlsJson[SecondaryStream], info);
+    auto secondary_stream = getStreamTuple(streamUrlsJson[SecondaryStream], info, SecondaryStream);
     if (!secondary_stream.empty()) {
         stream_map[SecondaryStream] = secondary_stream;
     }
@@ -227,11 +275,11 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     for (const auto &it : ret["addParams"]) {
         if (it["name"] == "bookmarkStats") {
             Json::Value bm_json;
-            readJsonString(it["value"].asString(), bm_json);
+            StrJsonUtils::readJsonString(it["value"].asString(), bm_json);
             stats.bm = getBookmarkStats(bm_json);
         } else if (it["name"] == "streamStorageInfos") {
             Json::Value storage_json;
-            readJsonString(it["value"].asString(), storage_json);
+            StrJsonUtils::readJsonString(it["value"].asString(), storage_json);
             if (!primary_stream.empty()) {
                 auto stream_id = primary_stream.stream_id;
                 stats.storage_map[stream_id] = getStreamStorageStats(storage_json[PrimaryStream]);
@@ -242,17 +290,17 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
             }
         } else if (it["name"] == "streamStatisticInfos") {
             Json::Value stream_stats_json;
-            readJsonString(it["value"].asString(), stream_stats_json);
+            StrJsonUtils::readJsonString(it["value"].asString(), stream_stats_json);
             if (!primary_stream.empty()) {
                 stats.sinfo_map[PrimaryStream] = getStreamStatistic(stream_stats_json[PrimaryStream]);
             }
             if (!secondary_stream.empty()) {
                 stats.sinfo_map[SecondaryStream] = getStreamStatistic(stream_stats_json[SecondaryStream]);
             }
-        } else if (it["name"] == "deviceCapabilities") {
-            Json::Value device_caps_json;
-            readJsonString(it["value"].asString(), device_caps_json);
-            stats.device_caps = getDeviceCapabilities(device_caps_json);
+        } else if (it["name"] == "deviceStatistic") {
+            Json::Value device_stats_json;
+            StrJsonUtils::readJsonString(it["value"].asString(), device_stats_json);
+            stats.device_stats = getDeviceStatistic(device_stats_json);
         }
     }
 
@@ -300,29 +348,33 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["webPort"] = stats.option.webPort;
     root["autoWebPort"] = stats.option.autoWebPort;
     root["keepConfigProfileAndStream"] = stats.option.keepConfigProfileAndStream;
+    root["reservePanAxis"] = stats.option.reservePanAxis;
+    root["reserveTiltAxis"] = stats.option.reserveTiltAxis;
+    root["ptzMode"] = stats.option.ptzMode;
+    root["onvifMainProfile"] = stats.option.onvifMainProfile;
+    root["onvifSubProfile"] = stats.option.onvifSubProfile;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;
     streamUrls[PrimaryStream] = makeStreamTupleJson(stats.stream_map, PrimaryStream);
     streamUrls[SecondaryStream] = makeStreamTupleJson(stats.stream_map, SecondaryStream);
-    root["streamUrls"] = writeJsonString(streamUrls);
+    root["streamUrls"] = StrJsonUtils::writeJsonString(streamUrls);
     // add params
     Json::Value params = Json::arrayValue;
     Json::Value bm_json = makeBookmarkStatsJson(stats.bm);
-    params.append(makeJsonKeyValue("bookmarkStats", writeJsonString(bm_json)));
-
+    params.append(makeJsonKeyValue("bookmarkStats", StrJsonUtils::writeJsonString(bm_json)));
     Json::Value storage_json = Json::arrayValue;
     storage_json.append(makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, PrimaryStream));
     storage_json.append(makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, SecondaryStream));
-    params.append(makeJsonKeyValue("streamStorageInfos", writeJsonString(storage_json)));
+    params.append(makeJsonKeyValue("streamStorageInfos", StrJsonUtils::writeJsonString(storage_json)));
 
     Json::Value stream_stats_json = Json::arrayValue;
     stream_stats_json.append(makeStreamStatisticJson(stats.sinfo_map, PrimaryStream));
     stream_stats_json.append(makeStreamStatisticJson(stats.sinfo_map, SecondaryStream));
-    params.append(makeJsonKeyValue("streamStatisticInfos", writeJsonString(stream_stats_json)));
+    params.append(makeJsonKeyValue("streamStatisticInfos", StrJsonUtils::writeJsonString(stream_stats_json)));
 
-    Json::Value device_caps_json = makeDeviceCapabilitiesJson(stats.device_caps);
-    params.append(makeJsonKeyValue("deviceCapabilities", writeJsonString(device_caps_json)));
+    Json::Value device_stats_json = makeDeviceStatisticJson(stats.device_stats);
+    params.append(makeJsonKeyValue("deviceStatistic", StrJsonUtils::writeJsonString(device_stats_json)));
 
     root["addParams"] = params;
 
@@ -363,7 +415,7 @@ void CameraStatisticImp::load() {
         bm = saved_stats.bm;
         storage_map = saved_stats.storage_map;
         sinfo_map = saved_stats.sinfo_map;
-        device_caps = saved_stats.device_caps;
+        device_stats = saved_stats.device_stats;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
     }
@@ -562,12 +614,14 @@ void CameraStatisticImp::remove() {
     }
 }
 
-void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, bool enable_ptz) {
+void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, const DeviceCapabilities *device_caps) {
     std::lock_guard<std::mutex> lck(_mtx);
-    device_caps.connect = connect;
-    device_caps.status = status;
-    device_caps.ptzCapabilities = enable_ptz;
-    DebugL << "Device " << info.shortUrl() << " capabilities: Connected=" << device_caps.connect << ", Status=" << device_caps.status << ", PTZ=" << device_caps.ptzCapabilities;
+    device_stats.connect = connect;
+    device_stats.status = status;
+    if (device_caps) {
+        device_stats.device_caps = *device_caps;
+    }
+    DebugL << "Device " << info.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status;
     save();
 }
 

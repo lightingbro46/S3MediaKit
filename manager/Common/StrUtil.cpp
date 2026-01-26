@@ -4,6 +4,7 @@
 #include <ctime>
 #include <iomanip>
 #include <algorithm>
+#include "Util/logger.h"
 
 using namespace std;
 using namespace toolkit;
@@ -225,6 +226,34 @@ StrTimeUtils::WeekTime StrTimeUtils::getWeekTime(uint64_t stamp) {
     wt.day_of_week = lt->tm_wday; // day of week
     wt.hour = lt->tm_hour;        // hour of day
     return wt;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+bool StrJsonUtils::readJsonString(const string &json_str, Json::Value &out) {
+    // parse json string to json var
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+    Json::Value data;
+    string errs;
+
+    unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
+        WarnL << "Parse json string failed: " << errs;
+        return false;
+    }
+    // get stream information from json var
+    TraceL << "Json data: " << data.toStyledString();
+    out = data;
+    return true;
+}
+
+string StrJsonUtils::writeJsonString(const Json::Value &in) {
+    // parse json string to json var
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    string output = Json::writeString(writer, in);
+    return output;
 }
 
 } // namespace managerkit
