@@ -391,18 +391,18 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     }
 
     // stream reader threshold config
-    bool maxConnectPerCameraAuto = !data["maxClientConnectPerCameraAuto"].isNull() ? data["maxClientConnectPerCameraAuto"].asBool() : false;
-    int maxClientConnectPerCamera = !data["maxClientConnectPerCamera"].isNull() ? data["maxClientConnectPerCamera"].asInt() : -1;
-    if (maxConnectPerCameraAuto && maxClientConnectPerCamera > 0) {
-        GlobalMonitor::Instance().setStreamReaderThreshold(maxClientConnectPerCamera, (int)(maxClientConnectPerCamera * 1.1));
+    bool maxConnectPerCameraAuto = !data["unlimitedStreamPerCamera"].isNull() ? data["unlimitedStreamPerCamera"].asBool() : false;
+    int maxConnectPerCamera = !data["maxStreamPerCamera"].isNull() ? data["maxStreamPerCamera"].asInt() : -1;
+    if (maxConnectPerCameraAuto && maxConnectPerCamera > 0) {
+        GlobalMonitor::Instance().setStreamReaderThreshold(maxConnectPerCamera, (int)(maxConnectPerCamera * 1.1));
     } else {
         GlobalMonitor::Instance().setStreamReaderThreshold(-1, -1);
     }
 
-    bool maxConnectOnMserverAuto = !data["maxClientConnectOnMediaServerAuto"].isNull() ? data["maxClientConnectOnMediaServerAuto"].asBool() : false;
-    int maxClientConnectOnMserver = !data["maxClientConnectOnMediaServer"].isNull() ? data["maxClientConnectOnMediaServer"].asInt() : -1;
-    if (maxConnectOnMserverAuto && maxClientConnectOnMserver > 0) {
-        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxClientConnectOnMserver,  (int)(maxClientConnectOnMserver * 1.1));
+    bool maxConnectOnMserverAuto = !data["unlimitedStream"].isNull() ? data["unlimitedStream"].asBool() : false;
+    int maxConnectOnMserver = !data["maxStream"].isNull() ? data["maxStream"].asInt() : -1;
+    if (maxConnectOnMserverAuto && maxConnectOnMserver > 0) {
+        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserver,  (int)(maxConnectOnMserver * 1.1));
     } else {
         GlobalMonitor::Instance().setThreshold(ResourceType::READER, -1, -1);
     }
