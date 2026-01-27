@@ -711,8 +711,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
             data["onvifProfiles"] = onvifProfileJson;
         } else {
-            data["manufacturer"] = info.manufacturer;
-            data["model"] = info.model;
+            data["manufacturer"] = info.manufacturer.empty() ? GENERIC_RTSP_CAMERA : info.manufacturer;
+            data["model"] = info.model.empty() ? GENERIC_RTSP_CAMERA : info.model;
             data["serialNumber"] = "";
             data["firmwareVersion"] = "";
             data["hardwareId"] = "";

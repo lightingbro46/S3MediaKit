@@ -3115,9 +3115,12 @@ void installWebApi() {
                     ret["hardwareId"] = "";
                     ret["macAddress"] = "";
                     ret["isPtz"] = false;
+                    ret["ip"] = "";
+                    ret["port"] = 0;
+                    ret["webPortAuto"] = true;
+                    ret["address"] = "";
                     ret["isNewDevice"] = true;
                     ret["profiles"] = arrayValue;
-                    ret["address"] = "";
                     Value stream;
                     stream["vcodec"] = info.vcodec;
                     stream["width"] = info.width;
@@ -3150,6 +3153,9 @@ void installWebApi() {
             ret["hardwareId"] = info.hardwareId;
             ret["macAddress"] = info.macAddress;
             ret["address"] = "http:// " + ipAddress; 
+            ret["ip"] = ip;
+            ret["port"] = port;
+            ret["webPortAuto"] = defaultPort;
             ret["isPtz"] = onvif->enablePTZ();
             //todo: check is new device or not
             ret["isNewDevice"] = true;
