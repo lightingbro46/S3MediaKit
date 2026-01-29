@@ -37,73 +37,24 @@ uint64_t getStartOfMinute(uint64_t seconds) {
 
     return static_cast<uint64_t>(std::mktime(tm));
 }
-
-////////////////////// TimeMaker/////////////////////////
+////////////////////// TimeMaker ////////////////////////
 
 bool TimeMaker::inputData(uint64_t &block_time, size_t &block_size) {
     auto last_minute = getStartOfMinute(block_time);
-    if (last_minute > _last_minute) {
-        writeIndex(last_minute, _last_offset);
-        _last_minute = last_minute;
+    if (last_minute > getLastStamp()) {
+        BlockListIndexEntry entry;
+        entry.start_time = last_minute;
+        entry.offset = _last_offset;
+        
+        inputEntry(entry);
+        setLastStamp(last_minute);
     }
     _last_offset += block_size;
     return true;
 }
 
-void TimeMaker::writeIndex(uint64_t stamp, uint64_t offset) {
-    BlockListIndexEntry entry;
-    entry.offset = offset;
-    entry.start_time = stamp;
-
-    onWriteIndex(entry);
-}
-
-bool TimeMaker::findLowerBound(BlockListIndexEntry &entry, uint64_t &stamp) {
-    bool found = false;
-    if (onSeekIndex(0)) {
-        bool eof = false;
-        uint64_t last_time = 0;
-        while (!eof && last_time < stamp) {
-            BlockListIndexEntry sample;
-            onReadIndex(sample, eof);
-            if (!eof) {
-                if (sample.start_time < stamp) {
-                    entry = sample;
-                    found = true;
-                }
-                last_time = sample.start_time;
-            }
-        }
-    }
-    return found;
-}
-
-uint64_t TimeMaker::findFirstStamp() {
-    uint64_t first_stamp = 0;
-    if (onSeekIndex(0)) {
-        bool eof = false;
-        BlockListIndexEntry entry;
-        onReadIndex(entry, eof);
-        if (!eof) {
-            first_stamp = entry.start_time;
-        }
-    }
-    return first_stamp;
-}
-
-uint64_t TimeMaker::findLastStamp() {
-    uint64_t last_stamp = 0;
-    if (onSeekIndex(0)) {
-        bool eof = false;
-        BlockListIndexEntry entry;
-        while(!eof) {
-            onReadIndex(entry, eof);
-            if (!eof) {
-                last_stamp = entry.start_time;
-            }
-        }
-    }
-    return last_stamp;
+uint64_t TimeMaker::getStampOfEntry(BlockListIndexEntry &entry) {
+    return entry.start_time;
 }
 
 ////////////////////// TimeMakerImp /////////////////////////
@@ -150,17 +101,27 @@ void TimeMakerImp::openFile(const std::string &file, string mode) {
 }
 
 void TimeMakerImp::closeFile() {
-    _file = nullptr;
+    if (_writer) {
+        _writer->flush();
+        _writer.reset();
+    }
+    if (_reader) {
+        _reader.reset();
+    }
+    if (_file) {
+        _file->closeFile();
+        _file.reset();
+    }
 }
 
-void TimeMakerImp::onWriteIndex(BlockListIndexEntry &entry) {
+void TimeMakerImp::onWriteEntry(BlockListIndexEntry &entry) {
     if(_writer) {
         _writer->write(reinterpret_cast<const char *>(&entry), sizeof(entry));
         _writer->flush();
     }
 }
 
-void TimeMakerImp::onReadIndex(BlockListIndexEntry &entry, bool &eof) {
+void TimeMakerImp::onReadEntry(BlockListIndexEntry &entry, bool &eof) {
     eof = false;
     if (_reader && _reader->read(reinterpret_cast<char*>(&entry), sizeof(entry)) == 0) {
         return;
@@ -168,7 +129,7 @@ void TimeMakerImp::onReadIndex(BlockListIndexEntry &entry, bool &eof) {
     eof = true;
 }
 
-bool TimeMakerImp::onSeekIndex(uint32_t offset) {
+bool TimeMakerImp::onSeekEntry(uint32_t offset) {
     if(_reader) {
         return _reader->seek(offset) == 0;
     }

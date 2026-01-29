@@ -56,7 +56,7 @@ void StreamSource::createPlayer() {
     option.enable_mp4 = _record_mp4;
     option.enable_rtsp = true;
     option.enable_hls = true;
-    option.enable_jpeg = false;
+    option.enable_motion = true;
     option.enable_audio = _record_audio;
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
@@ -191,6 +191,16 @@ TranslationInfo StreamSource::getTranslationInfo() {
     }
     
     return _info;
+}
+
+bool StreamSource::setupRecord(bool start, bool archived, int pre_sec) {
+    auto strong_player = _player.lock();
+    if (!strong_player) {
+        return false;
+    }
+
+    strong_player->setupRecord(Recorder::type_mp4, start, archived);
+    return true;
 }
 
 } // namespace managerkit

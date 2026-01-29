@@ -70,7 +70,8 @@ RUN apt-get update && \
          libssl-dev \
          libprotobuf-dev \
          libsqlite3-dev \
-         libcurl4-openssl-dev \
+         libcurl4-openssl-dev \
+         libfreetype6-dev \
          ffmpeg && \
          apt-get autoremove -y && \
          apt-get clean -y && \

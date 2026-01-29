@@ -64,6 +64,8 @@ public:
 
     mediakit::TranslationInfo getTranslationInfo();
 
+    bool setupRecord(bool start, bool archived = false, int pre_sec = 0);
+
 private:
     void createPlayer();
 

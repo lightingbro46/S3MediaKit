@@ -5,6 +5,7 @@
 #include "CameraController.h"
 #include "StreamSink.h"
 #include "Local/StatisticRecorder.h"
+#include "Extension/RecordPolicy.h"
 
 namespace managerkit {
 
@@ -32,6 +33,8 @@ public:
 
     CameraStatisticImp::Ptr getCameraStatisticImp();
 
+    void onMotionDetected(bool bActive, uint64_t pre_ms);
+
 private:
     void onAllStreamReady();
 
@@ -47,6 +50,7 @@ private:
     std::atomic<bool> _enabled { false };
     CameraOption _option;
     CameraController::Ptr _controller;
+    // RecordingController::Ptr _recording_controller;
     StreamSink::Ptr _sink;
     std::weak_ptr<CameraStatisticImp> _statistic;
 };

@@ -120,8 +120,13 @@ private:
     std::multimap<uint64_t, Frame::Ptr> _cache;
 };
 
-std::shared_ptr<MediaSinkInterface> MultiMediaSourceMuxer::makeRecorder(Recorder::type type) {
-    auto recorder = Recorder::createRecorder(type, getMediaTuple(), _option);
+std::shared_ptr<MediaSinkInterface> MultiMediaSourceMuxer::makeRecorder(Recorder::type type, bool archived) {
+    auto tuple = getMediaTuple();
+    if (archived) {
+        GET_CONFIG(string, archive_name, Record::kArchiveStreamName);
+        tuple.stream = archive_name;
+    }
+    auto recorder = Recorder::createRecorder(type, tuple, _option);
     for (auto &track : getTracks()) {
         recorder->addTrack(track);
     }
@@ -221,6 +226,9 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
     }
     if (option.enable_fmp4) {
         _fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(Recorder::createRecorder(Recorder::type_fmp4, _tuple, option));
+    }
+    if (option.enable_motion) {
+        _proc = std::make_shared<MediaSourceProcessor>(_tuple, option);
     }
 
     // Audio related settings
@@ -365,6 +373,29 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
                 _ts = ts;
             } else if (!start && _ts) {
                 _ts = nullptr;
+            }
+            return true;
+        }
+        default : return false;
+    }
+}
+
+bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, bool archived) {
+    CHECK(getOwnerPoller(MediaSource::NullMediaSource())->isCurrentThread(), "Can only call setupRecord in it's owner poller");
+    onceToken token(nullptr, [&]() {
+        if (_option.mp4_as_player && type == Recorder::type_mp4) {
+            // Turn on/off mp4 recording, trigger events related to changes in the number of viewers
+            onReaderChanged(MediaSource::NullMediaSource(), totalReaderCount());
+        }
+    });
+    switch (type) {
+        case Recorder::type_mp4 : {
+            if (start && !_mp4) {
+                // Start recording
+                _mp4 =  makeRecorder(type, archived);
+            } else if (!start && _mp4) {
+                // Stop recording
+                _mp4 = nullptr;
             }
             return true;
         }
@@ -569,6 +600,7 @@ bool MultiMediaSourceMuxer::close(MediaSource &sender) {
     _mp4 = nullptr;
     _hls = nullptr;
     _hls_fmp4 = nullptr;
+    _proc = nullptr;
 #if defined(ENABLE_RTPPROXY)
     _rtp_sender.clear();
 #endif // ENABLE_RTPPROXY
@@ -608,6 +640,9 @@ bool MultiMediaSourceMuxer::onTrackReady(const Track::Ptr &track) {
     if (_mp4) {
         ret = _mp4->addTrack(track) ? true : ret;
     }
+    if (_proc) {
+        ret = _proc->addTrack(track) ? true : ret;
+    }
     return ret;
 }
 
@@ -645,6 +680,9 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     }
     if (_hls_fmp4) {
         _hls_fmp4->addTrackCompleted();
+    }
+    if (_proc) {
+        _proc->addTrackCompleted();
     }
 
     auto listener = _track_listener.lock();
@@ -710,6 +748,9 @@ void MultiMediaSourceMuxer::resetTracks() {
     if (_mp4) {
         _mp4->resetTracks();
     }
+    if (_proc) {
+        _proc->resetTracks();
+    }
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
@@ -747,6 +788,9 @@ bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
     }
     if (_fmp4) {
         ret = _fmp4->inputFrame(frame) ? true : ret;
+    }
+    if (_proc) {
+        ret = _proc->inputFrame(frame) ? true : ret;
     }
 
     if (_ring) {

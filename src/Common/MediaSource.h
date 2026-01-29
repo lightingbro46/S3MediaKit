@@ -223,6 +223,9 @@ public:
     // Maximum number of tracks
     size_t max_track = 2;
 
+    // Whether to enable motion detection
+    bool enable_motion = false;
+
     template <typename MAP>
     ProtocolOption(const MAP &allArgs) : ProtocolOption() {
         load(allArgs);
@@ -259,6 +262,8 @@ public:
         GET_OPT_VALUE(hls_save_path);
         GET_OPT_VALUE(stream_replace);
         GET_OPT_VALUE(max_track);
+
+        GET_OPT_VALUE(enable_motion);
     }
 };
 

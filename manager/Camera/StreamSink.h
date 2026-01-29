@@ -3,7 +3,6 @@
 
 #include "GenericRtspCamera.h"
 #include "StreamSource.h"
-#include "Local/RecordingPolicy.h"
 
 namespace managerkit {
 
@@ -25,6 +24,8 @@ public:
     void setupMonitor(int type, const StreamTuple &tuple, const CameraInfo &info, const CameraOption &option);
 
     void stopMonitor(int type);
+
+    void setupRecord(int type, bool start, bool archived,int pre_sec);
 
 private:
     void onManager();

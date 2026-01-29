@@ -100,4 +100,14 @@ void StreamSink::onManager() {
     }
 }
 
+void StreamSink::setupRecord(int type, bool start, bool archived, int pre_sec) {
+    lock_guard<mutex> lck(_mtx_sink);
+    auto it = _monitor_map.find(type);
+    if (it != _monitor_map.end()) {
+        if (it->second->isLive()) {
+            it->second->setupRecord(start, archived, pre_sec);
+        }
+    }
+}
+
 } // namespace managerkit

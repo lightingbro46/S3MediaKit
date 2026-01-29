@@ -57,7 +57,7 @@ void GenericRtspCameraImp::setupController() {
 
             // update device capabilities if controller is connected
             if (connect) {
-                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *this, *caps);
+                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *this);
             }
         });
         _controller->start();
@@ -144,5 +144,12 @@ void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
     }
     strong_statistic->setCameraOption(option);
 }   
+
+void GenericRtspCameraImp::onMotionDetected(bool bActive, uint64_t pre_ms) {
+    // Implementation here
+    // check record mode in this hours
+    // start recording if bActive is true
+    // stop recording if bActive is false
+}
 
 } // namespace managerkit

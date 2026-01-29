@@ -80,6 +80,8 @@ const string kBroadcastDeviceCapsChanged = "kBroadcastDeviceCapsChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
 const string kBroadcastHealthCheckService = "kBroadcastHealthCheckService";
+const string kBroadcastMediaMotionChanged = "kBroadcastMediaMotionDetected";
+const string kBroadcastRecordMotion = "kBroadcastRecordMotion";
 
 } // namespace Broadcast
 
@@ -151,6 +153,10 @@ const string kTSDemand = string(kFieldName) + "ts_demand";
 const string kFMP4Demand = string(kFieldName) + "fmp4_demand";
 const string kAppName = string(kFieldName) + "appName";
 
+const string kEnableMotion = string(kFieldName) + "enable_motion";
+const string kMotionDemand = string(kFieldName) + "motion_demand";
+const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
+
 static onceToken token([]() {
     mINI::Instance()[kModifyStamp] = (int)ProtocolOption::kModifyStampRelative;
     mINI::Instance()[kEnableAudio] = 1;
@@ -183,6 +189,10 @@ static onceToken token([]() {
     mINI::Instance()[kTSDemand] = 0;
     mINI::Instance()[kFMP4Demand] = 0;
     mINI::Instance()[kAppName] = "live";
+
+    mINI::Instance()[kEnableMotion] = 0;
+    mINI::Instance()[kMotionDemand] = 0;
+    mINI::Instance()[kGopCacheSize] = 0;
 });
 } // !Protocol
 
@@ -320,6 +330,7 @@ const string kFileBufSize = RECORD_FIELD "fileBufSize";
 const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
+const string kArchiveStreamName = RECORD_FIELD "archiveStreamName";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -328,6 +339,7 @@ static onceToken token([]() {
     mINI::Instance()[kFastStart] = false;
     mINI::Instance()[kFileRepeat] = false;
     mINI::Instance()[kEnableFmp4] = false;
+    mINI::Instance()[kArchiveStreamName] = "archive";
 });
 } // namespace Record
 
@@ -418,6 +430,29 @@ static onceToken token([]() {
     mINI::Instance()[kAddrMulticast] = "239.255.255.250";
 });
 } //namespace SSDP
+
+//////////////Motion detection configuration///////////
+namespace Motion {
+#define MOTION_FIELD "motion."
+// Sensitivity of motion detection, the larger the value, the more sensitive
+const string kSensitivity = MOTION_FIELD "sensitivity";
+// Minimum interval time for motion detection trigger, in milliseconds
+const string kIntervalMS = MOTION_FIELD "intervalMS";
+// Minimum duration for motion detection to be considered valid, in milliseconds
+const string kMinDurationMS = MOTION_FIELD "minDurationMS";
+// Block size for motion detection
+const string kBlockSize = MOTION_FIELD "blockSize";
+// Whether to use the Y channel for motion detection
+const string kUseYChannel = MOTION_FIELD "useYChannel";
+
+static onceToken token([]() {
+    mINI::Instance()[kSensitivity] = 50;
+    mINI::Instance()[kIntervalMS] = 200;
+    mINI::Instance()[kMinDurationMS] = 1000;
+    mINI::Instance()[kBlockSize] = 16;
+    mINI::Instance()[kUseYChannel] = 0;
+});
+} // namespace Motion
 
 } // namespace mediakit
 

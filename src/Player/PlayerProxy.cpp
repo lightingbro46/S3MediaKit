@@ -335,4 +335,8 @@ uint64_t PlayerProxy::getRePullCount() {
     return _repull_count;
 }
 
+bool PlayerProxy::setupRecord(Recorder::type type, bool enable, bool archived) {
+    return (_muxer ? _muxer->setupRecord(type, enable, archived) : false);
+}
+
 } /* namespace mediakit */

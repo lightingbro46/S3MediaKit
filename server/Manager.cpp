@@ -75,7 +75,7 @@ void installManagerHook () {
 
 #ifdef ENABLE_MP4
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
-        DebugL << "Record mp4 file " << info.app << " " << info.stream << " " << info.start_time << " " << info.time_len << " " << info.file_path;
+        DebugL << "Record mp4 file " << info.app << "/" << info.stream << "/" << info.start_time << "/" << info.time_len << "/" << info.file_path;
         TimeBlock block;
         block.set_app(info.app);
         block.set_stream(info.stream);
@@ -161,6 +161,26 @@ void installManagerHook () {
             record_stream = true;
         }
         GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
+    });
+
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaMotionChanged, [](BroadcastMediaMotionChangedArgs) {
+        auto device = DeviceSource::find(args.vhost, args.app); 
+        if (!device) {
+            WarnL << "Motion event from unknown device:" << args.vhost << "/" << args.app << ": " << bActive;
+            return;
+        }
+        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(device);
+        if (ptr) {
+            ptr->onMotionDetected(bActive, pre_ms);
+        }
+    });
+
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMotion, [](BroadcastRecordMotionArgs) {
+        DebugL << "Record motion index " << info.app << "/" << info.stream << "/" << info.motion_level << "/" << info.motion_area << "/" << getTimeStr("%Y-%m-%d %H:%M:%S", info.start_time) << "/" << getTimeStr("%Y-%m-%d %H:%M:%S", info.end_time);
+        // auto ret = TimeRecorderManager::Instance().addMotionBlock(block);
+        // if (ret) {
+        //     StatisticRecorder::Instance().addMotionArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
+        // }
     });
 
     enforceStoragePolicy();
@@ -501,7 +521,8 @@ static Json::Value exampleJson() {
     device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
-    device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
     // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
 

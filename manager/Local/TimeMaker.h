@@ -1,8 +1,7 @@
 #ifndef LOCAL_TIMEMAKER_H
 #define LOCAL_TIMEMAKER_H
 
-#include <string>
-#include <deque>
+#include "FileMaker.h"
 #include "TimeFile.h"
 #include "Poller/EventPoller.h"
 
@@ -19,48 +18,16 @@ struct BlockListIndexEntry {
     uint64_t offset;
 } __attribute__((packed));
 
-class TimeMaker {
+class TimeMaker : public FileMaker<BlockListIndexEntry> {
 public:
-    virtual ~TimeMaker() = default;
-
     bool inputData(uint64_t &block_time, size_t &block_size);
 
-    /**
-     * find last block that has a start_time less than the search value
-     */
-    bool findLowerBound(BlockListIndexEntry &entry, uint64_t &stamp);
-
-    uint64_t getFirstStamp() { return _first_minute; }
-
-    void setLastOffset(uint64_t offset) { _last_offset = offset; }
-
-protected:
-    /**
-     * Return first time block in minute or return 0
-     */
-    uint64_t findFirstStamp();
-
-    /**
-     * Return last time block in minute or return 0
-     */
-    uint64_t findLastStamp();
-
-    void setFirstStamp(uint64_t stamp) { _first_minute = stamp; }
-
-    void setLastStamp(uint64_t stamp) { _last_minute = stamp; }
+    void setLastOffset(uint32_t offset) { _last_offset = offset; }
 
 private:
-    void writeIndex(uint64_t stamp, uint64_t offset);
-
-    virtual void onWriteIndex(BlockListIndexEntry &entry) = 0;
-
-    virtual void onReadIndex(BlockListIndexEntry &entry, bool &eof) = 0;
-
-    virtual bool onSeekIndex(uint32_t offset) = 0;
+    uint64_t getStampOfEntry(BlockListIndexEntry &entry) override;
 
 private:
-    uint64_t _first_minute = 0;
-    uint64_t _last_minute = 0;
     uint32_t _last_offset = 0;
 };
 
@@ -80,11 +47,11 @@ public:
     TimeReader::Ptr createReader();
 
 private:
-    void onWriteIndex(BlockListIndexEntry &entry) override;
+    void onWriteEntry(BlockListIndexEntry &entry) override;
 
-    void onReadIndex(BlockListIndexEntry &entry, bool &eof) override;
+    void onReadEntry(BlockListIndexEntry &entry, bool &eof) override;
 
-    bool onSeekIndex(uint32_t offset) override;
+    bool onSeekEntry(uint32_t offset) override;
 
 private:
     std::string _file_path;
@@ -94,4 +61,5 @@ private:
 };
 
 } // namespace managerkit
+
 #endif // LOCAL_TIMEMAKER_H

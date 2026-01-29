@@ -150,7 +150,7 @@ extern const std::string kBroadcastDeviceAccess;
 
 // Broadcast for device capabilities changed event.
 extern const std::string kBroadcastDeviceCapsChanged;
-#define BroadcastDeviceCapsChangedArgs DeviceSource &sender, const DeviceCapabilities &caps
+#define BroadcastDeviceCapsChangedArgs const DeviceCapabilities &caps, DeviceSource &sender
 
 // Broadcast for reloading API configuration.
 extern const std::string kBroadcastReloadApiConfig;
@@ -161,6 +161,12 @@ using HealthInvoker = std::function<void(const std::string&, const int&)>;
 extern const std::string kBroadcastHealthCheckService;
 #define BroadcastHealthCheckServiceArgs const std::vector<std::string> &origin_urls, const Broadcast::HealthInvoker &invoker
 
+extern const std::string kBroadcastMediaMotionChanged;
+#define BroadcastMediaMotionChangedArgs const MediaTuple &args, const bool &bActive, const int &pre_ms
+
+extern const std::string kBroadcastRecordMotion;
+#define BroadcastRecordMotionArgs const MotionEvent &info
+    
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
@@ -293,6 +299,13 @@ extern const std::string kTSDemand;
 extern const std::string kFMP4Demand;
 // Application name for viewing live stream
 extern const std::string kAppName;
+
+// Whether to enable motion detection
+extern const std::string kEnableMotion;
+// Motion detection on-demand switch
+extern const std::string kMotionDemand;
+// GOP cache size, unit is frames
+extern const std::string kGopCacheSize;
 } // !Protocol
 
 // //////////HTTP configuration///////////
@@ -403,6 +416,8 @@ extern const std::string kFastStart;
 extern const std::string kFileRepeat;
 // Whether to use fmp4 format for MP4 recording files
 extern const std::string kEnableFmp4;
+// Stream name for recording motion and low-resolution streams
+extern const std::string kArchiveStreamName;
 } // namespace Record
 
 // //////////HLS related configuration///////////
@@ -507,6 +522,21 @@ extern const std::string kTimeOutSec;
 // Multicast allocation address
 extern const std::string kAddrMulticast;
 } //namespace SSDP
+
+/////////////Motion detection configuration///////////
+namespace Motion {
+// Sensitivity of motion detection, the larger the value, the more sensitive
+extern const std::string kSensitivity;
+// Minimum interval time for motion detection trigger, in milliseconds
+extern const std::string kIntervalMS;
+// Minimum duration for motion detection to be considered valid, in milliseconds
+extern const std::string kMinDurationMS;
+// Block size for motion detection
+extern const std::string kBlockSize;
+// Whether to use the Y channel for motion detection
+extern const std::string kUseYChannel;
+} // namespace Motion
+
 } // namespace mediakit
 
 #endif /* COMMON_CONFIG_H */

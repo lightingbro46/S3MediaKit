@@ -12,6 +12,7 @@
 #include "Rtmp/RtmpMediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
+#include "MediaSourceProcessor.h"
 
 namespace mediakit {
 
@@ -78,6 +79,15 @@ public:
      * @return Whether the setting is successful
      */
     bool setupRecord(Recorder::type type, bool start, const std::string &custom_path, size_t max_second);
+
+    /**
+     * Start recording mp4 with archive mode
+     * @param type Recording type
+     * @param start Start or stop
+     * @param archived Whether it is archive mode
+     * @return Whether the setting is successful
+     */
+    bool setupRecord(Recorder::type type, bool start, bool archived);
 
     /**
      * Start recording mp4
@@ -153,7 +163,7 @@ protected:
 
 private:
     void createGopCacheIfNeed(size_t gop_count);
-    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type);
+    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type, bool archived = false);
 
 private:
     bool _is_enable = false;
@@ -176,6 +186,7 @@ private:
     MediaSinkInterface::Ptr _mp4;
     HlsRecorder::Ptr _hls;
     HlsFMP4Recorder::Ptr _hls_fmp4;
+    MediaSourceProcessor::Ptr _proc;
     toolkit::EventPoller::Ptr _poller;
     RingType::Ptr _ring;
 
