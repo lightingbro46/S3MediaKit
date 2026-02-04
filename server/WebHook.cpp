@@ -46,7 +46,9 @@ const string kOnServerStarted = HOOK_FIELD "on_server_started";
 const string kOnServerExited = HOOK_FIELD "on_server_exited";
 const string kOnServerKeepalive = HOOK_FIELD "on_server_keepalive";
 const string kOnServerLoad = HOOK_FIELD "on_server_load";
+const string kOnServerLoad2 = HOOK_FIELD "on_server_load2";
 const string kOnServerReport = HOOK_FIELD "on_server_report";
+const string kOnServerReport2 = HOOK_FIELD "on_server_report2";
 const string kOnServerReportUsage = HOOK_FIELD "on_server_report_usage";
 const string kOnSystemAlert = HOOK_FIELD "on_system_alert";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
@@ -80,8 +82,10 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerStarted] = "/api/media-server/start";
     mINI::Instance()[kOnServerExited] = "/api/media-server/end";
     mINI::Instance()[kOnServerKeepalive] = "/api/media-server/heartbeat";
-    mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration-2nd-gen";
+    mINI::Instance()[kOnServerLoad] = "/api/media-server/configuration";
+    mINI::Instance()[kOnServerLoad2] = "/api/media-server/configuration-2nd-gen";
     mINI::Instance()[kOnServerReport] = "/api/media-server/channels:update";
+    mINI::Instance()[kOnServerReport2] = "/api/media-server/update-status";
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
     mINI::Instance()[kOnServerHealthCheck] = "/api/actuator/health";
@@ -452,8 +456,8 @@ static atomic<uint64_t> s_last_report_time { 0 };
 static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
-    GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad);
-    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport);
+    GET_CONFIG(string, hook_server_load, Hook::kOnServerLoad2);
+    GET_CONFIG(string, hook_server_report, Hook::kOnServerReport2);
     if (!hook_enable || hook_server_load.empty() || hook_server_report.empty() || hook_api_url.empty()) {
         WarnL << "Load server configuration skipped, hook_api_url or hook_server_load or hook_server_report is empty";
         return;

@@ -137,7 +137,7 @@ void StreamSource::createPlayer() {
             }
         });
 
-        player->play(strong_self->_tuple.full_url);
+        player->play(strong_self->_full_url);
         strong_self->_player = player;
         DebugL << "Created stream player proxy: " << strong_self->_tuple.shortUrl();
     };
