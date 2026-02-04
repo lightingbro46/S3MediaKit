@@ -56,7 +56,6 @@ void StreamSource::createPlayer() {
     option.enable_mp4 = _record_mp4;
     option.enable_rtsp = true;
     option.enable_hls = true;
-    option.enable_jpeg = false;
     option.enable_audio = _record_audio;
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
@@ -137,7 +136,7 @@ void StreamSource::createPlayer() {
             }
         });
 
-        player->play(strong_self->_tuple.full_url);
+        player->play(strong_self->_full_url);
         strong_self->_player = player;
         DebugL << "Created stream player proxy: " << strong_self->_tuple.shortUrl();
     };
