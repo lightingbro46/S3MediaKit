@@ -484,7 +484,7 @@ static Json::Value exampleJson() {
     device["ip"] = "27.72.173.71";
     device["httpPort"] = 80;
     device["recordingConfig"] = Json::objectValue;
-    device["recordingConfig"]["enableRecording"] = true;
+    device["recordingConfig"]["enableRecording"] = false;
     Json::Value schedule = Json::arrayValue;
     for (int d = 0; d < 7; ++d) {
         for (int h = 0; h < 24; ++h) {
@@ -1006,8 +1006,15 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
     offline = 0;
     for (const auto &device : data) {
         bool is_online = false;
-        for (const auto &stream : device["channels"]) {
-            if (stream["status"].asInt() == 1) {
+        if (!device["primaryStreamId"].isNull() && !device["primaryStream"].isNull()) {
+            auto stream = device["primaryStream"];
+            if (stream["status"].asBool() == true) {
+                is_online = true;
+            }
+        }
+        if (!device["secondaryStreamId"].isNull() && !device["secondaryStream"].isNull()) {
+            auto stream = device["secondaryStream"];
+            if (stream["status"].asBool() == true) {
                 is_online = true;
             }
         }
