@@ -464,7 +464,7 @@ static Json::Value exampleJson() {
     device["ip"] = "27.72.173.71";
     device["httpPort"] = 80;
     device["recordingConfig"] = Json::objectValue;
-    device["recordingConfig"]["enableRecording"] = false;
+    device["recordingConfig"]["enableRecording"] = true;
     Json::Value schedule = Json::arrayValue;
     for (int d = 0; d < 7; ++d) {
         for (int h = 0; h < 24; ++h) {
