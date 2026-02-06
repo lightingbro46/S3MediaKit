@@ -79,6 +79,7 @@
 #include "Onvif/SoapUtil.h"
 #include "WebApiErrCode.h"
 #include "Common/StrUtil.h"
+#include "Control/SubnetScan.h"
 
 using namespace std;
 using namespace Json;
@@ -355,6 +356,9 @@ static ServiceController<FFmpegSource> s_ffmpeg_src;
 
 // FFmpeg extractor proxy list
 static ServiceController<FFmpegExtractor> s_ffmpeg_extractor;
+
+// Subnet scan proxy list
+static ServiceController<SubnetScan> s_subnet_scan;
 
 #if defined(ENABLE_RTPPROXY)
 // RTP server list
@@ -3091,92 +3095,6 @@ void installWebApi() {
         val["data"] = makeSystemStatisticJson();
     });
 
-    static auto discovery_device = [](string &address, int &port, bool &defaultPort, string &username, string &password, const function<void(const SockException &, const Value &)> &cb) {
-        Value ret;
-        if (start_with(address, "rtsp://")) {
-            // address is rtsp url
-            string url = address;
-            
-            if (url.find('@') == string::npos && !username.empty() && !password.empty()) {
-                url = UriUtils::replaceCredentials(url, username, password);
-            }
-
-            if (!defaultPort) {
-                url = UriUtils::replacePort(url, port);
-            }
-            FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
-                if (!success) {
-                    cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
-                } else {
-                    ret["manufacturer"] = GENERIC_RTSP_CAMERA;
-                    ret["model"] = GENERIC_RTSP_CAMERA;
-                    ret["firmwareVersion"] = "";
-                    ret["serialNumber"] = "";
-                    ret["hardwareId"] = "";
-                    ret["macAddress"] = "";
-                    ret["isPtz"] = false;
-                    ret["ip"] = "";
-                    ret["port"] = 0;
-                    ret["webPortAuto"] = true;
-                    ret["address"] = "";
-                    ret["isNewDevice"] = true;
-                    ret["profiles"] = arrayValue;
-                    Value stream;
-                    stream["vcodec"] = info.vcodec;
-                    stream["width"] = info.width;
-                    stream["height"] = info.height;
-                    stream["fps"] = info.fps;
-                    stream["bitrate"] = info.bitrate;
-                    stream["url"] = UriUtils::replaceCredentials(url, "", "");
-                    ret["profiles"].append(stream);
-                    cb(SockException(Err_success), ret);
-                }
-            });
-        } else if (isIP(address.data())) {
-            // address is ip
-            string ip = address;
-            if (defaultPort) {
-                port = 80;
-            }
-            string ipAddress = StrPrinter << ip << ":" << port;
-            auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
-            if (!onvif->initControl()) {
-                cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
-                return;
-            }
-
-            auto info = onvif->getDeviceInfo();
-            ret["manufacturer"] = info.manufacturer;
-            ret["model"] = info.model;
-            ret["firmwareVersion"] = info.firmwareVersion;
-            ret["serialNumber"] = info.serialNumber;
-            ret["hardwareId"] = info.hardwareId;
-            ret["macAddress"] = info.macAddress;
-            ret["address"] = "http:// " + ipAddress; 
-            ret["ip"] = ip;
-            ret["port"] = port;
-            ret["webPortAuto"] = defaultPort;
-            ret["isPtz"] = onvif->enablePTZ();
-            //todo: check is new device or not
-            ret["isNewDevice"] = true;
-            ret["profiles"] = arrayValue;
-            auto profiles = onvif->selectStreamUrls();
-            for (const auto &it : profiles) {
-                Value stream;
-                stream["vcodec"] = it.vcodec;
-                stream["width"] = it.width;
-                stream["height"] = it.height;
-                stream["fps"] = it.fps;
-                stream["bitrate"] = it.bitrate;
-                stream["url"] = UriUtils::replaceIp(it.url, ip);
-                ret["profiles"].append(stream);
-            }
-            cb(SockException(Err_success), ret);
-        } else {
-            cb(SockException(Err_other, "Address must be ip or rtsp url", ApiErrCode::CODE_INVALID_ARGS), ret);
-        }
-    };
-
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ADD_CAMERA_PERMISSION();
@@ -3188,12 +3106,12 @@ void installWebApi() {
         string username = allArgs["username"];
         string password = allArgs["password"];
 
-        discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const Value &data) mutable {
+        SubnetScan::discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const DeviceScanResult &data) mutable {
             if (ex) {
                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 return;
             }
-            val["data"] = data;
+            val["data"] = toJsonValue(data);
             invoker(200, headerOut, val.toStyledString());
         });
     });
@@ -3218,13 +3136,99 @@ void installWebApi() {
         val["data"] = arrayValue;
         auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
         for (auto &ip : ip_range) {
-            discovery_device(ip, port, defaultPort, username, password, [&](const SockException &ex, const Json::Value &data) {
+            SubnetScan::discovery_device(ip, port, defaultPort, username, password, [&](const SockException &ex, const DeviceScanResult &data) {
                 if (!ex) {
-                    val["data"].append(data);
+                    val["data"].append(toJsonValue(data));
                 }
             });
         }
         invoker(200, headerOut, val.toStyledString());
+    });
+
+    static auto addSubnetScan = [](SubnetScanOption &option, const function<void(const SockException &ex, const string &key)> &cb) {
+        string full_key = (StrPrinter << option.startIp << "/" << option.endIp << "/" << option.port << "/" << option.username << "/" << option.password);
+        string key = MD5(full_key).hexdigest();
+        if (s_subnet_scan.find(key)){
+            // Already create
+            cb(SockException(Err_success), key);
+            return;
+        }
+        auto scanner = s_subnet_scan.make(key, option);
+        scanner->setOnClose([key]() { s_subnet_scan.erase(key); });
+
+        scanner->makeScan(key, [cb, key](const SockException &ex) {
+            if (ex) {
+                s_subnet_scan.erase(key);
+            }
+            cb(ex, key);
+        });
+    };
+
+    api_regist("/media/mserver/device/subnetScan/create", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ADD_CAMERA_PERMISSION();
+        CHECK_ARGS_("startIp", "endIp", "port", "defaultPort");
+
+        string startIp = allArgs["startIp"];
+        string endIp = allArgs["endIp"];
+        int port = allArgs["port"];
+        bool defaultPort = allArgs["defaultPort"];
+        string username = allArgs["username"];
+        string password = allArgs["password"];
+        string jwt_token = allArgs["_jwt_token"];
+        
+        if (!SockUtil::is_ipv4(startIp.data()) || !SockUtil::is_ipv4(endIp.data())) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_IP, "startIp or endIp must be a IPv4");
+            return;
+        }
+
+        SubnetScanOption option;
+        option.startIp = startIp;
+        option.endIp = endIp;
+        option.port = port;
+        option.defaultPort = defaultPort;
+        option.username = username;
+        option.password = password;
+
+        addSubnetScan(option, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
+            if (ex) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_SUBNETSCAN_FAILED, ex.what());
+            } else {
+                UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
+                val["data"]["key"] = key;
+                invoker(201, headerOut, val.toStyledString());
+            }
+        });
+    });
+
+    api_regist("/media/mserver/device/subnetScan/progress", [](API_ARGS_MAP_ASYNC) {
+        CHECK_USER_AUTHOR("key");
+
+        std::string key = allArgs["key"];
+        auto scanner = s_subnet_scan.find(key);
+        if (!scanner) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_SCAN_KEY_NOT_FOUND, "Scan key not found");
+            return;
+        }
+
+        bool isFinished = scanner->finished();
+        double  progress = scanner->progress();
+        auto devices = scanner->result();
+        Json::Value ret = Json::arrayValue;
+        for (auto &d : devices) {
+            ret.append(toJsonValue(d));
+        }
+
+        val["data"]["finished"] = isFinished;
+        val["data"]["progress"] = progress;
+        val["data"]["devices"] = ret;
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/mserver/device/subnetScan/delete", [](API_ARGS_MAP) {
+        CHECK_USER_AUTHOR("key");
+
+        val["data"]["flag"] = s_subnet_scan.erase(allArgs["key"]) == 1;
     });
 
     api_regist("/media/mserver/device/ptz_control", [](API_ARGS_MAP_ASYNC) {
@@ -3407,6 +3411,7 @@ void unInstallWebApi(){
     s_player_proxy.clear();
     s_ffmpeg_src.clear();
     s_ffmpeg_extractor.clear();
+    s_subnet_scan.clear();
     s_pusher_proxy.clear();
 #if defined(ENABLE_RTPPROXY)
     s_rtp_server.clear();
