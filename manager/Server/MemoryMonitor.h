@@ -9,8 +9,8 @@ struct MemoryInfo {
     uint64_t totalMemory = 0;
     uint64_t usageMemory = 0;
     uint64_t procUsageMemory = 0;
-    double usagePct = 0;
-    double procUsagePct = 0;
+    float usagePct = 0;
+    float procUsagePct = 0;
 };
 
 class MemoryCollector :  public MetricCollector<MemoryInfo> {

@@ -179,7 +179,7 @@ public:
      * @param timeout_sec Timeout for probe url (to prevent blocking for too long)
      * @param cb Callback for whether the screenshot was generated successfully
      */
-    static void makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb);
+    static void makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb, const toolkit::EventPoller::Ptr &poller = nullptr);
 
 private:
     FFmpegProbe() = delete;

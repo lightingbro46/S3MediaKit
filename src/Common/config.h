@@ -134,7 +134,7 @@ extern const std::string kBroadcastRestartServer;
 
 // Broadcast for system alert events. Control server emit system alert through this event.
 extern const std::string kBroadcastSystemAlert;
-#define BroadcastSystemAlertArgs uint8_t &type, double &usage, double &threshold, bool &is_critical
+#define BroadcastSystemAlertArgs uint8_t &type, float &usage, float &threshold, bool &is_critical
 
 // Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
 extern const std::string kBroadcastStreamReaderAlert;

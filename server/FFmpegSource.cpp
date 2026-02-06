@@ -9,7 +9,7 @@
 #include "Network/sockutil.h"
 #include "Local/TimeQuery.h"
 #include <iomanip>
-#include "json/json.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -674,24 +674,6 @@ bool FFmpegExtractor::close() {
     return true;
 }
 
-static bool parseJsonString(const std::string &json_str, Json::Value &out) {
-    // parse json string to json var
-    Json::CharReaderBuilder builder;
-    builder["collectComments"] = false;
-    Json::Value data;
-    std::string errs;
-
-    std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-    if (!reader->parse(json_str.c_str(), json_str.c_str() + json_str.size(), &data, &errs)) {
-        WarnL << "Parse json string failed: " << errs;
-        return false;
-    }
-    // get stream information from json var
-    TraceL << "Json data: " << data.toStyledString();
-    out = data;
-    return true;
-}
-
 static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
     if (log_string.empty()) {
         return false;
@@ -709,7 +691,7 @@ static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
     auto json_str = log_string.substr(start_point, end_point - start_point + 1);
 
     Json::Value data;
-    if (!parseJsonString(json_str, data)) {
+    if (!StrJsonUtils::readJsonString(json_str, data)) {
         return false;
     }
     // get stream information from json var
@@ -755,12 +737,13 @@ static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
     return true;
 }
 
-void FFmpegProbe::makeProbe(const string &play_url, float timeout_sec, const onProbe &cb) {
+void FFmpegProbe::makeProbe(const string &play_url, float timeout_sec, const onProbe &cb, const toolkit::EventPoller::Ptr &poller) {
     GET_CONFIG(string, ffprobe_bin, FFmpeg::kBinP);
     GET_CONFIG(string, ffmpeg_probe, FFmpeg::kProbe);
     GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
     Ticker ticker;
-    WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, cb, ticker]() {
+    auto _poller = poller ? poller : WorkThreadPool::Instance().getPoller();
+    _poller->async([timeout_sec, play_url, cb, ticker]() {
         ProbeInfo info;
         info.url = play_url;
         auto elapsed_ms = ticker.elapsedTime();

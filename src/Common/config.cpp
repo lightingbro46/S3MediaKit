@@ -165,13 +165,13 @@ static onceToken token([]() {
     mINI::Instance()[kPacedSenderMS] = 0;
     mINI::Instance()[kAutoClose] = 0;
 
-    mINI::Instance()[kEnableHls] = 0;
+    mINI::Instance()[kEnableHls] = 1;
     mINI::Instance()[kEnableHlsFmp4] = 0;
-    mINI::Instance()[kEnableMP4] = 0;
-    mINI::Instance()[kEnableRtsp] = 0;
+    mINI::Instance()[kEnableMP4] = 1;
+    mINI::Instance()[kEnableRtsp] = 1;
     mINI::Instance()[kEnableRtmp] = 0;
     mINI::Instance()[kEnableTS] = 0;
-    mINI::Instance()[kEnableFMP4] = 0;
+    mINI::Instance()[kEnableFMP4] = 1;
 
     mINI::Instance()[kMP4AsPlayer] = 0;
     mINI::Instance()[kMP4MaxSecond] = 60;

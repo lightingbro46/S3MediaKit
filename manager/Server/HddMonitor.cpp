@@ -217,7 +217,7 @@ void HddCollector::collect() {
     _info.total_bytes = usage.total_bytes;
     _info.free_bytes = usage.free_bytes;
     _info.used_bytes = usage.used_bytes;
-    _info.usage_pct = _info.total_bytes == 0 ? 0.0 : (100.0 * (double)_info.used_bytes / _info.total_bytes);
+    _info.usage_pct = _info.total_bytes == 0 ? 0.0 : (100.0 * (float)_info.used_bytes / _info.total_bytes);
 
     onCollect(_info);
 }

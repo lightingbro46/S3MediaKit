@@ -29,6 +29,7 @@ namespace managerkit {
     XX(CODE_BOOKMARK_ID_NOT_FOUND,          "Bookmark id not found",            404,         200005) \
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         200006) \
     XX(CODE_MSERVER_NOT_FOUND,              "Media server not found",           404,         200007) \
+    XX(CODE_SCAN_KEY_NOT_FOUND,             "Scan key not found",               404,         200008) \
     /* 300xxx - Operation errors */                                                                  \
     XX(CODE_DEVICE_OFFLINE,                 "Device offline",                   400,         300001) \
     XX(CODE_STREAM_OFFLINE,                 "Stream offline",                   400,         300002) \
@@ -41,10 +42,12 @@ namespace managerkit {
     XX(CODE_DEVICE_CONFIG_DISABLE_PTZ,      "Device is configured to disable PTZ control", 403, 300009) \
     XX(CODE_HEALTH_CHECK_API_FAILED,        "Health check api service failed",  500,         300010) \
     XX(CODE_HEALTH_CHECK_MSERVER_FAILED,    "Health check media server service failed",  500, 300011) \
+    XX(CODE_SUBNETSCAN_FAILED,              "Scan device by ip range failed",   500,         300012) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
     XX(CODE_INVALID_EXTENSION,              "Invalid file extension",           400,         400003) \
+    XX(CODE_INVALID_IP_RANGE,               "Invalid IP range",                 400,         400004) \
     /* 500xxx - Database esc errors */                                                               \
 
 typedef enum {

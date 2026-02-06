@@ -64,14 +64,14 @@ void ReaderMonitor::setStreamReaderCount(const string &camera_id, int reader_cou
         lock_guard<mutex> lck(_mtx);
         _total_reader = totalReaderCountFromMap(_map_reader);
     }
-    emitSystemAlert(static_cast<double>(_total_reader.load()));
+    emitSystemAlert(static_cast<float>(_total_reader.load()));
     DebugL << "Set stream reader count for camera " << camera_id << ": " << current_count << ", total reader count: " << _total_reader.load();
 }
 
 void ReaderMonitor::start() {
     _timer = std::make_shared<Timer>(300.0f, [&]() {
         // Periodically check and emit alerts
-        emitSystemAlert(static_cast<double>(_total_reader.load())); 
+        emitSystemAlert(static_cast<float>(_total_reader.load())); 
 
         // Check each camera reader count and emit alerts
         auto ret = totalEachReaderCount();
