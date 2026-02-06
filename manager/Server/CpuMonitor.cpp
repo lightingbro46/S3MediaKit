@@ -186,8 +186,8 @@ void CpuCollector::collect() {
             _info.usagePct = 0.0;
             _info.procUsagePct = 0.0;
         } else {
-            _info.procUsagePct = 100.0 * ((double)processDiff / totalDiff);
-            _info.usagePct = 100.0 * (1.0 - (double)idleDiff / totalDiff);
+            _info.procUsagePct = 100.0 * ((float)processDiff / totalDiff);
+            _info.usagePct = 100.0 * (1.0 - (float)idleDiff / totalDiff);
         }   
         onCollect(_info);
         return 0;

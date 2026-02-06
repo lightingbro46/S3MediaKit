@@ -91,8 +91,8 @@ static size_t recreateTimeFile(const KeepTimeMap &map) {
     return removed_timefile_bytes;
 }
 
-static bool findMountPoint(const std::string& path, double &usage_pct, size_t &used_bytes, size_t &total_bytes) {
-    usage_pct = 0.0;
+static bool findMountPoint(const std::string& path, float &usage_pct, size_t &used_bytes, size_t &total_bytes) {
+    usage_pct = 0.0f;
     used_bytes = 0;
     total_bytes = 0;
     auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
@@ -132,8 +132,8 @@ static size_t estimateSpaceToReclaim() {
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, app_name, Record::kAppName);
     string record_path = File::absolutePath(app_name, mp4_save_path);
-    double usage_pct = 0.0;
-    size_t used_bytes = 0.0;
+    float usage_pct = 0.0f;
+    size_t used_bytes = 0;
     size_t total_bytes = 0;
 
     if (findMountPoint(record_path, usage_pct, used_bytes, total_bytes)) {
@@ -308,7 +308,7 @@ void StorageManager::enforceStoragePolicy() {
 
         KeepTimeMap keep_time_map;
         auto record_profiles = getRecordProfiles();
-        double keep_percent = 100.0;
+        float keep_percent = 100.0f;
         size_t removed_bytes = 0;
 
         while (keep_percent > 0 && (space_reclaim == 0 || removed_bytes < space_reclaim)) {
@@ -325,8 +325,8 @@ void StorageManager::enforceStoragePolicy() {
             // step 3: decrease keep_percent to estimate removed bytes again in next loop if removed_bytes is not enough
             if (removed_bytes < space_reclaim) {
                 // todo: auto select keep_percent by read/write speed
-                keep_percent += (-5.0);
-                TraceL << "Decrease keep percent: " << format_double_2f(keep_percent) << "%";
+                keep_percent += (-5.0f);
+                TraceL << "Decrease keep percent: " << format_float_2f(keep_percent) << "%";
             }
 
             // only enforce storage policy once if space_reclaim equal 0 byte
@@ -386,7 +386,7 @@ void StorageManager::getMainStorageUsage(size_t &used_bytes, size_t &total_bytes
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, app_name, Record::kAppName);
     string record_path = File::absolutePath(app_name, mp4_save_path);
-    double usage_pct = 0.0;
+    float usage_pct = 0.0f;
     if (!findMountPoint(record_path, usage_pct, used_bytes, total_bytes)) {
         WarnL << "Not found main storage: " << record_path;
     }

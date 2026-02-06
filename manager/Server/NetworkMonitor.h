@@ -11,8 +11,8 @@ namespace managerkit {
 
 struct NetSpeed {
     std::string name;
-    double rx_mbps = 0.0;
-    double tx_mbps = 0.0;
+    float rx_mbps = 0.0f;
+    float tx_mbps = 0.0f;
 };
 
 struct NetInterfaceInfo {
@@ -21,9 +21,9 @@ struct NetInterfaceInfo {
     std::string ipv6;
     std::string mac_address;
     bool is_up = false;
-    double speed_mbps = 0;
-    double rx_mbps = 0.0;
-    double tx_mbps = 0.0;
+    float speed_mbps = 0.0f;
+    float rx_mbps = 0.0f;
+    float tx_mbps = 0.0f;
 };
 
 class NetworkCollector : public MetricCollector<NetSpeed> {

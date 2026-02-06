@@ -115,8 +115,8 @@ void MemoryCollector::collect() {
         _info.usagePct = 0.0;
         _info.procUsagePct = 0.0;
     } else {
-        _info.usagePct = 100 * ((double)_info.usageMemory / _info.totalMemory);
-        _info.procUsagePct = 100 * ((double)_info.procUsageMemory / _info.totalMemory);
+        _info.usagePct = 100 * ((float)_info.usageMemory / _info.totalMemory);
+        _info.procUsagePct = 100 * ((float)_info.procUsageMemory / _info.totalMemory);
     }
     onCollect(_info);
     return ;

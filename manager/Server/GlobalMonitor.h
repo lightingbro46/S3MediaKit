@@ -33,9 +33,9 @@ public:
 
     std::string getMacAddresses();
 
-    void setThreshold(const ResourceType &type, double warning_threshold = -1, double critical_threshold = -1);
+    void setThreshold(const ResourceType &type, float warning_threshold = -1, float critical_threshold = -1);
 
-    std::pair<double, double> getThreshold(const ResourceType &type);
+    std::pair<float, float> getThreshold(const ResourceType &type);
 
     void setStreamReaderThreshold(int warning_threshold = -1, int critical_threshold = -1);
     

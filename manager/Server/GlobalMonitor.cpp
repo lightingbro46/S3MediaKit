@@ -53,19 +53,19 @@ void GlobalMonitor::start() {
             auto hdd_usage = strong_self->_hdd_monitor->getCurrentUsage();
             auto reader_usage = strong_self->_reader_monitor->totalReaderCount();
 
-            DebugL << "OS CPU usage: " << format_double_2f(cpu_usage.usagePct) << "%";
-            DebugL << "Process CPU usage: " << format_double_2f(cpu_usage.procUsagePct) << "%";
-            DebugL << "OS Memory usage: " << format_double_2f(mem_usage.usagePct) << "%";
-            DebugL << "Process Memory usage: " << format_double_2f(mem_usage.procUsagePct) << "%";
+            DebugL << "OS CPU usage: " << format_float_2f(cpu_usage.usagePct) << "%";
+            DebugL << "Process CPU usage: " << format_float_2f(cpu_usage.procUsagePct) << "%";
+            DebugL << "OS Memory usage: " << format_float_2f(mem_usage.usagePct) << "%";
+            DebugL << "Process Memory usage: " << format_float_2f(mem_usage.procUsagePct) << "%";
             DebugL << "Network usage:";
             for (const auto &it : net_usage) {
-                DebugL << "     " << it.name << " - in " << format_double_2f(it.rx_mbps) << " Mbps, out " << format_double_2f(it.tx_mbps) << " Mbps";
+                DebugL << "     " << it.name << " - in " << format_float_2f(it.rx_mbps) << " Mbps, out " << format_float_2f(it.tx_mbps) << " Mbps";
             }
             DebugL << "HDD usage:";
             for (const auto &it : hdd_usage) {
                 DebugL << "     " << it.mount_point << " - total " << format_bytes_human_readable(it.total_bytes) 
                                                     << ", used " << format_bytes_human_readable(it.used_bytes) 
-                                                    << ", usage " << format_double_2f(it.usage_pct) << "%";
+                                                    << ", usage " << format_float_2f(it.usage_pct) << "%";
             }
             DebugL << "Total Reader usage: " << reader_usage;
             return true;
@@ -132,7 +132,7 @@ string GlobalMonitor::getMacAddresses() {
     return printer;
 }
 
-void GlobalMonitor::setThreshold(const ResourceType &type, double warning_threshold, double critical_threshold) {
+void GlobalMonitor::setThreshold(const ResourceType &type, float warning_threshold, float critical_threshold) {
     std::shared_ptr<ResourceMonitor> monitor;
     if (type == ResourceType::CPU && _cpu_monitor) {
         monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);
@@ -156,7 +156,7 @@ void GlobalMonitor::setThreshold(const ResourceType &type, double warning_thresh
     }
 }
 
-std::pair<double, double> GlobalMonitor::getThreshold(const ResourceType &type) {
+std::pair<float, float> GlobalMonitor::getThreshold(const ResourceType &type) {
     std::shared_ptr<ResourceMonitor> monitor;
     if (type == ResourceType::CPU && _cpu_monitor) {
         monitor = dynamic_pointer_cast<ResourceMonitor>(_cpu_monitor);

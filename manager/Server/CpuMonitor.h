@@ -7,8 +7,8 @@ namespace managerkit {
 
 struct CpuInfo {
     int cores = 0;
-    double usagePct = 0.0;
-    double procUsagePct = 0.0;
+    float usagePct = 0.0f;
+    float procUsagePct = 0.0f;
 };
 
 class CpuCollector : public MetricCollector<CpuInfo> {

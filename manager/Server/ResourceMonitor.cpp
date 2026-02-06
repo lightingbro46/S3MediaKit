@@ -14,13 +14,19 @@ string format_double_2f(double value) {
     return oss.str();
 }
 
+string format_float_2f(float value) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2) << value;
+    return oss.str();
+}
+
 string format_bytes_human_readable(uint64_t bytes) {
     const char* units[] = {"B", "KB", "MB", "GB", "TB", "PB"};
-    double size = static_cast<double>(bytes);
+    float size = static_cast<float>(bytes);
     int unit_index = 0;
 
-    while (size >= 1024.0 && unit_index < 5) {
-        size /= 1024.0;
+    while (size >= 1024.0f && unit_index < 5) {
+        size /= 1024.0f;
         ++unit_index;
     }
 
@@ -54,6 +60,14 @@ string sanitize_for_json(double val) {
     return format_double_2f(ret);
 }
 
+string sanitize_for_json(float val) {
+    float ret = val;
+    if (std::isnan(val) || std::isinf(val))
+        ret = 0.0f;
+    if (val <= 0.0f) ret = 0.0f; // chuyển -0.0 → +0.0
+    return format_float_2f(ret);
+}
+
 ////////////////////////////////////ResourceMonitor//////////////////////////////////////////
 
 string getResourceTypeString(const ResourceType &type) {
@@ -68,16 +82,16 @@ string getResourceTypeString(const ResourceType &type) {
     }
 }
 
-void ResourceMonitor::setThreshold(double warning_threshold, double critical_threshold) {
+void ResourceMonitor::setThreshold(float warning_threshold, float critical_threshold) {
     _warning_threshold = warning_threshold;
     _critical_threshold = critical_threshold;
 }
 
-std::pair<double, double> ResourceMonitor::getThreshold() {
+std::pair<float, float> ResourceMonitor::getThreshold() {
     return std::make_pair(_warning_threshold, _critical_threshold);
 }
 
-void ResourceMonitor::emitSystemAlert(double usage) {
+void ResourceMonitor::emitSystemAlert(float usage) {
     if (_critical_threshold < 0 && _warning_threshold < 0) {
         TraceL << "No system " << getResourceTypeString(_type) << " threshold config. Ignore system alert";
         return;
@@ -96,7 +110,7 @@ void ResourceMonitor::emitSystemAlert(double usage) {
         }
         return;
     }
-    TraceL << "System " << getResourceTypeString(_type) << " usage is normal: " << format_double_2f(usage) << "%";
+    TraceL << "System " << getResourceTypeString(_type) << " usage is normal: " << format_float_2f(usage) << "%";
 }
 
 } // namespace managerkit

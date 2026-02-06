@@ -12,16 +12,20 @@ std::string format_bytes_human_readable(uint64_t bytes);
 
 std::string format_double_2f(double value);
 
+std::string format_float_2f(float value);
+
 std::string formatDuration(int64_t milliseconds);
 
 std::string sanitize_for_json(double val);
+
+std::string sanitize_for_json(float val);
 
 template <typename T>
 class MetricCollector {
 public:
     using Ptr = std::shared_ptr<MetricCollector>;
 
-    MetricCollector(toolkit::EventPoller::Ptr poller, double interval_sec = 10.0f) : _poller(poller) {
+    MetricCollector(toolkit::EventPoller::Ptr poller, float interval_sec = 10.0f) : _poller(poller) {
         _timer = std::make_shared<toolkit::Timer>(
             interval_sec,
             [this]() {
@@ -72,22 +76,22 @@ public:
 
     virtual ~ResourceMonitor() = default;
 
-    void setThreshold(double warning_threshold = -1, double critical_threshold = -1);
+    void setThreshold(float warning_threshold = -1.0f, float critical_threshold = -1.0f);
 
-    std::pair<double, double> getThreshold();
+    std::pair<float, float> getThreshold();
 
 private:
     virtual void start() = 0;
 
 protected:
-    void emitSystemAlert(double usage);
+    void emitSystemAlert(float usage);
 
 protected:
     std::mutex _mtx;
     ResourceType _type;
     toolkit::EventPoller::Ptr _poller;
-    double _warning_threshold = -1.0;
-    double _critical_threshold = -1.0;
+    float _warning_threshold = -1.0f;
+    float _critical_threshold = -1.0f;
 };
 
 } // namespace managerkit

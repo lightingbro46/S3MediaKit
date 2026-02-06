@@ -219,9 +219,9 @@ void NetworkCollector::collect() {
         std::pair<uint64_t, uint64_t> pair2 = get_rx_tx_bytes(_info.name);
         uint64_t rx2 = pair2.first;
         uint64_t tx2 = pair2.second;
-        double seconds = (double)_ticker.elapsedTime() / 1000;
-        double rx_mbps = ((double)(rx2 - rx1) * 8.0) / 1000000.0 / seconds;
-        double tx_mbps = ((double)(tx2 - tx1) * 8.0) / 1000000.0 / seconds;
+        float seconds = (float)_ticker.elapsedTime() / 1000;
+        float rx_mbps = ((float)(rx2 - rx1) * 8.0) / 1000000.0 / seconds;
+        float tx_mbps = ((float)(tx2 - tx1) * 8.0) / 1000000.0 / seconds;
         _info.rx_mbps = rx_mbps;
         _info.tx_mbps = tx_mbps;
 
