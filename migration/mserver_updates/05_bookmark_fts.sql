@@ -53,7 +53,6 @@ CREATE TRIGGER bookmark_au AFTER UPDATE ON bookmarks BEGIN
     VALUES (new.rowid, new.guid, COALESCE(new.description, ''), COALESCE(new.name, ''));
 END;
 
-
 -- Thêm mới tag
 CREATE TRIGGER bookmark_tag_ai AFTER INSERT ON bookmark_tags BEGIN
   INSERT INTO bookmark_tag_fts(rowid, bookmark_guid, tag)

@@ -165,7 +165,25 @@ static RecordProfiles getRecordProfiles() {
             }
 
             if (option.keepArchivedMaxForAuto) {
-                //todo: get first block from any stream proxy
+                auto stats_imp = ptr->getCameraStatisticImp();
+                if (stats_imp) {
+                    // get oldest block from both stream proxy
+                    auto storage_stats = stats_imp->getParams().storage_map;
+                    uint64_t first_block_time = 0;
+                    for (const auto &it : storage_stats) {
+                        if (first_block_time == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < first_block_time)) {
+                            first_block_time = it.second.archiveStartTime;
+                        }
+                    }
+                    if (first_block_time != 0) {
+                        max_value = first_block_time;
+                    }
+                }
+                if (max_value == 0) {
+                    // no recorded statistic data, use default 6 months
+                    uint64_t max_keep_archived_max_for =  6 * 30 * 24 * 3600; // default 6 months
+                    max_value = current_time - max_keep_archived_max_for;
+                }
             } else {
                 max_value = current_time - option.keepArchivedMaxFor;
             }
@@ -308,14 +326,14 @@ void StorageManager::enforceStoragePolicy() {
 
         KeepTimeMap keep_time_map;
         auto record_profiles = getRecordProfiles();
-        float keep_percent = 100.0f;
+        int keep_percent = 100;
         size_t removed_bytes = 0;
 
         while (keep_percent > 0 && (space_reclaim == 0 || removed_bytes < space_reclaim)) {
             // step 1: estimate keep time map with new keep_percent value
             for (const auto &p : record_profiles) {
                 auto keep_pair = p.second;
-                keep_time_map[p.first] = keep_pair.first - round((keep_pair.first - keep_pair.second) * keep_percent / 100);
+                keep_time_map[p.first] = static_cast<uint64_t>(keep_pair.first - (keep_pair.first - keep_pair.second) * keep_percent / 100);
             }
 
             // step 2: remove expired segment and get keep time map
@@ -325,8 +343,8 @@ void StorageManager::enforceStoragePolicy() {
             // step 3: decrease keep_percent to estimate removed bytes again in next loop if removed_bytes is not enough
             if (removed_bytes < space_reclaim) {
                 // todo: auto select keep_percent by read/write speed
-                keep_percent += (-5.0f);
-                TraceL << "Decrease keep percent: " << format_float_2f(keep_percent) << "%";
+                keep_percent += (-5);
+                TraceL << "Decrease keep percent by 5% => remain " << keep_percent << "%";
             }
 
             // only enforce storage policy once if space_reclaim equal 0 byte
