@@ -34,7 +34,7 @@ namespace managerkit {
     XX(CODE_DEVICE_OFFLINE,                 "Device offline",                   400,         300001) \
     XX(CODE_STREAM_OFFLINE,                 "Stream offline",                   400,         300002) \
     XX(CODE_EXTRACT_FAILED,                 "Extract video failed",             500,         300003) \
-    XX(CODE_DEVICE_NOT_SUPPORT_PTZ,         "Device does not support PTZ",      500,         300004) \
+    XX(CODE_DEVICE_NO_SUPPORT_PTZ,         "Device does not support PTZ",      500,         300004) \
     XX(CODE_DEVICE_IS_RUNNING_PTZ,          "Device is running PTZ control",    500,         300005) \
     XX(CODE_PTZ_ABSOLUTED_CONTROL_FAILED,   "PTZ Absoluted control failed",     500,         300006) \
     XX(CODE_PTZ_CONTINUOUS_CONTROL_FAILED,  "PTZ Continuous control failed",    500,         300007) \
@@ -43,6 +43,7 @@ namespace managerkit {
     XX(CODE_HEALTH_CHECK_API_FAILED,        "Health check api service failed",  500,         300010) \
     XX(CODE_HEALTH_CHECK_MSERVER_FAILED,    "Health check media server service failed",  500, 300011) \
     XX(CODE_SUBNETSCAN_FAILED,              "Scan device by ip range failed",   500,         300012) \
+    XX(CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE, "Device does not support selected PTZ mode", 500, 300013) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \

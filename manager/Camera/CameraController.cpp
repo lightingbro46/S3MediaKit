@@ -124,7 +124,7 @@ void CameraController::onManager() {
 
 static void onvifPTZMove(const OnvifController::Ptr &ptr, int ptz_mode, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
     if (!ptr->enablePTZ()) {
-        cb(SockException(Err_other, "Device do not support PTZ", ApiErrCode::CODE_DEVICE_NOT_SUPPORT_PTZ));
+        cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
         return;
     }
 
@@ -219,6 +219,7 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, int ptz_mode, PTZ_DIRE
             return 0;
         });
     }
+    cb(SockException(Err_other, "Device does not support selected PTZ control mode", ApiErrCode::CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE));
 }
 
 bool CameraController::enablePTZ() {
