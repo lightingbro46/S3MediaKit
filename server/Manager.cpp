@@ -259,8 +259,12 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
         GET_OPTION_PROPERTY_AS_STRING(option, recordSchedules, rc, recordingSchedule)
         GET_OPTION_PROPERTY(option, keepArchivedMinForAuto, rc, keepArchivedMinForAuto)
         GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, keepArchivedMinFor, rc, keepArchivedMinFor, 0)
+        // convert hour to second
+        option.keepArchivedMinFor = option.keepArchivedMinFor * 3600;
         GET_OPTION_PROPERTY(option, keepArchivedMaxForAuto, rc, keepArchivedMaxForAuto)
         GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, keepArchivedMaxFor, rc, keepArchivedMaxFor, 0)
+        // convert hour to second
+        option.keepArchivedMaxFor = option.keepArchivedMaxFor * 3600;
 
         GET_OPTION_PROPERTY(option, motionPreRecordSec, rc, motionPreRecordSec)
         GET_OPTION_PROPERTY(option, motionPostRecordSec, rc, motionPostRecordSec)
