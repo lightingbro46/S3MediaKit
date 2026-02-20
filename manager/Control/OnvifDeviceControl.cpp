@@ -2,23 +2,23 @@
 #include "plugin/wsseapi.h" //WS-Sercurity
 #include "Util/logger.h" 
 #include "Extension/Plugin.h" 
-#include "onvif.h"
+#include "OnvifDeviceControl.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace managerkit {
 
-OnvifController::OnvifController(std::string strDeviceIp, std::string strUsername, std::string strPassword)
-    : _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
+OnvifControl::OnvifControl(std::string strDeviceIp, std::string strUsername, std::string strPassword) 
+    : DeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
 
-OnvifController::~OnvifController() {
-    destroyControl();
+OnvifControl::~OnvifControl() {
+    disconnect();
 }    
 
-bool OnvifController::initControl() {
+bool OnvifControl::connect() {
     if (_m_soap != nullptr) {
-        destroyControl();
+        disconnect();
     }
 
     _m_soap = soap_new();
@@ -45,7 +45,7 @@ bool OnvifController::initControl() {
     return true;
 }
 
-bool OnvifController::destroyControl() {
+void OnvifControl::disconnect() {
     // free all deserialized and managed data, we can still reuse the context and proxies after this
     if (_m_soap != nullptr) {
         soap_destroy(_m_soap);
@@ -63,11 +63,9 @@ bool OnvifController::destroyControl() {
     _proxyMedia = nullptr;
     _proxyImaging = nullptr;
     _proxyPTZ = nullptr;
-
-    return true;
 }
 
-bool OnvifController::getDeviceInformation() {
+bool OnvifControl::getDeviceInformation() {
     // get device info and print
     thread_local string strDeviceUrl;
     strDeviceUrl = "http://" + _strDeviceIp + "/onvif/device_service";
@@ -76,13 +74,13 @@ bool OnvifController::getDeviceInformation() {
     _tds__GetDeviceInformation *GetDeviceInformation = soap_new__tds__GetDeviceInformation(_m_soap);
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
     if (!setCredentials()) {
-        destroyControl();
+        disconnect();
         return false;
     }
 
     if (_proxyDevice->GetDeviceInformation(GetDeviceInformation, GetDeviceInformationResponse)) {
         reportError();
-        destroyControl();
+        disconnect();
         return false;
     }
 
@@ -99,12 +97,12 @@ bool OnvifController::getDeviceInformation() {
     return true;
 }
 
-bool OnvifController::getDeviceCapabilities() {
+bool OnvifControl::getDeviceCapabilities() {
     // get device capabilities and print media
     _tds__GetCapabilities *GetCapabilities = soap_new__tds__GetCapabilities(_m_soap);
     _tds__GetCapabilitiesResponse GetCapabilitiesResponse;
     if (!setCredentials()) {
-        destroyControl();
+        disconnect();
         return false;
     }
 
@@ -115,7 +113,7 @@ bool OnvifController::getDeviceCapabilities() {
     if (!GetCapabilitiesResponse.Capabilities || !GetCapabilitiesResponse.Capabilities->Media ||
         !GetCapabilitiesResponse.Capabilities->Imaging) {
         reportError();
-        destroyControl();
+        disconnect();
         return false;
     }
 
@@ -164,13 +162,13 @@ bool OnvifController::getDeviceCapabilities() {
         _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
         _trt__GetProfilesResponse GetProfilesResponse;
         if (!setCredentials()) {
-            destroyControl();
+            disconnect();
             return false;
         }
 
         if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
             reportError();
-            destroyControl();
+            disconnect();
             return false;
         }
         if (GetProfilesResponse.Profiles[0]->PTZConfiguration) {
@@ -181,13 +179,13 @@ bool OnvifController::getDeviceCapabilities() {
             _tptz__GetConfigurationOptionsResponse GetConfigurationOptionsResponse;
             GetConfigurationOptions->ConfigurationToken = GetProfilesResponse.Profiles[0]->PTZConfiguration->token;
             if (!setCredentials()) {
-                destroyControl();
+                disconnect();
                 return false;
             }
 
             if (_proxyPTZ->GetConfigurationOptions(GetConfigurationOptions, GetConfigurationOptionsResponse)) {
                 reportError();
-                destroyControl();
+                disconnect();
                 return false;
             }
 
@@ -231,7 +229,7 @@ bool OnvifController::getDeviceCapabilities() {
     return true;
 }
 
-bool OnvifController::getMediaProfiles() {
+bool OnvifControl::getMediaProfiles() {
     if (_proxyMedia == nullptr) {
         WarnL << "Unknown proxyMedia";
         return false;
@@ -240,26 +238,26 @@ bool OnvifController::getMediaProfiles() {
     _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
     _trt__GetProfilesResponse GetProfilesResponse;
     if (!setCredentials()) {
-        destroyControl();
+        disconnect();
         return false;
     }
 
     if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
         reportError();
-        destroyControl();
+        disconnect();
         return false;
     }
 
     _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
     _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
     if (!setCredentials()) {
-        destroyControl();
+        disconnect();
         return false;
     }
 
     if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse)) {
         reportError();
-        destroyControl();
+        disconnect();
         return false;
     }
 
@@ -310,13 +308,13 @@ bool OnvifController::getMediaProfiles() {
             // GetVideoConfigOptions->ProfileToken = &profile->token;
             // GetVideoConfigOptions->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
             // if (!setCredentials()) {
-            //     destroyControl();
+            //     disconnect();
             //     return false;
             // }
 
             // if (_proxyMedia->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
             //     reportError();
-            //     destroyControl();
+            //     disconnect();
             //     return false;
             // }
 
@@ -363,13 +361,13 @@ bool OnvifController::getMediaProfiles() {
             // GetAudioConfigOptions->ProfileToken = &profile->token;
             // GetAudioConfigOptions->ConfigurationToken =  &profile->AudioEncoderConfiguration->token;
             // if (!setCredentials()) {
-            //     destroyControl();
+            //     disconnect();
             //     return false;
             // }
 
             // if (_proxyMedia->GetAudioEncoderConfigurationOptions(GetAudioConfigOptions, GetAudioConfigOptionResponse)) {
             //     reportError();
-            //     destroyControl();
+            //     disconnect();
             //     return false;
             // }
         }
@@ -384,13 +382,13 @@ bool OnvifController::getMediaProfiles() {
             GetStreamUri->StreamSetup->Transport = soap_new_tt__Transport(_m_soap, -1);
             GetStreamUri->StreamSetup->Transport->Protocol = tt__TransportProtocol__RTSP;
             if (!setCredentials()) {
-                destroyControl();
+                disconnect();
                 return false;
             }
 
             if (_proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
                 reportError();
-                destroyControl();
+                disconnect();
                 return false;
             }
             TraceL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
@@ -406,7 +404,7 @@ bool OnvifController::getMediaProfiles() {
     return true;    
 }
 
-bool OnvifController::getNetworkInterfaces() {
+bool OnvifControl::getNetworkInterfaces() {
     if (_proxyDevice == nullptr) {
         WarnL << "Unknown proxyDevice";
         return false;
@@ -415,12 +413,12 @@ bool OnvifController::getNetworkInterfaces() {
     _tds__GetNetworkInterfaces *GetNetworkInterfaces = soap_new__tds__GetNetworkInterfaces(_m_soap);
     _tds__GetNetworkInterfacesResponse GetNetworkInterfacesResponse;
     if (!setCredentials()) {
-        destroyControl();
+        disconnect();
         return false;
     }
     if (_proxyDevice->GetNetworkInterfaces(GetNetworkInterfaces, GetNetworkInterfacesResponse)) {
         reportError();
-        destroyControl();
+        disconnect();
         return false;
     }
 
@@ -433,14 +431,14 @@ bool OnvifController::getNetworkInterfaces() {
     return true;
 }
 
-void OnvifController::reportError() {
+void OnvifControl::reportError() {
     std::ostringstream oss;
     soap_stream_fault(_m_soap, oss);
     _soapErrMsg = oss.str();
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
-bool OnvifController::setCredentials() {
+bool OnvifControl::setCredentials() {
     soap_wsse_delete_Security(_m_soap);
     // Access with username, password and lifetime
     if (soap_wsse_add_Timestamp(_m_soap, "Time", 10) ||
@@ -451,7 +449,7 @@ bool OnvifController::setCredentials() {
     return true;
 }
 
-bool OnvifController::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
+bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -482,7 +480,7 @@ bool OnvifController::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
     return true;
 }
 
-bool OnvifController::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
+bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -525,7 +523,7 @@ bool OnvifController::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float 
     return true;
 }
 
-tt__MoveStatus OnvifController::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return tt__MoveStatus__UNKNOWN;
@@ -565,7 +563,7 @@ tt__MoveStatus OnvifController::PTZ_GetStatus(float &pan, float &tilt, float &zo
     return tt__MoveStatus__UNKNOWN;
 }
 
-bool OnvifController::PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout) {
+bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -602,7 +600,7 @@ bool OnvifController::PTZ_ContinuousMove(float pan, float tilt, float zoom, int 
     return true;
 }
 
-bool OnvifController::PTZ_Stop(bool panTilt, bool zoom) {
+bool OnvifControl::PTZ_Stop(bool panTilt, bool zoom) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -633,7 +631,7 @@ bool OnvifController::PTZ_Stop(bool panTilt, bool zoom) {
     return true;
 }
 
-bool OnvifController::PTZ_RelativeMove(float pan, float tilt, float zoom) {
+bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -664,7 +662,7 @@ bool OnvifController::PTZ_RelativeMove(float pan, float tilt, float zoom) {
     return true;
 }
 
-bool OnvifController::PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
+bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -708,7 +706,7 @@ bool OnvifController::PTZ_RelativeMove(float pan, float tilt, float zoom, float 
     return true;
 }
 
-vector<OnvifMediaProfile> OnvifController::selectStreamUrls(bool include_secondary) {
+vector<OnvifMediaProfile> OnvifControl::selectStreamUrls(bool include_secondary) {
     vector<OnvifMediaProfile> ret;
     bool found_primary = false;
     // find primary stream that eligible for

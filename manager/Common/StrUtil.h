@@ -57,6 +57,15 @@ public:
     static std::string writeJsonString(const Json::Value &in);
 };
 
+class StampUtils {
+public:
+    static uint64_t getStartOfDay(uint64_t seconds);
+
+    static uint64_t getStartOfHour(uint64_t seconds);
+
+    static uint64_t getStartOfMinute(uint64_t seconds);
+};
+
 } // namespace managerkit
 
 #endif // COMMON_STRUTIL_H

@@ -29,26 +29,26 @@ bool CameraController::isControlReady() const {
     return _ready.load(); 
 }
 
-void CameraController::setupController(const CameraInfo &info, const CameraOption &option) {
+void CameraController::setupController(const CameraOption &option) {
     lock_guard<mutex> lck(_mtx_ctr);
     if (_onvif_ctr) {
-        DebugL << "Controller already exists: " << info.shortUrl() << ". Recreate controller due to configuration changed";
+        DebugL << "Controller already exists. Recreate controller due to configuration changed";
         _onvif_ctr.reset();
     }
 
-    if (info.manufacturer == GENERIC_RTSP_CAMERA) {
+    if (option.manufacturer == GENERIC_RTSP_CAMERA) {
         WarnL << "Generic RTSP camera controller is not implemented yet";
         return;
     }
 
-    if (info.ip.empty() || info.port == 0) {
-        WarnL << "Invalid camera info, ip or port is empty: " << info.shortUrl();
+    if (option.ip.empty() || option.port == 0) {
+        WarnL << "Invalid camera address, ip or port is empty";
         return;
     }
 
-    string address = info.ip;
+    string address = option.ip;
     if (option.autoWebPort) {
-        address += ":" + (info.port > 0 ? to_string(info.port) : "80");
+        address += ":" + (option.port > 0 ? to_string(option.port) : "80");
     } else {
         address += ":" + (option.webPort > 0 ? to_string(option.webPort) : "80");
     }
@@ -56,11 +56,17 @@ void CameraController::setupController(const CameraInfo &info, const CameraOptio
     // create new controller, currently only support onvif controller
     // todo: create plugin from manufactor and model
     // todo: support PSI controller
-    _onvif_ctr = std::make_shared<OnvifController>(address, info.username, info.password);
-    DebugL << "Created Onvif controller for device: " << info.shortUrl();
+    _onvif_ctr = std::make_shared<OnvifControl>(address, option.username, option.password);
+    DebugL << "Created Onvif controller for device: " << address 
+        << ", username: " << (option.username.empty() ? "empty" : "******")
+        << ", password: " << (option.password.empty() ? "empty" : "******");
 
-    _info = info;
-    _option = option;
+     // save camera option for later use
+    _address = address;
+    _enablePTZControl = option.enablePTZControl;
+    _reservePanAxis = option.reservePanAxis;
+    _reserveTiltAxis = option.reserveTiltAxis;
+    _ptzMode = option.ptzMode;
 }
 
 void CameraController::stopController() {  
@@ -74,7 +80,7 @@ void CameraController::stopController() {
         _onvif_ctr.reset();
         _ready = false;
     }
-    DebugL << "Closed camera controller: " << _info.shortUrl();
+    DebugL << "Closed camera controller for device: " << _address;
 }
 
 void CameraController::onManager() {
@@ -88,10 +94,10 @@ void CameraController::onManager() {
         if (!_ready && time(nullptr) - _last_reconnect_time >= 60) {
             if (_onvif_ctr) {
                 // reconnect to device
-                if (_onvif_ctr->initControl()) {
+                if (_onvif_ctr->connect()) {
                     _ready = true;
                     _err_msg = "connected";
-                    InfoL << "Onvif controller of device " << _info.shortUrl() << " connected";
+                    InfoL << "Onvif controller of device connected: " << _address;
 
                     // get device capabilities after connected
                     _device_caps.isOnvifDevice = true;
@@ -101,7 +107,7 @@ void CameraController::onManager() {
                 } else {
                     _ready = false;
                     _err_msg = _onvif_ctr->getSoapErrMsg();
-                    WarnL << "Onvif controller of device " << _info.shortUrl() << " connect failed: " << _err_msg;
+                    WarnL << "Onvif controller of device " << _address << " connect failed: " << _err_msg;
                 }
                 call_on_ready = true;
             }
@@ -122,7 +128,7 @@ void CameraController::onManager() {
     // });
 }
 
-static void onvifPTZMove(const OnvifController::Ptr &ptr, int ptz_mode, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
+static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
         return;
@@ -219,12 +225,13 @@ static void onvifPTZMove(const OnvifController::Ptr &ptr, int ptz_mode, PTZ_DIRE
             return 0;
         });
     }
+    /* Unreachable */
     cb(SockException(Err_other, "Device does not support selected PTZ control mode", ApiErrCode::CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE));
 }
 
 bool CameraController::enablePTZ() {
     bool enable_ptz = false;
-    OnvifController::Ptr onvif_ptr;
+    OnvifControl::Ptr onvif_ptr;
     {
         lock_guard<mutex> lck(_mtx_ctr);
         onvif_ptr = _onvif_ctr;
@@ -243,7 +250,7 @@ const std::string CameraController::getErrMsg() const {
 
 void CameraController::PTZMove(std::string &strDirect, int &speed, const function<void(const SockException &ex)> &cb) {
     // check permission from camera option
-    if (!_option.enablePTZControl) {
+    if (!_enablePTZControl) {
         cb(SockException(Err_other, "Camera is configured to disable PTZ control", ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ));
         return;
     }
@@ -251,13 +258,13 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
     // convert direction string to PTZ_DIRECT
     PTZ_DIRECT direct;
     if (strDirect == "up")
-        direct = !_option.reservePanAxis ? PTZ_DIRECT::Up : PTZ_DIRECT::Down;
+        direct = !_reservePanAxis ? PTZ_DIRECT::Up : PTZ_DIRECT::Down;
     else if (strDirect == "down")
-        direct = !_option.reservePanAxis ? PTZ_DIRECT::Down : PTZ_DIRECT::Up;
+        direct = !_reservePanAxis ? PTZ_DIRECT::Down : PTZ_DIRECT::Up;
     else if (strDirect == "right")
-        direct = !_option.reserveTiltAxis ? PTZ_DIRECT::Right : PTZ_DIRECT::Left;
+        direct = !_reserveTiltAxis ? PTZ_DIRECT::Right : PTZ_DIRECT::Left;
     else if (strDirect == "left")
-        direct = !_option.reserveTiltAxis ? PTZ_DIRECT::Left : PTZ_DIRECT::Right;
+        direct = !_reserveTiltAxis ? PTZ_DIRECT::Left : PTZ_DIRECT::Right;
     else if (strDirect == "zoomIn")
         direct = PTZ_DIRECT::ZoomIn;
     else if (strDirect == "zoomOut")
@@ -266,14 +273,14 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
         direct = PTZ_DIRECT::Home;
 
     // find controller
-    OnvifController::Ptr onvif_ptr;
+    OnvifControl::Ptr onvif_ptr;
     {
         lock_guard<mutex> lck(_mtx_ctr);
         onvif_ptr = _onvif_ctr;
     }
     
     if (onvif_ptr && _ready.load()) {
-        onvifPTZMove(onvif_ptr, _option.ptzMode, direct, speed, cb);
+        onvifPTZMove(onvif_ptr, _ptzMode, direct, speed, cb);
         return;
     }
     // todo: add more ptz function from manufacturer sdk

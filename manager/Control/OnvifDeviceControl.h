@@ -6,7 +6,7 @@
 #include "soapMediaBindingProxy.h"
 #include "soapImagingBindingProxy.h"
 #include "soapPTZBindingProxy.h"
-#include "Common/DeviceController.h"
+#include "Common/DeviceControl.h"
 
 namespace managerkit {
 
@@ -71,15 +71,18 @@ struct OnvifMediaProfile {
     VideoConfigOption vOption;
 };
 
-class OnvifController : public DeviceController {
+using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
+
+class OnvifControl : public DeviceControl {
 public:
-    using Ptr = std::shared_ptr<OnvifController>;
-    using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
+    using Ptr = std::shared_ptr<OnvifControl>;
 
-    OnvifController(std::string strDeviceIp, std::string strUsername = "", std::string strPassword = "");
-    ~OnvifController() override;
+    OnvifControl(std::string strDeviceIp, std::string strUsername = "", std::string strPassword = "");
+    ~OnvifControl() override;
 
-    bool initControl() override;
+    bool connect() override;
+
+    void disconnect() override;
 
     /**
      * Get onvif device info
@@ -141,11 +144,12 @@ public:
      */
     bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
 
+    /**
+     * Get last soap error message
+     */
     std::string getSoapErrMsg() { return _soapErrMsg; }
 
 private:
-    bool destroyControl();
-
     void reportError();
 
     /**

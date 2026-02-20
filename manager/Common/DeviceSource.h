@@ -3,11 +3,12 @@
 
 #include <memory>
 #include <string>
-#include "Util/util.h"
+#include "Poller/EventPoller.h"
 #include "Util/TimeTicker.h"
 #include "Poller/Timer.h"
 
-#define CAMERA_SCHEMA "camera"
+#define GENERIC_RTSP_CAMERA_SCHEMA "generic_rtsp_camera"
+// todo: add more device types here
 
 namespace managerkit {
 
@@ -22,8 +23,7 @@ bool equalDeviceTuple(const DeviceTuple &a, const DeviceTuple &b);
 
 enum class DeviceOriginType : uint8_t {
     unknown = 0,
-    generic_rtsp_camera,
-    onvif_camera,
+    api,
 };
 
 std::string getOriginTypeString(DeviceOriginType type);
@@ -52,17 +52,11 @@ public:
 // This object is used to intercept interesting DeviceSourceEvent events
 class DeviceSourceEventInterceptor : public DeviceSourceEvent {
 public:
-    void setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener);
-    std::shared_ptr<DeviceSourceEvent> getDelegate() const;
-
-    DeviceOriginType getOriginType(DeviceSource &sender) const override;
-    std::string getOriginUrl(DeviceSource &sender) const override;
+    void addDelegate(const std::weak_ptr<DeviceSourceEvent> &listener);
 
     void onRegist(DeviceSource &sender, bool regist) override;
-    toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override;
-
 private:
-    std::weak_ptr<DeviceSourceEvent> _listener;
+    std::vector<std::weak_ptr<DeviceSourceEvent>> _listeners;
 };
 
 /**
@@ -70,16 +64,16 @@ private:
  */
 class DeviceSource : public std::enable_shared_from_this<DeviceSource> {
 public:
+    static DeviceSource& NullDeviceSource();
     using Ptr = std::shared_ptr<DeviceSource>;
     DeviceSource(const std::string &schema, const DeviceTuple &tuple);
     virtual ~DeviceSource();
 
-    //////////////Get MediaSource information////////////////
-
+    //////////////Get DeviceSource information////////////////
     // Get protocol type
     const std::string& getSchema() const { return _schema; }
-    // get camera tuple
-    const DeviceTuple &getDeviceTuple() const { return _tuple; };
+    // Get device tuple
+    const DeviceTuple &getDeviceTuple() const { return _tuple; }
 
     std::string getUrl() const { return _schema + "://" + _tuple.shortUrl(); }
 
@@ -91,7 +85,7 @@ public:
     // Get the stream online time, unit seconds
     uint64_t getAliveSecond() const;
 
-    // //////////////MediaSourceEvent related interface implementation////////////////
+    // //////////////DeviceSourceEvent related interface implementation////////////////
 
     // Set listener
     virtual void setListener(const std::weak_ptr<DeviceSourceEvent> &listener);
@@ -108,10 +102,10 @@ public:
 
     //////////////static methods, find or generate DeviceSource////////////////
 
-    // Synchronously find the camera by id
-    static Ptr find(const std::string &schema, const std::string &vhost, const std::string &device_id);
-    // Ignore schema, synchronously find the device, may return generic camera/onvif camera type
-    static Ptr find(const std::string &vhost, const std::string &device_id);
+    // Synchronously find device source by id
+    static DeviceSource::Ptr find(const std::string &schema, const std::string &vhost, const std::string &device_id);
+    // Ignore schema, synchronously find device source by id
+    static DeviceSource::Ptr find(const std::string &vhost, const std::string &device_id);
     
     // Traverse all device
     static void for_each_device(const std::function<void(const Ptr &src)> &cb, const std::string schema = "", const std::string vhost = "", const std::string device_id = "");

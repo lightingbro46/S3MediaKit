@@ -14,8 +14,7 @@ INSTANCE_IMP(CameraManager)
 
 CameraManager::CameraManager() {}
 
-template <typename Pointer>
-static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTuple> &stream_map) {
+static bool equalStreamConfig(GenericRtspCamera::Ptr ptr, int type, unordered_map<int, StreamTuple> &stream_map) {
     if (stream_map.find(type) != stream_map.end()) {
         return ptr->hasStreamTuple(type) && ptr->getStreamTuple(type) == stream_map[type];
     } else {
@@ -23,62 +22,58 @@ static bool equalStreamConfig(Pointer ptr, int type, unordered_map<int, StreamTu
     }
 }
 
-template <typename Pointer>
-static bool equalCameraConfig(Pointer ptr, CameraInfo &info, unordered_map<int, StreamTuple> &stream_map) {
-    auto _info = ptr->getCameraInfo();
-    if (!(_info == info)) {
-        return false;
-    }
-    return ptr->getCameraInfo() == info && 
-        equalStreamConfig(ptr, PrimaryStream, stream_map) &&
-        equalStreamConfig(ptr, SecondaryStream, stream_map);
+static bool equalCameraConfig(GenericRtspCameraImp::Ptr ptr, DeviceTuple &tuple, unordered_map<int, StreamTuple> &stream_map) {
+    auto src = ptr->getCameraSource();
+    return equalDeviceTuple(src->getDeviceTuple(), tuple) && 
+        equalStreamConfig(src, PrimaryStream, stream_map) &&
+        equalStreamConfig(src, SecondaryStream, stream_map);
 }
 
-bool CameraManager::addCamera(CameraInfo &info, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
+bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordered_map<int, StreamTuple> &stream_map) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
     if (!isReady()) {
         TraceL << "Camera manager has not been ready";
         return false;
     }
 
-    auto it = _gcImp.find(info.shortUrl());
+    auto it = _gcImp.find(tuple.shortUrl());
     if  (it != _gcImp.end()) {
         // device tuple already exist
         auto gc = it->second;
         if (gc) {
-            if (equalCameraConfig(gc, info, stream_map)) {
+            if (equalCameraConfig(gc, tuple, stream_map)) {
                 gc->setCameraOption(option);
                 return true;
             }
             // configuration changed, remove old one
-            _gcImp.erase(info.shortUrl());
+            _gcImp.erase(tuple.shortUrl());
         }
     }
 
     // create new one
-    auto stats_imp = StatisticRecorder::Instance().getRecorder(info.device_id);
-    auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map, stats_imp);
+    auto stats_imp = StatisticRecorder::Instance().getRecorder(tuple.device_id);
+    auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats_imp);
     imp->setCameraOption(option);
-    _gcImp.emplace(info.shortUrl(), imp);
+    _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
 }
 
 bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
     auto params = stats->getParams();
-    auto info = params.info;
+    auto tuple = params.tuple;
     auto stream_map = params.stream_map;
     auto option = params.option;
-    auto it = _gcImp.find(info.shortUrl());
+    auto it = _gcImp.find(tuple.shortUrl());
     if  (it != _gcImp.end()) {
-        WarnL << "Camera " << info.shortUrl() << " already exist. Ignore add camera from statistics";
+        WarnL << "Camera " << tuple.shortUrl() << " already exist. Ignore add camera from statistics";
         return false;
     }
 
     // create new one
-    auto imp = std::make_shared<GenericRtspCameraImp>(info, stream_map, stats);
+    auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats);
     imp->setCameraOption(option);
-    _gcImp.emplace(info.shortUrl(), imp);
+    _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
 }
 
@@ -161,7 +156,7 @@ void CameraManager::loadSavedCameraInfo() {
                 return;
             }
             strong_self->addCamera(stats);
-            DebugL << "Added saved info: " << stats->getParams().info.shortUrl();
+            DebugL << "Added saved info: " << stats->getParams().tuple.shortUrl();
             return;
         };
 

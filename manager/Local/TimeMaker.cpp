@@ -2,45 +2,17 @@
 #include "TimeMaker.h"
 #include "Common/config.h"
 #include "Util/util.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace managerkit {
 
-uint64_t getStartOfDay(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
-
-    tm->tm_hour = 0;
-    tm->tm_min = 0;
-    tm->tm_sec = 0;
-
-    return static_cast<uint64_t>(std::mktime(tm));
-}
-
-uint64_t getStartOfHour(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
-
-    tm->tm_min = 0;
-    tm->tm_sec = 0;
-
-    return static_cast<uint64_t>(std::mktime(tm));
-}
-
-uint64_t getStartOfMinute(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
-
-    tm->tm_sec = 0;
-
-    return static_cast<uint64_t>(std::mktime(tm));
-}
 ////////////////////// TimeMaker ////////////////////////
 
 bool TimeMaker::inputData(uint64_t &block_time, size_t &block_size) {
-    auto last_minute = getStartOfMinute(block_time);
+    auto last_minute = StampUtils::getStartOfMinute(block_time);
     if (last_minute > getLastStamp()) {
         BlockListIndexEntry entry;
         entry.start_time = last_minute;

@@ -8,30 +8,32 @@
 
 namespace managerkit {
 
-struct CameraInfo : public DeviceTuple {
-    std::string manufacturer;
-    std::string model;
-    std::string ip;
-    int port = 0;
-    std::string username;
-    std::string password;
-
-    bool operator==(const CameraInfo& other) const{
-        return ip == other.ip &&
-            port == other.port && 
-            username == other.username &&
-            password == other.password &&
-            manufacturer == other.manufacturer &&
-            model == other.model &&
-            name == other.name;
-    }
-};
-
 class CameraOption {
 public:
     CameraOption() {
         // todo: load default value from database
     }
+
+    // camera name 
+    std::string name;
+
+    // camera manufacturer
+    std::string manufacturer;
+
+    // camera model
+    std::string model;
+
+    // camera IP address or domain name
+    std::string ip;
+
+    // camera http port
+    int port = 0;
+
+    // camera credential username
+    std::string username;
+
+    // camera credential password
+    std::string password;
 
     // whether to disable primary stream
     bool disablePrimaryStream = false;
@@ -63,7 +65,7 @@ public:
     // whether to enable camera
     bool enableActive = false;
 
-    // use other media port instead of defaunt port of stream url
+    // use other media port instead of default port of stream url
     int mediaPort = 0;
 
     // whether to use other media port
@@ -132,7 +134,14 @@ public:
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
     bool operator==(const CameraOption& other) const{
-        return disablePrimaryStream == other.disablePrimaryStream &&
+        return name == other.name &&
+               manufacturer == other.manufacturer &&
+               model == other.model &&
+               ip == other.ip &&
+               port == other.port &&
+               username == other.username &&
+               password == other.password &&
+               disablePrimaryStream == other.disablePrimaryStream &&
                disableSecondaryStream == other.disableSecondaryStream &&
                doNotRecordPrimaryStream == other.doNotRecordPrimaryStream &&
                doNotRecordSecondaryStream == other.doNotRecordSecondaryStream &&
@@ -163,6 +172,8 @@ public:
     }
 };
 
+class GenericRtspCameraImp;
+
 /**
  * Data abstraction of generic camera source
  * Camera has two key elements, info and streams
@@ -170,12 +181,11 @@ public:
  */
 class GenericRtspCamera : public DeviceSource {
 public:
+    friend class GenericRtspCameraImp;
     using Ptr = std::shared_ptr<GenericRtspCamera>;
 
-    GenericRtspCamera(const CameraInfo &info, const std::unordered_map<int, StreamTuple> &stream_map)
-        : DeviceSource(CAMERA_SCHEMA, info), _info(info), _stream_map(stream_map) {}
-
-    const CameraInfo& getCameraInfo() const { return _info; }
+    GenericRtspCamera(const DeviceTuple &tuple, const std::unordered_map<int, StreamTuple> &stream_map)
+        : DeviceSource(GENERIC_RTSP_CAMERA_SCHEMA, tuple), _stream_map(stream_map) {}
 
     bool hasStreamTuple(int type) const { 
         auto it = _stream_map.find(type);
@@ -191,7 +201,6 @@ public:
     }
 
 protected:
-    CameraInfo _info;
     std::unordered_map<int, StreamTuple> _stream_map;
 };
 

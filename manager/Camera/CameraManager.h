@@ -12,7 +12,7 @@ public:
     static CameraManager& Instance();
     ~CameraManager() = default;
 
-    bool addCamera(CameraInfo &info, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map);
+    bool addCamera(DeviceTuple &tuple, CameraOption &option, std::unordered_map<int, StreamTuple> &stream_map);
 
     bool addCamera(CameraStatisticImp::Ptr &stats);
 

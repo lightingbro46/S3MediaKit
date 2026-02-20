@@ -72,8 +72,6 @@
 #include "Storage/Certification.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
-#include "Extension/Plugin.h"
-#include "ext-plugin/onvif.h"
 #include "Camera/GenericRtspCameraImp.h"
 #include "Onvif/Onvif.h"
 #include "Onvif/SoapUtil.h"
@@ -3247,21 +3245,32 @@ void installWebApi() {
                 return;
             }
 
-            auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
-            if (!ptr) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
                 return;
             }
 
-            ptr->getOwnerPoller()->async([=]() mutable {
-                ptr->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
-                    if (ex) {
-                        RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (impl) {
+                        impl->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                val["msg"] = ex.what();
+                                invoker(200, headerOut, val.toStyledString());
+                            }
+                        });
                     } else {
-                        val["msg"] = ex.what();
-                        invoker(200, headerOut, val.toStyledString());
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
                     }
-                });
+                } else {
+                    /* Unreachable */
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
             });
         };
 

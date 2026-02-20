@@ -8,10 +8,11 @@ using namespace mediakit;
 
 namespace managerkit {
 
-GenericRtspCameraImp::GenericRtspCameraImp(const CameraInfo& info, const std::unordered_map<int, StreamTuple>& stream_map, const CameraStatisticImp::Ptr& statistic)
-    : GenericRtspCamera(info, stream_map), _statistic(statistic) {
+GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::unordered_map<int, StreamTuple>& stream_map, const CameraStatisticImp::Ptr& statistic)
+    : _statistic(statistic) {
     _poller = EventPollerPool::Instance().getPoller();
-    statistic->setCameraInfo(info);
+    _src = std::make_shared<GenericRtspCamera>(tuple, stream_map);
+    statistic->setDeviceTuple(tuple);
     statistic->setStreamTuples(stream_map);
 }
 
@@ -41,7 +42,12 @@ void GenericRtspCameraImp::onAllStreamReady() {
         return;
     }
     _all_stream_ready = true;
-    regist();
+    if (_src) {
+        // set this as listener to handle device events
+        _src->setListener(shared_from_this());
+        // trigger device registration event
+        _src->regist();
+    }
 }
 
 void GenericRtspCameraImp::setupController() {
@@ -57,13 +63,13 @@ void GenericRtspCameraImp::setupController() {
 
             // update device capabilities if controller is connected
             if (connect) {
-                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *this);
+                auto sender = _src;
+                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
             }
         });
         _controller->start();
     }
-    auto info = getCameraInfo();
-    _controller->setupController(info, _option);
+    _controller->setupController(_option);
 }
 
 void GenericRtspCameraImp::setupStreamSink() {
@@ -80,21 +86,19 @@ void GenericRtspCameraImp::setupStreamSink() {
         _sink->start();
     }
 
-    auto info = getCameraInfo();
-
-    if (hasStreamTuple(PrimaryStream)) {
+    if (_src->hasStreamTuple(PrimaryStream)) {
         if (!_option.disablePrimaryStream) {
-            auto tuple = getStreamTuple(PrimaryStream);
-            _sink->setupMonitor(PrimaryStream, tuple, info, _option);
+            auto tuple = _src->getStreamTuple(PrimaryStream);
+            _sink->setupMonitor(PrimaryStream, tuple, _option);
         } else {
             _sink->stopMonitor(PrimaryStream);
         }
     }
 
-    if (hasStreamTuple(SecondaryStream)) {
+    if (_src->hasStreamTuple(SecondaryStream)) {
         if (!_option.disableSecondaryStream) {
-            auto tuple = getStreamTuple(SecondaryStream);
-            _sink->setupMonitor(SecondaryStream, tuple, info, _option);
+            auto tuple = _src->getStreamTuple(SecondaryStream);
+            _sink->setupMonitor(SecondaryStream, tuple, _option);
         } else {
             _sink->stopMonitor(SecondaryStream);
         }
@@ -108,10 +112,10 @@ void GenericRtspCameraImp::stop() {
         _controller->stopController();
     }
     if (_sink) {
-        if (hasStreamTuple(PrimaryStream)) {
+        if (_src->hasStreamTuple(PrimaryStream)) {
             _sink->stopMonitor(PrimaryStream);
         }
-        if (hasStreamTuple(SecondaryStream)) {
+        if (_src->hasStreamTuple(SecondaryStream)) {
             _sink->stopMonitor(SecondaryStream);
         }
     }
@@ -119,7 +123,7 @@ void GenericRtspCameraImp::stop() {
     onAllStreamReady();
 }
 
-void GenericRtspCameraImp::PTZMove(std::string &strDirect, int &speed, const std::function<void(const SockException &ex)> &cb) {
+void GenericRtspCameraImp::PTZMove(std::string &strDirect, int speed, const std::function<void(const SockException &ex)> &cb) {
     if (_controller) {
         _controller->PTZMove(strDirect, speed, cb);
     } else {
@@ -145,11 +149,21 @@ void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
     strong_statistic->setCameraOption(option);
 }   
 
-void GenericRtspCameraImp::onMotionDetected(bool bActive, uint64_t pre_ms) {
-    // Implementation here
-    // check record mode in this hours
-    // start recording if bActive is true
-    // stop recording if bActive is false
-}
+// void GenericRtspCameraImp::onMotionDetected(bool bActive, uint64_t pre_ms) {
+//     if (_recorder) {
+//         _recorder->onRecordEvent(bActive, pre_ms);
+//     }
+// }
+
+// void GenericRtspCameraImp::setupRecorder() {
+//     if (!_recorder) {
+//         _recorder = std::make_shared<RecordingController>(_poller);
+//         _recorder->setOnRecordModeChange([this](int type, bool start, bool archive, int backtime_ms) {
+//             DebugL << "Recording mode changed to " << (start ? "start" : "stop") << ", archive: " << archive << ", backtime_ms: " << backtime_ms;
+//         });
+//         _recorder->start();
+//     }
+//     _recorder->setScheduleStr(_option.recordSchedules);
+// }
 
 } // namespace managerkit

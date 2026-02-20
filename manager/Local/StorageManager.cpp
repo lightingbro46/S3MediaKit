@@ -153,50 +153,54 @@ static RecordProfiles getRecordProfiles() {
     RecordProfiles profiles;
     time_t current_time = time(nullptr);
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
-        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(src);
-        if (ptr) {
-            auto option = ptr->getCameraOption();
-            uint64_t min_value = 0;
-            uint64_t max_value = 0;
-            if (option.keepArchivedMinForAuto) {
-                min_value = current_time;
-            } else {
-                min_value = current_time - option.keepArchivedMinFor;
-            }
+        auto weak_listener = src->getListener();
+        if (auto strong_listener = weak_listener.lock()) {
+            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+            if (impl) {
+                auto camera = dynamic_pointer_cast<GenericRtspCamera>(src);
+                auto option = impl->getCameraOption();
+                uint64_t min_value = 0;
+                uint64_t max_value = 0;
+                if (option.keepArchivedMinForAuto) {
+                    min_value = current_time;
+                } else {
+                    min_value = current_time - option.keepArchivedMinFor;
+                }
 
-            if (option.keepArchivedMaxForAuto) {
-                auto stats_imp = ptr->getCameraStatisticImp();
-                if (stats_imp) {
-                    // get oldest block from both stream proxy
-                    auto storage_stats = stats_imp->getParams().storage_map;
-                    uint64_t first_block_time = 0;
-                    for (const auto &it : storage_stats) {
-                        if (first_block_time == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < first_block_time)) {
-                            first_block_time = it.second.archiveStartTime;
+                if (option.keepArchivedMaxForAuto) {
+                    auto stats_imp = impl->getCameraStatisticImp();
+                    if (stats_imp) {
+                        // get oldest block from both stream proxy
+                        auto storage_stats = stats_imp->getParams().storage_map;
+                        uint64_t first_block_time = 0;
+                        for (const auto &it : storage_stats) {
+                            if (first_block_time == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < first_block_time)) {
+                                first_block_time = it.second.archiveStartTime;
+                            }
+                        }
+                        if (first_block_time != 0) {
+                            max_value = first_block_time;
                         }
                     }
-                    if (first_block_time != 0) {
-                        max_value = first_block_time;
+                    if (max_value == 0) {
+                        // no recorded statistic data, use default 6 months
+                        uint64_t max_keep_archived_max_for =  6 * 30 * 24 * 3600; // default 6 months
+                        max_value = current_time - max_keep_archived_max_for;
                     }
+                } else {
+                    max_value = current_time - option.keepArchivedMaxFor;
                 }
-                if (max_value == 0) {
-                    // no recorded statistic data, use default 6 months
-                    uint64_t max_keep_archived_max_for =  6 * 30 * 24 * 3600; // default 6 months
-                    max_value = current_time - max_keep_archived_max_for;
-                }
-            } else {
-                max_value = current_time - option.keepArchivedMaxFor;
-            }
 
-            if (ptr->hasStreamTuple(PrimaryStream)) {
-                auto tuple = ptr->getStreamTuple(PrimaryStream);
-                string key_primary = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
-                profiles.emplace(key_primary, make_pair(min_value, max_value));
-            }
-            if (ptr->hasStreamTuple(SecondaryStream)) {
-                auto tuple = ptr->getStreamTuple(SecondaryStream);
-                string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
-                profiles.emplace(key_second, make_pair(min_value, max_value));
+                if (camera->hasStreamTuple(PrimaryStream)) {
+                    auto tuple = camera->getStreamTuple(PrimaryStream);
+                    string key_primary = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
+                    profiles.emplace(key_primary, make_pair(min_value, max_value));
+                }
+                if (camera->hasStreamTuple(SecondaryStream)) {
+                    auto tuple = camera->getStreamTuple(SecondaryStream);
+                    string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
+                    profiles.emplace(key_second, make_pair(min_value, max_value));
+                }
             }
         }
     });

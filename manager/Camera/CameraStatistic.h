@@ -53,7 +53,7 @@ public:
 };
 
 struct CameraStatistic {
-    CameraInfo info;
+    DeviceTuple tuple;
     CameraOption option;
     std::unordered_map<int, StreamTuple> stream_map;
     BookmarkStats bm;
@@ -79,7 +79,7 @@ public:
 
     void setOnRemove(const std::function<void(const std::string&)> &cb) { _on_remove = std::move(cb); }
 
-    void setCameraInfo(const CameraInfo &input_info);
+    void setDeviceTuple(const DeviceTuple &input_tuple);
 
     void setStreamTuples(const std::unordered_map<int, StreamTuple> &input_stream_map);
 

@@ -1,5 +1,6 @@
 #include "TimeDemuxer.h"
 #include "Common/config.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -96,7 +97,7 @@ int64_t TimeDemuxer::seekTo(uint64_t stamp_sec) {
         uint64_t offset_time = getFirstStamp();
         // get last block that has start_time less than search value or first block in timeline
         BlockListIndexEntry entry;
-        auto block_minute = getStartOfMinute(stamp_sec);
+        auto block_minute = StampUtils::getStartOfMinute(stamp_sec);
         if (_maker->findLowerBound(entry, block_minute)) {
             offset_bytes = entry.offset;
             offset_time = entry.start_time;

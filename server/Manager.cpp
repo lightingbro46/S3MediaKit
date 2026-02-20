@@ -171,7 +171,7 @@ void installManagerHook () {
         }
         auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(device);
         if (ptr) {
-            ptr->onMotionDetected(bActive, pre_ms);
+            // ptr->onMotionDetected(bActive, pre_ms);
         }
     });
 
@@ -230,22 +230,22 @@ void migrateDatabase() {
         dst.name = default_value;                                                                                                                              \
     }
 
-static void fromJson(CameraInfo &info, const Json::Value &data) {
+static void fromJson(DeviceTuple &tuple, const Json::Value &data) {
     // default vhost is __defaultVhost__
-    info.vhost = DEFAULT_VHOST;
+    tuple.vhost = DEFAULT_VHOST;
 
-    GET_OPTION_PROPERTY(info, device_id, data, id)
-    GET_OPTION_PROPERTY(info, name, data, name)
-    GET_OPTION_PROPERTY(info, manufacturer, data, manufacturer)
-    GET_OPTION_PROPERTY(info, model, data, model)
-    GET_OPTION_PROPERTY(info, username, data, username)
-    GET_OPTION_PROPERTY(info, password, data, password)
-    GET_OPTION_PROPERTY(info, ip, data, ip)
-    // http port default 80
-    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(info, port, data, httpPort, 80)
+    GET_OPTION_PROPERTY(tuple, device_id, data, id)
+    GET_OPTION_PROPERTY(tuple, name, data, name)
 }
 
 static void fromJson(CameraOption &option, const Json::Value &data) {
+    GET_OPTION_PROPERTY(option, manufacturer, data, manufacturer)
+    GET_OPTION_PROPERTY(option, model, data, model)
+    GET_OPTION_PROPERTY(option, username, data, username)
+    GET_OPTION_PROPERTY(option, password, data, password)
+    GET_OPTION_PROPERTY(option, ip, data, ip)
+    // http port default 80
+    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, port, data, httpPort, 80)
     GET_OPTION_PROPERTY(option, enableActive, data, enabled)
     GET_OPTION_PROPERTY(option, preferedMediaServer, data, priMediaServerId)
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
@@ -525,8 +525,8 @@ static Json::Value exampleJson() {
     device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
-    // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
+    device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    // device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
     // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
 
@@ -553,18 +553,18 @@ void loadServerConfigJson(const Json::Value &data1) {
 
         for (const auto &camera : data["devices"]) {
             // Get camera config from json data
-            CameraInfo info;
-            fromJson(info, camera);
+            DeviceTuple tuple;
+            fromJson(tuple, camera);
             CameraOption option;
             fromJson(option, camera);
             unordered_map<int, StreamTuple> stream_map;
             fromJson(stream_map, camera);
 
             // Add or update camera config
-            CameraManager::Instance().addCamera(info, option, stream_map);
+            CameraManager::Instance().addCamera(tuple, option, stream_map);
 
             // Remove active camera key from vector
-            current_cameras.erase(std::remove(current_cameras.begin(), current_cameras.end(), info.shortUrl()), current_cameras.end());
+            current_cameras.erase(std::remove(current_cameras.begin(), current_cameras.end(), tuple.shortUrl()), current_cameras.end());
         }
 
         // Remove all inactive camera
@@ -635,36 +635,40 @@ static Json::Value makeStreamStatisticJson(CameraStatistic &params, int type) {
 void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     Json::Value data = Json::arrayValue;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        auto camera = dynamic_pointer_cast<GenericRtspCameraImp>(device);
-        if (camera) {
-            auto stats_imp = camera->getCameraStatisticImp();
-            if (stats_imp) {
-                auto params = stats_imp->getParams();
-                auto option = params.option;
-                if (option.enableFailover && !camera->isEnabled()) {
-                    // this camera run in failover mode and actual camera connection run on prefered media server
-                    return;
-                }
-                Json::Value item;
-                item["deviceId"] = params.info.device_id;
-                item["status"] = params.device_stats.connect;
-                item["errMsg"] = params.device_stats.status;
-                if (camera->hasStreamTuple(PrimaryStream)) {
-                    item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
-                    item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
-                } else {
-                    item["primaryStreamId"] = Json::nullValue;
-                    item["primaryStream"] = Json::nullValue;
-                }
+        auto weak_listener = device->getListener();
+        if (auto strong_listener = weak_listener.lock()) {
+            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+            if (impl) {
+                auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
+                auto stats_imp = impl->getCameraStatisticImp();
+                if (stats_imp) {
+                    auto params = stats_imp->getParams();
+                    auto option = params.option;
+                    if (option.enableFailover && !impl->isEnabled()) {
+                        // this camera run in failover mode and actual camera connection run on prefered media server
+                        return;
+                    }
+                    Json::Value item;
+                    item["deviceId"] = params.tuple.device_id;
+                    item["status"] = params.device_stats.connect;
+                    item["errMsg"] = params.device_stats.status;
+                    if (camera->hasStreamTuple(PrimaryStream)) {
+                        item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
+                        item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
+                    } else {
+                        item["primaryStreamId"] = Json::nullValue;
+                        item["primaryStream"] = Json::nullValue;
+                    }
 
-                if (camera->hasStreamTuple(SecondaryStream)) {
-                    item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
-                    item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
-                } else {
-                    item["secondaryStreamId"] = Json::nullValue;
-                    item["secondaryStream"] = Json::nullValue;
+                    if (camera->hasStreamTuple(SecondaryStream)) {
+                        item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
+                        item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
+                    } else {
+                        item["secondaryStreamId"] = Json::nullValue;
+                        item["secondaryStream"] = Json::nullValue;
+                    }
+                    data.append(item);
                 }
-                data.append(item);
             }
         }
     });
@@ -711,46 +715,48 @@ static Json::Value getOnvifProfileJsonArray(const std::vector<OnvifMediaProfile>
 
 Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const DeviceCapabilities* caps) {
     Json::Value data;
-    auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(device);
-    if (ptr) {
-        auto info = ptr->getCameraInfo();
-        auto option = ptr->getCameraOption();
-        data["deviceId"] = info.device_id;
-        if (caps->isOnvifDevice) {
-            data["isOnvifDevice"] = true;
-            auto deviceInfo = caps->onvifProfile.deviceInfo;
-            data["manufacturer"] = deviceInfo.manufacturer;
-            data["model"] = deviceInfo.model;
-            data["serialNumber"] = deviceInfo.serialNumber;
-            data["firmwareVersion"] = deviceInfo.firmwareVersion;
-            data["hardwareId"] = deviceInfo.hardwareId;
-            data["macAddress"] = deviceInfo.macAddress;
-            data["hasWebPage"] = true;
-            data["webPage"] = StrPrinter << "http://" << info.ip << ":" << (option.autoWebPort ? info.port : option.webPort) << "/";
-            
-            Json::Value onvifProfileJson = Json::objectValue;
-            auto ptzProfile = caps->onvifProfile.ptzProfile;
-            onvifProfileJson["isPTZ"] = ptzProfile.isAbsMoveEnable || ptzProfile.isRelMoveEnable || ptzProfile.isConsMoveEnable;
-            onvifProfileJson["PTZControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
-            auto mediaProfiles = caps->onvifProfile.mediaProfiles;
-            onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
-            data["onvifProfiles"] = onvifProfileJson;
-        } else {
-            data["manufacturer"] = info.manufacturer.empty() ? GENERIC_RTSP_CAMERA : info.manufacturer;
-            data["model"] = info.model.empty() ? GENERIC_RTSP_CAMERA : info.model;
-            data["serialNumber"] = "";
-            data["firmwareVersion"] = "";
-            data["hardwareId"] = "";
-            data["macAddress"] = "";
-            data["hasWebPage"] = false;
-            data["webPage"] = "";
-            data["isOnvifDevice"] = false;
-            Json::Value onvifProfileJson = Json::objectValue;
-            onvifProfileJson["isPTZ"] = false;
-            onvifProfileJson["PTZControlMode"] = Json::arrayValue;
-            onvifProfileJson["profiles"] = Json::arrayValue;
-            data["onvifProfiles"] = onvifProfileJson;
-        }
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto option = impl->getCameraOption();
+            data["deviceId"] = device->getDeviceTuple().device_id;
+            if (caps->isOnvifDevice) {
+                data["isOnvifDevice"] = true;
+                auto deviceInfo = caps->onvifProfile.deviceInfo;
+                data["manufacturer"] = deviceInfo.manufacturer;
+                data["model"] = deviceInfo.model;
+                data["serialNumber"] = deviceInfo.serialNumber;
+                data["firmwareVersion"] = deviceInfo.firmwareVersion;
+                data["hardwareId"] = deviceInfo.hardwareId;
+                data["macAddress"] = deviceInfo.macAddress;
+                data["hasWebPage"] = true;
+                data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort) << "/";
+                
+                Json::Value onvifProfileJson = Json::objectValue;
+                auto ptzProfile = caps->onvifProfile.ptzProfile;
+                onvifProfileJson["isPTZ"] = ptzProfile.isAbsMoveEnable || ptzProfile.isRelMoveEnable || ptzProfile.isConsMoveEnable;
+                onvifProfileJson["PTZControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
+                auto mediaProfiles = caps->onvifProfile.mediaProfiles;
+                onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
+                data["onvifProfiles"] = onvifProfileJson;
+            } else {
+                data["manufacturer"] = !option.manufacturer.empty() ? option.manufacturer : GENERIC_RTSP_CAMERA;
+                data["model"] = !option.model.empty() ? option.model : GENERIC_RTSP_CAMERA;
+                data["serialNumber"] = "";
+                data["firmwareVersion"] = "";
+                data["hardwareId"] = "";
+                data["macAddress"] = "";
+                data["hasWebPage"] = false;
+                data["webPage"] = "";
+                data["isOnvifDevice"] = false;
+                Json::Value onvifProfileJson = Json::objectValue;
+                onvifProfileJson["isPTZ"] = false;
+                onvifProfileJson["PTZControlMode"] = Json::arrayValue;
+                onvifProfileJson["profiles"] = Json::arrayValue;
+                data["onvifProfiles"] = onvifProfileJson;
+            }
+        }   
     }
     return data;
 }
@@ -808,49 +814,52 @@ struct ServerStorageStatistic {
 
 static Json::Value makeDeviceStorageJson(const DeviceSource::Ptr& device, ServerStorageStatistic &server_stats) {
     Json::Value ret;
-    auto ptr = std::dynamic_pointer_cast<GenericRtspCameraImp>(device);
-    if (ptr) {
-        auto stats_imp = ptr->getCameraStatisticImp();
-        if (stats_imp) {
-            auto stats = stats_imp->getParams();
-            ret["id"] = stats.info.device_id;
-            ret["name"] = stats.info.name;
-            int bytes_speed = 0;
-            int desired_bytes_speed = 0;
-            for (const auto &it : stats.sinfo_map) {
-                if (it.second.live) {
-                    bytes_speed += it.second.byte_speed;
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto stats_imp = impl->getCameraStatisticImp();
+            if (stats_imp) {
+                auto stats = stats_imp->getParams();
+                ret["id"] = stats.tuple.device_id;
+                ret["name"] = stats.option.name;
+                int bytes_speed = 0;
+                int desired_bytes_speed = 0;
+                for (const auto &it : stats.sinfo_map) {
+                    if (it.second.live) {
+                        bytes_speed += it.second.byte_speed;
+                    }
+                    desired_bytes_speed += it.second.byte_speed;
                 }
-                desired_bytes_speed += it.second.byte_speed;
-            }
-            ret["bitrate"] = bytes_speed;
-            ret["desiredBitrate"] = desired_bytes_speed;
-            uint64_t oldest_time_block = 0;
-            uint64_t used_storage = 0;
-            for (const auto &it : stats.storage_map) {
-                if (oldest_time_block == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < oldest_time_block)) {
-                    oldest_time_block = it.second.archiveStartTime;
+                ret["bitrate"] = bytes_speed;
+                ret["desiredBitrate"] = desired_bytes_speed;
+                uint64_t oldest_time_block = 0;
+                uint64_t used_storage = 0;
+                for (const auto &it : stats.storage_map) {
+                    if (oldest_time_block == 0 || (it.second.archiveStartTime != 0 && it.second.archiveStartTime < oldest_time_block)) {
+                        oldest_time_block = it.second.archiveStartTime;
+                    }
+                    used_storage += it.second.archiveSizeB;
                 }
-                used_storage += it.second.archiveSizeB;
+                ret["oldestTimeBlock"] = oldest_time_block;
+                uint64_t desired_time_block = oldest_time_block;
+                if (!stats.option.keepArchivedMaxForAuto) {
+                    desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
+                }
+                ret["desiredTimeBlock"] = desired_time_block;
+                ret["usedStorage"] = used_storage;
+                auto isFailover = stats.option.enableFailover;
+                if (!isFailover) {
+                    server_stats.totalMainDevice++;
+                    server_stats.totalMainBitrate += bytes_speed;
+                    server_stats.totalMainUsedStorage += used_storage;
+                } else {
+                    server_stats.totalFailoverDevice++;
+                    server_stats.totalFailoverBitrate += bytes_speed;
+                    server_stats.totalFailoverUsedStorage += used_storage;
+                }
+                ret["isFailover"] = isFailover;
             }
-            ret["oldestTimeBlock"] = oldest_time_block;
-            uint64_t desired_time_block = oldest_time_block;
-            if (!stats.option.keepArchivedMaxForAuto) {
-                desired_time_block = time(nullptr) - stats.option.keepArchivedMaxFor;
-            }
-            ret["desiredTimeBlock"] = desired_time_block;
-            ret["usedStorage"] = used_storage;
-            auto isFailover = stats.option.enableFailover;
-            if (!isFailover) {
-                server_stats.totalMainDevice++;
-                server_stats.totalMainBitrate += bytes_speed;
-                server_stats.totalMainUsedStorage += used_storage;
-            } else {
-                server_stats.totalFailoverDevice++;
-                server_stats.totalFailoverBitrate += bytes_speed;
-                server_stats.totalFailoverUsedStorage += used_storage;
-            }
-            ret["isFailover"] = isFailover;
         }
     }
 
@@ -872,7 +881,7 @@ Json::Value makeStorageStatisticJson() {
                 data["mainDevices"].append(storage_json);
             }
         }
-    }, CAMERA_SCHEMA);
+    }, GENERIC_RTSP_CAMERA_SCHEMA);
 
     data["totalMainDevice"] = server_stats.totalMainDevice;
     data["totalMainBitrate"] = server_stats.totalMainBitrate;

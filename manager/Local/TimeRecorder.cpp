@@ -3,6 +3,7 @@
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 #include "TimeRecorder.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -37,7 +38,7 @@ void TimeRecorder::createFile() {
         uint64_t now = time(nullptr);
         auto date_str = getTimeStr("%Y-%m-%d", now);
         _full_path = StrPrinter << _path << "/" << date_str << ".s3db";
-        _next_open_time = getStartOfDay(now) + 86400; // close file after one day
+        _next_open_time = StampUtils::getStartOfDay(now) + 86400; // close file after one day
     } else {
         _full_path = _path;
     }

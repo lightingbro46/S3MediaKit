@@ -22,13 +22,21 @@ string getOriginTypeString(DeviceOriginType type){
 #define SWITCH_CASE(type) case DeviceOriginType::type : return #type
     switch (type) {
         SWITCH_CASE(unknown);
-        SWITCH_CASE(generic_rtsp_camera);
-        SWITCH_CASE(onvif_camera);
+        SWITCH_CASE(api);
         default : return "unknown";
     }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct DeviceSourceNull : public DeviceSource {
+    DeviceSourceNull() : DeviceSource("schema", DeviceTuple{"vhost", "device_id", ""}) {};
+};
+
+DeviceSource &DeviceSource::NullDeviceSource() {
+    static std::shared_ptr<DeviceSource> s_null = std::make_shared<DeviceSourceNull>();
+    return *s_null;
+}
 
 DeviceSource::DeviceSource(const string &schema, const DeviceTuple &tuple) : _tuple(tuple) {
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
@@ -67,7 +75,7 @@ uint64_t DeviceSource::getAliveSecond() const {
     return _ticker.createdTime() / 1000;
 }
 
-void DeviceSource::setListener(const std::weak_ptr<DeviceSourceEvent> &listener){
+void DeviceSource::setListener(const std::weak_ptr<DeviceSourceEvent> &listener) {
     _listener = listener;
 }
 
@@ -176,8 +184,8 @@ DeviceSource::Ptr DeviceSource::find(const std::string &schema, const std::strin
 
 DeviceSource::Ptr DeviceSource::find(const std::string &vhost, const std::string &device_id) {
     lock_guard<recursive_mutex> lock(s_device_source_mtx);
-    // todo: add more device type    
-    return  DeviceSource::find(CAMERA_SCHEMA, vhost, device_id);
+    // todo: add more device type here
+    return DeviceSource::find(GENERIC_RTSP_CAMERA_SCHEMA, vhost, device_id);
 }
 
 void DeviceSource::emitEvent(bool regist){
@@ -202,7 +210,7 @@ void DeviceSource::regist() {
                 return;
             }
             // Add judgment to prevent re-registration when the current device is already registered
-            throw std::invalid_argument("device source already existed:" + _tuple.device_id);
+            throw std::invalid_argument("Device source already existed:" + _tuple.device_id);
         }
         ref = shared_from_this();
     }
@@ -256,52 +264,17 @@ string DeviceSourceEvent::getOriginUrl(DeviceSource &sender) const {
     return sender.getUrl();
 }
 
-DeviceOriginType DeviceSourceEventInterceptor::getOriginType(DeviceSource &sender) const {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return DeviceSourceEvent::getOriginType(sender);
-    }
-    return listener->getOriginType(sender);
-}
-
-string DeviceSourceEventInterceptor::getOriginUrl(DeviceSource &sender) const {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return DeviceSourceEvent::getOriginUrl(sender);
-    }
-    auto ret = listener->getOriginUrl(sender);
-    if (!ret.empty()) {
-        return ret;
-    }
-    return DeviceSourceEvent::getOriginUrl(sender);
-}
-
 void DeviceSourceEventInterceptor::onRegist(DeviceSource &sender, bool regist) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return DeviceSourceEvent::onRegist(sender, regist);
+    for (const auto &weak_listener : _listeners) {
+        auto listener = weak_listener.lock();
+        if (listener) {
+            listener->onRegist(sender, regist);
+        }
     }
-    listener->onRegist(sender, regist);
 }
 
-toolkit::EventPoller::Ptr DeviceSourceEventInterceptor::getOwnerPoller(DeviceSource &sender) {
-    auto listener = _listener.lock();
-    if (!listener) {
-        return DeviceSourceEvent::getOwnerPoller(sender);
-    }
-    return listener->getOwnerPoller(sender);
-}
-
-
-void DeviceSourceEventInterceptor::setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener) {
-    if (listener.lock().get() == this) {
-        throw std::invalid_argument("can not set self as a delegate");
-    }
-    _listener = listener;
-}
-
-std::shared_ptr<DeviceSourceEvent> DeviceSourceEventInterceptor::getDelegate() const {
-    return _listener.lock();
+void DeviceSourceEventInterceptor::addDelegate(const std::weak_ptr<DeviceSourceEvent> &listener) {
+    _listeners.emplace_back(listener);
 }
 
 } // namespace managerkit

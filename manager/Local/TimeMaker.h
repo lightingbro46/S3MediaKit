@@ -7,12 +7,6 @@
 
 namespace managerkit {
 
-uint64_t getStartOfDay(uint64_t seconds);
-
-uint64_t getStartOfHour(uint64_t seconds);
-
-uint64_t getStartOfMinute(uint64_t seconds);
-
 struct BlockListIndexEntry {
     uint64_t start_time;
     uint64_t offset;

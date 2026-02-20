@@ -5,7 +5,7 @@
 #include "server/FFmpegSource.h"
 #include "server/WebApiErrCode.h"
 #include "Camera/GenericRtspCamera.h"
-#include "ext-plugin/onvif.h"
+#include "Control/OnvifDeviceControl.h"
 #include "SubnetScan.h"
 
 using namespace std;
@@ -115,8 +115,8 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
             port = 80;
         }
         string ipAddress = StrPrinter << ip << ":" << port;
-        auto onvif = std::make_shared<OnvifController>(ipAddress, username, password);
-        if (!onvif->initControl()) {
+        auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
+        if (!onvif->connect()) {
             cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
             return;
         }
@@ -128,7 +128,7 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
         ret.serialNumber = info.serialNumber;
         ret.hardwareId = info.hardwareId;
         ret.macAddress = info.macAddress;
-        ret.address = "http:// " + ipAddress; 
+        ret.address = "http://" + ipAddress; 
         ret.ip = ip;
         ret.port = port;
         ret.webPortAuto = defaultPort;

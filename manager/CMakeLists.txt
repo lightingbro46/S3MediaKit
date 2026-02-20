@@ -36,26 +36,30 @@ file(GLOB MANAGER_SRC_LIST
   ${CMAKE_CURRENT_SOURCE_DIR}/*/*.c)
 
 add_library(s3managerkit STATIC ${MANAGER_SRC_LIST})
-
 add_library(S3MediaKit::ManagerKit ALIAS s3managerkit)
+
+target_compile_definitions(s3managerkit PUBLIC ${COMPILE_DEFINITIONS})
+target_compile_options(s3managerkit PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 
 target_link_libraries(s3managerkit
   PUBLIC
     S3MediaKit::MediaKit
     S3MediaKit::ToolKit
-    S3MediaKit::ext-plugin
+  PRIVATE
+    onvifcore
+    ssl
+    crypto
+    z
     protocpp)
 
-target_compile_definitions(s3managerkit 
-  PUBLIC ${COMPILE_DEFINITIONS})
-target_compile_options(s3managerkit
-  PRIVATE ${COMPILE_OPTIONS_DEFAULT})
-  
 target_include_directories(s3managerkit
   PRIVATE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../3rdpart/onvif/core/include/>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../3rdpart/onvif/core/include/gsoap/>"
     "$<BUILD_INTERFACE:${GENERATED_PROTO_INCLUDE_DIR}>")
 
 update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_MANAGER)

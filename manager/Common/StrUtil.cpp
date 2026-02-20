@@ -256,4 +256,37 @@ string StrJsonUtils::writeJsonString(const Json::Value &in) {
     return output;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+uint64_t StampUtils::getStartOfDay(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
+
+    tm->tm_hour = 0;
+    tm->tm_min = 0;
+    tm->tm_sec = 0;
+
+    return static_cast<uint64_t>(std::mktime(tm));
+}
+
+uint64_t StampUtils::getStartOfHour(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
+
+    tm->tm_min = 0;
+    tm->tm_sec = 0;
+
+    return static_cast<uint64_t>(std::mktime(tm));
+}
+
+uint64_t StampUtils::getStartOfMinute(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm* tm = std::localtime(&t);
+
+    tm->tm_sec = 0;
+
+    return static_cast<uint64_t>(std::mktime(tm));
+}
+
+
 } // namespace managerkit

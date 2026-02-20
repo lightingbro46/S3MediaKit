@@ -1,6 +1,7 @@
 #include "Common/config.h"
 #include "Record/Recorder.h"
 #include "TimeQuery.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace toolkit;
@@ -143,7 +144,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         lock_guard<recursive_mutex> lck(_mtx);
 
         unordered_map<string /*date*/, set<int /*hour*/>> result;
-        auto start_date = getStartOfDay(start_time);
+        auto start_date = StampUtils::getStartOfDay(start_time);
         auto date = start_date;
         while (date < end_time) {
             string date_str = getTimeStr("%Y-%m-%d", date);
@@ -167,7 +168,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
-                if (getStartOfHour(block_start_time) < getStartOfHour(block_end_time) && getStartOfHour(block_end_time) < end_time) {
+                if (StampUtils::getStartOfHour(block_start_time) < StampUtils::getStartOfHour(block_end_time) && StampUtils::getStartOfHour(block_end_time) < end_time) {
                     string next_date_str = getTimeStr("%Y-%m-%d", block_end_time);
                     string next_hour_str = getTimeStr("%H", block_end_time);
                     auto &next_hour_map = result[next_date_str];
@@ -188,7 +189,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
             query(start_time, end_time, [&](const TimeBlock &block) {
                 string stream_id = block.stream();
                 if (result.find(stream_id) == result.end()) {
-                    auto start_date = getStartOfDay(start_time);
+                    auto start_date = StampUtils::getStartOfDay(start_time);
                     auto date = start_date;
                     while (date < end_time) {
                         string date_str = getTimeStr("%Y-%m-%d", date);
@@ -216,7 +217,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     string minute_str = getTimeStr("%M", current);
                     string second_str = getTimeStr("%S", current);
 
-                    int64_t start_of_hour = getStartOfHour(current);
+                    int64_t start_of_hour = StampUtils::getStartOfHour(current);
                     uint32_t offset_in_hour = static_cast<uint32_t>(current - start_of_hour);
                     uint32_t seconds_left_in_hour = 3600 - offset_in_hour;
                     uint32_t chunk = MIN(remaining, seconds_left_in_hour);
@@ -256,7 +257,7 @@ int64_t TimeQuery::getOffsetOfDate(uint64_t pos_time) {
     lock_guard<recursive_mutex> lck(_mtx);
     int64_t ret = 0;
     try {
-        auto start_of_date = getStartOfDay(pos_time);
+        auto start_of_date = StampUtils::getStartOfDay(pos_time);
         query(start_of_date, pos_time, [&](const TimeBlock &block) {
             auto block_start_time = block.start_time();
             if (block_start_time < start_of_date) {

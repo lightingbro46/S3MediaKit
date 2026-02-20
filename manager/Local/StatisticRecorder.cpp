@@ -98,7 +98,7 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
                 auto stats = imp->getParams();
                 {
                     std::lock_guard<std::mutex> lock(_mtx_stats);
-                    _cam_stats_map.emplace(stats.info.device_id, imp);
+                    _cam_stats_map.emplace(stats.tuple.device_id, imp);
                 }
                 invoker(imp);
                 return true;

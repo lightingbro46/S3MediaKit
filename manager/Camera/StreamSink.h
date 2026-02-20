@@ -6,7 +6,7 @@
 
 namespace managerkit {
 
-class StreamSink : public std::enable_shared_from_this<StreamSink> {
+class StreamSink : public DeviceSourceEvent, public std::enable_shared_from_this<StreamSink> {
 public:
     using Ptr = std::shared_ptr<StreamSink>;
     using OnStreamUpdate = std::function<void(int type, bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
@@ -21,7 +21,7 @@ public:
         _on_stream_update = std::move(cb);
     }
 
-    void setupMonitor(int type, const StreamTuple &tuple, const CameraInfo &info, const CameraOption &option);
+    void setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option);
 
     void stopMonitor(int type);
 

@@ -1,8 +1,8 @@
-#ifndef CAMERA_ONVIFCONTROL_H
-#define CAMERA_ONVIFCONTROL_H
+#ifndef CAMERA_CAMERACONTROLLER_H
+#define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
-#include "ext-plugin/onvif.h"
+#include "Control/OnvifDeviceControl.h"
 
 namespace managerkit {
 
@@ -32,7 +32,7 @@ public:
 
     bool isControlReady() const;
 
-    void setupController(const CameraInfo &info, const CameraOption &option);
+    void setupController(const CameraOption &option);
 
     void stopController();
     
@@ -56,13 +56,16 @@ private:
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
-    OnvifController::Ptr _onvif_ctr;
+    OnvifControl::Ptr _onvif_ctr;
     OnControllerReady _on_ready;
     DeviceCapabilities _device_caps;
-    CameraInfo _info;
-    CameraOption _option;
+    std::string _address;
+    int _ptzMode = CameraOption::kPTZModeAuto;
+    bool _reservePanAxis = false;
+    bool _reserveTiltAxis = false;
+    bool _enablePTZControl = true;
 };
 
 } // namespace managerkit
 
-#endif // CAMERA_ONVIFCONTROL_H
+#endif // CAMERA_CAMERACONTROLLER_H
