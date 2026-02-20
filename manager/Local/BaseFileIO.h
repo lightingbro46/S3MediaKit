@@ -1,21 +1,20 @@
-#ifndef LOCAL_TIMEFILE_H
-#define LOCAL_TIMEFILE_H
+#ifndef LOCAL_BASEFILEIO_H
+#define LOCAL_BASEFILEIO_H
 
 #include <memory>
 #include <string>
 #include "Util/File.h"
-#include "proto/timeblock.pb.h"
 
 namespace managerkit {
 
-class TimeFileIO;
+class BaseFileIO;
 
-class TimeWriter {
+class FileWriter {
 public:
-    using Ptr = std::shared_ptr<TimeWriter>;
+    using Ptr = std::shared_ptr<FileWriter>;
 
-    TimeWriter(std::shared_ptr<TimeFileIO> io) : _io(std::move(io)) {}
-    ~TimeWriter() = default;
+    FileWriter(std::shared_ptr<BaseFileIO> io) : _io(std::move(io)) {}
+    ~FileWriter() = default;
 
 public:
     int write(const void *data, size_t bytes);
@@ -24,15 +23,15 @@ public:
     int flush();
 
 private:
-    std::shared_ptr<TimeFileIO> _io;
+    std::shared_ptr<BaseFileIO> _io;
 };
 
-class TimeReader {
+class FileReader {
 public:
-    using Ptr = std::shared_ptr<TimeReader>;
+    using Ptr = std::shared_ptr<FileReader>;
 
-    TimeReader(std::shared_ptr<TimeFileIO> &io) : _io(std::move(io)) {}
-    ~TimeReader() = default;
+    FileReader(std::shared_ptr<BaseFileIO> &io) : _io(std::move(io)) {}
+    ~FileReader() = default;
 
 public:
     int read(void *data, size_t bytes);
@@ -40,18 +39,18 @@ public:
     int64_t tell();
 
 private:
-    std::shared_ptr<TimeFileIO> _io;
+    std::shared_ptr<BaseFileIO> _io;
 };
 
 
-// Abstract interface class for time block file IO
-class TimeFileIO : public std::enable_shared_from_this<TimeFileIO> {
+// Abstract interface class for base file IO
+class BaseFileIO : public std::enable_shared_from_this<BaseFileIO> {
 public:
-    using Ptr = std::shared_ptr<TimeFileIO>;
-    using Writer = std::shared_ptr<TimeWriter>;
-    using Reader = std::shared_ptr<TimeReader>;
+    using Ptr = std::shared_ptr<BaseFileIO>;
+    using Writer = std::shared_ptr<FileWriter>;
+    using Reader = std::shared_ptr<FileReader>;
 
-    virtual ~TimeFileIO() = default;
+    virtual ~BaseFileIO() = default;
 
     /**
      * Create an time writer
@@ -102,10 +101,10 @@ public:
     virtual int onFlush() { return 0; }
 };
 
-// Disk Time file class
-class TimeFileDisk : public TimeFileIO { 
+// Disk File class
+class FileDisk : public BaseFileIO { 
 public:
-    using Ptr = std::shared_ptr<TimeFileDisk>;
+    using Ptr = std::shared_ptr<FileDisk>;
 
     /**
      * Open the disk file
@@ -130,10 +129,10 @@ private:
     std::shared_ptr<FILE> _file;
 };
 
-class TimeFileMemory : public TimeFileIO {
+class FileMemory : public BaseFileIO {
 public:
-    using Ptr = std::shared_ptr<TimeFileMemory>;
-    TimeFileMemory(const std::string &buf = "");
+    using Ptr = std::shared_ptr<FileMemory>;
+    FileMemory(const std::string &buf = "");
 
     /**
      * Get the file size
@@ -158,4 +157,4 @@ private:
 
 } // namespace managerkit
 
-#endif // LOCAL_TIMEFILE_H
+#endif // LOCAL_BASEFILEIO_H

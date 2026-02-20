@@ -1,36 +1,13 @@
 #ifndef LOCAL_TIMEMUXER_H_
 #define LOCAL_TIMEMUXER_H_
 
-#include "TimeFile.h"
 #include "TimeMaker.h"
+#include "BaseProtoInterface.h"
+#include "proto/timeblock.pb.h"
 
 namespace managerkit {
 
-class TimeMuxerInterface {
-public:
-    using Ptr = std::shared_ptr<TimeMuxerInterface>;
-
-    virtual ~TimeMuxerInterface() = default;
-
-    /**
-     * Input block
-     */
-    bool inputBlock(const TimeBlock &block); 
-
-protected:
-    virtual TimeFileIO::Writer createWriter() = 0;
-
-    /**
-     * Save time block list
-     */
-    virtual size_t save(const TimeBlock &block);
-   
-private:
-    uint64_t _last_minute = 0;
-    TimeFileIO::Writer _writer;
-};
-
-class TimeMuxer : public TimeMuxerInterface {
+class TimeMuxer : public BaseProtoMuxerInterface<TimeBlock> {
 public:
     using Ptr = std::shared_ptr<TimeMuxer>;
 
@@ -49,7 +26,7 @@ public:
     void closeFile();
 
 protected:
-    TimeFileIO::Writer createWriter() override;
+    BaseFileIO::Writer createWriter() override;
 
     size_t save(const TimeBlock &block) override; 
 
@@ -57,23 +34,23 @@ protected:
 
 private:
     std::string _file_name;
-    TimeFileDisk::Ptr _file;
+    FileDisk::Ptr _file;
     bool _use_maker;
-    TimeMakerImp::Ptr _maker;
+    TimeMaker::Ptr _maker;
 };
 
-class TimeMuxerMemory : public TimeMuxerInterface {
+class TimeMuxerMemory : public BaseProtoMuxerInterface<TimeBlock> {
 public:
+    using Ptr = std::shared_ptr<TimeMuxerMemory>;
     TimeMuxerMemory();
 
     std::string getMemoryBlock();
 
 protected:
-    TimeFileIO::Writer createWriter() override;
-
+    BaseFileIO::Writer createWriter() override;
 
 private:
-    TimeFileMemory::Ptr _memory_file;
+    FileMemory::Ptr _memory_file;
 };
 
 } // namespace managerkit 

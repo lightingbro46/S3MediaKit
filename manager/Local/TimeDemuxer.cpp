@@ -71,13 +71,13 @@ void TimeDemuxer::openFile(const string &file) {
     closeFile();
     
     _file_name = file;
-    _file = std::make_shared<TimeFileDisk>();
+    _file = std::make_shared<FileDisk>();
     _file->openFile(_file_name.data(), "rb");
     _reader = _file->createReader();
 
-    auto index_path = TimeMakerImp::indexFile(_file_name);
+    auto index_path = TimeMaker::toIndexFilePath(_file_name);
     if (File::fileExist(index_path)) {
-        _maker = std::make_shared<TimeMakerImp>();
+        _maker = std::make_shared<TimeMaker>();
         _maker->openFile(index_path, "rb");
     }
 
@@ -180,7 +180,7 @@ void MultiTimeDemuxer::readBlock(TimeBlock &block, bool &eof) {
 ////////////////////////////TimeMemoryDemuxer//////////////////////////////////////
 
 TimeMemoryDemuxer::TimeMemoryDemuxer(const string& buf) {
-    _file = std::make_shared<TimeFileMemory>(buf);
+    _file = std::make_shared<FileMemory>(buf);
     _reader = _file->createReader();
     _first_stamp = findFirstStamp();
 }
