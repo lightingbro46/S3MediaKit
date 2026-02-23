@@ -632,6 +632,48 @@ static Json::Value makeStreamStatisticJson(CameraStatistic &params, int type) {
     return item;
 }
 
+/**
+ * Check camera online status based on stream status, if at least one stream is online then the camera is considered online
+ */
+static bool isGenericRtspCameraOnline(const Json::Value &device) {
+    bool is_online = false;
+    if (!device["primaryStreamId"].isNull() && !device["primaryStream"].isNull()) {
+        auto stream = device["primaryStream"];
+        if (stream["status"].asBool() == true) {
+            is_online = true;
+        }
+    }
+    if (!device["secondaryStreamId"].isNull() && !device["secondaryStream"].isNull()) {
+        auto stream = device["secondaryStream"];
+        if (stream["status"].asBool() == true) {
+            is_online = true;
+        }
+    }
+    return is_online;
+}
+
+/**
+ * Get camera error message based on stream status, if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream
+ */
+static std::string getGenericRtspCameraErrMsg(const Json::Value &device) {
+    std::string errMsg = "No message";
+    // Camera can cause both primary and secondary stream are offline,
+    // in this case we will show error message of primary stream if available,
+    // otherwise show error message of secondary stream
+    if (!device["primaryStreamId"].isNull() && !device["primaryStream"].isNull()) {
+        auto stream = device["primaryStream"];
+        if (stream["status"].asBool() == false) {
+            errMsg = stream["errMsg"].asString();
+        }
+    } else if (!device["secondaryStreamId"].isNull() && !device["secondaryStream"].isNull()) {
+        auto stream = device["secondaryStream"];
+        if (stream["status"].asBool() == false) {
+            errMsg = stream["errMsg"].asString();
+        }
+    }
+    return errMsg;
+}
+
 void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     Json::Value data = Json::arrayValue;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
@@ -650,8 +692,6 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                     }
                     Json::Value item;
                     item["deviceId"] = params.tuple.device_id;
-                    item["status"] = params.device_stats.connect;
-                    item["errMsg"] = params.device_stats.status;
                     if (camera->hasStreamTuple(PrimaryStream)) {
                         item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
                         item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
@@ -666,6 +706,14 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                     } else {
                         item["secondaryStreamId"] = Json::nullValue;
                         item["secondaryStream"] = Json::nullValue;
+                    }
+                    if (option.manufacturer == GENERIC_RTSP_CAMERA) {
+                        auto is_online = isGenericRtspCameraOnline(item);
+                        item["status"] = is_online;
+                        item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                    } else {
+                        item["status"] = params.device_stats.connect;
+                        item["errMsg"] = params.device_stats.status;
                     }
                     data.append(item);
                 }
@@ -1018,19 +1066,7 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
     online = 0;
     offline = 0;
     for (const auto &device : data) {
-        bool is_online = false;
-        if (!device["primaryStreamId"].isNull() && !device["primaryStream"].isNull()) {
-            auto stream = device["primaryStream"];
-            if (stream["status"].asBool() == true) {
-                is_online = true;
-            }
-        }
-        if (!device["secondaryStreamId"].isNull() && !device["secondaryStream"].isNull()) {
-            auto stream = device["secondaryStream"];
-            if (stream["status"].asBool() == true) {
-                is_online = true;
-            }
-        }
+        bool is_online = isGenericRtspCameraOnline(device);
         if (is_online) {
             online++;
         } else {
