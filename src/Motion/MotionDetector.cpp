@@ -1,92 +1,145 @@
-#include "MotionDetector.h"
 #include <cmath>
+#include <vector>
+#include "Common/config.h"
+#include "MotionDetector.h"
+
+using namespace std;
+using namespace toolkit;
 
 namespace mediakit {
 
-static int pointInPolygon(int x, int y, const Polygon &p) {
-    return 1; // Placeholder: Implement point-in-polygon algorithm if needed
+static vector<double> g_sensitivity; // Sensitivity thresholds for different ROI levels, indexed by (level - 1)
+static onceToken token([]() {
+    GET_CONFIG(string, sensitivity_str, Motion::kSensitivity);
+    for (auto &th : split(sensitivity_str, ";")) {
+        trim(th);
+        if (!th.empty()) {
+            g_sensitivity.emplace_back(stod(th));
+        }
+    }
+});
+
+ROIMask::ROIMask(int r, int c, std::string &s) : rows(r), cols(c), mask(r * c, 0) {
+    if (s.empty()) {
+        GET_CONFIG(int, roi_level, Motion::kROIDefaultLevel);
+        DebugL << "No ROI mask provided, motion detection will be performed on the entire frame with default level: " << roi_level;
+        s = string(MOTION_GRID_ROWS * MOTION_GRID_COLS, static_cast<char>('0' + roi_level)); // Default to full frame detection with size 440x320
+    }
+    if (s.size() != static_cast<size_t>(r * c)) {
+        WarnL << "Invalid ROI mask string, size does not match [rows * cols]";
+        return;
+    }
+    DebugL << "ROI mask created with rows: " << r << ", cols: " << c << ", mask string size: " << s.size();
+    for (size_t i = 0; i < s.size(); ++i) {
+        auto &ch = s[i];
+        if (ch < '0' || ch > '5') {
+            WarnL << "Invalid character in ROI mask string, only '0'-'5' are allowed";
+            continue;
+        }
+        mask[i] = static_cast<uint8_t>(s[i] - '0');
+    }
 }
 
-static ROIMask toMask(const Polygon &p, int w, int h) {
-    ROIMask mask(w, h);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-            mask.mask[y*w + x] = pointInPolygon(x, y, p);
+////////////////////////////////////MotionDetector////////////////////////////////
 
-    return mask;
+MotionDetector::MotionDetector(int width, int height, const ROIMaskPtr &roi_mask) 
+    : _width(width), _height(height), _roi(std::move(roi_mask)) {
+    CHECK(width > 0 && height > 0 && roi_mask != nullptr, "Invalid frame dimensions");
+    _prev_frame.resize(_width * _height);
+    _grid_boundary = std::make_shared<GridBoundary>();
+    GridBoundaryHelper::compute_grid_boundary(*_grid_boundary, _width, _height, _roi->rows, _roi->cols);
 }
 
-MotionDetector::MotionDetector(int width, int height, int block_size, double threshold)
-    : _width(width), _height(height), _block_size(block_size), _threshold(threshold) {
-    _prev_frame.resize(width * height);
-    _roi = std::make_shared<ROIMask>(width, height);
-}
+MotionDetector::~MotionDetector() {
+    _prev_frame.clear();
+    _roi.reset();
+};
 
-MotionDetector::~MotionDetector() {};
+bool MotionDetector::inputFrame(const uint8_t* data, int linesize, uint64_t pts_ms) {
+    if (!data || !_roi || _roi->rows <= 0 || _roi->cols <= 0 || linesize < _width) {
+        WarnL << "Invalid input frame or ROI";
+        return false;
+    }
 
-MotionResult MotionDetector::processFrame(const uint8_t* data, int linesize, uint64_t pts_ms) {
-    MotionResult result(_width, _height);
-    result.roi = _roi;
-    result.pts_ms = pts_ms;
+    if (g_sensitivity.empty()) {
+        WarnL << "Sensitivity config is empty";
+        return false;
+    }
 
-    int blocks_x = _width / _block_size;
-    int blocks_y = _height / _block_size;
-    int total_blocks = blocks_x * blocks_y;
+    // Use precomputed grid boundaries to iterate over blocks, which is more efficient than calculating pixel coordinates on the fly
+    const auto &x_bounds = _grid_boundary->x;
+    const auto &y_bounds = _grid_boundary->y;
+    if (x_bounds.size() != static_cast<size_t>(_roi->cols + 1) ||
+        y_bounds.size() != static_cast<size_t>(_roi->rows + 1)) {
+        WarnL << "Invalid grid boundary size";
+        return false;
+    }
+
+    auto result = MotionBitmapHelper::createMotionBitmap(_roi->rows, _roi->cols, nullptr); // Create empty motion bitmap
     int motion_blocks = 0;
+    int active_blocks = 0;
 
-    for (int by = 0; by < blocks_y; ++by) {
-        for (int bx = 0; bx < blocks_x; ++bx) {
-            double block_diff = 0.0;
-
-            for (int y = 0; y < _block_size; ++y) {
-                for (int x = 0; x < _block_size; ++x) {
-                    int frame_y = by * _block_size + y;
-                    int frame_x = bx * _block_size + x;
-                    int index = frame_y * linesize + frame_x;
-                    if (result.roi && !result.roi->mask[index]) continue; // Skip if outside ROI
-
-                    uint8_t curr_pixel = data[index];
-                    uint8_t prev_pixel = _prev_frame[frame_y * _width + frame_x];
-                    block_diff += std::abs(static_cast<int>(curr_pixel) - static_cast<int>(prev_pixel));
-                }
+    for (int by = 0; by < _roi->rows; ++by) {
+        const int y0 = y_bounds[by];
+        const int y1 = y_bounds[by + 1];
+        
+        for (int bx = 0; bx < _roi->cols; ++bx) {
+            const uint8_t level = _roi->mask[by * _roi->cols + bx];
+            if (level == 0) {
+                continue; // Ignore this block
+            }
+            if (level > g_sensitivity.size()) {
+                WarnL << "Invalid ROI level: " << level << ", exceeds sensitivity configuration";
+                continue;
             }
 
-            block_diff /= (_block_size * _block_size * 255.0); // Normalize to [0,1]
-            if (block_diff > _threshold) {
-                motion_blocks++;
-                // Mark motion in motion_map
-                for (int y = 0; y < _block_size; ++y) {
-                    for (int x = 0; x < _block_size; ++x) {
-                        int frame_y = by * _block_size + y;
-                        int frame_x = bx * _block_size + x;
-                        int index = frame_y * _width + frame_x;
-                        result.motion_map[index] = 1;
-                    }
+            const int x0 = x_bounds[bx];
+            const int x1 = x_bounds[bx + 1];
+            const int block_w = x1 - x0;
+            const int block_h = y1 - y0;
+            const int area = block_w * block_h;
+            if (area <= 0) {
+                WarnL << "Invalid block area: " << area << " for block (" << bx << ", " << by << ")";
+                continue;
+            }
+            
+            ++active_blocks;
+
+            uint64_t sum_diff = 0;
+            for (int y = y0; y < y1; ++y) {
+                const int row_src = y * linesize;
+                const int row_prev = y * _width;
+                for (int x = x0; x < x1; ++x) {
+                    const uint8_t curr_pixel = data[row_src + x];
+                    const uint8_t prev_pixel = _prev_frame[row_prev + x];
+                    sum_diff += std::abs(static_cast<int>(curr_pixel) - static_cast<int>(prev_pixel));
                 }
+            }
+            // Compare block difference with division: sum_diff / (area * 255.0) > threshold
+            // <=> sum_diff > threshold * area * 255.0
+            const double threshold = g_sensitivity[level - 1];
+            const double threshold_scaled = threshold * static_cast<double>(area) * 255.0;
+
+            if (static_cast<double>(sum_diff) > threshold_scaled) {
+                ++motion_blocks;
+                MotionBitmapHelper::setMotionValue(result.get(), bx, by, true);
             }
         }
     }
 
-    double motion_ratio = static_cast<double>(motion_blocks) / static_cast<double>(total_blocks);
-    result.ratio = motion_ratio;
-    result.motion_detected = motion_ratio > 0.0;
-
+    // Update previous frame buffer (row-wise copy)
     for (int y = 0; y < _height; ++y) {
-        for (int x = 0; x < _width; ++x) {
-            _prev_frame[y * _width + x] = data[y * linesize + x];
-        }
+        std::memcpy(&_prev_frame[y * _width], data + y * linesize, static_cast<size_t>(_width));
     }
 
-    return result;
-}
-
-void MotionDetector::setPolygonMask(const Polygon &p) {
-    auto roi = toMask(p, _width, _height);
-    setROIMask(roi);
-}
-
-void MotionDetector::setROIMask(const ROIMask &m) {
-    _roi = std::make_shared<ROIMask>(m);
+    const bool motion_detected = (motion_blocks > 0);
+    DebugL << "Motion blocks: " << motion_blocks << "/" << active_blocks
+           << ", motion_detected: " << motion_detected
+           << ", pts_ms: " << pts_ms;
+    if (_on_result) {
+        _on_result(motion_detected, pts_ms, result);
+    }
+    return true;
 }
 
 } // namespace mediakit 

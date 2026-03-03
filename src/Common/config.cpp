@@ -80,7 +80,6 @@ const string kBroadcastDeviceCapsChanged = "kBroadcastDeviceCapsChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
 const string kBroadcastHealthCheckService = "kBroadcastHealthCheckService";
-const string kBroadcastMediaMotionChanged = "kBroadcastMediaMotionDetected";
 const string kBroadcastRecordMotion = "kBroadcastRecordMotion";
 
 } // namespace Broadcast

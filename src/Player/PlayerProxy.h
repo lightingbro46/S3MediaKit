@@ -108,8 +108,6 @@ public:
     const MediaTuple& getMediaTuple() const { return _tuple; }
     const ProtocolOption& getOption() const { return _option; }
 
-    bool setupRecord(Recorder::type type, bool enable, bool archived = false);
-
 private:
     // MediaSourceEvent override
     bool close(MediaSource &sender) override;

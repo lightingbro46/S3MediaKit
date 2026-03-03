@@ -39,6 +39,7 @@ public:
     void fillPicture(AVPixelFormat target_format, int target_width, int target_height);
     int getChannels() const;
     void reset();
+    FFmpegFrame::Ptr clone() const;
 
 private:
     std::unique_ptr<char[]> _data;
@@ -169,6 +170,15 @@ public:
      * @return
      */
     static std::tuple<bool, std::string> saveFrame(const FFmpegFrame::Ptr &frame, const char *filename, AVPixelFormat fmt = AV_PIX_FMT_YUVJ420P, int w = 0, int h = 0, const char *font_path = nullptr);
+
+    /**
+     * Draw motion detection results on the frame, and return the result as a new frame
+     * @param frame Decoded frames
+     * @param grid_rows The number of rows in the grid
+     * @param grid_cols The number of columns in the grid
+     * @return A tuple containing a boolean indicating success and a string with the result message
+     */
+    static std::tuple<bool, std::string> drawGrid(const FFmpegFrame::Ptr &frame, int grid_rows, int grid_cols);
 };
 
 }//namespace mediakit

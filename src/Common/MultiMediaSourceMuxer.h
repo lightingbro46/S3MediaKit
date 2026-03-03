@@ -12,7 +12,7 @@
 #include "Rtmp/RtmpMediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
-#include "MediaSourceProcessor.h"
+#include "Processor/MultiMediaSourceProcessor.h"
 
 namespace mediakit {
 
@@ -81,15 +81,6 @@ public:
     bool setupRecord(Recorder::type type, bool start, const std::string &custom_path, size_t max_second);
 
     /**
-     * Start recording mp4 with archive mode
-     * @param type Recording type
-     * @param start Start or stop
-     * @param archived Whether it is archive mode
-     * @return Whether the setting is successful
-     */
-    bool setupRecord(Recorder::type type, bool start, bool archived);
-
-    /**
      * Start recording mp4
      * @param file_path mp4 relative path
      * @param back_time_ms Rewind recording duration
@@ -104,6 +95,17 @@ public:
      * @return Recording status
      */
     bool isRecording(Recorder::type type);
+
+    /**
+     * Start or stop motion detection, only for video streams
+     */
+    bool setupMotionDetect(bool start, bool record_motion = true, const std::string &custom_roi_mask = "");
+
+    /**
+     * Get motion detection status
+      * @return Motion detection status
+     */
+    bool isMotionDetecting();
 
     /**
      *Start sending ps-rtp stream
@@ -163,7 +165,7 @@ protected:
 
 private:
     void createGopCacheIfNeed(size_t gop_count);
-    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type, bool archived = false);
+    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type);
 
 private:
     bool _is_enable = false;
@@ -186,12 +188,14 @@ private:
     MediaSinkInterface::Ptr _mp4;
     HlsRecorder::Ptr _hls;
     HlsFMP4Recorder::Ptr _hls_fmp4;
-    MediaSourceProcessor::Ptr _proc;
     toolkit::EventPoller::Ptr _poller;
     RingType::Ptr _ring;
 
     // Object count statistics
     toolkit::ObjectStatistic<MultiMediaSourceMuxer> _statistic;
+
+    // Module stack, used for motion detection module or other video processing modules
+    MultiMediaSourceProcessor::Ptr _stack;
 };
 
 }//namespace mediakit

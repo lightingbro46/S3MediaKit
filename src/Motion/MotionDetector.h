@@ -1,53 +1,29 @@
 #ifndef S3MEDIAKIT_MOTIONDETECTOR_H
 #define S3MEDIAKIT_MOTIONDETECTOR_H
 
-#include <cstdint>
-#include <vector>
-#include <memory>
+#include "MotionBitmap.h"
+#include <functional>
+
+#define MOTION_GRID_ROWS 32
+#define MOTION_GRID_COLS 44
+#define FRAME_SCALE_WIDTH 440
+#define FRAME_SCALE_HEIGHT 320
 
 namespace mediakit {
-
-struct ROIMask {
-    int width; // Frame width after scale
-    int height; // Frame height after scale
-    std::vector<uint8_t> mask; // 1 byte = 1 pixel, 0 = ignore, 1 = detect
-
-    ROIMask(int w, int h) : width(w), height(h), mask(w * h, 1) {}
-};
-
-using ROIMaskPtr = std::shared_ptr<ROIMask>;
-
-struct MotionResult {
-    bool motion_detected = false;
-    double ratio = 0.0; // Ratio of motion area to total area
-    uint64_t pts_ms = 0; // Presentation timestamp in milliseconds
-    ROIMaskPtr roi; // Optional: ROI mask used
-    std::vector<uint8_t> motion_map; // Optional: map of motion areas
-
-    MotionResult(int w, int h) : motion_map(w * h, 0) {};
-};
-
-using MotionResultPtr = std::shared_ptr<MotionResult>;
-
-struct Point {
-    int x; // Top-left x coordinate
-    int y; // Top-left y coordinate
-};
-
-using Polygon = std::vector<Point>;
 
 class MotionDetector {
 public:
     using Ptr = std::shared_ptr<MotionDetector>;
+    using OnMotionResultCallback = std::function<void(bool motion, uint64_t pts_ms, const MotionBitmapPtr &result)>;
 
     /**
      * Constructor
      * @param width Frame width
      * @param height Frame height
-     * @param block_size Size of the blocks to divide the frame into
-     * @param threshold Threshold for motion detection in each block, range [0.0, 1.0]
+     * @param roi_mask Optional ROI mask string (format: "001234" where each character represents a pixel, '0' = ignore, '>1' = detect)
+     * @param default_threshold Default threshold for motion detection, used when ROI level is not specified or invalid
      */
-    MotionDetector(int width, int height, int block_size = 16, double threshold = 0.1);
+    MotionDetector(int width, int height, const ROIMaskPtr &roi_mask);
     ~MotionDetector();
 
     /**
@@ -55,28 +31,29 @@ public:
      * @param data Pointer to the frame data (YUV420 format or GRAY8 format)
      * @param linesize Line size of the frame
      * @param pts_ms Presentation timestamp in milliseconds
-     * @return Motion detection result
+     * @return Whether the processing is successful (e.g., frame format is correct), motion detection results will be returned via callback function
      */
-    MotionResult processFrame(const uint8_t* data, int linesize, uint64_t pts_ms);
-    /**
-     * Set polygonal ROI mask
-     */
-    void setPolygonMask(const Polygon &p);
+    bool inputFrame(const uint8_t* data, int linesize, uint64_t pts_ms);
 
     /**
-     * Set rectangular ROI mask
+     * Set callback function to receive motion detection results
      */
-    void setROIMask(const ROIMask &m);
+    void setOnMotionResultCallback(OnMotionResultCallback callback) { _on_result = std::move(callback); }
+
+    /**
+     * Get grid boundary information for motion visualization, 
+     * which can be used to draw grid lines on the frame when overlaying motion detection results
+     */
+    GridBoundaryPtr getGridBoundary() const { return _grid_boundary; }
 
 private:
     int _width;
     int _height;
-    int _block_size;
-    double _threshold;
-    std::vector<uint8_t> _prev_frame;
+    GridBoundaryPtr _grid_boundary;
     ROIMaskPtr _roi;
+    std::vector<uint8_t> _prev_frame;
+    OnMotionResultCallback _on_result;
 };
-
 
 } // namespace mediakit
 

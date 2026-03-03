@@ -163,23 +163,23 @@ void installManagerHook () {
         GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
     });
 
-    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaMotionChanged, [](BroadcastMediaMotionChangedArgs) {
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMotion, [](BroadcastRecordMotionArgs) {
         auto device = DeviceSource::find(args.vhost, args.app); 
         if (!device) {
             WarnL << "Motion event from unknown device:" << args.vhost << "/" << args.app << ": " << bActive;
             return;
         }
-        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(device);
-        if (ptr) {
-            // ptr->onMotionDetected(bActive, pre_ms);
-        }
-    });
-
-    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMotion, [](BroadcastRecordMotionArgs) {
-        DebugL << "Record motion index " << info.app << "/" << info.stream << "/" << info.motion_level << "/" << info.motion_area << "/" << getTimeStr("%Y-%m-%d %H:%M:%S", info.start_time) << "/" << getTimeStr("%Y-%m-%d %H:%M:%S", info.end_time);
-        // auto ret = TimeRecorderManager::Instance().addMotionBlock(block);
-        // if (ret) {
-        //     StatisticRecorder::Instance().addMotionArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
+        // auto weak_listener = device->getListener();
+        // if (auto strong_listener = weak_listener.lock()) {
+        //     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        //     if (impl) {
+        //         auto poller = impl->getOwnerPoller(*device);
+        //         if (poller) {
+        //             poller->async([impl, bActive](){
+        //                 impl->setupRecordEvent(RecordEventType::Motion, bActive);
+        //             });
+        //         }
+        //     }
         // }
     });
 

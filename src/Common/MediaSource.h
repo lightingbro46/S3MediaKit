@@ -225,6 +225,14 @@ public:
 
     // Whether to enable motion detection
     bool enable_motion = false;
+    // ROI mask for motion detection
+    std::string roi_mask;
+    // Whether to record video when motion is detected, which is valid when motion detection is enabled
+    bool record_motion;
+    // Record before motion is detected, in milliseconds, which is valid when motion_record is enabled
+    uint32_t pre_record_ms;
+    // Record after motion is detected, in milliseconds, which is valid when motion_record is enabled
+    uint32_t post_record_ms;
 
     template <typename MAP>
     ProtocolOption(const MAP &allArgs) : ProtocolOption() {
@@ -264,6 +272,10 @@ public:
         GET_OPT_VALUE(max_track);
 
         GET_OPT_VALUE(enable_motion);
+        GET_OPT_VALUE(roi_mask);
+        GET_OPT_VALUE(record_motion);
+        GET_OPT_VALUE(pre_record_ms);
+        GET_OPT_VALUE(post_record_ms);
     }
 };
 

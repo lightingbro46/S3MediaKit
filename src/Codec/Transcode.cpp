@@ -249,6 +249,27 @@ void FFmpegFrame::reset() {
     }
 }
 
+FFmpegFrame::Ptr FFmpegFrame::clone() const {
+    auto new_frame = std::make_shared<FFmpegFrame>();
+    if (_frame) {
+        new_frame->get()->format = _frame->format;
+        new_frame->get()->width = _frame->width;
+        new_frame->get()->height = _frame->height;
+        auto ret = av_frame_get_buffer(new_frame->get(), 32); // 32-byte alignment
+        if (ret < 0) {
+            WarnL << "av_frame_get_buffer failed: " << ffmpeg_err(ret);
+            return nullptr;
+        }
+
+        ret = av_frame_copy(new_frame->get(), _frame.get());
+        if (ret < 0) {
+            WarnL << "av_frame_copy failed: " << ffmpeg_err(ret);
+            return nullptr;
+        }
+    }
+    return new_frame;
+}
+
 ///////////////////////////////////////////////////////////////////////////
 
 template<bool decoder = true>
@@ -343,7 +364,8 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
             if (checkIfSupportedNvidia()) {
                 codec = getCodec({{AV_CODEC_ID_HEVC}, {"hevc_qsv"}, {"hevc_videotoolbox"}, {"hevc_cuvid"}, {"hevc_nvmpi"}});
             } else {
-                codec = getCodec({{AV_CODEC_ID_HEVC}, {"hevc_qsv"}, {"hevc_videotoolbox"}, {"hevc_nvmpi"}});
+                // codec = getCodec({{AV_CODEC_ID_HEVC}, {"hevc_qsv"}, {"hevc_videotoolbox"}, {"hevc_nvmpi"}});
+                codec = getCodec({{AV_CODEC_ID_HEVC}});
             }
             break;
         case CodecAAC:
@@ -802,78 +824,150 @@ std::tuple<bool, std::string> FFmpegUtils::saveFrame(const FFmpegFrame::Ptr &fra
         DebugL << ss;
         return make_tuple<bool, std::string>(false, ss.data());
     }
+
+    _filter_graph.reset(avfilter_graph_alloc(), [](AVFilterGraph *ctx) { avfilter_graph_free(&ctx); });
+    if (!_filter_graph) {
+        ss << "avfilter_graph_alloc failed";
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    char args[512];
+    snprintf(
+        args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d", jpeg_codec_ctx->width, jpeg_codec_ctx->height,
+        jpeg_codec_ctx->pix_fmt, jpeg_codec_ctx->time_base.num, jpeg_codec_ctx->time_base.den, jpeg_codec_ctx->sample_aspect_ratio.num,
+        jpeg_codec_ctx->sample_aspect_ratio.den);
+
+    buffersrc = avfilter_get_by_name("buffer");
+
+    if ((ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in", args, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter buffersrc failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    buffersink = avfilter_get_by_name("buffersink");
+    if ((ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter buffersink failed: " << ret << " " << ffmpeg_err(ret);
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    AVFilterContext *drawtext_ctx1 = nullptr;
+
+    const AVFilter *drawtext_filter = avfilter_get_by_name("drawtext");
+    if (!drawtext_filter) {
+        ss << "drawtext filter not found";
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    if ((ret = avfilter_graph_create_filter(&drawtext_ctx1, drawtext_filter, "drawtext", drawtext_args1, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter drawtext_filter failed: " << ret << " " << ffmpeg_err(ret);
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    if ((ret = avfilter_link(buffersrc_ctx, 0, drawtext_ctx1, 0) < 0 || avfilter_link(drawtext_ctx1, 0, buffersink_ctx, 0))< 0) {
+        ss << "avfilter_link: " << ret << " " << ffmpeg_err(ret);
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    if ((ret = avfilter_graph_config(_filter_graph.get(), NULL)) < 0) {
+        ss << "avfilter_graph_config failed: " << ret << " " << ffmpeg_err(ret);
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    if ((ret = av_buffersrc_add_frame_flags(buffersrc_ctx, new_frame->get(), 0)) < 0) {
+        ss << "av_buffersink_get_frame failed: " << ret << " " << ffmpeg_err(ret);
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
     auto pkt = alloc_av_packet();
-    if (avcodec_send_frame(jpeg_codec_ctx.get(), new_frame->get()) == 0) {
-        while (avcodec_receive_packet(jpeg_codec_ctx.get(), pkt.get()) == 0) {
-            WarnL << "Successfully saved frame to " << filename << ", size=" << pkt.get()->size;
-            fwrite(pkt.get()->data, pkt.get()->size, 1, tmp_save_file_jpg.get());
+    while (av_buffersink_get_frame(buffersink_ctx, new_frame->get()) >= 0) {
+        if (avcodec_send_frame(jpeg_codec_ctx.get(), new_frame->get()) == 0) {
+            while (avcodec_receive_packet(jpeg_codec_ctx.get(), pkt.get()) == 0) {
+                fwrite(pkt.get()->data, pkt.get()->size, 1, tmp_save_file_jpg.get());
+            }
         }
     }
     return make_tuple<bool, std::string>(true, "");
+}
 
-    // _filter_graph.reset(avfilter_graph_alloc(), [](AVFilterGraph *ctx) { avfilter_graph_free(&ctx); });
-    // if (!_filter_graph) {
-    //     ss << "avfilter_graph_alloc failed";
-    //     DebugL << ss;
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+std::tuple<bool, std::string> FFmpegUtils::drawGrid(const FFmpegFrame::Ptr &frame, int grid_rows, int grid_cols) {
+    std::shared_ptr<AVFilterGraph> _filter_graph;
+    AVFilterContext *buffersrc_ctx = nullptr;
+    AVFilterContext *buffersink_ctx = nullptr;
+    const AVFilter *buffersrc = nullptr;
+    const AVFilter *buffersink = nullptr;
+    char drawgrid_args[512];
+    _StrPrinter ss;
+    int ret = 0;
 
-    // char args[512];
-    // snprintf(
-    //     args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d", jpeg_codec_ctx->width, jpeg_codec_ctx->height,
-    //     jpeg_codec_ctx->pix_fmt, jpeg_codec_ctx->time_base.num, jpeg_codec_ctx->time_base.den, jpeg_codec_ctx->sample_aspect_ratio.num,
-    //     jpeg_codec_ctx->sample_aspect_ratio.den);
+    snprintf(drawgrid_args, sizeof(drawgrid_args), "w=iw/%d:h=ih/%d:t=%d:c=red@0.25", grid_cols, grid_rows, 1);
 
-    // buffersrc = avfilter_get_by_name("buffer");
+    _filter_graph.reset(avfilter_graph_alloc(), [](AVFilterGraph *ctx) { avfilter_graph_free(&ctx); });
+    if (!_filter_graph) {
+        ss << "avfilter_graph_alloc failed";
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // if ((ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in", args, NULL, _filter_graph.get())) < 0) {
-    //     ss << "avfilter_graph_create_filter buffersrc failed: " << ret << " " << ffmpeg_err(ret);
-    //     DebugL << ss;
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    char args[512];
+    AVRational time_base = {1, 1};
+    snprintf(
+        args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d", frame->get()->width, frame->get()->height, 
+        frame->get()->format, time_base.num, time_base.den, frame->get()->sample_aspect_ratio.num, frame->get()->sample_aspect_ratio.den);
 
-    // buffersink = avfilter_get_by_name("buffersink");
-    // if ((ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, NULL, _filter_graph.get())) < 0) {
-    //     ss << "avfilter_graph_create_filter buffersink failed: " << ret << " " << ffmpeg_err(ret);
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    buffersrc = avfilter_get_by_name("buffer");
+    if ((ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in", args, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter buffersrc failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // AVFilterContext *drawtext_ctx1 = nullptr;
+    buffersink = avfilter_get_by_name("buffersink");
+    if ((ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", NULL, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter buffersink failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // const AVFilter *drawtext_filter = avfilter_get_by_name("drawtext");
-    // if (!drawtext_filter) {
-    //     ss << "drawtext filter not found";
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
-    // if ((ret = avfilter_graph_create_filter(&drawtext_ctx1, drawtext_filter, "drawtext", drawtext_args1, NULL, _filter_graph.get())) < 0) {
-    //     ss << "avfilter_graph_create_filter drawtext_filter failed: " << ret << " " << ffmpeg_err(ret);
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    AVFilterContext *drawgrid_ctx = nullptr;
 
-    // if ((ret = avfilter_link(buffersrc_ctx, 0, drawtext_ctx1, 0) < 0 || avfilter_link(drawtext_ctx1, 0, buffersink_ctx, 0))< 0) {
-    //     ss << "avfilter_link: " << ret << " " << ffmpeg_err(ret);
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    const AVFilter *drawgrid_filter = avfilter_get_by_name("drawgrid");
+    if (!drawgrid_filter) {
+        ss << "drawgrid filter not found";
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // if ((ret = avfilter_graph_config(_filter_graph.get(), NULL)) < 0) {
-    //     ss << "avfilter_graph_config failed: " << ret << " " << ffmpeg_err(ret);
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    if ((ret = avfilter_graph_create_filter(&drawgrid_ctx, drawgrid_filter, "drawgrid", drawgrid_args, NULL, _filter_graph.get())) < 0) {
+        ss << "avfilter_graph_create_filter drawgrid failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // if ((ret = av_buffersrc_add_frame_flags(buffersrc_ctx, new_frame->get(), 0)) < 0) {
-    //     ss << "av_buffersink_get_frame failed: " << ret << " " << ffmpeg_err(ret);
-    //     return make_tuple<bool, std::string>(false, ss.data());
-    // }
+    if ((ret = avfilter_link(buffersrc_ctx, 0, drawgrid_ctx, 0)) < 0 || (ret = avfilter_link(drawgrid_ctx, 0, buffersink_ctx, 0)) < 0) {
+        ss << "avfilter_link: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
 
-    // auto pkt = alloc_av_packet();
-    // while (av_buffersink_get_frame(buffersink_ctx, new_frame->get()) >= 0) {
-    //     if (avcodec_send_frame(jpeg_codec_ctx.get(), new_frame->get()) == 0) {
-    //         while (avcodec_receive_packet(jpeg_codec_ctx.get(), pkt.get()) == 0) {
-    //             fwrite(pkt.get()->data, pkt.get()->size, 1, tmp_save_file_jpg.get());
-    //         }
-    //     }
-    // }
-    // return make_tuple<bool, std::string>(true, "");
+    if ((ret = avfilter_graph_config(_filter_graph.get(), NULL)) < 0) {
+        ss << "avfilter_graph_config failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    if ((ret = av_buffersrc_add_frame_flags(buffersrc_ctx, frame->get(), 0)) < 0) {
+        ss << "av_buffersrc_add_frame_flags failed: " << ret << " " << ffmpeg_err(ret);
+        DebugL << ss;
+        return make_tuple<bool, std::string>(false, ss.data());
+    }
+
+    while (av_buffersink_get_frame(buffersink_ctx, frame->get()) >= 0) {
+        // Here we just test the filter, so we do not care about the output frame, just return success
+        break;
+    }
+
+    return make_tuple<bool, std::string>(true, "");
 }
 
 } // namespace mediakit

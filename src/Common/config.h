@@ -161,12 +161,9 @@ using HealthInvoker = std::function<void(const std::string&, const int&)>;
 extern const std::string kBroadcastHealthCheckService;
 #define BroadcastHealthCheckServiceArgs const std::vector<std::string> &origin_urls, const Broadcast::HealthInvoker &invoker
 
-extern const std::string kBroadcastMediaMotionChanged;
-#define BroadcastMediaMotionChangedArgs const MediaTuple &args, const bool &bActive, const int &pre_ms
-
 extern const std::string kBroadcastRecordMotion;
-#define BroadcastRecordMotionArgs const MotionEvent &info
-    
+#define BroadcastRecordMotionArgs const MediaTuple &args, const bool &bActive
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
