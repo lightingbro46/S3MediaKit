@@ -255,6 +255,9 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.ptzMode = ret["ptzMode"].asInt();
     option.onvifMainProfile = ret["onvifMainProfile"].asString();
     option.onvifSubProfile = ret["onvifSubProfile"].asString();
+    option.enableMotion = ret["enableMotion"].asBool();
+    option.roiValue = ret["roiValue"].asString();
+    option.motionDetectOnStream = ret["motionDetectOnStream"].asInt();
     stats.option = option;
 
     // stream tuple map
@@ -354,6 +357,9 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["ptzMode"] = stats.option.ptzMode;
     root["onvifMainProfile"] = stats.option.onvifMainProfile;
     root["onvifSubProfile"] = stats.option.onvifSubProfile;
+    root["enableMotion"] = stats.option.enableMotion;
+    root["roiValue"] = stats.option.roiValue;
+    root["motionDetectOnStream"] = stats.option.motionDetectOnStream;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;

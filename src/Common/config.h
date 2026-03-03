@@ -306,6 +306,14 @@ extern const std::string kEnableMotion;
 extern const std::string kMotionDemand;
 // GOP cache size, unit is frames
 extern const std::string kGopCacheSize;
+// ROI mask for motion detection
+extern const std::string kRoiMask;
+// Record stream in motion detection mode, only record when motion is detected
+extern const std::string kRecordMotion;
+// Record before motion is detected, unit is milliseconds, default is 0, which means no recording before motion is detected
+extern const std::string kPreRecordMS;
+// Record after motion is detected, unit is milliseconds, default is 15000, which means to continue recording for 15 seconds after motion is detected
+extern const std::string kPostRecordMS;
 } // !Protocol
 
 // //////////HTTP configuration///////////
@@ -531,8 +539,12 @@ extern const std::string kSensitivity;
 extern const std::string kIntervalMS;
 // Minimum duration for motion detection to be considered valid, in milliseconds
 extern const std::string kMinDurationMS;
-// Block size for motion detection
-extern const std::string kBlockSize;
+// Region of interest rows for motion detection
+extern const std::string kROIRows;
+// Region of interest columns for motion detection
+extern const std::string kROICols;
+// Default region of interest level for motion detection
+extern const std::string kROIDefaultLevel;
 // Whether to use the Y channel for motion detection
 extern const std::string kUseYChannel;
 } // namespace Motion

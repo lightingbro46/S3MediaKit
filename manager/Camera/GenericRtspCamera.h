@@ -131,6 +131,15 @@ public:
     // onvif sub profile token
     std::string onvifSubProfile; 
 
+    // Enable motion detection, only for video streams
+    bool enableMotion = false;
+
+    // The level value of each grid in roi, the value range is 0-5, 0 means no motion detection, 5 means the most sensitive, the default value is 3
+    std::string roiValue;
+
+    // which stream to enable motion detection, default secondary stream
+    int motionDetectOnStream = StreamType::SecondaryStream; 
+
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
     bool operator==(const CameraOption& other) const{
@@ -168,7 +177,10 @@ public:
                reservePanAxis == other.reservePanAxis &&
                reserveTiltAxis == other.reserveTiltAxis &&
                onvifMainProfile == other.onvifMainProfile &&
-               onvifSubProfile == other.onvifSubProfile;
+               onvifSubProfile == other.onvifSubProfile && 
+               enableMotion == other.enableMotion &&
+               roiValue == other.roiValue &&
+               motionDetectOnStream == other.motionDetectOnStream;
     }
 };
 

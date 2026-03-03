@@ -156,6 +156,10 @@ const string kAppName = string(kFieldName) + "appName";
 const string kEnableMotion = string(kFieldName) + "enable_motion";
 const string kMotionDemand = string(kFieldName) + "motion_demand";
 const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
+const string kRoiMask = string(kFieldName) + "roi_mask";
+const string kRecordMotion = string(kFieldName) + "record_motion";
+const string kPreRecordMS = string(kFieldName) + "pre_record_ms";
+const string kPostRecordMS = string(kFieldName) + "post_record_ms";
 
 static onceToken token([]() {
     mINI::Instance()[kModifyStamp] = (int)ProtocolOption::kModifyStampRelative;
@@ -193,6 +197,10 @@ static onceToken token([]() {
     mINI::Instance()[kEnableMotion] = 0;
     mINI::Instance()[kMotionDemand] = 0;
     mINI::Instance()[kGopCacheSize] = 0;
+    mINI::Instance()[kRoiMask] = "";
+    mINI::Instance()[kRecordMotion] = 0;
+    mINI::Instance()[kPreRecordMS] = 5000;
+    mINI::Instance()[kPostRecordMS] = 5000;
 });
 } // !Protocol
 
@@ -440,16 +448,22 @@ const string kSensitivity = MOTION_FIELD "sensitivity";
 const string kIntervalMS = MOTION_FIELD "intervalMS";
 // Minimum duration for motion detection to be considered valid, in milliseconds
 const string kMinDurationMS = MOTION_FIELD "minDurationMS";
-// Block size for motion detection
-const string kBlockSize = MOTION_FIELD "blockSize";
+// Region of interest rows for motion detection
+const string kROIRows = MOTION_FIELD "roiRows";
+// Region of interest columns for motion detection
+const string kROICols = MOTION_FIELD "roiCols";
+// Default region of interest level for motion detection
+const string kROIDefaultLevel = MOTION_FIELD "roiDefaultLevel";
 // Whether to use the Y channel for motion detection
 const string kUseYChannel = MOTION_FIELD "useYChannel";
 
 static onceToken token([]() {
-    mINI::Instance()[kSensitivity] = 50;
+    mINI::Instance()[kSensitivity] = "0.2;0.15;0.1;0.08;0.05";
     mINI::Instance()[kIntervalMS] = 200;
     mINI::Instance()[kMinDurationMS] = 1000;
-    mINI::Instance()[kBlockSize] = 16;
+    mINI::Instance()[kROIRows] = 32;
+    mINI::Instance()[kROICols] = 44;
+    mINI::Instance()[kROIDefaultLevel] = 3;
     mINI::Instance()[kUseYChannel] = 0;
 });
 } // namespace Motion

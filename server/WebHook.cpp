@@ -438,7 +438,7 @@ static void reportServerKeepalive() {
         do_http_hook(hook_api_url + hook_server_keepalive, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
                 TraceL << "hook " << hook_api_url + hook_server_keepalive << " success:" << obj.toStyledString();
-                InfoL << "Report server keepalive success";
+                DebugL << "Report server keepalive success";
             } else {
                 TraceL << "hook " << hook_api_url + hook_server_keepalive << " failed:" << err;
                 WarnL << "Report server keepalive failed:" << err;
