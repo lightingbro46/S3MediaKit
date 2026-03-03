@@ -27,15 +27,17 @@ public:
 
     CameraStatisticImp::Ptr getCameraStatisticImp();
 
-    // void onMotionDetected(bool bActive, uint64_t pre_ms);
-
-    // void setupRecord(int type, bool start, bool archive = false, int backtime_ms = 0);
-
     void PTZMove(std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    bool setupRecordEvent(RecordEventType type, bool start);
 
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }
+
+    void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
+
+    void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
 
 private:
     void onAllStreamReady();
@@ -44,7 +46,7 @@ private:
 
     void setupStreamSink();
 
-    // void setupRecorder();
+    void setupScheduler();
 
     void saveCameraOption(const CameraOption &option);
 
@@ -57,8 +59,8 @@ private:
     GenericRtspCamera::Ptr _src;
     CameraOption _option;
     CameraController::Ptr _controller;
-    // RecordingController::Ptr _recorder;
     StreamSink::Ptr _sink;
+    RecordScheduler::Ptr _scheduler;
     std::weak_ptr<CameraStatisticImp> _statistic;
 };
 

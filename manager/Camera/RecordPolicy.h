@@ -2,7 +2,9 @@
 #define EXTENSION_RECORDPOLICY_H
 
 #include <string>
+#include <memory>
 #include "Poller/Timer.h"
+#include "Common/DeviceSource.h"
 
 namespace managerkit {
     
@@ -13,66 +15,67 @@ enum class RecordMode : uint8_t {
     RecordAlways,
     RecordModeMax
 };
-
 std::string getRecordModeString(RecordMode mode);
 
-enum class RecordState : uint8_t {
-    Idle = 0,
-    Recording,
+enum class ImageQuality : uint8_t {
+    Low = 0,
+    Medium,
+    High,
+    QualityMax
 };
+std::string getImageQualityString(ImageQuality quality);
 
 struct RecordScheduleItem {
-    using Ptr = std::shared_ptr<RecordScheduleItem>;
-
     int day = 0; // 0 = Sunday, 1 = Monday, ... 6 = Saturday
     int hour = 0; // 0-23
     RecordMode mode = RecordMode::NoRecord;
     int fps = 0;
-    std::string q;
+    ImageQuality q = ImageQuality::Low;
 };
 
-class GenericRtspCameraImp; // forward declaration
+enum class RecordEventType : uint8_t {
+    Unknown = 0,
+    Motion,
+};
+std::string getRecordEventTypeString(RecordEventType type);
 
-class RecordingController : public std::enable_shared_from_this<RecordingController> {
+class RecordScheduler : public DeviceSourceEventInterceptor, public std::enable_shared_from_this<RecordScheduler> {
 public:
-    using Ptr = std::shared_ptr<RecordingController>;
-    using OnRecordModeChange = std::function<void(int type, bool start, bool archive, int backtime_ms)>;
+    using Ptr = std::shared_ptr<RecordScheduler>;
+    using RecordScheduleMap = std::unordered_map<std::string, RecordScheduleItem>;
 
-    RecordingController(const toolkit::EventPoller::Ptr &poller = nullptr);
-    ~RecordingController();
+    static RecordScheduler::Ptr create(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller = nullptr);
 
-    void start();
+    RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller = nullptr);
+    ~RecordScheduler();
 
-    void setScheduleStr(const std::string &schedule_str);
+    void setListener(const std::shared_ptr<DeviceSourceEvent> &delegate);
 
-    RecordScheduleItem::Ptr getRecordScheduledActive();
+    std::string getProfile() const { return _profile; }
 
-    void onRecordEvent(bool bActive, uint64_t pre_ms);
+    void createTimer();
 
-    void setOnRecordModeChange(const OnRecordModeChange &cb) { _on_change = std::move(cb); }
+    void stopTimer();
 
-private:
-    void onSchedulerChange(RecordScheduleItem::Ptr &item);
-
-    void onRecordAlwaysMode();
-
-    void onRecordOnlyMotionMode();
-
-    void onNoRecordMode();
-
-    void onRecordLowResAndMotionMode();
+    bool setupRecordEvent(RecordEventType type, bool start);
 
 private:
+    void onSchedulerChange(RecordScheduleItem &item);
+
+    RecordScheduleMap::iterator getRecordScheduledActive(time_t time);
+
+private:
+    DeviceTuple _tuple;
+    std::string _profile;
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;
-    std::unordered_map<int, RecordState> _state_map;
-    std::unordered_map<std::string, RecordScheduleItem::Ptr> _schedules;
-    OnRecordModeChange _on_change;
+    RecordScheduleMap::iterator _it;
+    RecordScheduleMap _items;
 
-    // runtime
-    uint64_t _last_switch_record_ms = 0;
-    RecordMode _current_mode = RecordMode::NoRecord;
-    bool _event_active = false;
+    // running
+    bool _running = false;
+    uint64_t _last_sink_time = 0;
+    uint64_t _last_control_time = 0;
 };
 
 } // namespace managerkit

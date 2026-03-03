@@ -45,6 +45,10 @@ public:
     virtual std::string getOriginUrl(DeviceSource &sender) const;
     // Device registration or deregistration event
     virtual void onRegist(DeviceSource &sender, bool regist) {}
+    // Device record mode change event
+    virtual void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {}
+    // Device image quality configuration change event
+    virtual void onImageQualityChange(DeviceSource &sender, int fps, int q) {}
     // Get the current thread, this function is generally forced to overload
     virtual toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) { throw NotImplemented(toolkit::demangle(typeid(*this).name()) + "::getOwnerPoller not implemented"); }
 };
@@ -52,11 +56,15 @@ public:
 // This object is used to intercept interesting DeviceSourceEvent events
 class DeviceSourceEventInterceptor : public DeviceSourceEvent {
 public:
-    void addDelegate(const std::weak_ptr<DeviceSourceEvent> &listener);
+    void setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener);
+    std::shared_ptr<DeviceSourceEvent> getDelegate() const;
 
     void onRegist(DeviceSource &sender, bool regist) override;
+    void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
+    void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
+
 private:
-    std::vector<std::weak_ptr<DeviceSourceEvent>> _listeners;
+    std::weak_ptr<DeviceSourceEvent> _listener;
 };
 
 /**

@@ -1,4 +1,5 @@
 #include "StreamSink.h"
+#include "RecordPolicy.h"
 
 using namespace std;
 using namespace toolkit;
@@ -6,7 +7,7 @@ using namespace mediakit;
 
 namespace managerkit {
     
-StreamSink::StreamSink(const toolkit::EventPoller::Ptr &poller) : _poller(poller) {}
+StreamSink::StreamSink(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
 
 StreamSink::~StreamSink() {
     lock_guard<mutex> lck(_mtx_sink);
@@ -30,28 +31,30 @@ void StreamSink::start() {
 }
 
 void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option) {
-    bool start_record = option.enableRecord;
-    if ((type == PrimaryStream && option.doNotRecordPrimaryStream) || (type == SecondaryStream && option.doNotRecordSecondaryStream)) {
-        start_record = false;
+    bool record_mp4 = option.enableRecord;
+    if ((type == StreamType::PrimaryStream && option.doNotRecordPrimaryStream) || (type == StreamType::SecondaryStream && option.doNotRecordSecondaryStream)) {
+        record_mp4 = false;
     }
-    // todo: support rtp transport multicast mode 
+    // todo: support rtp transport multicast mode
     int rtp_type = option.rtpTransport == option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
     int media_port = option.autoMediaPort ? 0 :  option.mediaPort;
-    bool record_audio = !option.disableAudio;
+
+    ProtocolOption _option;
+    _option.enable_mp4 = false; // do not enable mp4 in player proxy, recording is controlled by StreamSource itself
+    _option.enable_audio = !option.disableAudio;
+    _option.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
+    _option.roi_mask = option.enableMotion ? option.roiValue : "";
+    _option.record_motion =  option.enableMotion ? true : false;
 
     StreamSource::Ptr monitor;
     {
         lock_guard<mutex> lck(_mtx_sink);
         auto it = _monitor_map.find(type);
         if (it != _monitor_map.end()) {
-            if (start_record == it->second->isRecording() && record_audio == it->second->isRecordingAudio() && rtp_type == it->second->getRtpType() && media_port == it->second->getMediaPort()) {
-                TraceL << "Stream " << tuple.shortUrl() << " config do not change. Ignore";
-                return;
-            }
+            // todo: check if the new option is different from current option, if not, skip recreate monitor
             _monitor_map.erase(type);
         }
-
-        monitor = std::make_shared<StreamSource>(tuple, start_record, record_audio, rtp_type, media_port, option.username, option.password);
+        monitor = std::make_shared<StreamSource>(tuple, _option, record_mp4, rtp_type, media_port, option.username, option.password);
         _monitor_map.emplace(type, monitor);
     }
     
@@ -100,14 +103,34 @@ void StreamSink::onManager() {
     }
 }
 
-void StreamSink::setupRecord(int type, bool start, bool archived, int pre_sec) {
+bool StreamSink::setupRecord(int archive_mode, bool start) {
     lock_guard<mutex> lck(_mtx_sink);
-    auto it = _monitor_map.find(type);
-    if (it != _monitor_map.end()) {
-        if (it->second->isLive()) {
-            it->second->setupRecord(start, archived, pre_sec);
+    if (archive_mode == static_cast<int>(RecordMode::NoRecord)) {
+        for (auto &it : _monitor_map) {
+            it.second->setupRecord(Recorder::type_mp4, false);
         }
+    } else if (archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)) {
+        for (auto &it : _monitor_map) {
+            if (it.first == StreamType::PrimaryStream) {
+                it.second->setupRecord(Recorder::type_mp4, start);
+            } else {
+                it.second->setupRecord(Recorder::type_mp4, false);
+            }
+        }
+    } else if (archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion)) {
+        for (auto &it : _monitor_map) {
+            int record_ = it.first == StreamType::PrimaryStream ? start : !start;
+            it.second->setupRecord(Recorder::type_mp4_archived, record_);
+        }
+    } else if (archive_mode == static_cast<int>(RecordMode::RecordAlways)) {
+        for (auto &it : _monitor_map) {
+            it.second->setupRecord(Recorder::type_mp4, true);
+        }
+    } else {
+        WarnL << "Unsupported record mode: " << archive_mode;
+        return false;
     }
+    return true;
 }
 
 } // namespace managerkit

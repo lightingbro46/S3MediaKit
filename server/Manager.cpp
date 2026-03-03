@@ -169,18 +169,18 @@ void installManagerHook () {
             WarnL << "Motion event from unknown device:" << args.vhost << "/" << args.app << ": " << bActive;
             return;
         }
-        // auto weak_listener = device->getListener();
-        // if (auto strong_listener = weak_listener.lock()) {
-        //     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-        //     if (impl) {
-        //         auto poller = impl->getOwnerPoller(*device);
-        //         if (poller) {
-        //             poller->async([impl, bActive](){
-        //                 impl->setupRecordEvent(RecordEventType::Motion, bActive);
-        //             });
-        //         }
-        //     }
-        // }
+        auto weak_listener = device->getListener();
+        if (auto strong_listener = weak_listener.lock()) {
+            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+            if (impl) {
+                auto poller = impl->getOwnerPoller(*device);
+                if (poller) {
+                    poller->async([impl, bActive](){
+                        impl->setupRecordEvent(RecordEventType::Motion, bActive);
+                    });
+                }
+            }
+        }
     });
 
     enforceStoragePolicy();

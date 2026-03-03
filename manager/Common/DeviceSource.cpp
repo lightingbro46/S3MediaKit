@@ -265,16 +265,35 @@ string DeviceSourceEvent::getOriginUrl(DeviceSource &sender) const {
 }
 
 void DeviceSourceEventInterceptor::onRegist(DeviceSource &sender, bool regist) {
-    for (const auto &weak_listener : _listeners) {
-        auto listener = weak_listener.lock();
-        if (listener) {
-            listener->onRegist(sender, regist);
-        }
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onRegist(sender, regist);
     }
+    listener->onRegist(sender, regist);
 }
 
-void DeviceSourceEventInterceptor::addDelegate(const std::weak_ptr<DeviceSourceEvent> &listener) {
-    _listeners.emplace_back(listener);
+void DeviceSourceEventInterceptor::onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onRecordModeChange(sender, archive_mode, start);
+    }
+    listener->onRecordModeChange(sender, archive_mode, start);
+}
+
+void DeviceSourceEventInterceptor::onImageQualityChange(DeviceSource &sender, int fps, int q) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onImageQualityChange(sender, fps, q);
+    }
+    listener->onImageQualityChange(sender, fps, q);
+}
+
+void DeviceSourceEventInterceptor::setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener) {
+    _listener = listener;
+}
+
+std::shared_ptr<DeviceSourceEvent> DeviceSourceEventInterceptor::getDelegate() const {
+    return _listener.lock();
 }
 
 } // namespace managerkit

@@ -19,9 +19,8 @@ const string getStreamTypeString(int type) {
     }
 }
 
-StreamSource::StreamSource(const StreamTuple &tuple, bool record_mp4, bool record_audio, int rtp_type, int media_port, string username, string password, float timeout_sec) 
-    : _tuple(std::move(tuple)), _record_mp4(record_mp4), _record_audio(record_audio), _rtp_type(rtp_type), _media_port(media_port),
-     _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec) {
+StreamSource::StreamSource(const StreamTuple &tuple, const ProtocolOption &option, bool record_mp4, int rtp_type, int media_port, const std::string &username, const std::string &password, float timeout_sec)
+    : _tuple(std::move(tuple)), _option(option), _rtp_type(rtp_type), _media_port(media_port), _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec), _record_mp4(record_mp4) {
 
     _full_url = tuple.full_url;
 
@@ -51,13 +50,6 @@ void StreamSource::start() {
 
 void StreamSource::createPlayer() {
     MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
-
-    ProtocolOption option;
-    option.enable_mp4 = _record_mp4;
-    option.enable_rtsp = true;
-    option.enable_hls = true;
-    option.enable_motion = false;
-    option.enable_audio = _record_audio;
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
     auto setup_player = [weak_self](const string &err, const PlayerProxy::Ptr &player) {
@@ -142,7 +134,7 @@ void StreamSource::createPlayer() {
         DebugL << "Created stream player proxy: " << strong_self->_tuple.shortUrl();
     };
 
-    addStreamProxy(tuple, option, setup_player);
+    addStreamProxy(tuple, _option, setup_player);
 }
 
 void StreamSource::closePlayer() {
@@ -193,13 +185,37 @@ TranslationInfo StreamSource::getTranslationInfo() {
     return _info;
 }
 
-bool StreamSource::setupRecord(bool start, bool archived, int pre_sec) {
+bool StreamSource::setupRecord(int type, bool start) {
+    if (!_record_mp4) {
+        WarnL << "MP4 recording is disabled, cannot setup record for stream: " << _tuple.shortUrl();
+        return false;
+    }
+
     auto strong_player = _player.lock();
     if (!strong_player) {
         return false;
     }
 
-    strong_player->setupRecord(Recorder::type_mp4, start, archived);
+    auto muxer = strong_player->getMuxer(MediaSource::NullMediaSource());
+    if (!muxer) {
+        WarnL << "MediaSourceMuxer not found for stream: " << _tuple.shortUrl();
+        return false;
+    }
+
+    auto poller = muxer->getOwnerPoller(MediaSource::NullMediaSource());
+    if (!poller) {
+        WarnL << "EventPoller not found for stream: " << _tuple.shortUrl();
+        return false;
+    }
+    poller->async([muxer, type, start]() {
+        auto option = muxer->getOption();
+        auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
+        if (start && is_recording) {
+            WarnL << "Recording is already enabled, resetting record settings for stream: " << muxer->getOriginUrl(MediaSource::NullMediaSource());
+            muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
+        }
+        muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second);
+    });
     return true;
 }
 

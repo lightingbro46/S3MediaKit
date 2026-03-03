@@ -41,20 +41,11 @@ public:
     using Ptr = std::shared_ptr<StreamSource>;
     using OnStreamUpdate = std::function<void(bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
 
-    StreamSource(const StreamTuple &tuple, bool record = false, bool record_audio = true, int rtp_type = 0, int media_port = 0,
-                    std::string username = "", std::string password = "", float timeout_sec = 0.0f);
+    StreamSource(const StreamTuple &tuple, const mediakit::ProtocolOption &option, bool record_mp4 = false, int rtp_type = 0, int media_port = 0, const std::string &username = "", const std::string &password = "", float timeout_sec = 0.0f);
 
     ~StreamSource();
 
     void start();
-
-    bool isRecording() { return _record_mp4; }
-
-    bool isRecordingAudio() { return _record_audio; }
-
-    int getRtpType() { return _rtp_type; }
-
-    int getMediaPort() { return _media_port; }
 
     void setOnStreamUpdate(const OnStreamUpdate &cb) { _on_update = std::move(cb); };
 
@@ -64,7 +55,7 @@ public:
 
     mediakit::TranslationInfo getTranslationInfo();
 
-    bool setupRecord(bool start, bool archived = false, int pre_sec = 0);
+    bool setupRecord(int type, bool start);
 
 private:
     void createPlayer();
@@ -73,13 +64,13 @@ private:
 
 private:
     StreamTuple _tuple;
-    bool _record_mp4;
-    bool _record_audio;
+    mediakit::ProtocolOption _option;
     int _rtp_type;
     int _media_port;
     std::string _username;
     std::string _password;
     float _timeout_sec;
+    bool _record_mp4;
     std::string _full_url;
     std::atomic_bool _live {false};
     std::string _status;

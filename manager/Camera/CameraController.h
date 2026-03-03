@@ -22,7 +22,7 @@ public:
     using Ptr = std::shared_ptr<CameraController>;
     using OnControllerReady = std::function<void(bool connect, const std::string &status, const DeviceCapabilities *caps)>;
 
-    CameraController(const toolkit::EventPoller::Ptr &poller);
+    CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller);
 
     ~CameraController() = default;
 
@@ -51,6 +51,7 @@ private:
 
 private:
     std::mutex _mtx_ctr;
+    DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
     std::atomic<bool> _ready { false };
     std::string _err_msg;

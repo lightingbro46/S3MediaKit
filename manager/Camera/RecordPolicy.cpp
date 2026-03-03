@@ -2,7 +2,6 @@
 #include "Util/util.h"
 #include "Common/StrUtil.h"
 #include "Camera/GenericRtspCameraImp.h"
-#include "Local/TimeMaker.h"
 
 using namespace std;
 using namespace toolkit;
@@ -19,8 +18,25 @@ string getRecordModeString(RecordMode mode) {
     }
 }
 
-static unordered_map<std::string, RecordScheduleItem::Ptr> parseRecordScheduleStr(const string &str) {
-    unordered_map<std::string, RecordScheduleItem::Ptr> ret;
+std::string getImageQualityString(ImageQuality quality) {
+    switch (quality) {
+        case ImageQuality::Low:     return "Low";
+        case ImageQuality::Medium:  return "Medium";
+        case ImageQuality::High:    return "High";
+        default:                   return "Unknown";
+    }
+}
+
+std::string getRecordEventTypeString(RecordEventType type) {
+    switch (type) {
+        case RecordEventType::Unknown: return "Unknown";
+        case RecordEventType::Motion:  return "Motion";
+        default:                      return "Unknown";
+    }
+}
+
+static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const string &str) {
+    unordered_map<std::string, RecordScheduleItem> ret;
 
     Json::Value root;
     if (!StrJsonUtils::readJsonString(str, root)) {
@@ -33,8 +49,18 @@ static unordered_map<std::string, RecordScheduleItem::Ptr> parseRecordScheduleSt
         return ret;
     }
 
+    // The json array is expected to contain items with the following format:
+    // [
+    //   {
+    //     "dh": "0,13", // day and hour, e.g. "0,13" = Sunday 13:00
+    //     "ty": 1, // record mode, e.g. 1 = RecordOnlyMotion
+    //     "fps": 15, // optional, fps for recording
+    //     "q": "M" // optional, image quality for recording, e.g. "M" = Medium, "L" = Low, "H" = High
+    //   },
+    //   ...
+    // ]
     for (const auto &item : root) {
-        RecordScheduleItem::Ptr s = std::make_shared<RecordScheduleItem>();
+        RecordScheduleItem s;
         string key;
         if (item.isMember("dh") && item["dh"].isString()) {
             // format: "d,h", e.g. "0,13" = Sunday 13:00
@@ -43,222 +69,157 @@ static unordered_map<std::string, RecordScheduleItem::Ptr> parseRecordScheduleSt
             if (tmp.size() == 2) {
                 string day_str = tmp[0];
                 string hour_str = tmp[1];
-                s->day = stoi(day_str);
-                s->hour = stoi(hour_str);
+                s.day = stoi(day_str);
+                s.hour = stoi(hour_str);
             }
             key = dh_str;
         }
 
         if (item.isMember("fps") && item["fps"].isInt()) {
-            s->fps = item["fps"].asInt();
+            // optional, default to 0 if not specified
+            s.fps = item["fps"].asInt();
         }
 
         if (item.isMember("q") && item["q"].isString()) {
-            s->q = item["q"].asString();
+            // optional, default to Low if not specified
+            auto q_str = item["q"].asString();
+            if (q_str == "L") {
+                s.q = ImageQuality::Low;
+            } else if (q_str == "M") {
+                s.q = ImageQuality::Medium;
+            } else if (q_str == "H") {
+                s.q = ImageQuality::High;
+            } else {
+                s.q = ImageQuality::Low;
+            }
         }
 
         if (item.isMember("ty") && item["ty"].isInt()) {
+            // required, default to NoRecord if not specified
             auto ty = item["ty"].asInt();
-            s->mode = static_cast<RecordMode>(ty);
+            s.mode = static_cast<RecordMode>(ty);
         }
 
         ret.emplace(key, s);
     }
 
+    // Fill in missing schedule with default value (NoRecord, fps=0, q=Low)
+    for (int i = 0; i < 7; ++i) {
+        for (int j = 0; j < 24; ++j) {
+            string key = to_string(i) + "," + to_string(j);
+            if (ret.find(key) == ret.end()) {
+                RecordScheduleItem s;
+                s.day = i;
+                s.hour = j;
+                ret.emplace(key, s);
+            }
+        }
+    }
+
     return ret;
 }
 
-RecordingController::RecordingController(const toolkit::EventPoller::Ptr &poller) {
+RecordScheduler::Ptr RecordScheduler::create(const DeviceTuple &tuple, const std::string &schedule_str, const toolkit::EventPoller::Ptr &poller) {
+    auto scheduler = std::make_shared<RecordScheduler>(tuple, schedule_str, poller);
+    scheduler->createTimer();
+    DebugL << "Created record scheduler for device: " << tuple.shortUrl() << ". Trigger after 1 second, then every 1 hour. Schedule profile: " << (schedule_str.empty() ? "empty" : "*******");
+    return scheduler;
+}
+
+RecordScheduler::RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _profile(profile) {
     _poller = poller ? poller : EventPollerPool::Instance().getPoller();
+    _items = parseRecordScheduleStr(profile);
 }
 
-RecordingController::~RecordingController() {
+RecordScheduler::~RecordScheduler() {
+    stopTimer();
     _poller.reset();
-    _schedules.clear();
 }
 
-void RecordingController::start() {
-    std::weak_ptr<RecordingController> weak_self = shared_from_this();
+void RecordScheduler::setListener(const std::shared_ptr<DeviceSourceEvent> &delegate) {
+    setDelegate(delegate);
+}
+
+void RecordScheduler::createTimer() {
+    weak_ptr<RecordScheduler> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
-        5000,
+        1.0f,
         [weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return false;
             }
-            auto it = strong_self->getRecordScheduledActive();
-            if (it->mode != strong_self->_current_mode) {
-                strong_self->onSchedulerChange(it);
+            auto time_now = time(nullptr);
+            auto it = strong_self->getRecordScheduledActive(time_now);
+            if (it != strong_self->_it) {
+                strong_self->onSchedulerChange(it->second);
+                strong_self->_it = it;
             }
+            // todo: trigger onPollStreamStatus, onPollDeviceStatus 
             return true;
         },
         _poller);
 }
 
-void RecordingController::setScheduleStr(const std::string &schedule_str) {
-    if (schedule_str.empty()) {
-        WarnL << "Empty schedule string. Ignored.";
-        return;
+void RecordScheduler::stopTimer() {
+    _timer.reset();
+    _items.clear();
+    _it = _items.end();
+}
+
+void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
+    auto _current_mode = _it == _items.end() ? RecordMode::NoRecord : _it->second.mode;
+    if (_current_mode != item.mode) {
+        DebugL << "Recording mode of device: " << _tuple.shortUrl() << " changed to " << getRecordModeString(item.mode) << " (day=" << item.day << ", hour=" << item.hour << ")";
+        onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(item.mode), false);
     }
-    _schedules = parseRecordScheduleStr(schedule_str);
-    auto it = getRecordScheduledActive();
-    if (it->mode != _current_mode) {
-        onSchedulerChange(it);
+
+    auto _current_fps = _it == _items.end() ? 0 : _it->second.fps;
+    auto _current_q = _it == _items.end() ? ImageQuality::Low : _it->second.q;
+    if (_current_fps != item.fps || _current_q != item.q) {
+        DebugL << "Recording quality of device: " << _tuple.shortUrl() << " changed to fps=" << item.fps << ", q=" << getImageQualityString(item.q) << " (day=" << item.day << ", hour=" << item.hour << ")";
+        onImageQualityChange(DeviceSource::NullDeviceSource(), item.fps, static_cast<int>(item.q));
     }
 }
 
-void RecordingController::onSchedulerChange(RecordScheduleItem::Ptr &item) {
-    _current_mode = item->mode;
-    InfoL << "Recording mode changed to " << getRecordModeString(_current_mode);
-
-    // Apply recording mode to camera
-    switch (_current_mode) {
-        case RecordMode::NoRecord:
-            onNoRecordMode();
-            break;
-        case RecordMode::RecordOnlyMotion:
-            onRecordOnlyMotionMode();
-            break;
-        case RecordMode::RecordLowResAndMotion:
-            onRecordLowResAndMotionMode();
-            break;
-        case RecordMode::RecordAlways:
-            onRecordAlwaysMode();
-            break;
-        default:
-            WarnL << "Unknown recording mode. Ignored";
-            break;
-    }
-}
-
-RecordScheduleItem::Ptr RecordingController::getRecordScheduledActive() {
-    auto week_time = StrTimeUtils::getWeekTime(time(nullptr));
+RecordScheduler::RecordScheduleMap::iterator RecordScheduler::getRecordScheduledActive(time_t time) {
+    auto week_time = StrTimeUtils::getWeekTime(time);
     string time_str = (StrPrinter << week_time.day_of_week << "," << week_time.hour);
-    auto it = _schedules.find(time_str);
-    if (it != _schedules.end()) {
-        return it->second;
+    auto it = _items.find(time_str);
+    if (it == _items.end()) {
+        throw std::runtime_error("No record schedule found for current time: " + time_str);
     }
-    // default
-    WarnL << "No matching schedule found for " << time_str << ", return default schedule item";
-    return std::make_shared<RecordScheduleItem>();
+    return it;
 }
 
+bool RecordScheduler::setupRecordEvent(RecordEventType type, bool start) {
+    RecordMode mode = RecordMode::NoRecord;
+    if (_it != _items.end()) {
+        mode = _it->second.mode;
+    }
 
-void RecordingController::onRecordAlwaysMode() {
-    for (auto &it : _state_map) {
-        if (it.second != RecordState::Recording) {
-            // stream is not recording, start recording
-            if (_on_change) {
-                _on_change(it.first, true, false, 0);
-            }
-            it.second = RecordState::Recording;
+    if (mode == RecordMode::NoRecord) {
+        WarnL << "Current schedule mode is NoRecord, ignore record event: " << getRecordEventTypeString(type) << ", start=" << start;
+        return false;
+    } else if (mode == RecordMode::RecordOnlyMotion) {
+        if (type != RecordEventType::Motion) {
+            WarnL << "Current schedule mode is RecordOnlyMotion, ignore non-motion event: " << getRecordEventTypeString(type) << ", start=" << start;
+            return false;
         } else {
-            // stream has already recording, keep recording
+            onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(mode), start);
         }
-    }
-}
-
-void RecordingController::onRecordOnlyMotionMode() {
-    for (auto &it : _state_map) {
-        if (_event_active) {
-            if (it.second != RecordState::Recording) {
-                // auto option = strong_camera->getCameraOption();
-                // auto start_of_hour = getStartOfHour(time(nullptr));
-                // int backtime_sec = MIN(option.motionPreRecordSec, static_cast<int>((time(nullptr) - start_of_hour)));
-                int backtime_sec = 0;
-                // stream is not recording, start recording
-                if (_on_change) {
-                    _on_change(it.first, true, false, backtime_sec * 1000);
-                }
-                it.second = RecordState::Recording;
-            } else {
-                // stream has already recording, keep recording
-            }
+    } else if (mode == RecordMode::RecordLowResAndMotion) {
+        if (type != RecordEventType::Motion) {
+            WarnL << "Current schedule mode is RecordLowResAndMotion, ignore non-motion event: " << getRecordEventTypeString(type) << ", start=" << start;
+            return false;
         } else {
-            if (it.second == RecordState::Recording) {
-                // stream is already recording, stop recording
-                if (_on_change) {
-                    _on_change(it.first, false, false, 0);
-                }
-                it.second = RecordState::Idle;
-            } else {
-                // stream is already idle, keep idle
-            }
+            onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(mode), start);
         }
+    } else if (mode == RecordMode::RecordAlways) {
+        WarnL << "Current schedule mode is RecordAlways, ignore record event: " << getRecordEventTypeString(type) << ", start=" << start;
+        return false; // always record, no need to handle record event
     }
-}
-
-void RecordingController::onNoRecordMode() {
-    for (auto &it : _state_map) {
-        if (it.second == RecordState::Recording) {
-            // stream is already recording, stop recording
-            if (_on_change) {
-                _on_change(it.first, false, false, 0);
-            }
-            it.second = RecordState::Idle;
-        } else {
-            // stream is already idle, keep idle
-        }
-    }
-}
-
-void RecordingController::onRecordLowResAndMotionMode() {
-    for (auto &it : _state_map) {
-        if (it.first == PrimaryStream) {
-            if (it.second == RecordState::Recording) {
-                if (_event_active) {
-                    // primary stream has already recording, event is active => keep recording
-                } else {
-                    // primary stream is recording, event is not active => stop recording
-                    if (_on_change) {
-                        _on_change(it.first, false, false, 0);
-                    }
-                    it.second = RecordState::Idle;
-                }
-            } else {
-                if (_event_active) {
-                    // primary stream is already idle, event is active => start recording
-                    // auto option = strong_camera->getCameraOption();
-                    // auto start_of_hour = getStartOfHour(time(nullptr));
-                    // int backtime_sec = MIN(option.motionPreRecordSec, static_cast<int>((time(nullptr) - start_of_hour)));
-                    int backtime_sec = 0;
-                    if (_on_change) {
-                        _on_change(it.first, true, false, backtime_sec * 1000);
-                    }
-                    it.second = RecordState::Recording;
-                } else {
-                    // primary stream is already idle, event is not active => keep idle
-                }
-            }
-        } else { // secondary stream
-            if (it.second == RecordState::Recording) {
-                if (_event_active) {
-                    // secondary stream has already recording, event is active => stop recording
-                    if (_on_change) {
-                        _on_change(it.first, false, true, 0);
-                    }
-                    it.second = RecordState::Idle;
-                } else {
-                    // secondary stream is recording, event is not active => keep recording
-                }
-            } else {
-                if (_event_active) {
-                    // secondary stream is already idle, event is active => keep idle
-                } else {
-                    // secondary stream is already idle, event is not active => start recording
-                    if (_on_change) {
-                        _on_change(it.first, true, true, 0);
-                    }
-                    it.second = RecordState::Recording;
-                }
-            }
-        }
-    }
-}
-
-void RecordingController::onRecordEvent(bool bActive, uint64_t pre_ms) {
-    DebugL << "Record event active: " << bActive << ", pre_ms: " << pre_ms;
-    _event_active = bActive;
+    return true;
 }
 
 } // namespace managerkit

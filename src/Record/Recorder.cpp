@@ -58,6 +58,22 @@ string Recorder::getRecordPath(Recorder::type type, const MediaTuple& tuple, con
             }
             return File::absolutePath(m3u8FilePath, hlsPath);
         }
+        case Recorder::type_mp4_archived: {
+            GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
+            GET_CONFIG(string, recordAppName, Record::kAppName);
+            GET_CONFIG(string, archive_name, Record::kArchiveStreamName);
+            string mp4FilePath;
+            if (enableVhost) {
+                mp4FilePath = tuple.vhost + "/" + recordAppName + "/" + tuple.app + "/" + archive_name + "/";
+            } else {
+                mp4FilePath = recordAppName + "/" + tuple.app + "/" + archive_name + "/";
+            }
+            //Here we use the customized file path.
+            if (!customized_path.empty()) {
+                return File::absolutePath(mp4FilePath, customized_path);
+            }
+            return File::absolutePath(mp4FilePath, recordPath);
+        }
         default: return "";
     }
 }
@@ -110,6 +126,15 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             return std::make_shared<TSMediaSourceMuxer>(tuple, option);
 #else
             throw std::invalid_argument("mpegts related functions are not turned on. Please enable the ENABLE_HLS or ENABLE_RTPPROXY macro and then compile and test it");
+#endif
+        }
+
+        case Recorder::type_mp4_archived: {
+#if defined(ENABLE_MP4)
+            auto path = Recorder::getRecordPath(type, tuple, option.mp4_save_path);
+            return std::make_shared<MP4Recorder>(tuple, path, option.mp4_max_second);
+#else
+            throw std::invalid_argument("The mp4-related functions are not turned on, please enable the ENABLE_MP4 macro and compile and test it again.");
 #endif
         }
 

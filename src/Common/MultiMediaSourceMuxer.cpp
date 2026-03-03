@@ -374,23 +374,12 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             }
             return true;
         }
-        default : return false;
-    }
-}
-
-bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, bool archived) {
-    CHECK(getOwnerPoller(MediaSource::NullMediaSource())->isCurrentThread(), "Can only call setupRecord in it's owner poller");
-    onceToken token(nullptr, [&]() {
-        if (_option.mp4_as_player && type == Recorder::type_mp4) {
-            // Turn on/off mp4 recording, trigger events related to changes in the number of viewers
-            onReaderChanged(MediaSource::NullMediaSource(), totalReaderCount());
-        }
-    });
-    switch (type) {
-        case Recorder::type_mp4 : {
+        case Recorder::type_mp4_archived: {
             if (start && !_mp4) {
                 // Start recording
-                _mp4 =  makeRecorder(type, archived);
+                _option.mp4_save_path = custom_path;
+                _option.mp4_max_second = max_second;
+                _mp4 = makeRecorder(type);
             } else if (!start && _mp4) {
                 // Stop recording
                 _mp4 = nullptr;

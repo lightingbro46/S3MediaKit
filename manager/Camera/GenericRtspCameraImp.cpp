@@ -35,6 +35,7 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
 
     setupController();
     setupStreamSink();
+    setupScheduler();
 }
 
 void GenericRtspCameraImp::onAllStreamReady() {
@@ -52,11 +53,11 @@ void GenericRtspCameraImp::onAllStreamReady() {
 
 void GenericRtspCameraImp::setupController() {
     if (!_controller) {
-        _controller = std::make_shared<CameraController>(_poller);
+        _controller = std::make_shared<CameraController>(_src->getDeviceTuple(), _poller);
         _controller->setOnControllerReady([this](bool connect, const std::string &status, const DeviceCapabilities *caps) {
             auto strong_statistic = _statistic.lock();
             if (!strong_statistic) {
-                WarnL << "Camera statistic has been released. Ignore device capabilities update";
+                WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore device capabilities update";
                 return;
             }
             strong_statistic->addDeviceCapabilities(connect, status, caps);
@@ -74,11 +75,11 @@ void GenericRtspCameraImp::setupController() {
 
 void GenericRtspCameraImp::setupStreamSink() {
     if (!_sink) {
-        _sink = std::make_shared<StreamSink>(_poller);
+        _sink = std::make_shared<StreamSink>(_src->getDeviceTuple(),_poller);
         _sink->setOnStreamUpdate([this](int type, bool live, const std::string &status, const mediakit::TranslationInfo *info) {
             auto strong_statistic = _statistic.lock();
             if (!strong_statistic) {
-                WarnL << "Camera statistic has been released. Ignore stream statistics update";
+                WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore stream statistics update";
                 return;
             }
             strong_statistic->addStreamStatistic(type, live, status, info);
@@ -107,6 +108,19 @@ void GenericRtspCameraImp::setupStreamSink() {
     onAllStreamReady();
 }
 
+void GenericRtspCameraImp::setupScheduler() {
+    if (_scheduler) {
+        auto profile = _scheduler->getProfile();
+        if (profile == _option.recordSchedules) {
+            DebugL << "Record scheduler for camera " << _src->getUrl() << " already setup with the same profile. Ignore setup scheduler request";
+            return;
+        }
+        _scheduler.reset();
+    }
+    _scheduler = RecordScheduler::create(_src->getDeviceTuple(), _option.recordSchedules, _poller);
+    _scheduler->setListener(shared_from_this());
+}
+
 void GenericRtspCameraImp::stop() {
     if (_controller) {
         _controller->stopController();
@@ -119,22 +133,25 @@ void GenericRtspCameraImp::stop() {
             _sink->stopMonitor(SecondaryStream);
         }
     }
+    if (_scheduler) {
+        _scheduler->stopTimer();
+    }
 
     onAllStreamReady();
 }
 
 void GenericRtspCameraImp::PTZMove(std::string &strDirect, int speed, const std::function<void(const SockException &ex)> &cb) {
-    if (_controller) {
-        _controller->PTZMove(strDirect, speed, cb);
-    } else {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call PTZMove in it's owner poller");
+    if (!_controller) {
         cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
     }
+    _controller->PTZMove(strDirect, speed, cb);
 }
 
 CameraStatisticImp::Ptr GenericRtspCameraImp::getCameraStatisticImp() {
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
-        WarnL << "Camera statistic has been released. Ignore get statistic request";
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore get statistic request";
         return nullptr;
     }
     return strong_statistic;
@@ -143,27 +160,40 @@ CameraStatisticImp::Ptr GenericRtspCameraImp::getCameraStatisticImp() {
 void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
-        WarnL << "Camera statistic has been released. Ignore camera option save";
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore camera option save";
         return;
     }
     strong_statistic->setCameraOption(option);
 }   
 
-// void GenericRtspCameraImp::onMotionDetected(bool bActive, uint64_t pre_ms) {
-//     if (_recorder) {
-//         _recorder->onRecordEvent(bActive, pre_ms);
-//     }
-// }
+void GenericRtspCameraImp::onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onRecordModeChange in it's owner poller");
+    if (!_sink) {
+        WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup record mode request";
+        return;
+    }
+    _sink->setupRecord(archive_mode, false);
+}
 
-// void GenericRtspCameraImp::setupRecorder() {
-//     if (!_recorder) {
-//         _recorder = std::make_shared<RecordingController>(_poller);
-//         _recorder->setOnRecordModeChange([this](int type, bool start, bool archive, int backtime_ms) {
-//             DebugL << "Recording mode changed to " << (start ? "start" : "stop") << ", archive: " << archive << ", backtime_ms: " << backtime_ms;
-//         });
-//         _recorder->start();
-//     }
-//     _recorder->setScheduleStr(_option.recordSchedules);
-// }
+void GenericRtspCameraImp::onImageQualityChange(DeviceSource &sender, int fps, int q) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onImageQualityChange in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore setup image quality request";
+        return;
+    }
+    auto quality = static_cast<ImageQuality>(q);
+    InfoL << "Camera " << _src->getUrl() << " image quality changed: fps=" << fps << ", q=" << getImageQualityString(quality);
+    // todo:
+    // _controller->setupImageQuality(fps, quality);
+}
+
+bool GenericRtspCameraImp::setupRecordEvent(RecordEventType type, bool start) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setupRecordEvent in it's owner poller");
+    if (!_scheduler) {
+        WarnL << "Record scheduler for camera " << _src->getUrl() << " is not ready. Ignore setup record event request";
+        return false;
+    }
+    return _scheduler->setupRecordEvent(type, start);
+}
 
 } // namespace managerkit

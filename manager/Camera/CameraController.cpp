@@ -7,7 +7,7 @@ using namespace toolkit;
 
 namespace managerkit {
 
-CameraController::CameraController(const toolkit::EventPoller::Ptr &poller) : _poller(poller) {}
+CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
 
 void CameraController::start() {
     weak_ptr<CameraController> weak_self = shared_from_this();
@@ -32,7 +32,8 @@ bool CameraController::isControlReady() const {
 void CameraController::setupController(const CameraOption &option) {
     lock_guard<mutex> lck(_mtx_ctr);
     if (_onvif_ctr) {
-        DebugL << "Controller already exists. Recreate controller due to configuration changed";
+        // todo: check if the new option is different from current option, if not, skip recreate controller
+        DebugL << "Controller of device: " << _tuple.shortUrl() << " already exists. Recreate controller due to configuration changed";
         _onvif_ctr.reset();
     }
 
@@ -57,11 +58,11 @@ void CameraController::setupController(const CameraOption &option) {
     // todo: create plugin from manufactor and model
     // todo: support PSI controller
     _onvif_ctr = std::make_shared<OnvifControl>(address, option.username, option.password);
-    DebugL << "Created Onvif controller for device: " << address 
+    DebugL << "Created Onvif controller for device: " << _tuple.shortUrl() << " (" << address << ")"
         << ", username: " << (option.username.empty() ? "empty" : "******")
         << ", password: " << (option.password.empty() ? "empty" : "******");
 
-     // save camera option for later use
+    // save camera option for later use
     _address = address;
     _enablePTZControl = option.enablePTZControl;
     _reservePanAxis = option.reservePanAxis;
@@ -80,7 +81,7 @@ void CameraController::stopController() {
         _onvif_ctr.reset();
         _ready = false;
     }
-    DebugL << "Closed camera controller for device: " << _address;
+    DebugL << "Closed camera controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
 void CameraController::onManager() {
@@ -97,7 +98,7 @@ void CameraController::onManager() {
                 if (_onvif_ctr->connect()) {
                     _ready = true;
                     _err_msg = "connected";
-                    InfoL << "Onvif controller of device connected: " << _address;
+                    InfoL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connected";
 
                     // get device capabilities after connected
                     _device_caps.isOnvifDevice = true;
@@ -107,7 +108,7 @@ void CameraController::onManager() {
                 } else {
                     _ready = false;
                     _err_msg = _onvif_ctr->getSoapErrMsg();
-                    WarnL << "Onvif controller of device " << _address << " connect failed: " << _err_msg;
+                    WarnL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connect failed: " << _err_msg;
                 }
                 call_on_ready = true;
             }

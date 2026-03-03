@@ -6,12 +6,12 @@
 
 namespace managerkit {
 
-class StreamSink : public DeviceSourceEvent, public std::enable_shared_from_this<StreamSink> {
+class StreamSink : public DeviceSourceEventInterceptor, public std::enable_shared_from_this<StreamSink> {
 public:
     using Ptr = std::shared_ptr<StreamSink>;
     using OnStreamUpdate = std::function<void(int type, bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
     
-    StreamSink(const toolkit::EventPoller::Ptr &poller);
+    StreamSink(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller);
 
     ~StreamSink();
 
@@ -25,14 +25,16 @@ public:
 
     void stopMonitor(int type);
 
-    void setupRecord(int type, bool start, bool archived,int pre_sec);
+    bool setupRecord(int archive_mode, bool start);
 
 private:
     void onManager();
 
 private:
     std::mutex _mtx_sink;
+    DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
+    bool _stream_ready[2] = { false , false };
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
     toolkit::Timer::Ptr _timer_sink;
     OnStreamUpdate _on_stream_update;
