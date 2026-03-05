@@ -92,7 +92,7 @@ void CameraController::onManager() {
             return;
         }
 
-        if (!_ready && time(nullptr) - _last_reconnect_time >= 60) {
+        if (time(nullptr) - _last_reconnect_time >= 60) {
             if (_onvif_ctr) {
                 // reconnect to device
                 if (_onvif_ctr->connect()) {

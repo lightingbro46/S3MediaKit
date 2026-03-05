@@ -732,7 +732,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                         item["secondaryStreamId"] = Json::nullValue;
                         item["secondaryStream"] = Json::nullValue;
                     }
-                    if (option.manufacturer == GENERIC_RTSP_CAMERA) {
+                    if (option.manufacturer == GENERIC_RTSP_CAMERA || option.manufacturer.empty()) {
                         auto is_online = isGenericRtspCameraOnline(item);
                         item["status"] = is_online;
                         item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
@@ -804,7 +804,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 data["hardwareId"] = deviceInfo.hardwareId;
                 data["macAddress"] = deviceInfo.macAddress;
                 data["hasWebPage"] = true;
-                data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort) << "/";
+                data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort);
                 
                 Json::Value onvifProfileJson = Json::objectValue;
                 auto ptzProfile = caps->onvifProfile.ptzProfile;
