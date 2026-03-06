@@ -16,6 +16,8 @@ typedef enum {
 
 const std::string getStreamTypeString(int type);
 
+bool isValidStreamType(int type);
+
 struct StreamTuple : public DeviceTuple {
     std::string stream_id;
     std::string full_url;
@@ -36,46 +38,51 @@ struct StreamTuple : public DeviceTuple {
     }
 };
 
-class StreamSource : public std::enable_shared_from_this<StreamSource> {
+class StreamSource : public DeviceSourceEventInterceptor, public std::enable_shared_from_this<StreamSource> {
 public:
     using Ptr = std::shared_ptr<StreamSource>;
-    using OnStreamUpdate = std::function<void(bool live, const std::string &status, const mediakit::TranslationInfo *info)>;
 
-    StreamSource(const StreamTuple &tuple, const mediakit::ProtocolOption &option, bool record_mp4 = false, int rtp_type = 0, int media_port = 0, const std::string &username = "", const std::string &password = "", float timeout_sec = 0.0f);
+    StreamSource(int type, const StreamTuple &tuple, const mediakit::ProtocolOption &option, bool record_mp4 = false, int rtp_type = 0, int media_port = 0, std::string username = "", std::string password = "", float timeout_sec = 0.0f);
 
     ~StreamSource();
 
+    void setListener(std::shared_ptr<DeviceSourceEvent> listener);
+
     void start();
 
-    void setOnStreamUpdate(const OnStreamUpdate &cb) { _on_update = std::move(cb); };
+    bool isLive() const { return _live.load(); }
 
-    bool isLive() { return _live.load(); }
-
-    std::string getStatus() { return _status; }
+    std::string getStatus() const {
+        auto status_ptr = std::atomic_load_explicit(&_status, std::memory_order_acquire);
+        return status_ptr ? *status_ptr : std::string();
+    }
 
     mediakit::TranslationInfo getTranslationInfo();
 
     bool setupRecord(int type, bool start);
 
 private:
+    void setState(bool live, std::string status);
+
     void createPlayer();
 
     void closePlayer();
 
+    void onStreamReady(bool ready, const std::string &status, const mediakit::TranslationInfo *info);
+
 private:
+    int _type;
     StreamTuple _tuple;
     mediakit::ProtocolOption _option;
+    bool _record_mp4;
     int _rtp_type;
-    int _media_port;
+    int _media_port = 0;
     std::string _username;
     std::string _password;
     float _timeout_sec;
-    bool _record_mp4;
     std::string _full_url;
     std::atomic_bool _live {false};
-    std::string _status;
-    mediakit::TranslationInfo _info;
-    OnStreamUpdate _on_update;
+    std::shared_ptr<const std::string> _status {std::make_shared<const std::string>("init")};
     std::weak_ptr<mediakit::PlayerProxy> _player;
 };
 

@@ -49,26 +49,18 @@ void GenericRtspCameraImp::onAllStreamReady() {
         // trigger device registration event
         _src->regist();
     }
+    if (_controller) {
+        _controller->setListener(shared_from_this());
+    }
+    if (_sink) {
+        _sink->setListener(shared_from_this());
+    }
 }
 
 void GenericRtspCameraImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<CameraController>(_src->getDeviceTuple(), _poller);
-        _controller->setOnControllerReady([this](bool connect, const std::string &status, const DeviceCapabilities *caps) {
-            auto strong_statistic = _statistic.lock();
-            if (!strong_statistic) {
-                WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore device capabilities update";
-                return;
-            }
-            strong_statistic->addDeviceCapabilities(connect, status, caps);
-
-            // update device capabilities if controller is connected
-            if (connect) {
-                auto sender = _src;
-                NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
-            }
-        });
-        _controller->start();
+        _controller->createTimer();
     }
     _controller->setupController(_option);
 }
@@ -76,15 +68,7 @@ void GenericRtspCameraImp::setupController() {
 void GenericRtspCameraImp::setupStreamSink() {
     if (!_sink) {
         _sink = std::make_shared<StreamSink>(_src->getDeviceTuple(),_poller);
-        _sink->setOnStreamUpdate([this](int type, bool live, const std::string &status, const mediakit::TranslationInfo *info) {
-            auto strong_statistic = _statistic.lock();
-            if (!strong_statistic) {
-                WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore stream statistics update";
-                return;
-            }
-            strong_statistic->addStreamStatistic(type, live, status, info);
-        });
-        _sink->start();
+        _sink->createTimer();
     }
 
     if (_src->hasStreamTuple(PrimaryStream)) {
@@ -140,7 +124,7 @@ void GenericRtspCameraImp::stop() {
     onAllStreamReady();
 }
 
-void GenericRtspCameraImp::PTZMove(std::string &strDirect, int speed, const std::function<void(const SockException &ex)> &cb) {
+void GenericRtspCameraImp::PTZMove(const std::string &strDirect, int speed, const std::function<void(const SockException &ex)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call PTZMove in it's owner poller");
     if (!_controller) {
         cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
@@ -194,6 +178,39 @@ bool GenericRtspCameraImp::setupRecordEvent(RecordEventType type, bool start) {
         return false;
     }
     return _scheduler->setupRecordEvent(type, start);
+}
+
+void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore stream ready event";
+        return;
+    }
+    const mediakit::TranslationInfo *info = nullptr;
+    if (data.is<mediakit::TranslationInfo>()) {
+        info = &data.get<mediakit::TranslationInfo>();
+    }
+    strong_statistic->addStreamStatistic(type, live, status, info);
+}
+
+void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore controller ready event";
+        return;
+    }
+
+    const DeviceCapabilities *caps = nullptr;
+    if (data.is<DeviceCapabilities>()) {
+        caps = &data.get<DeviceCapabilities>();
+    }
+    strong_statistic->addDeviceCapabilities(connect, status, caps);
+
+    // update device capabilities if controller is connected
+    if (connect) {
+        auto sender = _src;
+        NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
+    }
 }
 
 } // namespace managerkit

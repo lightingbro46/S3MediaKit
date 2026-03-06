@@ -27,7 +27,7 @@ public:
 
     CameraStatisticImp::Ptr getCameraStatisticImp();
 
-    void PTZMove(std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
+    void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
     bool setupRecordEvent(RecordEventType type, bool start);
 
@@ -38,6 +38,10 @@ public:
     void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
 
     void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
+
+    void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
+
+    void onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) override;
 
 private:
     void onAllStreamReady();

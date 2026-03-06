@@ -1,8 +1,8 @@
 #include "StreamSource.h"
-#include "Extension/Plugin.h"
 #include "server/WebApi.h"
 #include "server/Manager.h"
 #include "Common/StrUtil.h"
+#include "StreamSink.h"
 
 using namespace std;
 using namespace toolkit;
@@ -19,8 +19,12 @@ const string getStreamTypeString(int type) {
     }
 }
 
-StreamSource::StreamSource(const StreamTuple &tuple, const ProtocolOption &option, bool record_mp4, int rtp_type, int media_port, const std::string &username, const std::string &password, float timeout_sec)
-    : _tuple(std::move(tuple)), _option(option), _rtp_type(rtp_type), _media_port(media_port), _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec), _record_mp4(record_mp4) {
+bool isValidStreamType(int type) {
+    return type >= StreamType::PrimaryStream && type < StreamType::StreamMax;
+}
+
+StreamSource::StreamSource(int type, const StreamTuple &tuple, const ProtocolOption &option, bool record_mp4, int rtp_type, int media_port, std::string username, std::string password, float timeout_sec)
+    : _type(type), _tuple(std::move(tuple)), _option(option), _record_mp4(record_mp4), _rtp_type(rtp_type), _media_port(media_port), _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec) {
 
     _full_url = tuple.full_url;
 
@@ -29,7 +33,7 @@ StreamSource::StreamSource(const StreamTuple &tuple, const ProtocolOption &optio
         _full_url = UriUtils::replaceCredentials(_full_url, _username, _password);
     }
 
-    if (_media_port) {
+    if (_media_port > 0) {
         // replace port in url if media_port is specified
         _full_url = UriUtils::replacePort(_full_url, _media_port);
     }
@@ -42,6 +46,16 @@ StreamSource::StreamSource(const StreamTuple &tuple, const ProtocolOption &optio
 
 StreamSource::~StreamSource() {
     closePlayer();
+}
+
+void StreamSource::setState(bool live, std::string status) {
+    _live.store(live, std::memory_order_release);
+    auto status_ptr = std::make_shared<const std::string>(std::move(status));
+    std::atomic_store_explicit(&_status, status_ptr, std::memory_order_release);
+}
+
+void StreamSource::setListener(std::shared_ptr<DeviceSourceEvent> listener) {
+    setDelegate(listener);
 }
 
 void StreamSource::start() {
@@ -76,9 +90,11 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
-            strong_self->_live = !ex ? true : false;
-            strong_self->_status = ex.what();
-            TraceL << "setPlayCallbackOnce: live=" << strong_self->_live << " status=" << strong_self->_status;
+
+            auto live = !ex;
+            auto status = ex ? ex.what() : "play callback success";
+            strong_self->setState(live, status);
+            TraceL << "setPlayCallbackOnce: live=" << live << " status=" << status;
         });
 
         player->setOnConnect([weak_self](const TranslationInfo &info) {
@@ -86,16 +102,13 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
-            if (!strong_self->_live) {
-                strong_self->_live = true;
-                strong_self->_status = "play rtsp success";
-            }
-            strong_self->_info = info;
-            TraceL << "setOnConnect: live=" << strong_self->_live << " status=" << strong_self->_status;
+
+            const auto live = true;
+            const std::string status = "play rtsp success";
+            strong_self->setState(live, status);
+            TraceL << "setOnConnect: live=" << live << " status=" << status;
             
-            if (strong_self->_on_update) {
-                strong_self->_on_update(strong_self->_live, strong_self->_status, &strong_self->_info);
-            }
+            strong_self->onStreamReady(live, status, &info);
         });
 
         player->setOnDisconnect([weak_self]() {
@@ -103,15 +116,13 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
-            if (strong_self->_live) {
-                strong_self->_live = false;
-                strong_self->_status = "self-disconnect";
-            }
-            TraceL << "setOnDisconnect: live=" << strong_self->_live << " status=" << strong_self->_status;
 
-            if (strong_self->_on_update) {
-                strong_self->_on_update(strong_self->_live, strong_self->_status, nullptr);
-            }
+            const auto live = false;
+            const std::string status = "self-disconnect";
+            strong_self->setState(live, status);
+            TraceL << "setOnDisconnect: live=" << live << " status=" << status;
+
+            strong_self->onStreamReady(live, status, nullptr);
         });
 
         // Note: onClose is called when the player proxy is closed itself
@@ -120,13 +131,12 @@ void StreamSource::createPlayer() {
             if (!strong_self) {
                 return;
             }
-            strong_self->_live = !ex ? true : false;
-            strong_self->_status = ex.what();
-            TraceL << "setOnClose: live=" << strong_self->_live << " status=" << strong_self->_status;
-            
-            if (strong_self->_on_update) {
-                strong_self->_on_update(strong_self->_live, strong_self->_status, nullptr);
-            }
+
+            auto live = !ex;
+            auto status = ex ? ex.what() : "closed";
+            strong_self->setState(live, status);
+            TraceL << "setOnClose: live=" << live << " status=" << status;
+            strong_self->onStreamReady(live, status, nullptr);
         });
 
         player->play(strong_self->_full_url);
@@ -141,23 +151,23 @@ void StreamSource::closePlayer() {
     MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
     delStreamProxy(tuple);
     _player.reset();
+    setState(false, "self-closed");
     DebugL << "Closed stream player proxy: " << _tuple.shortUrl();
-    if (_on_update) {
-        _on_update(false, "self-closed", nullptr);
-    }
+    onStreamReady(false, "self-closed", nullptr);
 }
 
 TranslationInfo StreamSource::getTranslationInfo() {
+    TranslationInfo info;
     auto media_src = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
     if (media_src) {
-        _info.byte_speed = media_src->getBytesSpeed();
-        _info.start_time_stamp = media_src->getCreateStamp();
-        _info.stream_info.clear();
+        info.byte_speed = media_src->getBytesSpeed();
+        info.start_time_stamp = media_src->getCreateStamp();
+        info.stream_info.clear();
         auto tracks = media_src->getTracks();
         for (auto &track : tracks) {
             track->update();
-            _info.stream_info.emplace_back();
-            auto &back = _info.stream_info.back();
+            info.stream_info.emplace_back();
+            auto &back = info.stream_info.back();
             back.bitrate = track->getBitRate();
             back.codec_type = track->getTrackType();
             back.codec_name = track->getCodecName();
@@ -182,7 +192,7 @@ TranslationInfo StreamSource::getTranslationInfo() {
         }
     }
     
-    return _info;
+    return info;
 }
 
 bool StreamSource::setupRecord(int type, bool start) {
@@ -191,32 +201,38 @@ bool StreamSource::setupRecord(int type, bool start) {
         return false;
     }
 
-    auto strong_player = _player.lock();
-    if (!strong_player) {
-        return false;
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
+    if (!media_src) {
+       WarnL << "MediaSource not found for stream: " << _tuple.shortUrl();
+       return false;
     }
 
-    auto muxer = strong_player->getMuxer(MediaSource::NullMediaSource());
+    auto muxer = media_src->getMuxer();
     if (!muxer) {
         WarnL << "MediaSourceMuxer not found for stream: " << _tuple.shortUrl();
         return false;
     }
 
-    auto poller = muxer->getOwnerPoller(MediaSource::NullMediaSource());
+    auto poller = muxer->getOwnerPoller(*media_src);
     if (!poller) {
         WarnL << "EventPoller not found for stream: " << _tuple.shortUrl();
         return false;
     }
-    poller->async([muxer, type, start]() {
+    poller->async([muxer, type, start, media_src]() {
         auto option = muxer->getOption();
         auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
         if (start && is_recording) {
-            WarnL << "Recording is already enabled, resetting record settings for stream: " << muxer->getOriginUrl(MediaSource::NullMediaSource());
+            WarnL << "Recording is already enabled, resetting record settings for stream: " << muxer->getOriginUrl(*media_src);
             muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
         }
         muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second);
     });
     return true;
+}
+
+void StreamSource::onStreamReady(bool ready, const std::string &status, const TranslationInfo *info) {
+    auto data = toolkit::Any(info ? std::make_shared<TranslationInfo>(*info) : nullptr);
+    DeviceSourceEventInterceptor::onStreamReady(DeviceSource::NullDeviceSource(), _type, ready, status, data);
 }
 
 } // namespace managerkit

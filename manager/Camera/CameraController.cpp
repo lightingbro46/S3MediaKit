@@ -9,7 +9,7 @@ namespace managerkit {
 
 CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
 
-void CameraController::start() {
+void CameraController::createTimer() {
     weak_ptr<CameraController> weak_self = shared_from_this();
     _timer_ctr = std::make_shared<Timer>(
         10.0f,
@@ -25,12 +25,23 @@ void CameraController::start() {
     );
 }
 
-bool CameraController::isControlReady() const {
+void CameraController::setListener(const std::shared_ptr<DeviceSourceEvent> &listener) {
+    setDelegate(listener);
+}
+
+bool CameraController::isReady() const {
     return _ready.load(); 
 }
 
 void CameraController::setupController(const CameraOption &option) {
-    lock_guard<mutex> lck(_mtx_ctr);
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self, option]() {
+            self->setupController(option);
+        });
+        return;
+    }
+
     if (_onvif_ctr) {
         // todo: check if the new option is different from current option, if not, skip recreate controller
         DebugL << "Controller of device: " << _tuple.shortUrl() << " already exists. Recreate controller due to configuration changed";
@@ -71,65 +82,65 @@ void CameraController::setupController(const CameraOption &option) {
 }
 
 void CameraController::stopController() {  
-    if (_on_ready) {
-        _on_ready(false, "disconnected", nullptr);
-        _on_ready = nullptr;
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self]() {
+            self->stopController();
+        });
+        return;
     }
-    {
-        lock_guard<mutex> lck(_mtx_ctr);
-        _timer_ctr.reset();
-        _onvif_ctr.reset();
-        _ready = false;
-    }
+
+    onControllerReady(false, "disconnected", nullptr);
+    
+    _timer_ctr.reset();
+    _onvif_ctr.reset();
+    _ready = false;
     DebugL << "Closed camera controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
 void CameraController::onManager() {
-    bool call_on_ready = false;
-    {
-        lock_guard<mutex> lck(_mtx_ctr);
-        if (!_onvif_ctr) {
-            return;
-        }
-
-        if (time(nullptr) - _last_reconnect_time >= 60) {
-            if (_onvif_ctr) {
-                // reconnect to device
-                if (_onvif_ctr->connect()) {
-                    _ready = true;
-                    _err_msg = "connected";
-                    InfoL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connected";
-
-                    // get device capabilities after connected
-                    _device_caps.isOnvifDevice = true;
-                    _device_caps.onvifProfile.deviceInfo = _onvif_ctr->getDeviceInfo();
-                    _device_caps.onvifProfile.mediaProfiles = _onvif_ctr->getMediaProfilesInfo();
-                    _device_caps.onvifProfile.ptzProfile = _onvif_ctr->getPTZProfile();
-                } else {
-                    _ready = false;
-                    _err_msg = _onvif_ctr->getSoapErrMsg();
-                    WarnL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connect failed: " << _err_msg;
-                }
-                call_on_ready = true;
-            }
-            _last_reconnect_time = time(nullptr);
-        }
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self]() {
+            self->onManager();
+        });
+        return;
     }
 
-    // Call virtual method outside lock to prevent deadlock
-    if (call_on_ready && _on_ready) {
-        _on_ready(_ready.load(), _err_msg, &_device_caps);
+    if (!_onvif_ctr) {
+        return;
     }
 
-    // WorkThreadPool::Instance().getPoller()->async([this]() {
-    //     // Additional operations can be added here if controller is ready
-    //     //todo: get media profile
-    //     //todo: set media profile if need
-    //     return 0;
-    // });
+    if (time(nullptr) - _last_reconnect_time < 60) {
+        // avoid reconnecting too frequently
+        return;
+    }
+    _last_reconnect_time = time(nullptr);
+
+    // reconnect to device
+    if (_onvif_ctr->connect()) {
+        InfoL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connected";
+
+        // get device capabilities after connected
+        DeviceCapabilities caps;
+        caps.isOnvifDevice = true;
+        caps.onvifProfile.deviceInfo = _onvif_ctr->getDeviceInfo();
+        caps.onvifProfile.mediaProfiles = _onvif_ctr->getMediaProfilesInfo();
+        caps.onvifProfile.ptzProfile = _onvif_ctr->getPTZProfile();
+
+        onControllerReady(true, "connected", &caps);
+    } else {
+        WarnL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connect failed: " << _err_msg;
+
+        onControllerReady(false, _onvif_ctr->getSoapErrMsg(), &_device_caps);
+    }
+
+    // Additional operations can be added here if controller is ready
+    //todo: get media profile
+    //todo: set media profile if need
 }
 
-static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT &direct, int &speed, const function<void(const SockException &ex)> &cb) {
+static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed, const function<void(const SockException &ex)> &cb) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
         return;
@@ -172,12 +183,12 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     if (profile.isRelMoveEnable && (ptz_mode == CameraOption::kPTZRelativeMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan = 0.0, tilt = 0.0, zoom = 0.0;
         switch (direct) {
-            case PTZ_DIRECT::Up: tilt = clamp(tilt * step, profile.relMinTilt, profile.relMaxTilt); break;
-            case PTZ_DIRECT::Down: tilt = clamp(tilt * (-1) * step, profile.relMinTilt, profile.relMaxTilt); break;
-            case PTZ_DIRECT::Left: pan = clamp(pan * (-1) * step, profile.relMinPan, profile.relMaxPan); break;
-            case PTZ_DIRECT::Right: pan = clamp(pan * step, profile.relMinPan, profile.relMaxPan); break;
-            case PTZ_DIRECT::ZoomIn: zoom = clamp(zoom * step, profile.relMinZoom, profile.relMaxZoom); break;
-            case PTZ_DIRECT::ZoomOut: zoom = clamp(zoom * (-1) * step, profile.relMinZoom, profile.relMaxZoom); break;
+            case PTZ_DIRECT::Up: tilt = clamp(step, profile.relMinTilt, profile.relMaxTilt); break;
+            case PTZ_DIRECT::Down: tilt = clamp(-step, profile.relMinTilt, profile.relMaxTilt); break;
+            case PTZ_DIRECT::Left: pan = clamp(-step, profile.relMinPan, profile.relMaxPan); break;
+            case PTZ_DIRECT::Right: pan = clamp(step, profile.relMinPan, profile.relMaxPan); break;
+            case PTZ_DIRECT::ZoomIn: zoom = clamp(step, profile.relMinZoom, profile.relMaxZoom); break;
+            case PTZ_DIRECT::ZoomOut: zoom = clamp(-step, profile.relMinZoom, profile.relMaxZoom); break;
             case PTZ_DIRECT::Home:
                 pan = (profile.relMinPan + profile.relMaxPan) / 2;
                 tilt = (profile.relMinTilt + profile.relMaxTilt) / 2;
@@ -196,12 +207,12 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     if (profile.isConsMoveEnable && (ptz_mode == CameraOption::kPTZContinousMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan = 0.0, tilt = 0.0, zoom = 0.0;
         switch (direct) {
-            case PTZ_DIRECT::Up: tilt = clamp(tilt * step, profile.consMinTilt, profile.consMaxTilt); break;
-            case PTZ_DIRECT::Down: tilt = clamp(tilt * (-1) * step, profile.consMinTilt, profile.consMaxTilt); break;
-            case PTZ_DIRECT::Left: pan = clamp(pan * (-1) * step, profile.consMinPan, profile.consMaxPan); break;
-            case PTZ_DIRECT::Right: pan = clamp(pan * step, profile.consMinPan, profile.consMaxPan); break;
-            case PTZ_DIRECT::ZoomIn: zoom = clamp(zoom * step, profile.consMinZoom, profile.consMaxZoom); break;
-            case PTZ_DIRECT::ZoomOut: zoom = clamp(zoom * (-1) * step, profile.consMinZoom, profile.consMaxZoom); break;
+            case PTZ_DIRECT::Up: tilt = clamp(step, profile.consMinTilt, profile.consMaxTilt); break;
+            case PTZ_DIRECT::Down: tilt = clamp(-step, profile.consMinTilt, profile.consMaxTilt); break;
+            case PTZ_DIRECT::Left: pan = clamp(-step, profile.consMinPan, profile.consMaxPan); break;
+            case PTZ_DIRECT::Right: pan = clamp(step, profile.consMinPan, profile.consMaxPan); break;
+            case PTZ_DIRECT::ZoomIn: zoom = clamp(step, profile.consMinZoom, profile.consMaxZoom); break;
+            case PTZ_DIRECT::ZoomOut: zoom = clamp(-step, profile.consMinZoom, profile.consMaxZoom); break;
             case PTZ_DIRECT::Home:
                 pan = (profile.consMinPan + profile.consMaxPan) / 2;
                 tilt = (profile.consMinTilt + profile.consMaxTilt) / 2;
@@ -230,26 +241,15 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     cb(SockException(Err_other, "Device does not support selected PTZ control mode", ApiErrCode::CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE));
 }
 
-bool CameraController::enablePTZ() {
-    bool enable_ptz = false;
-    OnvifControl::Ptr onvif_ptr;
-    {
-        lock_guard<mutex> lck(_mtx_ctr);
-        onvif_ptr = _onvif_ctr;
+void CameraController::PTZMove(const std::string &strDirect, int speed, const function<void(const SockException &ex)> &cb) {
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self, strDirect, speed, cb]() {
+            self->PTZMove(strDirect, speed, cb);
+        });
+        return;
     }
 
-    if (onvif_ptr && _ready.load()) {
-        enable_ptz = onvif_ptr->enablePTZ();
-    }
-
-    return enable_ptz;
-}
-
-const std::string CameraController::getErrMsg() const {
-    return _err_msg;
-}
-
-void CameraController::PTZMove(std::string &strDirect, int &speed, const function<void(const SockException &ex)> &cb) {
     // check permission from camera option
     if (!_enablePTZControl) {
         cb(SockException(Err_other, "Camera is configured to disable PTZ control", ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ));
@@ -273,20 +273,23 @@ void CameraController::PTZMove(std::string &strDirect, int &speed, const functio
     else
         direct = PTZ_DIRECT::Home;
 
-    // find controller
-    OnvifControl::Ptr onvif_ptr;
-    {
-        lock_guard<mutex> lck(_mtx_ctr);
-        onvif_ptr = _onvif_ctr;
-    }
-    
-    if (onvif_ptr && _ready.load()) {
-        onvifPTZMove(onvif_ptr, _ptzMode, direct, speed, cb);
+    if (_onvif_ctr && _ready.load()) {
+        onvifPTZMove(_onvif_ctr, _ptzMode, direct, speed, cb);
         return;
     }
     // todo: add more ptz function from manufacturer sdk
 
     return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+}
+
+void CameraController::onControllerReady(bool connect, const std::string &status, const DeviceCapabilities *caps) {
+    _ready = connect;
+    _err_msg = status;
+    if (caps) {
+        _device_caps = *caps;
+    }
+    auto data = toolkit::Any(caps ? std::make_shared<DeviceCapabilities>(*caps) : nullptr);
+    DeviceSourceEventInterceptor::onControllerReady(DeviceSource::NullDeviceSource(), connect, status, data);
 }
 
 void CameraController::getMediaProfile() {

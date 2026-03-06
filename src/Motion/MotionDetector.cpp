@@ -133,9 +133,9 @@ bool MotionDetector::inputFrame(const uint8_t* data, int linesize, uint64_t pts_
     }
 
     const bool motion_detected = (motion_blocks > 0);
-    DebugL << "Motion blocks: " << motion_blocks << "/" << active_blocks
-           << ", motion_detected: " << motion_detected
-           << ", pts_ms: " << pts_ms;
+    // DebugL << "Motion blocks: " << motion_blocks << "/" << active_blocks
+    //        << ", motion_detected: " << motion_detected
+    //        << ", pts_ms: " << pts_ms;
     if (_on_result) {
         _on_result(motion_detected, pts_ms, result);
     }

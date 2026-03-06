@@ -49,6 +49,10 @@ public:
     virtual void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {}
     // Device image quality configuration change event
     virtual void onImageQualityChange(DeviceSource &sender, int fps, int q) {}
+    // Device stream ready event, generally triggered when the stream source of the device is ready or status changed, and report the stream status to the listener
+    virtual void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) {}
+    // Device controller ready event, generally used for onvif camera to notify the manager that the camera control interface is ready, and report the camera capabilities
+    virtual void onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) {}
     // Get the current thread, this function is generally forced to overload
     virtual toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) { throw NotImplemented(toolkit::demangle(typeid(*this).name()) + "::getOwnerPoller not implemented"); }
 };
@@ -62,7 +66,9 @@ public:
     void onRegist(DeviceSource &sender, bool regist) override;
     void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
     void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
-
+    void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
+    void onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) override;
+    toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override;
 private:
     std::weak_ptr<DeviceSourceEvent> _listener;
 };

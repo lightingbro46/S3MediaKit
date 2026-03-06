@@ -288,6 +288,30 @@ void DeviceSourceEventInterceptor::onImageQualityChange(DeviceSource &sender, in
     listener->onImageQualityChange(sender, fps, q);
 }
 
+void DeviceSourceEventInterceptor::onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onStreamReady(sender, type, live, status, data);
+    }
+    listener->onStreamReady(sender, type, live, status, data);
+}
+
+void DeviceSourceEventInterceptor::onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onControllerReady(sender, connect, status, data);
+    }
+    listener->onControllerReady(sender, connect, status, data);
+}
+
+toolkit::EventPoller::Ptr DeviceSourceEventInterceptor::getOwnerPoller(DeviceSource &sender) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::getOwnerPoller(sender);
+    }
+    return listener->getOwnerPoller(sender);
+}
+
 void DeviceSourceEventInterceptor::setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener) {
     _listener = listener;
 }
