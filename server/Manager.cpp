@@ -717,6 +717,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                     }
                     Json::Value item;
                     item["deviceId"] = params.tuple.device_id;
+                    // Get both stream status
                     if (camera->hasStreamTuple(PrimaryStream)) {
                         item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
                         item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
@@ -732,13 +733,17 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                         item["secondaryStreamId"] = Json::nullValue;
                         item["secondaryStream"] = Json::nullValue;
                     }
-                    if (option.manufacturer == GENERIC_RTSP_CAMERA || option.manufacturer.empty()) {
-                        auto is_online = isGenericRtspCameraOnline(item);
-                        item["status"] = is_online;
-                        item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                    // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
+                    // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
+                    auto is_online = isGenericRtspCameraOnline(item);
+                    item["status"] = is_online;
+                    item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                    // Get controller status
+                    if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
+                        item["controller"]["status"] = params.device_stats.connect;
+                        item["controller"]["errMsg"] = params.device_stats.status;
                     } else {
-                        item["status"] = params.device_stats.connect;
-                        item["errMsg"] = params.device_stats.status;
+                        item["controller"] = Json::nullValue;
                     }
                     data.append(item);
                 }

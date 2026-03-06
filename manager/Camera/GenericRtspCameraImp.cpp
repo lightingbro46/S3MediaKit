@@ -207,7 +207,7 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
     // update device capabilities if controller is connected
-    if (connect) {
+    if (connect && caps) {
         auto sender = _src;
         NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
     }
