@@ -44,7 +44,7 @@ private:
 
     void setMediaProfile();
 
-    void onControllerReady(bool connect, const std::string &status, const DeviceCapabilities *caps);
+    void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
 private:
     DeviceTuple _tuple;
@@ -54,7 +54,6 @@ private:
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
     OnvifControl::Ptr _onvif_ctr;
-    DeviceCapabilities _device_caps;
     std::string _address;
     int _ptzMode = CameraOption::kPTZModeAuto;
     bool _reservePanAxis = false;

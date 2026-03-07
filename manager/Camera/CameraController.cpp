@@ -117,23 +117,34 @@ void CameraController::onManager() {
     }
     _last_reconnect_time = time(nullptr);
 
-    // reconnect to device
-    if (_onvif_ctr->connect()) {
-        InfoL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connected";
+    auto weak_self = weak_from_this();
+    EventPollerPool::Instance().getPoller()->async([weak_self]() {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        auto onvif_ctr = strong_self->_onvif_ctr;
+        auto tuple = strong_self->_tuple;
+        auto address = strong_self->_address;
+        // reconnect to device
+        if (onvif_ctr->connect()) {
+            InfoL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connected";
 
-        // get device capabilities after connected
-        DeviceCapabilities caps;
-        caps.isOnvifDevice = true;
-        caps.onvifProfile.deviceInfo = _onvif_ctr->getDeviceInfo();
-        caps.onvifProfile.mediaProfiles = _onvif_ctr->getMediaProfilesInfo();
-        caps.onvifProfile.ptzProfile = _onvif_ctr->getPTZProfile();
+            // get device capabilities after connected
+            auto caps = std::make_shared<DeviceCapabilities>();
+            caps->isOnvifDevice = true;
+            caps->onvifProfile.deviceInfo = onvif_ctr->getDeviceInfo();
+            caps->onvifProfile.mediaProfiles = onvif_ctr->getMediaProfilesInfo();
+            caps->onvifProfile.ptzProfile = onvif_ctr->getPTZProfile();
 
-        onControllerReady(true, "connected", &caps);
-    } else {
-        WarnL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") connect failed: " << _err_msg;
+            strong_self->onControllerReady(true, "connected", std::move(caps));
+        } else {
+            auto err_msg = onvif_ctr->getSoapErrMsg();
+            WarnL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connect failed: " << err_msg;
 
-        onControllerReady(false, _onvif_ctr->getSoapErrMsg(), &_device_caps);
-    }
+            strong_self->onControllerReady(false, err_msg, nullptr);
+        }
+    });
 
     // Additional operations can be added here if controller is ready
     //todo: get media profile
@@ -282,13 +293,18 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
 }
 
-void CameraController::onControllerReady(bool connect, const std::string &status, const DeviceCapabilities *caps) {
+void CameraController::onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps) {
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self, connect, status, caps]() {
+            self->onControllerReady(connect, status, caps);
+        });
+        return;
+    }
+
     _ready = connect;
     _err_msg = status;
-    if (caps) {
-        _device_caps = *caps;
-    }
-    auto data = toolkit::Any(caps ? std::make_shared<DeviceCapabilities>(*caps) : nullptr);
+    auto data = toolkit::Any(caps);
     DeviceSourceEventInterceptor::onControllerReady(DeviceSource::NullDeviceSource(), connect, status, data);
 }
 

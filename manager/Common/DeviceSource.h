@@ -8,6 +8,8 @@
 #include "Poller/Timer.h"
 
 #define GENERIC_RTSP_CAMERA_SCHEMA "generic_rtsp_camera"
+#define ONVIF_CAMERA_SCHEMA "onvif_camera"
+#define RTSP_STREAM_SCHEMA "rtsp_stream"
 // todo: add more device types here
 
 namespace managerkit {
