@@ -1,7 +1,6 @@
 #include "MotionProcessor.h"
 #include "Common/config.h"
 #include "Processor/MultiMediaSourceProcessor.h"
-#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -12,6 +11,9 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
     : _tuple(tuple), _roi_mask(roi_mask), _enable_record(enable_record), _interval_ms(interval_ms), _use_y_channel(use_y_channel) {
     GET_CONFIG(int, min_duration, Motion::kMinDurationMS);
     _recorder = std::make_shared<MotionRecorder>(tuple, enable_record, min_duration);
+
+    GET_CONFIG(bool, save_image, Motion::kSaveImage);
+    _save_image = save_image;
 }
 
 MotionProcessor::~MotionProcessor() {
@@ -52,10 +54,10 @@ bool MotionProcessor::inputFrame(const FFmpegFrame::Ptr &frame) {
             strong_self->recordMotionResult(motion, pts_ms, result);
 
             // Save frame when motion is detected, for debugging or recording purposes
-            // if (motion) {
-            //     auto last_frame = strong_self->_last_frame;
-            //     strong_self->saveFrame(last_frame, result, true, roi_mask, true);
-            // }
+            if (motion && strong_self->_save_image) {
+                auto last_frame = strong_self->_last_frame;
+                strong_self->saveFrame(last_frame, result, true, roi_mask, true);
+            }
         });
     }
 
@@ -87,29 +89,10 @@ void MotionProcessor::recordMotionResult(bool motion, uint64_t stamp, const Moti
 }
 
 void MotionProcessor::saveFrame(const FFmpegFrame::Ptr &frame, const MotionBitmapPtr &result, bool overlay_motion, const ROIMaskPtr &roi, bool overlay_roi) {
-    // Clone the frame to avoid modifying the original frame data, 
-    // which may be used for subsequent motion detection and could lead to incorrect results if modified directly
-    auto clone_frame = frame->clone();
-    if (!clone_frame) {
-        WarnL << "Failed to clone frame for saving";
-        return;
+    if (_recorder) {
+        auto grid = _detector->getGridBoundary();
+        _recorder->saveImage(frame, result, overlay_motion, roi, overlay_roi, grid);
     }
-    auto grid = _detector->getGridBoundary();
-    WorkThreadPool::Instance().getPoller()->async([clone_frame, result, roi, overlay_roi, overlay_motion, grid]() {
-        if (overlay_motion && result) {
-            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
-                GridBoundaryHelper::draw_motion_grid_yuv420p(clone_frame->get(), *result, grid, true, true);
-            }
-        }
-
-        if (overlay_roi && roi) {
-            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
-                GridBoundaryHelper::draw_roi_border_yuv420p(clone_frame->get(), *roi, grid, true, true);
-            }
-        }
-        auto ret = FFmpegUtils::saveFrame(clone_frame, "./motion_detected.jpg");
-        DebugL << "Frame saved: " << std::get<0>(ret) << ", " << std::get<1>(ret);
-    });
 }
 
 } // namespace mediakit

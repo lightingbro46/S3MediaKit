@@ -455,6 +455,8 @@ const string kROICols = MOTION_FIELD "roiCols";
 const string kROIDefaultLevel = MOTION_FIELD "roiDefaultLevel";
 // Whether to use the Y channel for motion detection
 const string kUseYChannel = MOTION_FIELD "useYChannel";
+// Whether to save image when motion is detected, the image is saved in the same directory as the MP4 recording file, and the file name is "motion_yyyymmdd_hhmmss.jpg".
+const string kSaveImage = MOTION_FIELD "saveImage";
 
 static onceToken token([]() {
     mINI::Instance()[kSensitivity] = "0.2;0.15;0.1;0.08;0.05";
@@ -464,6 +466,7 @@ static onceToken token([]() {
     mINI::Instance()[kROICols] = 44;
     mINI::Instance()[kROIDefaultLevel] = 3;
     mINI::Instance()[kUseYChannel] = 0;
+    mINI::Instance()[kSaveImage] = 0;
 });
 } // namespace Motion
 

@@ -51,6 +51,7 @@ private:
     bool _enable_record;
     int _interval_ms;
     bool _use_y_channel;
+    bool _save_image = false;
     FFmpegSws::Ptr _sws_ctx;
     MotionDetector::Ptr _detector;
     MotionRecorder::Ptr _recorder;

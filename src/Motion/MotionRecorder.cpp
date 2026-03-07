@@ -1,6 +1,7 @@
 #include "MotionRecorder.h"
 #include "Common/config.h"
 #include "Util/NoticeCenter.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -10,6 +11,14 @@ namespace mediakit {
 MotionRecorder::MotionRecorder(const MediaTuple &tuple, bool enable_record, int min_duration_ms)
     : _enable_record(enable_record), _min_duration_ms(min_duration_ms) {
     static_cast<MediaTuple&>(_info) = tuple;
+
+    GET_CONFIG(string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(bool, enable_vhost, General::kEnableVhost);
+    if (enable_vhost) {
+        _path = record_path + "/motion/" + tuple.shortUrl() + '/';
+    } else {
+        _path = record_path + "/motion/" + tuple.app + '/' + tuple.stream + '/';
+    }
 }
 
 MotionRecorder::~MotionRecorder() {
@@ -99,6 +108,35 @@ void MotionRecorder::emitMotionEvent(bool start) {
     if (!flag) {
         DebugL << "Nobody listen on kBroadcastRecordMotion event";
     }
+}
+
+void MotionRecorder::saveImage(const FFmpegFrame::Ptr &frame, const MotionBitmapPtr &result, bool overlay_motion, const ROIMaskPtr &roi, bool overlay_roi, const GridBoundaryPtr &grid) {
+    // Clone the frame to avoid modifying the original frame data, 
+    // which may be used for subsequent motion detection and could lead to incorrect results if modified directly
+    auto clone_frame = frame->clone();
+    if (!clone_frame) {
+        WarnL << "Failed to clone frame for saving";
+        return;
+    }
+
+    // string full_path = StrPrinter << _path << "/" << "motion_" << getTimeStr("%Y%m%d_%H%M%S") << "_" << index++ << ".jpg";
+    string full_path = StrPrinter << _path << "/" << "motion.jpg";
+
+    WorkThreadPool::Instance().getPoller()->async([clone_frame, result, roi, overlay_roi, overlay_motion, grid, full_path]() {
+        if (overlay_motion && result) {
+            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
+                GridBoundaryHelper::draw_motion_grid_yuv420p(clone_frame->get(), *result, grid, true, true);
+            }
+        }
+
+        if (overlay_roi && roi) {
+            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
+                GridBoundaryHelper::draw_roi_border_yuv420p(clone_frame->get(), *roi, grid, true, true);
+            }
+        }
+        auto ret = FFmpegUtils::saveFrame(clone_frame, full_path.data());
+        TraceL << "Frame saved: " << std::get<0>(ret) << ", " << std::get<1>(ret);
+    });
 }
 
 } // namespace mediakit

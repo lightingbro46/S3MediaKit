@@ -218,7 +218,8 @@ public:
         int V_stride = frame->linesize[2];
 
         // Alpha blending parameters for motion overlay
-        const int alpha = 80;
+        const int alpha = 120;
+        const int line_alpha = 80;
 
         const uint8_t Y_red = 76;
         const uint8_t U_red = 84;
@@ -248,6 +249,10 @@ public:
         auto uv_y0_of = [&](int r) { return use_grid ? grid->uv_y[r] : ((int64_t)r * H / mb.rows) >> 1; };
         auto uv_y1_of = [&](int r) { return use_grid ? grid->uv_y[r + 1] : ((int64_t)(r + 1) * H / mb.rows) >> 1; };
 
+        auto blend_u8 = [](uint8_t dst, uint8_t src, int a) -> uint8_t {
+            return static_cast<uint8_t>((dst * (255 - a) + src * a) >> 8);
+        };
+
         // ==============================
         // 1️⃣ Fill motion cells
         // ==============================
@@ -272,7 +277,7 @@ public:
                     for (int y = y0; y < y1; ++y) {
                         uint8_t* row = Y + y * Y_stride;
                         for (int x = x0; x < x1; ++x) {
-                            row[x] = (row[x] * (255 - alpha) + Y_red * alpha) >> 8;
+                            row[x] = blend_u8(row[x], Y_red, alpha);
                         }
                     }
 
@@ -281,8 +286,8 @@ public:
                         uint8_t* u_row = U + y * U_stride;
                         uint8_t* v_row = V + y * V_stride;
                         for (int x = uv_x0; x < uv_x1; ++x) {
-                            u_row[x] = (u_row[x] * (255 - alpha) + U_red * alpha) >> 8;
-                            v_row[x] = (v_row[x] * (255 - alpha) + V_red * alpha) >> 8;
+                            u_row[x] = blend_u8(u_row[x], U_red, alpha);
+                            v_row[x] = blend_u8(v_row[x], V_red, alpha);
                         }
                     }
                 }
@@ -302,14 +307,14 @@ public:
 
                 // Y plane
                 for (int y = 0; y < H; ++y)
-                    Y[y * Y_stride + x] = use_red_line ? Y_red : Y_white;
+                    Y[y * Y_stride + x] = blend_u8(Y[y * Y_stride + x], use_red_line ? Y_red : Y_white, line_alpha);
 
                 // UV plane
                 int uv_x = use_grid ? grid->uv_x[c] : (x >> 1);
                 if (uv_x >= 0 && uv_x < (W >> 1)) {
                     for (int y = 0; y < (H >> 1); ++y) {
-                        U[y * U_stride + uv_x] = use_red_line ? U_red : U_white;
-                        V[y * V_stride + uv_x] = use_red_line ? V_red : V_white;
+                        U[y * U_stride + uv_x] = blend_u8(U[y * U_stride + uv_x], use_red_line ? U_red : U_white, line_alpha);
+                        V[y * V_stride + uv_x] = blend_u8(V[y * V_stride + uv_x], use_red_line ? V_red : V_white, line_alpha);
                     }
                 }
             }
@@ -321,14 +326,14 @@ public:
 
                 // Y plane
                 for (int x = 0; x < W; ++x)
-                    Y[y * Y_stride + x] = use_red_line ? Y_red : Y_white;
+                    Y[y * Y_stride + x] = blend_u8(Y[y * Y_stride + x], use_red_line ? Y_red : Y_white, line_alpha);
 
                 // UV plane
                 int uv_y = use_grid ? grid->uv_y[r] : (y >> 1);
                 if (uv_y >= 0 && uv_y < (H >> 1)) {
                     for (int x = 0; x < (W >> 1); ++x) {
-                        U[uv_y * U_stride + x] = use_red_line ? U_red : U_white;
-                        V[uv_y * V_stride + x] = use_red_line ? V_red : V_white;
+                        U[uv_y * U_stride + x] = blend_u8(U[uv_y * U_stride + x], use_red_line ? U_red : U_white, line_alpha);
+                        V[uv_y * V_stride + x] = blend_u8(V[uv_y * V_stride + x], use_red_line ? V_red : V_white, line_alpha);
                     }
                 }
             }

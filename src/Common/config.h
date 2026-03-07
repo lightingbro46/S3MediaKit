@@ -544,6 +544,9 @@ extern const std::string kROICols;
 extern const std::string kROIDefaultLevel;
 // Whether to use the Y channel for motion detection
 extern const std::string kUseYChannel;
+// Whether to save image when motion is detected, the image is saved in the same directory as the MP4 recording file, and the file name is "motion_yyyymmdd_hhmmss.jpg".
+// Using for debug purpose, it may cause performance issues when enabled, so it is disabled by default.
+extern const std::string kSaveImage;
 } // namespace Motion
 
 } // namespace mediakit
