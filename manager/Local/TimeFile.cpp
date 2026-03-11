@@ -1,4 +1,4 @@
-#include "BaseFileIO.h"
+#include "TimeFile.h"
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Common/config.h"
@@ -9,61 +9,61 @@ using namespace mediakit;
 
 namespace managerkit {
 
-//////////////////////////FileWriter////////////////////////////////
+//////////////////////////TimeWriter////////////////////////////////
 
-int FileWriter::write(const void *data, size_t bytes) { 
+int TimeWriter::write(const void *data, size_t bytes) { 
     return _io->onWrite(data, bytes); 
 }
 
-int FileWriter::seek(int64_t offset) { 
+int TimeWriter::seek(int64_t offset) { 
     return _io->onSeek(offset); 
 }
 
-int64_t FileWriter::tell() { 
+int64_t TimeWriter::tell() { 
     return _io->onTell(); 
 }
 
-int FileWriter::flush() { 
+int TimeWriter::flush() { 
     return _io->onFlush(); 
 }
 
-//////////////////////////FileReader////////////////////////////////
+//////////////////////////TimeWriter////////////////////////////////
 
-int FileReader::read(void *data, size_t bytes)  { 
+int TimeReader::read(void *data, size_t bytes)  { 
     return _io->onRead(data, bytes); 
 }
 
-int FileReader::seek(int64_t offset) { 
+int TimeReader::seek(int64_t offset) { 
     return _io->onSeek(offset); 
 }
 
-int64_t FileReader::tell() { 
+int64_t TimeReader::tell() { 
     return _io->onTell(); 
 }
 
-//////////////////////////BaseFileIO////////////////////////////////
+//////////////////////////TimeFileIO////////////////////////////////
 
-BaseFileIO::Writer BaseFileIO::createWriter() {
+TimeFileIO::Writer TimeFileIO::createWriter() {
     Ptr self = shared_from_this();
     // Save a strong reference to itself to prevent premature release
-    Writer writer = std::make_shared<FileWriter>(self);
+    Writer writer = std::make_shared<TimeWriter>(self);
     if (!writer) {
-        throw std::runtime_error("Failed to write to base file IO!");
+        throw std::runtime_error("Failed to write to time file!");
     }
     return writer;
 }
 
-BaseFileIO::Reader BaseFileIO::createReader() {
+TimeFileIO::Reader TimeFileIO::createReader() {
     Ptr self = shared_from_this();
     // Save a strong reference to itself to prevent premature release
-    Reader reader = std::make_shared<FileReader>(self);
+    Reader reader = std::make_shared<TimeReader>(self);
     if (!reader) {
-        throw std::runtime_error("Failed to read to base file IO!");
+        throw std::runtime_error("Failed to read to time file!");
     }
     return reader;
 }
 
-/////////////////////////////////////////////////////FileDisk/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////TimeFileDisk/////////////////////////////////////////////////////////
 
 #if defined(_WIN32) || defined(_WIN64)
     #define fseek64 _fseeki64
@@ -73,7 +73,7 @@ BaseFileIO::Reader BaseFileIO::createReader() {
     #define ftell64 ftell
 #endif
 
-void FileDisk::openFile(const char *file, const char* mode) {
+void TimeFileDisk::openFile(const char *file, const char* mode) {
     // Create a file
     auto fp = File::create_file(file, mode);
     if(!fp){
@@ -99,55 +99,55 @@ void FileDisk::openFile(const char *file, const char* mode) {
     });
 }
 
-void FileDisk::closeFile() {
+void TimeFileDisk::closeFile() {
     _file = nullptr;
 }
 
-int FileDisk::onRead(void *data, size_t bytes) {
+int TimeFileDisk::onRead(void *data, size_t bytes) {
     if (bytes == fread(data, 1, bytes, _file.get())) {
         return 0;
     }
     return 0 != ferror(_file.get()) ? ferror(_file.get()) : -1 /*EOF*/;
 }
 
-int FileDisk::onWrite(const void *data, size_t bytes) {
+int TimeFileDisk::onWrite(const void *data, size_t bytes) {
     return bytes == fwrite(data, 1, bytes, _file.get()) ? 0 : ferror(_file.get());
 }
 
-int FileDisk::onSeek(uint64_t offset) {
+int TimeFileDisk::onSeek(uint64_t offset) {
     return fseek64(_file.get(), offset, SEEK_SET);
 }
 
-uint64_t FileDisk::onTell() {
+uint64_t TimeFileDisk::onTell() {
     return ftell64(_file.get());
 }
 
-int FileDisk::onFlush() {
+int TimeFileDisk::onFlush() {
     return fflush(_file.get());
 }
 
-/////////////////////////////////////////////////////FileMemory/////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////TimeFileMemory/////////////////////////////////////////////////////////
 
-FileMemory::FileMemory(const string &buf) : _memory(buf) {
+TimeFileMemory::TimeFileMemory(const string &buf) : _memory(buf) {
     _offset = _memory.size();
 }
 
-string FileMemory::getAndClearMemory() {
+string TimeFileMemory::getAndClearMemory() {
     string ret;
     ret.swap(_memory);
     _offset = 0;
     return ret;
 }
 
-size_t FileMemory::fileSize() const {
+size_t TimeFileMemory::fileSize() const {
     return _memory.size();
 }
 
-uint64_t FileMemory::onTell() {
+uint64_t TimeFileMemory::onTell() {
     return _offset;
 }
 
-int FileMemory::onSeek(uint64_t offset) {
+int TimeFileMemory::onSeek(uint64_t offset) {
     if (offset > _memory.size()) {
         return -1;
     }
@@ -155,7 +155,7 @@ int FileMemory::onSeek(uint64_t offset) {
     return 0;
 }
 
-int FileMemory::onRead(void *data, size_t bytes){
+int TimeFileMemory::onRead(void *data, size_t bytes){
     if (_offset >= _memory.size()) {
         //EOF
         return -1;
@@ -166,7 +166,7 @@ int FileMemory::onRead(void *data, size_t bytes){
     return 0;
 }
 
-int FileMemory::onWrite(const void *data, size_t bytes){
+int TimeFileMemory::onWrite(const void *data, size_t bytes){
     if (_offset + bytes > _memory.size()) {
         // Need to expand
         _memory.resize(_offset + bytes);

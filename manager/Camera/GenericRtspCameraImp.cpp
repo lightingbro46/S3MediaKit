@@ -156,7 +156,7 @@ void GenericRtspCameraImp::onRecordModeChange(DeviceSource &sender, int archive_
         WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup record mode request";
         return;
     }
-    _sink->setupRecord(archive_mode, false);
+    _sink->setupRecord(archive_mode, start);
 }
 
 void GenericRtspCameraImp::onImageQualityChange(DeviceSource &sender, int fps, int q) {

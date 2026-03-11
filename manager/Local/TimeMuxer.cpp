@@ -15,12 +15,12 @@ TimeMuxer::~TimeMuxer() {
 void TimeMuxer::openFile(const string &file) {
     closeFile();
     _file_name = file;
-    _file = std::make_shared<FileDisk>();
+    _file = std::make_shared<TimeFileDisk>();
     _file->openFile(_file_name.data(), "ab+");
 
     if (_use_maker) {
-        auto index_path = TimeMaker::toIndexFilePath(_file_name);
-        _maker = std::make_shared<TimeMaker>();
+        auto index_path = TimeMakerImp::indexFile(_file_name);
+        _maker = std::make_shared<TimeMakerImp>();
         // open file to write time index in append mode
         _maker->openFile(index_path, "ab+");
         // set current offset to write correct time index after restart server
@@ -28,7 +28,7 @@ void TimeMuxer::openFile(const string &file) {
     }
 }
 
-BaseFileIO::Writer TimeMuxer::createWriter() {
+TimeFileIO::Writer TimeMuxer::createWriter() {
     return _file->createWriter();
 }
 
@@ -44,18 +44,41 @@ void TimeMuxer::onInput(uint64_t block_time, size_t bytes) {
 }
 
 size_t TimeMuxer::save(const TimeBlock &block) {
-    size_t writen_size = BaseProtoMuxerInterface<TimeBlock>::save(block);
+    size_t writen_size = TimeMuxerInterface::save(block);
     onInput(block.start_time(), writen_size);
     return writen_size;
+}
+
+/////////////////////////////////////////// TimeMuxerInterface /////////////////////////////////////////////
+
+size_t TimeMuxerInterface::save(const TimeBlock &block) {
+    string data = block.SerializeAsString();
+    uint32_t size = data.size();
+    if (size == 0) {
+        throw std::runtime_error("Serialize time block to string failed");
+    }
+    if (!_writer) {
+        _writer = createWriter();
+    }
+    _writer->write(reinterpret_cast<const char *>(&size), sizeof(uint32_t));
+    _writer->write(data.c_str(), size);
+    _writer->flush();
+
+    return sizeof(uint32_t) + size;
+}
+
+bool TimeMuxerInterface::inputBlock(const TimeBlock &block) {
+    save(block);
+    return true;
 }
 
 /////////////////////////////////////////// TimeMuxerMemory /////////////////////////////////////////////
 
 TimeMuxerMemory::TimeMuxerMemory() {
-    _memory_file = std::make_shared<FileMemory>();
+    _memory_file = std::make_shared<TimeFileMemory>();
 }
 
-BaseFileIO::Writer TimeMuxerMemory::createWriter() {
+TimeFileIO::Writer TimeMuxerMemory::createWriter() {
     return _memory_file->createWriter();
 }
 

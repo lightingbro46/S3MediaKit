@@ -1,8 +1,8 @@
 #ifndef LOCAL_TIMEDEMUXER_H
 #define LOCAL_TIMEDEMUXER_H
 
+#include "TimeFile.h"
 #include "TimeMaker.h"
-#include "proto/timeblock.pb.h"
 
 namespace managerkit {
 
@@ -34,7 +34,7 @@ protected:
 
 protected:
     uint64_t _first_stamp;
-    BaseFileIO::Reader _reader;
+    TimeFileIO::Reader _reader;
 };
 
 class TimeDemuxer final : public TimerDemuxerInterface {
@@ -61,8 +61,8 @@ private:
 
 private:
     std::string _file_name;
-    FileDisk::Ptr _file;
-    TimeMaker::Ptr _maker;
+    TimeFileDisk::Ptr _file;
+    TimeMakerImp::Ptr _maker;
 };
 
 class MultiTimeDemuxer final {
@@ -94,7 +94,7 @@ public:
     ~TimeMemoryDemuxer() = default;
 
 private:
-    FileMemory::Ptr _file;
+    TimeFileMemory::Ptr _file;
 };
 
 } // namespace managerkit 
