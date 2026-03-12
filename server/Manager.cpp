@@ -567,8 +567,8 @@ void loadServerConfigJson(const Json::Value &data1) {
     TraceL << "Server configuration loaded: " << data.toStyledString();
     Ticker _ticker;
 
-    if (data.isMember("mediaServer")) {
-        loadServerConfigFromJson(data["mediaServer"]);
+    if (data.isMember("media_server")) {
+        loadServerConfigFromJson(data["media_server"]);
     }
 
     if (data.isMember("list_media_server") && data["list_media_server"].isArray()) {

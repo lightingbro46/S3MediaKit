@@ -517,7 +517,7 @@ static void reportServerStatistic() {
                         TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
                         InfoL << "Report server statistic success";
                     } else {
-                        // Load server config failed
+                        // Report server statistic failed
                         TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
                         WarnL << "Report server statistic failed:" << err;
                     }
