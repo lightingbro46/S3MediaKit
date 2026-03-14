@@ -34,6 +34,21 @@ public:
         uint64_t start_time, uint64_t end_time,
         int period_type, int detail, bool include_motion,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
+
+    /**
+     * Search for motion periods filtered by a ROI mask within [start_time, end_time].
+     *
+     * @param roi_mask  String of length rows*cols (e.g. 32*44 = 1408 chars).
+     *                  Each char '0' or '1': '0' = exclude cell, '1' = include cell.
+     *                  Passing an empty string returns all motion periods.
+     * @param cb        Invoked with the JSON response:
+     *                  { "cameraId": "...", "motionPeriods": [{"startTime":..., "duration":...}] }
+     */
+    static void findMotionPeriodByRoi(
+        const mediakit::MediaTuple &tuple,
+        uint64_t start_time, uint64_t end_time,
+        const std::string &roi_mask,
+        const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 };
 
 } // namespace managerkit

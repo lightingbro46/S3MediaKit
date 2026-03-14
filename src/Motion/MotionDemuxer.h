@@ -16,11 +16,12 @@ namespace mediakit {
  * A time interval during which motion was confirmed, as recorded by a Summary block.
  */
 struct MotionInterval {
-    uint64_t start_ms    = 0;
-    uint64_t end_ms      = 0;
-    uint16_t rows        = 0;
-    uint16_t cols        = 0;
-    uint16_t active_cells = 0;
+    uint64_t             start_ms     = 0;
+    uint64_t             end_ms       = 0;
+    uint16_t             rows         = 0;
+    uint16_t             cols         = 0;
+    uint16_t             active_cells = 0;
+    std::vector<uint8_t> bitmap;       // bit-packed motion map (rows*cols bits, MSB-first)
 };
 
 /**

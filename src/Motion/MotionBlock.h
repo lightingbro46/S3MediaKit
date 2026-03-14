@@ -67,6 +67,25 @@ struct MotionSummaryExtHeader {
 static_assert(sizeof(MotionEventExtHeader)   ==  8, "MotionEventExtHeader layout changed");
 static_assert(sizeof(MotionSummaryExtHeader) == 16, "MotionSummaryExtHeader layout changed");
 
+// ── CRC32 helper ──────────────────────────────────────────────────────────────
+// Standard CRC32/ISO-HDLC over concatenated (ext_header + bitmap) bytes.
+// Used to populate BlockHeader.crc on write and verify integrity on read.
+static inline uint32_t motionCrc32(const uint8_t *ext,  size_t ext_len,
+                                    const uint8_t *data, size_t data_len) {
+    auto step = [](uint32_t crc, const uint8_t *p, size_t n) -> uint32_t {
+        for (size_t i = 0; i < n; ++i) {
+            crc ^= p[i];
+            for (int b = 0; b < 8; ++b)
+                crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+        }
+        return crc;
+    };
+    uint32_t crc = 0xFFFFFFFFu;
+    if (ext  && ext_len)  crc = step(crc, ext,  ext_len);
+    if (data && data_len) crc = step(crc, data, data_len);
+    return ~crc;
+}
+
 /**
  * Motion-specific index entry.
  * Extends the base (stamp + offset) with the block type so that readers
@@ -112,7 +131,10 @@ public:
     uint32_t payloadSize() const override {
         return static_cast<uint32_t>(_bitmap.size());
     }
-    uint32_t crc() const override { return _crc; }
+    uint32_t crc() const override {
+        return motionCrc32(reinterpret_cast<const uint8_t *>(&_ext), sizeof(_ext),
+                           _bitmap.data(), _bitmap.size());
+    }
 
     void serialize(toolkit::BlockBuffer &buf) const override {
         auto hdr = buildBaseHeader();
@@ -156,7 +178,10 @@ public:
     uint32_t payloadSize() const override {
         return static_cast<uint32_t>(_bitmap.size());
     }
-    uint32_t crc() const override { return _crc; }
+    uint32_t crc() const override {
+        return motionCrc32(reinterpret_cast<const uint8_t *>(&_ext), sizeof(_ext),
+                           _bitmap.data(), _bitmap.size());
+    }
 
     void serialize(toolkit::BlockBuffer &buf) const override {
         auto hdr = buildBaseHeader();

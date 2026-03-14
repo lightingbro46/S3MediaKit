@@ -227,4 +227,33 @@ void SearchEngine::findTimePeriod(
     return cb(SockException(Err_success), result);
 }
 
+void SearchEngine::findMotionPeriodByRoi(
+    const MediaTuple &tuple,
+    uint64_t start_time, uint64_t end_time,
+    const string &roi_mask,
+    const function<void(const SockException &, const Value &)> &cb)
+{
+    Value result;
+    result["cameraId"]     = tuple.app;
+    result["motionPeriods"] = arrayValue;
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    try {
+        MotionSearch ms(tuple);
+        ms.getMotionTimePeriodByRoi(start_time, end_time, roi_mask,
+            [&](vector<MotionTimeRange> &ret) {
+                for (auto const &p : ret) {
+                    Value period;
+                    period["startTime"] = (Json::UInt64)p.startTime;
+                    period["duration"]  = p.duration;
+                    period["mediaServerId"] = mediaServerId;
+                    result["motionPeriods"].append(period);
+                }
+            });
+    } catch (const std::exception &ex) {
+        WarnL << "findMotionPeriodByRoi failed: " << ex.what();
+    }
+
+    return cb(SockException(Err_success), result);
+}
+
 } // namespace managerkit

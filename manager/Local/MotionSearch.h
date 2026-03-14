@@ -74,6 +74,18 @@ public:
                                  std::unordered_map<int /*hour*/,
                                  std::vector<MotionTimeRange>>> &)> &cb);
 
+    /**
+     * Flat list of motion intervals filtered by ROI.
+     * Only intervals where at least one ROI cell has a confirmed motion bit are returned.
+     *
+     * @param roi_mask  String of length rows*cols; each char '0' or '1'.
+     *                  '0' = exclude cell, '1' = include cell (check for motion).
+     *                  An empty string behaves like getMotionTimePeriod (no filter).
+     */
+    void getMotionTimePeriodByRoi(uint64_t start_time, uint64_t end_time,
+        const std::string &roi_mask,
+        const std::function<void(std::vector<MotionTimeRange> &)> &cb);
+
 private:
     /**
      * Core query: iterate all MotionIntervals in [start_ms, end_ms] and
@@ -87,6 +99,13 @@ private:
     /** Merge a [seg_start, seg_end] second-range into a flat result list. */
     static void mergeInto(std::vector<MotionTimeRange> &list,
                           uint64_t seg_start, uint64_t seg_end);
+
+    /**
+     * Returns true if the motion bitmap of the interval has at least one bit set
+     * in a cell that is enabled in roi_mask (roi_mask[i] == '1').
+     * Returns true unconditionally when roi_mask is empty or bitmap is empty.
+     */
+    static bool matchesRoi(const mediakit::MotionInterval &iv, const std::string &roi_mask);
 
 private:
     mediakit::MediaTuple              _tuple;

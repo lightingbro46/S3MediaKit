@@ -1,5 +1,6 @@
 #include "MotionSearch.h"
 
+#include "Motion/MotionBitmap.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
 #include "Util/logger.h"
@@ -131,6 +132,57 @@ void MotionSearch::getMotionTimePeriod(uint64_t start_time, uint64_t end_time,
                       remaining -= chunk;
                   }
               });
+    } catch (...) {}
+
+    cb(result);
+}
+
+bool MotionSearch::matchesRoi(const MotionInterval &iv, const string &roi_mask) {
+    if (roi_mask.empty() || iv.bitmap.empty()) return true;
+    const int cells = iv.rows * iv.cols;
+    if (cells == 0) return true;
+
+    // Convert roi_mask string ('0'/'1' per cell) into a bit-packed MotionBitmap
+    std::vector<uint8_t> roi_cells(cells, 0);
+    for (int i = 0; i < cells && i < static_cast<int>(roi_mask.size()); ++i)
+        roi_cells[i] = (roi_mask[i] == '1') ? 1u : 0u;
+    auto roi_bmp = mediakit::MotionBitmapHelper::createMotionBitmap(iv.rows, iv.cols, roi_cells.data());
+    if (!roi_bmp) return true;
+
+    // Wrap iv.bitmap (raw bit-packed bytes) as a MotionBitmap for intersection check
+    const size_t expected_bytes = static_cast<size_t>((cells + 7) / 8);
+    if (iv.bitmap.size() < expected_bytes) return true; // malformed data, allow through
+
+    std::vector<uint8_t> buf(sizeof(mediakit::MotionBitmap) + iv.bitmap.size(), 0);
+    mediakit::MotionBitmap *motion_bmp = reinterpret_cast<mediakit::MotionBitmap *>(buf.data());
+    motion_bmp->rows         = iv.rows;
+    motion_bmp->cols         = iv.cols;
+    motion_bmp->active_cells = iv.active_cells;
+    std::memcpy(motion_bmp->bitmap, iv.bitmap.data(), iv.bitmap.size());
+
+    return mediakit::MotionBitmapHelper::intersectMotionBitmaps(motion_bmp, roi_bmp.get());
+}
+
+void MotionSearch::getMotionTimePeriodByRoi(uint64_t start_time, uint64_t end_time,
+    const string &roi_mask,
+    const function<void(vector<MotionTimeRange> &)> &cb) {
+    lock_guard<recursive_mutex> lck(_mtx);
+
+    vector<MotionTimeRange> result;
+    if (!_demuxer || _demuxer->isEmpty()) {
+        cb(result);
+        return;
+    }
+
+    try {
+        auto intervals = _demuxer->getMotionIntervals(start_time * 1000, end_time * 1000);
+        for (const auto &iv : intervals) {
+            if (!matchesRoi(iv, roi_mask)) continue;
+            uint64_t iv_start = max(iv.start_ms, start_time * 1000) / 1000;
+            uint64_t iv_end   = min(iv.end_ms,   end_time   * 1000) / 1000;
+            if (iv_start >= iv_end) continue;
+            mergeInto(result, iv_start, iv_end);
+        }
     } catch (...) {}
 
     cb(result);

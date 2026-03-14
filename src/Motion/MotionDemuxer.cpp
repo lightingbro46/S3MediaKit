@@ -98,6 +98,17 @@ bool MotionDemuxer::readBlock(MotionBlock &out, bool &eof) {
 
     if (!_storage.readNextBlock(out.header, out.ext_header, out.payload, eof)) return false;
     ++_cursor;
+
+    // Verify CRC when stored value is non-zero (zero = legacy block written before CRC was implemented).
+    if (out.header.crc != 0) {
+        const uint32_t computed = motionCrc32(
+            out.ext_header.data(), out.ext_header.size(),
+            out.payload.data(),    out.payload.size());
+        if (computed != out.header.crc) {
+            WarnL << "MotionDemuxer: CRC mismatch at stamp=" << out.header.stamp
+                  << " stored=" << out.header.crc << " computed=" << computed;
+        }
+    }
     return true;
 }
 
@@ -135,7 +146,8 @@ std::vector<MotionInterval> MotionDemuxer::getMotionIntervals(uint64_t from_ms, 
         iv.rows         = ext.rows;
         iv.cols         = ext.cols;
         iv.active_cells = ext.active_cells;
-        result.push_back(iv);
+        iv.bitmap       = std::move(payload_vec);
+        result.push_back(std::move(iv));
     }
 
     // Restore sequential read position (readBlockAt uses random seek internally).
@@ -236,7 +248,8 @@ bool MultiMotionDemuxer::readBlock(MotionBlock &out, bool &eof) {
 std::vector<MotionInterval> MultiMotionDemuxer::getMotionIntervals(uint64_t from_ms,
                                                                      uint64_t to_ms) {
     std::vector<MotionInterval> result;
-    for (auto &[key, d] : _demuxers) {
+    for (auto &it : _demuxers) {
+        auto &d = it.second;
         if (d->getLastStamp() < from_ms) continue;
         if (d->getFirstStamp() > to_ms) break;
         auto ivs = d->getMotionIntervals(from_ms, to_ms);

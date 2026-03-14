@@ -2370,8 +2370,6 @@ void installWebApi() {
         return DeviceSource::find(tuple.vhost, tuple.device_id);
     };
 
-
-
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_PLAYBACK_PERMISSION();
@@ -2384,6 +2382,10 @@ void installWebApi() {
             int period_type = allArgs["periodType"];
             int detail = allArgs["detail"];
             bool include_motion = allArgs["motion"];
+
+            if (!start_time) {
+                start_time = time(nullptr) - 24 * 3600;
+            }
 
             if (!end_time) {
                 end_time = time(nullptr);
@@ -3299,6 +3301,40 @@ void installWebApi() {
 
         NOTICE_EMIT(BroadcastReloadApiConfigArgs, Broadcast::kBroadcastReloadApiConfig);
         invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/searchMotion", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_PLAYBACK_PERMISSION();
+        CHECK_ARGS_("cameraId", "startTime", "endTime", "roiMask");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string camera_id = allArgs["cameraId"];
+            uint64_t start_time = allArgs["startTime"];
+            uint64_t end_time = allArgs["endTime"];
+            string roi_mask = allArgs["roiMask"];
+
+            if (!start_time) {
+                start_time = time(nullptr) - 24 * 3600;
+            }
+
+            if (!end_time) {
+                end_time = time(nullptr);
+            }
+
+            MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
+            SearchEngine::findMotionPeriodByRoi(tuple, start_time, end_time, roi_mask, [&](const SockException &ex, const Value &data) {
+                if (ex) {
+                    RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                } else {
+                    val["data"] = data;
+                    InfoL << "Search motion time by ROI success";
+                    invoker(200, headerOut, val.toStyledString());
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 }
 
