@@ -2,7 +2,8 @@
 #define MOTION_MOTIONPROCESSOR_H
 
 #include "MotionDetector.h"
-#include "MotionRecorder.h"
+#include "MotionEventController.h"
+#include "MotionMuxer.h"
 #include "Codec/Transcode.h"
 
 namespace mediakit {
@@ -52,13 +53,14 @@ private:
     int _interval_ms;
     bool _use_y_channel;
     bool _save_image = false;
+    std::string _save_path;
     FFmpegSws::Ptr _sws_ctx;
     MotionDetector::Ptr _detector;
-    MotionRecorder::Ptr _recorder;
+    MotionEventController::Ptr _event_ctr;
+    MotionMuxer::Ptr _muxer;
 
     uint64_t _last_recv_time = 0;
     FFmpegFrame::Ptr _last_frame;
-    bool _in_motion = false;
     std::weak_ptr<MultiMediaSourceProcessor> _delegate;
 };
 

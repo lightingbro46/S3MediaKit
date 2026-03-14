@@ -224,7 +224,7 @@ public:
     size_t max_track = 2;
 
     // Whether to enable motion detection
-    bool enable_motion = false;
+    bool enable_motion;
     // ROI mask for motion detection
     std::string roi_mask;
     // Whether to record video when motion is detected, which is valid when motion detection is enabled

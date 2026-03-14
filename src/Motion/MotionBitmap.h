@@ -12,6 +12,7 @@ namespace mediakit {
 struct MotionBitmap {
     int rows;
     int cols;
+    int active_cells; // number of cells with motion, for quick access without counting bits
     // bit-packed motion map, 1 bit = 1 pixel, 0 = no motion, 1 = motion
     uint8_t bitmap[];
 };
@@ -41,10 +42,12 @@ public:
         MotionBitmap* bmp = reinterpret_cast<MotionBitmap*>(buffer);
         bmp->rows = rows;
         bmp->cols = cols;
+        bmp->active_cells = 0;
         if (result) {
             for (int i = 0; i < rows * cols; ++i) {
                 if (result[i]) {
                     bmp->bitmap[i / 8] |= (1 << (7 - (i % 8))); // Set the corresponding bit
+                    bmp->active_cells++;
                 }
             }
         } else {
@@ -80,10 +83,14 @@ public:
     static void setMotionValue(MotionBitmap* bmp, int x, int y, bool motion) {
         size_t bitIndex = getBitIndex(bmp, x, y);
         if (bitIndex == static_cast<size_t>(-1)) return; // Out of bounds
-        if (motion) {
-            bmp->bitmap[bitIndex / 8] |= (1 << (7 - (bitIndex % 8))); // Set the bit
-        } else {
-            bmp->bitmap[bitIndex / 8] &= ~(1 << (7 - (bitIndex % 8))); // Clear the bit
+        const uint8_t mask = static_cast<uint8_t>(1 << (7 - (bitIndex % 8)));
+        const bool current = (bmp->bitmap[bitIndex / 8] & mask) != 0;
+        if (motion && !current) {
+            bmp->bitmap[bitIndex / 8] |= mask;
+            bmp->active_cells++;
+        } else if (!motion && current) {
+            bmp->bitmap[bitIndex / 8] &= ~mask;
+            bmp->active_cells--;
         }
     }
 
@@ -99,22 +106,32 @@ public:
         return static_cast<double>(motionPixels) / static_cast<double>(totalPixels);
     }
 
-    // OR operation between two motion bitmaps, result is stored in the first bitmap
+    // OR operation between two motion bitmaps, result is stored in the first bitmap.
+    // active_cells is updated to reflect the number of cells set in the result.
     static void orMotionBitmaps(MotionBitmap* bmp1, const MotionBitmap* bmp2) {
         if (bmp1->rows != bmp2->rows || bmp1->cols != bmp2->cols) return; // Size mismatch
         size_t bitmapSize = (bmp1->rows * bmp1->cols + 7) / 8;
+        int delta = 0;
         for (size_t i = 0; i < bitmapSize; ++i) {
+            const uint8_t before = bmp1->bitmap[i];
             bmp1->bitmap[i] |= bmp2->bitmap[i];
+            delta += __builtin_popcount(static_cast<uint8_t>(bmp1->bitmap[i] & ~before));
         }
+        bmp1->active_cells += delta;
     }
 
-    // AND operation between two motion bitmaps, result is stored in the first bitmap
+    // AND operation between two motion bitmaps, result is stored in the first bitmap.
+    // active_cells is updated to reflect the number of cells set in the result.
     static void andMotionBitmaps(MotionBitmap* bmp1, const MotionBitmap* bmp2) {
         if (bmp1->rows != bmp2->rows || bmp1->cols != bmp2->cols) return; // Size mismatch
         size_t bitmapSize = (bmp1->rows * bmp1->cols + 7) / 8;
+        int delta = 0;
         for (size_t i = 0; i < bitmapSize; ++i) {
+            const uint8_t before = bmp1->bitmap[i];
             bmp1->bitmap[i] &= bmp2->bitmap[i];
+            delta += __builtin_popcount(static_cast<uint8_t>(before & ~bmp1->bitmap[i]));
         }
+        bmp1->active_cells -= delta;
     }
 
     // intersect two motion bitmaps, return true if there is any intersection

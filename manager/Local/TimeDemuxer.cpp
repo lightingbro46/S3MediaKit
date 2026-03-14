@@ -144,7 +144,7 @@ void MultiTimeDemuxer::openFile(const string &files_string) {
         auto start_stamp = demuxer->getFirstStamp();
         _demuxers.emplace(start_stamp, demuxer);
     }
-    CHECK(!_demuxers.empty());
+    CHECK(!_demuxers.empty(), (StrPrinter << "No valid time file found in " << files_string));
     _it = _demuxers.begin();
 }
 
@@ -154,6 +154,9 @@ void MultiTimeDemuxer::closeFile() {
 }
 
 int64_t MultiTimeDemuxer::seekTo(uint64_t stamp_sec) {
+    if (_demuxers.empty()) {
+        return -1;
+    }
     auto it = _demuxers.upper_bound(stamp_sec);
     // find last element less than or equal to stamp_sec, or return the first element
     _it = it == _demuxers.begin() ? it : std::prev(it);
@@ -161,6 +164,10 @@ int64_t MultiTimeDemuxer::seekTo(uint64_t stamp_sec) {
 }
 
 void MultiTimeDemuxer::readBlock(TimeBlock &block, bool &eof) {
+    if (_demuxers.empty() || _it == _demuxers.end()) {
+        eof = true;
+        return;
+    }
     for (;;) {
         _it->second->readBlock(block, eof);
         if (eof && _it != _demuxers.end()) {

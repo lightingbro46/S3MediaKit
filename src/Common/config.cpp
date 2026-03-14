@@ -457,9 +457,11 @@ const string kROIDefaultLevel = MOTION_FIELD "roiDefaultLevel";
 const string kUseYChannel = MOTION_FIELD "useYChannel";
 // Whether to save image when motion is detected, the image is saved in the same directory as the MP4 recording file, and the file name is "motion_yyyymmdd_hhmmss.jpg".
 const string kSaveImage = MOTION_FIELD "saveImage";
+// Aggregation window for MotionSummaryBlock generation (ms). Default: 5 minutes.
+const string kSummaryWindowMS = MOTION_FIELD "summaryWindowMS";
 
 static onceToken token([]() {
-    mINI::Instance()[kSensitivity] = "0.2;0.15;0.1;0.08;0.05";
+    mINI::Instance()[kSensitivity] = "0.2,0.15,0.1,0.08,0.05";
     mINI::Instance()[kIntervalMS] = 200;
     mINI::Instance()[kMinDurationMS] = 1000;
     mINI::Instance()[kROIRows] = 32;
@@ -467,6 +469,7 @@ static onceToken token([]() {
     mINI::Instance()[kROIDefaultLevel] = 3;
     mINI::Instance()[kUseYChannel] = 0;
     mINI::Instance()[kSaveImage] = 0;
+    mINI::Instance()[kSummaryWindowMS] = 10000;
 });
 } // namespace Motion
 

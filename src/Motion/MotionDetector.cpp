@@ -11,7 +11,7 @@ namespace mediakit {
 static vector<double> g_sensitivity; // Sensitivity thresholds for different ROI levels, indexed by (level - 1)
 static onceToken token([]() {
     GET_CONFIG(string, sensitivity_str, Motion::kSensitivity);
-    for (auto &th : split(sensitivity_str, ";")) {
+    for (auto &th : split(sensitivity_str, ",")) {
         trim(th);
         if (!th.empty()) {
             g_sensitivity.emplace_back(stod(th));
@@ -132,12 +132,20 @@ bool MotionDetector::inputFrame(const uint8_t* data, int linesize, uint64_t pts_
         std::memcpy(&_prev_frame[y * _width], data + y * linesize, static_cast<size_t>(_width));
     }
 
+    // Skip motion event on first frame: _prev_frame was uninitialized (all zeros),
+    // so any comparison would produce false positives.
+    if (_first_frame) {
+        _first_frame = false;
+        return true;
+    }
+
     const bool motion_detected = (motion_blocks > 0);
-    // DebugL << "Motion blocks: " << motion_blocks << "/" << active_blocks
-    //        << ", motion_detected: " << motion_detected
-    //        << ", pts_ms: " << pts_ms;
     if (_on_result) {
-        _on_result(motion_detected, pts_ms, result);
+        auto stamp_ms = getCurrentMillisecond(true);
+        // DebugL << "Motion blocks: " << motion_blocks << "/" << active_blocks
+        //        << ", motion_detected: " << motion_detected
+        //        << ", stamp_ms: " << stamp_ms;
+        _on_result(motion_detected, stamp_ms, result);
     }
     return true;
 }

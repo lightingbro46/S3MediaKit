@@ -1,6 +1,7 @@
 #include "MotionProcessor.h"
 #include "Common/config.h"
 #include "Processor/MultiMediaSourceProcessor.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -8,18 +9,40 @@ using namespace toolkit;
 namespace mediakit {
 
 MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask, bool enable_record, int interval_ms, bool use_y_channel) 
-    : _tuple(tuple), _roi_mask(roi_mask), _enable_record(enable_record), _interval_ms(interval_ms), _use_y_channel(use_y_channel) {
-    GET_CONFIG(int, min_duration, Motion::kMinDurationMS);
-    _recorder = std::make_shared<MotionRecorder>(tuple, enable_record, min_duration);
-
+    : _tuple(tuple), _roi_mask(roi_mask), _interval_ms(interval_ms), _use_y_channel(use_y_channel) {
+    // Whether to save frame when motion is detected, which is useful for debugging or recording
     GET_CONFIG(bool, save_image, Motion::kSaveImage);
     _save_image = save_image;
+
+    // Build the motion recording base path (same layout as saveFrame).
+    GET_CONFIG(string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(bool, enable_vhost, General::kEnableVhost);
+    if (enable_vhost) {
+        _save_path = record_path + "/motion/" + tuple.vhost + '/' + tuple.app + '/';
+    } else {
+        _save_path = record_path + "/motion/" + tuple.app + '/';
+    }
+
+    GET_CONFIG(int, min_duration, Motion::kMinDurationMS);
+    _event_ctr = std::make_shared<MotionEventController>(tuple, min_duration);
+
+    if (_enable_record) {
+        GET_CONFIG(uint64_t, summary_window_ms, Motion::kSummaryWindowMS);
+        _muxer = std::make_shared<MotionMuxer>(_save_path, summary_window_ms);
+
+        // Wire the muxer directly into the controller — single point of noise control.
+        _event_ctr->setMuxer(_muxer);
+    }
 }
 
 MotionProcessor::~MotionProcessor() {
-    if (_recorder) {
-        _recorder->flush();
-        _recorder.reset();
+    if (_muxer) {
+        _muxer->flush();
+        _muxer.reset();
+    }
+    if (_event_ctr) {
+        _event_ctr->flush();
+        _event_ctr.reset();
     }
 }
 
@@ -46,15 +69,15 @@ bool MotionProcessor::inputFrame(const FFmpegFrame::Ptr &frame) {
         ROIMaskPtr roi_mask = make_shared<ROIMask>(MOTION_GRID_ROWS, MOTION_GRID_COLS, _roi_mask);
         _detector = std::make_shared<MotionDetector>(frame_width, frame_height, roi_mask);
         std::weak_ptr<MotionProcessor> weak_self = shared_from_this();
-        _detector->setOnMotionResultCallback([weak_self, roi_mask](bool motion, uint64_t pts_ms, const MotionBitmapPtr &result) {
+        _detector->setOnMotionResultCallback([weak_self, roi_mask](bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
             }
-            strong_self->recordMotionResult(motion, pts_ms, result);
+            strong_self->recordMotionResult(motion, stamp_ms, result);
 
-            // Save frame when motion is detected, for debugging or recording purposes
-            if (motion && strong_self->_save_image) {
+            // Save decoded frame for debugging or recording purposes
+            if (strong_self->_save_image) {
                 auto last_frame = strong_self->_last_frame;
                 strong_self->saveFrame(last_frame, result, true, roi_mask, true);
             }
@@ -83,16 +106,41 @@ void MotionProcessor::swsGrayScale(const FFmpegFrame::Ptr &in_frame, FFmpegFrame
 }
 
 void MotionProcessor::recordMotionResult(bool motion, uint64_t stamp, const MotionBitmapPtr &result) {
-    if (_recorder) {
-        _recorder->inputBlock(motion, stamp, result);
+    if (_event_ctr) {
+        // The controller evaluates the frame and fires OnEvaluated → muxer internally.
+        _event_ctr->inputBlock(motion, stamp, result);
     }
 }
 
 void MotionProcessor::saveFrame(const FFmpegFrame::Ptr &frame, const MotionBitmapPtr &result, bool overlay_motion, const ROIMaskPtr &roi, bool overlay_roi) {
-    if (_recorder) {
-        auto grid = _detector->getGridBoundary();
-        _recorder->saveImage(frame, result, overlay_motion, roi, overlay_roi, grid);
+    if (!frame) return;
+    auto grid = _detector ? _detector->getGridBoundary() : nullptr;
+
+    // Clone the frame to avoid modifying the original frame data,
+    // which may be used for subsequent motion detection and could lead to incorrect results if modified directly
+    auto clone_frame = frame->clone();
+    if (!clone_frame) {
+        WarnL << "Failed to clone frame for saving";
+        return;
     }
+
+    string full_path = StrPrinter << _save_path << "/" << "motion.jpg";
+
+    WorkThreadPool::Instance().getExecutor()->async([clone_frame, result, roi, overlay_roi, overlay_motion, grid, full_path]() {
+        if (overlay_motion && result) {
+            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
+                GridBoundaryHelper::draw_motion_grid_yuv420p(clone_frame->get(), *result, grid, true, true);
+            }
+        }
+
+        if (overlay_roi && roi) {
+            if (clone_frame->get()->format == AV_PIX_FMT_YUV420P || clone_frame->get()->format == AV_PIX_FMT_YUVJ420P) {
+                GridBoundaryHelper::draw_roi_border_yuv420p(clone_frame->get(), *roi, grid, true, true);
+            }
+        }
+        auto ret = FFmpegUtils::saveFrame(clone_frame, full_path.data());
+        TraceL << "Frame saved: " << std::get<0>(ret) << ", " << std::get<1>(ret);
+    });
 }
 
 } // namespace mediakit

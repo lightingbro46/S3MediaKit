@@ -14,7 +14,7 @@ namespace mediakit {
 class MotionDetector {
 public:
     using Ptr = std::shared_ptr<MotionDetector>;
-    using OnMotionResultCallback = std::function<void(bool motion, uint64_t pts_ms, const MotionBitmapPtr &result)>;
+    using OnMotionResultCallback = std::function<void(bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result)>;
 
     /**
      * Constructor
@@ -51,6 +51,7 @@ private:
     int _height;
     GridBoundaryPtr _grid_boundary;
     ROIMaskPtr _roi;
+    bool _first_frame = true;
     std::vector<uint8_t> _prev_frame;
     OnMotionResultCallback _on_result;
 };

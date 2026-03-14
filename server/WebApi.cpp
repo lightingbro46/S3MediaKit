@@ -66,7 +66,7 @@
 #include "VideoStack.h"
 #endif
 
-#include "Local/TimeQuery.h"
+#include "Local/SearchEngine.h"
 #include "Storage/Bookmark.h"
 #include "Storage/UserEntity.h"
 #include "Storage/Certification.h"
@@ -2370,122 +2370,7 @@ void installWebApi() {
         return DeviceSource::find(tuple.vhost, tuple.device_id);
     };
 
-    static auto findTimePeriod = [](MediaTuple &tuple, uint64_t start_time, uint64_t end_time, int period_type, int detail,
-                                    const function<void(const SockException&, const Value&)> &cb) {
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        Value result;
-        TimeQuery::Ptr query;
-        try {
-            query = std::make_shared<TimeQuery>(tuple);
-        } catch (...) {
-            WarnL << "Timefile has not been created";
-        }
 
-        if (period_type == 1) {
-            if (detail == 0) {
-                result["cameraId"] = tuple.app;
-                result["periods"] = arrayValue;
-                if (query) {
-                    query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
-                        for (auto const &p : ret) {
-                            Value period;
-                            period["startTime"] = p.startTime;
-                            period["duration"] = p.duration;
-                            period["mediaServerId"] = mediaServerId;
-                            result["periods"].append(period);
-                        }
-                    });
-                }
-            } else {
-                result["cameraId"] = tuple.app;
-                result["streams"] = arrayValue;
-                if (query) {
-                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, vector<TimeRange>> &ret) {
-                        for (auto const &it : ret) {
-                            Value stream;
-                            stream["streamId"] = it.first;
-                            stream["periods"] = arrayValue;
-                            for (auto const &p : it.second) {
-                                Value period;
-                                period["startTime"] = p.startTime;
-                                period["duration"] = p.duration;
-                                period["mediaServerId"] = mediaServerId;
-                                stream["periods"].append(period);
-                            }
-                            result["streams"].append(stream);
-                        }
-                    });
-                }
-            }
-        } else if (period_type == 2) {
-            if (detail == 0) {
-                result["cameraId"] = tuple.app;
-                result["periods"] = objectValue;
-                if (query) {
-                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, set<int>> &ret) {
-                        for (auto const &it : ret) {
-                            string date_str = it.first;
-                            auto &hour_set = it.second;
-                            result["periods"][date_str] = arrayValue;
-                            for (int i = 0; i < 24; i++) {
-                                auto it_hour = hour_set.find(i);
-                                result["periods"][date_str].append(it_hour != hour_set.end() ? 1 : 0);
-                            }
-                        }
-                    });
-                }
-            } else {
-                result["cameraId"] = tuple.app;
-                result["streams"] = arrayValue;
-                if (query) {
-                    query->getRecordedTimePeriod(start_time, end_time, [&](unordered_map<string, unordered_map<string, unordered_map<int, std::vector<TimeRange>>>> &ret) {
-                        for (auto const &it_stream : ret) {
-                            Value stream;
-                            stream["streamId"] = it_stream.first;
-
-                            for (auto const &it_date : it_stream.second) {
-                                string date_str = it_date.first;
-                                auto hour_map = it_date.second;
-                                Value date;
-                                for (int i = 0; i < 24; i++) {
-                                    Value hour = arrayValue;
-                                    auto it_hour = hour_map.find(i);
-                                    if (it_hour != hour_map.end()) {
-                                        for (auto const &it : it_hour->second) {
-                                            Json::Value period;
-                                            period["startTime"] = it.startTime;
-                                            period["duration"] = it.duration;
-                                            period["mediaServerId"] = mediaServerId;
-                                            hour.append(period);
-                                        }
-                                    }
-                                    date.append(hour);
-                                }
-                                stream["dates"][date_str] = date;
-                            }
-                            result["streams"].append(stream);
-                        }
-                    });
-                }
-            }
-        } else if (period_type == 0) {
-            result["periods"] = arrayValue;
-            if (query) {
-                query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeBlock> &ret) {
-                    for (auto const &p : ret) {
-                        Value period;
-                        period["cameraId"] = p.app();
-                        period["streamId"] = p.stream();
-                        period["startTime"] = p.start_time();
-                        period["timeLen"] = p.time_len();
-                        period["mediaServerId"] = mediaServerId;
-                        result["periods"].append(period);
-                    }
-                });
-            }
-        }
-        return cb(SockException(Err_success), result);
-    };
 
     api_regist("/media/esc/recordedTimePeriod", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
@@ -2498,13 +2383,14 @@ void installWebApi() {
             uint64_t end_time = allArgs["endTime"];
             int period_type = allArgs["periodType"];
             int detail = allArgs["detail"];
+            bool include_motion = allArgs["motion"];
 
             if (!end_time) {
                 end_time = time(nullptr);
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            findTimePeriod(tuple, start_time, end_time, period_type, detail, [&](const SockException &ex, const Value &data) {
+            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, [&](const SockException &ex, const Value &data) {
                 if (ex) {
                     RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {

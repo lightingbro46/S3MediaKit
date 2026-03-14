@@ -132,7 +132,9 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first]) 
                 continue;
-
+            // note: stop record both primary and secondary stream if record mode is RecordMode::NoRecord, even if record mode is RecordOnlyMotion or RecordLowResAndMotion,
+            // because RecordMode::NoRecord means no recording at all, so we stop record for both primary and secondary stream to save resource, also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded,
+            // so we stop record for both stream when record mode is RecordMode::NoRecord, but the recording can be automatically deleted after certain period of time to save storage space
             it.second->setupRecord(Recorder::type_mp4, false);
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)) {
@@ -143,14 +145,22 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
             if (it.first == StreamType::PrimaryStream) {
                 it.second->setupRecord(Recorder::type_mp4, start);
             } else {
-                it.second->setupRecord(Recorder::type_mp4, false);
+                // note: keep record secondary stream, even if record mode is RecordOnlyMotion, 
+                // because secondary stream may be low resolution stream which is more likely to have motion detection enabled, and recording it does not consume much resource,
+                // also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded, 
+                // so here we still record secondary stream if it is live, but the recording can be automatically deleted after certain period of time to save storage space
+                it.second->setupRecord(Recorder::type_mp4, true);
             }
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion)) {
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first]) 
                 continue; 
-
+            // note: record primary stream only when record mode is RecordLowResAndMotion and motion is detected,
+            // because primary stream usually has higher resolution and recording it consumes more resource, 
+            // so we only record primary stream when motion is detected to save resource, but secondary stream is always recorded if it is live, 
+            // because secondary stream usually has lower resolution and more likely to have motion detection enabled, and recording it does not consume much resource, also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded, 
+            // so here we still record secondary stream if it is live, but the recording can be automatically deleted after certain period of time to save storage space
             int record_ = it.first == StreamType::PrimaryStream ? start : !start;
             it.second->setupRecord(Recorder::type_mp4_archived, record_);
         }
@@ -158,11 +168,11 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first]) 
                 continue;
-
+            // note: always record both primary and secondary stream if they are live, even if record mode is RecordAlways
             it.second->setupRecord(Recorder::type_mp4, true);
         }
     } else {
-        WarnL << "Unsupported record mode: " << archive_mode;
+        WarnL << "Unsupported record mode: " << getRecordModeString(static_cast<RecordMode>(archive_mode));
         return false;
     }
     _archive_mode = archive_mode;

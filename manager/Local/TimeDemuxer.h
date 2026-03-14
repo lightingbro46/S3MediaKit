@@ -79,7 +79,7 @@ public:
 
     void readBlock(TimeBlock &block, bool &eof);
 
-    uint64_t getFirstStamp() { return _demuxers.begin()->first; }
+    uint64_t getFirstStamp() { return _demuxers.empty() ? 0 : _demuxers.begin()->first; }
 
 private:
     std::map<uint64_t, TimeDemuxer::Ptr>::iterator _it;
