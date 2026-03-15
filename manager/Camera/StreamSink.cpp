@@ -58,22 +58,31 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     // todo: support rtp transport multicast mode
     int rtp_type = option.rtpTransport == option.kRtpTransportUdp ? 1 /*udp mode*/ : 0 /*tcp mode*/;
 
-    ProtocolOption _option;
-    _option.enable_mp4 = false; // do not enable mp4 in player proxy, recording is controlled by StreamSource itself
-    _option.enable_audio = !option.disableAudio;
-    _option.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
-    _option.roi_mask = option.enableMotion ? option.roiValue : "";
-    _option.record_motion =  option.enableMotion ? true : false;
+    StreamOption new_cfg;
+    new_cfg.tuple                  = tuple;
+    new_cfg.record_mp4             = record_mp4;
+    new_cfg.rtp_type               = rtp_type;
+    new_cfg.media_port             = media_port;
+    new_cfg.username               = option.username;
+    new_cfg.password               = option.password;
+    new_cfg.protocol.enable_mp4    = false; // recording is controlled by StreamSource itself
+    new_cfg.protocol.enable_audio  = !option.disableAudio;
+    new_cfg.protocol.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
+    new_cfg.protocol.roi_mask      = option.enableMotion ? option.roiValue : "";
+    new_cfg.protocol.record_motion = option.enableMotion ? true : false;
 
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
-        // todo: check if the new option is different from current option, if not, skip recreate monitor
+        if (it->second->getOption() == new_cfg) {
+            DebugL << "Monitor for stream type " << getStreamTypeString(type) << " of device " << _tuple.shortUrl() << " already exists with same config, skip recreate";
+            return;
+        }
         _monitor_map.erase(type);
     }
-    auto monitor = std::make_shared<StreamSource>(type, tuple, _option, record_mp4, rtp_type, media_port, option.username, option.password);
+    auto monitor = std::make_shared<StreamSource>(type, new_cfg);
     monitor->setListener(shared_from_this());
     monitor->start();
-    _monitor_map.emplace(type, monitor);    
+    _monitor_map.emplace(type, monitor);
 }
 
 void StreamSink::stopMonitor(int type) {
@@ -156,13 +165,10 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first]) 
                 continue; 
-            // note: record primary stream only when record mode is RecordLowResAndMotion and motion is detected,
-            // because primary stream usually has higher resolution and recording it consumes more resource, 
-            // so we only record primary stream when motion is detected to save resource, but secondary stream is always recorded if it is live, 
-            // because secondary stream usually has lower resolution and more likely to have motion detection enabled, and recording it does not consume much resource, also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded, 
-            // so here we still record secondary stream if it is live, but the recording can be automatically deleted after certain period of time to save storage space
-            int record_ = it.first == StreamType::PrimaryStream ? start : !start;
-            it.second->setupRecord(Recorder::type_mp4_archived, record_);
+            // note: record primary stream when motion event start, and stop record when motion event stop,
+            // and invert for secondary stream, record when motion event stop, and stop record when motion event start
+            int start_record = it.first == StreamType::PrimaryStream ? start : !start;
+            it.second->setupRecord(Recorder::type_mp4_archived, start_record);
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordAlways)) {
         for (auto &it : _monitor_map) {

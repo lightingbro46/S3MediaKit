@@ -69,8 +69,8 @@ private:
     std::string _profile;
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;
-    RecordScheduleMap::iterator _it;
     RecordScheduleMap _items;
+    RecordScheduleMap::iterator _it = _items.end();
 
     // running
     bool _running = false;

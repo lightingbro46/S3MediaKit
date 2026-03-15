@@ -43,9 +43,18 @@ void CameraController::setupController(const CameraOption &option) {
     }
 
     if (_onvif_ctr) {
-        // todo: check if the new option is different from current option, if not, skip recreate controller
-        DebugL << "Controller of device: " << _tuple.shortUrl() << " already exists. Recreate controller due to configuration changed";
+        if (ControllerOption::from(option) == _ctrl_option) {
+            // Connection unchanged — update PTZ settings in-place, no reconnect needed
+            _enablePTZControl = option.enablePTZControl;
+            _reservePanAxis   = option.reservePanAxis;
+            _reserveTiltAxis  = option.reserveTiltAxis;
+            _ptzMode          = option.ptzMode;
+            DebugL << "Controller of device: " << _tuple.shortUrl() << " connection unchanged, updated PTZ settings in-place";
+            return;
+        }
+        DebugL << "Controller of device: " << _tuple.shortUrl() << " connection changed, recreating controller";
         _onvif_ctr.reset();
+        _ready = false;
     }
 
     if (option.manufacturer == GENERIC_RTSP_CAMERA) {
@@ -73,12 +82,13 @@ void CameraController::setupController(const CameraOption &option) {
         << ", username: " << (option.username.empty() ? "empty" : "******")
         << ", password: " << (option.password.empty() ? "empty" : "******");
 
-    // save camera option for later use
-    _address = address;
+    // save controller option and PTZ settings for later use
+    _address      = address;
+    _ctrl_option  = ControllerOption::from(option);
     _enablePTZControl = option.enablePTZControl;
-    _reservePanAxis = option.reservePanAxis;
-    _reserveTiltAxis = option.reserveTiltAxis;
-    _ptzMode = option.ptzMode;
+    _reservePanAxis   = option.reservePanAxis;
+    _reserveTiltAxis  = option.reserveTiltAxis;
+    _ptzMode          = option.ptzMode;
 }
 
 void CameraController::stopController() {  
@@ -117,13 +127,13 @@ void CameraController::onManager() {
     }
     _last_reconnect_time = time(nullptr);
 
+    auto onvif_ctr = _onvif_ctr;
     auto weak_self = weak_from_this();
-    EventPollerPool::Instance().getPoller()->async([weak_self]() {
+    EventPollerPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
-        auto onvif_ctr = strong_self->_onvif_ctr;
         auto tuple = strong_self->_tuple;
         auto address = strong_self->_address;
         // reconnect to device
@@ -247,6 +257,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             cb(SockException(Err_success, "Device execute ptz continuous move success", ApiErrCode::CODE_SUCCESS));
             return 0;
         });
+        return;
     }
     /* Unreachable */
     cb(SockException(Err_other, "Device does not support selected PTZ control mode", ApiErrCode::CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE));

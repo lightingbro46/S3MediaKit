@@ -23,24 +23,24 @@ bool isValidStreamType(int type) {
     return type >= StreamType::PrimaryStream && type < StreamType::StreamMax;
 }
 
-StreamSource::StreamSource(int type, const StreamTuple &tuple, const ProtocolOption &option, bool record_mp4, int rtp_type, int media_port, std::string username, std::string password, float timeout_sec)
-    : _type(type), _tuple(std::move(tuple)), _option(option), _record_mp4(record_mp4), _rtp_type(rtp_type), _media_port(media_port), _username(std::move(username)), _password(std::move(password)), _timeout_sec(timeout_sec) {
+StreamSource::StreamSource(int type, const StreamOption &option)
+    : _type(type), _option(option) {
 
-    _full_url = tuple.full_url;
+    _full_url = _option.tuple.full_url;
 
-    if (_full_url.find("@") == string::npos && !_username.empty() && !_password.empty()) {
+    if (_full_url.find("@") == string::npos && !_option.username.empty() && !_option.password.empty()) {
         // insert auth info to url if not exist
-        _full_url = UriUtils::replaceCredentials(_full_url, _username, _password);
+        _full_url = UriUtils::replaceCredentials(_full_url, _option.username, _option.password);
     }
 
-    if (_media_port > 0) {
+    if (_option.media_port > 0) {
         // replace port in url if media_port is specified
-        _full_url = UriUtils::replacePort(_full_url, _media_port);
+        _full_url = UriUtils::replacePort(_full_url, _option.media_port);
     }
 
-    if (!_timeout_sec) {
+    if (!_option.timeout_sec) {
         GET_CONFIG(float, timeoutSec, Manager::kMaxStreamTimeoutSec);
-        _timeout_sec = timeoutSec;
+        _option.timeout_sec = timeoutSec;
     }
 }
 
@@ -63,7 +63,7 @@ void StreamSource::start() {
 }
 
 void StreamSource::createPlayer() {
-    MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
+    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, "");
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
     auto setup_player = [weak_self](const string &err, const PlayerProxy::Ptr &player) {
@@ -74,15 +74,15 @@ void StreamSource::createPlayer() {
 
         // return if player proxy with same key exist
         if (!err.empty()) {
-            WarnL << "Create stream player proxy " << strong_self->_tuple.shortUrl() << " failed: " << err;
+            WarnL << "Create stream player proxy " << strong_self->_option.tuple.shortUrl() << " failed: " << err;
             return;
         }
 
-        (*player)[Client::kRtpType] = strong_self->_rtp_type;
+        (*player)[Client::kRtpType] = strong_self->_option.rtp_type;
 
-        if (strong_self->_timeout_sec > 0.1f) {
+        if (strong_self->_option.timeout_sec > 0.1f) {
             // Play handshake timeout
-            (*player)[Client::kTimeoutMS] = strong_self->_timeout_sec * 1000;
+            (*player)[Client::kTimeoutMS] = strong_self->_option.timeout_sec * 1000;
         }
 
         player->setPlayCallbackOnce([weak_self](const SockException &ex) {
@@ -141,24 +141,24 @@ void StreamSource::createPlayer() {
 
         player->play(strong_self->_full_url);
         strong_self->_player = player;
-        DebugL << "Created stream player proxy: " << strong_self->_tuple.shortUrl();
+        DebugL << "Created stream player proxy: " << strong_self->_option.tuple.shortUrl();
     };
 
-    addStreamProxy(tuple, _option, setup_player);
+    addStreamProxy(tuple, _option.protocol, setup_player);
 }
 
 void StreamSource::closePlayer() {
-    MediaTuple tuple(DEFAULT_VHOST, _tuple.device_id, _tuple.stream_id, "");
+    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, "");
     delStreamProxy(tuple);
     _player.reset();
     setState(false, "self-closed");
-    DebugL << "Closed stream player proxy: " << _tuple.shortUrl();
+    DebugL << "Closed stream player proxy: " << _option.tuple.shortUrl();
     onStreamReady(false, "self-closed", nullptr);
 }
 
 TranslationInfo StreamSource::getTranslationInfo() {
     TranslationInfo info;
-    auto media_src = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
     if (media_src) {
         info.byte_speed = media_src->getBytesSpeed();
         info.start_time_stamp = media_src->getCreateStamp();
@@ -196,26 +196,26 @@ TranslationInfo StreamSource::getTranslationInfo() {
 }
 
 bool StreamSource::setupRecord(int type, bool start) {
-    if (!_record_mp4) {
-        WarnL << "MP4 recording is disabled, cannot setup record for stream: " << _tuple.shortUrl();
+    if (!_option.record_mp4) {
+        WarnL << "MP4 recording is disabled, cannot setup record for stream: " << _option.tuple.shortUrl();
         return false;
     }
 
-    auto media_src = MediaSource::find(RTSP_SCHEMA, _tuple.vhost, _tuple.device_id, _tuple.stream_id);
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
     if (!media_src) {
-       WarnL << "MediaSource not found for stream: " << _tuple.shortUrl();
+       WarnL << "MediaSource not found for stream: " << _option.tuple.shortUrl();
        return false;
     }
 
     auto muxer = media_src->getMuxer();
     if (!muxer) {
-        WarnL << "MediaSourceMuxer not found for stream: " << _tuple.shortUrl();
+        WarnL << "MediaSourceMuxer not found for stream: " << _option.tuple.shortUrl();
         return false;
     }
 
     auto poller = muxer->getOwnerPoller(*media_src);
     if (!poller) {
-        WarnL << "EventPoller not found for stream: " << _tuple.shortUrl();
+        WarnL << "EventPoller not found for stream: " << _option.tuple.shortUrl();
         return false;
     }
     poller->async([muxer, type, start, media_src]() {

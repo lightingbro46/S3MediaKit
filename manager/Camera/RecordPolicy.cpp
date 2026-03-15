@@ -187,6 +187,7 @@ RecordScheduler::RecordScheduleMap::iterator RecordScheduler::getRecordScheduled
     string time_str = (StrPrinter << week_time.day_of_week << "," << week_time.hour);
     auto it = _items.find(time_str);
     if (it == _items.end()) {
+        // throw exception if no schedule found for current time, this should not happen because we fill in default schedule for all time in parseRecordScheduleStr
         throw std::runtime_error("No record schedule found for current time: " + time_str);
     }
     return it;

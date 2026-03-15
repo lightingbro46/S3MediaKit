@@ -17,6 +17,40 @@ struct DeviceCapabilities {
     OnvifProfile onvifProfile;
 };
 
+// Connection-relevant fields that require a full controller recreate when changed.
+struct ControllerOption {
+    std::string manufacturer;
+    std::string ip;
+    int  port        = 0;
+    int  webPort     = 0;
+    bool autoWebPort = true;
+    std::string username;
+    std::string password;
+
+    static ControllerOption from(const CameraOption &o) {
+        ControllerOption c;
+        c.manufacturer = o.manufacturer;
+        c.ip           = o.ip;
+        c.port         = o.port;
+        c.webPort      = o.webPort;
+        c.autoWebPort  = o.autoWebPort;
+        c.username     = o.username;
+        c.password     = o.password;
+        return c;
+    }
+
+    bool operator==(const ControllerOption &o) const {
+        return manufacturer == o.manufacturer
+            && ip           == o.ip
+            && port         == o.port
+            && webPort      == o.webPort
+            && autoWebPort  == o.autoWebPort
+            && username     == o.username
+            && password     == o.password;
+    }
+    bool operator!=(const ControllerOption &o) const { return !(*this == o); }
+};
+
 class CameraController : public DeviceSourceEventInterceptor, public std::enable_shared_from_this<CameraController>  {
 public:
     using Ptr = std::shared_ptr<CameraController>;
@@ -55,6 +89,7 @@ private:
     toolkit::Timer::Ptr _timer_ctr;
     OnvifControl::Ptr _onvif_ctr;
     std::string _address;
+    ControllerOption _ctrl_option;
     int _ptzMode = CameraOption::kPTZModeAuto;
     bool _reservePanAxis = false;
     bool _reserveTiltAxis = false;
