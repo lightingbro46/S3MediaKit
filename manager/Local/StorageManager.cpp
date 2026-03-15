@@ -201,6 +201,12 @@ static RecordProfiles getRecordProfiles() {
                     string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
                     profiles.emplace(key_second, make_pair(min_value, max_value));
                 }
+                GET_CONFIG(string, archived_stream, Record::kArchiveStreamName);
+                if (!archived_stream.empty()) {
+                    auto tuple = camera->getDeviceTuple();
+                    string key_archived = (StrPrinter << tuple.device_id << "/" << archived_stream);
+                    profiles.emplace(key_archived, make_pair(min_value, max_value));
+                }
             }
         }
     });

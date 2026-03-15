@@ -109,14 +109,7 @@ void CameraController::stopController() {
 }
 
 void CameraController::onManager() {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self]() {
-            self->onManager();
-        });
-        return;
-    }
-
+    // Always called from the Timer which runs on _poller - no dispatch needed.
     if (!_onvif_ctr) {
         return;
     }
@@ -264,14 +257,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
 }
 
 void CameraController::PTZMove(const std::string &strDirect, int speed, const function<void(const SockException &ex)> &cb) {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self, strDirect, speed, cb]() {
-            self->PTZMove(strDirect, speed, cb);
-        });
-        return;
-    }
-
+    // Caller (GenericRtspCameraImp::PTZMove) asserts isCurrentThread - no dispatch needed.
     // check permission from camera option
     if (!_enablePTZControl) {
         cb(SockException(Err_other, "Camera is configured to disable PTZ control", ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ));

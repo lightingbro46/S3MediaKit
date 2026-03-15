@@ -33,6 +33,8 @@ public:
 
     void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
 
+    void setStreamRegist(int type, bool regist);
+
 private:
     void onManager();
 

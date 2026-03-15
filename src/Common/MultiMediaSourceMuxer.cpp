@@ -483,6 +483,7 @@ bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
         case Recorder::type_hls_fmp4: return !!_hls_fmp4;
         case Recorder::type_fmp4: return !!_fmp4;
         case Recorder::type_ts: return !!_ts;
+        case Recorder::type_mp4_archived: return !!_mp4;
         default: return false;
     }
 }

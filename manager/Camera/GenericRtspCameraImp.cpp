@@ -21,6 +21,13 @@ GenericRtspCameraImp::~GenericRtspCameraImp() {
 }
 
 void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
+    if (!_poller->isCurrentThread()) {
+        auto self = shared_from_this();
+        _poller->async([self, option]() {
+            self->setCameraOption(option);
+        });
+        return;
+    }
     if (_option == option) {
         return; // No change
     }
@@ -211,6 +218,15 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         auto sender = _src;
         NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
     }
+}
+
+void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setupStreamRegist in it's owner poller");
+    if (!_sink) {
+        WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup stream regist request";
+        return;
+    }
+    _sink->setStreamRegist(type, regist);
 }
 
 } // namespace managerkit

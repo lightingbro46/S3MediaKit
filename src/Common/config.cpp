@@ -461,7 +461,7 @@ const string kSaveImage = MOTION_FIELD "saveImage";
 const string kSummaryWindowMS = MOTION_FIELD "summaryWindowMS";
 
 static onceToken token([]() {
-    mINI::Instance()[kSensitivity] = "0.2,0.15,0.1,0.08,0.05";
+    mINI::Instance()[kSensitivity] = "0.15,0.1,0.08,0.05,0.02";
     mINI::Instance()[kIntervalMS] = 200;
     mINI::Instance()[kMinDurationMS] = 1000;
     mINI::Instance()[kROIRows] = 32;

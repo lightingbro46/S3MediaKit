@@ -31,6 +31,8 @@ public:
 
     bool setupRecordEvent(RecordEventType type, bool start);
 
+    void setupStreamRegist(int type, bool regist);
+
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }

@@ -184,6 +184,51 @@ void installManagerHook () {
         }
     });
 
+    // Listen to rtsp, rtmp source registration or deregistration events
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaChanged, [](BroadcastMediaChangedArgs) {
+        if (sender.getSchema() == RTSP_SCHEMA) {
+            auto media_tuple = sender.getMediaTuple();
+            auto device = DeviceSource::find(media_tuple.vhost, media_tuple.app);
+            if (!device) {
+                return;
+            }
+            auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
+            if (!camera) {
+                return;
+            }
+            int type = -1;
+            if (camera->hasStreamTuple(StreamType::PrimaryStream)) {
+                auto &tuple = camera->getStreamTuple(StreamType::PrimaryStream);
+                if (tuple.stream_id == media_tuple.stream) {
+                    type = StreamType::PrimaryStream;
+                }
+            } 
+            if (camera->hasStreamTuple(StreamType::SecondaryStream)) {
+                auto &tuple = camera->getStreamTuple(StreamType::SecondaryStream);
+                if (tuple.stream_id == media_tuple.stream) {
+                    type = StreamType::SecondaryStream;
+                }
+            } 
+            if (type == -1) {
+                return;
+            }
+
+            auto weak_listener = device->getListener();
+            if (auto strong_listener = weak_listener.lock()) {
+                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                if (impl) {
+                    auto poller = impl->getOwnerPoller(*device);
+                    auto regist = bRegist;
+                    if (poller) {
+                        poller->async([impl, type, regist](){
+                            impl->setupStreamRegist(type, regist);
+                        });
+                    }
+                }
+            }
+        }
+    });
+
     enforceStoragePolicy();
 
     loadSavedDeviceInfo();

@@ -105,13 +105,7 @@ void StreamSink::stopMonitor(int type) {
 }
 
 void StreamSink::onManager() {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self]() {
-            self->onManager();
-        });
-        return;
-    }
+    // Always called from the Timer which runs on _poller - no dispatch needed.
     for (const auto &it : _monitor_map) {
         auto type = it.first;
         if (!isValidStreamType(type)) {
@@ -129,52 +123,50 @@ void StreamSink::onManager() {
 }
 
 bool StreamSink::setupRecord(int archive_mode, bool start) {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self, archive_mode, start]() {
-            self->setupRecord(archive_mode, start);
-        });
-        return true;
-    }
-
+    // Callers: onRecordModeChange (asserts isCurrentThread) and setStreamRegist (already on poller).
     if (archive_mode == static_cast<int>(RecordMode::NoRecord)) {
         for (auto &it : _monitor_map) {
-            if (!_stream_ready[it.first]) 
+            if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
             // note: stop record both primary and secondary stream if record mode is RecordMode::NoRecord, even if record mode is RecordOnlyMotion or RecordLowResAndMotion,
             // because RecordMode::NoRecord means no recording at all, so we stop record for both primary and secondary stream to save resource, also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded,
             // so we stop record for both stream when record mode is RecordMode::NoRecord, but the recording can be automatically deleted after certain period of time to save storage space
+            DebugL << "Stop record for stream type " << getStreamTypeString(it.first) << " of device " << _tuple.shortUrl() << " due to record mode is NoRecord";
             it.second->setupRecord(Recorder::type_mp4, false);
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)) {
         for (auto &it : _monitor_map) {
-            if (!_stream_ready[it.first]) 
+            if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
 
             if (it.first == StreamType::PrimaryStream) {
+                DebugL << (start ? "Start" : "Stop") << " record for primary stream of device " << _tuple.shortUrl() << " due to record mode is RecordOnlyMotion";
                 it.second->setupRecord(Recorder::type_mp4, start);
             } else {
                 // note: keep record secondary stream, even if record mode is RecordOnlyMotion, 
                 // because secondary stream may be low resolution stream which is more likely to have motion detection enabled, and recording it does not consume much resource,
                 // also it is easier to correlate motion events with video frames if both primary and secondary stream are recorded, 
                 // so here we still record secondary stream if it is live, but the recording can be automatically deleted after certain period of time to save storage space
+                DebugL << "Start record for secondary stream of device " << _tuple.shortUrl() << " due to record mode is RecordOnlyMotion";
                 it.second->setupRecord(Recorder::type_mp4, true);
             }
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion)) {
         for (auto &it : _monitor_map) {
-            if (!_stream_ready[it.first]) 
-                continue; 
+            if (!_stream_ready[it.first] || !it.second->isLive())
+                continue;
             // note: record primary stream when motion event start, and stop record when motion event stop,
             // and invert for secondary stream, record when motion event stop, and stop record when motion event start
             int start_record = it.first == StreamType::PrimaryStream ? start : !start;
+            DebugL << (start_record ? "Start" : "Stop") << " record for stream type " << getStreamTypeString(it.first) << " of device " << _tuple.shortUrl() << " due to record mode is RecordLowResAndMotion";
             it.second->setupRecord(Recorder::type_mp4_archived, start_record);
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordAlways)) {
         for (auto &it : _monitor_map) {
-            if (!_stream_ready[it.first]) 
+            if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
             // note: always record both primary and secondary stream if they are live, even if record mode is RecordAlways
+            DebugL << "Start record for stream type " << getStreamTypeString(it.first) << " of device " << _tuple.shortUrl() << " due to record mode is RecordAlways";
             it.second->setupRecord(Recorder::type_mp4, true);
         }
     } else {
@@ -198,12 +190,21 @@ void StreamSink::onStreamReady(DeviceSource &sender, int type, bool live, const 
         return;
     }
 
-    if (_stream_ready[type] != live && live) {
+    DeviceSourceEventInterceptor::onStreamReady(sender, type, live, status, data);
+}
+
+void StreamSink::setStreamRegist(int type, bool regist) {
+    // Caller (GenericRtspCameraImp::setupStreamRegist) asserts isCurrentThread - no dispatch needed.
+    if (!isValidStreamType(type)) {
+        WarnL << "Invalid stream type in setStreamRegist: " << type;
+        return;
+    }
+    // Implement the logic to register or unregister the stream based on the 'regist' flag
+    bool was_ready = _stream_ready[type];
+    _stream_ready[type] = regist; // update before calling setupRecord so the guard inside sees the correct state
+    if (!was_ready && regist) {
         setupRecord(_archive_mode, true);
     }
-    // update stream status
-    _stream_ready[type] = live;
-    DeviceSourceEventInterceptor::onStreamReady(sender, type, live, status, data);
 }
 
 } // namespace managerkit
