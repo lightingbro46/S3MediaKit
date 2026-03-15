@@ -1,8 +1,10 @@
 #ifndef MOTION_MOTIONPROCESSOR_H
 #define MOTION_MOTIONPROCESSOR_H
 
+#include <atomic>
 #include "MotionDetector.h"
 #include "MotionEventController.h"
+#include "MotionMjpegMediaSourceMuxer.h"
 #include "MotionMuxer.h"
 #include "Codec/Transcode.h"
 
@@ -27,6 +29,13 @@ public:
      * Set delegate to receive motion events, e.g., log or trigger recording when motion is detected
      */
     void setListener(const std::weak_ptr<MultiMediaSourceProcessor> &delegate);
+
+    /**
+     * Attach the MJPEG muxer created by MultiMediaSourceProcessor.
+     * Once set, the processor will push encoded frames through the muxer
+     * and respect its demand-gating logic.
+     */
+    void setMjpegMuxer(const std::shared_ptr<MotionMjpegMediaSourceMuxer> &muxer);
 
 private:
     /**
@@ -62,6 +71,10 @@ private:
     uint64_t _last_recv_time = 0;
     FFmpegFrame::Ptr _last_frame;
     std::weak_ptr<MultiMediaSourceProcessor> _delegate;
+
+    // Weak reference to the MJPEG muxer created by MultiMediaSourceProcessor.
+    // Null when motion_demand=false and no muxer was provided.
+    std::weak_ptr<MotionMjpegMediaSourceMuxer> _mjpeg_muxer;
 };
 
 } // namespace mediakit

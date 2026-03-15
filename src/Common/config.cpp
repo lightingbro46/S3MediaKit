@@ -194,7 +194,7 @@ static onceToken token([]() {
     mINI::Instance()[kAppName] = "live";
 
     mINI::Instance()[kEnableMotion] = 0;
-    mINI::Instance()[kMotionDemand] = 0;
+    mINI::Instance()[kMotionDemand] = 1;
     mINI::Instance()[kGopCacheSize] = 0;
     mINI::Instance()[kRoiMask] = "";
     mINI::Instance()[kRecordMotion] = 0;

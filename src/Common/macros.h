@@ -59,6 +59,7 @@
 #define FMP4_SCHEMA "fmp4"
 #define HLS_SCHEMA "hls"
 #define HLS_FMP4_SCHEMA "hls.fmp4"
+#define MOTION_MJPEG_SCHEMA "motion.mjpeg"
 
 #define VHOST_KEY "vhost"
 #define DEFAULT_VHOST "__defaultVhost__"

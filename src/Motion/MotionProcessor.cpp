@@ -46,6 +46,10 @@ MotionProcessor::~MotionProcessor() {
     }
 }
 
+void MotionProcessor::setMjpegMuxer(const std::shared_ptr<MotionMjpegMediaSourceMuxer> &muxer) {
+    _mjpeg_muxer = muxer;
+}
+
 void MotionProcessor::setListener(const std::weak_ptr<MultiMediaSourceProcessor> &delegate) {
     _delegate = delegate;
 }
@@ -80,6 +84,52 @@ bool MotionProcessor::inputFrame(const FFmpegFrame::Ptr &frame) {
             if (strong_self->_save_image) {
                 auto last_frame = strong_self->_last_frame;
                 strong_self->saveFrame(last_frame, result, true, roi_mask, true);
+            }
+
+            // Push encoded MJPEG frame through the muxer if any client is connected
+            auto mjpeg_muxer = strong_self->_mjpeg_muxer.lock();
+            if (mjpeg_muxer && mjpeg_muxer->isEnabled()) {
+                auto last_frame  = strong_self->_last_frame;
+                auto bmp         = result;
+                auto grid        = strong_self->_detector ? strong_self->_detector->getGridBoundary() : nullptr;
+                bool ov_motion   = mjpeg_muxer->overlayMotion();
+                bool ov_roi      = mjpeg_muxer->overlayRoi();
+                auto weak_muxer  = std::weak_ptr<MotionMjpegMediaSourceMuxer>(mjpeg_muxer);
+                bool is_motion   = motion;
+                uint64_t pts     = stamp_ms;
+                int cells        = bmp ? bmp->active_cells : 0;
+
+                WorkThreadPool::Instance().getExecutor()->async([
+                    last_frame, bmp, roi_mask, grid,
+                    ov_motion, ov_roi, weak_muxer,
+                    is_motion, pts, cells
+                ]() {
+                    auto mux = weak_muxer.lock();
+                    if (!mux || !mux->isEnabled()) return;
+
+                    auto clone = last_frame ? last_frame->clone() : nullptr;
+                    if (!clone) return;
+
+                    auto *avf = clone->get();
+                    // Apply motion overlay (cell highlights)
+                    if (ov_motion && bmp &&
+                        (avf->format == AV_PIX_FMT_YUV420P || avf->format == AV_PIX_FMT_YUVJ420P)) {
+                        GridBoundaryHelper::draw_motion_grid_yuv420p(avf, *bmp, grid, true, true);
+                    }
+                    // Apply ROI border overlay
+                    if (ov_roi && roi_mask &&
+                        (avf->format == AV_PIX_FMT_YUV420P || avf->format == AV_PIX_FMT_YUVJ420P)) {
+                        GridBoundaryHelper::draw_roi_border_yuv420p(avf, *roi_mask, grid, true, true);
+                    }
+
+                    auto jpeg         = FFmpegUtils::encodeFrameToBuffer(clone);
+                    auto pkt          = std::make_shared<MotionJpegFrame>();
+                    pkt->motion       = is_motion;
+                    pkt->stamp_ms     = pts;
+                    pkt->active_cells = cells;
+                    pkt->jpeg         = jpeg;
+                    mux->onWrite(pkt);
+                });
             }
         });
     }

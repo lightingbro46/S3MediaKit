@@ -4,6 +4,7 @@
 
 #include "MediaSourceDecoder.h"
 #include "Motion/MotionProcessor.h"
+#include "Motion/MotionMjpegMediaSourceMuxer.h"
 
 namespace mediakit {
 
@@ -21,7 +22,7 @@ public:
 
     void addTrackCompleted() override;
 
-    bool isMotionDetect();
+    bool isMotionDetectRunning();
 
 protected:
     void onDecode(const FFmpegFrame::Ptr &frame) override;
@@ -33,6 +34,7 @@ private:
     std::unordered_map<int, std::weak_ptr<MultiMediaSourceMuxer>> _peer_muxers;
 
     MotionProcessor::Ptr _motion;
+    MotionMjpegMediaSourceMuxer::Ptr _mjpeg_muxer;
 };
 
 } // namespace mediakit

@@ -508,7 +508,7 @@ bool MultiMediaSourceMuxer::setupMotionDetect(bool start, bool record_motion, co
 }
 
 bool MultiMediaSourceMuxer::isMotionDetecting() {
-    return !!_stack && _stack->isMotionDetect();
+    return !!_stack && _stack->isMotionDetectRunning();
 }
 
 void MultiMediaSourceMuxer::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {

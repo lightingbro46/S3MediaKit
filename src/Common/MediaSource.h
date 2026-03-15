@@ -233,6 +233,8 @@ public:
     uint32_t pre_record_ms;
     // Record after motion is detected, in milliseconds, which is valid when motion_record is enabled
     uint32_t post_record_ms;
+    // Whether to generate motion MJPEG stream on demand (only create the live MJPEG source when a viewer connects)
+    bool motion_demand;
 
     template <typename MAP>
     ProtocolOption(const MAP &allArgs) : ProtocolOption() {
@@ -276,6 +278,7 @@ public:
         GET_OPT_VALUE(record_motion);
         GET_OPT_VALUE(pre_record_ms);
         GET_OPT_VALUE(post_record_ms);
+        GET_OPT_VALUE(motion_demand);
     }
 };
 

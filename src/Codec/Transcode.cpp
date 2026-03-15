@@ -891,6 +891,37 @@ std::tuple<bool, std::string> FFmpegUtils::saveFrame(const FFmpegFrame::Ptr &fra
     return make_tuple<bool, std::string>(true, "");
 }
 
+std::shared_ptr<std::vector<uint8_t>> FFmpegUtils::encodeFrameToBuffer(
+    const FFmpegFrame::Ptr &frame, AVPixelFormat fmt, int w, int h) {
+    const AVCodec *jpeg_codec = avcodec_find_encoder(
+        fmt == AV_PIX_FMT_YUVJ420P ? AV_CODEC_ID_MJPEG : AV_CODEC_ID_PNG);
+    std::unique_ptr<AVCodecContext, void (*)(AVCodecContext *)> ctx(
+        jpeg_codec ? avcodec_alloc_context3(jpeg_codec) : nullptr,
+        [](AVCodecContext *c) { avcodec_free_context(&c); });
+    if (!ctx) return nullptr;
+
+    ctx->width     = (w > 0 && w < 8192) ? w : frame->get()->width;
+    ctx->height    = (h > 0 && h < 4320) ? h : frame->get()->height;
+    ctx->pix_fmt   = fmt;
+    ctx->time_base = {1, 1};
+
+    if (avcodec_open2(ctx.get(), jpeg_codec, nullptr) < 0) return nullptr;
+
+    FFmpegSws sws(fmt, ctx->width, ctx->height);
+    auto scaled = sws.inputFrame(frame);
+    if (!scaled) return nullptr;
+
+    auto result = std::make_shared<std::vector<uint8_t>>();
+    auto pkt = alloc_av_packet();
+    if (avcodec_send_frame(ctx.get(), scaled->get()) == 0) {
+        while (avcodec_receive_packet(ctx.get(), pkt.get()) == 0) {
+            const uint8_t *d = pkt->data;
+            result->insert(result->end(), d, d + pkt->size);
+        }
+    }
+    return result->empty() ? nullptr : result;
+}
+
 std::tuple<bool, std::string> FFmpegUtils::drawGrid(const FFmpegFrame::Ptr &frame, int grid_rows, int grid_cols) {
     std::shared_ptr<AVFilterGraph> _filter_graph;
     AVFilterContext *buffersrc_ctx = nullptr;

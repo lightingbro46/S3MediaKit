@@ -10,6 +10,7 @@
 #include "HttpFileManager.h"
 #include "TS/TSMediaSource.h"
 #include "FMP4/FMP4MediaSource.h"
+#include "Motion/MotionMjpegMediaSource.h"
 
 namespace mediakit {
 
@@ -102,6 +103,7 @@ private:
     bool checkLiveStreamTS(const std::function<void(bool close)> &cb = nullptr);
     bool checkLiveStreamFMP4(const std::function<void(bool close)> &fmp4_list = nullptr);
     bool checkLiveStreamHls();
+    bool checkMotionStream();
 
     bool checkWebSocket();
     bool emitHttpEvent(bool doInvoke);
@@ -133,6 +135,7 @@ private:
     toolkit::Ticker _ticker;
     TSMediaSource::RingType::RingReader::Ptr _ts_reader;
     FMP4MediaSource::RingType::RingReader::Ptr _fmp4_reader;
+    MotionMjpegMediaSource::RingType::RingReader::Ptr _motion_reader;
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;
 };

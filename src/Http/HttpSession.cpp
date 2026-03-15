@@ -609,6 +609,11 @@ void HttpSession::onHttpRequest_GET() {
         return;
     }
 
+    if (checkMotionStream()) {
+        // Intercept MJPEG motion stream
+        return;
+    }
+
     if (checkLiveStreamFlv()) {
         // Intercept http-flv player
         return;
@@ -954,6 +959,70 @@ void HttpSession::onWebSocketDecodeComplete(const WebSocketHeader &header_in) {
 
         default: break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Motion MJPEG stream
+// URL: /media/{app}/{stream}.motion.mjpeg?overlay_motion=0|1&overlay_roi=0|1
+// Streams a multipart/x-mixed-replace JPEG sequence with per-frame headers:
+//   X-Motion: 0|1   X-Timestamp: <ms>   X-Active-Cells: <N>
+// ---------------------------------------------------------------------------
+
+bool HttpSession::checkMotionStream() {
+    bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
+    bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
+
+    return checkLiveStream(MOTION_MJPEG_SCHEMA, "/media", ".motion.mjpeg",
+        [this, overlay_motion, overlay_roi](const MediaSource::Ptr &src) {
+            auto motion_src = dynamic_pointer_cast<MotionMjpegMediaSource>(src);
+            if (!motion_src || !motion_src->getRing()) {
+                sendNotFound(true);
+                return;
+            }
+
+            motion_src->setOverlay(overlay_motion, overlay_roi);
+
+            KeyValue header;
+            header["Cache-Control"]               = "no-store";
+            header["Access-Control-Allow-Origin"] = "*";
+            sendResponse(200, false,
+                "multipart/x-mixed-replace; boundary=mjpeg_boundary",
+                header, nullptr, /*no_content_length=*/true);
+
+            setSocketFlags();
+
+            weak_ptr<HttpSession> weak_self =
+                static_pointer_cast<HttpSession>(shared_from_this());
+
+            _motion_reader = motion_src->getRing()->attach(getPoller());
+            _motion_reader->setGetInfoCB([weak_self]() {
+                Any ret;
+                ret.set(static_pointer_cast<Session>(weak_self.lock()));
+                return ret;
+            });
+            _motion_reader->setDetachCB([weak_self]() {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) return;
+                strong_self->shutdown(SockException(Err_shutdown, "motion ring buffer detached"));
+            });
+            _motion_reader->setReadCB([weak_self](const MotionJpegFrame::Ptr &pkt) {
+                auto strong_self = weak_self.lock();
+                if (!strong_self || !pkt || !pkt->jpeg) return;
+
+                const auto &jpeg = pkt->jpeg;
+                string hdr =
+                    "--mjpeg_boundary\r\n"
+                    "Content-Type: image/jpeg\r\n"
+                    "Content-Length: " + to_string(jpeg->size()) + "\r\n"
+                    "X-Motion: "       + string(pkt->motion ? "1" : "0") + "\r\n"
+                    "X-Timestamp: "    + to_string(pkt->stamp_ms) + "\r\n"
+                    "X-Active-Cells: " + to_string(pkt->active_cells) + "\r\n"
+                    "\r\n";
+                strong_self->onWrite(std::make_shared<BufferString>(std::move(hdr)), false);
+                strong_self->onWrite(std::make_shared<MjpegBuffer>(jpeg), false);
+                strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
+            });
+        });
 }
 
 void HttpSession::onDetach() {

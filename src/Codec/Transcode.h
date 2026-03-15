@@ -172,6 +172,19 @@ public:
     static std::tuple<bool, std::string> saveFrame(const FFmpegFrame::Ptr &frame, const char *filename, AVPixelFormat fmt = AV_PIX_FMT_YUVJ420P, int w = 0, int h = 0, const char *font_path = nullptr);
 
     /**
+     * Encode a decoded frame to a JPEG byte buffer in memory (no disk I/O).
+     * Useful for live MJPEG streaming without writing temporary files.
+     * @param frame  Decoded source frame
+     * @param fmt    AV_PIX_FMT_YUVJ420P (JPEG) or AV_PIX_FMT_RGB24 (PNG)
+     * @param w, h   Optional target dimensions; 0 = keep source size
+     * @return       Shared pointer to encoded bytes, or nullptr on failure
+     */
+    static std::shared_ptr<std::vector<uint8_t>> encodeFrameToBuffer(
+        const FFmpegFrame::Ptr &frame,
+        AVPixelFormat fmt = AV_PIX_FMT_YUVJ420P,
+        int w = 0, int h = 0);
+
+    /**
      * Draw motion detection results on the frame, and return the result as a new frame
      * @param frame Decoded frames
      * @param grid_rows The number of rows in the grid
