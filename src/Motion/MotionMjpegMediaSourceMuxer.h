@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONMJPEGMEDIASOURCEMUXER_H
 #define MOTION_MOTIONMJPEGMEDIASOURCEMUXER_H
 
+#ifdef ENABLE_MOTION
+
 #include "Mjpeg/MjpegMediaSourceMuxer.h"
 #include "MotionMjpegMediaSource.h"
 
@@ -54,5 +56,7 @@ public:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_MOTIONMJPEGMEDIASOURCEMUXER_H

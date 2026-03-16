@@ -1,6 +1,8 @@
 #ifndef MOTION_DEMUXER_H
 #define MOTION_DEMUXER_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -149,5 +151,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_DEMUXER_H

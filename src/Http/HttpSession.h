@@ -10,7 +10,9 @@
 #include "HttpFileManager.h"
 #include "TS/TSMediaSource.h"
 #include "FMP4/FMP4MediaSource.h"
+#ifdef ENABLE_MOTION
 #include "Motion/MotionMjpegMediaSource.h"
+#endif // ENABLE_MOTION
 
 namespace mediakit {
 
@@ -135,7 +137,9 @@ private:
     toolkit::Ticker _ticker;
     TSMediaSource::RingType::RingReader::Ptr _ts_reader;
     FMP4MediaSource::RingType::RingReader::Ptr _fmp4_reader;
+#ifdef ENABLE_MOTION
     MotionMjpegMediaSource::RingType::RingReader::Ptr _motion_reader;
+#endif // ENABLE_MOTION
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;
 };

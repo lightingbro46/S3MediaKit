@@ -1,10 +1,13 @@
-
 #ifndef MULTI_MEDIASOURCE_PROCESSOR_H
 #define MULTI_MEDIASOURCE_PROCESSOR_H
 
+#if defined(ENABLE_FFMPEG)
 #include "MediaSourceDecoder.h"
+
+#if defined(ENABLE_MOTION)
 #include "Motion/MotionProcessor.h"
 #include "Motion/MotionMjpegMediaSourceMuxer.h"
+#endif // ENABLE_MOTION
 
 namespace mediakit {
 
@@ -33,10 +36,13 @@ private:
     toolkit::EventPoller::Ptr _poller;
     std::unordered_map<int, std::weak_ptr<MultiMediaSourceMuxer>> _peer_muxers;
 
+#if defined(ENABLE_MOTION)
     MotionProcessor::Ptr _motion;
     MotionMjpegMediaSourceMuxer::Ptr _mjpeg_muxer;
+#endif // ENABLE_MOTION
 };
 
 } // namespace mediakit
 
+#endif // ENABLE_FFMPEG
 #endif // MULTI_MEDIASOURCE_PROCESSOR_H

@@ -1,3 +1,5 @@
+#if defined(ENABLE_MOTION)
+
 #include "MotionSearch.h"
 
 #include "Motion/MotionBitmap.h"
@@ -189,3 +191,5 @@ void MotionSearch::getMotionTimePeriodByRoi(uint64_t start_time, uint64_t end_ti
 }
 
 } // namespace managerkit
+
+#endif // ENABLE_MOTION

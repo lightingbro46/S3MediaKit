@@ -1,6 +1,8 @@
 #ifndef MOTION_AGGREGATOR_H
 #define MOTION_AGGREGATOR_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -153,5 +155,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_AGGREGATOR_H

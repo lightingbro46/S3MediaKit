@@ -58,6 +58,7 @@ string Recorder::getRecordPath(Recorder::type type, const MediaTuple& tuple, con
             }
             return File::absolutePath(m3u8FilePath, hlsPath);
         }
+#ifdef ENABLE_MOTION
         case Recorder::type_mp4_archived: {
             GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
             GET_CONFIG(string, recordAppName, Record::kAppName);
@@ -74,6 +75,7 @@ string Recorder::getRecordPath(Recorder::type type, const MediaTuple& tuple, con
             }
             return File::absolutePath(mp4FilePath, recordPath);
         }
+#endif // ENABLE_MOTION
         default: return "";
     }
 }
@@ -128,7 +130,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             throw std::invalid_argument("mpegts related functions are not turned on. Please enable the ENABLE_HLS or ENABLE_RTPPROXY macro and then compile and test it");
 #endif
         }
-
+#ifdef ENABLE_MOTION
         case Recorder::type_mp4_archived: {
 #if defined(ENABLE_MP4)
             auto path = Recorder::getRecordPath(type, tuple, option.mp4_save_path);
@@ -137,7 +139,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             throw std::invalid_argument("The mp4-related functions are not turned on, please enable the ENABLE_MP4 macro and compile and test it again.");
 #endif
         }
-
+#endif // ENABLE_MOTION
         default: throw std::invalid_argument("Unknown recording type");
     }
 }

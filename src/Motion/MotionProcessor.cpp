@@ -1,3 +1,5 @@
+#if defined(ENABLE_MOTION) && defined(ENABLE_FFMPEG)
+
 #include "MotionProcessor.h"
 #include "Common/config.h"
 #include "Processor/MultiMediaSourceProcessor.h"
@@ -194,3 +196,5 @@ void MotionProcessor::saveFrame(const FFmpegFrame::Ptr &frame, const MotionBitma
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION && ENABLE_FFMPEG

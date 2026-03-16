@@ -135,6 +135,7 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
             it.second->setupRecord(Recorder::type_mp4, false);
         }
     } else if (archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)) {
+#ifdef ENABLE_MOTION
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
@@ -151,7 +152,11 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
                 it.second->setupRecord(Recorder::type_mp4, true);
             }
         }
+#else
+        WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
     } else if (archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion)) {
+#ifdef ENABLE_MOTION
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
@@ -161,6 +166,9 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
             DebugL << (start_record ? "Start" : "Stop") << " record for stream type " << getStreamTypeString(it.first) << " of device " << _tuple.shortUrl() << " due to record mode is RecordLowResAndMotion";
             it.second->setupRecord(Recorder::type_mp4_archived, start_record);
         }
+#else
+        WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
     } else if (archive_mode == static_cast<int>(RecordMode::RecordAlways)) {
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first] || !it.second->isLive())

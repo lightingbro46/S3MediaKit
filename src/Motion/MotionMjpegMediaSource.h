@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONMJPEGMEDIASOURCE_H
 #define MOTION_MOTIONMJPEGMEDIASOURCE_H
 
+#ifdef ENABLE_MOTION
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -66,3 +68,5 @@ private:
 } // namespace mediakit
 
 #endif // MOTION_MOTIONMJPEGMEDIASOURCE_H
+
+#endif // ENABLE_MOTION

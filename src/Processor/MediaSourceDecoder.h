@@ -1,6 +1,8 @@
 #ifndef PROCESSOR_VIDEODECODER_H
 #define PROCESSOR_VIDEODECODER_H
 
+#if defined(ENABLE_FFMPEG)
+
 #include "Common/MediaSink.h"
 #include "Common/MediaSource.h"
 #include "Codec/Transcode.h"
@@ -10,34 +12,6 @@
 #define FRAME_CACHE_SIZE 50
 
 namespace mediakit {
-
-// class RingFFmpegFrame : public toolkit::RingDelegate<FFmpegFrame::Ptr> {
-// public:
-//     using Ptr = std::shared_ptr<RingFFmpegFrame>;
-//     using RingDataType = std::shared_ptr<toolkit::List<FFmpegFrame::Ptr>>;
-//     using RingType = toolkit::RingBuffer<RingDataType>;
-
-//     RingFFmpegFrame(const MediaTuple& tuple, int ring_size = FRAME_CACHE_SIZE) : _ring_size(ring_size) {}
-
-//     ~RingFFmpegFrame() override {
-//         try {
-//             flush();
-//         } catch (std::exception &ex) {
-//             WarnL << ex.what();
-//         }
-//     }
-
-//     const RingType::Ptr &getRing() const {
-//         return _ring;
-//     }
-
-//     void onWrite(FFmpegFrame::Ptr in, bool is_key) override;
-
-// private:
-//     bool _have_video = false;
-//     RingType::Ptr _ring;
-//     int _ring_size;
-// };
 
 /**
  * MediaSourceDecoder is responsible for decoding video frames, 
@@ -89,10 +63,10 @@ protected:
         FFmpegDecoder::Ptr decoder;
     };
     std::unordered_map<int, TrackInfo> _tracks;
-    // RingFFmpegFrame::RingType::Ptr _ring;
-    // RingFFmpegFrame::RingType::Ptr _ringInterceptor;
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_FFMPEG
 
 #endif // PROCESSOR_VIDEODECODER_H

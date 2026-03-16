@@ -970,6 +970,7 @@ void HttpSession::onWebSocketDecodeComplete(const WebSocketHeader &header_in) {
 // ---------------------------------------------------------------------------
 
 bool HttpSession::checkMotionStream() {
+#ifdef ENABLE_MOTION
     bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
     bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
 
@@ -1024,6 +1025,9 @@ bool HttpSession::checkMotionStream() {
                 strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
             });
         });
+#else
+    return false;
+#endif // ENABLE_MOTION
 }
 
 void HttpSession::onDetach() {

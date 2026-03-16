@@ -1,3 +1,5 @@
+#ifdef ENABLE_MOTION
+
 #include "MotionDemuxer.h"
 
 #include "Util/logger.h"
@@ -259,3 +261,5 @@ std::vector<MotionInterval> MultiMotionDemuxer::getMotionIntervals(uint64_t from
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION

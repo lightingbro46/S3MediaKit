@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONEVENTCONTROLLER_H
 #define MOTION_MOTIONEVENTCONTROLLER_H
 
+#ifdef ENABLE_MOTION
+
 #include <functional>
 #include "Common/MediaSource.h"
 #include "MotionDetector.h"
@@ -49,5 +51,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif //MOTION_MOTIONEVENTCONTROLLER_H

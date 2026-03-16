@@ -48,8 +48,10 @@ public:
         type_fmp4 = 3,
         // ts live
         type_ts = 4,
+#ifdef ENABLE_MOTION
         // record archive mp4
         type_mp4_archived = 5
+#endif // ENABLE_MOTION
     } type;
 
     /**

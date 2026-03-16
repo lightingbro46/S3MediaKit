@@ -1,6 +1,8 @@
 #ifndef MOTION_MUXER_H
 #define MOTION_MUXER_H
 
+#ifdef ENABLE_MOTION
+
 #include "MotionBlock.h"
 #include "MotionAggregator.h"
 #include "Util/BlockStorageEngine.h"
@@ -153,5 +155,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_MUXER_H

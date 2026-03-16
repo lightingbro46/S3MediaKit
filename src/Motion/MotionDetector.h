@@ -1,6 +1,8 @@
 #ifndef S3MEDIAKIT_MOTIONDETECTOR_H
 #define S3MEDIAKIT_MOTIONDETECTOR_H
 
+#ifdef ENABLE_MOTION
+
 #include "MotionBitmap.h"
 #include <functional>
 
@@ -57,5 +59,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif //S3MEDIAKIT_MOTIONDETECTOR_H

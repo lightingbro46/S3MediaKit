@@ -1,13 +1,11 @@
+#if defined(ENABLE_FFMPEG)
+
 #include "MediaSourceDecoder.h"
 #include <memory>
 
 using namespace std;
 
 namespace mediakit {
-
-///////////////////////////RingFFmpegFrame///////////////////////////
-
-
 
 ///////////////////////////MediaSourceDecoder///////////////////////////
 
@@ -92,3 +90,5 @@ bool MediaSourceDecoder::haveVideo() const {
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_FFMPEG

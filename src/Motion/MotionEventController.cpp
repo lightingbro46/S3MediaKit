@@ -1,3 +1,5 @@
+#ifdef ENABLE_MOTION
+
 #include "MotionEventController.h"
 #include "Common/config.h"
 #include "Util/NoticeCenter.h"
@@ -123,3 +125,5 @@ void MotionEventController::clearPreBuffer(bool motion, uint64_t pts_ms, const M
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION

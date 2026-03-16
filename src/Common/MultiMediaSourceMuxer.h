@@ -12,7 +12,9 @@
 #include "Rtmp/RtmpMediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
+#if defined(ENABLE_FFMPEG)
 #include "Processor/MultiMediaSourceProcessor.h"
+#endif // ENABLE_FFMPEG
 
 namespace mediakit {
 
@@ -194,8 +196,10 @@ private:
     // Object count statistics
     toolkit::ObjectStatistic<MultiMediaSourceMuxer> _statistic;
 
+#if defined(ENABLE_FFMPEG)
     // Module stack, used for motion detection module or other video processing modules
     MultiMediaSourceProcessor::Ptr _stack;
+#endif // ENABLE_FFMPEG
 };
 
 }//namespace mediakit

@@ -1,3 +1,5 @@
+#ifdef ENABLE_MOTION
+
 #include "MotionMuxer.h"
 
 #include "Util/File.h"
@@ -127,3 +129,5 @@ void MotionMuxer::closeWriter() {
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION

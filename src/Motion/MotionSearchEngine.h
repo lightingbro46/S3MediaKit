@@ -1,6 +1,8 @@
 #ifndef MOTION_SEARCHENGINE_H
 #define MOTION_SEARCHENGINE_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -96,5 +98,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_SEARCHENGINE_H

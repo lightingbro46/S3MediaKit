@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONBITMAP_H
 #define MOTION_MOTIONBITMAP_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -534,5 +536,7 @@ public:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_MOTIONBITMAP_H

@@ -223,7 +223,9 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
         _fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(Recorder::createRecorder(Recorder::type_fmp4, _tuple, option));
     }
     if (option.enable_motion) {
+#if defined(ENABLE_FFMPEG)
         _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
+#endif // ENABLE_FFMPEG
     }
 
     // Audio related settings
@@ -254,9 +256,11 @@ void MultiMediaSourceMuxer::setMediaListener(const std::weak_ptr<MediaSourceEven
     if (_hls) {
         _hls->setListener(self);
     }
+#if defined(ENABLE_FFMPEG)
     if (_stack) {
         _stack->setListener(self);
     }
+#endif // ENABLE_FFMPEG
 }
 
 void MultiMediaSourceMuxer::setTrackListener(const std::weak_ptr<Listener> &listener) {
@@ -374,6 +378,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             }
             return true;
         }
+#if defined(ENABLE_MOTION)
         case Recorder::type_mp4_archived: {
             if (start && !_mp4) {
                 // Start recording
@@ -386,6 +391,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             }
             return true;
         }
+#endif // ENABLE_MOTION
         default : return false;
     }
 }
@@ -483,12 +489,15 @@ bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
         case Recorder::type_hls_fmp4: return !!_hls_fmp4;
         case Recorder::type_fmp4: return !!_fmp4;
         case Recorder::type_ts: return !!_ts;
+#if defined(ENABLE_MOTION)
         case Recorder::type_mp4_archived: return !!_mp4;
+#endif // ENABLE_MOTION
         default: return false;
     }
 }
 
 bool MultiMediaSourceMuxer::setupMotionDetect(bool start, bool record_motion, const string &custom_roi_mask) {
+#if defined(ENABLE_FFMPEG) && defined(ENABLE_MOTION)
     CHECK(getOwnerPoller(MediaSource::NullMediaSource())->isCurrentThread(), "Can only call setupMotionDetect in it's owner poller");
     if (start && !_stack) {
         // createGopCacheIfNeed(10);
@@ -506,10 +515,19 @@ bool MultiMediaSourceMuxer::setupMotionDetect(bool start, bool record_motion, co
         _stack = nullptr;
     }
     return true;
+#else
+    WarnL << "Motion detection is not enabled. Please turn on the ENABLE_MOTION and ENABLE_FFMPEG macros when compiling to use this feature.";
+    return false;
+#endif // ENABLE_MOTION && ENABLE_FFMPEG
 }
 
 bool MultiMediaSourceMuxer::isMotionDetecting() {
+#if defined(ENABLE_FFMPEG) && defined(ENABLE_MOTION)
     return !!_stack && _stack->isMotionDetectRunning();
+#else
+    WarnL << "Motion detection is not enabled. Please turn on the ENABLE_MOTION and ENABLE_FFMPEG macros when compiling to use this feature.";
+    return false;
+#endif // ENABLE_FFMPEG && ENABLE_MOTION
 }
 
 void MultiMediaSourceMuxer::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {
@@ -612,7 +630,9 @@ bool MultiMediaSourceMuxer::close(MediaSource &sender) {
     _mp4 = nullptr;
     _hls = nullptr;
     _hls_fmp4 = nullptr;
+#if defined(ENABLE_FFMPEG)
     _stack = nullptr;
+#endif // ENABLE_FFMPEG
 #if defined(ENABLE_RTPPROXY)
     _rtp_sender.clear();
 #endif // ENABLE_RTPPROXY
@@ -652,9 +672,11 @@ bool MultiMediaSourceMuxer::onTrackReady(const Track::Ptr &track) {
     if (_mp4) {
         ret = _mp4->addTrack(track) ? true : ret;
     }
+#if defined(ENABLE_FFMPEG)
     if (_stack) {
         ret = _stack->addTrack(track) ? true : ret;
     }
+#endif // ENABLE_FFMPEG
     return ret;
 }
 
@@ -693,9 +715,11 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     if (_hls_fmp4) {
         _hls_fmp4->addTrackCompleted();
     }
+#if defined(ENABLE_FFMPEG)
     if (_stack) {
         _stack->addTrackCompleted();
     }
+#endif // ENABLE_FFMPEG
 
     auto listener = _track_listener.lock();
     if (listener) {
@@ -760,9 +784,11 @@ void MultiMediaSourceMuxer::resetTracks() {
     if (_mp4) {
         _mp4->resetTracks();
     }
+#if defined(ENABLE_FFMPEG)
     if (_stack) {
         _stack->resetTracks();
     }
+#endif // ENABLE_FFMPEG
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
@@ -801,9 +827,11 @@ bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
     if (_fmp4) {
         ret = _fmp4->inputFrame(frame) ? true : ret;
     }
+#if defined(ENABLE_FFMPEG)
     if (_stack) {
         ret = _stack->inputFrame(frame) ? true : ret;
     }
+#endif // ENABLE_FFMPEG
 
     if (_ring) {
         // In this scenario, due to direct forwarding, there may be data cached in the pipeline due to thread switching, so CacheAbleFrame is needed

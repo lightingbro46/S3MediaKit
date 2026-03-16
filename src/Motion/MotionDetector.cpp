@@ -1,3 +1,5 @@
+#ifdef ENABLE_MOTION
+
 #include <cmath>
 #include <vector>
 #include "Common/config.h"
@@ -152,3 +154,4 @@ bool MotionDetector::inputFrame(const uint8_t* data, int linesize, uint64_t pts_
 
 } // namespace mediakit 
 
+#endif // ENABLE_MOTION

@@ -1,3 +1,5 @@
+#if defined(ENABLE_FFMPEG)
+
 #include "MultiMediaSourceProcessor.h"
 #include "Common/MultiMediaSourceMuxer.h"
 
@@ -9,14 +11,17 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
 
 void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent> &listener) {
     setDelegate(listener);
+#if defined(ENABLE_MOTION)
     if (_mjpeg_muxer) {
         _mjpeg_muxer->setListener(shared_from_this());
     }
+#endif // ENABLE_MOTION
 }
 
 void MultiMediaSourceProcessor::addTrackCompleted() {
     if (haveVideo()) {
         if (_option.enable_motion) {
+#if defined(ENABLE_MOTION)
             GET_CONFIG(int, interval_ms, Motion::kIntervalMS);
             GET_CONFIG(bool, use_y_channel, Motion::kUseYChannel);
             _motion = std::make_shared<MotionProcessor>(_tuple, _option.roi_mask, _option.record_motion, interval_ms, use_y_channel);
@@ -28,6 +33,9 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
             _mjpeg_muxer = std::make_shared<MotionMjpegMediaSourceMuxer>(_tuple, _option);
             _motion->setMjpegMuxer(_mjpeg_muxer);
             // Listener will be set (or updated) when setListener() is called by MultiMediaSourceMuxer.
+#else
+            WarnL << "Motion detection is not enabled. Please turn on the ENABLE_MOTION macro when compiling to use this feature.";
+#endif // ENABLE_MOTION
         }
     }
 }
@@ -35,13 +43,21 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
 void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
     TraceL << "Decoded frame dts: " << frame->get()->pkt_dts << ", pts: " << frame->get()->pts << ", size: " << frame->get()->pkt_size;
     // Dispatch decoded frame to all tracks
+#if defined(ENABLE_MOTION)
     if (_motion) {
         _motion->inputFrame(frame);
     }
+#endif // ENABLE_MOTION
 }
 
 bool MultiMediaSourceProcessor::isMotionDetectRunning() {
+#if defined(ENABLE_MOTION)
     return !!_motion;
+#else
+    return false;
+#endif // ENABLE_MOTION
 }
 
 } // namespace mediakit
+
+#endif // ENABLE_FFMPEG

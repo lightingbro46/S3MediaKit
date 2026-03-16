@@ -47,6 +47,7 @@ void SearchEngine::findTimePeriod(
             }
             if (include_motion) {
                 result["motionPeriods"] = arrayValue;
+#if defined(ENABLE_MOTION)
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -58,6 +59,9 @@ void SearchEngine::findTimePeriod(
                         }
                     });
                 } catch (...) {}
+#else
+                WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
             }
         } else {
             result["cameraId"] = tuple.app;
@@ -82,6 +86,7 @@ void SearchEngine::findTimePeriod(
             }
             if (include_motion) {
                 result["motionPeriods"] = arrayValue;
+#if defined(ENABLE_MOTION)
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -93,6 +98,9 @@ void SearchEngine::findTimePeriod(
                         }
                     });
                 } catch (...) {}
+#else
+                WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
             }
         }
     } else if (period_type == 2) {
@@ -115,6 +123,7 @@ void SearchEngine::findTimePeriod(
             }
             if (include_motion) {
                 result["motionPeriods"] = objectValue;
+#if defined(ENABLE_MOTION)
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time,
@@ -130,6 +139,9 @@ void SearchEngine::findTimePeriod(
                             }
                         });
                 } catch (...) {}
+#else
+                WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
             }
         } else {
             result["cameraId"] = tuple.app;
@@ -166,6 +178,7 @@ void SearchEngine::findTimePeriod(
             }
             if (include_motion) {
                 result["motionPeriods"] = objectValue;
+#if defined(ENABLE_MOTION)
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time,
@@ -191,6 +204,9 @@ void SearchEngine::findTimePeriod(
                             }
                         });
                 } catch (...) {}
+#else
+                WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
             }
         }
     } else if (period_type == 0) {
@@ -210,6 +226,7 @@ void SearchEngine::findTimePeriod(
         }
         if (include_motion) {
             result["motionPeriods"] = arrayValue;
+#if defined(ENABLE_MOTION)
             try {
                 MotionSearch ms(tuple);
                 ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -221,6 +238,9 @@ void SearchEngine::findTimePeriod(
                     }
                 });
             } catch (...) {}
+#else
+            WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
         }
     }
 
@@ -237,6 +257,7 @@ void SearchEngine::findMotionPeriodByRoi(
     result["cameraId"]     = tuple.app;
     result["motionPeriods"] = arrayValue;
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+#if defined(ENABLE_MOTION)
     try {
         MotionSearch ms(tuple);
         ms.getMotionTimePeriodByRoi(start_time, end_time, roi_mask,
@@ -252,7 +273,9 @@ void SearchEngine::findMotionPeriodByRoi(
     } catch (const std::exception &ex) {
         WarnL << "findMotionPeriodByRoi failed: " << ex.what();
     }
-
+#else
+    WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+#endif // ENABLE_MOTION
     return cb(SockException(Err_success), result);
 }
 

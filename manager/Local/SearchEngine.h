@@ -6,7 +6,9 @@
 #include "Network/Socket.h"
 #include "Common/MediaSource.h"
 #include "TimeQuery.h"
+#ifdef ENABLE_MOTION
 #include "MotionSearch.h"
+#endif // ENABLE_MOTION
 
 namespace managerkit {
 

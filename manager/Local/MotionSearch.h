@@ -1,6 +1,8 @@
 #ifndef LOCAL_MOTIONSEARCH_H
 #define LOCAL_MOTIONSEARCH_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -115,5 +117,7 @@ private:
 };
 
 } // namespace managerkit
+
+#endif // ENABLE_MOTION
 
 #endif // LOCAL_MOTIONSEARCH_H

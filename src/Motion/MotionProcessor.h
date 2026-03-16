@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONPROCESSOR_H
 #define MOTION_MOTIONPROCESSOR_H
 
+#ifdef ENABLE_MOTION
+
 #include <atomic>
 #include "MotionDetector.h"
 #include "MotionEventController.h"
@@ -78,5 +80,7 @@ private:
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif //MOTION_MOTIONPROCESSOR_H

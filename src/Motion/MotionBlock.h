@@ -1,6 +1,8 @@
 #ifndef MOTION_MOTIONFILE_H
 #define MOTION_MOTIONFILE_H
 
+#ifdef ENABLE_MOTION
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -211,5 +213,7 @@ struct MotionBlock {
 };
 
 } // namespace mediakit
+
+#endif // ENABLE_MOTION
 
 #endif // MOTION_MOTIONFILE_H
