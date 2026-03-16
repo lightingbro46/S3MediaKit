@@ -318,7 +318,14 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     auto suffix_path = findSubString(file_path.data(), "vod/", nullptr);
 
     auto tmp = split(prefix_path, "/");
-    MediaTuple tuple = { DEFAULT_VHOST, tmp[tmp.size() - 2], tmp[tmp.size() - 1], "" };
+    auto app = tmp[tmp.size() - 2];
+    auto stream = tmp[tmp.size() - 1];
+    GET_CONFIG(string, archived_stream, Record::kArchiveStreamName);
+    if (!archived_stream.empty() && stream == archived_stream) {
+        stream = "";
+    }
+    CHECK(!app.empty());
+    MediaTuple tuple = { DEFAULT_VHOST, app, stream, "" };
     uint64_t start_time = stoll(suffix_path.data());
 
     auto total_duration = findSegmentDuration(tuple, start_time);

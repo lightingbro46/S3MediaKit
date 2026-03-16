@@ -250,9 +250,10 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.webPort = ret["webPort"].asInt();
     option.autoWebPort = ret["autoWebPort"].asBool();
     option.keepConfigProfileAndStream = ret["keepConfigProfileAndStream"].asBool();
-    option.reservePanAxis = ret["reservePanAxis"].asBool();
-    option.reserveTiltAxis = ret["reserveTiltAxis"].asBool();
+    option.reversePanAxis = ret["reversePanAxis"].asBool();
+    option.reverseTiltAxis = ret["reverseTiltAxis"].asBool();
     option.ptzMode = ret["ptzMode"].asInt();
+    option.ptzSpeed = ret["ptzSpeed"].asFloat();
     option.onvifMainProfile = ret["onvifMainProfile"].asString();
     option.onvifSubProfile = ret["onvifSubProfile"].asString();
     option.enableMotion = ret["enableMotion"].asBool();
@@ -352,9 +353,10 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["webPort"] = stats.option.webPort;
     root["autoWebPort"] = stats.option.autoWebPort;
     root["keepConfigProfileAndStream"] = stats.option.keepConfigProfileAndStream;
-    root["reservePanAxis"] = stats.option.reservePanAxis;
-    root["reserveTiltAxis"] = stats.option.reserveTiltAxis;
+    root["reversePanAxis"] = stats.option.reversePanAxis;
+    root["reverseTiltAxis"] = stats.option.reverseTiltAxis;
     root["ptzMode"] = stats.option.ptzMode;
+    root["ptzSpeed"] = stats.option.ptzSpeed;
     root["onvifMainProfile"] = stats.option.onvifMainProfile;
     root["onvifSubProfile"] = stats.option.onvifSubProfile;
     root["enableMotion"] = stats.option.enableMotion;

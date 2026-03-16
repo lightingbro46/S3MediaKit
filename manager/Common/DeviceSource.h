@@ -25,7 +25,8 @@ bool equalDeviceTuple(const DeviceTuple &a, const DeviceTuple &b);
 
 enum class DeviceOriginType : uint8_t {
     unknown = 0,
-    api,
+    api_service,
+    mobile_device,
 };
 
 std::string getOriginTypeString(DeviceOriginType type);

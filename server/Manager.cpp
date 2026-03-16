@@ -339,25 +339,6 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             };
             option.onvifMainProfile = parseOnvifProfile(onvif["mainStream"]);
             option.onvifSubProfile = parseOnvifProfile(onvif["subStream"]);
-
-            GET_OPTION_PROPERTY(option, enablePTZControl, onvif, enablePtzControl)
-            GET_OPTION_PROPERTY(option, reservePanAxis, onvif, reservePanAxis)
-            GET_OPTION_PROPERTY(option, reserveTiltAxis, onvif, reserveTiltAxis)
-
-            auto parsePTZMode = [](const Json::Value &v) {
-                if (v.isNull() || !v.isString())
-                    return CameraOption::kPTZModeAuto;
-                if (v.asString() == "ABSOLUTE")
-                    return CameraOption::kPTZAbsolutedMode;
-                if (v.asString() == "RELATIVE")
-                    return CameraOption::kPTZRelativeMode;
-                if (v.asString() == "CONTINUOUS")
-                    return CameraOption::kPTZContinousMode;
-                if (v.asString() == "AUTO")
-                    return CameraOption::kPTZModeAuto;
-                return CameraOption::kPTZModeAuto;
-            };
-            option.ptzMode = parsePTZMode(onvif["ptzMode"]);
         }
 
         if (adv.isMember("mediaStreaming") && !adv["mediaStreaming"].isNull()) {
@@ -385,6 +366,30 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
 
             GET_OPTION_PROPERTY(option, webPort, wp, webPort)
             GET_OPTION_PROPERTY(option, autoWebPort, wp, useDefaultWebPort)
+        }
+
+        if (adv.isMember("ptzSetting") && !adv["ptzSetting"].isNull()) {
+            const Json::Value &ptz = adv["ptzSetting"];
+
+            GET_OPTION_PROPERTY(option, enablePTZControl, ptz, enablePTZControl)
+            GET_OPTION_PROPERTY(option, reversePanAxis, ptz, reversePanAxis)
+            GET_OPTION_PROPERTY(option, reverseTiltAxis, ptz, reverseTiltAxis)
+
+            auto parsePTZMode = [](const Json::Value &v) {
+                if (v.isNull() || !v.isString())
+                    return CameraOption::kPTZModeAuto;
+                if (v.asString() == "ABSOLUTE")
+                    return CameraOption::kPTZAbsolutedMode;
+                if (v.asString() == "RELATIVE")
+                    return CameraOption::kPTZRelativeMode;
+                if (v.asString() == "CONTINUOUS")
+                    return CameraOption::kPTZContinousMode;
+                if (v.asString() == "AUTO")
+                    return CameraOption::kPTZModeAuto;
+                return CameraOption::kPTZModeAuto;
+            };
+            option.ptzMode = parsePTZMode(ptz["ptzModeSelected"]);
+            GET_OPTION_PROPERTY(option, ptzSpeed, ptz, ptzSpeed)
         }
     }
 
@@ -560,17 +565,19 @@ static Json::Value exampleJson() {
             period["dh"] = StrPrinter << d << "," << h;
             period["fps"] = 25;
             period["q"] = "L";
-            period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
+            // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
     }
     device["recordingConfig"]["recordingSchedule"] = schedule;
     device["recordingConfig"]["keepArchivedMinForAuto"] = true;
-    device["recordingConfig"]["keepArchivedMinFor"] = 0;
+    device["recordingConfig"]["keepArchivedMinFor"] = 0; // hour
     device["recordingConfig"]["keepArchivedMaxForAuto"] = false;
-    device["recordingConfig"]["keepArchivedMaxFor"] = 10 * 60;
-    device["recordingConfig"]["motionPreRecordSec"] = 5;
-    device["recordingConfig"]["motionPostRecordSec"] = 5;
+    device["recordingConfig"]["keepArchivedMaxFor"] = 1; // hour
+    device["recordingConfig"]["motionPreRecordSec"] = 5;  // second
+    device["recordingConfig"]["motionPostRecordSec"] = 5; // second
     device["cameraAdvanceConfig"] = Json::objectValue;
     device["cameraAdvanceConfig"]["streamSettings"] = Json::objectValue;
     device["cameraAdvanceConfig"]["streamSettings"]["keepConfigProfileAndStream"] = false;
@@ -579,6 +586,8 @@ static Json::Value exampleJson() {
     device["cameraAdvanceConfig"]["streamSettings"]["notRecordSubStream"] = false;
     device["cameraAdvanceConfig"]["streamSettings"]["disableAudio"] = false;
     device["cameraAdvanceConfig"]["onvif"] = Json::objectValue;
+    device["cameraAdvanceConfig"]["onvif"]["mainStream"] = "AUTO";
+    device["cameraAdvanceConfig"]["onvif"]["subStream"] = "AUTO";
     device["cameraAdvanceConfig"]["mediaStreaming"] = Json::objectValue;
     device["cameraAdvanceConfig"]["mediaStreaming"]["mediaPort"] = 5555;
     device["cameraAdvanceConfig"]["mediaStreaming"]["useDefaultMediaPort"] = true;
@@ -586,14 +595,19 @@ static Json::Value exampleJson() {
     device["cameraAdvanceConfig"]["webPage"] = Json::objectValue;
     device["cameraAdvanceConfig"]["webPage"]["webPort"] = 8080;
     device["cameraAdvanceConfig"]["webPage"]["useDefaultWebPort"] = false;
+    device["cameraAdvanceConfig"]["ptzSetting"]["enablePTZControl"] = true;
+    device["cameraAdvanceConfig"]["ptzSetting"]["reversePanAxis"] = false;
+    device["cameraAdvanceConfig"]["ptzSetting"]["reverseTiltAxis"] = true;
+    device["cameraAdvanceConfig"]["ptzSetting"]["ptzSpeed"] = 0.5;
+    device["cameraAdvanceConfig"]["ptzSetting"]["ptzModeSelected"] = "AUTO";
     device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
     device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
-    // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+    device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    // device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
+    device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
     device["motionDetectConfig"]["numOfRow"] = 32;
     device["motionDetectConfig"]["numOfColumn"] = 44;
     device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
@@ -848,7 +862,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             auto option = impl->getCameraOption();
             data["deviceId"] = device->getDeviceTuple().device_id;
             if (caps->isOnvifDevice) {
-                data["isOnvifDevice"] = true;
+                data["onvifDevice"] = true;
                 auto deviceInfo = caps->onvifProfile.deviceInfo;
                 data["manufacturer"] = deviceInfo.manufacturer;
                 data["model"] = deviceInfo.model;
@@ -862,7 +876,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 Json::Value onvifProfileJson = Json::objectValue;
                 auto ptzProfile = caps->onvifProfile.ptzProfile;
                 onvifProfileJson["isPTZ"] = ptzProfile.isAbsMoveEnable || ptzProfile.isRelMoveEnable || ptzProfile.isConsMoveEnable;
-                onvifProfileJson["PTZControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
+                onvifProfileJson["ptzControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
                 auto mediaProfiles = caps->onvifProfile.mediaProfiles;
                 onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
                 data["onvifProfiles"] = onvifProfileJson;
@@ -875,14 +889,19 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 data["macAddress"] = "";
                 data["hasWebPage"] = false;
                 data["webPage"] = "";
-                data["isOnvifDevice"] = false;
+                data["onvifDevice"] = false;
                 Json::Value onvifProfileJson = Json::objectValue;
                 onvifProfileJson["isPTZ"] = false;
-                onvifProfileJson["PTZControlMode"] = Json::arrayValue;
+                onvifProfileJson["ptzControlMode"] = Json::arrayValue;
                 onvifProfileJson["profiles"] = Json::arrayValue;
                 data["onvifProfiles"] = onvifProfileJson;
             }
-        }   
+#ifdef ENABLE_MOTION
+            data["motionDetection"]["mediaSupport"] = true;
+#else
+            data["motionDetection"]["mediaSupport"] = false;
+#endif
+        }
     }
     return data;
 }

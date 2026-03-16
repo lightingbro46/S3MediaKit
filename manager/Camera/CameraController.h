@@ -91,8 +91,9 @@ private:
     std::string _address;
     ControllerOption _ctrl_option;
     int _ptzMode = CameraOption::kPTZModeAuto;
-    bool _reservePanAxis = false;
-    bool _reserveTiltAxis = false;
+    float _ptzSpeed = 0.5; // default ptz speed, range [0,1], used when caller does not specify speed in PTZMove
+    bool _reversePanAxis = false;
+    bool _reverseTiltAxis = false;
     bool _enablePTZControl = true;
 };
 

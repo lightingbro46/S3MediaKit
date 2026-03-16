@@ -46,9 +46,10 @@ void CameraController::setupController(const CameraOption &option) {
         if (ControllerOption::from(option) == _ctrl_option) {
             // Connection unchanged — update PTZ settings in-place, no reconnect needed
             _enablePTZControl = option.enablePTZControl;
-            _reservePanAxis   = option.reservePanAxis;
-            _reserveTiltAxis  = option.reserveTiltAxis;
+            _reversePanAxis   = option.reversePanAxis;
+            _reverseTiltAxis  = option.reverseTiltAxis;
             _ptzMode          = option.ptzMode;
+            _ptzSpeed         = option.ptzSpeed;
             DebugL << "Controller of device: " << _tuple.shortUrl() << " connection unchanged, updated PTZ settings in-place";
             return;
         }
@@ -86,9 +87,10 @@ void CameraController::setupController(const CameraOption &option) {
     _address      = address;
     _ctrl_option  = ControllerOption::from(option);
     _enablePTZControl = option.enablePTZControl;
-    _reservePanAxis   = option.reservePanAxis;
-    _reserveTiltAxis  = option.reserveTiltAxis;
+    _reversePanAxis   = option.reversePanAxis;
+    _reverseTiltAxis  = option.reverseTiltAxis;
     _ptzMode          = option.ptzMode;
+    _ptzSpeed         = option.ptzSpeed;
 }
 
 void CameraController::stopController() {  
@@ -267,13 +269,13 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     // convert direction string to PTZ_DIRECT
     PTZ_DIRECT direct;
     if (strDirect == "up")
-        direct = !_reservePanAxis ? PTZ_DIRECT::Up : PTZ_DIRECT::Down;
+        direct = !_reversePanAxis ? PTZ_DIRECT::Up : PTZ_DIRECT::Down;
     else if (strDirect == "down")
-        direct = !_reservePanAxis ? PTZ_DIRECT::Down : PTZ_DIRECT::Up;
+        direct = !_reversePanAxis ? PTZ_DIRECT::Down : PTZ_DIRECT::Up;
     else if (strDirect == "right")
-        direct = !_reserveTiltAxis ? PTZ_DIRECT::Right : PTZ_DIRECT::Left;
+        direct = !_reverseTiltAxis ? PTZ_DIRECT::Right : PTZ_DIRECT::Left;
     else if (strDirect == "left")
-        direct = !_reserveTiltAxis ? PTZ_DIRECT::Left : PTZ_DIRECT::Right;
+        direct = !_reverseTiltAxis ? PTZ_DIRECT::Left : PTZ_DIRECT::Right;
     else if (strDirect == "zoomIn")
         direct = PTZ_DIRECT::ZoomIn;
     else if (strDirect == "zoomOut")
@@ -281,8 +283,10 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     else
         direct = PTZ_DIRECT::Home;
 
+    int ptz_speed = speed > 0 ? speed : static_cast<int>(_ptzSpeed * 100);
+
     if (_onvif_ctr && _ready.load()) {
-        onvifPTZMove(_onvif_ctr, _ptzMode, direct, speed, cb);
+        onvifPTZMove(_onvif_ctr, _ptzMode, direct, ptz_speed, cb);
         return;
     }
     // todo: add more ptz function from manufacturer sdk

@@ -288,9 +288,10 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
     }
 
     // Url with header Authorization
-    auto headers = _parser.getHeader(); 
-    if (!headers["Authorization"].empty()) {
-        auto jwt_token = trim(findSubString(headers["Authorization"].data(), "Bearer", nullptr));
+    auto headers = _parser.getHeader();
+    if (!headers["Authorization"].empty() || !headers["authorization"].empty()) {
+        auto tmp = !headers["Authorization"].empty() ? headers["Authorization"] : headers["authorization"];
+        auto jwt_token = trim(findSubString(tmp.data(), "Bearer", nullptr));
         url += url.find("?") == string::npos ? "?" : "&";
         url += StrPrinter << "token=" << jwt_token;
     }

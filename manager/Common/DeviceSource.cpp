@@ -22,7 +22,8 @@ string getOriginTypeString(DeviceOriginType type){
 #define SWITCH_CASE(type) case DeviceOriginType::type : return #type
     switch (type) {
         SWITCH_CASE(unknown);
-        SWITCH_CASE(api);
+        SWITCH_CASE(api_service);
+        SWITCH_CASE(mobile_device);
         default : return "unknown";
     }
 }

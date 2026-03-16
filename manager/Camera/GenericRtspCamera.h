@@ -111,10 +111,10 @@ public:
     bool enablePTZControl = true;
 
     // whether to reserve pan axis when ptz operation
-    bool reservePanAxis = false;
+    bool reversePanAxis = false;
 
     // whether to reserve tilt axis when ptz operation
-    bool reserveTiltAxis = false;
+    bool reverseTiltAxis = false;
 
     enum { 
         kPTZModeAuto = 0, // System automatical choose ptz control mode, default use absoluted mode or relative mode or continous based on camera capability
@@ -124,6 +124,8 @@ public:
     };
     // ptz mode for ptz control
     int ptzMode = kPTZModeAuto;
+
+    float ptzSpeed = 0.5;
 
     // onvif main profile token
     std::string onvifMainProfile; 
@@ -174,8 +176,9 @@ public:
                autoWebPort == other.autoWebPort &&
                keepConfigProfileAndStream == other.keepConfigProfileAndStream &&
                ptzMode == other.ptzMode &&
-               reservePanAxis == other.reservePanAxis &&
-               reserveTiltAxis == other.reserveTiltAxis &&
+               ptzSpeed == other.ptzSpeed &&
+               reversePanAxis == other.reversePanAxis &&
+               reverseTiltAxis == other.reverseTiltAxis &&
                onvifMainProfile == other.onvifMainProfile &&
                onvifSubProfile == other.onvifSubProfile && 
                enableMotion == other.enableMotion &&
