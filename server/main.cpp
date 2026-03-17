@@ -293,6 +293,23 @@ int start_main(int argc,char *argv[]) {
                   << ", saved config file: " << g_ini_file;
         }
 
+        auto &notfound_response = mINI::Instance()[Http::kNotFound];
+        if (notfound_response.empty() || notfound_response.find(kServerName) == string::npos) {
+            // Starting with the 404 response with <kServerName> is prohibited
+            notfound_response = StrPrinter << "<html>"
+                                    "<head><title>404 Not Found</title></head>"
+                                    "<body bgcolor=\"white\">"
+                                    "<center><h1>The resources you access do not exist!</h1></center>"
+                                    "<hr><center>"
+                                    << kServerName
+                                    << "</center>"
+                                    "</body>"
+                                    "</html>"
+                                    << endl;
+            mINI::Instance().dumpFile(g_ini_file);
+            WarnL << "The " << Http::kNotFound << " is invalid, modified it to default html content, saved config file: " << g_ini_file;
+        }
+
         auto &cert_folder = mINI::Instance()[Manager::kCertSavePath];
         if (!File::is_dir(ssl_file)) {
             // Not a folder, load certificate, certificate contains public key and private key
