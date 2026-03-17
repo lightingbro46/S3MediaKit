@@ -248,19 +248,6 @@ bool OnvifControl::getMediaProfiles() {
         return false;
     }
 
-    _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
-    _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
-    if (!setCredentials()) {
-        disconnect();
-        return false;
-    }
-
-    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse)) {
-        reportError();
-        disconnect();
-        return false;
-    }
-
     for (const auto &profile : GetProfilesResponse.Profiles) {
         if (!profile || profile->token.empty()) {
             continue;
@@ -345,7 +332,18 @@ bool OnvifControl::getMediaProfiles() {
         //     TraceL << "Sample Bit Limit: " << _profile.sampleBit;
         //     int sample = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
         //     TraceL << "Sample Rate Limit: " << _profile.sampleRate;
+        //     _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);    
+        //     _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
+        //     if (!setCredentials()) {
+        //         disconnect();
+        //         return false;
+        //     }
 
+        //     if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse)) {
+        //         reportError();
+        //         disconnect();
+        //         return false;
+        //     }
         //     auto sourceToken = profile->AudioSourceConfiguration->SourceToken;
         //     for (const auto &audioSource : GetAudioSourcesResponse.AudioSources) {
         //         WarnL << "Found audio source token: " << sourceToken << ", " << audioSource->token;
@@ -354,6 +352,7 @@ bool OnvifControl::getMediaProfiles() {
         //             break;
         //         }
         //     }
+    
         //     TraceL << "Channel No: " << _profile.channelNo;
         //     // todo: get audio configuration option in profile
         //     // _trt__GetAudioEncoderConfigurationOptions* GetAudioConfigOptions = soap_new__trt__GetAudioEncoderConfigurationOptions(_m_soap);
