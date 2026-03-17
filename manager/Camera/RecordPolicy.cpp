@@ -38,69 +38,71 @@ std::string getRecordEventTypeString(RecordEventType type) {
 static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const string &str) {
     unordered_map<std::string, RecordScheduleItem> ret;
 
-    Json::Value root;
-    if (!StrJsonUtils::readJsonString(str, root)) {
-        WarnL << "Failed to parse record schedule string";
-        return ret;
-    }
+    if (!str.empty()) {
+        Json::Value root;
+        if (!StrJsonUtils::readJsonString(str, root)) {
+            WarnL << "Failed to parse record schedule string";
+            return ret;
+        }
 
-    if (!root.isArray()) {
-        WarnL << "Record schedule json is not an array";
-        return ret;
-    }
+        if (!root.isArray()) {
+            WarnL << "Record schedule json is not an array";
+            return ret;
+        }
 
-    // The json array is expected to contain items with the following format:
-    // [
-    //   {
-    //     "dh": "0,13", // day and hour, e.g. "0,13" = Sunday 13:00
-    //     "ty": 1, // record mode, e.g. 1 = RecordOnlyMotion
-    //     "fps": 15, // optional, fps for recording
-    //     "q": "M" // optional, image quality for recording, e.g. "M" = Medium, "L" = Low, "H" = High
-    //   },
-    //   ...
-    // ]
-    for (const auto &item : root) {
-        RecordScheduleItem s;
-        string key;
-        if (item.isMember("dh") && item["dh"].isString()) {
-            // format: "d,h", e.g. "0,13" = Sunday 13:00
-            string dh_str = item["dh"].asString();
-            auto tmp = split(dh_str, ",");
-            if (tmp.size() == 2) {
-                string day_str = tmp[0];
-                string hour_str = tmp[1];
-                s.day = stoi(day_str);
-                s.hour = stoi(hour_str);
+        // The json array is expected to contain items with the following format:
+        // [
+        //   {
+        //     "dh": "0,13", // day and hour, e.g. "0,13" = Sunday 13:00
+        //     "ty": 1, // record mode, e.g. 1 = RecordOnlyMotion
+        //     "fps": 15, // optional, fps for recording
+        //     "q": "M" // optional, image quality for recording, e.g. "M" = Medium, "L" = Low, "H" = High
+        //   },
+        //   ...
+        // ]
+        for (const auto &item : root) {
+            RecordScheduleItem s;
+            string key;
+            if (item.isMember("dh") && item["dh"].isString()) {
+                // format: "d,h", e.g. "0,13" = Sunday 13:00
+                string dh_str = item["dh"].asString();
+                auto tmp = split(dh_str, ",");
+                if (tmp.size() == 2) {
+                    string day_str = tmp[0];
+                    string hour_str = tmp[1];
+                    s.day = stoi(day_str);
+                    s.hour = stoi(hour_str);
+                }
+                key = dh_str;
             }
-            key = dh_str;
-        }
 
-        if (item.isMember("fps") && item["fps"].isInt()) {
-            // optional, default to 0 if not specified
-            s.fps = item["fps"].asInt();
-        }
-
-        if (item.isMember("q") && item["q"].isString()) {
-            // optional, default to Low if not specified
-            auto q_str = item["q"].asString();
-            if (q_str == "L") {
-                s.q = ImageQuality::Low;
-            } else if (q_str == "M") {
-                s.q = ImageQuality::Medium;
-            } else if (q_str == "H") {
-                s.q = ImageQuality::High;
-            } else {
-                s.q = ImageQuality::Low;
+            if (item.isMember("fps") && item["fps"].isInt()) {
+                // optional, default to 0 if not specified
+                s.fps = item["fps"].asInt();
             }
-        }
 
-        if (item.isMember("ty") && item["ty"].isInt()) {
-            // required, default to NoRecord if not specified
-            auto ty = item["ty"].asInt();
-            s.mode = static_cast<RecordMode>(ty);
-        }
+            if (item.isMember("q") && item["q"].isString()) {
+                // optional, default to Low if not specified
+                auto q_str = item["q"].asString();
+                if (q_str == "L") {
+                    s.q = ImageQuality::Low;
+                } else if (q_str == "M") {
+                    s.q = ImageQuality::Medium;
+                } else if (q_str == "H") {
+                    s.q = ImageQuality::High;
+                } else {
+                    s.q = ImageQuality::Low;
+                }
+            }
 
-        ret.emplace(key, s);
+            if (item.isMember("ty") && item["ty"].isInt()) {
+                // required, default to NoRecord if not specified
+                auto ty = item["ty"].asInt();
+                s.mode = static_cast<RecordMode>(ty);
+            }
+
+            ret.emplace(key, s);
+        }
     }
 
     // Fill in missing schedule with default value (NoRecord, fps=0, q=Low)

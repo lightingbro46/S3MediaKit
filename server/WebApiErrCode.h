@@ -50,6 +50,7 @@ namespace managerkit {
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
     XX(CODE_INVALID_EXTENSION,              "Invalid file extension",           400,         400003) \
     XX(CODE_INVALID_IP_RANGE,               "Invalid IP range",                 400,         400004) \
+    XX(CODE_FEATURE_NOT_SUPPORTED,          "Feature not supported",            400,         400005) \
     /* 500xxx - Database esc errors */                                                               \
 
 typedef enum {

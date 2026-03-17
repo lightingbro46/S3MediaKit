@@ -2,6 +2,7 @@
 
 #include "Common/config.h"
 #include "Util/logger.h"
+#include "server/WebApiErrCode.h"
 
 #include <set>
 #include <vector>
@@ -46,8 +47,8 @@ void SearchEngine::findTimePeriod(
                 });
             }
             if (include_motion) {
-                result["motionPeriods"] = arrayValue;
 #if defined(ENABLE_MOTION)
+                result["motionPeriods"] = arrayValue;
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -85,8 +86,8 @@ void SearchEngine::findTimePeriod(
                     });
             }
             if (include_motion) {
-                result["motionPeriods"] = arrayValue;
 #if defined(ENABLE_MOTION)
+                result["motionPeriods"] = arrayValue;
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -122,8 +123,8 @@ void SearchEngine::findTimePeriod(
                     });
             }
             if (include_motion) {
-                result["motionPeriods"] = objectValue;
 #if defined(ENABLE_MOTION)
+                result["motionPeriods"] = objectValue;
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time,
@@ -177,8 +178,8 @@ void SearchEngine::findTimePeriod(
                     });
             }
             if (include_motion) {
-                result["motionPeriods"] = objectValue;
 #if defined(ENABLE_MOTION)
+                result["motionPeriods"] = objectValue;
                 try {
                     MotionSearch ms(tuple);
                     ms.getMotionTimePeriod(start_time, end_time,
@@ -225,8 +226,8 @@ void SearchEngine::findTimePeriod(
             });
         }
         if (include_motion) {
-            result["motionPeriods"] = arrayValue;
 #if defined(ENABLE_MOTION)
+            result["motionPeriods"] = arrayValue;
             try {
                 MotionSearch ms(tuple);
                 ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
@@ -254,10 +255,10 @@ void SearchEngine::findMotionPeriodByRoi(
     const function<void(const SockException &, const Value &)> &cb)
 {
     Value result;
+#if defined(ENABLE_MOTION)
     result["cameraId"]     = tuple.app;
     result["motionPeriods"] = arrayValue;
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-#if defined(ENABLE_MOTION)
     try {
         MotionSearch ms(tuple);
         ms.getMotionTimePeriodByRoi(start_time, end_time, roi_mask,
@@ -273,10 +274,11 @@ void SearchEngine::findMotionPeriodByRoi(
     } catch (const std::exception &ex) {
         WarnL << "findMotionPeriodByRoi failed: " << ex.what();
     }
+    return cb(SockException(Err_success), result);
 #else
     WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
+    return cb(SockException(Err_other, "Motion feature is not enabled", CODE_FEATURE_NOT_SUPPORTED), result);
 #endif // ENABLE_MOTION
-    return cb(SockException(Err_success), result);
 }
 
 } // namespace managerkit

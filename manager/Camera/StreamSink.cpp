@@ -67,9 +67,15 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     new_cfg.password               = option.password;
     new_cfg.protocol.enable_mp4    = false; // recording is controlled by StreamSource itself
     new_cfg.protocol.enable_audio  = !option.disableAudio;
+#ifdef ENABLE_MOTION
     new_cfg.protocol.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
     new_cfg.protocol.roi_mask      = option.enableMotion ? option.roiValue : "";
     new_cfg.protocol.record_motion = option.enableMotion ? true : false;
+#else
+    new_cfg.protocol.enable_motion = false;
+    new_cfg.protocol.roi_mask      = "";
+    new_cfg.protocol.record_motion = false;
+#endif // ENABLE_MOTION
 
     auto it = _monitor_map.find(type);
     if (it != _monitor_map.end()) {
