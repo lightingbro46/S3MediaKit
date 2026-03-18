@@ -27,7 +27,7 @@ void MotionEventController::flush() {
     }
 }
 
-void MotionEventController::inputBlock(bool motion_detected, uint64_t pts_ms, const MotionBitmapPtr &result) {
+void MotionEventController::inputBlock(bool motion_detected, uint64_t stamp_ms, const MotionBitmapPtr &result) {
     const uint64_t base_ms = static_cast<uint64_t>(std::max(0, _min_duration_ms));
     // Hysteresis: To avoid frequent start/stop events due to short-term motion fluctuations, we use different thresholds for starting and stopping motion events
     const uint64_t start_confirm_ms = std::max<uint64_t>(base_ms, base_ms * 3 / 2); // 1.5x
@@ -36,7 +36,7 @@ void MotionEventController::inputBlock(bool motion_detected, uint64_t pts_ms, co
     // Feed the muxer only for frames the controller considers relevant:
     // any frame with motion detected (debounce phase), or while an event is ongoing.
     if (motion_detected || _in_motion) {
-        feedMuxer(pts_ms, result);
+        feedMuxer(stamp_ms, result);
     }
 
     if (motion_detected) {
@@ -50,11 +50,11 @@ void MotionEventController::inputBlock(bool motion_detected, uint64_t pts_ms, co
 
         // Debounce: Only start motion event if motion is continuously detected for at least start_confirm_ms
         if (_tmp_start_ms == 0) {
-            _tmp_start_ms = pts_ms;
+            _tmp_start_ms = stamp_ms;
             return;
         }
 
-        const uint64_t motion_span_ms = pts_ms - _tmp_start_ms;
+        const uint64_t motion_span_ms = stamp_ms - _tmp_start_ms;
         if (motion_span_ms < start_confirm_ms) {
             return;
         }
@@ -80,11 +80,11 @@ void MotionEventController::inputBlock(bool motion_detected, uint64_t pts_ms, co
 
     // Debounce: Only stop motion event if no motion is detected for at least stop_confirm_ms
     if (_tmp_end_ms == 0) {
-        _tmp_end_ms = pts_ms;
+        _tmp_end_ms = stamp_ms;
         return;
     }
 
-    const uint64_t quiet_span_ms = pts_ms - _tmp_end_ms;
+    const uint64_t quiet_span_ms = stamp_ms - _tmp_end_ms;
     if (quiet_span_ms < stop_confirm_ms) {
         return;
     }
@@ -102,7 +102,7 @@ void MotionEventController::emitMotionEvent(bool start) {
     }
 }
 
-void MotionEventController::feedMuxer(uint64_t stamp, const MotionBitmapPtr &result) {
+void MotionEventController::feedMuxer(uint64_t stamp_ms, const MotionBitmapPtr &result) {
     auto m = _muxer.lock();
     if (!m || !result) return;
     const size_t bitmap_bytes = static_cast<size_t>((result->rows * result->cols + 7) / 8);
@@ -111,7 +111,7 @@ void MotionEventController::feedMuxer(uint64_t stamp, const MotionBitmapPtr &res
     ext.cols         = static_cast<uint16_t>(result->cols);
     ext.active_cells = static_cast<uint16_t>(std::min(result->active_cells, 0xFFFF));
     std::vector<uint8_t> bitmap_vec(result->bitmap, result->bitmap + bitmap_bytes);
-    MotionEventBlock block(stamp, ext, std::move(bitmap_vec));
+    MotionEventBlock block(stamp_ms, ext, std::move(bitmap_vec));
     m->inputEvent(block);
 }
 
@@ -120,7 +120,7 @@ void MotionEventController::setRecording(bool recording) {
 }
 
 
-void MotionEventController::clearPreBuffer(bool motion, uint64_t pts_ms, const MotionBitmapPtr &result) {
+void MotionEventController::clearPreBuffer(bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result) {
     if (auto m = _muxer.lock()) m->clearPreBuffer();
 }
 

@@ -6,6 +6,7 @@
 #include "MotionBlock.h"
 #include "MotionAggregator.h"
 #include "Util/BlockStorageEngine.h"
+#include "Record/Recorder.h"
 #include <deque>
 
 namespace mediakit {
@@ -30,47 +31,35 @@ public:
 
     bool appendEvent(const MotionEventBlock &block) {
         return append(block, MotionBlockType::Event,
-                       reinterpret_cast<const uint8_t *>(&block.extHeader()),
-                       sizeof(MotionEventExtHeader));
+                      reinterpret_cast<const uint8_t *>(&block.extHeader()), sizeof(MotionEventExtHeader),
+                      block.bitmap().data(), static_cast<uint32_t>(block.bitmap().size()));
     }
 
     bool appendSummary(const MotionSummaryBlock &block) {
         return append(block, MotionBlockType::Summary,
-                       reinterpret_cast<const uint8_t *>(&block.extHeader()),
-                       sizeof(MotionSummaryExtHeader));
+                      reinterpret_cast<const uint8_t *>(&block.extHeader()), sizeof(MotionSummaryExtHeader),
+                      block.bitmap().data(), static_cast<uint32_t>(block.bitmap().size()));
+    }
+
+    bool appendMeta(const MotionMetaBlock &block) {
+        auto payload = block.buildPayload();
+        return append(block, MotionBlockType::Meta,
+                      reinterpret_cast<const uint8_t *>(&block.extHeader()), sizeof(MotionMetaExtHeader),
+                      payload.data(), static_cast<uint32_t>(payload.size()));
     }
 
 private:
     bool append(const toolkit::BlockInterface &block, MotionBlockType type,
-                 const uint8_t *ext, uint16_t ext_size) {
-        auto hdr = block.buildBaseHeader();
-
-        // Build index entry with type before writing (position() is the pre-write offset).
+                const uint8_t *ext, uint16_t ext_size,
+                const uint8_t *payload, uint32_t payload_size) {
         MotionIndexEntry entry{};
-        entry.stamp  = hdr.stamp;
-        entry.offset = writer().position();
-        entry.type   = static_cast<uint16_t>(type);
-
-        const uint8_t *bitmap_data = nullptr;
-        uint32_t       bitmap_size = 0;
-        // Decode the concrete type to get the raw bitmap pointer.
-        if (type == MotionBlockType::Event) {
-            const auto &b = static_cast<const MotionEventBlock &>(block);
-            bitmap_data   = b.bitmap().data();
-            bitmap_size   = static_cast<uint32_t>(b.bitmap().size());
-        } else {
-            const auto &b = static_cast<const MotionSummaryBlock &>(block);
-            bitmap_data   = b.bitmap().data();
-            bitmap_size   = static_cast<uint32_t>(b.bitmap().size());
-        }
-        TraceL << "Append block" << " stamp: " << hdr.stamp
+        entry.type = static_cast<uint16_t>(type);
+        auto hdr   = block.buildBaseHeader();
+        TraceL << "Append block stamp: " << hdr.stamp
+               << " type: " << static_cast<int>(type)
                << " ext_size: " << ext_size
-               << " bitmap_size: " << bitmap_size;
-        if (!writer().appendBlock(hdr, ext, ext_size, bitmap_data, bitmap_size)) {
-            return false;
-        }
-        TraceL << "Block written at offset " << entry.offset;
-        return index().addEntry(entry);
+               << " payload_size: " << payload_size;
+        return appendBlock(entry, hdr, ext, ext_size, payload, payload_size);
     }
 };
 
@@ -84,8 +73,8 @@ private:
  *   4. Auto-roll to a new day file when the wall-clock date changes
  *
  * On-disk layout under base_path:
- *   {base_path}/YYYYMMDD.blk  — packed block data
- *   {base_path}/YYYYMMDD.idx  — mmap index (stamp + offset + type)
+ *   {base_path}/YYYY-MM-DD.blk  — packed block data
+ *   {base_path}/YYYY-MM-DD.idx  — mmap index (stamp + offset + type)
  *
  * Usage:
  *   MotionMuxer muxer("/record/motion/app/stream/");
@@ -97,12 +86,15 @@ public:
     using Ptr = std::shared_ptr<MotionMuxer>;
 
     /**
-     * @param base_path          Directory where date-named files are created.
+     * @param tuple              Stream identity (app / stream / vhost).
+     * @param roi_mask           Serialised ROI mask binary blob.
+     * @param save_path          Directory where date-named files are created.
      *                           Created automatically if it does not exist.
      * @param summary_window_ms  Aggregation window for MotionAggregator (ms).
      *                           Default: 5 minutes.
      */
-    explicit MotionMuxer(std::string base_path, uint64_t summary_window_ms = 10000);
+    explicit MotionMuxer(const MediaTuple &tuple,  std::string roi_mask,
+                         std::string save_path, uint64_t summary_window_ms = 10000);
     ~MotionMuxer();
 
     /**
@@ -145,8 +137,9 @@ private:
     void rollIfNeeded();
 
 private:
-    std::string            _base_path;
     std::string            _current_date;
+    MotionMeta             _meta;
+    std::string            _base_path;
     uint64_t               _summary_window_ms;
     bool                   _recording = false;        // controlled by MotionEventController
     std::deque<MotionEventBlock> _pre_buffer;         // events buffered before motion is confirmed

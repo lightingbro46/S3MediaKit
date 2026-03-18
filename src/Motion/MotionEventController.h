@@ -26,14 +26,14 @@ public:
      */
     void setMuxer(std::weak_ptr<MotionMuxer> muxer) { _muxer = std::move(muxer); }
 
-    void inputBlock(bool motion_detected, uint64_t pts_ms, const MotionBitmapPtr &result = nullptr);
+    void inputBlock(bool motion_detected, uint64_t stamp_ms, const MotionBitmapPtr &result = nullptr);
     void flush();
 
 private:
     void emitMotionEvent(bool start);
     void setRecording(bool recording);
-    void clearPreBuffer(bool motion, uint64_t pts_ms, const MotionBitmapPtr &result);
-    void feedMuxer(uint64_t stamp, const MotionBitmapPtr &result);
+    void clearPreBuffer(bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result);
+    void feedMuxer(uint64_t stamp_ms, const MotionBitmapPtr &result);
 
 private:
     int  _min_duration_ms;

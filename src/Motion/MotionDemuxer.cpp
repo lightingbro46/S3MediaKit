@@ -38,16 +38,53 @@ bool MotionDemuxer::open(const std::string &blk_path, const std::string &idx_pat
         return false;
     }
 
-    _cursor = 0;
-    _open   = true;
-    DebugL << "MotionDemuxer: opened " << blk_path << " (" << entryCount() << " entries)";
+    _cursor     = 0;
+    _data_start = 0;
+    _has_meta   = false;
+    _meta       = {};
+    _open       = true;
+
+    // If the first index entry is a Meta block, decode it and advance the
+    // sequential read cursor past it so callers never see Meta blocks.
+    if (entryCount() > 0) {
+        MotionIndexEntry first_entry{};
+        _storage.getIndexEntry(0, first_entry);
+        if (static_cast<MotionBlockType>(first_entry.type) == MotionBlockType::Meta) {
+            toolkit::BlockHeader meta_hdr{};
+            std::vector<uint8_t> ext_vec, payload_vec;
+            bool meta_eof = false;
+            if (_storage.readBlockAt(0, meta_hdr, ext_vec, payload_vec, meta_eof)
+                    && ext_vec.size() >= sizeof(MotionMetaExtHeader)) {
+                MotionMetaExtHeader ext{};
+                std::memcpy(&ext, ext_vec.data(), sizeof(ext));
+                const uint8_t *p   = payload_vec.data();
+                const size_t   n   = payload_vec.size();
+                size_t off = 0;
+                if (off + ext.device_id_len <= n) { _meta.device_id.assign(p + off, p + off + ext.device_id_len); off += ext.device_id_len; }
+                if (off + ext.stream_id_len <= n) { _meta.stream_id.assign(p + off, p + off + ext.stream_id_len); off += ext.stream_id_len; }
+                if (off + ext.roi_mask_len  <= n) { _meta.roi_mask.assign( p + off, p + off + ext.roi_mask_len);  }
+                _meta.rows = ext.rows;
+                _meta.cols = ext.cols;
+                _has_meta = true;
+            }
+            _data_start = 1;
+            _cursor     = 1;
+            if (entryCount() > 1) _storage.seekToEntry(1);
+        }
+    }
+
+    DebugL << "MotionDemuxer: opened " << blk_path << " (" << entryCount() << " entries"
+           << (_has_meta ? ", has meta: " + _meta.device_id + "/" + _meta.stream_id : "") << ")";
     return true;
 }
 
 void MotionDemuxer::close() {
     _storage.close();
-    _cursor = 0;
-    _open   = false;
+    _cursor     = 0;
+    _data_start = 0;
+    _has_meta   = false;
+    _meta       = {};
+    _open       = false;
 }
 
 uint64_t MotionDemuxer::getFirstStamp() const {
@@ -80,7 +117,7 @@ size_t MotionDemuxer::lowerBound(uint64_t target_ms) const {
 int64_t MotionDemuxer::seekTo(uint64_t stamp_ms) {
     if (!_open) return -1;
 
-    const size_t pos = lowerBound(stamp_ms);
+    const size_t pos = std::max(_data_start, lowerBound(stamp_ms));
     if (pos >= entryCount()) {
         _cursor = entryCount();
         return -1;
@@ -96,6 +133,23 @@ int64_t MotionDemuxer::seekTo(uint64_t stamp_ms) {
 bool MotionDemuxer::readBlock(MotionBlock &out, bool &eof) {
     eof = false;
     if (!_open) { eof = true; return false; }
+
+    // Skip any Meta blocks at any position (there may be more than one if the
+    // stream config changed mid-file).  We loop so callers always get a data block.
+    while (_cursor < entryCount()) {
+        MotionIndexEntry e{};
+        if (_storage.getIndexEntry(_cursor, e)
+                && static_cast<MotionBlockType>(e.type) == MotionBlockType::Meta) {
+            // Advance without reading the payload into *out.
+            if (!_storage.seekToEntry(_cursor + 1)) {
+                eof = true; return false;
+            }
+            ++_cursor;
+            continue;
+        }
+        break;
+    }
+
     if (_cursor >= entryCount()) { eof = true; return false; }
 
     if (!_storage.readNextBlock(out.header, out.ext_header, out.payload, eof)) return false;

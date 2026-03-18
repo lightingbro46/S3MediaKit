@@ -60,8 +60,12 @@ public:
     /** Stamp of the last index entry (ms), 0 if empty. */
     uint64_t getLastStamp() const;
 
-    /** Total number of index entries. */
+    /** Total number of index entries (includes the Meta block if present). */
     size_t entryCount() const { return _storage.entryCount(); }
+
+    /** True when the file contains a Meta block at index 0. */
+    bool             hasMeta() const { return _has_meta; }
+    const MotionMeta &getMeta() const { return _meta; }
 
     /**
      * Position the read cursor to the first block whose stamp >= stamp_ms.
@@ -95,8 +99,11 @@ private:
 
 private:
     toolkit::BlockStorageReader<MotionIndexEntry> _storage;
-    size_t _cursor = 0; // index position of the next readBlock() call
-    bool   _open   = false;
+    size_t     _cursor     = 0;     // index position of next readBlock() call
+    size_t     _data_start = 0;     // 1 when Meta block occupies index entry 0
+    bool       _open       = false;
+    bool       _has_meta   = false;
+    MotionMeta _meta;
 };
 
 /**
@@ -127,6 +134,16 @@ public:
     void closeAll();
 
     bool isEmpty() const { return _demuxers.empty(); }
+
+    /**
+     * Returns the MotionMeta from the first file, or nullptr if no file has a Meta block.
+     * Valid for the lifetime of this MultiMotionDemuxer.
+     */
+    const MotionMeta *getMeta() const {
+        if (_demuxers.empty()) return nullptr;
+        const auto &d = _demuxers.begin()->second;
+        return d->hasMeta() ? &d->getMeta() : nullptr;
+    }
 
     uint64_t getFirstStamp() const;
     uint64_t getLastStamp() const;

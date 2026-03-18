@@ -13,8 +13,11 @@ using namespace toolkit;
 
 namespace mediakit {
 
-MotionMuxer::MotionMuxer(std::string base_path, uint64_t summary_window_ms)
-    : _base_path(std::move(base_path)), _summary_window_ms(summary_window_ms) {}
+MotionMuxer::MotionMuxer(const MediaTuple &tuple, std::string roi_mask, 
+                         std::string save_path, uint64_t summary_window_ms)
+    : _meta(tuple.app, tuple.stream, std::move(roi_mask), MOTION_GRID_ROWS, MOTION_GRID_COLS)
+    , _base_path(std::move(save_path))
+    , _summary_window_ms(summary_window_ms) {}
 
 MotionMuxer::~MotionMuxer() {
     closeWriter();
@@ -75,7 +78,6 @@ void MotionMuxer::flush() {
     if (_agg)    { _agg->flush(); }
     if (_writer) { _writer->flush(); }
 }
-
 void MotionMuxer::rollIfNeeded() {
     const std::string today = getTimeStr("%Y-%m-%d");
     if (today != _current_date) {
@@ -98,6 +100,14 @@ void MotionMuxer::openForDate(const std::string &date) {
         return;
     }
     _writer = std::move(writer);
+
+    // Always write a Meta block when opening a file — on first creation it
+    // anchors device/stream identity at position 0; on resume it records the
+    // current config at the point the process restarted.
+    MotionMetaBlock meta_block(getCurrentMillisecond(true), _meta.device_id, _meta.stream_id, _meta.roi_mask, _meta.rows, _meta.cols);
+    if (!_writer->appendMeta(meta_block)) {
+        WarnL << "MotionMuxer: failed to write meta block to " << blk;
+    }
 
     // Aggregator callback writes completed summaries to the current _writer.
     // Uses weak_ptr so that a delayed flush after destruction is a safe no-op.

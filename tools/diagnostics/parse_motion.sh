@@ -19,19 +19,21 @@ readonly INDEX_MAGIC=1480870222         # 0x5844494E  "INDX"
 readonly BLOCK_HEADER_SIZE=24           # sizeof(BlockHeader)
 readonly INDEX_HEADER_SIZE=56           # sizeof(IndexHeader)
 readonly INDEX_ENTRY_SIZE=24            # sizeof(MotionIndexEntry)
-readonly BLOCK_TYPE_EVENT=2
+readonly BLOCK_TYPE_META=0
 readonly BLOCK_TYPE_SUMMARY=1
+readonly BLOCK_TYPE_EVENT=2
+readonly META_EXT_HEADER_SIZE=12
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ANSI colours (disabled when stdout is not a terminal)
 # ──────────────────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
     CR=$'\033[0m'  CB=$'\033[1m'  CC=$'\033[36m'
-    CG=$'\033[32m' CY=$'\033[33m' CRED=$'\033[31m' CD=$'\033[2m'
+    CG=$'\033[32m' CY=$'\033[33m' CRED=$'\033[31m' CD=$'\033[2m' CM=$'\033[35m'
 else
-    CR='' CB='' CC='' CG='' CY='' CRED='' CD=''
+    CR='' CB='' CC='' CG='' CY='' CRED='' CD='' CM=''
 fi
-export CR CB CC CG CY CRED CD
+export CR CB CC CG CY CRED CD CM
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared awk helper functions (injected into every awk program via $AWK_COMMON)
@@ -53,6 +55,7 @@ function ms2str(ms,   sec, rem, r, cmd) {
     return sprintf("%s.%03dZ", r, rem)
 }
 function type_name(t) {
+    if (t == 0) return "Meta"
     if (t == 1) return "Summary"
     if (t == 2) return "Event"
     return sprintf("0x%04X", t)
@@ -76,11 +79,13 @@ parse_idx() {
         -v IDX_MAGIC="$INDEX_MAGIC" \
         -v IDX_HDR="$INDEX_HEADER_SIZE" \
         -v ENTRY_SZ="$INDEX_ENTRY_SIZE" \
+        -v META="$BLOCK_TYPE_META" \
+        -v SUM="$BLOCK_TYPE_SUMMARY" \
         -v EVT="$BLOCK_TYPE_EVENT" \
         'BEGIN {
             n = 0
             CR=ENVIRON["CR"]; CG=ENVIRON["CG"]; CY=ENVIRON["CY"]
-            CRED=ENVIRON["CRED"]; CD=ENVIRON["CD"]
+            CRED=ENVIRON["CRED"]; CD=ENVIRON["CD"]; CM=ENVIRON["CM"]
         }
         { b[n++] = $1 + 0 }
         '"$AWK_COMMON"'
@@ -108,7 +113,7 @@ parse_idx() {
                 offset = u64(off+8)
                 btype  = u16(off+16)
                 tname  = type_name(btype)
-                color  = (btype == EVT+0) ? CG : CY
+                color  = (btype == EVT+0) ? CG : (btype == SUM+0) ? CY : CM
                 printf "  %4d  %18.0f  %-26s  %12.0f  " color "%-8s" CR "\n", \
                     i, stamp, ms2str(stamp), offset, tname
             }
@@ -132,13 +137,14 @@ parse_mblk() {
     od_bytes "$file" | awk \
         -v MMAGIC="$MOTION_MAGIC" \
         -v BLK_HDR="$BLOCK_HEADER_SIZE" \
-        -v EVT="$BLOCK_TYPE_EVENT" \
+        -v META="$BLOCK_TYPE_META" \
         -v SUM="$BLOCK_TYPE_SUMMARY" \
+        -v EVT="$BLOCK_TYPE_EVENT" \
         -v verbose="$verbose" \
         'BEGIN {
             n = 0
             CR=ENVIRON["CR"]; CG=ENVIRON["CG"]; CY=ENVIRON["CY"]
-            CRED=ENVIRON["CRED"]; CD=ENVIRON["CD"]
+            CRED=ENVIRON["CRED"]; CD=ENVIRON["CD"]; CM=ENVIRON["CM"]
         }
         { b[n++] = $1 + 0 }
         '"$AWK_COMMON"'
@@ -161,7 +167,21 @@ parse_mblk() {
                 rows = 0; cols = 0; active = 0
                 info = sprintf("crc=0x%08X", crc_v)
 
-                if (btype == EVT+0 && ext_size >= 8) {
+                if (btype == META+0 && ext_size >= 12) {
+                    dev_id_len = u16(ext_off)
+                    str_id_len = u16(ext_off+2)
+                    roi_len    = u32(ext_off+4)
+                    rows       = u16(ext_off+8)
+                    cols       = u16(ext_off+10)
+                    pay_off    = file_offset + hdr_size
+                    dev_id = ""
+                    for (k = 0; k < dev_id_len && (pay_off+k) < n; k++)
+                        dev_id = dev_id sprintf("%c", b[pay_off + k])
+                    str_id = ""
+                    for (k = 0; k < str_id_len && (pay_off+dev_id_len+k) < n; k++)
+                        str_id = str_id sprintf("%c", b[pay_off + dev_id_len + k])
+                    info = "dev=" dev_id " stream=" str_id " roi=" roi_len "B " rows "x" cols
+                } else if (btype == EVT+0 && ext_size >= 8) {
                     rows   = u16(ext_off)
                     cols   = u16(ext_off+2)
                     active = u16(ext_off+4)
@@ -174,7 +194,7 @@ parse_mblk() {
                 }
 
                 tname = type_name(btype)
-                tcolor = (btype == EVT+0) ? CG : CY
+                tcolor = (btype == EVT+0) ? CG : (btype == SUM+0) ? CY : CM
                 printf "  %4d  %12d  " tcolor "%-8s" CR "  %18.0f  %-26s  %5d  %6d  %4d  %4d  %6d  %s\n", \
                     block_idx, file_offset, tname, stamp, ms2str(stamp), \
                     hdr_size, pay_size, rows, cols, active, info

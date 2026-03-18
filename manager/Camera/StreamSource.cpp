@@ -222,7 +222,7 @@ bool StreamSource::setupRecord(int type, bool start) {
         auto option = muxer->getOption();
         auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
         if (start && is_recording) {
-            WarnL << "Recording is already enabled, resetting record settings for stream: " << muxer->getOriginUrl(*media_src);
+            WarnL << "Recording is already enabled, resetting record settings for stream: " << media_src->getMediaTuple().shortUrl();
             muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
         }
         muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second);

@@ -17,6 +17,7 @@ static constexpr uint32_t kMotionMagic   = 0x4D4F544E; // "MOTN"
 static constexpr uint16_t kMotionVersion = 1;
 
 enum class MotionBlockType : uint16_t {
+    Meta    = 0x00,  // file metadata — always the first block in every .mblk file
     Summary = 0x01,
     Event   = 0x02,
     // future types can be added here
@@ -64,10 +65,24 @@ struct MotionSummaryExtHeader {
     uint16_t reserved;
 };
 
+/**
+ * Extension header for Meta blocks.
+ * payload = device_id bytes || stream_id bytes || roi_mask bytes (no null terminator).
+ * rows / cols = ROI grid dimensions (same as used in Event/Summary blocks).
+ */
+struct MotionMetaExtHeader {
+    uint16_t device_id_len;
+    uint16_t stream_id_len;
+    uint32_t roi_mask_len;
+    uint16_t rows;
+    uint16_t cols;
+};
+
 #pragma pack(pop)
 
 static_assert(sizeof(MotionEventExtHeader)   ==  8, "MotionEventExtHeader layout changed");
 static_assert(sizeof(MotionSummaryExtHeader) == 16, "MotionSummaryExtHeader layout changed");
+static_assert(sizeof(MotionMetaExtHeader)    == 12, "MotionMetaExtHeader layout changed");
 
 // ── CRC32 helper ──────────────────────────────────────────────────────────────
 // Standard CRC32/ISO-HDLC over concatenated (ext_header + bitmap) bytes.
@@ -203,6 +218,73 @@ private:
 };
 
 /**
+ * In-memory Motion Meta block.
+ * Always the first block written to a new .mblk file.
+ * payload = device_id || stream_id || roi_mask (lengths stored in ext header).
+ * BlockHeader.stamp is set to the current wall-clock time (ms) at write time.
+ */
+class MotionMetaBlock : public toolkit::BlockInterface {
+public:
+    using Ptr = std::shared_ptr<MotionMetaBlock>;
+
+    MotionMetaBlock(uint64_t stamp,
+                    std::string device_id,
+                    std::string stream_id,
+                    std::string roi_mask,
+                    uint16_t rows = 0,
+                    uint16_t cols = 0)
+        : _stamp(stamp)
+        , _device_id(std::move(device_id))
+        , _stream_id(std::move(stream_id))
+        , _roi_mask(std::move(roi_mask)) {
+        _ext.device_id_len = static_cast<uint16_t>(_device_id.size());
+        _ext.stream_id_len = static_cast<uint16_t>(_stream_id.size());
+        _ext.roi_mask_len  = static_cast<uint32_t>(_roi_mask.size());
+        _ext.rows          = rows;
+        _ext.cols          = cols;
+    }
+
+    uint32_t magic()       const override { return kMotionMagic; }
+    uint16_t type()        const override { return static_cast<uint16_t>(MotionBlockType::Meta); }
+    uint64_t stamp()       const override { return _stamp; }
+    uint32_t headerSize()  const override {
+        return static_cast<uint32_t>(sizeof(toolkit::BlockHeader) + sizeof(MotionMetaExtHeader));
+    }
+    uint32_t payloadSize() const override {
+        return static_cast<uint32_t>(_device_id.size() + _stream_id.size() + _roi_mask.size());
+    }
+    uint32_t crc() const override {
+        auto p = buildPayload();
+        return motionCrc32(reinterpret_cast<const uint8_t *>(&_ext), sizeof(_ext),
+                           p.data(), p.size());
+    }
+    void serialize(toolkit::BlockBuffer &buf) const override {
+        auto hdr = buildBaseHeader();
+        buf.append(&hdr,  sizeof(hdr));
+        buf.append(&_ext, sizeof(_ext));
+        buf.append(_device_id.data(), _device_id.size());
+        buf.append(_stream_id.data(), _stream_id.size());
+        buf.append(_roi_mask.data(),  _roi_mask.size());
+    }
+
+    const MotionMetaExtHeader &extHeader()    const { return _ext; }
+    std::vector<uint8_t>       buildPayload() const {
+        std::vector<uint8_t> p;
+        p.insert(p.end(), _device_id.begin(), _device_id.end());
+        p.insert(p.end(), _stream_id.begin(), _stream_id.end());
+        p.insert(p.end(), _roi_mask.begin(),  _roi_mask.end());
+        return p;
+    }
+
+private:
+    uint64_t            _stamp = 0;
+    MotionMetaExtHeader _ext{};
+    std::string         _device_id;
+    std::string         _stream_id;
+    std::string         _roi_mask;
+};
+
+/**
  * Raw in-memory block produced by BlockReaderInterface::readBlock().
  * ext_header and payload are already separated by the reader.
  */
@@ -210,6 +292,21 @@ struct MotionBlock {
     toolkit::BlockHeader header;
     std::vector<uint8_t> ext_header; // (header.header_size - sizeof(BlockHeader)) bytes
     std::vector<uint8_t> payload;    // bitmap bytes only
+};
+
+/** Decoded Meta block strings (used by MotionDemuxer and its callers). */
+struct MotionMeta {
+    std::string device_id;
+    std::string stream_id;
+    std::string roi_mask;
+    uint16_t    rows = 0;
+    uint16_t    cols = 0;
+
+    MotionMeta() = default;
+    MotionMeta(std::string device_id, std::string stream_id, std::string roi_mask,
+               uint16_t rows = 0, uint16_t cols = 0)
+        : device_id(std::move(device_id)), stream_id(std::move(stream_id))
+        , roi_mask(std::move(roi_mask)), rows(rows), cols(cols) {}
 };
 
 } // namespace mediakit

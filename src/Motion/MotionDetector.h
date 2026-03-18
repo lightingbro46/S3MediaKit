@@ -6,11 +6,6 @@
 #include "MotionBitmap.h"
 #include <functional>
 
-#define MOTION_GRID_ROWS 32
-#define MOTION_GRID_COLS 44
-#define FRAME_SCALE_WIDTH 440
-#define FRAME_SCALE_HEIGHT 320
-
 namespace mediakit {
 
 class MotionDetector {

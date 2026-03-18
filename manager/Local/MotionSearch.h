@@ -42,8 +42,8 @@ public:
 
     /**
      * @param tuple      Stream identity (used to build base_path when omitted).
-     * @param base_path  Directory that contains YYYYMMDD.mblk files.
-     *                   When empty, defaults to {MP4SavePath}/motion/{app}/{stream}/
+     * @param base_path  Directory that contains YYYY-MM-DD.mblk files.
+     *                   When empty, defaults to {MP4SavePath}/motion/{app}/
      */
     explicit MotionSearch(const mediakit::MediaTuple &tuple, const std::string &base_path = "");
     ~MotionSearch() = default;
