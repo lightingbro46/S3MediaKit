@@ -293,6 +293,8 @@ int start_main(int argc,char *argv[]) {
                   << ", saved config file: " << g_ini_file;
         }
 
+        // Check if the 404 response configured in the config file is valid, if not, modify it to default html content and save to config file
+        // Also update remain configurations in config file if application is new version and config file is old version, to ensure all necessary configurations are present in config file for the application to run properly
         auto &notfound_response = mINI::Instance()[Http::kNotFound];
         if (notfound_response.empty() || notfound_response.find(kServerName) == string::npos) {
             // Starting with the 404 response with <kServerName> is prohibited
