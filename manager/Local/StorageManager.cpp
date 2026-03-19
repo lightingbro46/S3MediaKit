@@ -138,8 +138,16 @@ static size_t estimateSpaceToReclaim() {
 
     if (findMountPoint(record_path, usage_pct, used_bytes, total_bytes)) {
         // todo: estimate with read/write speed
-        if (usage_pct >= 90.0) {
-            space_reclaim = static_cast<size_t>((usage_pct - 85.0)) * total_bytes / 100;
+        GET_CONFIG(int, limit_percent_usage, Storage::kLimitPercentUsage);
+        auto _limit_percent_usage = std::min(99, std::max(0, limit_percent_usage));
+        GET_CONFIG(int, remove_percent_extra, Storage::kRemovePercentExtra);
+        auto _remove_percent_extra = std::min(99, std::max(0, remove_percent_extra));
+        if (_limit_percent_usage <= _remove_percent_extra) {
+            // avoid aggressive deletion when limit percentage is set too low, e.g. 0, or remove extra percentage is set too high, e.g. 100
+            _remove_percent_extra = 5;
+        }
+        if (usage_pct >= static_cast<float>(_limit_percent_usage)) {
+            space_reclaim = static_cast<size_t>((usage_pct - static_cast<float>(_limit_percent_usage) + static_cast<float>(_remove_percent_extra))) * total_bytes / 100;
         }
     }
     DebugL << "Estimate space to reclaim: " << format_bytes_human_readable(space_reclaim);

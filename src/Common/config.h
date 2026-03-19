@@ -551,6 +551,15 @@ extern const std::string kSaveImage;
 extern const std::string kSummaryWindowMS;
 } // namespace Motion
 
+////////////////////Storage configuration//////////////////////
+namespace Storage {
+// Limit percentage of disk usage, when the disk usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. The value range is 0~100, and the default value is 90.
+extern const std::string kLimitPercentUsage;
+// When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
+extern const std::string kRemovePercentExtra;
+
+} // namespace Storage
+
 } // namespace mediakit
 
 #endif /* COMMON_CONFIG_H */
