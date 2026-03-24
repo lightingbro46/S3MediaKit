@@ -1,4 +1,5 @@
 #include "StreamSource.h"
+#include "Extension/Track.h"
 #include "server/WebApi.h"
 #include "server/Manager.h"
 #include "Common/StrUtil.h"
@@ -195,7 +196,7 @@ TranslationInfo StreamSource::getTranslationInfo() {
     return info;
 }
 
-bool StreamSource::setupRecord(int type, bool start) {
+bool StreamSource::setupRecord(int type, bool start, bool replay_gop) {
     if (!_option.record_mp4) {
         WarnL << "MP4 recording is disabled, cannot setup record for stream: " << _option.tuple.shortUrl();
         return false;
@@ -218,21 +219,99 @@ bool StreamSource::setupRecord(int type, bool start) {
         WarnL << "EventPoller not found for stream: " << _option.tuple.shortUrl();
         return false;
     }
-    poller->async([muxer, type, start, media_src]() {
+    poller->async([muxer, type, start, replay_gop, media_src]() {
         auto option = muxer->getOption();
         auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
         if (start && is_recording) {
             WarnL << "Recording is already enabled, resetting record settings for stream: " << media_src->getMediaTuple().shortUrl();
             muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
         }
-        muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second);
+        muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second, replay_gop);
     });
     return true;
+}
+
+mediakit::EventRecordSession::Ptr StreamSource::startEventRecord() {
+    if (!_option.record_mp4) {
+        WarnL << "MP4 recording is disabled, cannot start event record: " << _option.tuple.shortUrl();
+        return nullptr;
+    }
+
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
+    if (!media_src) {
+        WarnL << "MediaSource not found for event record: " << _option.tuple.shortUrl();
+        return nullptr;
+    }
+
+    auto muxer = media_src->getMuxer();
+    if (!muxer) {
+        WarnL << "MediaSourceMuxer not found for event record: " << _option.tuple.shortUrl();
+        return nullptr;
+    }
+
+    if (!muxer->isRingEnabled()) {
+        WarnL << "GOP cache not available for event record: " << _option.tuple.shortUrl();
+        return nullptr;
+    }
+
+    auto type = Recorder::type_mp4_archived;
+    uint32_t back_ms = _option.protocol.pre_record_ms;
+    // forward_ms = 0 → infinite clip; terminated by stopRecord() when event ends.
+    auto session = muxer->startEventRecord(type, back_ms, 0 /*infinite*/);
+    _event_session = session;
+    InfoL << "Event record started: stream=" << _option.tuple.shortUrl() << ", back_ms=" << back_ms << " ms, forward_ms=infinite";
+    return session;
+}
+
+void StreamSource::extendEventRecord() {
+    auto session = _event_session;
+    if (!session || !session->isActive()) return;
+    uint32_t post_ms = _option.protocol.post_record_ms;
+    session->extend(post_ms);
+    TraceL << "Event record extended by stream=" << _option.tuple.shortUrl() << ", post_ms=" << post_ms << " ms";
+}
+
+void StreamSource::stopEventRecord(uint32_t extra_overlap_ms) {
+    // Do NOT null out _event_session here. Keep the pointer alive so that
+    // hasActiveEventSession() returns true during the post_ms tail window.
+    // If a new motion event arrives before the tail expires, extendRecord()
+    // will be called instead of startRecord(), which would otherwise create
+    // a second overlapping primary clip.  _event_session is overwritten in
+    // the next startRecord() call, or becomes stale (isActive()==false) and
+    // ignored by hasActiveEventSession().
+    auto session = _event_session;
+    if (!session || !session->isActive()) return;
+    uint32_t post_ms = _option.protocol.post_record_ms + extra_overlap_ms;
+    session->stop(post_ms);
+    InfoL << "Event record stop requested (post_ms=" << post_ms << ", overlap=" << extra_overlap_ms << "): " << _option.tuple.shortUrl();
+}
+
+void StreamSource::cancelEventRecord() {
+    if (_event_session) {
+        if (_event_session->isActive()) {
+            // stop(0) sets end_dts = last_written_dts, so the ring-reader lambda
+            // will detect DTS exceeded on the very next frame and close the file.
+            _event_session->stop(0);
+        }
+        _event_session = nullptr; // drop our reference; ring reader holds its own
+    }
 }
 
 void StreamSource::onStreamReady(bool ready, const std::string &status, const TranslationInfo *info) {
     auto data = toolkit::Any(info ? std::make_shared<TranslationInfo>(*info) : nullptr);
     DeviceSourceEventInterceptor::onStreamReady(DeviceSource::NullDeviceSource(), _type, ready, status, data);
+}
+
+uint32_t StreamSource::getVideoGopIntervalMs() const {
+    auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
+    if (!media_src) return 0;
+    for (auto &track : media_src->getTracks(true)) {
+        auto video = std::dynamic_pointer_cast<VideoTrack>(track);
+        if (video) {
+            return static_cast<uint32_t>(video->getVideoGopInterval());
+        }
+    }
+    return 0;
 }
 
 } // namespace managerkit

@@ -31,13 +31,15 @@ MP4Recorder::~MP4Recorder() {
 
 void MP4Recorder::createFile() {
     closeFile();
-    auto date = getTimeStr("%Y-%m-%d");
-    auto file_name = date + "-" + getTimeStr("%H-%M-%S") + "-" + std::to_string(_file_index++) + ".mp4";
+    time_t file_time = (_next_file_time != 0) ? _next_file_time : ::time(NULL);
+    _next_file_time = 0; // consume override
+    auto date = getTimeStr("%Y-%m-%d", file_time);
+    auto file_name = date + "-" + getTimeStr("%H-%M-%S", file_time) + "-" + std::to_string(_file_index++) + ".mp4";
     auto full_path = _info.folder + date + "/" + file_name;
     auto full_path_tmp = _info.folder + date + "/." + file_name;
 
     // ///record Business Logic//////
-    _info.start_time = ::time(NULL);
+    _info.start_time = file_time;
     _info.file_name = file_name;
     _info.file_path = full_path;
     GET_CONFIG(string, appName, Record::kAppName);

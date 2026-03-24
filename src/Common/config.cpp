@@ -154,11 +154,13 @@ const string kAppName = string(kFieldName) + "appName";
 
 const string kEnableMotion = string(kFieldName) + "enable_motion";
 const string kMotionDemand = string(kFieldName) + "motion_demand";
-const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
 const string kRoiMask = string(kFieldName) + "roi_mask";
 const string kRecordMotion = string(kFieldName) + "record_motion";
 const string kPreRecordMS = string(kFieldName) + "pre_record_ms";
 const string kPostRecordMS = string(kFieldName) + "post_record_ms";
+
+const string kEnableGopCache = string(kFieldName) + "enable_gop_cache";
+const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
 
 static onceToken token([]() {
     mINI::Instance()[kModifyStamp] = (int)ProtocolOption::kModifyStampRelative;
@@ -195,11 +197,13 @@ static onceToken token([]() {
 
     mINI::Instance()[kEnableMotion] = 0;
     mINI::Instance()[kMotionDemand] = 1;
-    mINI::Instance()[kGopCacheSize] = 0;
     mINI::Instance()[kRoiMask] = "";
     mINI::Instance()[kRecordMotion] = 0;
     mINI::Instance()[kPreRecordMS] = 5000;
     mINI::Instance()[kPostRecordMS] = 5000;
+
+    mINI::Instance()[kEnableGopCache] = 0;
+    mINI::Instance()[kGopCacheSize] = 5;
 });
 } // !Protocol
 
@@ -459,6 +463,8 @@ const string kUseYChannel = MOTION_FIELD "useYChannel";
 const string kSaveImage = MOTION_FIELD "saveImage";
 // Aggregation window for MotionSummaryBlock generation (ms). Default: 5 minutes.
 const string kSummaryWindowMS = MOTION_FIELD "summaryWindowMS";
+// Default overlap interval between two motion events (s). Default: 2s. If the interval between two motion events is less than this value, they will be merged into one event.
+const string kDefaultOverlapInterval = MOTION_FIELD "defaultOverlapInterval";
 
 static onceToken token([]() {
     mINI::Instance()[kSensitivity] = "0.15,0.1,0.08,0.05,0.02";
@@ -470,6 +476,7 @@ static onceToken token([]() {
     mINI::Instance()[kUseYChannel] = 0;
     mINI::Instance()[kSaveImage] = 0;
     mINI::Instance()[kSummaryWindowMS] = 10000;
+    mINI::Instance()[kDefaultOverlapInterval] = 2;
 });
 } // namespace Motion
 

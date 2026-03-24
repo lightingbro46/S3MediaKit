@@ -2,6 +2,7 @@
 #include "Common/config.h"
 #include "MultiMediaSourceMuxer.h"
 #include "Thread/WorkThreadPool.h"
+#include "Record/MP4Recorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -120,13 +121,13 @@ private:
     std::multimap<uint64_t, Frame::Ptr> _cache;
 };
 
-std::shared_ptr<MediaSinkInterface> MultiMediaSourceMuxer::makeRecorder(Recorder::type type) {
+std::shared_ptr<MediaSinkInterface> MultiMediaSourceMuxer::makeRecorder(Recorder::type type, bool replay_gop) {
     auto recorder = Recorder::createRecorder(type, getMediaTuple(), _option);
     for (auto &track : getTracks()) {
         recorder->addTrack(track);
     }
     recorder->addTrackCompleted();
-    if (_ring) {
+    if (replay_gop && _ring) {
         _ring->flushGop([&](const Frame::Ptr &frame) {
             recorder->inputFrame(frame);
         });
@@ -222,11 +223,11 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
     if (option.enable_fmp4) {
         _fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(Recorder::createRecorder(Recorder::type_fmp4, _tuple, option));
     }
-    if (option.enable_motion) {
 #if defined(ENABLE_FFMPEG)
+    if (option.enable_motion) {
         _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
-#endif // ENABLE_FFMPEG
     }
+#endif // ENABLE_FFMPEG
 
     // Audio related settings
     enableAudio(option.enable_audio);
@@ -301,7 +302,7 @@ int MultiMediaSourceMuxer::totalReaderCount(MediaSource &sender) {
 }
 
 // This function may be called across threads
-bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const string &custom_path, size_t max_second) {
+bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const string &custom_path, size_t max_second, bool replay_gop) {
     CHECK(getOwnerPoller(MediaSource::NullMediaSource())->isCurrentThread(), "Can only call setupRecord in it's owner poller");
     onceToken token(nullptr, [&]() {
         if (_option.mp4_as_player && type == Recorder::type_mp4) {
@@ -378,20 +379,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             }
             return true;
         }
-#if defined(ENABLE_MOTION)
-        case Recorder::type_mp4_archived: {
-            if (start && !_mp4) {
-                // Start recording
-                _option.mp4_save_path = custom_path;
-                _option.mp4_max_second = max_second;
-                _mp4 = makeRecorder(type);
-            } else if (!start && _mp4) {
-                // Stop recording
-                _mp4 = nullptr;
-            }
-            return true;
-        }
-#endif // ENABLE_MOTION
+
         default : return false;
     }
 }
@@ -481,6 +469,134 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, uin
 #endif
 }
 
+EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type type, uint32_t back_time_ms, uint32_t forward_time_ms) {
+#if !defined(ENABLE_MP4)
+    throw std::invalid_argument("The mp4-related functions are not turned on, please enable the ENABLE_MP4 macro and compile and test it again.");
+#else
+    if (!_ring) {
+        throw std::runtime_error("frame gop cache disabled, start event record failed");
+    }
+    if (type != Recorder::type_mp4 && type != Recorder::type_mp4_archived) {
+        throw std::invalid_argument("Only mp4 recording is supported for event record");
+    }
+
+    auto recorder = std::static_pointer_cast<MP4Recorder>(Recorder::createRecorder(type, getMediaTuple(), _option));
+    for (auto &track : getTracks()) {
+        recorder->addTrack(track);
+    }
+    recorder->addTrackCompleted();
+
+    // ── Replay GOP history (pre-event backfill) ──────────────────────────────
+    std::list<Frame::Ptr> history;
+    _ring->flushGop([&](const Frame::Ptr &frame) { history.emplace_back(frame); });
+    time_t first_frame_time = 0;
+    if (!history.empty()) {
+        auto now_dts = history.back()->dts();
+        decltype(history)::iterator pos = history.end();
+        for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            auto &frame = *it;
+            if (frame->getTrackType() != TrackVideo || (!frame->configFrame() && !frame->keyFrame())) {
+                continue;
+            }
+            if (frame->dts() + back_time_ms < now_dts) {
+                pos = it.base();
+                --pos;
+                break;
+            }
+        }
+        if (pos != history.end()) {
+            TraceL << "clear history video: " << history.front()->dts() << " -> " << (*pos)->dts();
+            history.erase(history.begin(), pos);
+        }
+        if (!history.empty()) {
+            auto &front = history.front();
+            // Derive wall-clock time for the first frame by back-calculating from now.
+            // now_dts corresponds to ::time(NULL); front->dts() is back_time_ms earlier.
+            auto delta_ms = (int64_t)now_dts - (int64_t)front->dts();
+            first_frame_time = ::time(NULL) - (time_t)(delta_ms / 1000);
+            InfoL << "start event record:" << _tuple.shortUrl()
+                  << ", start_dts: " << front->dts()
+                  << ", key_frame: " << front->keyFrame()
+                  << ", config_frame: " << front->configFrame()
+                  << ", now_dts: " << now_dts
+                  << ", forward_time_ms: " << forward_time_ms
+                  << " (" << (forward_time_ms == 0 ? "infinite" : "fixed") << ")"
+                  << ", first_frame_wall: " << first_frame_time;
+            // Set first file name to reflect earliest frame, not current time.
+            recorder->setNextFileTime(first_frame_time);
+            for (auto &frame : history) {
+                recorder->inputFrame(frame);
+            }
+        }
+    }
+
+    // ── Build session handle ─────────────────────────────────────────────────
+    auto session = std::make_shared<EventRecordSession>();
+    session->type                = type; // 
+    session->initial_forward_ms  = forward_time_ms;
+    if (forward_time_ms == 0) {
+        // Infinite session: only stop() / extend() can set a deadline.
+        session->end_dts.store(std::numeric_limits<uint64_t>::max(), std::memory_order_relaxed);
+        session->wall_deadline_ms.store(std::numeric_limits<uint64_t>::max(), std::memory_order_relaxed);
+    }
+    // For forward_time_ms > 0, deadline is initialised on the first live frame
+    // (so the timer starts from the live edge, not from GOP history start).
+
+    // ── Forward ring reader ──────────────────────────────────────────────────
+    bool is_live_stream = _dur_sec < 0.01;
+    auto tuple = getMediaTuple();
+    auto reader = _ring->attach(getOwnerPoller(MediaSource::NullMediaSource()), false);
+    reader->setReadCB([recorder, session, reader, is_live_stream, tuple](const Frame::Ptr &frame) mutable {
+        session->last_dts.store(frame->dts(), std::memory_order_relaxed);
+
+        // Initialise selected_index and DTS/wall deadlines on the first live frame.
+        if (session->selected_index.load(std::memory_order_relaxed) == -1) {
+            session->selected_index.store(frame->getIndex(), std::memory_order_relaxed);
+            if (session->initial_forward_ms > 0) {
+                session->end_dts.store(
+                    frame->dts() + static_cast<uint64_t>(session->initial_forward_ms),
+                    std::memory_order_release);
+                auto wall_dl = toolkit::getCurrentMillisecond(true)
+                    + session->initial_forward_ms + 3000ULL;
+                session->wall_deadline_ms.store(wall_dl, std::memory_order_release);
+            }
+        }
+
+        auto end  = session->end_dts.load(std::memory_order_acquire);
+        auto wall = session->wall_deadline_ms.load(std::memory_order_acquire);
+        auto now_wall = toolkit::getCurrentMillisecond(true);
+
+        bool dts_exceeded  = end  != std::numeric_limits<uint64_t>::max()
+                             && frame->getIndex() == session->selected_index.load(std::memory_order_relaxed)
+                             && frame->dts() > end;
+        bool wall_exceeded = is_live_stream
+                             && wall != std::numeric_limits<uint64_t>::max()
+                             && now_wall > wall;
+
+        if (dts_exceeded || wall_exceeded) {
+            InfoL << "stop event record: " << tuple.shortUrl() << ", end_dts: " << frame->dts();
+            session->active.store(false, std::memory_order_release);
+            // Destroy recorder on a worker thread (closeMP4 can be slow).
+            WorkThreadPool::Instance().getPoller()->async([recorder]() mutable { recorder.reset(); });
+            reader = nullptr;
+            return;
+        }
+        recorder->inputFrame(frame);
+    });
+    std::weak_ptr<RingType::RingReader> weak_reader = reader;
+    reader->setDetachCB([weak_reader, session, recorder]() mutable {
+        session->active.store(false, std::memory_order_release);
+        // Recorder destructor finalises and closes all open files.
+        WorkThreadPool::Instance().getPoller()->async([recorder]() mutable { recorder.reset(); });
+        if (auto strong = weak_reader.lock()) {
+            strong->setReadCB(nullptr);
+        }
+    });
+
+    return session;
+#endif
+}
+
 // This function may be called across threads
 bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
     switch (type) {
@@ -489,9 +605,7 @@ bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
         case Recorder::type_hls_fmp4: return !!_hls_fmp4;
         case Recorder::type_fmp4: return !!_fmp4;
         case Recorder::type_ts: return !!_ts;
-#if defined(ENABLE_MOTION)
-        case Recorder::type_mp4_archived: return !!_mp4;
-#endif // ENABLE_MOTION
+
         default: return false;
     }
 }
@@ -730,6 +844,16 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     GET_CONFIG(size_t, gop_cache, RtpProxy::kGopCache);
     if (gop_cache > 0) {
         createGopCacheIfNeed(gop_cache);
+    }
+#endif
+
+#if defined(ENABLE_MOTION)
+    // enable_gop_cache: pre-create GOP ring buffer so that makeRecorder() can
+    // immediately backfill historical frames when recording is started later
+    // (e.g. seamless RecordLowResAndMotion stream switch).
+    if (_option.enable_gop_cache && !_ring) {
+        GET_CONFIG(int, default_gop_cache, Protocol::kGopCacheSize);
+        createGopCacheIfNeed(_option.gop_cache_size > 0 ? _option.gop_cache_size : default_gop_cache);
     }
 #endif
 

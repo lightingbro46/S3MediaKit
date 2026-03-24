@@ -12,6 +12,7 @@
 #include "Rtmp/RtmpMediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
+#include "Record/EventRecordSession.h"
 #if defined(ENABLE_FFMPEG)
 #include "Processor/MultiMediaSourceProcessor.h"
 #endif // ENABLE_FFMPEG
@@ -80,7 +81,7 @@ public:
      * @param custom_path Specify a custom path when recording is enabled
      * @return Whether the setting is successful
      */
-    bool setupRecord(Recorder::type type, bool start, const std::string &custom_path, size_t max_second);
+    bool setupRecord(Recorder::type type, bool start, const std::string &custom_path, size_t max_second, bool replay_gop = true);
 
     /**
      * Start recording mp4
@@ -92,11 +93,27 @@ public:
     std::string startRecord(const std::string &file_path, uint32_t back_time_ms, uint32_t forward_time_ms);
 
     /**
+     * Start an event-based recording clip.
+     * @param type    Recording type
+     * @param back_time_ms History to replay from the GOP ring buffer (pre-event).
+     * @param forward_time_ms
+     *   0  → clip runs indefinitely; caller must call session->stop() to end it.
+     *   >0 → clip auto-stops after this many ms (one-shot, fixed-duration clip).
+     * @return Session handle; never nullptr (throws on error).
+     */
+    EventRecordSession::Ptr startEventRecord(Recorder::type type, uint32_t back_time_ms, uint32_t forward_time_ms = 0);
+                                        
+    /**
      * Get recording status
      * @param type Recording type
      * @return Recording status
      */
     bool isRecording(Recorder::type type);
+
+    /**
+     * Whether the GOP ring buffer cache is active (needed for event-based startRecord()).
+     */
+    bool isRingEnabled() const { return !!_ring; }
 
     /**
      * Start or stop motion detection, only for video streams
@@ -167,7 +184,7 @@ protected:
 
 private:
     void createGopCacheIfNeed(size_t gop_count);
-    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type);
+    std::shared_ptr<MediaSinkInterface> makeRecorder(Recorder::type type, bool replay_gop = true);
 
 private:
     bool _is_enable = false;

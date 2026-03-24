@@ -236,6 +236,13 @@ public:
     // Whether to generate motion MJPEG stream on demand (only create the live MJPEG source when a viewer connects)
     bool motion_demand;
 
+    // Pre-create raw frame GOP ring buffer so that makeRecorder() can backfill history
+    // when recording starts (e.g. RecordLowResAndMotion stream switch).
+    // Set to true for streams that may need a seamless recording hand-off.
+    bool enable_gop_cache;
+    // GOP cache size, which is needed when enable_gop_cache is true. The default value is 2, which can cache about 4 seconds of video stream (assuming 30fps).
+    int gop_cache_size;
+
     template <typename MAP>
     ProtocolOption(const MAP &allArgs) : ProtocolOption() {
         load(allArgs);
@@ -279,6 +286,9 @@ public:
         GET_OPT_VALUE(pre_record_ms);
         GET_OPT_VALUE(post_record_ms);
         GET_OPT_VALUE(motion_demand);
+
+        GET_OPT_VALUE(enable_gop_cache);
+        GET_OPT_VALUE(gop_cache_size);
     }
 };
 

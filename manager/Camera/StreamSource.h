@@ -5,6 +5,7 @@
 #include "Player/PlayerProxy.h"
 #include "Common/DeviceSource.h"
 #include "Server/ResourceMonitor.h"
+#include "Record/EventRecordSession.h"
 
 namespace managerkit {
 
@@ -86,7 +87,57 @@ public:
 
     mediakit::TranslationInfo getTranslationInfo();
 
-    bool setupRecord(int type, bool start);
+    bool setupRecord(int type, bool start, bool replay_gop = true);
+
+    /**
+     * Start an infinite event-based recording clip for the primary stream.
+     * Records pre_record_ms of buffered history (GOP backfill) before the
+     * event and writes frames continuously thereafter.  Call stopRecord()
+     * when the event ends so the clip is finalised with a post-event tail.
+     * @return session handle (nullptr on failure).
+     */
+    mediakit::EventRecordSession::Ptr startEventRecord();
+
+    /**
+     * Extend the active event-recording window while the event is still
+     * ongoing.  Pushes the stop deadline to (now + post_record_ms).
+     * No-op if no session is active.
+     */
+    void extendEventRecord();
+
+    /**
+     * Signal end of the event.  Records (post_record_ms + extra_overlap_ms) more ms
+     * then closes the file automatically.  No-op if no session is active.
+     * @param extra_overlap_ms Additional ms to add on top of post_record_ms so the
+     *        secondary recorder has time to receive its first IDR before primary ends.
+     */
+    void stopEventRecord(uint32_t extra_overlap_ms = 0);
+
+    /**
+     * True if an event-recording session is currently active (file is still
+     * being written).  Used to decide whether a new motion event should
+     * extend the current clip or start a fresh one.
+     */
+    bool hasActiveEventSession() const {
+        return _event_session && _event_session->isActive();
+    }
+
+    /**
+     * Immediately cancel any active event-recording session.
+     * Calls stop(0) so the ring-reader lambda terminates on the very next
+     * incoming frame and closes the file cleanly.  Must be called when
+     * leaving RecordLowResAndMotion so the session does not outlive the mode
+     * that started it (and does not conflict with recorders started by the
+     * new mode).
+     */
+    void cancelEventRecord();
+
+    /**
+     * Returns the measured GOP interval (ms) of the video track on this stream.
+     * Uses VideoTrack::getVideoGopInterval() which tracks wall-clock time between
+     * consecutive IDR frames.  Returns 0 if no video track / not yet measured.
+     */
+    uint32_t getVideoGopIntervalMs() const;
 
 private:
     void setState(bool live, std::string status);
@@ -104,6 +155,7 @@ private:
     std::atomic_bool _live {false};
     std::shared_ptr<const std::string> _status {std::make_shared<const std::string>("init")};
     std::weak_ptr<mediakit::PlayerProxy> _player;
+    mediakit::EventRecordSession::Ptr _event_session;
 };
 
 } // namespace managerkit

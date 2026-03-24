@@ -301,8 +301,6 @@ extern const std::string kAppName;
 extern const std::string kEnableMotion;
 // Motion detection on-demand switch
 extern const std::string kMotionDemand;
-// GOP cache size, unit is frames
-extern const std::string kGopCacheSize;
 // ROI mask for motion detection
 extern const std::string kRoiMask;
 // Record stream in motion detection mode, only record when motion is detected
@@ -311,6 +309,11 @@ extern const std::string kRecordMotion;
 extern const std::string kPreRecordMS;
 // Record after motion is detected, unit is milliseconds, default is 15000, which means to continue recording for 15 seconds after motion is detected
 extern const std::string kPostRecordMS;
+
+// GOP cache configuration, whether to enable GOP cache, which can improve the performance of event-based recording and on-demand streaming, but it will consume more memory. The default value is false.
+extern const std::string kEnableGopCache;
+// GOP cache size, which is needed when GOP cache is enabled. The default value is 2, which can cache about 4 seconds of video stream (assuming 30fps).
+extern const std::string kGopCacheSize;
 } // !Protocol
 
 // //////////HTTP configuration///////////
@@ -549,6 +552,8 @@ extern const std::string kUseYChannel;
 extern const std::string kSaveImage;
 // Aggregation window for MotionSummaryBlock generation (ms). Default: 10 seconds.
 extern const std::string kSummaryWindowMS;
+// Default overlap interval between two motion events (s). Default: 2s. If the interval between two motion events is less than this value, they will be merged into one event.
+extern const std::string kDefaultOverlapInterval;
 } // namespace Motion
 
 ////////////////////Storage configuration//////////////////////
