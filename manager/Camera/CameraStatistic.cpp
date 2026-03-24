@@ -630,7 +630,9 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
     if (device_caps) {
         device_stats.device_caps = *device_caps;
     }
-    DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status;
+    DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
+           << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
+           << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();
     save();
 }
 

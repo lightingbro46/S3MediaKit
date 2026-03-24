@@ -248,6 +248,8 @@ bool OnvifControl::getMediaProfiles() {
         return false;
     }
 
+    _mediaProfile.clear();
+
     for (const auto &profile : GetProfilesResponse.Profiles) {
         if (!profile || profile->token.empty()) {
             continue;
