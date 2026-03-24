@@ -173,7 +173,7 @@ void GenericRtspCameraImp::onImageQualityChange(DeviceSource &sender, int fps, i
         return;
     }
     auto quality = static_cast<ImageQuality>(q);
-    InfoL << "Camera " << _src->getUrl() << " image quality changed: fps=" << fps << ", q=" << getImageQualityString(quality);
+    // InfoL << "Camera " << _src->getUrl() << " image quality changed: fps=" << fps << ", q=" << getImageQualityString(quality);
     // todo:
     // _controller->setupImageQuality(fps, quality);
 }

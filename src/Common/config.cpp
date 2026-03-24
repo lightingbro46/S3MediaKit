@@ -109,7 +109,7 @@ static onceToken token([]() {
     mINI::Instance()[kMaxStreamWaitTimeMS] = 15 * 1000;
     mINI::Instance()[kEnableVhost] = 0;
     mINI::Instance()[kResetWhenRePlay] = 1;
-    mINI::Instance()[kMergeWriteMS] = 5000;
+    mINI::Instance()[kMergeWriteMS] = 0;
     mINI::Instance()[kMediaServerId] = makeRandStr(32);
     mINI::Instance()[kCheckNvidiaDev] = 1;
     mINI::Instance()[kEnableFFmpegLog] = 0;

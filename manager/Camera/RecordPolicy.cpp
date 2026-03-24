@@ -179,7 +179,7 @@ void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
     auto _current_fps = _it == _items.end() ? 0 : _it->second.fps;
     auto _current_q = _it == _items.end() ? ImageQuality::Low : _it->second.q;
     if (_current_fps != item.fps || _current_q != item.q) {
-        DebugL << "Recording quality of device: " << _tuple.shortUrl() << " changed to fps=" << item.fps << ", q=" << getImageQualityString(item.q) << " (day=" << item.day << ", hour=" << item.hour << ")";
+        // DebugL << "Recording quality of device: " << _tuple.shortUrl() << " changed to fps=" << item.fps << ", q=" << getImageQualityString(item.q) << " (day=" << item.day << ", hour=" << item.hour << ")";
         onImageQualityChange(DeviceSource::NullDeviceSource(), item.fps, static_cast<int>(item.q));
     }
 }
