@@ -377,20 +377,20 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
     uint64_t duration_ms = 0;
     for (auto it = files.begin(); it != files.end(); ++it) {
         if (it == files.begin()) {
-            offset = start_segment - it->first;
+            offset = (start_segment >= it->first) ? (start_segment - it->first) : 0;
             if (first_segment) {
                 _stats.first_time = it->first;
             } else {    
                 duration_ms = (it->first - _stats.first_time) * 1000;
             }
         } else if (it->first - start_segment >= max_duration) {
-            next_time = it->first;
             break;
         }
         auto demuxer = std::make_shared<MP4Demuxer>();
         demuxer->openMP4(it->second);
         _demuxers.emplace(duration_ms, demuxer);
         duration_ms += demuxer->getDurationMS();
+        next_time = it->first + demuxer->getDurationMS() / 1000;
     }
     
     _stats.next_time = next_time;

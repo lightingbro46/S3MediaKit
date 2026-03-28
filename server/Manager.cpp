@@ -132,7 +132,8 @@ void installManagerHook () {
             TimeRange first_range;
             query->getRecordedTimePeriod(stamp, stamp + max_duration, [&](vector<TimeRange> &ret) {
                 for (auto const &p : ret) {
-                    if (p.startTime == stamp) {
+                    // Note: We allow 1 second of gap to find the nearest block, since the timestamp may not be exactly the same as the start time of a block due to various reasons (e.g., recording delay, file writing delay, etc.)
+                    if (p.startTime <= stamp + 1) {
                         found = true;
                         first_range = p;
                     }
