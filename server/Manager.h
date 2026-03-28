@@ -66,4 +66,6 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 
 void installGlobalMonitor();
 
+Json::Value makeDeviceStatisticJson(const managerkit::DeviceSource::Ptr &device);
+
 #endif // S3MANAGERKIT_MANAGER_H

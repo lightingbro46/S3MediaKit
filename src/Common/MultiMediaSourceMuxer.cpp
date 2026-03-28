@@ -315,7 +315,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             if (start && !_hls) {
                 // Start recording
                 _option.hls_save_path = custom_path;
-                auto hls = dynamic_pointer_cast<HlsRecorder>(makeRecorder(type));
+                auto hls = dynamic_pointer_cast<HlsRecorder>(makeRecorder(type, replay_gop));
                 if (hls) {
                     // Set the event listener for HlsMediaSource
                     hls->setListener(shared_from_this());
@@ -332,7 +332,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
                 // Start recording
                 _option.mp4_save_path = custom_path;
                 _option.mp4_max_second = max_second;
-                _mp4 = makeRecorder(type);
+                _mp4 = makeRecorder(type, replay_gop);
             } else if (!start && _mp4) {
                 // Stop recording
                 _mp4 = nullptr;
@@ -343,7 +343,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
             if (start && !_hls_fmp4) {
                 // Start recording
                 _option.hls_save_path = custom_path;
-                auto hls = dynamic_pointer_cast<HlsFMP4Recorder>(makeRecorder(type));
+                auto hls = dynamic_pointer_cast<HlsFMP4Recorder>(makeRecorder(type, replay_gop));
                 if (hls) {
                     // Set the event listener for HlsMediaSource
                     hls->setListener(shared_from_this());
@@ -357,7 +357,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
         }
         case Recorder::type_fmp4: {
             if (start && !_fmp4) {
-                auto fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(makeRecorder(type));
+                auto fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(makeRecorder(type, replay_gop));
                 if (fmp4) {
                     fmp4->setListener(shared_from_this());
                 }
@@ -369,7 +369,7 @@ bool MultiMediaSourceMuxer::setupRecord(Recorder::type type, bool start, const s
         }
         case Recorder::type_ts: {
             if (start && !_ts) {
-                auto ts = dynamic_pointer_cast<TSMediaSourceMuxer>(makeRecorder(type));
+                auto ts = dynamic_pointer_cast<TSMediaSourceMuxer>(makeRecorder(type, replay_gop));
                 if (ts) {
                     ts->setListener(shared_from_this());
                 }
@@ -514,7 +514,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
             // now_dts corresponds to ::time(NULL); front->dts() is back_time_ms earlier.
             auto delta_ms = (int64_t)now_dts - (int64_t)front->dts();
             first_frame_time = ::time(NULL) - (time_t)(delta_ms / 1000);
-            InfoL << "start event record:" << _tuple.shortUrl()
+            DebugL << "start event record:" << _tuple.shortUrl()
                   << ", start_dts: " << front->dts()
                   << ", key_frame: " << front->keyFrame()
                   << ", config_frame: " << front->configFrame()
@@ -574,7 +574,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
                              && now_wall > wall;
 
         if (dts_exceeded || wall_exceeded) {
-            InfoL << "stop event record: " << tuple.shortUrl() << ", end_dts: " << frame->dts();
+            DebugL << "stop event record: " << tuple.shortUrl() << ", end_dts: " << frame->dts();
             session->active.store(false, std::memory_order_release);
             // Destroy recorder on a worker thread (closeMP4 can be slow).
             WorkThreadPool::Instance().getPoller()->async([recorder]() mutable { recorder.reset(); });

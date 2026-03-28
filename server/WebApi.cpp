@@ -3336,6 +3336,20 @@ void installWebApi() {
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
+
+    api_regist("/media/mserver/device/statistics", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS_("id");
+
+        string id = allArgs["id"];
+        auto device = findDeviceSource(id);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+            return;
+        }
+
+        val["data"] = makeDeviceStatisticJson(device);
+        invoker(200, headerOut, val.toStyledString());
+    });
 }
 
 void unInstallWebApi(){

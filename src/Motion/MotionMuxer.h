@@ -7,6 +7,7 @@
 #include "MotionAggregator.h"
 #include "Util/BlockStorageEngine.h"
 #include "Record/Recorder.h"
+#include "Poller/Timer.h"
 #include <deque>
 
 namespace mediakit {
@@ -145,6 +146,7 @@ private:
     std::deque<MotionEventBlock> _pre_buffer;         // events buffered before motion is confirmed
     MotionEventWriter::Ptr _writer;
     MotionAggregator::Ptr  _agg;
+    toolkit::Timer::Ptr    _flush_timer;  // periodic checkpoint every 30s while recording
 };
 
 } // namespace mediakit

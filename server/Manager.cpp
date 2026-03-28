@@ -566,8 +566,8 @@ static Json::Value exampleJson() {
             period["fps"] = 25;
             period["q"] = "L";
             // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
-            period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
-            // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
+            // period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
+            period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
     }
@@ -1208,4 +1208,109 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
 void installGlobalMonitor() {
     // Start monitoring system resource usage
     GlobalMonitor::Instance().start();
+}
+
+Json::Value makeCameraOptionJson(const CameraOption &option) {
+    Json::Value val;
+    // Basic info
+    val["name"]         = option.name;
+    val["manufacturer"] = option.manufacturer;
+    val["model"]        = option.model;
+    val["ip"]           = option.ip;
+    val["port"]         = option.port;
+    val["username"]     = option.username;
+    val["password"]     = option.password;
+
+    // Stream control
+    val["disablePrimaryStream"]      = option.disablePrimaryStream;
+    val["disableSecondaryStream"]    = option.disableSecondaryStream;
+    val["doNotRecordPrimaryStream"]  = option.doNotRecordPrimaryStream;
+    val["doNotRecordSecondaryStream"]= option.doNotRecordSecondaryStream;
+    val["disableAudio"]              = option.disableAudio;
+
+    // Recording
+    val["enableRecord"]            = option.enableRecord;
+    val["keepArchivedMinForAuto"]  = option.keepArchivedMinForAuto;
+    val["keepArchivedMinFor"]      = (Json::UInt64)option.keepArchivedMinFor;
+    val["keepArchivedMaxForAuto"]  = option.keepArchivedMaxForAuto;
+    val["keepArchivedMaxFor"]      = (Json::UInt64)option.keepArchivedMaxFor;
+    val["motionPreRecordSec"]      = option.motionPreRecordSec;
+    val["motionPostRecordSec"]     = option.motionPostRecordSec;
+    val["recordSchedules"]         = option.recordSchedules;
+
+    // Device activation & media transport
+    val["enableActive"]            = option.enableActive;
+    val["mediaPort"]               = option.mediaPort;
+    val["autoMediaPort"]           = option.autoMediaPort;
+    val["rtpTransport"]            = option.rtpTransport;
+    val["enableFailover"]          = option.enableFailover;
+    val["preferedMediaServer"]     = option.preferedMediaServer;
+
+    // Web access
+    val["webPort"]                 = option.webPort;
+    val["autoWebPort"]             = option.autoWebPort;
+    val["keepConfigProfileAndStream"] = option.keepConfigProfileAndStream;
+
+    // PTZ
+    val["enablePTZControl"]    = option.enablePTZControl;
+    val["reversePanAxis"]      = option.reversePanAxis;
+    val["reverseTiltAxis"]     = option.reverseTiltAxis;
+    val["ptzMode"]             = option.ptzMode;
+    val["ptzSpeed"]            = option.ptzSpeed;
+    val["onvifMainProfile"]    = option.onvifMainProfile;
+    val["onvifSubProfile"]     = option.onvifSubProfile;
+
+    // Motion detection
+    val["enableMotion"]         = option.enableMotion;
+    val["roiValue"]             = option.roiValue;
+    val["motionDetectOnStream"] = option.motionDetectOnStream;
+
+    return val;
+}
+
+Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
+    Json::Value item;
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto camera = impl->getCameraSource();
+            auto stats_imp = impl->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                auto option = params.option;
+                item["deviceId"] = params.tuple.device_id;
+                // Get both stream status
+                if (camera->hasStreamTuple(PrimaryStream)) {
+                    item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
+                    item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
+                } else {
+                    item["primaryStreamId"] = Json::nullValue;
+                    item["primaryStream"] = Json::nullValue;
+                }
+
+                if (camera->hasStreamTuple(SecondaryStream)) {
+                    item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
+                    item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
+                } else {
+                    item["secondaryStreamId"] = Json::nullValue;
+                    item["secondaryStream"] = Json::nullValue;
+                }
+                // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
+                // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
+                auto is_online = isGenericRtspCameraOnline(item);
+                item["status"] = is_online;
+                item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                // Get controller status
+                if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
+                    item["controller"]["status"] = params.device_stats.connect;
+                    item["controller"]["errMsg"] = params.device_stats.status;
+                } else {
+                    item["controller"] = Json::nullValue;
+                }
+                item["options"] = makeCameraOptionJson(option);
+            }
+        }
+    }
+    return item;
 }

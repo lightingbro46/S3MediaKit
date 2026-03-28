@@ -58,11 +58,24 @@ void MotionMuxer::setRecording(bool recording) {
             // The index is mmap-backed and already on disk; the block file uses a
             // 64 KB stdio buffer that would otherwise stay in userspace until full.
             _writer->flush();
+
+            // Start a 30s periodic checkpoint: fflush .mblk + msync .idx.
+            // Limits data loss window for long-running motion events without
+            // the overhead of fdatasync on every appendBlock call.
+            std::weak_ptr<MotionMuxer> weak_self = shared_from_this();
+            _flush_timer = std::make_shared<Timer>(30.0f, [weak_self]() {
+                auto self = weak_self.lock();
+                if (self && self->_writer) {
+                    self->_writer->flush();
+                    DebugL << "MotionMuxer: periodic checkpoint";
+                }
+                return true;
+            }, nullptr);
         }
         _pre_buffer.clear();
     } else if (!recording) {
-        // Motion ended — flush the aggregator summary window, then flush the
-        // block file so all pending data reaches disk before the next reader.
+        // Motion ended — cancel periodic timer, flush and close.
+        _flush_timer.reset();
         _pre_buffer.clear();
         if (_agg) _agg->flush();
         if (_writer) _writer->flush();
@@ -126,6 +139,7 @@ void MotionMuxer::openForDate(const std::string &date) {
 }
 
 void MotionMuxer::closeWriter() {
+    _flush_timer.reset();  // stop periodic flush before closing writer
     // Flush the aggregator first so any pending summary goes to _writer.
     if (_agg) {
         _agg->flush();
