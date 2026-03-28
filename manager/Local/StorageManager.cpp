@@ -209,12 +209,6 @@ static RecordProfiles getRecordProfiles() {
                     string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
                     profiles.emplace(key_second, make_pair(min_value, max_value));
                 }
-                GET_CONFIG(string, archived_stream, Record::kArchiveStreamName);
-                if (!archived_stream.empty()) {
-                    auto tuple = camera->getDeviceTuple();
-                    string key_archived = (StrPrinter << tuple.device_id << "/" << archived_stream);
-                    profiles.emplace(key_archived, make_pair(min_value, max_value));
-                }
             }
         }
     });
@@ -260,7 +254,8 @@ static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
     // todo: Execution time exceeds period time, default 10 minutes
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
     GET_CONFIG(string, appName, Record::kAppName)
-    GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
+    GET_CONFIG(string, archive_name, Record::kArchiveName)
+    GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond)
     auto record_path = File::absolutePath(appName, mp4_save_path);
     unordered_map<string, uint64_t> path_threshold;
     Ticker ticket;
@@ -271,6 +266,9 @@ static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
             if (tuples.size() == 2) {
                 string camera_id = tuples[0];
                 string stream_id = tuples[1];
+                if (stream_id == archive_name) {
+                    return true;
+                }
                 string key = (StrPrinter << camera_id << "/" << stream_id);
                 uint64_t threshold = time(nullptr) - s_max_second;
                 auto it = keep_time_map.find(key);

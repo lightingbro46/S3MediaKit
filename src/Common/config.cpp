@@ -341,7 +341,7 @@ const string kFileBufSize = RECORD_FIELD "fileBufSize";
 const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
-const string kArchiveStreamName = RECORD_FIELD "archiveStreamName";
+const string kArchiveName = RECORD_FIELD "archiveName";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -350,7 +350,7 @@ static onceToken token([]() {
     mINI::Instance()[kFastStart] = false;
     mINI::Instance()[kFileRepeat] = false;
     mINI::Instance()[kEnableFmp4] = false;
-    mINI::Instance()[kArchiveStreamName] = "archive";
+    mINI::Instance()[kArchiveName] = "archive";
 });
 } // namespace Record
 

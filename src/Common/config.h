@@ -424,8 +424,8 @@ extern const std::string kFastStart;
 extern const std::string kFileRepeat;
 // Whether to use fmp4 format for MP4 recording files
 extern const std::string kEnableFmp4;
-// Stream name for recording motion and low-resolution streams
-extern const std::string kArchiveStreamName;
+//  App name for record metadata, used to distinguish different types of recordings, for example, "record" for regular recording, "motion_record" for motion detection recording, etc.
+extern const std::string kArchiveName;
 } // namespace Record
 
 // //////////HLS related configuration///////////

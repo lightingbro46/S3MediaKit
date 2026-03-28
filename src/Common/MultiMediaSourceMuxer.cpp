@@ -476,7 +476,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
     if (!_ring) {
         throw std::runtime_error("frame gop cache disabled, start event record failed");
     }
-    if (type != Recorder::type_mp4 && type != Recorder::type_mp4_archived) {
+    if (type != Recorder::type_mp4) {
         throw std::invalid_argument("Only mp4 recording is supported for event record");
     }
 

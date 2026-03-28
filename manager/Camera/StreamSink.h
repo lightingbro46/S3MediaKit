@@ -43,9 +43,6 @@ private:
     toolkit::EventPoller::Ptr _poller;
     std::unordered_map<int, StreamSource::Ptr> _monitor_map;
     toolkit::Timer::Ptr _timer_sink;
-    // Delayed-stop task used to keep the outgoing stream recording until the
-    // incoming stream has written its first IDR (seamless stream switch).
-    toolkit::EventPoller::DelayTask::Ptr _switch_delay_task;
     int _archive_mode = 0;
     std::array<bool, StreamType::StreamMax> _stream_ready{{false, false}};
 };

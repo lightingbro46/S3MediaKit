@@ -320,13 +320,8 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     auto tmp = split(prefix_path, "/");
     auto app = tmp[tmp.size() - 2];
     auto stream = tmp[tmp.size() - 1];
-#ifdef ENABLE_MOTION
-    GET_CONFIG(string, archived_stream, Record::kArchiveStreamName);
-    if (!archived_stream.empty() && stream == archived_stream) {
-        stream = "";
-    }
-#endif // ENABLE_MOTION
-    CHECK(!app.empty());
+
+    CHECK(!app.empty() && !stream.empty());
     MediaTuple tuple = { DEFAULT_VHOST, app, stream, "" };
     uint64_t start_time = stoll(suffix_path.data());
 

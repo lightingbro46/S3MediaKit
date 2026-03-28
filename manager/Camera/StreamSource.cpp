@@ -64,7 +64,7 @@ void StreamSource::start() {
 }
 
 void StreamSource::createPlayer() {
-    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, "");
+    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, "quality=" + (_type == StreamType::PrimaryStream) ? "hi" : "lo");
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
     auto setup_player = [weak_self](const string &err, const PlayerProxy::Ptr &player) {
@@ -254,7 +254,7 @@ mediakit::EventRecordSession::Ptr StreamSource::startEventRecord() {
         return nullptr;
     }
 
-    auto type = Recorder::type_mp4_archived;
+    auto type = Recorder::type_mp4;
     uint32_t back_ms = _option.protocol.pre_record_ms;
     // forward_ms = 0 → infinite clip; terminated by stopRecord() when event ends.
     auto session = muxer->startEventRecord(type, back_ms, 0 /*infinite*/);

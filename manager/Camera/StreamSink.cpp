@@ -67,22 +67,15 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     new_cfg.password               = option.password;
     new_cfg.protocol.enable_mp4    = false; // recording is controlled by StreamSource itself
     new_cfg.protocol.enable_audio  = !option.disableAudio;
-    // Pre-create GOP ring buffer on both streams.
-    // Primary: needed for pre-event backfill (pre_record_ms history).
-    // Secondary: needed so startEventRecord() can attach a ring reader for live
-    //   frame delivery (RecordLowResAndMotion rest-state continuous recording).
-    //   Secondary is low-res, so a size-1 ring has negligible memory cost.
-    new_cfg.protocol.enable_gop_cache     = true;
-    // Primary: use global gop_cache_size config; secondary: size-1 is enough since
-    // it only needs the ring for live frame delivery (no backfill).
+    // GOP ring buffer: only primary needs it (pre-event backfill for startEventRecord).
+    // Secondary uses setupRecord(type_mp4) for continuous recording which does not
+    // require a ring reader, so enable_gop_cache=false saves memory on the secondary.
+    new_cfg.protocol.enable_gop_cache = (type == StreamType::PrimaryStream);
     {
         GET_CONFIG(int, gop_cache_size, mediakit::Protocol::kGopCacheSize);
-        new_cfg.protocol.gop_cache_size = (type == StreamType::PrimaryStream)
-                                          ? gop_cache_size
-                                          : 1;
+        new_cfg.protocol.gop_cache_size = gop_cache_size;
     }
-    // Event-based recording window.
-    // Secondary has no pre-roll (no backfill desired; recording starts at next IDR).
+    // Event-based recording window (only relevant for primary).
     new_cfg.protocol.pre_record_ms  = (type == StreamType::PrimaryStream)
                                       ? static_cast<uint32_t>(option.motionPreRecordSec  * 1000)
                                       : 0;
@@ -153,36 +146,41 @@ void StreamSink::onManager() {
 bool StreamSink::setupRecord(int archive_mode, bool start) {
     // Callers: onRecordModeChange (asserts isCurrentThread) and setStreamRegist (already on poller).
 
-    // ── Step 1: Always cancel any in-flight delayed task first. ─────────────
-    // The task (pending secondary stream restart from a RecordLowResAndMotion
-    // event end) must be cancelled unconditionally, not only inside the
-    // RecordLowResAndMotion branch.  If the mode is changing away from
-    // RecordLowResAndMotion the task must not fire after the switch.
-    // cancel() must be called explicitly — dropping the shared_ptr only removes
-    // our reference but the poller's _delay_task_map still holds its own copy.
-    if (_switch_delay_task) {
-        _switch_delay_task->cancel();
-        _switch_delay_task = nullptr;
-    }
-
-    // ── Step 2: Cancel any active EventRecordSessions when leaving (or ────────
-    // cross-switching between) event-based modes (RecordOnlyMotion and
-    // RecordLowResAndMotion).  Both modes drive the primary stream via
-    // startEventRecord().  The session recorder is NOT stored in muxer->_mp4,
-    // so the mode-specific branches below cannot detect it via isRecording().
-    // Without this:
-    //   - exiting to NoRecord/RecordAlways: orphaned session keeps writing.
-    //   - switching between the two event modes: old session overlaps with the
-    //     new session created by the incoming motion event.
+    // ── Cleanup guard: handle state left by the previous mode before switching ──
     {
         bool was_event_mode = _archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)
                            || _archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion);
-        bool is_same_event_mode = archive_mode == _archive_mode;
-        if (was_event_mode && !is_same_event_mode) {
+        bool is_same_mode = archive_mode == _archive_mode;
+        if (was_event_mode && !is_same_mode) {
+            // Cancel any active primary EventRecordSessions.  The session recorder
+            // is NOT stored in muxer->_mp4 so the incoming branches cannot detect it
+            // via isRecording(); without this, the orphaned session would keep writing.
             for (auto &it : _monitor_map) {
                 if (it.second) {
                     it.second->cancelEventRecord();
                 }
+            }
+        }
+
+        // Stop any primary continuous (type_mp4) recorders left over from a previous mode (e.g. RecordAlways).
+        bool was_record_primary = _archive_mode == static_cast<int>(RecordMode::RecordAlways);
+        if (was_record_primary && !is_same_mode) {
+            auto sec_it = _monitor_map.find(StreamType::PrimaryStream);
+            if (sec_it != _monitor_map.end() && sec_it->second) {
+                sec_it->second->setupRecord(Recorder::type_mp4, false);
+            }
+        }
+
+        // Stop any secondary continuous (type_mp4) recorders left over from a previous mode (e.g. RecordAlways or RecordLowResAndMotion).
+        // 
+        bool was_record_secondary = _archive_mode == static_cast<int>(RecordMode::RecordAlways) 
+                                    || _archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion);
+        bool now_record_secondary = archive_mode == static_cast<int>(RecordMode::RecordAlways) 
+                                    || archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion);
+        if (was_record_secondary && !now_record_secondary) {
+            auto sec_it = _monitor_map.find(StreamType::SecondaryStream);
+            if (sec_it != _monitor_map.end() && sec_it->second) {
+                sec_it->second->setupRecord(Recorder::type_mp4, false);
             }
         }
     }
@@ -203,36 +201,26 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
             if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
 
-            if (it.first == StreamType::PrimaryStream) {
-                // Use EventRecordSession (same as RecordLowResAndMotion) so that:
-                //   - pre_record_ms history is backfilled (GOP cache on primary).
-                //   - overlapping motion events extend the clip cleanly instead
-                //     of restarting a new _mp4 recorder each time.
-                //   - cancelEventRecord() in the cleanup guard above handles all
-                //     mode-exit cleanup uniformly for both event-based modes.
-                if (start) {
-                    if (it.second->hasActiveEventSession()) {
-                        DebugL << "Extend active event record for primary stream of device " << _tuple.shortUrl()
-                               << " due to overlapping motion event (RecordOnlyMotion)";
-                        it.second->extendEventRecord();
-                    } else {
-                        DebugL << "Start event record for primary stream of device " << _tuple.shortUrl()
-                               << " due to RecordOnlyMotion";
-                        it.second->startEventRecord();
-                    }
+            if (it.first != StreamType::PrimaryStream) {
+                // Secondary stream: no recording in RecordOnlyMotion.
+                continue;
+            }
+
+            // Primary stream only: event-based recording via EventRecordSession.
+            if (start) {
+                if (it.second->hasActiveEventSession()) {
+                    DebugL << "Extend active event record for primary stream of device " << _tuple.shortUrl()
+                           << " due to overlapping motion event (RecordOnlyMotion)";
+                    it.second->extendEventRecord();
                 } else {
-                    // Motion ended: record post_record_ms tail then close.
-                    // No secondary-overlap delay needed — secondary records continuously.
-                    DebugL << "Stop event record for primary stream of device " << _tuple.shortUrl()
-                           << " due to RecordOnlyMotion motion end";
-                    it.second->stopEventRecord(0);
+                    DebugL << "Start event record for primary stream of device " << _tuple.shortUrl()
+                           << " due to RecordOnlyMotion";
+                    it.second->startEventRecord();
                 }
             } else {
-                // Secondary (low-res): always-on continuous recording.
-                // Recording it does not consume much resource and it correlates
-                // motion events with video frames from both streams.
-                DebugL << "Start record for secondary stream of device " << _tuple.shortUrl() << " due to RecordOnlyMotion";
-                it.second->setupRecord(Recorder::type_mp4, true);
+                DebugL << "Stop event record for primary stream of device " << _tuple.shortUrl()
+                       << " due to RecordOnlyMotion motion end";
+                it.second->stopEventRecord(0);
             }
         }
 #else
@@ -240,53 +228,13 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
 #endif // ENABLE_MOTION
     } else if (archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion)) {
 #ifdef ENABLE_MOTION
-        // Stop any continuous (type_mp4) recorders left over from a previous mode
-        // (e.g. RecordAlways). Without this they would keep recording in parallel
-        // with the event-based / archived recorders managed by this mode.
-        for (auto &it : _monitor_map) {
-            if (!_stream_ready[it.first] || !it.second->isLive())
-                continue;
-            it.second->setupRecord(Recorder::type_mp4, false);
-        }
-
-        // post_record_ms from primary defines the event tail duration.
-        uint32_t post_ms = 0;
-        {
-            auto primary_it = _monitor_map.find(StreamType::PrimaryStream);
-            if (primary_it != _monitor_map.end()) {
-                post_ms = primary_it->second->getOption().protocol.post_record_ms;
-            }
-        }
-
-        // secondary_gop_ms: overlap added to primary's post-event tail so primary is still
-        // recording when secondary receives its first IDR after resuming.
-        // Only computed for the !start (event-ends) path where it is actually consumed.
-        uint32_t secondary_gop_ms = 0;
-        if (!start) {
-            GET_CONFIG(uint32_t, default_overlap_sec, Motion::kDefaultOverlapInterval);
-            secondary_gop_ms = default_overlap_sec * 1000;
-            auto secondary_it = _monitor_map.find(StreamType::SecondaryStream);
-            if (secondary_it != _monitor_map.end()) {
-                auto measured = secondary_it->second->getVideoGopIntervalMs();
-                if (measured > 0) {
-                    secondary_gop_ms = measured;
-                    DebugL << "Secondary GOP interval for device " << _tuple.shortUrl()
-                           << ": " << secondary_gop_ms << " ms (measured)";
-                } else {
-                    DebugL << "Secondary GOP interval not yet measured for device " << _tuple.shortUrl()
-                           << ", using fallback " << secondary_gop_ms << " ms";
-                }
-            }
-        }
-
         for (auto &it : _monitor_map) {
             if (!_stream_ready[it.first] || !it.second->isLive())
                 continue;
 
             if (it.first == StreamType::PrimaryStream) {
+                // Primary: event-based clip with GOP pre-roll backfill.
                 if (start) {
-                    // Event begins: start primary event clip with GOP backfill.
-                    // If a session is already active (overlapping event), extend it.
                     if (it.second->hasActiveEventSession()) {
                         DebugL << "Extend active event record for primary stream of device " << _tuple.shortUrl()
                                << " due to overlapping motion event";
@@ -297,39 +245,16 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
                         it.second->startEventRecord();
                     }
                 } else {
-                    // Event ends: primary records (post_ms + secondary_gop_ms) then auto-closes.
-                    // The extra secondary_gop_ms overlap ensures primary is still writing
-                    // when secondary receives its first IDR.
-                    DebugL << "Stopping event record for primary stream of device " << _tuple.shortUrl()
-                           << " (post_ms=" << post_ms << " + overlap=" << secondary_gop_ms << " ms)";
-                    it.second->stopEventRecord(secondary_gop_ms);
+                    // Motion ended: primary records post_record_ms tail then auto-closes.
+                    DebugL << "Stop event record for primary stream of device " << _tuple.shortUrl()
+                           << " due to RecordLowResAndMotion motion end";
+                    it.second->stopEventRecord(0);
                 }
             } else {
-                // Secondary stream: inverse of primary — records at rest, pauses during event.
-                // Uses EventRecordSession (startEventRecord with back_ms=0) so that secondary
-                // goes through the same cleanup path as primary (cancelEventRecord in the guard),
-                // and type_mp4_archived is no longer needed in muxer::setupRecord at all.
-                if (start) {
-                    // Event begins: cancel the active secondary session immediately so only
-                    // primary covers the event window.
-                    DebugL << "Stop secondary stream record for device " << _tuple.shortUrl()
-                           << " (primary event recording started)";
-                    it.second->cancelEventRecord();
-                } else {
-                    // Event ends: resume secondary after post_ms (while primary is still in
-                    // the overlap window).  back_ms=0 (pre_record_ms=0 for secondary) so
-                    // recording starts at the next IDR, avoiding overlap with primary's tail.
-                    DebugL << "Scheduling secondary stream start for device " << _tuple.shortUrl()
-                           << " after " << post_ms << " ms";
-                    auto monitor = it.second;
-                    _switch_delay_task = _poller->doDelayTask(post_ms, [monitor]() {
-                        // Cancel any leftover session (e.g. stream reconnected before the
-                        // previous session's ring detach callback fired) before starting fresh.
-                        monitor->cancelEventRecord();
-                        monitor->startEventRecord(); // back_ms=0, infinite session
-                        return static_cast<uint64_t>(0); // run once
-                    });
-                }
+                // Secondary stream: records continuously at all,
+                // Uses plain setupRecord(type_mp4) so no ring buffer is required.
+                DebugL << "Start secondary stream record for device " << _tuple.shortUrl();
+                it.second->setupRecord(Recorder::type_mp4, true);
             }
         }
 #else
