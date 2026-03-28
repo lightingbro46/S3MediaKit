@@ -26,9 +26,10 @@ using namespace toolkit;
 namespace managerkit {
 
 struct CpuTimes {
-    uint64_t idleTime = 0;
-    uint64_t totalTime = 0;
-    uint64_t processTime = 0;
+    uint64_t idleTime = 0;     // Idle CPU time (container or host)
+    uint64_t totalTime = 0;    // Total CPU time (container or host)
+    uint64_t processTime = 0;  // Process CPU time (container or host)
+    bool isCgroup = false;     // whether the times are collected from cgroup (container) or host
 };
 
 #ifdef _WIN32
@@ -110,6 +111,10 @@ static CpuTimes get_cpu_times() {
 
 #elif __ANDROID__ || __linux__
 
+static bool file_exists(const char* path) {
+    return access(path, F_OK) == 0;
+}
+
 static int get_cpu_core_count() {
     // Dùng sysconf là an toàn và nhanh
     long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
@@ -131,20 +136,58 @@ static int get_cpu_core_count() {
     return count > 0 ? count : 1;
 }
 
+static double getCpuLimit() {
+    std::ifstream file("/sys/fs/cgroup/cpu.max");
+
+    if (!file.is_open()) {
+        // fallback host
+        return std::thread::hardware_concurrency();
+    }
+
+    std::string quota_str, period_str;
+    file >> quota_str >> period_str;
+
+    if (quota_str == "max") {
+        return std::thread::hardware_concurrency();
+    }
+
+    double quota = std::stod(quota_str);
+    double period = std::stod(period_str);
+
+    return quota / period;
+}
+
 static CpuTimes get_cpu_times() {
-    std::ifstream file("/proc/stat");
-    std::string line;
     CpuTimes times;
+    // ưu tiên cgroup v2 (Docker / Kubernetes)
+    if (file_exists("/sys/fs/cgroup/cpu.stat")) {
+       std::ifstream file("/sys/fs/cgroup/cpu.stat");
+        std::string key;
+        uint64_t value;
 
-    if (std::getline(file, line)) {
-        std::istringstream iss(line);
-        std::string cpu;
-        uint64_t user, nice, system, idle, iowait, irq, softirq, steal;
+        while (file >> key >> value) {
+            if (key == "usage_usec") {
+                times.totalTime = value; // microseconds
+                break;
+            }
+        }
+        times.idleTime = 0; // cgroup v2 không cung cấp idle time, sẽ tính toán dựa trên total time
+        times.isCgroup = true;
+    } else {
+        std::ifstream file("/proc/stat");
+        std::string line;
 
-        iss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+        if (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string cpu;
+            uint64_t user, nice, system, idle, iowait, irq, softirq, steal;
 
-        times.idleTime = idle + iowait;
-        times.totalTime = user + nice + system + idle + iowait + irq + softirq + steal;
+            iss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+
+            times.idleTime = idle + iowait;
+            times.totalTime = user + nice + system + idle + iowait + irq + softirq + steal;
+        }
+        times.isCgroup = false;
     }
 
     std::ifstream file_("/proc/self/stat");
@@ -176,19 +219,43 @@ static CpuTimes get_cpu_times() {
 void CpuCollector::collect() {
     _info.cores = get_cpu_core_count();
     CpuTimes t1 = get_cpu_times();
-    _poller->doDelayTask(200, [&]() {
+    _poller->doDelayTask(1000, [=]() {
         CpuTimes t2 = get_cpu_times();
-        uint64_t idleDiff = t2.idleTime - t1.idleTime;
-        uint64_t totalDiff = t2.totalTime - t1.totalTime;
-        uint64_t processDiff = t2.processTime - t1.processTime;
+        if (t1.isCgroup) {
+            uint64_t totalDiff = t2.totalTime - t1.totalTime;
+            uint64_t processDiff = t2.processTime - t1.processTime;
 
-        if (totalDiff == 0) {
-            _info.usagePct = 0.0;
-            _info.procUsagePct = 0.0;
+            if (totalDiff == 0) {
+                _info.usagePct = 0.0;
+                _info.procUsagePct = 0.0;
+            } else {
+                // wall time
+                double interval_usec = 1e6; // nếu bạn sleep 1s
+
+                long ticks = sysconf(_SC_CLK_TCK);
+                double proc_usec = (double)processDiff * interval_usec / ticks;
+                double proc_usage_per_core = (proc_usec / totalDiff) * 100.0;
+                double cpu_limit = getCpuLimit();
+                _info.procUsagePct = proc_usage_per_core / cpu_limit;
+                if (_info.procUsagePct > 100.0) {
+                    _info.procUsagePct = 100.0;
+                }
+                double host_usage = (double)totalDiff / interval_usec * 100.0;
+                _info.usagePct = host_usage;
+            }
         } else {
-            _info.procUsagePct = 100.0 * ((float)processDiff / totalDiff);
-            _info.usagePct = 100.0 * (1.0 - (float)idleDiff / totalDiff);
-        }   
+            uint64_t idleDiff = t2.idleTime - t1.idleTime;
+            uint64_t totalDiff = t2.totalTime - t1.totalTime;
+            uint64_t processDiff = t2.processTime - t1.processTime;
+
+            if (totalDiff == 0) {
+                _info.usagePct = 0.0;
+                _info.procUsagePct = 0.0;
+            } else {
+                _info.procUsagePct = 100.0 * ((float)processDiff / totalDiff);
+                _info.usagePct = 100.0 * (1.0 - (float)idleDiff / totalDiff);
+            }   
+        }
         onCollect(_info);
         return 0;
     });
