@@ -286,6 +286,7 @@ static void fromJson(DeviceTuple &tuple, const Json::Value &data) {
 }
 
 static void fromJson(CameraOption &option, const Json::Value &data) {
+    GET_OPTION_PROPERTY(option, name, data, name)
     GET_OPTION_PROPERTY(option, manufacturer, data, manufacturer)
     GET_OPTION_PROPERTY(option, model, data, model)
     GET_OPTION_PROPERTY(option, username, data, username)
