@@ -369,7 +369,7 @@ const string kFastRegister = HLS_FIELD "fastRegister";
 
 static onceToken token([]() {
     mINI::Instance()[kSegmentDuration] = 2;
-    mINI::Instance()[kSegmentNum] = 6;
+    mINI::Instance()[kSegmentNum] = 3;
     mINI::Instance()[kSegmentKeep] = false;
     mINI::Instance()[kSegmentDelay] = 0;
     mINI::Instance()[kSegmentRetain] = 10;
