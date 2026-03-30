@@ -160,8 +160,8 @@ static double getCpuLimit() {
 static CpuTimes get_cpu_times() {
     CpuTimes times;
     // ưu tiên cgroup v2 (Docker / Kubernetes)
-    if (file_exists("/sys/fs/cgroup/cpu.stat")) {
-       std::ifstream file("/sys/fs/cgroup/cpu.stat");
+    if (file_exists("/sys/fs/cgroup/cpu.stat") && 0) {
+        std::ifstream file("/sys/fs/cgroup/cpu.stat");
         std::string key;
         uint64_t value;
 

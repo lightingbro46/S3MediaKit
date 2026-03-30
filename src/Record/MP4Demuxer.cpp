@@ -385,7 +385,7 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
         demuxer->openMP4(it->second);
         _demuxers.emplace(duration_ms, demuxer);
         duration_ms += demuxer->getDurationMS();
-        next_time = it->first + demuxer->getDurationMS() / 1000;
+        next_time = it->first + static_cast<uint64_t>(demuxer->getDurationMS() / 1000);
     }
     
     _stats.next_time = next_time;
