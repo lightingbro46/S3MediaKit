@@ -105,7 +105,7 @@ void installManagerHook () {
             bool found = false;
             query->getRecordedTimePeriod(stamp, stamp + 60, [&](vector<TimeRange> &ret) {
                 for (auto const &p : ret) {
-                    if (p.startTime == stamp) {
+                    if (p.startTime <= stamp + 1) {
                         found = true;
                     }
                 }
@@ -566,9 +566,9 @@ static Json::Value exampleJson() {
             period["dh"] = StrPrinter << d << "," << h;
             period["fps"] = 25;
             period["q"] = "L";
-            // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            period["ty"] = static_cast<int>(RecordMode::RecordAlways);
             // period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
-            period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
+            // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
     }
@@ -613,7 +613,7 @@ static Json::Value exampleJson() {
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
     device["motionDetectConfig"]["chooseStream"] = "SECONDARY";
-    device["motionDetectConfig"]["clientEnabled"] = true;
+    device["motionDetectConfig"]["clientEnabled"] = false;
     device["motionDetectConfig"]["mediaSupport"] = true;
     device["motionDetectConfig"]["value"] =
         "00000000000000000000000000000000000000000000"  // row  0
