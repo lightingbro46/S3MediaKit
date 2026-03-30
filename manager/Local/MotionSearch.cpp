@@ -22,11 +22,14 @@ MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
         _base_path = base_path;
     } else {
         GET_CONFIG(string, record_path, Protocol::kMP4SavePath);
+        GET_CONFIG(string, app_name, Record::kAppName);
+        auto _record_path = File::absolutePath(app_name, record_path);
+        GET_CONFIG(string, archive_name, Record::kArchiveName);
         GET_CONFIG(bool, enable_vhost, General::kEnableVhost);
         if (enable_vhost) {
-            _base_path = record_path + "/motion/" + tuple.vhost + '/' + tuple.app + '/';
+            _base_path = _record_path + '/' + tuple.vhost + '/' + tuple.app + '/' + archive_name + "/motion/";
         } else {
-            _base_path = record_path + "/motion/" + tuple.app + '/';
+            _base_path = _record_path + '/' + tuple.app + '/' + archive_name + "/motion/";
         }
     }
 

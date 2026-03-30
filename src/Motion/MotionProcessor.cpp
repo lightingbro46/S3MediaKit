@@ -25,13 +25,11 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
     GET_CONFIG(string, app_name, Record::kAppName);
     auto _record_path = File::absolutePath(app_name, record_path);
     GET_CONFIG(string, archive_name, Record::kArchiveName);
-    _record_path = File::absolutePath(archive_name, _record_path);
-
     GET_CONFIG(bool, enable_vhost, General::kEnableVhost);
     if (enable_vhost) {
-        _save_path = _record_path + "/motion/" + tuple.vhost + '/' + tuple.app + '/';
+        _save_path = _record_path + '/' + tuple.vhost + '/' + tuple.app + '/' + archive_name + "/motion/";
     } else {
-        _save_path = _record_path + "/motion/" + tuple.app + '/';
+        _save_path = _record_path + '/' + tuple.app + '/' + archive_name + "/motion/";
     }
 
     GET_CONFIG(int, min_duration, Motion::kMinDurationMS);
