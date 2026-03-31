@@ -30,6 +30,7 @@ namespace managerkit {
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         200006) \
     XX(CODE_MSERVER_NOT_FOUND,              "Media server not found",           404,         200007) \
     XX(CODE_SCAN_KEY_NOT_FOUND,             "Scan key not found",               404,         200008) \
+    XX(CODE_PTZ_PRESET_NOT_FOUND,           "User preset not found",            404,         200009) \
     /* 300xxx - Operation errors */                                                                  \
     XX(CODE_DEVICE_OFFLINE,                 "Device offline",                   400,         300001) \
     XX(CODE_STREAM_OFFLINE,                 "Stream offline",                   400,         300002) \
@@ -45,6 +46,11 @@ namespace managerkit {
     XX(CODE_SUBNETSCAN_FAILED,              "Scan device by ip range failed",   500,         300012) \
     XX(CODE_DEVICE_NO_SUPPORT_SELECTED_PTZ_MODE, "Device does not support selected PTZ mode", 500, 300013) \
     XX(CODE_DEVICE_OWNERSHIP_BY_OTHER,      "Device is controlled by other user", 403,       300014) \
+    XX(CODE_PTZ_GOTO_HOME_FAILED,           "PTZ Goto Home failed",             500,         300015) \
+    XX(CODE_PTZ_GET_STATUS_FAILED,          "PTZ Get status failed",            500,         300016) \
+    XX(CODE_PTZ_GOTO_PRESET_FAILED,         "PTZ Goto preset failed",           500,         300017) \
+    XX(CODE_PTZ_GOTO_USER_PRESET_FAILED,    "PTZ Goto preset failed",           500,         300018) \
+    XX(CODE_DEVICE_NO_SUPPORT_PTZ_PRESET,   "Device does not support PTZ Preset", 500,       300019) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \

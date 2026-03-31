@@ -71,6 +71,14 @@ public:
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    bool addUserPTZPreset(const std::string &presetToken, const std::string &presetName, float &pan, float &tilt, float &zoom,const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    bool addUserPTZPreset(const std::string &presetToken, const std::string &presetName, float &pan, float &tilt, float &zoom);
+
+    bool removeUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    void PTZGotoPreset(const std::string &presetToken, bool isUserPreset, const std::function<void(const toolkit::SockException &ex)> &cb);
+
 private:
     void onManager();
 
@@ -95,6 +103,7 @@ private:
     bool _reversePanAxis = false;
     bool _reverseTiltAxis = false;
     bool _enablePTZControl = true;
+    OnvifPTZProfile::PTZPresetMap _userPresets; // user defined preset list, used for preset operation when device does not support get preset api or preset info is incomplete
 };
 
 } // namespace managerkit

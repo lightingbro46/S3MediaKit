@@ -44,6 +44,19 @@ struct OnvifPTZProfile {
     float relMaxTilt = 1;
     float relMinZoom = -1;
     float relMaxZoom = 1;
+
+    bool isPresetEnable = false;
+    struct PTZPreset {
+        std::string Token;
+        std::string Name;
+        float absPan = -1;
+        float absTilt = -1;
+        float absZoom = -1;
+    };
+    using PTZPresetMap = std::unordered_map<std::string /*Token*/, PTZPreset>;
+    PTZPresetMap presetMap; // pair of preset token and preset name
+    bool isHomePresetEnable = false;
+    std::string homePresetToken;
 };
 
 struct OnvifMediaProfile {
@@ -145,9 +158,24 @@ public:
     bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
 
     /**
+     * Execute PTZ Goto Home Position
+     */
+    bool PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed);
+
+    /**
      * Get last soap error message
      */
     std::string getSoapErrMsg() { return _soapErrMsg; }
+
+    /**
+     * Execute PTZ Goto Preset
+     */
+    bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
+
+    /**
+     * Execute PTZ Set Preset
+     */
+    bool PTZ_SetPreset(const std::string &presetName, const std::string &presetToken, float &pan, float &tilt, float &zoom);
 
 private:
     void reportError();
@@ -176,6 +204,11 @@ private:
      * get media profiles by soap protocol
      */
     bool getMediaProfiles();
+
+    /**
+     * get preset
+     */
+    bool getPTZPresets();
 
 private:
     // Device information

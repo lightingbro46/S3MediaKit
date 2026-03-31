@@ -42,6 +42,7 @@ struct DeviceStatistic {
     bool connect = false;
     std::string status;
     DeviceCapabilities device_caps;
+    OnvifPTZProfile::PTZPresetMap user_presets;
 };
 
 struct CameraStatistic;
@@ -92,6 +93,8 @@ public:
     void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
 
     void addDeviceCapabilities(bool connect, std::string status, const DeviceCapabilities *device_caps = nullptr);
+
+    void addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add = true);
 
 public:
     CameraStatistic getParams();

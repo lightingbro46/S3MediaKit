@@ -101,6 +101,21 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
 }
 
 // DeviceCapabilities
+static Json::Value makeOnvifPTZPresetMapJson(const OnvifPTZProfile::PTZPresetMap &preset_map) {
+    Json::Value ret = Json::arrayValue;
+    for (const auto &it : preset_map) {
+        auto preset = it.second;
+        Json::Value p_json = Json::objectValue;
+        p_json["Token"] = preset.Token;
+        p_json["Name"] = preset.Name;
+        p_json["Pan"] = preset.absPan;
+        p_json["Tilt"] = preset.absTilt;
+        p_json["Zoom"] = preset.absZoom;
+        ret.append(p_json);
+    }
+    return ret;
+}
+
 static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
     Json::Value ret = Json::objectValue;
     // mediaProfiles
@@ -114,9 +129,14 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
     ret["mediaProfiles"] = mediaProfiles;
     // ptzProfile
     Json::Value ptzProfile = Json::objectValue;
+    ptzProfile["strMediaProfileToken"] = profile.ptzProfile.strMediaProfileToken;
     ptzProfile["isAbsMoveEnable"] = profile.ptzProfile.isAbsMoveEnable;
     ptzProfile["isConsMoveEnable"] = profile.ptzProfile.isConsMoveEnable;
     ptzProfile["isRelMoveEnable"] = profile.ptzProfile.isRelMoveEnable;
+    ptzProfile["isPresetEnable"] = profile.ptzProfile.isPresetEnable;
+    ptzProfile["presetMap"] = makeOnvifPTZPresetMapJson(profile.ptzProfile.presetMap);
+    ptzProfile["isHomePresetEnable"] = profile.ptzProfile.isHomePresetEnable;
+    ptzProfile["homePresetToken"] = profile.ptzProfile.homePresetToken;
     ret["ptzProfile"] = ptzProfile;
     // deviceInfo
     Json::Value deviceInfo = Json::objectValue;
@@ -142,6 +162,23 @@ static Json::Value makeDeviceStatisticJson(const DeviceStatistic &stats) {
     ret["connect"] = stats.connect;
     ret["status"] = stats.status;
     ret["capabilities"] = makeDeviceCapabilitiesJson(stats.device_caps);
+    ret["user_presets"] = makeOnvifPTZPresetMapJson(stats.user_presets);
+    return ret;
+}
+
+static OnvifPTZProfile::PTZPresetMap getOnvifPTZPresetMap(const Json::Value &data) {
+    OnvifPTZProfile::PTZPresetMap ret;
+    if (!data.isNull() && data.isArray()) {
+        for (const auto &preset : data) {
+            OnvifPTZProfile::PTZPreset p;
+            p.Token = preset["Token"].asString();
+            p.Name = preset["Name"].asString();
+            p.absPan = preset["Pan"].asFloat();
+            p.absTilt = preset["Tilt"].asFloat();
+            p.absZoom = preset["Zoom"].asFloat();
+            ret.emplace(p.Token, std::move(p));
+        }
+    }
     return ret;
 }
 
@@ -155,9 +192,14 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
         profile.mediaProfiles.push_back(mp);
     }
     // ptzProfile
+    profile.ptzProfile.strMediaProfileToken = data["ptzProfile"]["strMediaProfileToken"].asString();
     profile.ptzProfile.isAbsMoveEnable = data["ptzProfile"]["isAbsMoveEnable"].asBool();
     profile.ptzProfile.isConsMoveEnable = data["ptzProfile"]["isConsMoveEnable"].asBool();
     profile.ptzProfile.isRelMoveEnable = data["ptzProfile"]["isRelMoveEnable"].asBool();
+    profile.ptzProfile.isPresetEnable = data["ptzProfile"]["isPresetEnable"].asBool();
+    profile.ptzProfile.presetMap = getOnvifPTZPresetMap(data["ptzProfile"]["presetMap"]);
+    profile.ptzProfile.isHomePresetEnable = data["ptzProfile"]["isHomePresetEnable"].asBool();
+    profile.ptzProfile.homePresetToken = data["ptzProfile"]["homePresetToken"].asString();
     // deviceInfo
     profile.deviceInfo.manufacturer = data["deviceInfo"]["manufacturer"].asString();
     profile.deviceInfo.model = data["deviceInfo"]["model"].asString();
@@ -181,6 +223,9 @@ static DeviceStatistic getDeviceStatistic(const Json::Value &data) {
     stats.status = !data["status"].empty() ? data["status"].asString() : "";
     if (!data["capabilities"].empty()) {
         stats.device_caps = getDeviceCapabilities(data["capabilities"]);
+    }
+    if (!data["user_presets"].empty()) {
+        stats.user_presets = getOnvifPTZPresetMap(data["user_presets"]);
     }
     return stats;
 }
@@ -633,6 +678,41 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
     DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
            << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
            << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();
+    save();
+}
+
+void CameraStatisticImp::addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    if (!device_stats.device_caps.isOnvifDevice) {
+        WarnL << "Camera " << tuple.shortUrl() << " is not an ONVIF device. Ignore add user preset.";
+        return;
+    }
+    auto &ptzProfile = device_stats.device_caps.onvifProfile.ptzProfile;
+    if (!ptzProfile.isPresetEnable) {
+        WarnL << "Camera " << tuple.shortUrl() << " does not support preset. Ignore add user preset.";
+        return;
+    }
+    if (add) {
+        OnvifPTZProfile::PTZPreset preset;
+        preset.Token = preset_token;
+        preset.Name = preset_name;
+        preset.absPan = abs_pan;
+        preset.absTilt = abs_tilt;
+        preset.absZoom = abs_zoom;
+        ptzProfile.presetMap.emplace(preset.Token, std::move(preset));
+        DebugL << "Camera " << tuple.shortUrl() << " add user preset: " << preset_token << ", name: " << preset_name
+               << ", absPan: " << abs_pan << ", absTilt: " << abs_tilt << ", absZoom: " << abs_zoom
+               << ". Total preset count: " << ptzProfile.presetMap.size();
+    } else {
+        auto it_preset = ptzProfile.presetMap.find(preset_token);
+        if (it_preset != ptzProfile.presetMap.end()) {
+            ptzProfile.presetMap.erase(it_preset);
+            DebugL << "Camera " << tuple.shortUrl() << " remove user preset: " << preset_token
+                   << ". Total preset count: " << ptzProfile.presetMap.size();
+        } else {
+            WarnL << "Camera " << tuple.shortUrl() << " do not have user preset with token: " << preset_token << ". Ignore remove user preset.";
+        }
+    }
     save();
 }
 

@@ -1316,3 +1316,38 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
     }
     return item;
 }
+
+Json::Value makeDevicePTZPresetJson(const DeviceSource::Ptr &device) {
+    Json::Value item;
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto camera = impl->getCameraSource();
+            auto stats_imp = impl->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                if (params.device_stats.device_caps.onvifProfile.ptzProfile.isPresetEnable) {
+                    for (auto &it : params.device_stats.device_caps.onvifProfile.ptzProfile.presetMap) {
+                        Json::Value preset;
+                        preset["name"] = it.second.Name;
+                        preset["token"] = it.second.Token;
+                        preset["isUserDefined"] = false;
+                        item.append(preset);
+                    }
+
+                    for (auto &it : params.device_stats.user_presets) {
+                        Json::Value preset;
+                        preset["name"] = it.second.Name;
+                        preset["token"] = it.second.Token;
+                        preset["isUserDefined"] = true;
+                        item.append(preset);
+                    }
+                }
+
+                
+            }
+        }
+    }
+    return item;
+}

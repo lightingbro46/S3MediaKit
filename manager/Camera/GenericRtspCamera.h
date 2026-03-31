@@ -125,12 +125,13 @@ public:
     // ptz mode for ptz control
     int ptzMode = kPTZModeAuto;
 
+    // ptz speed for ptz control, range [0,1]
     float ptzSpeed = 0.5;
 
-    // onvif main profile token
+    // onvif main profile token, such as "AUTO" or "Profile token 1"
     std::string onvifMainProfile; 
     
-    // onvif sub profile token
+    // onvif sub profile token, such as "AUTO" or "Profile token 2"
     std::string onvifSubProfile; 
 
     // Enable motion detection, only for video streams

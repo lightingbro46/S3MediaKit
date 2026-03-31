@@ -224,6 +224,16 @@ bool OnvifControl::getDeviceCapabilities() {
                 DebugL << "RelativeMove supported: Pan[" << _ptzProfile.relMinPan << "~" << _ptzProfile.relMaxPan << "] Tilt[" << _ptzProfile.relMinTilt << "~" << _ptzProfile.relMaxTilt
                     << "] Zoom[" << _ptzProfile.relMinZoom << "~" << _ptzProfile.relMaxZoom << "]";
             }
+
+            if (_ptzProfile.isAbsMoveEnable) {
+                getPTZPresets();
+            } else {
+                _ptzProfile.isPresetEnable = false;
+                _ptzProfile.isHomePresetEnable = false;
+                _ptzProfile.homePresetToken = "";
+                _ptzProfile.presetMap.clear();
+                DebugL << "Preset is not supported since AbsoluteMove is not supported";
+            }
         }
     }
     return true;
@@ -248,6 +258,7 @@ bool OnvifControl::getMediaProfiles() {
         return false;
     }
 
+    // note: reset media profile list every time when get media profiles since profile token may change after device reboot
     _mediaProfile.clear();
 
     for (const auto &profile : GetProfilesResponse.Profiles) {
@@ -455,6 +466,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    DebugL << "Execute PTZ AbsoluteMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__AbsoluteMove *AbsoluteMove = soap_new__tptz__AbsoluteMove(_m_soap);
     _tptz__AbsoluteMoveResponse AbsoluteMoveResponse;
@@ -486,8 +498,8 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
         WarnL << "Unknown proxyPTZ";
         return false;
     }
-
-    cout << panSpeed << tiltSpeed << zoomSpeed << endl;
+    DebugL << "Execute PTZ AbsoluteMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "), "
+            << "panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
 
     _tptz__AbsoluteMove *AbsoluteMove = soap_new__tptz__AbsoluteMove(_m_soap);
     _tptz__AbsoluteMoveResponse AbsoluteMoveResponse;
@@ -569,6 +581,7 @@ bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int tim
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    DebugL << "Execute PTZ ContinuousMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__ContinuousMove *ContinuosMove = soap_new__tptz__ContinuousMove(_m_soap);
     _tptz__ContinuousMoveResponse ContinuosMoveResponse;
@@ -606,6 +619,7 @@ bool OnvifControl::PTZ_Stop(bool panTilt, bool zoom) {
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    DebugL << "Execute PTZ ContinuousMove Stop: PanTilt(" << panTilt << "), Zoom(" << zoom << ")";
 
     _tptz__Stop *Stop = soap_new__tptz__Stop(_m_soap);
     _tptz__StopResponse StopResponse;
@@ -637,6 +651,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    DebugL << "Execute PTZ RelativeMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__RelativeMove *RelativeMove = soap_new__tptz__RelativeMove(_m_soap);
     _tptz__RelativeMoveResponse RelativeMoveResponse;
@@ -668,9 +683,8 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom, float pan
         WarnL << "Unknown proxyPTZ";
         return false;
     }
-
-    DebugL << pan << " " << tilt << " " << zoom;
-    DebugL << panSpeed << " " << tiltSpeed << " " << zoomSpeed;
+    DebugL << "Execute PTZ RelativeMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "), "
+            << "panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
 
     _tptz__RelativeMove *RelativeMove = soap_new__tptz__RelativeMove(_m_soap);
     _tptz__RelativeMoveResponse RelativeMoveResponse;
@@ -730,6 +744,188 @@ vector<OnvifMediaProfile> OnvifControl::selectStreamUrls(bool include_secondary)
     }
 
     return ret;
+}
+
+bool OnvifControl::PTZ_GotoPreset(const string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed) {
+    if (_proxyPTZ == nullptr) {
+        WarnL << "Unknown proxyPTZ";
+        return false;
+    }
+    DebugL << "Execute PTZ GotoPreset: presetToken(" << presetToken << "), panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
+
+    _tptz__GotoPreset *GotoPreset = soap_new__tptz__GotoPreset(_m_soap);
+    _tptz__GotoPresetResponse GotoPresetResponse;
+
+    GotoPreset->ProfileToken = _ptzProfile.strMediaProfileToken;
+    GotoPreset->PresetToken = presetToken;
+    if (GotoPreset->Speed == nullptr)
+        GotoPreset->Speed = soap_new_tt__PTZSpeed(_m_soap);
+    if (GotoPreset->Speed->PanTilt == nullptr)
+        GotoPreset->Speed->PanTilt = soap_new_tt__Vector2D(_m_soap);
+    if (GotoPreset->Speed->Zoom == nullptr)
+        GotoPreset->Speed->Zoom = soap_new_tt__Vector1D(_m_soap);
+    GotoPreset->Speed->PanTilt->x = panSpeed;
+    GotoPreset->Speed->PanTilt->y = tiltSpeed;
+    GotoPreset->Speed->Zoom->x = zoomSpeed;
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (_proxyPTZ->GotoPreset(GotoPreset, GotoPresetResponse)) {
+        reportError();
+        return false;
+    }
+
+    return true;
+}
+
+bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetToken, float &pan, float &tilt, float &zoom) {
+    if (_proxyPTZ == nullptr) {
+        WarnL << "Unknown proxyPTZ";
+        return false;
+    }
+
+    pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
+    tt__MoveStatus moveStatus = PTZ_GetStatus(pan, tilt, zoom);
+    if (moveStatus == tt__MoveStatus__MOVING) {
+        WarnL << "PTZ is moving, can not set preset";
+        return false;
+    }
+
+    DebugL << "Execute PTZ SetPreset: presetName(" << presetName << "), presetToken(" << presetToken << "), "
+           << "current pan(" << pan << "), current tilt(" << tilt << "), current zoom(" << zoom << ")";
+    
+    _tptz__SetPreset *SetPreset = soap_new__tptz__SetPreset(_m_soap);
+    _tptz__SetPresetResponse SetPresetResponse;
+
+    SetPreset->ProfileToken = _ptzProfile.strMediaProfileToken;
+    *SetPreset->PresetToken = presetToken;
+    *SetPreset->PresetName = presetName;
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (_proxyPTZ->SetPreset(SetPreset, SetPresetResponse)) {
+        reportError();
+        return false;
+    }
+    // todo: update preset list after set preset since some devices may change preset token after reboot
+    // todo: update home preset if current preset is home preset
+    // todo: store user defined preset token and name in local storage
+    return true;
+}
+
+bool  OnvifControl::PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed) {
+    if (_proxyPTZ == nullptr) {
+        WarnL << "Unknown proxyPTZ";
+        return false;
+    }
+
+    if (_ptzProfile.isPresetEnable && _ptzProfile.isHomePresetEnable) {
+        DebugL << "Goto Home preset: " << _ptzProfile.homePresetToken;
+        return PTZ_GotoPreset(_ptzProfile.homePresetToken, panSpeed, tiltSpeed, zoomSpeed);
+    }
+
+    WarnL << "Home preset is not supported. Try execute GotoHomePosition command directly";
+    _tptz__GotoHomePosition *GotoHomePosition = soap_new__tptz__GotoHomePosition(_m_soap);
+    _tptz__GotoHomePositionResponse GotoHomePositionResponse;
+    GotoHomePosition->ProfileToken = _ptzProfile.strMediaProfileToken;
+    if (GotoHomePosition->Speed == nullptr)
+        GotoHomePosition->Speed = soap_new_tt__PTZSpeed(_m_soap);
+    if (GotoHomePosition->Speed->PanTilt == nullptr)
+        GotoHomePosition->Speed->PanTilt = soap_new_tt__Vector2D(_m_soap);
+    if (GotoHomePosition->Speed->Zoom == nullptr)
+        GotoHomePosition->Speed->Zoom = soap_new_tt__Vector1D(_m_soap);
+    GotoHomePosition->Speed->PanTilt->x = panSpeed;
+    GotoHomePosition->Speed->PanTilt->y = tiltSpeed;
+    GotoHomePosition->Speed->Zoom->x = zoomSpeed;
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (_proxyPTZ->GotoHomePosition(GotoHomePosition, GotoHomePositionResponse)) {
+        reportError();
+        return false;
+    }
+
+    return true;
+}
+
+bool OnvifControl::getPTZPresets() {
+    if (_proxyPTZ == nullptr) {
+        WarnL << "Unknown proxyPTZ";
+        return false;
+    }
+
+    _tptz__GetPresets *GetPresets = soap_new__tptz__GetPresets(_m_soap);
+    _tptz__GetPresetsResponse GetPresetsResponse;
+    GetPresets->ProfileToken = _ptzProfile.strMediaProfileToken;
+    if (!setCredentials()) {
+        return false;
+    }
+    if (_proxyPTZ->GetPresets(GetPresets, GetPresetsResponse)) {
+        reportError();
+        return false;
+    }
+
+    // note: reset preset list every time when get capabilities since preset token may change after device reboot
+    if (!GetPresetsResponse.Preset.empty()) {
+        _ptzProfile.isPresetEnable = true;
+        _ptzProfile.presetMap.clear();
+
+        for (const auto &preset : GetPresetsResponse.Preset) {
+            if (!preset || !preset->token || preset->token->empty()) {
+                continue;
+            }
+            string pToken = *preset->token;
+            string pName = *preset->Name;
+            auto pAbsPan = preset->PTZPosition->PanTilt->x;
+            auto pAbsTilt = preset->PTZPosition->PanTilt->y;
+            auto pAbsZoom = preset->PTZPosition->Zoom->x;
+
+            DebugL << "Preset token: " << pToken << " name: " << pName << " pan: " << pAbsPan << " tilt: " << pAbsTilt << " zoom: " << pAbsZoom;
+            OnvifPTZProfile::PTZPreset p;
+            p.Token = pToken;
+            p.Name = pName;
+            p.absPan = pAbsPan;
+            p.absTilt = pAbsTilt;
+            p.absZoom = pAbsZoom;
+            _ptzProfile.presetMap.emplace(pToken, std::move(p));
+
+            if (pToken == "home" || pToken == "Home" || pToken == "1") {
+                _ptzProfile.isHomePresetEnable = true;
+                _ptzProfile.homePresetToken = pToken;
+                DebugL << "Home preset is supported";
+            }
+        }
+    } else {
+        float pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
+        string homePresetToken = "home";
+        string homePresetName = "1";
+        if (PTZ_SetPreset(homePresetName, homePresetToken, pan, tilt, zoom)) {
+            _ptzProfile.isPresetEnable = true;
+            _ptzProfile.isHomePresetEnable = true;
+            OnvifPTZProfile::PTZPreset homePreset;
+            homePreset.Token = homePresetToken;
+            homePreset.Name = homePresetName;
+            homePreset.absPan = pan;
+            homePreset.absTilt = tilt;
+            homePreset.absZoom = zoom;
+            _ptzProfile.homePresetToken = homePresetToken;
+            _ptzProfile.presetMap.emplace(homePresetToken, std::move(homePreset));
+            DebugL << "Home preset is supported by setting preset with token: " << homePresetToken << " and name: " << homePresetName;
+        } else {
+            _ptzProfile.isPresetEnable = false;
+            _ptzProfile.isHomePresetEnable = false;
+            _ptzProfile.homePresetToken = "";
+            _ptzProfile.presetMap.clear();
+            WarnL << "Home preset is not supported since device can not set preset successfully";
+        }
+    }
+    return true;
 }
 
 } // namespace managerkit

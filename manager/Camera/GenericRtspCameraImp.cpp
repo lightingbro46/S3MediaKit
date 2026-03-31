@@ -229,4 +229,51 @@ void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
     _sink->setStreamRegist(type, regist);
 }
 
+void GenericRtspCameraImp::addUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call addUserPreset in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore add user preset request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    float pan = 0.0, tilt = 0.0, zoom = 0.0;
+    if (!_controller->addUserPTZPreset(presetToken, presetName, pan, tilt, zoom, cb)) {
+        return;
+    }
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore controller ready event";
+        return;
+    }
+    strong_statistic->addUserPresets(presetToken, presetName, pan, tilt, zoom, true);
+}
+
+void GenericRtspCameraImp::removeUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call removeUserPreset in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore remove user preset request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    if (!_controller->removeUserPTZPreset(presetToken, presetName, cb)) {
+        return;
+    }
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore controller ready event";
+        return;
+    }
+    strong_statistic->addUserPresets(presetToken, presetName, 0.0, 0.0, 0.0, false);
+}
+
+void GenericRtspCameraImp::PTZGotoPreset(const std::string &presetToken, bool isUserPreset, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call PTZGotoPreset in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore goto preset request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->PTZGotoPreset(presetToken, isUserPreset, cb);
+}
+
 } // namespace managerkit

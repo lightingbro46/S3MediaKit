@@ -3165,6 +3165,159 @@ void installWebApi() {
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
     });
 
+    api_regist("/media/mserver/device/ptz_control/goto_preset", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_PTZ_CONTROL_PERMISSION();
+        CHECK_ARGS_("deviceId", "presetToken", "isUserPreset");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            string presetToken = allArgs["presetToken"];
+            bool isUserPreset = allArgs["isUserPreset"];
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                return;
+            }
+
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (impl) {
+                        impl->PTZGotoPreset(presetToken, isUserPreset, [=](const SockException &ex) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                val["msg"] = ex.what();
+                                invoker(200, headerOut, val.toStyledString());
+                            }
+                        });
+                    } else {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
+                    }
+                } else {
+                    /* Unreachable */
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    api_regist("/media/mserver/device/ptz_control/get_presets", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_PTZ_CONTROL_PERMISSION();
+        CHECK_ARGS_("deviceId");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                return;
+            }
+
+            val["data"] = makeDevicePTZPresetJson(ret);
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    api_regist("/media/mserver/device/ptz_control/set_preset", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_PTZ_CONTROL_PERMISSION();
+        CHECK_ARGS_("deviceId", "presetToken", "presetName");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            string presetToken = allArgs["presetToken"];
+            string presetName = allArgs["presetName"];
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (impl) {
+                        impl->addUserPTZPreset(presetToken, presetName, [=](const SockException &ex) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                val["msg"] = ex.what();
+                                invoker(200, headerOut, val.toStyledString());
+                            }
+                        });
+                    } else {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
+                    }
+                } else {
+                    /* Unreachable */
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    api_regist("/media/mserver/device/ptz_control/remove_preset", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_PTZ_CONTROL_PERMISSION();
+        CHECK_ARGS_("deviceId", "presetToken", "presetName");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            string presetToken = allArgs["presetToken"];
+            string presetName = allArgs["presetName"];
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (impl) {
+                        impl->removeUserPTZPreset(presetToken, presetName, [=](const SockException &ex) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                val["msg"] = ex.what();
+                                invoker(200, headerOut, val.toStyledString());
+                            }
+                        });
+                    } else {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
+                    }
+                } else {
+                    /* Unreachable */
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_READ_MSERVER_PERMISSION();
