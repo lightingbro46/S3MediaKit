@@ -800,6 +800,8 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
     _tptz__SetPresetResponse SetPresetResponse;
 
     SetPreset->ProfileToken = _ptzProfile.strMediaProfileToken;
+    SetPreset->PresetToken = soap_new_std__string(_m_soap);
+    SetPreset->PresetName  = soap_new_std__string(_m_soap);
     *SetPreset->PresetToken = presetToken;
     *SetPreset->PresetName = presetName;
 
@@ -871,10 +873,14 @@ bool OnvifControl::getPTZPresets() {
         return false;
     }
 
+    _ptzProfile.isPresetEnable = true;
+    _ptzProfile.presetMap.clear();
+
+    bool isHomePresetEnable = false;
+    string homePresetToken;
+
     // note: reset preset list every time when get capabilities since preset token may change after device reboot
     if (!GetPresetsResponse.Preset.empty()) {
-        _ptzProfile.isPresetEnable = true;
-        _ptzProfile.presetMap.clear();
 
         for (const auto &preset : GetPresetsResponse.Preset) {
             if (!preset || !preset->token || preset->token->empty()) {
@@ -896,35 +902,32 @@ bool OnvifControl::getPTZPresets() {
             _ptzProfile.presetMap.emplace(pToken, std::move(p));
 
             if (pToken == "home" || pToken == "Home" || pToken == "1") {
-                _ptzProfile.isHomePresetEnable = true;
-                _ptzProfile.homePresetToken = pToken;
-                DebugL << "Home preset is supported";
+                isHomePresetEnable = true;
+                homePresetToken = pToken;
             }
         }
     } else {
-        float pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
-        string homePresetToken = "home";
-        string homePresetName = "1";
-        if (PTZ_SetPreset(homePresetName, homePresetToken, pan, tilt, zoom)) {
-            _ptzProfile.isPresetEnable = true;
-            _ptzProfile.isHomePresetEnable = true;
-            OnvifPTZProfile::PTZPreset homePreset;
-            homePreset.Token = homePresetToken;
-            homePreset.Name = homePresetName;
-            homePreset.absPan = pan;
-            homePreset.absTilt = tilt;
-            homePreset.absZoom = zoom;
-            _ptzProfile.homePresetToken = homePresetToken;
-            _ptzProfile.presetMap.emplace(homePresetToken, std::move(homePreset));
-            DebugL << "Home preset is supported by setting preset with token: " << homePresetToken << " and name: " << homePresetName;
-        } else {
-            _ptzProfile.isPresetEnable = false;
-            _ptzProfile.isHomePresetEnable = false;
-            _ptzProfile.homePresetToken = "";
-            _ptzProfile.presetMap.clear();
-            WarnL << "Home preset is not supported since device can not set preset successfully";
-        }
+        // float pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
+        // string homePresetToken = "1";
+        // string homePresetName = "home";
+        // if (PTZ_SetPreset(homePresetName, homePresetToken, pan, tilt, zoom)) {
+        //     _ptzProfile.isPresetEnable = true;
+        //     _ptzProfile.isHomePresetEnable = true;
+        //     OnvifPTZProfile::PTZPreset homePreset;
+        //     homePreset.Token = homePresetToken;
+        //     homePreset.Name = homePresetName;
+        //     homePreset.absPan = pan;
+        //     homePreset.absTilt = tilt;
+        //     homePreset.absZoom = zoom;
+        //     _ptzProfile.homePresetToken = homePresetToken;
+        //     _ptzProfile.presetMap.emplace(homePresetToken, std::move(homePreset));
+        //     DebugL << "Home preset is supported by setting preset with token: " << homePresetToken << " and name: " << homePresetName;
+        // }
     }
+
+    _ptzProfile.isHomePresetEnable = isHomePresetEnable;
+    _ptzProfile.homePresetToken = homePresetToken;
+    DebugL << (isHomePresetEnable ? "Home preset is supported" : "Home preset can be not found");
     return true;
 }
 

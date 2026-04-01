@@ -167,7 +167,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     auto clamp = [](float value, float minVal, float maxVal) { return std::max(minVal, std::min(maxVal, value)); };
     float step = speed / 100.0f;
 
-    if (direct == PTZ_DIRECT::Home && profile.isPresetEnable) {
+    if (direct == PTZ_DIRECT::Home) {
         // If Home command and preset is enabled, go to home preset if exist, otherwise go to home position
         if (!ptr->PTZ_GotoHomePosition(step, step, step)) {
             cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED));
