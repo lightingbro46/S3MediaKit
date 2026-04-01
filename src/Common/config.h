@@ -552,8 +552,8 @@ extern const std::string kUseYChannel;
 extern const std::string kSaveImage;
 // Aggregation window for MotionSummaryBlock generation (ms). Default: 10 seconds.
 extern const std::string kSummaryWindowMS;
-// Default overlap interval between two motion events (s). Default: 2s. If the interval between two motion events is less than this value, they will be merged into one event.
-extern const std::string kDefaultOverlapInterval;
+// Default overlap interval between two motion events (s). Default: 5s. If the interval between two motion events is less than this value, they will be merged into one event.
+extern const std::string kOverlapInterval;
 } // namespace Motion
 
 ////////////////////Storage configuration//////////////////////

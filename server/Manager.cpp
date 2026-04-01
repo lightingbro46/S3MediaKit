@@ -497,7 +497,7 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     bool maxConnectOnMserverAuto = !data["unlimitedStream"].isNull() ? data["unlimitedStream"].asBool() : false;
     int maxConnectOnMserver = !data["maxStream"].isNull() ? data["maxStream"].asInt() : -1;
     if (maxConnectOnMserverAuto && maxConnectOnMserver > 0) {
-        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserver,  (int)(maxConnectOnMserver * 1.1));
+        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserver, (int)(maxConnectOnMserver * 1.1));
     } else {
         GlobalMonitor::Instance().setThreshold(ResourceType::READER, -1, -1);
     }
@@ -1344,8 +1344,6 @@ Json::Value makeDevicePTZPresetJson(const DeviceSource::Ptr &device) {
                         item.append(preset);
                     }
                 }
-
-                
             }
         }
     }

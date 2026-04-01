@@ -47,7 +47,7 @@ public:
         // fmp4 live
         type_fmp4 = 3,
         // ts live
-        type_ts = 4,
+        type_ts = 4
     } type;
 
     /**

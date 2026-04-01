@@ -293,7 +293,7 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     else
         direct = PTZ_DIRECT::Home;
 
-    int ptz_speed = speed > 0 ? speed : static_cast<int>(_ptzSpeed * 100);
+    int ptz_speed = speed < 0 ? speed : static_cast<int>(_ptzSpeed);
 
     if (_onvif_ctr && _ready.load()) {
         onvifPTZMove(_onvif_ctr, _ptzMode, direct, ptz_speed, cb);

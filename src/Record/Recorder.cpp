@@ -112,6 +112,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
             throw std::invalid_argument("mpegts related functions are not turned on. Please enable the ENABLE_HLS or ENABLE_RTPPROXY macro and then compile and test it");
 #endif
         }
+
         default: throw std::invalid_argument("Unknown recording type");
     }
 }

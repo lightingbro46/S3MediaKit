@@ -463,8 +463,8 @@ const string kUseYChannel = MOTION_FIELD "useYChannel";
 const string kSaveImage = MOTION_FIELD "saveImage";
 // Aggregation window for MotionSummaryBlock generation (ms). Default: 5 minutes.
 const string kSummaryWindowMS = MOTION_FIELD "summaryWindowMS";
-// Default overlap interval between two motion events (s). Default: 2s. If the interval between two motion events is less than this value, they will be merged into one event.
-const string kDefaultOverlapInterval = MOTION_FIELD "defaultOverlapInterval";
+// Default overlap interval between two motion events (s). Default: 5s. If the interval between two motion events is less than this value, they will be merged into one event.
+const string kOverlapInterval = MOTION_FIELD "overlapInterval";
 
 static onceToken token([]() {
     mINI::Instance()[kSensitivity] = "0.15,0.1,0.08,0.05,0.02";
@@ -476,7 +476,7 @@ static onceToken token([]() {
     mINI::Instance()[kUseYChannel] = 0;
     mINI::Instance()[kSaveImage] = 0;
     mINI::Instance()[kSummaryWindowMS] = 10000;
-    mINI::Instance()[kDefaultOverlapInterval] = 2;
+    mINI::Instance()[kOverlapInterval] = 5;
 });
 } // namespace Motion
 
