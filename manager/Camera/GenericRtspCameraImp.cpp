@@ -68,6 +68,17 @@ void GenericRtspCameraImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<CameraController>(_src->getDeviceTuple(), _poller);
         _controller->createTimer();
+        {
+            // add user presets after controller constructor
+            auto strong_statistic = _statistic.lock();
+            auto params = strong_statistic->getParams();
+            if (!params.device_stats.user_presets.empty()) {
+                for (auto &it : params.device_stats.user_presets) {
+                    auto p = it.second;
+                    _controller->addUserPTZPreset(p.Token, p.Name, p.absPan, p.absTilt, p.absZoom);
+                }
+            }
+        }
     }
     _controller->setupController(_option);
 }
