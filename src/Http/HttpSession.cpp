@@ -368,7 +368,8 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
 bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
     auto pos_stamp = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["pos"].data()));
     auto start_pts = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["startPts"].data()));
-    return checkLiveStream(FMP4_SCHEMA, "/media", ".live.mp4", [this, cb, pos_stamp, start_pts](const MediaSource::Ptr &src) {
+    auto dur_sec = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["duration"].data()));
+    return checkLiveStream(FMP4_SCHEMA, "/media", ".live.mp4", [this, cb, pos_stamp, start_pts, dur_sec](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
         bool bClose = false;
@@ -406,6 +407,8 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
         setSocketFlags();
         onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        auto end_dts = std::make_shared<std::atomic<uint64_t>>(std::numeric_limits<uint64_t>::max());
+        auto stop_requested = std::make_shared<std::atomic<bool>>(false);
 
         fmp4_src->pause(false);
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
@@ -422,15 +425,38 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
             }
             strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
         });
-        _fmp4_reader->setReadCB([weak_self](const FMP4MediaSource::RingDataType &fmp4_list) {
+        _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested](const FMP4MediaSource::RingDataType &fmp4_list) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 // This object has been destroyed
                 return;
             }
+            const uint64_t dur_ms = dur_sec * 1000;
             size_t i = 0;
             auto size = fmp4_list->size();
-            fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) { strong_self->onWrite(ts, ++i == size); });
+            fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) {
+                if (stop_requested->load(std::memory_order_acquire)) {
+                    return; // Stop requested: skip the rest of the current batch
+                }
+                if (dur_ms > 0) {
+                    uint64_t expected = std::numeric_limits<uint64_t>::max();
+                    uint64_t target_end = ts->time_stamp + dur_ms;
+
+                    if (end_dts->compare_exchange_strong(expected, target_end, std::memory_order_acq_rel)) {
+                        DebugL << "http-mp4 set duration limit, end_dts:" << target_end;
+                    }
+                    const uint64_t limit = end_dts->load(std::memory_order_acquire);
+                    if (ts->time_stamp > limit) {
+                        if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
+                            WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
+                            fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
+                            strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
+                        }
+                        return;
+                    }
+                }
+                strong_self->onWrite(ts, ++i == size);
+            });
         });
     });
 }
