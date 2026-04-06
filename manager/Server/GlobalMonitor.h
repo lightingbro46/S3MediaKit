@@ -6,6 +6,7 @@
 #include "MemoryMonitor.h"
 #include "NetworkMonitor.h"
 #include "ReaderMonitor.h"
+#include "RestartScheduler.h"
 #include "osInfo.h"
 
 namespace managerkit {
@@ -45,6 +46,10 @@ public:
 
     ReaderCountInfoMap getReaderUsage();
 
+    void setRestartConfig(const RestartSchedulerConfig &cfg);
+
+    RestartSchedulerConfig getRestartConfig() const;
+
 private:
     GlobalMonitor();
 
@@ -55,6 +60,7 @@ private:
     NetworkMonitor::Ptr _net_monitor;
     HddMonitor::Ptr _hdd_monitor;
     ReaderMonitor::Ptr _reader_monitor;
+    RestartScheduler::Ptr _restart_scheduler;
 
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;

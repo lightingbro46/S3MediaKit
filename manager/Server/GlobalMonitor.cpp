@@ -39,6 +39,10 @@ void GlobalMonitor::start() {
     _reader_monitor = std::make_shared<ReaderMonitor>(_poller);
     DebugL << "Start monitoring Stream reader usage";
 
+    _restart_scheduler = std::make_shared<RestartScheduler>(_poller);
+    _restart_scheduler->start();
+    DebugL << "Start periodical restart scheduler";
+
     weak_ptr<GlobalMonitor> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
         300.0f,
@@ -199,6 +203,19 @@ bool GlobalMonitor::isReaderCountLimit(const string &camera_id, bool record_stre
         ret = _reader_monitor->isReaderCountLimit(camera_id, record_stream);
     }
     return ret;
+}
+
+void GlobalMonitor::setRestartConfig(const RestartSchedulerConfig &cfg) {
+    if (_restart_scheduler) {
+        _restart_scheduler->setConfig(cfg);
+    }
+}
+
+RestartSchedulerConfig GlobalMonitor::getRestartConfig() const {
+    if (_restart_scheduler) {
+        return _restart_scheduler->getConfig();
+    }
+    return RestartSchedulerConfig{};
 }
 
 } // namespace managerkit

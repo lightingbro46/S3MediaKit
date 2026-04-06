@@ -486,18 +486,26 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     }
 
     // stream reader threshold config
-    bool maxConnectPerCameraAuto = !data["unlimitedStreamPerCamera"].isNull() ? data["unlimitedStreamPerCamera"].asBool() : false;
+    bool unlimitedConnectPerCamera = !data["unlimitedStreamPerCamera"].isNull() ? data["unlimitedStreamPerCamera"].asBool() : false;
     int maxConnectPerCamera = !data["maxStreamPerCamera"].isNull() ? data["maxStreamPerCamera"].asInt() : -1;
-    if (maxConnectPerCameraAuto && maxConnectPerCamera > 0) {
-        GlobalMonitor::Instance().setStreamReaderThreshold(maxConnectPerCamera, (int)(maxConnectPerCamera * 1.1));
+    int maxConnectPerCameraByLicense = !data["streamMaxCameraOfLicense"].isNull() ? data["streamMaxCameraOfLicense"].asInt() : -1;
+    if (!unlimitedConnectPerCamera && maxConnectPerCamera > 0 && maxConnectPerCameraByLicense > 0) {
+        auto value = min(maxConnectPerCamera, maxConnectPerCameraByLicense);
+        GlobalMonitor::Instance().setStreamReaderThreshold(value, (int)(value * 1.1));
+    } else if (unlimitedConnectPerCamera && maxConnectPerCameraByLicense > 0) {
+        GlobalMonitor::Instance().setStreamReaderThreshold(maxConnectPerCameraByLicense, (int)(maxConnectPerCameraByLicense * 1.1));
     } else {
         GlobalMonitor::Instance().setStreamReaderThreshold(-1, -1);
     }
 
-    bool maxConnectOnMserverAuto = !data["unlimitedStream"].isNull() ? data["unlimitedStream"].asBool() : false;
+    bool unlimitedConnectOnMserver = !data["unlimitedStream"].isNull() ? data["unlimitedStream"].asBool() : false;
     int maxConnectOnMserver = !data["maxStream"].isNull() ? data["maxStream"].asInt() : -1;
-    if (maxConnectOnMserverAuto && maxConnectOnMserver > 0) {
-        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserver, (int)(maxConnectOnMserver * 1.1));
+    int maxConnectOnMserverByLicense = !data["streamMaxOfLicense"].isNull() ? data["streamMaxOfLicense"].asInt() : -1;
+    if (!unlimitedConnectOnMserver && maxConnectOnMserver > 0  && maxConnectOnMserverByLicense > 0) {
+        auto value = min(maxConnectPerCamera, maxConnectPerCameraByLicense);
+        GlobalMonitor::Instance().setThreshold(ResourceType::READER, value, (int)(value * 1.1));
+    } else if (unlimitedConnectOnMserver && maxConnectOnMserverByLicense > 0) {
+        GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserverByLicense, (int)(maxConnectOnMserverByLicense * 1.1));
     } else {
         GlobalMonitor::Instance().setThreshold(ResourceType::READER, -1, -1);
     }
@@ -510,6 +518,19 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     GET_THRESHOLD(CPU, CPU);
     GET_THRESHOLD(MEMORY, RAM);
     GET_THRESHOLD(HDD, STORAGE);
+
+    // restart service config
+    if (!data["restartConfig"].isNull()) {
+        const Json::Value &rc = data["restartConfig"];
+        RestartSchedulerConfig cfg;
+        cfg.enabled    = !rc["enabled"].isNull()    ? rc["enabled"].asBool()       : false;
+        cfg.type       = !rc["type"].isNull()       ? rc["type"].asString()        : "";
+        cfg.time       = !rc["time"].isNull()       ? rc["time"].asString()        : "";
+        cfg.dayOfWeek  = !rc["dayOfWeek"].isNull()  ? rc["dayOfWeek"].asString()   : "";
+        cfg.everyHours = !rc["everyHours"].isNull() ? rc["everyHours"].asString()  : "";
+        cfg.timezone   = !rc["timezone"].isNull()   ? rc["timezone"].asString()    : "";
+        GlobalMonitor::Instance().setRestartConfig(cfg);
+    }
 }
 
 static void loadServerClusterFromJson(const Json::Value &data) {
