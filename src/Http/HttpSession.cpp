@@ -443,12 +443,12 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
                     uint64_t target_end = ts->time_stamp + dur_ms;
 
                     if (end_dts->compare_exchange_strong(expected, target_end, std::memory_order_acq_rel)) {
-                        DebugL << "http-fmp4 set duration limit, end_dts:" << target_end;
+                        DebugL << "http-mp4 set duration limit, end_dts:" << target_end;
                     }
                     const uint64_t limit = end_dts->load(std::memory_order_acquire);
                     if (ts->time_stamp > limit) {
                         if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
-                            WarnL << "http-fmp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
+                            WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
                             fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
                             strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
                         }
