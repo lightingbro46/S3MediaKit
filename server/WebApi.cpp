@@ -42,6 +42,7 @@
 #include "Pusher/PusherProxy.h"
 #include "Rtp/RtpProcess.h"
 #include "User/UserAuthorManager.h"
+#include "User/UserAuditLog.h"
 #include "Record/MP4Reader.h"
 
 #if defined(ENABLE_RTPPROXY)
@@ -2955,6 +2956,7 @@ void installWebApi() {
 
             if (need_to_restart) {
                 // notify to restart server
+                NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, "Restart due to updating api configuration");
                 NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
             }
 

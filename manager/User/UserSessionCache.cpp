@@ -58,7 +58,76 @@ bool UserSessionHelper::decodeJwtToken(Json::Value &decoded_payload, const strin
     return true;
 }
 
-UserSessionCache::UserSessionCache(const string &token) : _token(token) {
+static std::string extractVersion(const std::string& ua, const std::string& key) {
+    size_t pos = ua.find(key);
+    if (pos == std::string::npos) return "";
+
+    pos += key.length();
+    size_t end = ua.find_first_of(" ;)", pos);
+
+    if (end == std::string::npos)
+        return ua.substr(pos);
+
+    return ua.substr(pos, end - pos);
+}
+
+ClientOSInfo parseUserAgent(const std::string& ua) {
+    ClientOSInfo info;
+
+    // =========================
+    // Detect OS
+    // =========================
+    if (ua.find("Windows NT 10.0") != std::string::npos) {
+        info.os = "Windows 10";
+    } else if (ua.find("Windows NT 6.1") != std::string::npos) {
+        info.os = "Windows 7";
+    } else if (ua.find("Android") != std::string::npos) {
+        info.os = "Android";
+    } else if (ua.find("iPhone") != std::string::npos || ua.find("iPad") != std::string::npos) {
+        info.os = "iOS";
+    } else if (ua.find("Mac OS X") != std::string::npos) {
+        info.os = "macOS";
+    } else if (ua.find("Linux") != std::string::npos) {
+        info.os = "Linux";
+    } else {
+        info.os = "Unknown";
+    }
+
+    // =========================
+    // Detect Device
+    // =========================
+    if (ua.find("Mobile") != std::string::npos) {
+        info.device = "Mobile";
+    } else if (ua.find("Tablet") != std::string::npos || ua.find("iPad") != std::string::npos) {
+        info.device = "Tablet";
+    } else {
+        info.device = "Desktop";
+    }
+
+    // =========================
+    // Detect Browser + Version
+    // =========================
+    if (ua.find("Edg/") != std::string::npos) {
+        info.browser = "Edge";
+        info.browserVersion = extractVersion(ua, "Edg/");
+    } else if (ua.find("Chrome/") != std::string::npos) {
+        info.browser = "Chrome";
+        info.browserVersion = extractVersion(ua, "Chrome/");
+    } else if (ua.find("Firefox/") != std::string::npos) {
+        info.browser = "Firefox";
+        info.browserVersion = extractVersion(ua, "Firefox/");
+    } else if (ua.find("Safari/") != std::string::npos) {
+        info.browser = "Safari";
+        info.browserVersion = extractVersion(ua, "Safari/");
+    } else {
+        info.browser = "Unknown";
+        info.browserVersion = "";
+    }
+
+    return info;
+}
+
+UserSessionCache::UserSessionCache(const string &token, const string &user_agent, const string &client_ip) : _token(token), _client_ip(client_ip) {
     if (!UserSessionHelper::verifyJwtToken(token)) {
         WarnL << "Invalid token: " << token;
         _has_access = false;
@@ -86,6 +155,7 @@ UserSessionCache::UserSessionCache(const string &token) : _token(token) {
         return;
     }
     _has_access = true;
+    _client_os_info = parseUserAgent(user_agent);
 
     saveUserSession();
 }

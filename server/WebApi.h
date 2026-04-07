@@ -225,7 +225,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
             CHECK_ARGS_("Authorization");                                                                                                                      \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, allArgs["User-Agent"], sender.get_peer_ip());                            \
             if (!token_cache->hasProjectAccess()) {                                                                                                            \
                 throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
             }                                                                                                                                                  \

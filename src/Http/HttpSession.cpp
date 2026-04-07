@@ -296,6 +296,11 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         url += StrPrinter << "token=" << jwt_token;
     }
 
+    if (!headers["User-Agent"].empty()) {
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "user-agent=" << encodeBase64(headers["User-Agent"]);
+    }
+
     // Parse the complete url with protocol + parameters
     _media_info.parse(schema + "://" + _parser["Host"] + url);
 
@@ -598,6 +603,11 @@ bool HttpSession::checkLiveStreamHls() {
         auto jwt_token = trim(findSubString(tmp.data(), "Bearer", nullptr));
         url += url.find("?") == string::npos ? "?" : "&";
         url += StrPrinter << "token=" << jwt_token;
+    }
+
+    if (!headers["User-Agent"].empty()) {
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "user-agent=" << encodeBase64(headers["User-Agent"]);
     }
 
     string schema;

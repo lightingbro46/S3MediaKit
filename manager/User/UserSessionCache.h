@@ -26,6 +26,13 @@ public:
     static bool decodeJwtToken(Json::Value &decoded_payload, const std::string &jwt_token);
 };
 
+struct ClientOSInfo {
+    std::string os;
+    std::string browser;
+    std::string browserVersion;
+    std::string device;
+};
+
 /**
  * Authorization cache of user with device, default max elapsed is 60 seconds
  */
@@ -33,7 +40,7 @@ class UserSessionCache {
 public:
     using Ptr = std::shared_ptr<UserSessionCache>;
 
-    UserSessionCache(const std::string &token);
+    UserSessionCache(const std::string &token, const std::string &user_agent = "", const std::string &client_ip = "");
 
     /**
      * get created at timestamp, unit: second
@@ -70,6 +77,16 @@ public:
      */
     bool hasPermissionCode(std::string code);
 
+    /**
+     * get client os info
+     */
+    ClientOSInfo getClientOSInfo() { return _client_os_info; }
+
+    /**
+     * get client ip
+     */
+    std::string getClientIp() { return _client_ip; }
+
 private:
     /**
      *  save user session into database
@@ -87,6 +104,8 @@ private:
     int _level;
     std::string _session_id;
     bool _has_access = false;
+    ClientOSInfo _client_os_info;
+    std::string _client_ip;
 };
 
 } // namespace managerkit

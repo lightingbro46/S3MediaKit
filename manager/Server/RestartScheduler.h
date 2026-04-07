@@ -18,6 +18,8 @@ struct RestartSchedulerConfig {
     std::string dayOfWeek;   // "MON".."SUN" – used by WEEKLY
     std::string everyHours;  // numeric string, e.g. "6" – used by HOURLY
     std::string timezone;    // reserved, currently unused
+    int  restartDelaySec = 60; // delay seconds before restart, default to 60
+    bool emitEvent = true; // whether to emit event when restart is triggered, default to true
 };
 
 class RestartScheduler : public std::enable_shared_from_this<RestartScheduler> {
@@ -39,6 +41,9 @@ private:
 
     static int parseDayOfWeek(const std::string &dow);
 
+    void emitEvent();
+
+private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr       _timer;
 

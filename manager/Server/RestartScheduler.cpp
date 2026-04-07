@@ -3,6 +3,7 @@
 #include "Util/NoticeCenter.h"
 #include "Util/logger.h"
 #include <unordered_map>
+#include "User/UserAuditLog.h"
 
 using namespace std;
 using namespace toolkit;
@@ -84,40 +85,77 @@ void RestartScheduler::onTick() {
     }
     _last_restart = now_time;
 
+    if (cfg.emitEvent) {
+        emitEvent();
+    }
+
     WarnL << "RestartScheduler: triggering system restart (type=" << cfg.type << ")";
     NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
 }
 
+/**
+ * Determine whether the server should restart at the current time.
+ *
+ * The actual trigger time = scheduled time + restartDelaySec (second precision).
+ * This intentional delay lets the API service (which restarts at the
+ * scheduled time) finish starting up before the media server restarts.
+ *
+ * Example: scheduled 02:00, restartDelaySec=90 → trigger at 02:01:30.
+ *
+ * Supported types:
+ *   WEEKLY  – specific day-of-week + HH:MM + delay
+ *   DAILY   – every day at HH:MM + delay
+ *   HOURLY  – every N hours, at minute 0 + delay
+ */
 bool RestartScheduler::shouldRestartNow(const tm &now) const {
-    // Parse HH:MM
-    auto parseTime = [](const string &t, int &hour, int &min) -> bool {
+    // Parse "HH:MM" string into total seconds since midnight.
+    auto parseTimeSec = [](const string &t, int &out_total_sec) -> bool {
         if (t.size() < 5 || t[2] != ':') return false;
         try {
-            hour = stoi(t.substr(0, 2));
-            min  = stoi(t.substr(3, 2));
+            int hour = stoi(t.substr(0, 2));
+            int min  = stoi(t.substr(3, 2));
+            if (hour < 0 || hour >= 24 || min < 0 || min >= 60) return false;
+            out_total_sec = hour * 3600 + min * 60;
         } catch (...) { return false; }
-        return hour >= 0 && hour < 24 && min >= 0 && min < 60;
+        return true;
+    };
+
+    // Apply restartDelaySec to a base second-of-day, wrapping at midnight.
+    // Returns target {hour, min, sec}.
+    const int delay_sec = _cfg.restartDelaySec;
+    auto applyDelay = [delay_sec](int base_sec,
+                                  int &out_hour, int &out_min, int &out_sec) {
+        int total = (base_sec + delay_sec) % 86400;  // wrap at 24 h
+        out_hour  = total / 3600;
+        out_min   = (total % 3600) / 60;
+        out_sec   = total % 60;
     };
 
     if (_cfg.type == "WEEKLY") {
         int target_dow = parseDayOfWeek(_cfg.dayOfWeek);
         if (target_dow < 0) return false;
 
-        int hour = 0, min = 0;
-        if (!parseTime(_cfg.time, hour, min)) return false;
+        int base_sec = 0;
+        if (!parseTimeSec(_cfg.time, base_sec)) return false;
+
+        int th, tm_, ts;
+        applyDelay(base_sec, th, tm_, ts);
 
         return now.tm_wday == target_dow
-            && now.tm_hour == hour
-            && now.tm_min  == min
-            && now.tm_sec  == 0;
+            && now.tm_hour == th
+            && now.tm_min  == tm_
+            && now.tm_sec  == ts;
 
     } else if (_cfg.type == "DAILY") {
-        int hour = 0, min = 0;
-        if (!parseTime(_cfg.time, hour, min)) return false;
+        int base_sec = 0;
+        if (!parseTimeSec(_cfg.time, base_sec)) return false;
 
-        return now.tm_hour == hour
-            && now.tm_min  == min
-            && now.tm_sec  == 0;
+        int th, tm_, ts;
+        applyDelay(base_sec, th, tm_, ts);
+
+        return now.tm_hour == th
+            && now.tm_min  == tm_
+            && now.tm_sec  == ts;
 
     } else if (_cfg.type == "HOURLY") {
         if (_cfg.everyHours.empty()) return false;
@@ -125,10 +163,13 @@ bool RestartScheduler::shouldRestartNow(const tm &now) const {
         try { every = stoi(_cfg.everyHours); } catch (...) { return false; }
         if (every <= 0) return false;
 
-        // Fire at the start of every N-th hour
+        // Base is second 0 of every N-th hour; apply delay on top.
+        int th, tm_, ts;
+        applyDelay(0, th, tm_, ts);  // base = 00:00:00 within the hour
+
         return (now.tm_hour % every == 0)
-            && now.tm_min  == 0
-            && now.tm_sec  == 0;
+            && now.tm_min  == tm_
+            && now.tm_sec  == ts;
     }
 
     return false;
@@ -141,6 +182,13 @@ int RestartScheduler::parseDayOfWeek(const string &dow) {
     };
     auto it = kMap.find(dow);
     return it != kMap.end() ? it->second : -1;
+}
+
+void RestartScheduler::emitEvent() {
+    auto flag = NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, "Restart due to scheduled task");
+    if (!flag) {
+        WarnL << "Nobody listen on kBroadcastSystemAuditLog";
+    }
 }
 
 } // namespace managerkit

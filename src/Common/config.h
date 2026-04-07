@@ -150,7 +150,7 @@ extern const std::string kBroadcastDeviceAccess;
 
 // Broadcast for device capabilities changed event.
 extern const std::string kBroadcastDeviceCapsChanged;
-#define BroadcastDeviceCapsChangedArgs const DeviceCapabilities &caps, DeviceSource &sender
+#define BroadcastDeviceCapsChangedArgs const managerkit::DeviceCapabilities &caps, DeviceSource &sender
 
 // Broadcast for reloading API configuration.
 extern const std::string kBroadcastReloadApiConfig;
@@ -163,6 +163,12 @@ extern const std::string kBroadcastHealthCheckService;
 
 extern const std::string kBroadcastRecordMotion;
 #define BroadcastRecordMotionArgs const MediaTuple &args, const bool &bActive
+
+extern const std::string kBroadcastSystemAuditLog;
+#define BroadcastSystemAuditLogArgs const std::string &event, std::string msg
+
+extern const std::string kBroadcastUserAuditLog;
+#define BroadcastUserAuditLogArgs const std::string &event, const std::string &resource_id, const managerkit::UserAuditLogArgs &args, const managerkit::UserSessionCache::Ptr &session
 
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \

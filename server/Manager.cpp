@@ -17,6 +17,8 @@
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
 #include "Common/StrUtil.h"
+#include "User/UserAuditLog.h"
+#include "User/UserSessionCache.h"
 
 using namespace std;
 using namespace toolkit;
@@ -228,6 +230,16 @@ void installManagerHook () {
                 }
             }
         }
+    });
+
+    // Listen to system audit log events
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastSystemAuditLog, [](BroadcastSystemAuditLogArgs) { 
+        
+    });
+
+    // Listen to user audit log events
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastUserAuditLog, [](BroadcastUserAuditLogArgs) {
+        
     });
 
     enforceStoragePolicy();

@@ -35,7 +35,7 @@ public:
     /**
      *  get user session cache
      */
-    UserSessionCache::Ptr getTokenCache(const std::string &jwt_token);
+    UserSessionCache::Ptr getTokenCache(const std::string &jwt_token, const std::string &user_agent = "", const std::string &client_ip = "");
 
     /**
      *  get user-resource author cache
@@ -61,7 +61,7 @@ private:
     /**
      *  add user session cache
      */
-    UserSessionCache::Ptr addTokenCache(const std::string &jwt_token);
+    UserSessionCache::Ptr addTokenCache(const std::string &jwt_token, const std::string &user_agent, const std::string &client_ip);
 
     /**
      * Traver all token-resource author cache expired

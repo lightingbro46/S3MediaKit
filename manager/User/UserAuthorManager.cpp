@@ -61,14 +61,14 @@ void UserAuthorManager::cleanExpiredTokenCache() {
     }
 }
 
-UserSessionCache::Ptr UserAuthorManager::getTokenCache(const string &jwt_token) {
+UserSessionCache::Ptr UserAuthorManager::getTokenCache(const string &jwt_token, const string &user_agent, const std::string &client_ip) {
     lock_guard<recursive_mutex> lck(_mtx);
-    return _map_token_cache.find(jwt_token) != _map_token_cache.end() ? _map_token_cache[jwt_token] : addTokenCache(jwt_token);
+    return _map_token_cache.find(jwt_token) != _map_token_cache.end() ? _map_token_cache[jwt_token] : addTokenCache(jwt_token, user_agent, client_ip);
 }
 
-UserSessionCache::Ptr UserAuthorManager::addTokenCache(const string &jwt_token) {
+UserSessionCache::Ptr UserAuthorManager::addTokenCache(const string &jwt_token, const string &user_agent, const std::string &client_ip) {
     lock_guard<recursive_mutex> lck(_mtx);
-    auto cache = std::make_shared<UserSessionCache>(jwt_token);
+    auto cache = std::make_shared<UserSessionCache>(jwt_token, user_agent, client_ip);
     // add to cache map
     _map_token_cache[jwt_token] = cache;
     return cache;

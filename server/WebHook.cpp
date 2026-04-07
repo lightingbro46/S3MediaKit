@@ -17,6 +17,8 @@
 #include "Server/ClusterManager.h"
 #include "Camera/CameraManager.h"
 #include "Server/ReaderMonitor.h"
+#include "User/UserAuditLog.h"
+#include "Util/base64.h"
 
 using namespace std;
 using namespace Json;
@@ -51,6 +53,7 @@ const string kOnServerReport = HOOK_FIELD "on_server_report";
 const string kOnServerReport2 = HOOK_FIELD "on_server_report2";
 const string kOnServerReportUsage = HOOK_FIELD "on_server_report_usage";
 const string kOnSystemAlert = HOOK_FIELD "on_system_alert";
+const string kOnSystemAuditLog = HOOK_FIELD "on_system_audit_log";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kOnServerHealthCheck = HOOK_FIELD "on_server_health_check";
@@ -88,6 +91,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerReport2] = "/api/media-server/update-status";
     mINI::Instance()[kOnServerReportUsage] = "/api/media-server/server-metrics";
     mINI::Instance()[kOnSystemAlert] = "/api/event-rule/system-event";
+    mINI::Instance()[kOnSystemAuditLog] = "/api/audit-log/media-server/user-actions";
     mINI::Instance()[kOnServerHealthCheck] = "/api/actuator/health";
     mINI::Instance()[kOnDeviceChanged] = "";
     mINI::Instance()[kOnDeviceCapsChanged] = "/api/media-server/media-device-info";
@@ -737,7 +741,7 @@ void installWebHook() {
             return;
         }
 
-        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
+        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, decodeBase64(params["user-agent"]), sender.get_peer_ip());
         if (!token_cache->hasProjectAccess()) {
             invoker("Unauthorized");
             return;
@@ -1283,6 +1287,62 @@ void installWebHook() {
         
         // Execute hook
         do_http_hook(hook_api_url + hook_device_caps_changed, body, nullptr);
+    });
+
+    // Listen to system audit log events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSystemAuditLog, [](BroadcastSystemAuditLogArgs) {
+        GET_CONFIG(string, hook_system_audit_log, Hook::kOnSystemAuditLog);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_audit_log.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        const string user_admin = "sysadmin1";
+        uint64_t created_stamp = time(nullptr) * 1000;
+        GET_CONFIG(string, media_server_id, General::kMediaServerId);
+        GET_CONFIG(string, project_id, Manager::kMediaServerProjectId);
+
+        ArgsType body;
+        body["action"] = event;
+        body["actor"] = user_admin;
+        body["resourceId"] = media_server_id;
+        body["createdTimestamp"] = created_stamp;
+        body["projectId"] = project_id;
+        body["descriptions"] = msg;
+
+        // Execute hook
+        do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);
+    });
+
+    // Listen to user audit log events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastUserAuditLog, [](BroadcastUserAuditLogArgs) {
+        GET_CONFIG(string, hook_system_audit_log, Hook::kOnSystemAuditLog);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_audit_log.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        const string user_name = session->getUserName();
+        auto client_os = session->getClientOSInfo();
+        auto ip = session->getClientIp();
+        
+        uint64_t created_stamp = time(nullptr) * 1000;
+        GET_CONFIG(string, project_id, Manager::kMediaServerProjectId);
+
+        ArgsType body;
+        body["action"] = event;
+        body["actor"] = user_name;
+        body["resourceId"] = resource_id;
+        body["createdTimestamp"] = created_stamp;
+        body["projectId"] = project_id;
+        body["ipAddress"] = ip;
+        body["os"] = client_os.os;
+        body["browser"] = client_os.browser;
+        body["device"] = client_os.device;
+        body["descriptions"] = toJson(args);
+
+        // Execute hook
+        do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);
     });
 
     // Report server restart
