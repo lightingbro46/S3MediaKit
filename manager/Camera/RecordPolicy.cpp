@@ -173,7 +173,8 @@ void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
     auto _current_mode = _it == _items.end() ? RecordMode::NoRecord : _it->second.mode;
     if (_current_mode != item.mode) {
         DebugL << "Recording mode of device: " << _tuple.shortUrl() << " changed to " << getRecordModeString(item.mode) << " (day=" << item.day << ", hour=" << item.hour << ")";
-        onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(item.mode), false);
+        auto event_active = _event_active;
+        onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(item.mode), event_active);
     }
 
     auto _current_fps = _it == _items.end() ? 0 : _it->second.fps;
@@ -200,6 +201,7 @@ bool RecordScheduler::setupRecordEvent(RecordEventType type, bool start) {
     if (_it != _items.end()) {
         mode = _it->second.mode;
     }
+    _event_active = start;
 
     if (mode == RecordMode::NoRecord) {
         WarnL << "Current schedule mode is NoRecord, ignore record event: " << getRecordEventTypeString(type) << ", start=" << start;

@@ -29,7 +29,17 @@ public:
 
     void stopMonitor(int type);
 
-    bool setupRecord(int archive_mode, bool start);
+    /**
+     * Setup recording for the stream, which will be called when the recording mode of the camera changes.
+     * The recording mode includes normal recording, motion detection recording, etc. 
+     * The specific recording policy is determined by the RecordPolicy class.
+     * @param archive_mode The recording mode, which is defined in RecordPolicy::ArchiveMode
+     * @param event_active Whether the recording is triggered by an event, which is used to determine the recording policy when the recording mode is motion detection recording. 
+     * If event_active is true, it means the recording is triggered by a motion event, and the recording policy will be to record the secondary stream immediately and record the primary stream after a delay; 
+     * if event_active is false, it means the recording is triggered by a non-motion event, such as a schedule, and the recording policy will be to record both primary and secondary stream immediately.
+     * @return Whether the recording setup is successful
+     */
+    bool setupRecord(int archive_mode, bool event_active);
 
     void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
 

@@ -19,12 +19,17 @@ namespace mediakit {
  *   1. startEventRecord(type, back_ms, forward_ms=0) → returns a session.
  *      - forward_ms == 0  : clip runs indefinitely until stop() is called.
  *      - forward_ms >  0  : clip auto-stops after forward_ms (one-shot clip).
- *   2. extend(post_ms) : while event is still ongoing, push the deadline to
- *                         (last_frame_dts + post_ms).  Safe to call any time.
- *   3. stop(post_ms=0) : mark event as finished; record post_ms more ms then
+ *   2. resume()          : a new event arrived while session is in post-tail;
+ *                         resets deadline to infinite so the clip stays open
+ *                         until the next stop() call.
+ *   3. extend(post_ms)   : push the DTS deadline forward by post_ms from the
+ *                         last frame.  Only useful after stop() has been called
+ *                         and the deadline is already finite — do NOT use this
+ *                         when a new event arrives (use resume() instead).
+ *   4. stop(post_ms=0)  : mark event as finished; record post_ms more ms then
  *                         close the file automatically.
  *
- * Thread-safe: extend() and stop() may be called from any thread.
+ * Thread-safe: all public methods may be called from any thread.
  *
  * Internal fields are public so that the ring-reader lambda defined inside
  * MultiMediaSourceMuxer::startEventRecord() can access them directly without
@@ -37,9 +42,24 @@ public:
     // ── public API ──────────────────────────────────────────────────────────
 
     /**
-     * Extend the recording window.  Pushes the DTS stop-deadline to at least
-     * (last_frame_dts + post_ms) without ever moving it backward.
-     * Call this while the triggering event is still ongoing.
+     * Resume an infinite session after a previous stop() was called but the
+     * file has not yet closed (i.e. still in the post-event tail window).
+     * Resets both DTS and wall-clock deadlines to "no limit" so the clip keeps
+     * recording until the next stop() call, regardless of how long the new
+     * event lasts.
+     * No-op if the session is already infinite (end_dts == UINT64_MAX).
+     */
+    void resume() {
+        end_dts.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
+        wall_deadline_ms.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
+    }
+
+    /**
+     * Push the DTS stop-deadline further into the future.
+     * Only useful after stop() has set a finite deadline — if end_dts is still
+     * UINT64_MAX (infinite) this is a no-op.
+     * Do NOT call this when a new event arrives mid-tail; use resume() instead
+     * so the clip stays open however long the new event lasts.
      */
     void extend(uint32_t post_ms) {
         auto last = last_dts.load(std::memory_order_relaxed);

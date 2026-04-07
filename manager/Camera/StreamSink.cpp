@@ -143,15 +143,17 @@ void StreamSink::onManager() {
     }
 }
 
-bool StreamSink::setupRecord(int archive_mode, bool start) {
+bool StreamSink::setupRecord(int archive_mode, bool event_active) {
     // Callers: onRecordModeChange (asserts isCurrentThread) and setStreamRegist (already on poller).
 
     // ── Cleanup guard: handle state left by the previous mode before switching ──
     {
+        bool is_same_mode = archive_mode == _archive_mode;
         bool was_event_mode = _archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)
                            || _archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion);
-        bool is_same_mode = archive_mode == _archive_mode;
-        if (was_event_mode && !is_same_mode) {
+        bool now_event_mode = archive_mode == static_cast<int>(RecordMode::RecordOnlyMotion)
+                           || archive_mode == static_cast<int>(RecordMode::RecordLowResAndMotion);
+        if (was_event_mode && !now_event_mode) {
             // Cancel any active primary EventRecordSessions.  The session recorder
             // is NOT stored in muxer->_mp4 so the incoming branches cannot detect it
             // via isRecording(); without this, the orphaned session would keep writing.
@@ -207,7 +209,7 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
             }
 
             // Primary stream only: event-based recording via EventRecordSession.
-            if (start) {
+            if (event_active) {
                 if (it.second->hasActiveEventSession()) {
                     DebugL << "Extend active event record for primary stream of device " << _tuple.shortUrl()
                            << " due to overlapping motion event (RecordOnlyMotion)";
@@ -234,7 +236,7 @@ bool StreamSink::setupRecord(int archive_mode, bool start) {
 
             if (it.first == StreamType::PrimaryStream) {
                 // Primary: event-based clip with GOP pre-roll backfill.
-                if (start) {
+                if (event_active) {
                     if (it.second->hasActiveEventSession()) {
                         DebugL << "Extend active event record for primary stream of device " << _tuple.shortUrl()
                                << " due to overlapping motion event";

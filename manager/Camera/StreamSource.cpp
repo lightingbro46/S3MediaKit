@@ -266,9 +266,11 @@ mediakit::EventRecordSession::Ptr StreamSource::startEventRecord() {
 void StreamSource::extendEventRecord() {
     auto session = _event_session;
     if (!session || !session->isActive()) return;
-    uint32_t post_ms = _option.protocol.post_record_ms;
-    session->extend(post_ms);
-    TraceL << "Event record extended by stream=" << _option.tuple.shortUrl() << ", post_ms=" << post_ms << " ms";
+    // Reset deadline to infinite so the clip stays open for the full duration
+    // of the new event, however long it lasts.  stop() will re-arm the finite
+    // post-tail deadline when the event eventually ends.
+    session->resume();
+    TraceL << "Event record resumed (deadline reset to infinite): stream=" << _option.tuple.shortUrl();
 }
 
 void StreamSource::stopEventRecord(uint32_t extra_overlap_ms) {

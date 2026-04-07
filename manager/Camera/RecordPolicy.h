@@ -10,8 +10,8 @@ namespace managerkit {
     
 enum class RecordMode : uint8_t {
     NoRecord = 0,
-    RecordOnlyMotion,
     RecordLowResAndMotion,
+    RecordOnlyMotion,
     RecordAlways,
     RecordModeMax
 };
@@ -74,6 +74,7 @@ private:
 
     // running
     bool _running = false;
+    bool _event_active = false;
     uint64_t _last_sink_time = 0;
     uint64_t _last_control_time = 0;
 };
