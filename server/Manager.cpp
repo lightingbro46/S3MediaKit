@@ -234,12 +234,18 @@ void installManagerHook () {
 
     // Listen to system audit log events
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastSystemAuditLog, [](BroadcastSystemAuditLogArgs) { 
-        
+        // todo: save to database, currently we just print the log
+        DebugL << "System audit log: " << event;
     });
 
     // Listen to user audit log events
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastUserAuditLog, [](BroadcastUserAuditLogArgs) {
-        
+        // todo: save to database, currently we just print the log
+        DebugL << "User audit log: " << event;
+    });
+
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaPublish, [](BroadcastMediaPublishArgs) {
+        // todo: rtsp, rtmp video publish event, currently we only have stream pull event, we can add publish event later if needed
     });
 
     enforceStoragePolicy();
@@ -686,6 +692,16 @@ static Json::Value exampleJson() {
     // device["motionDetectConfig"]["value"] = "";
 
     data["devices"].append(device);
+
+    data["media_server"] = Json::objectValue;
+    data["media_server"]["restartConfig"] = Json::objectValue;
+    data["media_server"]["restartConfig"]["enabled"] = true;
+    data["media_server"]["restartConfig"]["type"] = "DAILY";
+    data["media_server"]["restartConfig"]["time"] = "21:38";
+    data["media_server"]["restartConfig"]["dayOfWeek"] = "";
+    data["media_server"]["restartConfig"]["everyHours"] = "";
+    data["media_server"]["restartConfig"]["timezone"] = Json::nullValue;
+
     return data;
 }
 

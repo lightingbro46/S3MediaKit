@@ -185,7 +185,7 @@ int RestartScheduler::parseDayOfWeek(const string &dow) {
 }
 
 void RestartScheduler::emitEvent() {
-    auto flag = NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, "Restart due to scheduled task");
+    auto flag = NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, string("Restart due to scheduled task"));
     if (!flag) {
         WarnL << "Nobody listen on kBroadcastSystemAuditLog";
     }

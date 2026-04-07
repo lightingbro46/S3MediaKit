@@ -1308,7 +1308,7 @@ void installWebHook() {
         body["resourceId"] = media_server_id;
         body["createdTimestamp"] = created_stamp;
         body["projectId"] = project_id;
-        body["descriptions"] = msg;
+        body["descriptions"]["reason"] = msg;
 
         // Execute hook
         do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);

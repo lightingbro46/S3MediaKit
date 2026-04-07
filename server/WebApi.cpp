@@ -2956,7 +2956,7 @@ void installWebApi() {
 
             if (need_to_restart) {
                 // notify to restart server
-                NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, "Restart due to updating api configuration");
+                NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::MEDIA_SERVER_SHUTTING_DOWN_CONFIG, string("Restart due to updating api configuration"));
                 NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
             }
 
