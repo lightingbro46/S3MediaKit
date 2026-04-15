@@ -95,7 +95,6 @@ void MotionEventController::inputBlock(bool motion_detected, uint64_t stamp_ms, 
 }
 
 void MotionEventController::emitMotionEvent(bool start) {
-    setRecording(start);
     auto flag = NOTICE_EMIT(BroadcastRecordMotionArgs, Broadcast::kBroadcastRecordMotion, static_cast<MediaTuple&>(_info), start);
     if (!flag) {
         DebugL << "Nobody listen on kBroadcastRecordMotion event";
@@ -113,15 +112,6 @@ void MotionEventController::feedMuxer(uint64_t stamp_ms, const MotionBitmapPtr &
     std::vector<uint8_t> bitmap_vec(result->bitmap, result->bitmap + bitmap_bytes);
     MotionEventBlock block(stamp_ms, ext, std::move(bitmap_vec));
     m->inputEvent(block);
-}
-
-void MotionEventController::setRecording(bool recording) {
-    if (auto m = _muxer.lock()) m->setRecording(recording);
-}
-
-
-void MotionEventController::clearPreBuffer(bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result) {
-    if (auto m = _muxer.lock()) m->clearPreBuffer();
 }
 
 } // namespace mediakit

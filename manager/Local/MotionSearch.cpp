@@ -34,7 +34,7 @@ MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
     }
 
     _demuxer = make_shared<MultiMotionDemuxer>();
-    _demuxer->openDirectory(_base_path);
+    _demuxer->openDir(_base_path);
 }
 
 void MotionSearch::query(uint64_t start_ms, uint64_t end_ms,

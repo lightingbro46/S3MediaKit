@@ -10,7 +10,7 @@ using namespace toolkit;
 
 namespace mediakit {
 
-MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask, bool enable_record, int interval_ms, bool use_y_channel) 
+MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask, bool enable_record, const string &record_stream_id, int interval_ms, bool use_y_channel) 
     : _tuple(tuple), _roi_mask(roi_mask), _interval_ms(interval_ms), _use_y_channel(use_y_channel) {
     if (_roi_mask.empty()) {
         GET_CONFIG(int, roi_level, Motion::kROIDefaultLevel);
@@ -37,7 +37,7 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
 
     if (_enable_record) {
         GET_CONFIG(uint64_t, summary_window_ms, Motion::kSummaryWindowMS);
-        _muxer = std::make_shared<MotionMuxer>(tuple, _roi_mask, _save_path, summary_window_ms);
+        _muxer = std::make_shared<MotionMuxer>(tuple, _roi_mask, _save_path, summary_window_ms, record_stream_id);
 
         // Wire the muxer directly into the controller — single point of noise control.
         _event_ctr->setMuxer(_muxer);
@@ -46,7 +46,6 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
 
 MotionProcessor::~MotionProcessor() {
     if (_muxer) {
-        _muxer->flush();
         _muxer.reset();
     }
     if (_event_ctr) {

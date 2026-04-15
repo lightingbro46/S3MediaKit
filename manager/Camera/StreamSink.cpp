@@ -86,6 +86,16 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     new_cfg.protocol.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
     new_cfg.protocol.roi_mask      = option.enableMotion ? option.roiValue : "";
     new_cfg.protocol.record_motion = option.enableMotion ? true : false;
+    // Tell MotionMuxer to listen for kBroadcastRecordMP4 from the primary stream.
+    // Only the primary stream uses event_session_record triggered by motion start/end.
+    // When motion detection runs on a non-primary stream, _primary_stream_id holds
+    // the primary stream's ID (set earlier in setupMonitor for PrimaryStream).
+    if (type == StreamType::PrimaryStream) {
+        _primary_stream_id = tuple.stream_id;
+    }
+    if (new_cfg.protocol.enable_motion && type != StreamType::PrimaryStream) {
+        new_cfg.protocol.motion_record_stream_id = _primary_stream_id;
+    }
 #else
     new_cfg.protocol.enable_motion = false;
     new_cfg.protocol.roi_mask      = "";
@@ -294,7 +304,7 @@ void StreamSink::onStreamReady(DeviceSource &sender, int type, bool live, const 
     DeviceSourceEventInterceptor::onStreamReady(sender, type, live, status, data);
 }
 
-void StreamSink::setStreamRegist(int type, bool regist) {
+void StreamSink::setStreamRegist(int type, bool regist, bool event_active) {
     // Caller (GenericRtspCameraImp::setupStreamRegist) asserts isCurrentThread - no dispatch needed.
     if (!isValidStreamType(type)) {
         WarnL << "Invalid stream type in setStreamRegist: " << type;
@@ -304,12 +314,9 @@ void StreamSink::setStreamRegist(int type, bool regist) {
     bool was_ready = _stream_ready[type];
     _stream_ready[type] = regist; // update before calling setupRecord so the guard inside sees the correct state
     if (!was_ready && regist) {
-        // Use start=false to initialize to the rest state:
-        //   RecordAlways        → start param unused (always starts type_mp4)
-        //   RecordOnlyMotion    → primary waits for motion, secondary records
-        //   RecordLowResAndMotion → primary waits for motion, secondary records
-        //   NoRecord            → start param unused (always stops)
-        setupRecord(_archive_mode, false);
+        // Pass the current event_active state so that a stream which registers
+        // while a motion event is already in progress immediately starts recording.
+        setupRecord(_archive_mode, event_active);
     }
 }
 

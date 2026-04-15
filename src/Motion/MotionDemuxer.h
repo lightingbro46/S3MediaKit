@@ -123,7 +123,7 @@ public:
      * Scan base_path for all YYYYMMDD.mblk files and open them.
      * @return Number of files successfully opened.
      */
-    int openDirectory(const std::string &base_path);
+    int openDir(const std::string &base_path);
 
     /**
      * Add a single .mblk file explicitly.

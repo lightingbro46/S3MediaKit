@@ -6,8 +6,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <dirent.h>
-#include <sys/stat.h>
 
 using namespace std;
 using namespace toolkit;
@@ -215,25 +213,20 @@ std::vector<MotionInterval> MotionDemuxer::getMotionIntervals(uint64_t from_ms, 
 
 // ── MultiMotionDemuxer ────────────────────────────────────────────────────────
 
-int MultiMotionDemuxer::openDirectory(const std::string &base_path) {
+int MultiMotionDemuxer::openDir(const std::string &base_path) {
     int count = 0;
-    DIR *dir = opendir(base_path.c_str());
-    if (!dir) {
-        WarnL << "MultiMotionDemuxer: cannot open directory: " << base_path;
+    if (!File::is_dir(base_path)) {
+        WarnL << "MultiMotionDemuxer: cannot open directory: " << base_path << " or directory does not exist";
         return 0;
     }
 
     const std::string suffix = ".mblk";
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        const std::string name = entry->d_name;
-        if (name.size() <= suffix.size()) continue;
-        if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
-
-        const std::string full_path = base_path + (base_path.back() == '/' ? "" : "/") + name;
-        if (addFile(full_path)) ++count;
-    }
-    closedir(dir);
+    File::scanDir(base_path, [&](const std::string &path, bool isDir) {
+        if (isDir) return true;
+        if (!end_with(path, suffix)) return true;
+        if (addFile(path)) ++count;
+        return true;
+    });
     return count;
 }
 

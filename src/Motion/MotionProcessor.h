@@ -17,7 +17,7 @@ class MotionProcessor : public std::enable_shared_from_this<MotionProcessor> {
 public:
     using Ptr = std::shared_ptr<MotionProcessor>;
 
-    MotionProcessor(const MediaTuple &tuple, const std::string &roi_mask = "", bool enable_record = true, int interval_ms = 200, bool use_y_channel = false);
+    MotionProcessor(const MediaTuple &tuple, const std::string &roi_mask = "", bool enable_record = true, const std::string &record_stream_id = "", int interval_ms = 200, bool use_y_channel = false);
     ~MotionProcessor();
 
     /**

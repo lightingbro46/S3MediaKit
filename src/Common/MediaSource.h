@@ -229,6 +229,11 @@ public:
     std::string roi_mask;
     // Whether to record video when motion is detected, which is valid when motion detection is enabled
     bool record_motion;
+    // Stream ID of the stream that generates kBroadcastRecordMP4 events for this motion pipeline.
+    // When motion detection runs on a secondary stream but recording is on the primary stream,
+    // set this to the primary stream's stream_id so MotionMuxer writes .mblk on the correct trigger.
+    // Empty string means "use own stream" (default).
+    std::string motion_record_stream_id;
     // Record before motion is detected, in milliseconds, which is valid when motion_record is enabled
     uint32_t pre_record_ms;
     // Record after motion is detected, in milliseconds, which is valid when motion_record is enabled

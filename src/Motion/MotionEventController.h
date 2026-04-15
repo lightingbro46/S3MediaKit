@@ -20,9 +20,6 @@ public:
     /**
      * Attach a muxer. The controller drives it directly:
      *   - relevant frames → muxer.inputEvent()
-     *   - motion confirmed → muxer.setRecording(true)
-     *   - motion ended    → muxer.setRecording(false)
-     *   - debounce reset  → muxer.clearPreBuffer()
      */
     void setMuxer(std::weak_ptr<MotionMuxer> muxer) { _muxer = std::move(muxer); }
 
@@ -31,8 +28,6 @@ public:
 
 private:
     void emitMotionEvent(bool start);
-    void setRecording(bool recording);
-    void clearPreBuffer(bool motion, uint64_t stamp_ms, const MotionBitmapPtr &result);
     void feedMuxer(uint64_t stamp_ms, const MotionBitmapPtr &result);
 
 private:

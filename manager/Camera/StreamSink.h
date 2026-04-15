@@ -43,7 +43,7 @@ public:
 
     void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
 
-    void setStreamRegist(int type, bool regist);
+    void setStreamRegist(int type, bool regist, bool event_active = false);
 
 private:
     void onManager();
@@ -55,6 +55,7 @@ private:
     toolkit::Timer::Ptr _timer_sink;
     int _archive_mode = 0;
     std::array<bool, StreamType::StreamMax> _stream_ready{{false, false}};
+    std::string _primary_stream_id; // stream_id of the PrimaryStream monitor (cached for motion filter)
 };
 
 } // namespace managerkit

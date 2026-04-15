@@ -59,6 +59,8 @@ public:
 
     bool setupRecordEvent(RecordEventType type, bool start);
 
+    bool isEventActive() const { return _event_active; }
+
 private:
     void onSchedulerChange(RecordScheduleItem &item);
 

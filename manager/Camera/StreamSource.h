@@ -60,7 +60,8 @@ struct StreamOption {
             && protocol.enable_audio  == o.protocol.enable_audio
             && protocol.enable_motion == o.protocol.enable_motion
             && protocol.roi_mask      == o.protocol.roi_mask
-            && protocol.record_motion == o.protocol.record_motion;
+            && protocol.record_motion == o.protocol.record_motion
+            && protocol.motion_record_stream_id == o.protocol.motion_record_stream_id;
     }
 };
 

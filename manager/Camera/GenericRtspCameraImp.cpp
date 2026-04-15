@@ -237,7 +237,8 @@ void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
         WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup stream regist request";
         return;
     }
-    _sink->setStreamRegist(type, regist);
+    bool event_active = _scheduler ? _scheduler->isEventActive() : false;
+    _sink->setStreamRegist(type, regist, event_active);
 }
 
 void GenericRtspCameraImp::addUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb) {

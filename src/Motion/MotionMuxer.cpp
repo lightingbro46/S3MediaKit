@@ -2,10 +2,13 @@
 
 #include "MotionMuxer.h"
 
+#include "Common/config.h"
 #include "Util/File.h"
 #include "Util/logger.h"
+#include "Util/NoticeCenter.h"
 #include "Util/util.h"
 
+#include <algorithm>
 #include <sys/stat.h>
 
 using namespace std;
@@ -13,143 +16,153 @@ using namespace toolkit;
 
 namespace mediakit {
 
-MotionMuxer::MotionMuxer(const MediaTuple &tuple, std::string roi_mask, 
-                         std::string save_path, uint64_t summary_window_ms)
+MotionMuxer::MotionMuxer(const MediaTuple &tuple, std::string roi_mask,
+                         std::string save_path, uint64_t summary_window_ms,
+                         std::string record_stream_id)
     : _meta(tuple.app, tuple.stream, std::move(roi_mask), MOTION_GRID_ROWS, MOTION_GRID_COLS)
     , _base_path(std::move(save_path))
-    , _summary_window_ms(summary_window_ms) {}
+    , _summary_window_ms(summary_window_ms)
+    , _record_stream_id(std::move(record_stream_id)) {
+
+    GET_CONFIG(uint32_t, max_second, Protocol::kMP4MaxSecond);
+    _max_buffer_ms = static_cast<uint64_t>(max_second) * 2 * 1000;
+
+    // Subscribe to MP4 segment release events from the recording stream (primary).
+    // When motion detection runs on a secondary stream while recording is on the
+    // primary stream, _record_stream_id is set to the primary stream's ID so that
+    // .mblk files are written only when the primary segment is committed.
+    // If empty, fall back to own stream ID (motion detect == record stream).
+    const std::string my_app = _meta.device_id;
+    const std::string record_stream = _record_stream_id.empty() ? _meta.stream_id : _record_stream_id;
+    std::weak_ptr<MotionMuxer> weak_self = shared_from_this();
+
+    NoticeCenter::Instance().addListener(
+        this, Broadcast::kBroadcastRecordMP4,
+        [weak_self, my_app, record_stream](BroadcastRecordMP4Args) {
+            if (info.app != my_app || info.stream != record_stream) return;
+            if (auto self = weak_self.lock()) self->onSegmentCommit(info);
+        });
+}
 
 MotionMuxer::~MotionMuxer() {
-    closeWriter();
+    NoticeCenter::Instance().delListener(this, Broadcast::kBroadcastRecordMP4);
 }
 
 bool MotionMuxer::inputEvent(const MotionEventBlock &block) {
-    if (!_recording) {
-        // Buffer the event so it is not lost if motion is confirmed shortly after.
-        _pre_buffer.push_back(block);
-        return true;
+    // Trim events that are too old to belong to any pending segment.
+    if (!_raw_buffer.empty() &&
+        block.stamp() > _raw_buffer.front().stamp() + _max_buffer_ms) {
+        const uint64_t cutoff = block.stamp() - _max_buffer_ms;
+        while (!_raw_buffer.empty() && _raw_buffer.front().stamp() < cutoff) {
+            _raw_buffer.pop_front();
+        }
     }
-    rollIfNeeded();
-    if (!_writer) {
-        return false;
-    }
-    if (!_writer->appendEvent(block)) {
-        WarnL << "MotionMuxer: appendEvent failed";
-        return false;
-    }
-    _agg->inputEvent(block);
+    _raw_buffer.push_back(block);
     return true;
 }
 
-void MotionMuxer::setRecording(bool recording) {
-    if (recording && !_recording) {
-        // Motion just confirmed — flush the pre-buffer so no events are missed.
-        rollIfNeeded();
-        if (_writer) {
-            const size_t n = _pre_buffer.size();
-            for (const auto &e : _pre_buffer) {
-                _writer->appendEvent(e);
-                _agg->inputEvent(e);
-            }
-            if (n > 0) {
-                DebugL << "MotionMuxer: flushed " << n << " pre-buffered events on motion confirm";
-            }
-            // Flush stdio buffer to disk so the .mblk file is visible immediately.
-            // The index is mmap-backed and already on disk; the block file uses a
-            // 64 KB stdio buffer that would otherwise stay in userspace until full.
-            _writer->flush();
+// ── onSegmentCommit ───────────────────────────────────────────────────────────
 
-            // Start a 30s periodic checkpoint: fflush .mblk + msync .idx.
-            // Limits data loss window for long-running motion events without
-            // the overhead of fdatasync on every appendBlock call.
-            std::weak_ptr<MotionMuxer> weak_self = shared_from_this();
-            _flush_timer = std::make_shared<Timer>(30.0f, [weak_self]() {
-                auto self = weak_self.lock();
-                if (self && self->_writer) {
-                    self->_writer->flush();
-                    DebugL << "MotionMuxer: periodic checkpoint";
-                }
-                return true;
-            }, nullptr);
-        }
-        _pre_buffer.clear();
-    } else if (!recording) {
-        // Motion ended — cancel periodic timer, flush and close.
-        _flush_timer.reset();
-        _pre_buffer.clear();
-        if (_agg) _agg->flush();
-        if (_writer) _writer->flush();
+void MotionMuxer::onSegmentCommit(const RecordInfo &info) {
+    if (info.time_len <= 0.0f) return;
+
+    const uint64_t seg_start_ms = static_cast<uint64_t>(info.start_time) * 1000ULL;
+    const uint64_t seg_end_ms   = seg_start_ms +
+                                   static_cast<uint64_t>(info.time_len * 1000.0f);
+
+    // 1. Drop events that pre-date this segment (they belong to no segment).
+    while (!_raw_buffer.empty() && _raw_buffer.front().stamp() < seg_start_ms) {
+        _raw_buffer.pop_front();
     }
-    _recording = recording;
-}
 
-void MotionMuxer::clearPreBuffer() {
-    _pre_buffer.clear();
-}
-
-void MotionMuxer::flush() {
-    if (_agg)    { _agg->flush(); }
-    if (_writer) { _writer->flush(); }
-}
-void MotionMuxer::rollIfNeeded() {
-    const std::string today = getTimeStr("%Y-%m-%d");
-    if (today != _current_date) {
-        closeWriter();
-        openForDate(today);
-        _current_date = today;
+    // 2. Collect events in [seg_start_ms, seg_end_ms].
+    std::vector<MotionEventBlock> seg_events;
+    for (const auto &e : _raw_buffer) {
+        if (e.stamp() > seg_end_ms) break;
+        seg_events.push_back(e);
     }
-}
 
-void MotionMuxer::openForDate(const std::string &date) {
-    // Ensure the directory tree exists before creating files in it.
-    File::create_path(_base_path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-
-    const std::string blk = _base_path + date + ".mblk";
-    const std::string idx = _base_path + date + ".idx";
-
-    auto writer = std::make_shared<MotionEventWriter>();
-    if (!writer->open(blk, idx)) {
-        WarnL << "MotionMuxer: failed to open " << blk;
+    if (seg_events.empty()) {
+        DebugL << "MotionMuxer: no motion events for segment " << info.file_name;
         return;
     }
-    _writer = std::move(writer);
 
-    // Always write a Meta block when opening a file — on first creation it
-    // anchors device/stream identity at position 0; on resume it records the
-    // current config at the point the process restarted.
-    MotionMetaBlock meta_block(getCurrentMillisecond(true), _meta.device_id, _meta.stream_id, _meta.roi_mask, _meta.rows, _meta.cols);
-    if (!_writer->appendMeta(meta_block)) {
-        WarnL << "MotionMuxer: failed to write meta block to " << blk;
+    // 3. Build time-ordered list of events and summaries.
+    auto ordered = buildOrderedBlocks(seg_events);
+
+    // 4. Open (or append to) the daily .mblk for the segment's date.
+    File::create_path(_base_path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+
+    const std::string date = getTimeStr("%Y-%m-%d", info.start_time);
+    const std::string blk  = _base_path + date + ".mblk";
+    const std::string idx  = _base_path + date + ".idx";
+
+    MotionEventWriter writer;
+    if (!writer.open(blk, idx)) {
+        WarnL << "MotionMuxer: cannot open " << blk;
+        return;
     }
 
-    // Aggregator callback writes completed summaries to the current _writer.
-    // Uses weak_ptr so that a delayed flush after destruction is a safe no-op.
-    std::weak_ptr<MotionMuxer> weak_self = shared_from_this();
-    _agg = std::make_shared<MotionAggregator>(
-        _summary_window_ms, [weak_self](MotionSummaryBlock::Ptr summary) {
-            auto self = weak_self.lock();
-            if (self && self->_writer && summary) {
-                if (!self->_writer->appendSummary(*summary)) {
-                    WarnL << "MotionMuxer: appendSummary failed";
-                }
-            }
-        });
+    // Write a Meta block to anchor device/stream identity.
+    MotionMetaBlock meta_block(getCurrentMillisecond(true),
+                               _meta.device_id, _meta.stream_id, _meta.roi_mask,
+                               _meta.rows, _meta.cols);
+    writer.appendMeta(meta_block);
 
-    DebugL << "MotionMuxer: opened " << blk;
+    // 5. Write events and summaries in timestamp order.
+    for (const auto &entry : ordered) {
+        if (entry->type() == static_cast<uint16_t>(MotionBlockType::Event)) {
+            writer.appendEvent(static_cast<const MotionEventBlock &>(*entry));
+        } else {
+            writer.appendSummary(static_cast<const MotionSummaryBlock &>(*entry));
+        }
+    }
+
+    writer.flush();
+    writer.close();
+
+    DebugL << "MotionMuxer: committed " << seg_events.size()
+           << " events for segment " << info.file_name
+           << " [" << seg_start_ms << ", " << seg_end_ms << "] → " << blk;
+
+    // 6. Remove committed events from buffer; keep events after seg_end_ms.
+    while (!_raw_buffer.empty() && _raw_buffer.front().stamp() <= seg_end_ms) {
+        _raw_buffer.pop_front();
+    }
 }
 
-void MotionMuxer::closeWriter() {
-    _flush_timer.reset();  // stop periodic flush before closing writer
-    // Flush the aggregator first so any pending summary goes to _writer.
-    if (_agg) {
-        _agg->flush();
-        _agg.reset();
+// ── buildOrderedBlocks ────────────────────────────────────────────────────────
+
+std::vector<MotionMuxer::TimeOrderedBlock>
+MotionMuxer::buildOrderedBlocks(const std::vector<MotionEventBlock> &seg_events) const {
+    // Aggregate the segment events into summary blocks (in-memory only).
+    std::vector<MotionSummaryBlock> summaries;
+    MotionAggregator agg(_summary_window_ms, [&](MotionSummaryBlock::Ptr s) {
+        if (s) summaries.push_back(std::move(*s));
+    });
+    for (const auto &e : seg_events) {
+        agg.inputEvent(e);
     }
-    if (_writer) {
-        _writer->flush();
-        _writer->close();
-        _writer.reset();
+    agg.flush();
+
+    // Merge events and summaries into a single stamp-sorted list.
+    std::vector<TimeOrderedBlock> ordered;
+    ordered.reserve(seg_events.size() + summaries.size());
+
+    size_t ei = 0, si = 0;
+    while (ei < seg_events.size() && si < summaries.size()) {
+        // A summary's stamp is its window start; place it before events at the
+        // same stamp so that readers see the summary first (consistent ordering).
+        if (summaries[si].stamp() <= seg_events[ei].stamp()) {
+            ordered.push_back(std::make_shared<MotionSummaryBlock>(std::move(summaries[si++])));
+        } else {
+            ordered.push_back(std::make_shared<MotionEventBlock>(seg_events[ei++]));
+        }
     }
+    while (ei < seg_events.size()) ordered.push_back(std::make_shared<MotionEventBlock>(seg_events[ei++]));
+    while (si < summaries.size())  ordered.push_back(std::make_shared<MotionSummaryBlock>(std::move(summaries[si++])));
+
+    return ordered;
 }
 
 } // namespace mediakit

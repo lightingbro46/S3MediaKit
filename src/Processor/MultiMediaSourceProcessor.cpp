@@ -13,7 +13,7 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
     if (option.enable_motion) {
         GET_CONFIG(int, interval_ms, Motion::kIntervalMS);
         GET_CONFIG(bool, use_y_channel, Motion::kUseYChannel);
-        _motion = std::make_shared<MotionProcessor>(tuple, option.roi_mask, option.record_motion, interval_ms, use_y_channel);
+        _motion = std::make_shared<MotionProcessor>(tuple, option.roi_mask, option.record_motion, option.motion_record_stream_id, interval_ms, use_y_channel);
         // Create the live MJPEG muxer only when enabled (either always-on or demand mode).
         // motion_demand=true  → source becomes active only when a viewer connects.
         // motion_demand=false → source is always active once motion detection starts.

@@ -606,8 +606,8 @@ static Json::Value exampleJson() {
             period["dh"] = StrPrinter << d << "," << h;
             period["fps"] = 25;
             period["q"] = "L";
-            period["ty"] = static_cast<int>(RecordMode::RecordAlways);
-            // period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
+            // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
             // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
@@ -653,7 +653,7 @@ static Json::Value exampleJson() {
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
     device["motionDetectConfig"]["chooseStream"] = "SECONDARY";
-    device["motionDetectConfig"]["clientEnabled"] = false;
+    device["motionDetectConfig"]["clientEnabled"] = true;
     device["motionDetectConfig"]["mediaSupport"] = true;
     device["motionDetectConfig"]["value"] =
         "00000000000000000000000000000000000000000000"  // row  0
@@ -695,7 +695,7 @@ static Json::Value exampleJson() {
 
     data["media_server"] = Json::objectValue;
     data["media_server"]["restartConfig"] = Json::objectValue;
-    data["media_server"]["restartConfig"]["enabled"] = true;
+    data["media_server"]["restartConfig"]["enabled"] = false;
     data["media_server"]["restartConfig"]["type"] = "DAILY";
     data["media_server"]["restartConfig"]["time"] = "21:38";
     data["media_server"]["restartConfig"]["dayOfWeek"] = "";
