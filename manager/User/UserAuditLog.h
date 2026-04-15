@@ -7,9 +7,10 @@
 namespace managerkit {
 
 namespace SystemAuditLogType {
-const std::string MEDIA_SERVER_START = "MEDIA_SERVER_START";
-const std::string MEDIA_SERVER_SHUTTING_DOWN  = "MEDIA_SERVER_SHUTTING_DOWN";
-const std::string MEDIA_SERVER_SHUTTING_DOWN_CONFIG = "MEDIA_SERVER_SHUTTING_DOWN_CONFIG";
+const std::string START = "MEDIA_SERVER_START";
+const std::string SHUT_DOWN  = "MEDIA_SERVER_SHUTTING_DOWN";
+const std::string RESTART_SCHEDULE = "MEDIA_SERVER_RESTART_SCHEDULE";
+const std::string RESTART_CONFIG = "MEDIA_SERVER_RESTART_CONFIG";
 
 } // namespace SystemAuditLogType
 

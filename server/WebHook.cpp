@@ -383,6 +383,7 @@ static void reportServerStarted() {
                 EventPollerPool::Instance().getPoller()->async([obj]() {
                     // Load server started config success
                     loadServerStartedConfigJson(obj);
+                    NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::START, string("Media server started successfully"));
                 });
             } else {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
@@ -408,7 +409,16 @@ static void reportServerExited() {
     }
 #endif
     // Execute hook
-    do_http_hook(hook_api_url + hook_server_exited, body, nullptr);
+    do_http_hook(hook_api_url + hook_server_exited, body, [](const Value &obj, const string &err) {
+        if (err.empty()) {
+            TraceL << "hook " << hook_api_url + hook_server_exited << " success:" << obj.toStyledString();
+            InfoL << "Report server exited success";
+            NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::SHUT_DOWN, string("Media server is shutting down"));
+        } else {
+            TraceL << "hook " << hook_api_url + hook_server_exited << " failed:" << err;
+            WarnL << "Report server exited failed:" << err;
+        }
+    });
 }
 
 // Server keep-alive timer
@@ -1287,6 +1297,22 @@ void installWebHook() {
         
         // Execute hook
         do_http_hook(hook_api_url + hook_device_caps_changed, body, nullptr);
+    });
+
+    // Listen to device statistic change events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceStatsChanged, [](BroadcastDeviceStatsChangedArgs) {
+        GET_CONFIG(string, hook_server_report, Hook::kOnServerReport2);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_server_report.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        auto device = sender.shared_from_this();
+        ArgsType body;
+        body["data"].append(makeDeviceStatisticJson(device));
+        
+        // Execute hook
+        do_http_hook(hook_api_url + hook_server_report, body, nullptr);
     });
 
     // Listen to system audit log events

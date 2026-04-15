@@ -102,7 +102,7 @@ void CameraController::stopController() {
         return;
     }
 
-    onControllerReady(false, "disconnected", nullptr);
+    onControllerReady(false, "Stop", nullptr);
     
     _timer_ctr.reset();
     _onvif_ctr.reset();
@@ -113,6 +113,7 @@ void CameraController::stopController() {
 void CameraController::onManager() {
     // Always called from the Timer which runs on _poller - no dispatch needed.
     if (!_onvif_ctr) {
+        onControllerReady(false, "Not supported", std::make_shared<DeviceCapabilities>());
         return;
     }
 

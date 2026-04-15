@@ -204,11 +204,21 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
         WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore stream ready event";
         return;
     }
-    const mediakit::TranslationInfo *info = nullptr;
-    if (data.is<mediakit::TranslationInfo>()) {
-        info = &data.get<mediakit::TranslationInfo>();
+    // get current stream live status from statistic, because stream source may trigger onStreamReady with the same status when sink setup monitor or scheduler setup record, we only want to emit event when stream status changed
+    auto params = strong_statistic->getParams();
+    bool current_stream_live = params.sinfo_map.count(type) > 0 ? params.sinfo_map[type].live : false;
+    {
+        const mediakit::TranslationInfo *info = nullptr;
+        if (data.is<mediakit::TranslationInfo>()) {
+            info = &data.get<mediakit::TranslationInfo>();
+        }
+        strong_statistic->addStreamStatistic(type, live, status, info);
     }
-    strong_statistic->addStreamStatistic(type, live, status, info);
+    if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
+        // only emit event when stream status changed
+        auto &src = *_src;
+        NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, src);
+    }
 }
 
 void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) {
@@ -224,10 +234,10 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
-    // update device capabilities if controller is connected
-    if (connect && caps) {
-        auto sender = _src;
-        NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, *caps, *sender);
+    {
+        auto &src = *_src;
+        auto params = strong_statistic->getParams();
+        NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, params.device_stats.device_caps, src);
     }
 }
 

@@ -883,14 +883,14 @@ bool OnvifControl::getPTZPresets() {
     if (!GetPresetsResponse.Preset.empty()) {
 
         for (const auto &preset : GetPresetsResponse.Preset) {
-            if (!preset || !preset->token || preset->token->empty()) {
+            if (!preset || !preset->token || preset->token->empty() || !preset->Name || preset->Name->empty() || !preset->PTZPosition) {
                 continue;
             }
             string pToken = *preset->token;
             string pName = *preset->Name;
-            auto pAbsPan = preset->PTZPosition->PanTilt->x;
-            auto pAbsTilt = preset->PTZPosition->PanTilt->y;
-            auto pAbsZoom = preset->PTZPosition->Zoom->x;
+            auto pAbsPan = preset->PTZPosition->PanTilt ? preset->PTZPosition->PanTilt->x : 0.0f;
+            auto pAbsTilt = preset->PTZPosition->PanTilt ? preset->PTZPosition->PanTilt->y : 0.0f;
+            auto pAbsZoom = preset->PTZPosition->Zoom ? preset->PTZPosition->Zoom->x : 0.0f;
 
             DebugL << "Preset token: " << pToken << " name: " << pName << " pan: " << pAbsPan << " tilt: " << pAbsTilt << " zoom: " << pAbsZoom;
             OnvifPTZProfile::PTZPreset p;

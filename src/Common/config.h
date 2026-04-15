@@ -152,6 +152,10 @@ extern const std::string kBroadcastDeviceAccess;
 extern const std::string kBroadcastDeviceCapsChanged;
 #define BroadcastDeviceCapsChangedArgs const DeviceCapabilities &caps, DeviceSource &sender
 
+// Broadcast for device statistics changed event.
+extern const std::string kBroadcastDeviceStatsChanged;
+#define BroadcastDeviceStatsChangedArgs DeviceSource &sender
+
 // Broadcast for reloading API configuration.
 extern const std::string kBroadcastReloadApiConfig;
 #define BroadcastReloadApiConfigArgs void
