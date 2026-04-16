@@ -642,7 +642,7 @@ static Json::Value exampleJson() {
     device["cameraAdvanceConfig"]["ptzSetting"]["enablePTZControl"] = true;
     device["cameraAdvanceConfig"]["ptzSetting"]["reversePanAxis"] = false;
     device["cameraAdvanceConfig"]["ptzSetting"]["reverseTiltAxis"] = true;
-    device["cameraAdvanceConfig"]["ptzSetting"]["ptzSpeed"] = 0.5;
+    device["cameraAdvanceConfig"]["ptzSetting"]["ptzSpeed"] = 50;
     device["cameraAdvanceConfig"]["ptzSetting"]["ptzModeSelected"] = "AUTO";
     device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";

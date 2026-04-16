@@ -221,11 +221,14 @@ bool StreamSource::setupRecord(int type, bool start, bool replay_gop) {
     }
     poller->async([muxer, type, start, replay_gop, media_src]() {
         auto option = muxer->getOption();
-        auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
-        if (start && is_recording) {
-            WarnL << "Recording is already enabled, resetting record settings for stream: " << media_src->getMediaTuple().shortUrl();
-            muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
-        }
+        // note: comment out the following code to avoid resetting record settings when setupRecord is called multiple times with the same type, 
+        // because some stream source may trigger onStreamReady with the same status multiple times when sink setup monitor or scheduler setup record, 
+        // we only want to setup record when stream status changed, otherwise it may cause recording file being split into multiple files unexpectedly due to resetting record settings --- IGNORE ---
+        // auto is_recording = muxer->isRecording(static_cast<mediakit::Recorder::type>(type));
+        // if (start && is_recording) {
+        //     WarnL << "Recording is already enabled, resetting record settings for stream: " << media_src->getMediaTuple().shortUrl();
+        //     muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), false, "", 0);
+        // }
         muxer->setupRecord(static_cast<mediakit::Recorder::type>(type), start, option.mp4_save_path, option.mp4_max_second, replay_gop);
     });
     return true;

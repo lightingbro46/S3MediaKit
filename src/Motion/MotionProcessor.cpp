@@ -38,7 +38,7 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
     if (_enable_record) {
         GET_CONFIG(uint64_t, summary_window_ms, Motion::kSummaryWindowMS);
         _muxer = std::make_shared<MotionMuxer>(tuple, _roi_mask, _save_path, summary_window_ms, record_stream_id);
-
+        _muxer->setMediaSourceListener();
         // Wire the muxer directly into the controller — single point of noise control.
         _event_ctr->setMuxer(_muxer);
     }

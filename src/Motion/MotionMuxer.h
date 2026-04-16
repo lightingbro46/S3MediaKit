@@ -100,6 +100,11 @@ public:
     ~MotionMuxer();
 
     /**
+     * Set up listener to the media source's kBroadcastRecordMP4 events, which trigger the .mblk writes.
+     */
+    void setMediaSourceListener();
+
+    /**
      * Cache one event block.
      * Events are always appended to _raw_buffer; no disk I/O here.
      * Old events beyond 2× kMP4MaxSecond are trimmed to bound memory.

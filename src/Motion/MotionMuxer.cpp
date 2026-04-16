@@ -27,6 +27,9 @@ MotionMuxer::MotionMuxer(const MediaTuple &tuple, std::string roi_mask,
     GET_CONFIG(uint32_t, max_second, Protocol::kMP4MaxSecond);
     _max_buffer_ms = static_cast<uint64_t>(max_second) * 2 * 1000;
 
+}
+
+void MotionMuxer::setMediaSourceListener() {
     // Subscribe to MP4 segment release events from the recording stream (primary).
     // When motion detection runs on a secondary stream while recording is on the
     // primary stream, _record_stream_id is set to the primary stream's ID so that
