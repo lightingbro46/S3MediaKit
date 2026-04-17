@@ -105,7 +105,12 @@ private:
     bool checkLiveStreamTS(const std::function<void(bool close)> &cb = nullptr);
     bool checkLiveStreamFMP4(const std::function<void(bool close)> &fmp4_list = nullptr);
     bool checkLiveStreamHls();
-    bool checkMotionStream();
+    bool checkLiveMotionStream();
+
+    bool checkLiveStreamByApp(const std::string &schema, const std::string &url_prefix, const std::string  &url_suffix, const std::function<void(const std::vector<MediaSource::Ptr> &)> &cb);
+    bool checkLiveStreamFMP4ByApp(const std::function<void(bool close)> &fmp4_list = nullptr);
+    bool checkLiveStreamHlsByApp();
+    bool checkLiveMotionStreamByApp();
 
     bool checkWebSocket();
     bool emitHttpEvent(bool doInvoke);

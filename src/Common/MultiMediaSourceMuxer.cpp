@@ -576,6 +576,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
         if (dts_exceeded || wall_exceeded) {
             DebugL << "stop event record: " << tuple.shortUrl() << ", end_dts: " << frame->dts();
             session->active.store(false, std::memory_order_release);
+            if (session->onStop) session->onStop();
             // Destroy recorder on a worker thread (closeMP4 can be slow).
             WorkThreadPool::Instance().getPoller()->async([recorder]() mutable { recorder.reset(); });
             reader = nullptr;
@@ -586,6 +587,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
     std::weak_ptr<RingType::RingReader> weak_reader = reader;
     reader->setDetachCB([weak_reader, session, recorder]() mutable {
         session->active.store(false, std::memory_order_release);
+        if (session->onStop) session->onStop();
         // Recorder destructor finalises and closes all open files.
         WorkThreadPool::Instance().getPoller()->async([recorder]() mutable { recorder.reset(); });
         if (auto strong = weak_reader.lock()) {

@@ -59,6 +59,7 @@ const string kBroadcastFlowReport = "kBroadcastFlowReport";
 const string kBroadcastReloadConfig = "kBroadcastReloadConfig";
 const string kBroadcastShellLogin = "kBroadcastShellLogin";
 const string kBroadcastNotFoundStream = "kBroadcastNotFoundStream";
+const string kBroadcastNotFoundApp = "kBroadcastNotFoundApp";
 const string kBroadcastStreamNoneReader = "kBroadcastStreamNoneReader";
 const string kBroadcastHttpBeforeAccess = "kBroadcastHttpBeforeAccess";
 const string kBroadcastSendRtpStopped = "kBroadcastSendRtpStopped";

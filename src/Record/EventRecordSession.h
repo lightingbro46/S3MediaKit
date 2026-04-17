@@ -102,6 +102,8 @@ public:
     /** True while the ring reader is still active (file is being written). */
     bool isActive() const { return active.load(std::memory_order_acquire); }
 
+    void setOnStop(const std::function<void()> &cb) { onStop = std::move(cb); }
+
 public:
     // ── internal fields (used by MultiMediaSourceMuxer callback) ────────────
 
@@ -120,6 +122,8 @@ public:
     std::atomic<uint64_t> wall_deadline_ms{std::numeric_limits<uint64_t>::max()};
 
     std::atomic<bool> active{true};
+
+    std::function<void()> onStop; // callback to trigger when the session is stopped (file is closed)
 };
 
 } // namespace mediakit

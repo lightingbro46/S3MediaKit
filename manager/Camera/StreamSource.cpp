@@ -64,7 +64,8 @@ void StreamSource::start() {
 }
 
 void StreamSource::createPlayer() {
-    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, "quality=" + (_type == StreamType::PrimaryStream) ? "hi" : "lo");
+    string params = "quality=" + string((_type == StreamType::PrimaryStream) ? "hi" : "lo");
+    MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, params);
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
     auto setup_player = [weak_self](const string &err, const PlayerProxy::Ptr &player) {
@@ -258,9 +259,17 @@ mediakit::EventRecordSession::Ptr StreamSource::startEventRecord() {
     }
 
     auto type = Recorder::type_mp4;
-    uint32_t back_ms = _option.protocol.pre_record_ms;
+    uint32_t back_ms =  MIN(_option.protocol.pre_record_ms, getCurrentMillisecond(true) - _last_record_end.load(std::memory_order_relaxed));
     // forward_ms = 0 → infinite clip; terminated by stopRecord() when event ends.
     auto session = muxer->startEventRecord(type, back_ms, 0 /*infinite*/);
+    std::weak_ptr<StreamSource> weak_self = shared_from_this();
+    session->setOnStop([weak_self]() {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        strong_self->_last_record_end.store(getCurrentMillisecond(true), std::memory_order_release); // update last record end time to now, used for calculating back time for next event record
+    });
     _event_session = session;
     InfoL << "Event record started: stream=" << _option.tuple.shortUrl() << ", back_ms=" << back_ms << " ms, forward_ms=infinite";
     return session;

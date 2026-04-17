@@ -430,6 +430,21 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
             }
             strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
         });
+        _fmp4_reader->setMessageCB([weak_self](const Any &data) {
+            // Receive new init segment broadcast when tracks change (e.g. codec/resolution change)
+            // Any(std::make_shared<std::string>(...)) stores typeid(std::string), NOT typeid(shared_ptr<string>)
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return;
+            }
+            if (data.is<std::string>()) {
+                auto &init_seg = data.get<std::string>();
+                if (!init_seg.empty()) {
+                    WarnL << "Received new init segment, length: " << init_seg.size();
+                    strong_self->onWrite(std::make_shared<BufferString>(init_seg), true);
+                }
+            }
+        });
         _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested](const FMP4MediaSource::RingDataType &fmp4_list) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
@@ -587,6 +602,13 @@ bool HttpSession::checkLiveStreamHls() {
         }
     }
 
+    string schema;
+    if (end_with(url, hls_suffix) || end_with(url, ts_suffix)) {
+        schema = HLS_SCHEMA;
+    } else {
+        schema = HLS_FMP4_SCHEMA;
+    }
+
     // Set url without prefix and suffix
     _parser.setUrl(url);  
 
@@ -608,13 +630,6 @@ bool HttpSession::checkLiveStreamHls() {
     if (!headers["User-Agent"].empty()) {
         url += url.find("?") == string::npos ? "?" : "&";
         url += StrPrinter << "user-agent=" << encodeBase64(headers["User-Agent"]);
-    }
-
-    string schema;
-    if (end_with(url, hls_suffix) || end_with(url, ts_suffix)) {
-        schema = HLS_SCHEMA;
-    } else {
-        schema = HLS_FMP4_SCHEMA;
     }
 
     // Parse the complete url with protocol + parameters
@@ -647,7 +662,7 @@ void HttpSession::onHttpRequest_GET() {
         return;
     }
 
-    if (checkMotionStream()) {
+    if (checkLiveMotionStream()) {
         // Intercept MJPEG motion stream
         return;
     }
@@ -664,6 +679,21 @@ void HttpSession::onHttpRequest_GET() {
 
     if (checkLiveStreamFMP4()) {
         // Intercept http-fmp4 player
+        return;
+    }
+
+    if (checkLiveStreamFMP4ByApp()) {
+        // Intercept http-fmp4 player by app
+        return;
+    }
+
+    if (checkLiveMotionStreamByApp()) {
+        // Intercept MJPEG motion stream by app
+        return;
+    }
+
+    if (checkLiveStreamHlsByApp()) {
+        // Intercept hls-ts, hls-fmp4 player by app
         return;
     }
 
@@ -1006,7 +1036,7 @@ void HttpSession::onWebSocketDecodeComplete(const WebSocketHeader &header_in) {
 //   X-Motion: 0|1   X-Timestamp: <ms>   X-Active-Cells: <N>
 // ---------------------------------------------------------------------------
 
-bool HttpSession::checkMotionStream() {
+bool HttpSession::checkLiveMotionStream() {
 #ifdef ENABLE_MOTION
     bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
     bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
@@ -1066,6 +1096,382 @@ bool HttpSession::checkMotionStream() {
     return false;
 #endif // ENABLE_MOTION
 }
+
+// ---------------------------------------------------------------------------
+// API v2
+// ---------------------------------------------------------------------------
+bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_prefix, const string &url_suffix, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
+    std::string url = _parser.url();
+    auto it = _parser.getUrlArgs().find("schema");
+    if (it != _parser.getUrlArgs().end()) {
+        if (strcasecmp(it->second.c_str(), schema.c_str())) {
+            // unsupported schema
+            return false;
+        }
+    } else {
+        auto prefix_size = url_prefix.size();
+        if (prefix_size > 0) {
+            if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
+                // Prefix not found
+                return false;
+            }
+            // Remove special prefix from url
+            url.erase(0, prefix_size);
+        }
+
+        auto suffix_size = url_suffix.size();
+        if (suffix_size > 0) {
+            if (url.size() < suffix_size || strcasecmp(url.data() + (url.size() - suffix_size), url_suffix.data())) {
+                // Suffix not found
+                return false;
+            }
+            // Remove special suffix from url
+            url.erase(url.size() - suffix_size);
+        }
+    }
+
+    GET_CONFIG(string, appName, Protocol::kAppName)
+    if (!appName.empty()) {
+        auto app_prefix = "/" + appName;
+        if (start_with(url, app_prefix)) {
+            // Remove special prefix from url
+            url.erase(0, app_prefix.size());
+        }
+    }
+    
+    // Url with parameters
+    if (!_parser.params().empty()) {
+        url += "?";
+        url += _parser.params();
+    }
+
+    // Url with header Authorization
+    auto headers = _parser.getHeader();
+    if (!headers["Authorization"].empty() || !headers["authorization"].empty()) {
+        auto tmp = !headers["Authorization"].empty() ? headers["Authorization"] : headers["authorization"];
+        auto jwt_token = trim(findSubString(tmp.data(), "Bearer", nullptr));
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "token=" << jwt_token;
+    }
+
+    if (!headers["User-Agent"].empty()) {
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "user-agent=" << encodeBase64(headers["User-Agent"]);
+    }
+
+    // Parse the complete url with protocol + parameters
+    _media_info.parse(schema + "://" + _parser["Host"] + url);
+
+    // note: app are required for live stream, but stream name can be empty (e.g. for motion stream)
+    GET_CONFIG(string, appRecord, Record::kAppName)
+    if (_media_info.app.empty() || (_media_info.app == appRecord && _media_info.stream.empty())) {
+        // URL is invalid
+        return false;
+    }
+
+    if (_is_websocket) {
+        _media_info.protocol = overSsl() ? "wss" : "ws";
+    } else {
+        _media_info.protocol = overSsl() ? "https" : "http";
+    }
+
+    bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+
+    // Authentication result callback
+    auto onRes = [cb, weak_self, close_flag](const string &err) {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        if (!err.empty()) {
+           if (err == "MaxRequest") {
+                // Too many connections
+                strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            // Playback authentication failed
+            strong_self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
+            return;
+        }
+
+        // Asynchronously find live stream
+        MediaSource::findAsyncByApp(strong_self->_media_info, strong_self, [weak_self, close_flag, cb](const std::vector<MediaSource::Ptr> &list_src) {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                // This object has been destroyed
+                return;
+            }
+            if (list_src.empty()) {
+                // Stream not found
+                strong_self->sendNotFound(close_flag);
+            } else {
+                strong_self->_is_live_stream = true;
+                // Trigger callback
+                cb(list_src);
+            }
+        });
+    };
+
+    Broadcast::AuthInvoker invoker = [weak_self, onRes](const string &err) {
+        if (auto strong_self = weak_self.lock()) {
+            strong_self->async([onRes, err]() { onRes(err); }, false);
+        }
+    };
+
+    auto flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, _media_info, invoker, *this);
+    if (!flag) {
+        // No one is listening to this event, no authentication by default
+        invoker("");
+    }
+    return true;
+}
+
+// FMP4 live stream (app-level, no stream name required)
+// URL format: http://vhost-url:port/media/app/live.mp4?duration=xx&quality=hi|lo|auto&prefered=hi|lo
+bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void(bool close)> &fmp4_list) {
+    auto dur_sec  = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["duration"].data()));
+    auto quality  = _parser.getUrlArgs().find("quality") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["quality"]  : "auto";
+    auto prefered = _parser.getUrlArgs().find("prefered") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["prefered"] : "lo";
+    return checkLiveStreamByApp(FMP4_SCHEMA, "/media", ".live.mp4", [this, fmp4_list, dur_sec, quality, prefered](const vector<MediaSource::Ptr> &list_src) {
+        // Find a source whose MediaTuple.params contains quality=<target>
+        auto findByQuality = [&](const string &target) -> MediaSource::Ptr {
+            for (auto &src : list_src) {
+                auto kv = Parser::parseArgs(src->getMediaTuple().params);
+                auto it = kv.find("quality");
+                if (it != kv.end() && it->second == target) {
+                    return src;
+                }
+            }
+            return nullptr;
+        };
+
+        MediaSource::Ptr selected;
+        if (quality == "hi" || quality == "lo") {
+            selected = findByQuality(quality);
+        } else {
+            // auto: try prefered first, then fall back to the other
+            selected = findByQuality(prefered);
+            if (!selected) {
+                selected = findByQuality(prefered == "hi" ? "lo" : "hi");
+            }
+        }
+
+        auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(selected);
+        if (!fmp4_src) {
+            sendNotFound(true);
+            return;
+        }
+
+        bool bClose = false;
+        if (!fmp4_list) {
+            sendResponse(200, false, HttpFileManager::getContentType(".mp4").data(), KeyValue(), nullptr, true);
+        } else {
+            fmp4_list(bClose);
+        }
+
+        setSocketFlags();
+        onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
+
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        auto end_dts        = std::make_shared<std::atomic<uint64_t>>(std::numeric_limits<uint64_t>::max());
+        auto stop_requested = std::make_shared<std::atomic<bool>>(false);
+
+        fmp4_src->pause(false);
+        _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
+        _fmp4_reader->setGetInfoCB([weak_self]() {
+            Any ret;
+            ret.set(static_pointer_cast<Session>(weak_self.lock()));
+            return ret;
+        });
+        _fmp4_reader->setDetachCB([weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) return;
+            strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
+        });
+        _fmp4_reader->setMessageCB([weak_self](const Any &data) {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) return;
+            if (data.is<std::string>()) {
+                auto &init_seg = data.get<std::string>();
+                if (!init_seg.empty()) {
+                    WarnL << "Received new init segment, length: " << init_seg.size();
+                    strong_self->onWrite(std::make_shared<BufferString>(init_seg), true);
+                }
+            }
+        });
+        _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested]
+                                (const FMP4MediaSource::RingDataType &fmp4_list) {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) return;
+            const uint64_t dur_ms = dur_sec * 1000;
+            size_t i = 0;
+            auto size = fmp4_list->size();
+            fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) {
+                if (stop_requested->load(std::memory_order_acquire)) return;
+                if (dur_ms > 0) {
+                    uint64_t expected = std::numeric_limits<uint64_t>::max();
+                    uint64_t target_end = ts->time_stamp + dur_ms;
+                    if (end_dts->compare_exchange_strong(expected, target_end, std::memory_order_acq_rel)) {
+                        DebugL << "http-mp4 set duration limit, end_dts:" << target_end;
+                    }
+                    const uint64_t limit = end_dts->load(std::memory_order_acquire);
+                    if (ts->time_stamp > limit) {
+                        if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
+                            WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
+                            fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
+                            strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
+                        }
+                        return;
+                    }
+                }
+                strong_self->onWrite(ts, ++i == size);
+            });
+        });
+    });
+}
+
+// HLS master playlist (app-level, no stream name required)
+// URL: /media/{app}/hls.master.m3u8
+// Returns an HLS master playlist listing all sub-streams for the app.
+// Sub-stream entries use absolute paths: /media/{app}/{stream}/hls.m3u8
+bool HttpSession::checkLiveStreamHlsByApp() {
+    // Capture base URL before checkLiveStreamByApp may alter _media_info
+    string base_url = _parser.url();
+    static const string kMasterSuffix = "/hls.master.m3u8";
+    if (end_with(base_url, kMasterSuffix)) {
+        base_url.resize(base_url.size() - kMasterSuffix.size());
+    }
+
+    bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+    return checkLiveStreamByApp(HLS_SCHEMA, "/media", "/hls.master.m3u8",
+        [this, close_flag, base_url](const vector<MediaSource::Ptr> &list_src) {
+            string playlist =
+                "#EXTM3U\r\n"
+                "#EXT-X-VERSION:3\r\n";
+
+            for (const auto &src : list_src) {
+                const auto &tuple = src->getMediaTuple();
+                if (tuple.stream.empty()) continue;
+
+                // Parse quality params once
+                auto kv = Parser::parseArgs(tuple.params);
+                auto quality_it = kv.find("quality");
+
+                // Accumulate bandwidth from all tracks; pick resolution from video track only
+                int bandwidth = 0;
+                string resolution;
+                auto tracks = src->getTracks();
+                for (const auto &track : tracks) {
+                    int br = track->getBitRate();
+                    if (br > 0) {
+                        bandwidth += br;
+                    }
+                    if (track->getTrackType() == TrackVideo) {
+                        auto video_track = dynamic_pointer_cast<VideoTrack>(track);
+                        int w = video_track->getVideoWidth();
+                        int h =  video_track->getVideoHeight();
+                        if (w > 0 && h > 0) {
+                            resolution = to_string(w) + "x" + to_string(h);
+                        }
+                    }
+                }
+
+                // Fallback bandwidth based on quality param
+                if (bandwidth <= 0) {
+                    bandwidth = (quality_it != kv.end() && quality_it->second == "lo") ? 512000 : 2000000;
+                }
+
+                string attrs = "BANDWIDTH=" + to_string(bandwidth);
+                if (!resolution.empty()) {
+                    attrs += ",RESOLUTION=" + resolution;
+                }
+                // Add human-readable NAME from quality param if available
+                if (quality_it != kv.end() && !quality_it->second.empty()) {
+                    attrs += ",NAME=\"" + quality_it->second + "\"";
+                }
+
+                playlist += "#EXT-X-STREAM-INF:" + attrs + "\r\n";
+                playlist += base_url + "/" + tuple.stream + "/hls.m3u8\r\n";
+            }
+
+            KeyValue header;
+            header["Cache-Control"] = "no-store";
+            sendResponse(200, close_flag, "application/x-mpegURL", header, std::make_shared<HttpStringBody>(playlist));
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Motion MJPEG stream (app-level, no stream name required)
+// URL: /media/{app}.motion.mjpeg?overlay_motion=0|1&overlay_roi=0|1
+// ---------------------------------------------------------------------------
+bool HttpSession::checkLiveMotionStreamByApp() {
+#ifdef ENABLE_MOTION
+    bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
+    bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
+
+    return checkLiveStreamByApp(MOTION_MJPEG_SCHEMA, "/media", ".motion.mjpeg",
+        [this, overlay_motion, overlay_roi](const vector<MediaSource::Ptr> &list_src) {
+            // Use the first MotionMjpegMediaSource found in the app
+            MotionMjpegMediaSource::Ptr motion_src;
+            for (auto &src : list_src) {
+                motion_src = dynamic_pointer_cast<MotionMjpegMediaSource>(src);
+                if (motion_src && motion_src->getRing()) break;
+                motion_src = nullptr;
+            }
+            if (!motion_src) {
+                sendNotFound(true);
+                return;
+            }
+
+            motion_src->setOverlay(overlay_motion, overlay_roi);
+
+            KeyValue header;
+            header["Cache-Control"]               = "no-store";
+            header["Access-Control-Allow-Origin"] = "*";
+            sendResponse(200, false,
+                "multipart/x-mixed-replace; boundary=mjpeg_boundary",
+                header, nullptr, /*no_content_length=*/true);
+
+            setSocketFlags();
+
+            weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+
+            _motion_reader = motion_src->getRing()->attach(getPoller());
+            _motion_reader->setGetInfoCB([weak_self]() {
+                Any ret;
+                ret.set(static_pointer_cast<Session>(weak_self.lock()));
+                return ret;
+            });
+            _motion_reader->setDetachCB([weak_self]() {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) return;
+                strong_self->shutdown(SockException(Err_shutdown, "motion ring buffer detached"));
+            });
+            _motion_reader->setReadCB([weak_self](const MotionJpegFrame::Ptr &pkt) {
+                auto strong_self = weak_self.lock();
+                if (!strong_self || !pkt || !pkt->jpeg) return;
+
+                const auto &jpeg = pkt->jpeg;
+                string hdr =
+                    "--mjpeg_boundary\r\n"
+                    "Content-Type: image/jpeg\r\n"
+                    "Content-Length: " + to_string(jpeg->size()) + "\r\n"
+                    "X-Motion: "       + string(pkt->motion ? "1" : "0") + "\r\n"
+                    "X-Timestamp: "    + to_string(pkt->stamp_ms) + "\r\n"
+                    "X-Active-Cells: " + to_string(pkt->active_cells) + "\r\n"
+                    "\r\n";
+                strong_self->onWrite(std::make_shared<BufferString>(std::move(hdr)), false);
+                strong_self->onWrite(std::make_shared<MjpegBuffer>(jpeg), false);
+                strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
+            });
+        });
+#else
+    return false;
+#endif // ENABLE_MOTION
+}
+
+// ---------------------------------------------------------------------------
 
 void HttpSession::onDetach() {
     shutdown(SockException(Err_shutdown, "rtmp ring buffer detached"));

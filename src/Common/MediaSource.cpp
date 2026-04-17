@@ -534,6 +534,49 @@ bool MediaSource::unregist() {
 bool equalMediaTuple(const MediaTuple& a, const MediaTuple& b) {
     return a.vhost == b.vhost && a.app == b.app && a.stream == b.stream;
 }
+
+static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4) {
+    string vhost = vhost_in;
+    GET_CONFIG(bool, enableVhost, General::kEnableVhost);
+    if(vhost.empty() || !enableVhost){
+        vhost = DEFAULT_VHOST;
+    }
+
+    if (app.empty()) {
+        // If no app is specified, then it is traversal instead of searching, so it should return search failure
+        return {};
+    }
+
+    vector<MediaSource::Ptr> results;
+    MediaSource::for_each_media([&](const MediaSource::Ptr &src) { results.emplace_back(src); },
+        schema, vhost, app, "" /*empty = all streams*/);
+
+    if(!results.size() && from_mp4 && schema != HLS_SCHEMA){
+        // If the media source is not found, read mp4 to create one
+        // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
+        auto ret = MediaSource::createFromMP4(schema, vhost, app, id);
+        if (ret) {
+            results.emplace_back(ret);
+        }
+    }
+
+    return results;
+}
+
+static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, bool retry, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
+    auto results = findByApp_l(info.schema, info.vhost, info.app, info.stream, true);
+    if (!results.empty() || !retry) {
+        cb(std::move(results));
+        return;
+    }
+
+    // todo: pull from origin if not found, then wait for a while
+}
+
+void MediaSource::findAsyncByApp(const MediaInfo &info, const std::shared_ptr<Session> &session, const std::function<void(const std::vector<Ptr> &)> &cb) {
+    return findAsyncByApp_l(info, session, false, cb);
+}
+
 /////////////////////////////////////MediaInfo//////////////////////////////////////
 
 void MediaInfo::parse(const std::string &url_in){

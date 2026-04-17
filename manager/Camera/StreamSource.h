@@ -157,6 +157,7 @@ private:
     std::shared_ptr<const std::string> _status {std::make_shared<const std::string>("init")};
     std::weak_ptr<mediakit::PlayerProxy> _player;
     mediakit::EventRecordSession::Ptr _event_session;
+    std::atomic<uint64_t> _last_record_end {0};
 };
 
 } // namespace managerkit

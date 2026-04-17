@@ -454,6 +454,7 @@ public:
 
     // Asynchronously find the stream
     static void findAsync(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, const std::function<void(const Ptr &src)> &cb);
+    static void findAsyncByApp(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, const std::function<void(const std::vector<Ptr> &)> &cb);
     // Traverse all streams
     static void for_each_media(const std::function<void(const Ptr &src)> &cb, const std::string &schema = "", const std::string &vhost = "", const std::string &app = "", const std::string &stream = "");
     // Generate MediaSource from mp4 file

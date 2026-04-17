@@ -83,6 +83,10 @@ extern const std::string kBroadcastFlowReport;
 extern const std::string kBroadcastNotFoundStream;
 #define BroadcastNotFoundStreamArgs const MediaInfo &args, SockInfo &sender, const std::function<void()> &closePlayer
 
+// This event will be broadcast after the app is not found. Please pull the stream or other methods to generate the stream after listening to this event, so that you can pull the stream on demand.
+extern const std::string kBroadcastNotFoundApp;
+#define BroadcastNotFoundAppArgs const std::string &schema, const std::string &vhost, const std::string &app, SockInfo &sender, const std::function<void()> &closePlayer
+
 // Triggered when a stream is not consumed by anyone. The purpose is to achieve business logic such as actively disconnecting the pull stream when no one is watching.
 extern const std::string kBroadcastStreamNoneReader;
 #define BroadcastStreamNoneReaderArgs MediaSource &sender
