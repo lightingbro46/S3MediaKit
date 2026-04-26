@@ -38,6 +38,9 @@
     // =========================================================================
     const _playerRegistry  = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
     const _registeredTechs = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    // Set to the S3ProPlayer instance that is actively calling vjsPlayer.src().
+    // handleSource is invoked synchronously inside src(), so this is always valid.
+    let _pendingPlayerSetup = null;
 
     // =========================================================================
     // Private helpers
@@ -267,6 +270,10 @@
             this._onUpdateEnd = null;
 
             this._stallSince           = 0;
+            this._noDataSince          = 0;
+            this._waitLogSince         = 0;   // timestamp of last "waiting for data" log
+            this._segmentsReceived     = 0;   // total moof+mdat pairs received from server
+            this._moovReceived         = false; // true once moov received — HTTP stream is healthy
             this._stagingCodec         = null;
             this._stagingTimer         = null;
             this._seekAfterCodecChange = false;
@@ -285,7 +292,10 @@
             let response;
             try {
                 this._fetchCtrl = new AbortController();
-                response = await fetch(url, { signal: this._fetchCtrl.signal });
+                response = await fetch(url, {
+                    signal:  this._fetchCtrl.signal,
+                    headers: { 'Range': 'bytes=0-' },
+                });
             } catch (e) {
                 if (e.name !== 'AbortError') {
                     this._cb.error('[vjs] fetch: ' + e.message);
@@ -293,7 +303,7 @@
                 }
                 return;
             }
-            if (!response.ok) {
+            if (!response.ok && response.status !== 206) {
                 const msg = 'HTTP ' + response.status + ' ' + response.statusText;
                 this._cb.error('[vjs] ' + msg);
                 this._cb.showError(msg);
@@ -383,6 +393,9 @@
             this._pendingQ = [];
             this._moofBuf  = null;
             this._ftypBuf  = null;
+            this._waitLogSince     = 0;
+            this._segmentsReceived = 0;
+            this._moovReceived     = false;
             if (this._stagingTimer) { clearTimeout(this._stagingTimer); this._stagingTimer = null; }
             this._stagingCodec         = null;
             this._seekAfterCodecChange = false;
@@ -404,6 +417,8 @@
         }
 
         _setupMS(mime, initBuf) {
+            // Set codec immediately so _poll() can report it without waiting for sourceopen
+            this._currentMime = mime;
             this._ms     = new MediaSource();
             this._objUrl = URL.createObjectURL(this._ms);
             this._videoEl.src = this._objUrl;
@@ -423,8 +438,15 @@
                     this._sb.mode = 'segments';
                     this._onUpdateEnd = () => this._handleUpdateEnd();
                     this._sb.addEventListener('updateend', this._onUpdateEnd);
-                    this._sb.addEventListener('error',
-                        e => this._cb.error('[vjs] SB error: ' + e.type));
+                    this._sb.addEventListener('error', e => {
+                        this._cb.error('[vjs] SB error: ' + e.type);
+                        // SourceBuffer decode error is unrecoverable — abort the HTTP fetch,
+                        // clear the queue, and surface the error.  Without this the MS enters
+                        // readyState='ended', _drainQueue silently returns on every call, and
+                        // the queue grows unboundedly while the HTTP stream keeps running.
+                        this._stop();
+                        this._cb.showError('Media decode error: browser cannot decode this stream (' + this._currentMime + ')');
+                    });
                     this._cb.info('[vjs] SourceBuffer created: ' + mime +
                                   ' | sb.mode=' + this._sb.mode);
                     this._pendingQ.unshift({ type: 'init', buf: initBuf });
@@ -451,8 +473,8 @@
                 } catch (_) {}
             }
 
-            // -- diagnostic dump --
-            {
+            // -- diagnostic dump (only when queue is non-empty or readyState < 3) --
+            if (this._pendingQ.length > 0 || v.readyState < 3) {
                 const ct  = v.currentTime.toFixed(3);
                 const rs  = v.readyState;
                 let   buf = '(empty)';
@@ -476,11 +498,14 @@
                 this._cb.info('[vjs] play()+seek -- rs=' + v.readyState +
                               ' ct=' + v.currentTime.toFixed(3) +
                               ' bStart=' + bStart.toFixed(3));
-                v.play().catch(() => {});
+                // Seek first so the browser doesn't race-seek internally
                 if (v.currentTime < bStart - 0.05) v.currentTime = bStart;
+                v.play().catch(() => {});
             }
 
-            if (this._seekAfterCodecChange && sb.buffered.length > 0) {
+            // Only seek after ALL staged segments are drained so bEnd reflects the full
+            // staged window — avoids a premature backward seek caused by a partial buffer.
+            if (this._seekAfterCodecChange && sb.buffered.length > 0 && this._pendingQ.length === 0) {
                 const bStart = sb.buffered.start(0);
                 const bEnd   = sb.buffered.end(sb.buffered.length - 1);
                 if (v.currentTime < bStart - 0.1) {
@@ -502,7 +527,14 @@
 
         _drainQueue() {
             if (!this._pendingQ.length) return;
-            if (!this._ms || this._ms.readyState !== 'open') return;
+            if (!this._ms || this._ms.readyState !== 'open') {
+                // MS entered 'ended' due to an unhandled error — clean up to prevent
+                // unbounded queue growth while the HTTP fetch keeps running.
+                if (this._ms && this._ms.readyState === 'ended') {
+                    this._stop();
+                }
+                return;
+            }
             if (!this._sb || this._sb.updating) return;
 
             const item = this._pendingQ.shift();
@@ -515,12 +547,12 @@
                         return;
                     }
                 } else if (item.type === 'data') {
-                    // Log baseMediaDecodeTime of first few segments for diagnostics
+                    // Always log first few segments; include bMDT when available
                     if (this._pendingQ.length <= 2) {
                         const tfdt = readTfdt(new Uint8Array(item.buf));
-                        if (tfdt !== null)
-                            this._cb.info('[vjs] seg bMDT=' + (tfdt / 1000).toFixed(3) +
-                                          's q=' + this._pendingQ.length);
+                        this._cb.info('[vjs] seg size=' + item.buf.byteLength +
+                                      (tfdt !== null ? ' bMDT=' + (tfdt / 1000).toFixed(3) + 's' : '') +
+                                      ' q=' + this._pendingQ.length);
                     }
                 }
                 this._sb.appendBuffer(item.buf);
@@ -604,6 +636,12 @@
                     return;
                 }
 
+                // moov received = HTTP stream is healthy; transition to 'buffering'
+                // so the UI can suppress the full loading spinner while we wait for
+                // the next IDR from the ring buffer (normal GOP gap, not a server issue).
+                this._moovReceived = true;
+                if (this._cb.onBuffering) this._cb.onBuffering();
+
                 const initBuf = this._ftypBuf
                     ? concat(new Uint8Array(this._ftypBuf), new Uint8Array(boxBuf)).buffer
                     : boxBuf;
@@ -639,6 +677,9 @@
             }
 
             if (boxType === 'moof') {
+                this._cb.info('[vjs] moof received size=' + boxBuf.byteLength +
+                              ' q=' + this._pendingQ.length +
+                              (this._ms ? ' ms=' + this._ms.readyState : ' ms=none'));
                 if (this._moofBuf) {
                     this._pendingQ.push({ type: 'data', buf: this._moofBuf.buffer });
                 }
@@ -647,6 +688,7 @@
             }
 
             if (boxType === 'mdat') {
+                this._cb.info('[vjs] mdat received size=' + boxBuf.byteLength);
                 if (this._moofBuf) {
                     const combined = concat(this._moofBuf, new Uint8Array(boxBuf));
                     this._moofBuf  = null;
@@ -661,6 +703,7 @@
                         }
                         return;
                     }
+                    this._segmentsReceived++;
                     this._pendingQ.push({ type: 'data', buf: combined.buffer });
                     this._drainQueue();
                 }
@@ -698,8 +741,13 @@
             this._opts      = opts;
             this._state     = 'idle';
             this._listeners = {};
-            this._activeHandler = null;
-            this._pollTimer     = null;
+            this._activeHandler     = null;
+            this._pollTimer         = null;
+            this._primeUrl          = null;  // .mp4 URL to prime: next poll stops, poll after replays
+            this._reconnectUrl      = null;  // URL to replay in next poll (after prime-stop)
+            this._currentUrl        = null;  // last URL passed to play()
+            this._noImageSince      = 0;     // timestamp when player started showing no image
+            this._reconnectAt       = 0;     // timestamp of last watchdog reconnect (8s cooldown)
 
             // Register opts callback shortcuts as event listeners
             if (opts.onLog)         this.on('log',         opts.onLog);
@@ -755,8 +803,30 @@
             this._emit('log', 'info', '=== Play: ' + url + ' ===');
             this._emit('error', null); // clear previous fatal error
             if (this._activeHandler) { this._activeHandler.dispose(); this._activeHandler = null; }
+            this._currentUrl = url;
             this._setState('connecting');
-            this._vjsPlayer.src({ src: url, type: 'application/x-fmp4live' });
+            // Auto-detect stream type from URL
+            const type = /\.m3u8(\?.*)?$/i.test(url)
+                ? 'application/x-mpegURL'
+                : 'application/x-fmp4live';
+            // For .mp4 live streams that need priming: skip the first vjsPlayer.src() call
+            // (which would create a handler that gets killed 200ms later, causing a double flash).
+            // The poll prime-stop will do the single vjsPlayer.src() call after reset.
+            if (type === 'application/x-fmp4live' && /\.mp4(\?.*)?$/i.test(url)
+                    && !this._reconnectUrl) {
+                this._primeUrl = url;
+                return;
+            }
+            // Expose this player so handleSource (called synchronously inside src()) can find it
+            // reliably, without depending on tech.player_ WeakMap lookup.
+            _pendingPlayerSetup = this;
+            this._vjsPlayer.src({ src: url, type });
+            _pendingPlayerSetup = null;
+            // For HLS, our custom source handler is not involved.
+            // Video.js won't start loading with preload:'none' until play() is called.
+            if (type === 'application/x-mpegURL') {
+                this._vjsPlayer.play().catch(() => {});
+            }
         }
 
         stop() {
@@ -764,6 +834,11 @@
             this._vjsPlayer.pause();
             if (this._activeHandler) { this._activeHandler.dispose(); this._activeHandler = null; }
             this._vjsPlayer.reset();
+            this._currentUrl        = null;
+            this._noImageSince      = 0;
+            this._reconnectAt       = 0;
+            this._primeUrl          = null;
+            this._reconnectUrl      = null;
             this._setState('stopped');
         }
 
@@ -822,11 +897,18 @@
         // Build a cb object for S3ProLiveSourceHandler backed by this player's event system
         _makeCb() {
             return {
-                info:      msg => this._emit('log', 'info',  msg),
-                warn:      msg => this._emit('log', 'warn',  msg),
-                error:     msg => this._emit('log', 'error', msg),
-                showError: msg => { this._setState('error'); this._emit('error', msg); },
-                messages:  this._opts.messages || null,
+                info:       msg => this._emit('log', 'info',  msg),
+                warn:       msg => this._emit('log', 'warn',  msg),
+                error:      msg => this._emit('log', 'error', msg),
+                showError:  msg => { this._setState('error'); this._emit('error', msg); },
+                // Called when moov is received: HTTP stream confirmed healthy,
+                // but video may not yet render (waiting for first IDR from ring buffer).
+                // Transition 'connecting' -> 'buffering' so the UI can show a lighter
+                // indicator instead of the full loading spinner.
+                onBuffering: () => {
+                    if (this._state === 'connecting') this._setState('buffering');
+                },
+                messages:   this._opts.messages || null,
             };
         }
 
@@ -849,13 +931,17 @@
                     return '';
                 },
                 handleSource(source, tech, options) {
-                    // Find the owning S3ProPlayer via the registry
+                    // Primary: use the player that just called vjsPlayer.src() (synchronous path).
+                    // Fallback: WeakMap lookup via tech.player_ (for edge cases).
                     const vjsPlayer = tech.player_;
-                    const fp = _playerRegistry && vjsPlayer
-                        ? _playerRegistry.get(vjsPlayer) : null;
+                    const fp = _pendingPlayerSetup
+                        || (_playerRegistry && vjsPlayer ? _playerRegistry.get(vjsPlayer) : null);
                     const cb = fp ? fp._makeCb() : {
-                        info: () => {}, warn: () => {}, error: () => {},
-                        showError: () => {}, messages: null,
+                        info:      msg => console.info('[s3pro]', msg),
+                        warn:      msg => console.warn('[s3pro]', msg),
+                        error:     msg => console.error('[s3pro]', msg),
+                        showError: () => {},
+                        messages:  null,
                     };
                     const handler = new S3ProLiveSourceHandler(source, tech, options, cb);
                     if (fp) fp._activeHandler = handler;
@@ -873,6 +959,7 @@
                         const rs = v ? v.readyState : '?';
                         this._emit('log', 'info', '[vjs-event] ' + evName + ' readyState=' + rs);
                         if (evName === 'playing') this._setState('playing');
+                        if (evName === 'ended')   this._setState('stopped');
                     });
                 });
             player.on('error', () => {
@@ -886,6 +973,24 @@
         }
 
         _poll() {
+            // --- Prime-reconnect state machine (for .mp4 live streams) ---
+            // Stop the just-started connection immediately then reconnect in the same tick.
+            if (this._primeUrl) {
+                const url      = this._primeUrl;
+                this._primeUrl = null;
+                if (this._activeHandler) { this._activeHandler.dispose(); this._activeHandler = null; }
+                this._emit('log', 'info', '[vjs] prime-stop then reconnect: ' + url);
+                // Single vjsPlayer.reset() here, then single vjsPlayer.src() inside play()
+                this._vjsPlayer.reset();
+                // _reconnectUrl stays non-null during play() so play() won't set _primeUrl again
+                this._reconnectUrl = url;
+                this._noImageSince = 0;
+                this.play(url);
+                this._reconnectUrl = null;
+                return;
+            }
+            // ---
+
             const player  = this._vjsPlayer;
             const el      = player.el && player.el();
             const videoEl = el ? el.querySelector('video') : null;
@@ -893,6 +998,25 @@
 
             if (!videoEl || !h || !h._running) {
                 this._emit('timeupdate', 0, '00:00:00', '', 0);
+                // No-image watchdog: handler not running (HTTP ended / error) but we still have a URL
+                const rs_early = videoEl ? videoEl.readyState : 0;
+                const _videoOk = rs_early >= 3 || (videoEl && videoEl.buffered.length > 0 && rs_early >= 2);
+                const _cooldownOk = !this._reconnectAt || performance.now() - this._reconnectAt > 8000;
+                if (this._currentUrl && !this._primeUrl && !_videoOk && _cooldownOk) {
+                    if (!this._noImageSince) this._noImageSince = performance.now();
+                    if (performance.now() - this._noImageSince > 2000) {
+                        this._noImageSince = 0;
+                        this._reconnectAt  = performance.now();
+                        this._emit('log', 'info',
+                            '[vjs] no image after 2s (handler stopped) -- stop+play: ' + this._currentUrl);
+                        const url = this._currentUrl;
+                        this.stop();
+                        this.play(url);
+                    }
+                } else {
+                    if (_videoOk) { this._noImageSince = 0; this._reconnectAt = 0; }
+                    else if (!_cooldownOk) this._noImageSince = 0;
+                }
                 return;
             }
 
@@ -909,10 +1033,14 @@
             if (rs >= 3) {
                 h._stallSince = 0;
                 if (h._afterCodecChangeTick > 0) h._afterCodecChangeTick--;
-                if (videoEl.paused) player.play().catch(() => {});
+                // Do not call play() if the stream has ended — would restart from beginning
+                if (videoEl.paused && !videoEl.ended) player.play().catch(() => {});
             } else if (videoEl.buffered.length > 0) {
                 if (!h._stallSince) h._stallSince = performance.now();
                 const stallMs   = performance.now() - h._stallSince;
+                // While codec-change seek is still pending (staged data still draining),
+                // suppress the poll's stall-skip to avoid conflicting seeks.
+                if (h._seekAfterCodecChange) return;
                 const postCodec = h._afterCodecChangeTick > 0;
                 const outsideMs = postCodec ?  80 : 300;
                 const nudgeMs   = postCodec ? 350 : 800;
@@ -943,6 +1071,75 @@
                 }
             } else {
                 h._stallSince = 0;
+            }
+
+            // Periodic "waiting for data" diagnostic (every 3 s before first segment)
+            if (h._running && !h._httpEnded && h._segmentsReceived === 0 && rs <= 1) {
+                const now = performance.now();
+                if (!h._waitLogSince) h._waitLogSince = now;
+                const waitedMs = now - h._waitLogSince;
+                if (waitedMs >= 3000) {
+                    h._waitLogSince = now;
+                    this._emit('log', 'warn',
+                        '[vjs] waiting for first media segment... ' +
+                        Math.round(waitedMs / 1000) + 's elapsed' +
+                        ' | q=' + h._pendingQ.length +
+                        ' rs=' + rs +
+                        ' sbUpdating=' + (h._sb ? h._sb.updating : 'no-sb'));
+                }
+            } else if (h._segmentsReceived > 0) {
+                h._waitLogSince = 0;
+            }
+
+            // No-data timeout: if connected but no buffered data after 10 s, report error
+            if (h._running && !h._httpEnded && rs <= 1 && videoEl.buffered.length === 0) {
+                if (!h._noDataSince) h._noDataSince = performance.now();
+                const waitMs = performance.now() - h._noDataSince;
+                if (waitMs > 10000) {
+                    this._emit('log', 'warn', '[vjs] no data timeout after ' + Math.round(waitMs) + 'ms -- aborting');
+                    h._stop();
+                    this._setState('error');
+                    this._emit('error', 'No data received from server (timeout)');
+                }
+            } else {
+                h._noDataSince = 0;
+            }
+
+            // No-image watchdog: if handler is running but video shows no image, reconnect.
+            // Two distinct cases:
+            //  • 'buffering' (moovReceived=true, segmentsReceived=0): we're waiting for the
+            //    next IDR from the ring buffer — this is NORMAL and can take up to one full
+            //    GOP interval (1–3 s).  Use a longer grace period (8 s) and keep state as
+            //    'buffering' so the UI can show a lighter indicator instead of full loading.
+            //  • 'connecting' (moovReceived=false): no moov yet — server may be unreachable.
+            //    Use the short 2 s grace period and then reconnect.
+            const _videoVisible = rs >= 3 || (videoEl.buffered.length > 0 && rs >= 2);
+            const _cooldownOk2 = !this._reconnectAt || performance.now() - this._reconnectAt > 8000;
+            if (h._running && this._currentUrl && !this._primeUrl && !this._reconnectUrl) {
+                if (!_videoVisible && _cooldownOk2) {
+                    // When moov received but still waiting for first IDR, stay in 'buffering'
+                    // and extend the reconnect timeout — server is healthy, no panic needed.
+                    const isWaitingForIDR = h._moovReceived && h._segmentsReceived === 0;
+                    if (isWaitingForIDR && this._state === 'connecting') {
+                        this._setState('buffering');
+                    }
+                    const noImgGrace = isWaitingForIDR ? 8000 : 2000;
+                    if (!this._noImageSince) this._noImageSince = performance.now();
+                    if (performance.now() - this._noImageSince > noImgGrace) {
+                        this._noImageSince = 0;
+                        this._reconnectAt  = performance.now();
+                        this._emit('log', 'info',
+                            '[vjs] no image after ' + (noImgGrace / 1000) + 's' +
+                            ' (rs=' + rs + ' moov=' + h._moovReceived + ') -- stop+play: ' + this._currentUrl);
+                        const url = this._currentUrl;
+                        this.stop();   // full reset so play() triggers prime-reconnect
+                        this.play(url);
+                        return;
+                    }
+                } else {
+                    if (_videoVisible) { this._noImageSince = 0; this._reconnectAt = 0; }
+                    else if (!_cooldownOk2) this._noImageSince = 0;
+                }
             }
         }
     } // end S3ProPlayer

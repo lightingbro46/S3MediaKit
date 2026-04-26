@@ -1,5 +1,5 @@
 // =============================================================================
-// player-controls.js - Mode switch (Live/Replay) + Recording Timeline + Cursor
+// player-controls.js - Mode switch (Live/Replay) + Stream fetch + Timeline
 // Requires a S3ProPlayer instance passed as argument.
 // =============================================================================
 
@@ -25,47 +25,82 @@ function initPlayerControls(player) {
         // Show the relevant badge; hide the other
         if (badgeLive)   badgeLive.classList.toggle('show',   m === 'live');
         if (badgeReplay) badgeReplay.classList.toggle('show', m === 'replay');
+        // In replay mode: HLS is not supported — silently switch transport to MP4
+        if (m === 'replay' && _selectedTransport !== 'mp4') {
+            _selectedTransport = 'mp4';
+            _updateTransportMenu();
+        }
     }
     liveBtn.addEventListener('click',   function () { setMode('live'); });
     replayBtn.addEventListener('click', function () { setMode('replay'); })
 
     // =========================================================================
-    // Motion badge toggle + public API
+    // Motion badge: show MJPEG motion overlay when camera supports motion
     // =========================================================================
-    let _motionEnabled = true;   // UI toggle state
-    let _motionActive  = false;  // server-driven active state
+    var _motionSupported = false; // true when camera reports enableMotion=true
+    var _motionOnline    = false; // true when the device/motion stream is online
+    var _motionPlaying   = false; // true while MJPEG motion overlay is shown
+    var _motionOverlay   = document.getElementById('motion-overlay');
+    var _BLANK_GIF       = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
     function _updateMotionBadge() {
         if (!badgeMotion) return;
-        // Enabled+active → red;  enabled+idle → gray;  disabled → hidden/dim
-        badgeMotion.classList.toggle('motion-on', _motionEnabled && _motionActive);
-        badgeMotion.style.opacity = _motionEnabled ? '1' : '0.35';
-        badgeMotion.title = _motionEnabled
-            ? (_motionActive ? 'Motion detected — click to disable' : 'Motion detection ON — click to disable')
-            : 'Motion detection OFF — click to enable';
+        var canShow = _motionSupported; // only show if feature is configured
+        badgeMotion.classList.toggle('show',      canShow);
+        badgeMotion.classList.toggle('motion-on', _motionPlaying);
+        badgeMotion.classList.toggle('motion-offline', canShow && !_motionOnline);
+        if (!canShow || !_motionOnline) {
+            // If device went offline while playing, stop the overlay
+            if (_motionPlaying) _stopMotionStream();
+            badgeMotion.title = canShow
+                ? 'Motion offline — không có kết nối'
+                : 'Motion không được hỗ trợ';
+        } else {
+            badgeMotion.title = _motionPlaying
+                ? 'Đang xem motion — nhấn để tắt'
+                : 'Xem luồng phân tích motion';
+        }
+    }
+
+    function _startMotionStream() {
+        var domain   = (document.getElementById('media-domain').value || '').replace(/\/+$/, '');
+        var cameraId = (document.getElementById('camera-id').value    || '').trim();
+        if (!domain || !cameraId) return;
+        var url = domain + '/media/live/' + encodeURIComponent(cameraId)
+                + '.motion.mjpeg?overlay_roi=1&overlay_motion=1';
+        if (_motionOverlay) {
+            _motionOverlay.src = url;
+            _motionOverlay.classList.add('show');
+        }
+        _motionPlaying = true;
+        _updateMotionBadge();
+    }
+
+    function _stopMotionStream() {
+        if (_motionOverlay) {
+            _motionOverlay.src = _BLANK_GIF;
+            _motionOverlay.classList.remove('show');
+        }
+        _motionPlaying = false;
+        _updateMotionBadge();
     }
 
     if (badgeMotion) {
         badgeMotion.addEventListener('click', function () {
-            _motionEnabled = !_motionEnabled;
-            _updateMotionBadge();
-            // Hook for future feature: notify external code
-            if (typeof window.onMotionToggle === 'function') {
-                window.onMotionToggle(_motionEnabled);
-            }
+            if (!_motionOnline) return; // ignore click when offline
+            if (_motionPlaying) { _stopMotionStream(); }
+            else                { _startMotionStream(); }
         });
     }
     _updateMotionBadge();
 
-    // Public API: call from future motion-event handler to light up the badge
-    //   window.setMotionActive(true)   → badge turns red
-    //   window.setMotionActive(false)  → badge back to gray
-    window.setMotionActive = function (active) {
-        _motionActive = !!active;
+    // Called by _applyDeviceStreams when device statistic is loaded
+    window.setMotionActive = function (supported, online) {
+        _motionSupported = !!supported;
+        _motionOnline    = !!online;
         _updateMotionBadge();
     };
-    // Public API: check whether user has motion UI enabled
-    window.isMotionEnabled = function () { return _motionEnabled; };
+    window.isMotionPlaying = function () { return _motionPlaying; };
 
     // =========================================================================
     // Wire player events: log, fatal error, timeupdate
@@ -94,12 +129,89 @@ function initPlayerControls(player) {
         if (errOverlay) errOverlay.classList.add('show');
     });
 
+    function _friendlyCodec(mime) {
+        if (!mime) return '';
+        var m = mime.match(/codecs="([^"]+)"/);
+        var src = m ? m[1] : mime;
+        return src.split(',').map(function (c) {
+            c = c.trim();
+            if (/^avc1|^avc3/i.test(c)) return 'H.264';
+            if (/^hvc1|^hev1/i.test(c)) return 'H.265';
+            if (/^av01/i.test(c))       return 'AV1';
+            if (/^vp09/i.test(c))       return 'VP9';
+            if (/^vp08/i.test(c))       return 'VP8';
+            if (/^mp4a\.40/i.test(c))   return 'AAC';
+            if (/^opus/i.test(c))       return 'Opus';
+            return c;
+        }).join(' + ');
+    }
+
     player.on('timeupdate', function (ct, fmt, codec, bufLen) {
+        var friendly = _friendlyCodec(codec);
         if (infoEl)
-            infoEl.textContent = 'codec: ' + (codec || '--') +
+            infoEl.textContent = 'codec: ' + (friendly || '--') +
                                  ' | bufferLen: ' + (bufLen ? bufLen.toFixed(2) + 's' : '--');
         if (timeEl) timeEl.textContent = fmt || '00:00:00';
+        if (!friendly) return; // no codec yet — skip quality menu update
+        // Update Auto item realtime info (resolution + codec)
+        var videoEl = document.querySelector('.vjs-tech');
+        if (!videoEl) return;
+        var w = videoEl.videoWidth, h = videoEl.videoHeight;
+        var info = (w && h ? w + 'x' + h + ' ' : '') + friendly;
+        var autoItem = pcbQualMenu && pcbQualMenu.querySelector('.qm-item[data-profile="auto"]');
+        if (autoItem) {
+            var infoSpan = autoItem.querySelector('.qm-info');
+            if (!infoSpan) {
+                infoSpan = document.createElement('span');
+                infoSpan.className = 'qm-info';
+                autoItem.appendChild(infoSpan);
+            }
+            infoSpan.textContent = info;
+        }
     });
+
+    // =========================================================================
+    // Stream selection state
+    // =========================================================================
+    // 'auto' = no specific stream; otherwise contains the streamId string
+    let _selectedStreamId  = 'auto';
+    let _selectedTransport = 'mp4'; // 'mp4' | 'hls'
+
+    // Cached stream profiles fetched from device statistic API
+    let _deviceStreamProfiles = [];
+
+    function _getActiveStreamId() {
+        if (_selectedStreamId === 'auto') return '';
+        return _selectedStreamId;
+    }
+
+    // =========================================================================
+    // URL builder helpers
+    // =========================================================================
+    function _buildLiveUrl(domain, cameraId, streamId) {
+        if (_selectedTransport === 'hls') {
+            if (streamId) {
+                return domain + '/media/live/' + encodeURIComponent(cameraId)
+                    + '/' + encodeURIComponent(streamId) + '/hls.m3u8';
+            }
+            // HLS master playlist — quality selection handled by the HLS manifest itself
+            return domain + '/media/live/' + encodeURIComponent(cameraId) + '/hls.master.m3u8';
+        }
+        if (streamId) {
+            return domain + '/media/live/' + encodeURIComponent(cameraId)
+                 + '/' + encodeURIComponent(streamId) + '.live.mp4';
+        }
+        return domain + '/media/live/' + encodeURIComponent(cameraId) + '.live.mp4?quality=auto&prefered=hi';
+    }
+
+    function _buildVodUrl(domain, cameraId, streamId, stampSec) {
+        if (streamId) {
+            return domain + '/media/record/' + encodeURIComponent(cameraId)
+                 + '/' + encodeURIComponent(streamId) + '/vod/' + stampSec + '.live.mp4';
+        }
+        return domain + '/media/record/' + encodeURIComponent(cameraId)
+             + '/vod/' + stampSec + '.live.mp4?quality=auto&prefered=hi';
+    }
 
     // =========================================================================
     // URL builder for Live mode - capture phase runs before player.play()
@@ -108,9 +220,8 @@ function initPlayerControls(player) {
         if (_mode !== 'live') return;
         const domain   = (document.getElementById('media-domain').value || '').replace(/\/+$/, '');
         const cameraId = (document.getElementById('camera-id').value    || '').trim();
-        const streamId = (document.getElementById('stream-id').value    || '').trim();
-        document.getElementById('url-input').value =
-            domain + '/media/live/' + cameraId + '/' + streamId + '.live.mp4';
+        const streamId = _getActiveStreamId();
+        document.getElementById('url-input').value = _buildLiveUrl(domain, cameraId, streamId);
     }, true /* capture phase */);
 
     // =========================================================================
@@ -173,8 +284,210 @@ function initPlayerControls(player) {
     }
 
     // =========================================================================
-    // Timeline state
+    // Device statistic fetch — populates quality menu
     // =========================================================================
+    var qualStatusEl   = document.getElementById('qual-status');
+    var fetchStreamsBtn = document.getElementById('btn-fetch-streams');
+
+    function _setQualStatus(msg, isError) {
+        if (!qualStatusEl) return;
+        qualStatusEl.textContent = msg;
+        qualStatusEl.style.color = isError ? '#ef9a9a' : '#888';
+    }
+
+    function _buildAuthHeaders() {
+        var token = (document.getElementById('auth-token') || {}).value || '';
+        token = token.trim();
+        var headers = {};
+        if (token) {
+            headers['Authorization'] = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
+        }
+        return headers;
+    }
+
+    var _statJsonEl = document.getElementById('device-stat-json');
+
+    function _showStatJson(json) {
+        if (!_statJsonEl) return;
+        try {
+            _statJsonEl.textContent = JSON.stringify(json, null, 2);
+        } catch(e) {
+            _statJsonEl.textContent = String(json);
+        }
+    }
+
+    function fetchDeviceStatistic() {
+        var domain   = (document.getElementById('media-domain').value || '').replace(/\/+$/, '').trim();
+        var cameraId = (document.getElementById('camera-id').value    || '').trim();
+
+        if (!domain || !cameraId) {
+            _setQualStatus('Nhập Camera ID và Media Server trước', true);
+            return;
+        }
+
+        _setQualStatus('Đang tải...', false);
+        if (fetchStreamsBtn) { fetchStreamsBtn.disabled = true; fetchStreamsBtn.textContent = '...'; }
+
+        var url = domain + '/media/mserver/device/statistics?id=' + encodeURIComponent(cameraId);
+        fetch(url, { headers: _buildAuthHeaders() })
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (json) {
+                _showStatJson(json);
+                var device = json && json.data ? json.data : null;
+                if (!device || !device.deviceId) {
+                    _setQualStatus('Không tìm thấy camera: ' + cameraId, true);
+                    return;
+                }
+                _applyDeviceStreams(device);
+            })
+            .catch(function (err) {
+                console.warn('[Streams] fetch error:', err);
+                _setQualStatus('Lỗi: ' + (err.message || err), true);
+            })
+            .finally(function () {
+                if (fetchStreamsBtn) { fetchStreamsBtn.disabled = false; fetchStreamsBtn.textContent = 'Load Streams'; }
+            });
+    }
+
+    function _applyDeviceStreams(device) {
+        var profiles = [{ id: 'auto', label: 'Auto', streamId: '', online: null }];
+        _deviceStreamProfiles = [];
+
+        function _addStream(streamData, streamIdField, label) {
+            if (!streamData || !device[streamIdField]) return;
+            var sid    = device[streamIdField];
+            var online = streamData.status === true;
+            var w      = streamData.width  || 0;
+            var h      = streamData.height || 0;
+            var codec  = streamData.vcodec || '?';
+            var info   = (w && h ? w + 'x' + h + ' ' : '') + codec;
+            profiles.push({ id: sid, label: label, streamId: sid, online: online, info: info });
+            _deviceStreamProfiles.push({ id: sid, streamId: sid, online: online, info: info });
+        }
+
+        _addStream(device.primaryStream,   'primaryStreamId',   'Stream chính');
+        _addStream(device.secondaryStream, 'secondaryStreamId', 'Stream phụ');
+
+        var onlineCount = _deviceStreamProfiles.filter(function (p) { return p.online; }).length;
+        var totalCount  = _deviceStreamProfiles.length;
+        _setQualStatus(totalCount + ' stream' + (totalCount !== 1 ? 's' : '') + ' · ' + onlineCount + ' online', false);
+
+        _populateQualityMenu(profiles);
+
+        var stillValid = profiles.some(function (p) { return p.id === _selectedStreamId; });
+        if (!stillValid) {
+            _selectedStreamId = 'auto';
+            document.getElementById('stream-id').value = '';
+        }
+
+        _triggerTimelineRefresh();
+        // Motion badge: show only when enableMotion is configured AND device is online
+        var enableMotion = (device.options && device.options.enableMotion === true);
+        var deviceOnline = device.status === true;
+        window.setMotionActive(enableMotion, deviceOnline);
+    }
+
+    function _populateQualityMenu(profiles) {
+        if (!pcbQualMenu) return;
+        Array.from(pcbQualMenu.querySelectorAll('.qm-item, .qm-section')).forEach(function (el) { el.remove(); });
+        var checkSvg = '<svg class="qm-check" viewBox="0 0 24 24" fill="currentColor">'
+            + '<path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+        // -- Profile items --
+        profiles.forEach(function (p) {
+            var div = document.createElement('div');
+            div.className = 'qm-item' + (p.id === _selectedStreamId ? ' active' : '');
+            div.dataset.profile = p.id;
+            var body = '';
+            if (p.id === 'auto') {
+                body = checkSvg + 'Auto<span class="qm-info"></span>';
+            } else {
+                var dotClass = p.online ? 'qm-dot qm-dot-on' : 'qm-dot qm-dot-off';
+                var dotHtml  = '<span class="' + dotClass + ' qm-dot-right" title="' + (p.online ? 'Online' : 'Offline') + '"></span>';
+                body = checkSvg
+                    + p.label
+                    + dotHtml
+                    + (p.info ? '<span class="qm-info">' + p.info + '</span>' : '');
+            }
+            div.innerHTML = body;
+            pcbQualMenu.appendChild(div);
+        });
+        // -- Transport section --
+        var secDiv = document.createElement('div');
+        secDiv.className = 'qm-section';
+        secDiv.textContent = 'Transport';
+        pcbQualMenu.appendChild(secDiv);
+        [{ id: 'mp4', label: 'MP4 (FMP4)' }, { id: 'hls', label: 'HLS' }].forEach(function (t) {
+            var div = document.createElement('div');
+            div.className = 'qm-item' + (t.id === _selectedTransport ? ' active' : '');
+            div.dataset.transport = t.id;
+            div.innerHTML = checkSvg + t.label;
+            pcbQualMenu.appendChild(div);
+        });
+    }
+
+    function _updateTransportMenu() {
+        if (!pcbQualMenu) return;
+        pcbQualMenu.querySelectorAll('.qm-item[data-transport]').forEach(function (i) {
+            i.classList.toggle('active', i.dataset.transport === _selectedTransport);
+        });
+    }
+
+    window.onTransportSelect = function (transport) {
+        if (transport === _selectedTransport) return;
+        _selectedTransport = transport;
+        _updateTransportMenu();
+        if (!_stopped) {
+            if (_mode === 'replay' && transport === 'hls') {
+                // Show error, revert to MP4
+                _selectedTransport = 'mp4';
+                _updateTransportMenu();
+                if (errMsgEl)   errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4';
+                if (errOverlay) errOverlay.classList.add('show');
+                return;
+            }
+            if (_mode === 'live') {
+                document.getElementById('btn-play').click();
+            }
+        }
+    };
+
+    if (fetchStreamsBtn) fetchStreamsBtn.addEventListener('click', fetchDeviceStatistic);
+
+    // Debounced auto-fetch when camera-id or domain changes
+    var _fetchDebounce = null;
+    function _scheduleFetch() {
+        clearTimeout(_fetchDebounce);
+        _fetchDebounce = setTimeout(function () {
+            var camId  = (document.getElementById('camera-id').value    || '').trim();
+            var domain = (document.getElementById('media-domain').value || '').trim();
+            if (camId && domain) fetchDeviceStatistic();
+        }, 600);
+    }
+    var _camInput    = document.getElementById('camera-id');
+    var _domainInput = document.getElementById('media-domain');
+    if (_camInput)    _camInput.addEventListener('input',  _scheduleFetch);
+    if (_domainInput) _domainInput.addEventListener('input', _scheduleFetch);
+
+    // Profile selection handler (called by quality menu click)
+    window.onProfileSelect = function (profileId) {
+        if (profileId === _selectedStreamId) return; // no change
+        _selectedStreamId = profileId;
+        document.getElementById('stream-id').value = (profileId === 'auto') ? '' : profileId;
+        _triggerTimelineRefresh();
+        if (!_stopped) {
+            // Auto-switch: restart stream with the new profile at the current position
+            if (_mode === 'replay' && _replayStartTime > 0) {
+                var videoEl = document.querySelector('.vjs-tech');
+                var offset  = (videoEl && videoEl.currentTime > 0) ? videoEl.currentTime : 0;
+                seekToWallTime(_replayStartTime + offset);
+            } else if (_mode === 'live') {
+                document.getElementById('btn-play').click();
+            }
+        }
+    };
     const timelineEl   = document.getElementById('timeline');
     const dateInput    = document.getElementById('timeline-date');
     const fetchBtn     = document.getElementById('timeline-fetch');
@@ -301,14 +614,19 @@ function initPlayerControls(player) {
     // Seek to exact wall-clock time
     // =========================================================================
     function seekToWallTime(wallTime) {
+        // HLS does not support replay/VOD in this player
+        if (_selectedTransport === 'hls') {
+            if (errMsgEl)   errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4';
+            if (errOverlay) errOverlay.classList.add('show');
+            return;
+        }
         const ts       = Math.floor(wallTime);
         const domain   = (document.getElementById('media-domain').value || '').replace(/\/+$/, '');
         const cameraId = (document.getElementById('camera-id').value    || '').trim();
-        const streamId = (document.getElementById('stream-id').value    || '').trim();
+        const streamId = _getActiveStreamId();
         _replayStartTime = ts;
         setMode('replay');
-        document.getElementById('url-input').value =
-            domain + '/media/record/' + cameraId + '/' + streamId + '/vod/' + ts + '.live.mp4';
+        document.getElementById('url-input').value = _buildVodUrl(domain, cameraId, streamId, ts);
         document.getElementById('btn-play').click();
         moveCursorToWallTime(wallTime);
     }
@@ -329,7 +647,8 @@ function initPlayerControls(player) {
     }
 
     function validateInputs() {
-        const ids = ['camera-id', 'stream-id', 'media-domain'];
+        // stream-id is optional (auto mode); only camera-id and media-domain are required
+        const ids = ['camera-id', 'media-domain'];
         let ok = true;
         ids.forEach(function (id) {
             const el = document.getElementById(id);
@@ -396,6 +715,18 @@ function initPlayerControls(player) {
         return null;
     }
 
+    // Merge two 24-element arrays of period arrays (union per hour)
+    function _mergeRecordingHours(hoursA, hoursB) {
+        if (!hoursA && !hoursB) return null;
+        if (!hoursA) return hoursB;
+        if (!hoursB) return hoursA;
+        var merged = [];
+        for (var h = 0; h < 24; h++) {
+            merged.push((hoursA[h] || []).concat(hoursB[h] || []));
+        }
+        return merged;
+    }
+
     function fillTimeline(raw, dateStr, dayStart) {
         clearTimeline();
         _dayStart = dayStart;
@@ -404,15 +735,22 @@ function initPlayerControls(player) {
             ? raw.data : raw;
 
         console.log('[Timeline] parsed json keys:', Object.keys(json || {}));
-        const streamId = (document.getElementById('stream-id').value || '').trim();
 
         let recordingHours = null;
         if (Array.isArray(json.streams) && json.streams.length > 0) {
-            const stream = json.streams.find(function (s) { return s.streamId === streamId; })
-                        || json.streams[0];
-            console.log('[Timeline] stream:', stream ? stream.streamId : 'none',
-                        '| dates keys:', stream && stream.dates ? Object.keys(stream.dates) : []);
-            recordingHours = resolveDatesArray(stream && stream.dates, dateStr);
+            if (_selectedStreamId === 'auto') {
+                // Merge all streams' recording data
+                json.streams.forEach(function (s) {
+                    var hrs = resolveDatesArray(s && s.dates, dateStr);
+                    recordingHours = _mergeRecordingHours(recordingHours, hrs);
+                });
+                console.log('[Timeline] auto mode — merged', json.streams.length, 'streams');
+            } else {
+                const stream = json.streams.find(function (s) { return s.streamId === _selectedStreamId; })
+                            || json.streams[0];
+                console.log('[Timeline] stream:', stream ? stream.streamId : 'none');
+                recordingHours = resolveDatesArray(stream && stream.dates, dateStr);
+            }
         }
         console.log('[Timeline] recordingHours length:', recordingHours ? recordingHours.length : 'null');
 
@@ -426,16 +764,12 @@ function initPlayerControls(player) {
             if (recordingHours) renderRecordingHour(bar,  recordingHours[h], hStart);
             if (motionHours)    renderMotionHour(mbar, motionHours[h],    hStart);
         }
-        // Expose data to custom timebar (vars declared in custom-controls section)
         _pcbDayStart  = dayStart;
         _pcbRecHours  = recordingHours;
         _pcbMotHours  = motionHours;
         _pcbRenderTimebar();
     }
 
-    // =========================================================================
-    // Fetch
-    // =========================================================================
     function fetchTimeline() {
         const dateStr = dateInput.value;
         if (!dateStr) return;
@@ -464,13 +798,12 @@ function initPlayerControls(player) {
                 console.log('[Timeline] raw response:', JSON.stringify(json).slice(0, 400));
                 fillTimeline(json, dateStr, dayStart);
             })
-            .catch(function (err) {
-                console.warn('[Timeline] fetch error:', err);
-            })
-            .finally(function () {
-                fetchBtn.disabled    = false;
-                fetchBtn.textContent = 'Load';
-            });
+            .catch(function (err) { console.warn('[Timeline] fetch error:', err); })
+            .finally(function () { fetchBtn.disabled = false; fetchBtn.textContent = 'Load'; });
+    }
+
+    function _triggerTimelineRefresh() {
+        if (dateInput.value) fetchTimeline();
     }
 
     fetchBtn.addEventListener('click', fetchTimeline);
@@ -503,12 +836,7 @@ function initPlayerControls(player) {
     // =========================================================================
     // Custom control bar
     // =========================================================================
-    // Public hook: called by fmp4-player after timeline data available
-    // so timebar can render recording/motion segments for the current hour.
-    // Also called on every poll tick to advance the cursor.
-
-    // Data captured by fillTimeline (hoisted function writes these before use)
-    var _pcbRecHours  = null;   // 24-element array of period arrays
+    var _pcbRecHours  = null;
     var _pcbMotHours  = null;
     var _pcbDayStart  = 0;
 
@@ -532,29 +860,23 @@ function initPlayerControls(player) {
     var pcbQualBtn    = document.getElementById('pcb-quality-btn');
     var pcbQualMenu   = document.getElementById('pcb-quality-menu');
 
+    // Ensure the Auto item always exists so the codec/resolution info can be shown
+    // even before device statistics are loaded.
+    _populateQualityMenu([{ id: 'auto', label: 'Auto', streamId: '', online: null }]);
+
     var _pcbCurrentHour = -1;
 
-    // -- Render timebar segments for the current wall-clock hour --
-    function _pcbRenderTimebar() {
+    // Fill pcbTrack with recording+motion segments for hour h
+    function _pcbFillTrack(h) {
         if (!pcbTrack) return;
-        // Clear old segments
-        Array.from(pcbTrack.children).forEach(function (c) { pcbTrack.removeChild(c); });
-        if (!_pcbDayStart || !_replayStartTime) return;
-
-        var wallNow = _replayStartTime; // current replay wall start
-        var h = Math.floor((wallNow - _pcbDayStart) / 3600);
-        if (h < 0 || h >= 24) return;
         _pcbCurrentHour = h;
         var hStart = _pcbDayStart + h * 3600;
-
-        // Recording segments
+        Array.from(pcbTrack.children).forEach(function (c) { pcbTrack.removeChild(c); });
         if (_pcbRecHours && _pcbRecHours[h]) {
             _pcbRecHours[h].forEach(function (p) {
-                var st  = Number(p.startTime);
-                var dur = Number(p.duration);
+                var st = Number(p.startTime), dur = Number(p.duration);
                 if (!dur) return;
-                var os = Math.max(st, hStart);
-                var oe = Math.min(st + dur, hStart + 3600);
+                var os = Math.max(st, hStart), oe = Math.min(st + dur, hStart + 3600);
                 if (os >= oe) return;
                 var seg = document.createElement('div');
                 seg.className = 'pcb-ts-seg';
@@ -563,14 +885,11 @@ function initPlayerControls(player) {
                 pcbTrack.appendChild(seg);
             });
         }
-        // Motion segments
         if (_pcbMotHours && _pcbMotHours[h]) {
             _pcbMotHours[h].forEach(function (p) {
-                var st  = Number(p.startTime);
-                var dur = Number(p.duration);
+                var st = Number(p.startTime), dur = Number(p.duration);
                 if (!dur) return;
-                var os = Math.max(st, hStart);
-                var oe = Math.min(st + dur, hStart + 3600);
+                var os = Math.max(st, hStart), oe = Math.min(st + dur, hStart + 3600);
                 if (os >= oe) return;
                 var seg = document.createElement('div');
                 seg.className = 'pcb-tm-seg';
@@ -581,53 +900,24 @@ function initPlayerControls(player) {
         }
     }
 
-    // -- Move timebar cursor to a wall-clock time --
+    // Render timebar for the current replay wall time
+    function _pcbRenderTimebar() {
+        if (!pcbTrack || !_pcbDayStart || !_replayStartTime) return;
+        var h = Math.floor((_replayStartTime - _pcbDayStart) / 3600);
+        if (h < 0 || h >= 24) return;
+        _pcbFillTrack(h);
+    }
+
+    // Move timebar cursor to a wall-clock time
     function _pcbMoveCursor(wallTime) {
         if (!pcbCursor || !pcbTrack) return;
         if (!_pcbDayStart) { pcbCursor.style.display = 'none'; return; }
         var h = Math.floor((wallTime - _pcbDayStart) / 3600);
-        if (h !== _pcbCurrentHour) {
-            _pcbBuildForHour(h, wallTime);
-        }
+        if (h !== _pcbCurrentHour) _pcbFillTrack(h);
         var hStart = _pcbDayStart + h * 3600;
-        var pct    = (wallTime - hStart) / 3600;
-        pct = Math.max(0, Math.min(1, pct));
+        var pct = Math.max(0, Math.min(1, (wallTime - hStart) / 3600));
         pcbCursor.style.left    = (pct * 100) + '%';
         pcbCursor.style.display = 'block';
-    }
-
-    // Rebuild timebar segments when the replay position crosses into a new hour
-    function _pcbBuildForHour(h, wallTime) {
-        if (!pcbTrack) return;
-        _pcbCurrentHour = h;
-        var hStart = _pcbDayStart + h * 3600;
-        Array.from(pcbTrack.children).forEach(function (c) { pcbTrack.removeChild(c); });
-        if (_pcbRecHours && _pcbRecHours[h]) {
-            _pcbRecHours[h].forEach(function (p) {
-                var st = Number(p.startTime), dur = Number(p.duration);
-                if (!dur) return;
-                var os = Math.max(st, hStart), oe = Math.min(st + dur, hStart + 3600);
-                if (os >= oe) return;
-                var seg = document.createElement('div');
-                seg.className = 'pcb-ts-seg';
-                seg.style.left  = ((os - hStart) / 3600 * 100) + '%';
-                seg.style.width = ((oe - os)     / 3600 * 100) + '%';
-                pcbTrack.appendChild(seg);
-            });
-        }
-        if (_pcbMotHours && _pcbMotHours[h]) {
-            _pcbMotHours[h].forEach(function (p) {
-                var st = Number(p.startTime), dur = Number(p.duration);
-                if (!dur) return;
-                var os = Math.max(st, hStart), oe = Math.min(st + dur, hStart + 3600);
-                if (os >= oe) return;
-                var seg = document.createElement('div');
-                seg.className = 'pcb-tm-seg';
-                seg.style.left  = ((os - hStart) / 3600 * 100) + '%';
-                seg.style.width = ((oe - os)     / 3600 * 100) + '%';
-                pcbTrack.appendChild(seg);
-            });
-        }
     }
 
     // -- Timebar click: seek to wall time within current hour --
@@ -667,13 +957,20 @@ function initPlayerControls(player) {
         });
     }
 
-    // -- Play/Pause button --
+    // -- Play/Pause/Stop button (replaces the manual btn-play / btn-stop below) --
     if (pcbPlayPause) {
         pcbPlayPause.addEventListener('click', function () {
             var videoEl = document.querySelector('.vjs-tech');
-            if (!videoEl) return;
-            if (videoEl.paused) { videoEl.play().catch(function(){}); }
-            else                { videoEl.pause(); }
+            if (_stopped || !videoEl || videoEl.readyState === 0) {
+                // Completely stopped — build URL and start stream
+                document.getElementById('btn-play').click();
+            } else if (videoEl.paused || videoEl.ended) {
+                // Paused mid-stream (e.g. after VOD ended) — restart
+                document.getElementById('btn-play').click();
+            } else {
+                // Currently playing — stop
+                document.getElementById('btn-stop').click();
+            }
         });
     }
 
@@ -756,8 +1053,7 @@ function initPlayerControls(player) {
         });
     }
 
-    // -- Quality / profile picker --
-    // Placeholder: list is populated externally via window.setQualityProfiles([...])
+    // -- Quality menu open/close --
     if (pcbQualBtn) {
         pcbQualBtn.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -767,32 +1063,30 @@ function initPlayerControls(player) {
             if (pcbQualMenu) pcbQualMenu.classList.remove('show');
         });
     }
+
+    // -- Quality menu item click: delegate to onProfileSelect --
     if (pcbQualMenu) {
         pcbQualMenu.addEventListener('click', function (e) {
             var item = e.target.closest('.qm-item');
             if (!item) return;
-            pcbQualMenu.querySelectorAll('.qm-item').forEach(function (i) { i.classList.remove('active'); });
-            item.classList.add('active');
-            var profile = item.dataset.profile;
             pcbQualMenu.classList.remove('show');
-            if (typeof window.onProfileSelect === 'function') window.onProfileSelect(profile);
+            if (item.dataset.transport !== undefined) {
+                // Transport item
+                pcbQualMenu.querySelectorAll('.qm-item[data-transport]').forEach(function (i) { i.classList.remove('active'); });
+                item.classList.add('active');
+                window.onTransportSelect(item.dataset.transport);
+            } else if (item.dataset.profile !== undefined) {
+                // Profile item
+                pcbQualMenu.querySelectorAll('.qm-item[data-profile]').forEach(function (i) { i.classList.remove('active'); });
+                item.classList.add('active');
+                window.onProfileSelect(item.dataset.profile);
+            }
         });
     }
-    // Public API: populate quality menu from stream info
+
+    // Public API: populate quality menu from external code
     window.setQualityProfiles = function (profiles) {
-        // profiles: [{id, label}]  e.g. [{id:'auto',label:'Auto'},{id:'1080p',label:'1080p HD'}]
-        if (!pcbQualMenu) return;
-        var active = (pcbQualMenu.querySelector('.qm-item.active') || {}).dataset || {};
-        var activeId = active.profile || 'auto';
-        // Remove existing items (keep title)
-        Array.from(pcbQualMenu.querySelectorAll('.qm-item')).forEach(function (el) { el.remove(); });
-        profiles.forEach(function (p) {
-            var div = document.createElement('div');
-            div.className = 'qm-item' + (p.id === activeId ? ' active' : '');
-            div.dataset.profile = p.id;
-            div.innerHTML = '<svg class="qm-check" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>' + p.label;
-            pcbQualMenu.appendChild(div);
-        });
+        _populateQualityMenu(profiles);
     };
 
     // -- Poll every 200ms to advance cursor + sync play/pause icon --
@@ -830,6 +1124,27 @@ function initPlayerControls(player) {
         // Timebar cursor
         if (_mode === 'replay' && _replayStartTime && _pcbDayStart) {
             _pcbMoveCursor(_replayStartTime + videoEl.currentTime);
+        }
+
+        // Codec + buffer info bar — driven directly from player state (robust fallback)
+        var pState = player.getState();
+        if (pState.codec) {
+            var friendly2 = _friendlyCodec(pState.codec);
+            if (friendly2) {
+                if (infoEl) {
+                    var bl = pState.buffered || 0;
+                    infoEl.textContent = 'codec: ' + friendly2
+                        + ' | bufferLen: ' + (bl > 0 ? bl.toFixed(2) + 's' : '--');
+                }
+                var w2 = videoEl.videoWidth, h2 = videoEl.videoHeight;
+                var info2 = (w2 && h2 ? w2 + 'x' + h2 + ' ' : '') + friendly2;
+                var autoItem = pcbQualMenu && pcbQualMenu.querySelector('.qm-item[data-profile="auto"]');
+                if (autoItem) {
+                    var sp = autoItem.querySelector('.qm-info');
+                    if (!sp) { sp = document.createElement('span'); sp.className = 'qm-info'; autoItem.appendChild(sp); }
+                    if (sp.textContent !== info2) sp.textContent = info2;
+                }
+            }
         }
     }, 200);
 }

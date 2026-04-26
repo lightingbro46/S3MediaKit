@@ -118,7 +118,7 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 /* ── Timeline (right panel) ── */
 .player-right {
     display: flex; flex-direction: column; gap: 8px;
-    background: #1e1e1e; border-radius: 6px; padding: 12px;
+    background: #1e1e1e; border-radius: 6px; padding: 10px 6px;
     position: sticky; top: 16px;
 }
 .player-right h3 {
@@ -138,15 +138,31 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 }
 #timeline-fetch:hover { background: #1976d2; }
 #timeline-fetch:disabled { opacity: 0.5; cursor: default; }
-#timeline { display: flex; flex-direction: column; gap: 2px; position: relative; }
-.tl-row { display: flex; align-items: stretch; gap: 5px; }
+#timeline { display: flex; flex-direction: column; gap: 1px; position: relative; }
+/* Device statistic JSON panel */
+#device-stat-panel {
+    border: 1px solid #2a2a2a; border-radius: 4px;
+    overflow: hidden; margin-top: 4px;
+}
+.ds-header {
+    font-size: 0.68rem; color: #777; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; padding: 4px 8px; background: #252525;
+    border-bottom: 1px solid #2a2a2a;
+}
+#device-stat-json {
+    margin: 0; padding: 6px 8px;
+    font-size: 0.68rem; font-family: monospace; color: #9cdcfe;
+    background: #1a1a1a; white-space: pre-wrap; word-break: break-all;
+    max-height: 220px; overflow-y: auto;
+}
+.tl-row { display: flex; align-items: stretch; gap: 4px; }
 .tl-hour {
-    width: 20px; font-size: 0.68rem; color: #555; font-family: monospace;
-    text-align: right; flex-shrink: 0; padding-top: 2px;
+    width: 18px; font-size: 0.66rem; color: #555; font-family: monospace;
+    text-align: right; flex-shrink: 0; padding-top: 3px;
 }
 .tl-tracks { flex: 1; display: flex; flex-direction: column; gap: 0; }
 .tl-bar {
-    flex: 1; height: 12px; background: #252525; border-radius: 2px 2px 0 0;
+    flex: 1; height: 18px; background: #252525; border-radius: 2px 2px 0 0;
     position: relative; overflow: hidden; cursor: default;
 }
 .tl-segment {
@@ -157,7 +173,7 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 .tl-segment:hover { background: #43a047; }
 /* motion lane — thin strip below recording bar, visual only */
 .tl-mbar {
-    height: 4px; background: #1e1e1e; border-radius: 0 0 2px 2px;
+    height: 6px; background: #1e1e1e; border-radius: 0 0 2px 2px;
     position: relative; overflow: hidden; pointer-events: none;
 }
 .tl-mseg {
@@ -263,9 +279,19 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
     user-select: none;
 }
 #badge-motion svg { width: 11px; height: 11px; flex-shrink: 0; transition: fill 0.2s; }
-#badge-motion.motion-on  { color: #ef5350; border-color: rgba(239,83,80,0.6); }
-#badge-motion.motion-on svg { fill: #ef5350; }
-#badge-motion:hover { opacity: 0.85; }
+#badge-motion.motion-on      { color: #ef5350; border-color: rgba(239,83,80,0.6); }
+#badge-motion.motion-on svg  { fill: #ef5350; }
+/* offline: feature configured but stream down — show badge dimmed, no pointer */
+#badge-motion.motion-offline { color: #555; border-color: rgba(80,80,80,0.4); cursor: default; opacity: 0.6; }
+#badge-motion:not(.motion-offline):hover { opacity: 0.85; }
+
+/* ── Motion MJPEG overlay ── */
+#motion-overlay {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; display: none; z-index: 4;
+    background: #000;
+}
+#motion-overlay.show { display: block; }
 
 /* ── Custom player control bar (YouTube-style) ── */
 #player-controls-bar {
@@ -388,6 +414,30 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
     width: 14px; height: 14px; flex-shrink: 0; opacity: 0;
 }
 .qm-item.active .qm-check { opacity: 1; }
+.qm-item .qm-info {
+    font-size: 0.68rem; color: #888; margin-left: auto;
+    white-space: nowrap; flex-shrink: 0;
+}
+.qm-item.active .qm-info { color: #aaa; }
+.qm-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    display: inline-block;
+}
+/* dot after label name — push it right against the info text */
+.qm-dot-right { margin-left: 4px; }
+.qm-dot-on  { background: #43a047; }
+.qm-dot-off { background: #b71c1c; }
+/* Transport section divider */
+.qm-section {
+    padding: 5px 12px 3px; color: #666; font-size: 0.65rem;
+    text-transform: uppercase; letter-spacing: 0.07em;
+    border-top: 1px solid #2a2a2a; margin-top: 2px; pointer-events: none;
+}
+/* quality fetch status */
+#qual-status {
+    font-size: 0.7rem; color: #888;
+    min-height: 1.2em;
+}
 /* spacer */
 .pcb-spacer { flex: 1; }
 
@@ -500,6 +550,8 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                     </svg>
                     <span>Đã dừng</span>
                 </div>
+                <!-- Motion MJPEG overlay -->
+                <img id="motion-overlay" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
                 <div id="player-error">
                     <svg viewBox="0 0 24 24" fill="none" stroke="#ef9a9a" stroke-width="1.8" stroke-linecap="round">
                         <circle cx="12" cy="12" r="10"/>
@@ -520,8 +572,8 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                         </svg>
                         REPLAY
                     </div>
-                    <!-- MOTION toggle button -->
-                    <div id="badge-motion" class="player-badge show" title="Motion detection (click to toggle)">
+                    <!-- MOTION toggle button (hidden until camera reports enableMotion=true) -->
+                    <div id="badge-motion" class="player-badge" title="Xem luồng phân tích motion">
                         <svg viewBox="0 0 24 24" fill="#777" xmlns="http://www.w3.org/2000/svg">
                             <path d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zM9.8 8.9L7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/>
                         </svg>
@@ -589,11 +641,19 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                 <label class="ctrl-label" for="camera-id">Camera ID</label>
                 <input id="camera-id"    class="ctrl-input" type="text" placeholder="camera-id">
 
-                <label class="ctrl-label" for="stream-id">Stream ID</label>
-                <input id="stream-id"    class="ctrl-input" type="text" placeholder="stream-id">
-
                 <label class="ctrl-label" for="media-domain">Media Server</label>
                 <input id="media-domain" class="ctrl-input" type="text" value="http://localhost:8080">
+
+                <label class="ctrl-label" for="auth-token">Token</label>
+                <input id="auth-token"   class="ctrl-input" type="text" placeholder="Bearer ... (tuỳ chọn)">
+
+                <label class="ctrl-label">Chất lượng</label>
+                <div style="display:flex;flex-direction:column;gap:3px">
+                    <span id="qual-status">Nhập Camera ID và Domain rồi nhấn Load</span>
+                    <button id="btn-fetch-streams" class="btn" style="padding:5px 10px;background:#1565c0;font-size:0.78rem">Load Streams</button>
+                </div>
+                <!-- hidden: set by quality picker -->
+                <input id="stream-id" type="hidden" value="">
 
                 <label class="ctrl-label">Mode</label>
                 <div class="mode-switch">
@@ -601,7 +661,7 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                     <button id="mode-replay" class="mode-btn">Replay</button>
                 </div>
 
-                <div class="ctrl-actions">
+                <div class="ctrl-actions" style="display:none">
                     <button id="btn-play" class="btn">Play</button>
                     <button id="btn-stop" class="btn">Stop</button>
                 </div>
@@ -626,6 +686,11 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                 <span><span class="tl-leg-mot"></span>Motion</span>
             </div>
             <div id="timeline"></div>
+            <!-- Device statistic JSON panel -->
+            <div id="device-stat-panel">
+                <div class="ds-header">Device Statistic</div>
+                <pre id="device-stat-json">Chưa tải — nhấn Load Streams để xem</pre>
+            </div>
         </div>
 
     </div>
