@@ -127,10 +127,18 @@ using SeekInvoker = std::function <void(const int64_t &)>;
 extern const std::string kBroadcastMediaSeeked;
 #define BroadcastMediaSeekedArgs const MediaTuple &args, const uint64_t &stamp, const Broadcast::SeekInvoker &invoker, SockInfo &sender
 
-using Seek2Invoker = std::function <void(const uint64_t&, const std::map<uint64_t, std::string> &)>;
+// Inner map: stream_id → file_path (multiple streams can share the same timestamp)
+using Seek2Invoker = std::function<void(const uint64_t&, const std::map<std::string, std::map<uint64_t, std::string>> &)>;
 // Broadcast for seeking rtsp/rtmp/http-flv events. Control playback seeking through this event.
 extern const std::string kBroadcastMediaSeeked2;
 #define BroadcastMediaSeeked2Args const MediaTuple& args, const uint64_t &stamp, const uint64_t &max_duration, const Broadcast::Seek2Invoker &invoker
+
+// Broadcast to query the stream quality map (PrimaryStream=0 → hi, SecondaryStream=1 → lo)
+// for a given device_id. Used by Mp4ReaderByApp when cameras are offline.
+// Invoker is called with map<int/*StreamType*/, string/*stream_id*/>.
+using StreamQualityInvoker = std::function<void(const std::map<int, std::string> &)>;
+extern const std::string kBroadcastGetStreamQuality;
+#define BroadcastGetStreamQualityArgs const std::string &vhost, const std::string &device_id, const Broadcast::StreamQualityInvoker &invoker
 
 // Broadcast for restart server events. Control server restarting through this event.
 extern const std::string kBroadcastRestartServer;

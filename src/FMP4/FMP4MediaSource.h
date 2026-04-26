@@ -61,10 +61,19 @@ public:
     /**
      * Set the fmp4 init segment
      * @param str init segment
+     * If the ring buffer already exists (clients already connected), do NOT recreate it —
+     * instead broadcast the new init segment to all connected readers (supports codec change).
      */
     void setInitSegment(std::string str) {
         _init_segment = std::move(str);
-        createRing();
+        if (!_ring) {
+            createRing();
+        } else {
+            // Notify existing readers to re-send init segment (e.g. codec change).
+            // Any(shared_ptr<T>) constructor calls set<T>() which stores _type=typeid(T)=typeid(string),
+            // so setMessageCB's data.is<std::string>() check correctly returns true.
+            _ring->sendMessage(toolkit::Any(std::make_shared<std::string>(_init_segment)));
+        }
     }
 
     /**
@@ -96,7 +105,9 @@ public:
      */
     void clearCache() override {
         PacketCache<FMP4Packet>::clearCache();
-        _ring->clearCache();
+        if (_ring) {
+            _ring->clearCache();
+        }
     }
 
 private:

@@ -55,6 +55,16 @@ public:
 protected:
     virtual MP4FileIO::Writer createWriter() = 0;
 
+    /**
+     * Seed the relative stamp of all tracks with 'offset' (milliseconds).
+     * Called after resetTracks()+addTrackCompleted() for VOD to ensure timestamps
+     * continue from where the previous segment left off rather than restarting at 0.
+     * The Stamp's first deltaStamp() call returns 0 (initialisation rule), so the
+     * pre-seeded _relative_stamp is used verbatim for the first frame and subsequent
+     * frames accumulate normally from there.
+     */
+    void seedStampOffsets(int64_t offset_ms);
+
 private:
     void stampSync();
 

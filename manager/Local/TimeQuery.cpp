@@ -33,7 +33,9 @@ TimeQuery::~TimeQuery() {
 }
 
 bool TimeQuery::seekTo(uint64_t seek_stamp) {
-    auto pos_time = _demuxer->seekTo(seek_stamp);
+    GET_CONFIG(uint64_t, max_second, Protocol::kMP4MaxSecond);
+    auto efficient_seek_stamp = seek_stamp > (max_second * 2) ? seek_stamp - (max_second * 2) : 0;
+    auto pos_time = _demuxer->seekTo(efficient_seek_stamp);
     if (pos_time < 0) {
         return false;
     }
@@ -44,7 +46,9 @@ bool TimeQuery::seekTo(uint64_t seek_stamp) {
 
 bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const TimeBlockImp &cb) {
     bool eof = false;
-    while (!eof && end_stamp > getCurrentStamp()) {
+    GET_CONFIG(uint64_t, max_second, Protocol::kMP4MaxSecond);
+    auto efficient_end_stamp = end_stamp + (max_second * 2);
+    while (!eof && efficient_end_stamp > getCurrentStamp()) {
         TimeBlock block;
         _demuxer->readBlock(block, eof);
         if (!eof) {
@@ -69,7 +73,19 @@ void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const TimeBlockI
         if (!seekTo(start_time)) {
             return;
         }
-        readBlockList(start_time, end_time, cb);
+        // Blocks from multiple streams arrive interleaved (not sorted by start_time).
+        // Collect all, sort by start_time, then invoke cb so merge logic in callers
+        // (which only looks at the last element) always works correctly.
+        vector<TimeBlock> collected;
+        readBlockList(start_time, end_time, [&](const TimeBlock &block) {
+            collected.push_back(block);
+        });
+        sort(collected.begin(), collected.end(), [](const TimeBlock &a, const TimeBlock &b) {
+            return a.start_time() < b.start_time();
+        });
+        for (auto &block : collected) {
+            cb(block);
+        }
     }
 }
 
@@ -90,10 +106,13 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 }
                 if (!result.empty()) {
                     TimeRange &last = result.back();
+                    uint64_t last_start = last.startTime;
                     uint64_t last_end = last.startTime + last.duration;
 
                     if (block_start_time <= last_end + 1) {
+                        uint64_t new_start = MIN(last_start, block_start_time);
                         uint64_t new_end = MAX(last_end, block_end_time);
+                        last.startTime = new_start;
                         last.duration = static_cast<int>(new_end - last.startTime);
                         return;
                     }
@@ -124,10 +143,13 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
 
                 if (!range_map.empty()) {
                     TimeRange &last = range_map.back();
+                    uint64_t last_start = last.startTime;
                     uint64_t last_end = last.startTime + last.duration;
 
                     if (block_start_time <= last_end + 1) {
+                        uint64_t new_start = MIN(last_start, block_start_time);
                         uint64_t new_end = MAX(last_end, block_end_time);
+                        last.startTime = new_start;
                         last.duration = static_cast<int>(new_end - last.startTime);
                         return;
                     }
@@ -225,7 +247,9 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     auto &range_map = result[stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
                     auto chunk_start = current;
                     if (!range_map.empty() && range_map.back().startTime + range_map.back().duration + 1 >= chunk_start) {
+                        uint64_t new_start = MIN(range_map.back().startTime, chunk_start);
                         uint64_t new_end = MAX(range_map.back().startTime + range_map.back().duration, chunk_start + chunk);
+                        range_map.back().startTime = new_start;
                         range_map.back().duration = static_cast<uint32_t>(new_end - range_map.back().startTime);
                     } else {
                         range_map.push_back({chunk_start, chunk});

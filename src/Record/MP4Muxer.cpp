@@ -66,6 +66,12 @@ void MP4MuxerInterface::resetTracks() {
     _tracks.clear();
 }
 
+void MP4MuxerInterface::seedStampOffsets(int64_t offset_ms) {
+    for (auto &pr : _tracks) {
+        pr.second.stamp.setRelativeStamp(offset_ms);
+    }
+}
+
 void MP4MuxerInterface::flush() {
     for (auto &pr : _tracks) {
         pr.second.merger.flush();

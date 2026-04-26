@@ -431,8 +431,8 @@ bool HttpSession::checkLiveStreamFMP4(const function<void(bool close)> &cb) {
             strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
         });
         _fmp4_reader->setMessageCB([weak_self](const Any &data) {
-            // Receive new init segment broadcast when tracks change (e.g. codec/resolution change)
-            // Any(std::make_shared<std::string>(...)) stores typeid(std::string), NOT typeid(shared_ptr<string>)
+            // Receive new init segment broadcast when tracks change (e.g. codec/resolution change).
+            // FMP4MediaSource::setInitSegment sends toolkit::Any(_init_segment) — stored type is std::string.
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
@@ -1228,11 +1228,11 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
 }
 
 // FMP4 live stream (app-level, no stream name required)
-// URL format: http://vhost-url:port/media/app/live.mp4?duration=xx&quality=hi|lo|auto&prefered=hi|lo
+// URL format: http://vhost-url:port/media/app.live.mp4?duration=xx&quality=hi|lo|auto&prefered=hi|lo
 bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void(bool close)> &fmp4_list) {
     auto dur_sec  = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["duration"].data()));
     auto quality  = _parser.getUrlArgs().find("quality") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["quality"]  : "auto";
-    auto prefered = _parser.getUrlArgs().find("prefered") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["prefered"] : "lo";
+    auto prefered = _parser.getUrlArgs().find("prefered") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["prefered"] : "hi";
     return checkLiveStreamByApp(FMP4_SCHEMA, "/media", ".live.mp4", [this, fmp4_list, dur_sec, quality, prefered](const vector<MediaSource::Ptr> &list_src) {
         // Find a source whose MediaTuple.params contains quality=<target>
         auto findByQuality = [&](const string &target) -> MediaSource::Ptr {
@@ -1397,7 +1397,7 @@ bool HttpSession::checkLiveStreamHlsByApp() {
 
             KeyValue header;
             header["Cache-Control"] = "no-store";
-            sendResponse(200, close_flag, "application/x-mpegURL", header, std::make_shared<HttpStringBody>(playlist));
+            sendResponse(200, close_flag, "application/vnd.apple.mpegurl", header, std::make_shared<HttpStringBody>(playlist));
         });
 }
 

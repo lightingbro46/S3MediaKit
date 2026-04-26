@@ -3350,24 +3350,6 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/statistic", [](API_ARGS_MAP_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_READ_MSERVER_PERMISSION();
-        CHECK_ARGS_("mediaServerId");
-
-        string id = allArgs["mediaServerId"];
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        if (id != mediaServerId) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
-            return;
-        }
-
-        getServerStatisticJson([=](Json::Value &data) mutable {
-            val["data"] = data;
-            invoker(200, headerOut, val.toStyledString());
-        });
-    });
-
     static auto findPlaybackStream = [](MediaSource::Ptr &ret, const string &url_in) {
         MediaInfo info_in;
         info_in.parse(url_in);

@@ -59,7 +59,28 @@ public:
 
     void addTrackCompleted() override {
         MP4MuxerMemory::addTrackCompleted();
+        // Restore DTS continuity after a track reset (e.g. codec/resolution change
+        // during VOD playback across segment boundaries).  Without this, the fresh
+        // Stamp objects start at relative_stamp=0, so the first IDR of the new
+        // segment gets dts_out=0 and overwrites the MSE buffer at t=0, freezing video.
+        if (_pending_dts_offset > 0) {
+            seedStampOffsets(_pending_dts_offset);
+            _pending_dts_offset = 0;
+        }
         _media_src->setInitSegment(getInitSegment());
+    }
+
+    void resetTracks() override {
+        // Capture current timeline position BEFORE clearing tracks, so we can
+        // re-seed the new Stamp objects in addTrackCompleted().
+        _pending_dts_offset = static_cast<int64_t>(getDuration());
+        DebugL << "FMP4Muxer resetTracks: saving dts_offset=" << _pending_dts_offset << "ms";
+        // Flush any pending segment data before resetting muxer state
+        try { MP4MuxerMemory::flush(); } catch (...) {}
+        // Reset muxer state (clears _init_segment, _memory_file, all tracks)
+        MP4MuxerMemory::resetTracks();
+        // Clear GOP cache so readers wait for the incoming new moov box
+        _media_src->clearCache();
     }
 
 protected:
@@ -75,6 +96,7 @@ protected:
 private:
     bool _enabled = true;
     bool _clear_cache = false;
+    int64_t _pending_dts_offset = 0; // DTS offset saved before resetTracks(), applied in addTrackCompleted()
     ProtocolOption _option;
     FMP4MediaSource::Ptr _media_src;
 };

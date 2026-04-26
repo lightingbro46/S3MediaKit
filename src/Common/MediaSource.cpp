@@ -535,7 +535,7 @@ bool equalMediaTuple(const MediaTuple& a, const MediaTuple& b) {
     return a.vhost == b.vhost && a.app == b.app && a.stream == b.stream;
 }
 
-static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4) {
+static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &vhost_in, const string &app, const string &id, const string &params, bool from_mp4) {
     string vhost = vhost_in;
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
     if(vhost.empty() || !enableVhost){
@@ -554,7 +554,7 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
     if(!results.size() && from_mp4 && schema != HLS_SCHEMA){
         // If the media source is not found, read mp4 to create one
         // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
-        auto ret = MediaSource::createFromMP4(schema, vhost, app, id);
+        auto ret = MediaSource::createFromMP4ByApp(schema, vhost, app, id, params);
         if (ret) {
             results.emplace_back(ret);
         }
@@ -564,7 +564,7 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
 }
 
 static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, bool retry, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
-    auto results = findByApp_l(info.schema, info.vhost, info.app, info.stream, true);
+    auto results = findByApp_l(info.schema, info.vhost, info.app, info.stream, info.params, true);
     if (!results.empty() || !retry) {
         cb(std::move(results));
         return;
@@ -638,6 +638,27 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
 #ifdef ENABLE_MP4
     try {
         MediaTuple tuple = {vhost, app, stream, ""};
+        auto reader = std::make_shared<MP4Reader>(tuple, file_path);
+        reader->startReadMP4();
+        return MediaSource::find(schema, vhost, app, stream);
+    } catch (std::exception &ex) {
+        WarnL << ex.what();
+        return nullptr;
+    }
+#else
+    WarnL << "Creating MP4 on demand failed. Please open the \"ENABLE_MP4\" option when compiling";
+    return nullptr;
+#endif //ENABLE_MP4
+}
+
+MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const string &vhost, const string &app, const string &stream, const string &params, const string &file_path , bool check_app){
+    GET_CONFIG(string, appName, Record::kAppName);
+    if (check_app && app != appName) {
+        return nullptr;
+    }
+#ifdef ENABLE_MP4
+    try {
+        MediaTuple tuple = {vhost, app, stream, params};
         auto reader = std::make_shared<MP4Reader>(tuple, file_path);
         reader->startReadMP4();
         return MediaSource::find(schema, vhost, app, stream);

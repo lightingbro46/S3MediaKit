@@ -123,7 +123,7 @@ void installManagerHook () {
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaSeeked2, [](BroadcastMediaSeeked2Args) {
         TimeQuery::Ptr query;
         uint64_t duration = 0;
-        std::map<uint64_t, std::string> files;
+        std::map<std::string, std::map<uint64_t, std::string>> files;
         try {
             query = make_shared<TimeQuery>(args);
         } catch(...) {}
@@ -143,15 +143,36 @@ void installManagerHook () {
             });
             // find offset duration in date if this stamp has data
             if (found) {
+                // Use first_range.duration — already a merged, de-duplicated span
+                // covering all streams.  Summing block.time_len() would double-count
+                // when both hi and lo blocks exist for the same timestamps.
+                duration = first_range.duration;
                 query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
                     for (const auto &block : ret) {
-                        duration += block.time_len();
-                        files.emplace(block.start_time(), decodeBase64(block.file_path()));
+                        files[block.stream()][block.start_time()] = decodeBase64(block.file_path());
                     }
                 });
             }
         }
         invoker(duration, files);
+    });
+
+    // Query stream quality map (PrimaryStream→hi stream_id, SecondaryStream→lo stream_id)
+    // for a device that may currently be offline. Reads info.txt via StatisticRecorder.
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetStreamQuality, [](BroadcastGetStreamQualityArgs) {
+        auto stats_imp = StatisticRecorder::Instance().getRecorder(device_id);
+        if (!stats_imp) {
+            invoker({});
+            return;
+        }
+        auto params = stats_imp->getParams();
+        std::map<int, std::string> result;
+        for (auto &kv : params.stream_map) {
+            if (!kv.second.stream_id.empty()) {
+                result[kv.first] = kv.second.stream_id;
+            }
+        }
+        invoker(result);
     });
 #endif // ENABLE_MP4
 
@@ -647,11 +668,11 @@ static Json::Value exampleJson() {
     device["priMediaServerId"] = mINI::Instance()[General::kMediaServerId];
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
-    device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
-    // device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
+    // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
+    device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
     device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
-    device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    // device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
+    // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
+    device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
     device["motionDetectConfig"]["numOfRow"] = 32;
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
