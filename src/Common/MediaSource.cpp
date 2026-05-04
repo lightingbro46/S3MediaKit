@@ -8,6 +8,7 @@
 #include "Common/Parser.h"
 #include "Common/MultiMediaSourceMuxer.h"
 #include "Record/MP4Reader.h"
+#include "Record/MergedMP4Reader.h"
 #include "PacketCache.h"
 
 using namespace std;
@@ -551,13 +552,10 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
     MediaSource::for_each_media([&](const MediaSource::Ptr &src) { results.emplace_back(src); },
         schema, vhost, app, "" /*empty = all streams*/);
 
-    if(!results.size() && from_mp4 && schema != HLS_SCHEMA){
-        // If the media source is not found, read mp4 to create one
-        // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
+    if(!results.size() && from_mp4 && schema == FMP4_SCHEMA){
+        // Quality-aware dual-stream replay (FMP4 only, stream = "<app>/vod/<ts>")
         auto ret = MediaSource::createFromMP4ByApp(schema, vhost, app, id, params);
-        if (ret) {
-            results.emplace_back(ret);
-        }
+        if (ret) { results.emplace_back(ret); }
     }
 
     return results;
@@ -651,7 +649,7 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
 #endif //ENABLE_MP4
 }
 
-MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const string &vhost, const string &app, const string &stream, const string &params, const string &file_path , bool check_app){
+MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const string &vhost, const string &app, const string &stream, const string &params, bool check_app){
     GET_CONFIG(string, appName, Record::kAppName);
     if (check_app && app != appName) {
         return nullptr;
@@ -659,8 +657,8 @@ MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const str
 #ifdef ENABLE_MP4
     try {
         MediaTuple tuple = {vhost, app, stream, params};
-        auto reader = std::make_shared<MP4Reader>(tuple, file_path);
-        reader->startReadMP4();
+        auto reader = std::make_shared<MergedMP4Reader>(tuple);
+        reader->openForReplay();
         return MediaSource::find(schema, vhost, app, stream);
     } catch (std::exception &ex) {
         WarnL << ex.what();

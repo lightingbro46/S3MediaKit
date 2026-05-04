@@ -56,7 +56,6 @@ private:
     uint32_t getCurrentStamp();
     void setCurrentStamp(uint32_t stamp);
     bool seekTo(uint32_t stamp_seek);
-    void onTracksChanged(const std::vector<Track::Ptr> &new_tracks);
 
     void setup(const MediaTuple &tuple, const std::string &file_path, const ProtocolOption &option, toolkit::EventPoller::Ptr poller);
 

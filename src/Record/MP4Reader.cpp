@@ -42,7 +42,7 @@ void MP4Reader::setup(const MediaTuple &tuple, const std::string &file_path, con
     }
 
     _demuxer = std::make_shared<MultiMP4Demuxer>();
-    _demuxer->openMP4(_file_path, tuple.params);
+    _demuxer->openMP4(_file_path);
 
     if (tuple.stream.empty()) {
         return;
@@ -111,21 +111,6 @@ void MP4Reader::stopReadMP4() {
     _timer = nullptr;
 }
 
-void MP4Reader::onTracksChanged(const std::vector<Track::Ptr> &new_tracks) {
-    if (!_muxer) {
-        return;
-    }
-    _muxer->resetTracks();
-    _have_video = false;
-    for (auto &track : new_tracks) {
-        _muxer->addTrack(track);
-        if (track->getTrackType() == TrackVideo) {
-            _have_video = true;
-        }
-    }
-    _muxer->addTrackCompleted();
-}
-
 void MP4Reader::startReadMP4(uint64_t sample_ms, bool ref_self, bool file_repeat) {
     GET_CONFIG(uint32_t, sampleMS, Record::kSampleMS);
     setCurrentStamp(0);
@@ -135,16 +120,6 @@ void MP4Reader::startReadMP4(uint64_t sample_ms, bool ref_self, bool file_repeat
         while (!_muxer->isAllTrackReady() && readNextSample());
         // Register and then switch OwnerPoller
         _muxer->setMediaListener(strong_self);
-    }
-
-    if (_demuxer) {
-        weak_ptr<MP4Reader> weak_self = strong_self;
-        _demuxer->setOnTracksChangedCB([weak_self](const std::vector<Track::Ptr> &new_tracks) {
-            if (auto self = weak_self.lock()) {
-                lock_guard<recursive_mutex> lck(self->_mtx);
-                self->onTracksChanged(new_tracks);
-            }
-        });
     }
 
     auto timer_sec = (sample_ms ? sample_ms : sampleMS) / 1000.0f;

@@ -1164,7 +1164,8 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
 
     // note: app are required for live stream, but stream name can be empty (e.g. for motion stream)
     GET_CONFIG(string, appRecord, Record::kAppName)
-    if (_media_info.app.empty() || (_media_info.app == appRecord && _media_info.stream.empty())) {
+    auto is_replay = _media_info.app == appRecord;
+    if (_media_info.app.empty() || (is_replay && _media_info.stream.empty())) {
         // URL is invalid
         return false;
     }
@@ -1233,7 +1234,7 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void(bool close)>
     auto dur_sec  = static_cast<uint64_t>(atoll(_parser.getUrlArgs()["duration"].data()));
     auto quality  = _parser.getUrlArgs().find("quality") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["quality"]  : "auto";
     auto prefered = _parser.getUrlArgs().find("prefered") != _parser.getUrlArgs().end() ? _parser.getUrlArgs()["prefered"] : "hi";
-    return checkLiveStreamByApp(FMP4_SCHEMA, "/media", ".live.mp4", [this, fmp4_list, dur_sec, quality, prefered](const vector<MediaSource::Ptr> &list_src) {
+    return checkLiveStreamByApp(FMP4_SCHEMA, "/media", ".live2.mp4", [this, fmp4_list, dur_sec, quality, prefered](const vector<MediaSource::Ptr> &list_src) {
         // Find a source whose MediaTuple.params contains quality=<target>
         auto findByQuality = [&](const string &target) -> MediaSource::Ptr {
             for (auto &src : list_src) {
@@ -1254,6 +1255,10 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void(bool close)>
             selected = findByQuality(prefered);
             if (!selected) {
                 selected = findByQuality(prefered == "hi" ? "lo" : "hi");
+            }
+            // use "auto" for replay stream without quality specified in params
+            if (!selected) {
+                selected = findByQuality("auto");
             }
         }
 
@@ -1295,7 +1300,7 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void(bool close)>
             if (data.is<std::string>()) {
                 auto &init_seg = data.get<std::string>();
                 if (!init_seg.empty()) {
-                    WarnL << "Received new init segment, length: " << init_seg.size();
+                    DebugL << "Received new init segment, length: " << init_seg.size();
                     strong_self->onWrite(std::make_shared<BufferString>(init_seg), true);
                 }
             }

@@ -186,10 +186,10 @@ uint64_t MP4Demuxer::getDurationMS() const {
 
 /////////////////////////////////////////////////////////////////////////////////
 
-void MultiMP4Demuxer::openMP4(const string &files_string, const string &params) {
+void MultiMP4Demuxer::openMP4(const string &files_string) {
     if (files_string.find("/vod/") != string::npos) {
         _use_timeline = true;
-        openMP4WithTimeline(files_string, params);
+        openMP4WithTimeline(files_string);
         return;
     }
 
@@ -234,8 +234,6 @@ void MultiMP4Demuxer::closeMP4() {
     _demuxers.clear();
     _it = _demuxers.end();
     _tracks.clear();
-    _demuxer_stop_offsets.clear();
-    _demuxer_start_cuts.clear();
 }
 
 int64_t MultiMP4Demuxer::seekTo(int64_t stamp_ms) {
@@ -290,92 +288,58 @@ std::vector<Track::Ptr> MultiMP4Demuxer::getTracks(bool trackReady) const {
     return ret;
 }
 
-static int64_t findSegmentBatch(map<string, map<uint64_t, string>> &files, const MediaTuple& tuple, uint64_t stamp, uint64_t max_duration) {
-    // Query for the next segment starting from start_time, and add it to _demuxers if found
-    // Returns the start time of the next segment, or -1 if no more segment is found
+static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 300) {
     uint64_t duration = 0;
-    Broadcast::Seek2Invoker invoker = [&](const uint64_t &duration_, const map<string, map<uint64_t,string>> &ret) {
+    map<string, map<uint64_t, string>> multi_files;
+    Broadcast::Seek2Invoker invoker = [&](const uint64_t &duration_, const map<string, map<uint64_t, string>> &ret) {
         duration = duration_;
-        files = ret;
+        multi_files = ret;
     };
     auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
     if (!flag) {
         // No one is listening to this event
-        WarnL << "No listener for BroadcastMediaSeeked2 event, cannot find segment batch for tuple=" << tuple.shortUrl() << " stamp=" << stamp;
+    }
+    // Flatten: prefer stream that matches tuple.stream; otherwise take the first
+    if (!multi_files.empty()) {
+        auto it = tuple.stream.empty() ? multi_files.begin() : multi_files.find(tuple.stream);
+        if (it == multi_files.end()) it = multi_files.begin();
+        files = it->second;
     }
     return duration;
 }
 
-void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path, const std::string &params) {
+static uint64_t findSegmentDuration(const MediaTuple &tuple, const uint64_t &stamp, const uint64_t &max_duration = 3600) {
+    uint64_t duration = 0;
+    Broadcast::Seek2Invoker invoker = [&](const uint64_t &ret, const map<string, map<uint64_t, string>> &) {
+        duration = ret;
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
+    if (!flag) {
+        // No one is listening to this event
+    }
+    return duration;
+}
+
+void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     auto prefix_path = findSubString(file_path.data(), nullptr, "/vod");
     auto suffix_path = findSubString(file_path.data(), "vod/", nullptr);
 
     auto tmp = split(prefix_path, "/");
-    string app = tmp[tmp.size() - 2];
-    string stream = tmp[tmp.size() - 1];
+    auto app = tmp[tmp.size() - 2];
+    auto stream = tmp[tmp.size() - 1];
+
+    CHECK(!app.empty() && !stream.empty());
+    MediaTuple tuple = { DEFAULT_VHOST, app, stream, "" };
     uint64_t start_time = stoll(suffix_path.data());
 
-    GET_CONFIG(string, app_name, Record::kAppName);
-    if (app == app_name) {
-        // URL was record/{app}/vod/{stamp} — stream segment lives under app
-        app = stream;
-        stream = "";
-    }
-    CHECK(!app.empty());
-    _stats.app = app;
-    _stats.start_time = start_time;
+    auto total_duration = findSegmentDuration(tuple, start_time);
+    int64_t offset = 0;
 
-    if (!params.empty()) {
-        auto kv = Parser::parseArgs(params);
-        if (kv.find("quality") != kv.end()) {
-            auto quality = kv["quality"];
-            if (quality == "hi" || quality == "lo") {
-                _stats.quality = quality;
-            }
-        }
-        if (kv.find("prefered") != kv.end()) {
-            auto prefered = kv["prefered"];
-            if (prefered == "hi" || prefered == "lo") {
-                _stats.prefered = prefered;
-            }
-        }
-    }
-
-    // Step 1: discover hi/lo stream IDs for this camera
-    if (stream.empty()) {
-        // If stream was not explicit in the URL, query for hi/lo stream IDs (multi-stream mode)
-        Broadcast::StreamQualityInvoker invoker = [&](const map<int, string> &m) {
-            auto it_hi = m.find(0); // PrimaryStream
-            if (it_hi != m.end()) _stats.hi_stream = it_hi->second;
-            auto it_lo = m.find(1); // SecondaryStream
-            if (it_lo != m.end()) _stats.lo_stream = it_lo->second;
-        };
-        string vhost = DEFAULT_VHOST;
-        NOTICE_EMIT(BroadcastGetStreamQualityArgs, Broadcast::kBroadcastGetStreamQuality, vhost, app, invoker);
-    } else {
-        // If stream was explicit in the URL, pin to it (single-stream mode)
-        _stats.hi_stream = stream;
-        _stats.lo_stream = "";
-        _stats.quality = "hi";
-    }
-
-    // Step 2: find the first batch of segments starting from start_time
-    // Use stream-level query for duration (stream="" is app-level query, covers all streams; duration is
-    // the merged TimeRange span so it is NOT double-counted across hi/lo streams
-    {
-        MediaTuple tuple = { DEFAULT_VHOST, app, stream, "" };
-        map<string, map<uint64_t, string>> files;
-        auto total_duration = findSegmentBatch(files, tuple, start_time, 3600);
-        DebugL << "Found initial segment batch for tuple=" << tuple.shortUrl() << " start=" << start_time << " total_duration=" << total_duration;
-        if (total_duration > 0) {
-            _stats.tuple = tuple;
-            _stats.total_dur = total_duration;
-            prefetchNextSegmentBatch(tuple, start_time, 300);
-        }
-        if (_next_batch.ready) {
-            // If prefetch is already ready (e.g. no listener or very fast response), we can open the first batch immediately
-           openNextSegmentBatch();
-        }
+    if (total_duration > 0) {
+        _stats.tuple = tuple;
+        _stats.start_time = start_time;
+        _stats.total_dur = total_duration;
+        offset = findNextSegment(true);
     }
 
     CHECK(!_demuxers.empty());
@@ -386,463 +350,101 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path, const st
         _tracks.emplace(clone_track->getIndex(), clone_track);
         DebugL << "track index: " << track->getIndex() << " -> " << clone_track->getIndex();
     }
+
+    if (offset >= 0) {
+        _it->second->seekTo(offset * 1000);
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Opens each unique file path once, reads ms-accurate duration and caches the
-// opened MP4Demuxer in entry.demuxer so openSegmentDemuxers can reuse it
-// without reopening.
-// ---------------------------------------------------------------------------
-static uint64_t loadAllSegment(vector<SegmentEntry> &raw_segs) {
+int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_duration) {
+    // clear map
+    if (_demuxers.size()) {
+        _demuxers.clear();
+        _it = _demuxers.end();
+    }
+    
+    uint64_t start_segment = first_segment ? _stats.start_time : _stats.next_time;
+    uint64_t next_time = 0;
+
+    if (start_segment <= 0) {
+        return -1;
+    }
+
+    map<uint64_t, string> files;
+    auto duration = findSegmentFiles(files, _stats.tuple, start_segment, max_duration * 2);
+    if (duration <= 0) {
+        return -1;
+    }
+    uint64_t offset = 0;
     uint64_t duration_ms = 0;
-    for (auto &entry : raw_segs) {
-        if (entry.file_path.empty()) {
-            continue;
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        if (it == files.begin()) {
+            offset = (start_segment >= it->first) ? (start_segment - it->first) : 0;
+            if (first_segment) {
+                _stats.first_time = it->first;
+            } else {    
+                duration_ms = (it->first - _stats.first_time) * 1000;
+            }
+        } else if (it->first - start_segment >= max_duration) {
+            break;
         }
         auto demuxer = std::make_shared<MP4Demuxer>();
-        demuxer->openMP4(entry.file_path);
-        entry.dur_ms = demuxer->getDurationMS();
-        entry.demuxer = demuxer;
-        entry.start_cut = 0;
-        entry.stop_offset = entry.dur_ms;
-        // Note: duration_ms is the sum of all segments' duration, except start_cut/stop_cut
-        // the actual played duration may be shorter after applying start_cut/stop_cut, but that is handled in readFrameWithTimeline
-        duration_ms += entry.dur_ms;
+        demuxer->openMP4(it->second);
+        _demuxers.emplace(duration_ms, demuxer);
+        duration_ms += demuxer->getDurationMS();
+        next_time = it->first + static_cast<uint64_t>(demuxer->getDurationMS() / 1000);
     }
-    return duration_ms;
-}
-
-std::vector<SegmentEntry> buildSortedSegmentList(map<string, map<uint64_t, string>> &files, const string &hi_stream, const string &lo_stream, const string &quality, const string &prefered, const uint64_t &start_time) {
-    // ------------------------------------------------------------------
-    // 1. Extract raw hi / lo lists (stamp-sorted, dur=0 yet)
-    // files layout: stream_id → { unix_ts_sec → file_path }
-    // ------------------------------------------------------------------
-    auto extractStream = [&](const string &stream_id, const string &qual) {
-        vector<SegmentEntry> out;
-        auto sit = files.find(stream_id);
-        if (sit == files.end()) return out;
-        for (auto &tv : sit->second) {   // tv.first = unix_ts, tv.second = path
-            SegmentEntry e;
-            e.stamp     = tv.first;
-            e.quality   = qual;
-            e.file_path = tv.second;
-            out.push_back(move(e));
-        }
-        // inner map is std::map so already sorted by ts
-        return out;
-    };
-
-    // ------------------------------------------------------------------
-    // 2. Single-quality filter (no gap-fill needed)
-    // ------------------------------------------------------------------
-    if (quality == "hi" || quality == "lo") {
-        string stream_id  = (quality == "hi") ? hi_stream : lo_stream;
-        vector<SegmentEntry> result = extractStream(stream_id, quality);
-        loadAllSegment(result);
-        return result;
-    }
-
-    // ------------------------------------------------------------------
-    // 3. quality == "auto" : gap-fill merge
-    // ------------------------------------------------------------------
-    vector<SegmentEntry> hi_list = extractStream(hi_stream, "hi");
-    vector<SegmentEntry> lo_list = extractStream(lo_stream, "lo");
-
-    // Load ms-accurate durations for both lists
-    loadAllSegment(hi_list);
-    loadAllSegment(lo_list);
-
-    // Helper: end time of a segment in unix-ms (stamp is seconds → *1000 + dur_ms)
-    auto getSegEndMs = [](const SegmentEntry &e) -> uint64_t {
-        return e.stamp * 1000 + e.dur_ms;
-    };
-    // ------------------------------------------------------------------
-    // 3a. Find hi files and create trimmed
-    //     SegmentEntries with start_cut / stop_cut set.
-    //     start_cut is IDR-probed; stop_cut is a plain ms boundary.
-    // ------------------------------------------------------------------
-    vector<SegmentEntry> hi_fill;
-    for (auto &entry : hi_list) {
-        uint64_t seg_start_ms = entry.stamp * 1000;
-        uint64_t seg_end_ms = getSegEndMs(entry);
-        if (seg_end_ms <= start_time * 1000 + 1000) { // allow 1s gap tolerance to avoid over-fragmentation; also skip if no overlap at all
-            // No overlap
-            continue;
-        }
-        SegmentEntry filled = entry; // copy
-        // Trim to start_time boundary
-        uint64_t raw_start_cut_ms = (start_time * 1000 > seg_start_ms) ? (start_time * 1000 - seg_start_ms) : 0;
-        if (raw_start_cut_ms > 0 && filled.demuxer) {
-            auto idr_cut = entry.demuxer->seekTo(raw_start_cut_ms);
-            if (idr_cut >= 0) {
-                filled.start_cut = idr_cut;
-            } else {
-                // IDR probe failed, fallback to raw ms cut
-                filled.start_cut = raw_start_cut_ms;
-            }
-        } else {
-            filled.start_cut = 0;
-        }
-        // stop_cut is not needed for hi files since they are the preferred quality and will not be cut short by any following file; 
-        // also simplifies gap-fill logic since we only need to consider lo files' stop_cut when filling gaps in hi timeline
-        filled.stop_offset = filled.dur_ms;
-        // Safety: seekTo may snap start_cut FORWARD past the stop boundary
-        // (e.g. next IDR is after gap.end_ms).  If so, this fill window has
-        // no decodable content — discard rather than causing unsigned underflow
-        // in (stop_cut - start_cut) downstream.
-        if (filled.start_cut >=  filled.stop_offset - 1000) { // allow 1s tolerance to avoid over-fragmentation; also skip if no usable content after cut
-            // No usable content after cut, skip this file
-            continue;
-        }
-        hi_fill.push_back(move(filled));
-    }
-
-    // ------------------------------------------------------------------
-    // 3b. Build gaps from the hi timeline
-    //     A gap is [gap_start_ms, gap_end_ms) in unix-ms where no hi file
-    //     provides coverage.
-    // ------------------------------------------------------------------
-    struct Gap { uint64_t start_ms; uint64_t end_ms; };
-    vector<Gap> gaps;
-    if (hi_fill.empty()) {
-        // Entire range is a gap; fill with lo
-        if (!lo_list.empty()) {
-            uint64_t gstart = lo_list.front().stamp > start_time ? (lo_list.front().stamp * 1000) : (start_time * 1000);
-            uint64_t gend   = getSegEndMs(lo_list.back());
-            gaps.push_back({ gstart, gend });
-        }
-    } else {
-        // Gaps before the first hi file
-        if (!lo_list.empty() && lo_list.front().stamp * 1000 < hi_fill.front().stamp * 1000) {
-            gaps.push_back({ lo_list.front().stamp > start_time ? (lo_list.front().stamp * 1000) : (start_time * 1000), hi_fill.front().stamp * 1000 });
-        }
-        // Gaps between consecutive hi files
-        for (size_t i = 0; i + 1 < hi_fill.size(); ++i) {
-            uint64_t end_current = getSegEndMs(hi_fill[i]);
-            uint64_t start_next = hi_fill[i + 1].stamp * 1000;
-            if (end_current < start_next - 1000) { // allow 1s gap tolerance to avoid over-fragmentation
-                gaps.push_back({ end_current, start_next });
-            }
-        }
-        // Gaps after the last hi file (only if lo extends beyond)
-        if (!lo_list.empty()) {
-            uint64_t end_last_hi = getSegEndMs(hi_fill.back());
-            uint64_t end_last_lo = getSegEndMs(lo_list.back());
-            if (end_last_lo > end_last_hi + 1000) { // allow 1s gap tolerance
-                gaps.push_back({ end_last_hi, end_last_lo });
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 3c. For each gap, find lo files that overlap it and create trimmed
-    //     SegmentEntries with start_cut / stop_cut set.
-    //     start_cut is IDR-probed; stop_cut is a plain ms boundary.
-    // ------------------------------------------------------------------
-    vector<SegmentEntry> lo_fill;
-    for (auto &gap : gaps) {
-        for (auto &entry : lo_list) {
-            uint64_t seg_start_ms = entry.stamp * 1000;
-            uint64_t seg_end_ms = getSegEndMs(entry);
-            if (seg_end_ms <= gap.start_ms + 1000 || seg_start_ms >= gap.end_ms - 1000) { // allow 1s gap tolerance to avoid over-fragmentation; also skip if no overlap at all
-                // No overlap
-                continue;
-            }
-            SegmentEntry filled = entry; // copy
-            // Trim to gap boundaries
-            // start_cut: offset into the lo file (ms).  IDR-probe to find the
-            // nearest IDR that the decoder can use immediately.
-            uint64_t raw_start_cut_ms = (gap.start_ms > seg_start_ms) ? (gap.start_ms - seg_start_ms) : 0; // todo: allow 500ms pre-roll for better IDR probe accuracy?
-            if (raw_start_cut_ms > 0 && filled.demuxer) {
-                auto idr_cut = entry.demuxer->seekTo(raw_start_cut_ms);
-                if (idr_cut >= 0) {
-                    filled.start_cut = idr_cut;
-                } else {
-                    // IDR probe failed, fallback to raw ms cut
-                    filled.start_cut = raw_start_cut_ms;
-                }
-            } else {
-                filled.start_cut = 0;
-            }
-            DebugL << "Gap fill: IDR probe for file " << entry.file_path << " raw_start_cut=" << raw_start_cut_ms << "ms -> idr_cut=" << filled.start_cut << "ms";
-            // stop_cut: end of the useful portion (ms into the lo file).
-            // No backward IDR probe needed — the file that follows starts with
-            // its own IDR (its start_cut is IDR-aligned or it starts at 0).
-            uint64_t raw_stop_cut_ms = (gap.end_ms < seg_end_ms) ? (gap.end_ms - seg_start_ms) : filled.dur_ms;
-            filled.stop_offset = raw_stop_cut_ms;
-            DebugL << "Gap fill: stop cut for file " << entry.file_path << " raw_stop_cut=" << raw_stop_cut_ms << "ms";
-            // Safety: seekTo may snap start_cut FORWARD past the stop boundary
-            // (e.g. next IDR is after gap.end_ms).  If so, this fill window has
-            // no decodable content — discard rather than causing unsigned underflow
-            // in (stop_cut - start_cut) downstream.
-            if (filled.start_cut >=  filled.stop_offset - 1000) { // allow 1s tolerance to avoid over-fragmentation; also skip if no usable content after cut
-                // No usable content after cut, skip this file
-                WarnL << "Gap fill: no usable content after cut for file " << entry.file_path << " start_cut=" << filled.start_cut << "ms stop_cut=" << filled.stop_offset << "ms, skipping this file";
-                continue;
-            }
-            lo_fill.push_back(move(filled));
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 3d. Merge hi + lo_fill, sort by: start time in unix-ms
-    //     For hi: start = stamp * 1000
-    //     For lo fill: start = stamp * 1000 + start_cut
-    // ------------------------------------------------------------------
-    vector<SegmentEntry> result;
-    result.insert(result.end(), hi_fill.begin(), hi_fill.end());
-    result.insert(result.end(), lo_fill.begin(), lo_fill.end());
-
-    // For hi files: start_cut=0 (always from beginning), stop_cut=0 (natural EOF)
-    // (already default 0)
-    sort(result.begin(), result.end(), [](const SegmentEntry &a, const SegmentEntry &b) {
-        uint64_t a_start = a.stamp * 1000 + a.start_cut;
-        uint64_t b_start = b.stamp * 1000 + b.start_cut;
-        return a_start < b_start;
-    });
-
-    // ── Diagnostic log: sorted segment list ──────────────────────────────────
-    DebugL << "[MultiMP4] buildSortedSegmentList: " << result.size() << " entries";
-    for (size_t i = 0; i < result.size(); ++i) {
-        const auto &e = result[i];
-        uint64_t eff_stop = (e.stop_offset > 0) ? e.stop_offset : e.dur_ms;
-        // Extract just the filename for readability
-        auto slash = e.file_path.rfind('/');
-        auto fname = (slash != string::npos) ? e.file_path.substr(slash + 1) : e.file_path;
-        DebugL << "[MultiMP4]  [" << i << "] " << e.quality
-              << " stamp=" << e.stamp << "s"
-              << " dur=" << e.dur_ms << "ms"
-              << " start_cut=" << e.start_cut << "ms"
-              << " stop_cut=" << e.stop_offset << "ms"
-              << "  " << fname;
-    }
-
-    return result;
-}
-
-void MultiMP4Demuxer::prefetchNextSegmentBatch(const MediaTuple &tuple, uint64_t start_time, uint64_t max_duration, bool seek) {
-    _next_batch.reset();
-    // Query next batch of files (all streams, ~5 min window)
-    map<string, map<uint64_t, string>> files;
-    auto duration = findSegmentBatch(files, tuple, start_time, max_duration);
-    if (duration == 0 || files.empty()) {
-        // No more segment found, do nothing
-        _next_batch.ready = true;
-        return;
-    }
-
-    // -------------------------------------------------------------------
-    // Build sorted, quality-filtered segment list
-    // -------------------------------------------------------------------
-    auto all_segs = buildSortedSegmentList(files, _stats.hi_stream, _stats.lo_stream, _stats.quality, _stats.prefered, start_time);
-    if (all_segs.empty()) {
-        // No valid segment found after processing, do nothing
-        _next_batch.ready = true;
-        return;
-    }
-    // Note: all_segs is sorted by effective start time (after applying start_cut)
-    uint64_t last_seg_end_ms = 0;
-    if (seek) {
-        // for seek, next batch should start from the seek position (start_time) rather than the end of the last batch
-        last_seg_end_ms = (start_time - _stats.start_time) * 1000;
-    } else if (!_demuxers.empty()) {
-        auto first_next_seg = all_segs.begin();
-        auto last_cur_seg = _current_batch.back();
-        if (first_next_seg->file_path == last_cur_seg.file_path) {
-            // update stop_offset for last current segment
-            last_cur_seg.stop_offset = first_next_seg->stop_offset;
-            _demuxer_stop_offsets[_demuxers.rbegin()->first] = first_next_seg->stop_offset;
-            // remove duplicate segment
-            all_segs.erase(first_next_seg);
-        } 
-        last_seg_end_ms = _demuxers.rbegin()->first + _demuxer_stop_offsets[_demuxers.rbegin()->first] - _demuxer_start_cuts[_demuxers.rbegin()->first];
-    }
-    auto next_seg_start_ms = last_seg_end_ms;
-    for (auto &entry : all_segs) {
-        if (entry.file_path.empty()) {
-            continue;
-        }
-        _next_batch.demuxers.emplace(last_seg_end_ms, entry.demuxer);
-        _next_batch.start_cuts.emplace(last_seg_end_ms, entry.start_cut);
-        _next_batch.stop_offsets.emplace(last_seg_end_ms, entry.stop_offset);
-
-        last_seg_end_ms += entry.stop_offset - entry.start_cut; // next file starts after the effective content of this file (after applying cuts)
-    }
-    _next_batch.segments = std::move(all_segs);
-    _next_batch.ready = true;
-
-    DebugL << "Prefetched next segment batch: " << _next_batch.demuxers.size() << " files, total duration ~" << (last_seg_end_ms - next_seg_start_ms) << "ms";
-}
-
-void MultiMP4Demuxer::openNextSegmentBatch() {
-    if (!_next_batch.ready) {
-        // Next batch is not ready yet, cannot open
-        return;
-    }
-    // Clear current batch data (if any) before swapping in the new batch to release old MP4Demuxers and free file handles as soon as possible
-    _demuxers.clear();
-    _demuxer_stop_offsets.clear();
-    _demuxer_start_cuts.clear();
-    _current_batch.clear();
-
-    // O(1) swap — no blocking I/O at boundary
-    _demuxers = std::move(_next_batch.demuxers);
-    _demuxer_stop_offsets = std::move(_next_batch.stop_offsets);
-    _demuxer_start_cuts = std::move(_next_batch.start_cuts);
-    _current_batch = std::move(_next_batch.segments);
-    _next_batch.reset();
-
-    // Set next_time for the following batch based on the end of the last segment in this batch
-    auto last_seg = _current_batch.back();
-    _stats.next_time = last_seg.stamp; // next batch should start from the begin of the last segment in this batch
-    DebugL << "Next batch next_time set to " << _stats.next_time;
+    
+    _stats.next_time = next_time;
+    return offset;
 }
 
 int64_t MultiMP4Demuxer::seekToWithTimeline(int64_t stamp_ms) {
     if (stamp_ms >= (int64_t)getDurationMS()) {
         return -1;
     }
-
-    // Find target_unix in current batch; if not found, prefetch next batch until found or no more batch
-    if (!_demuxers.empty()) {
-        // Find the demuxer that contains target_unix
-        for (auto &pr : _demuxers) {
-            uint64_t seg_start_ms = pr.first;
-            uint64_t seg_end_ms = pr.first + _demuxer_stop_offsets[pr.first] - _demuxer_start_cuts[pr.first];
-            if (stamp_ms >= (int64_t)seg_start_ms && stamp_ms < (int64_t)seg_end_ms) {
-                // Found the target demuxer in current batch
-                _it = _demuxers.find(pr.first);
-                // Seek to the correct offset within the file
-                auto start_cut = _demuxer_start_cuts[pr.first];
-                auto seek_offset = start_cut + (stamp_ms - seg_start_ms);
-                return pr.first + _it->second->seekTo(seek_offset);
-            }
-        }
-    }
-
-    // Compute the target unix timestamp
-    uint64_t target_unix = _stats.start_time + (uint64_t)(stamp_ms / 1000);
-    _stats.next_time = target_unix;
-
-    prefetchNextSegmentBatch(_stats.tuple, target_unix, 300, true);
-    if (_next_batch.ready) {
-        // If prefetch is already ready (e.g. no listener or very fast response), we can open the first batch immediately
-        openNextSegmentBatch();
-    }
-    if (_demuxers.empty()) {
-        // No segment available, signal EOF
+    _stats.next_time = _stats.start_time + stamp_ms / 1000;
+    auto offset = findNextSegment();
+    if (offset < 0) {
         return -1;
     }
     _it = _demuxers.begin();
-    refreshTracksIfChanged();
-    // Note: do not seek here; the first file should already be seeked to the correct offset if needed (e.g. for lo fill with start_cut)
-    return _it->first;
+    auto diff_time_ms = (_stats.start_time - _stats.first_time) * 1000;
+    auto offset_ms = offset * 1000;
+    return _it->first - diff_time_ms +_it->second->seekTo(offset_ms);
 }
 
 Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
     for (;;) {
-        // Trigger pre-fetch when we reach the last file of the current batch
-        if (!_next_batch.ready && !_demuxers.empty() && _it != _demuxers.end()) {
-            if (std::next(_it) == _demuxers.end()) {
-                prefetchNextSegmentBatch(_stats.tuple, _stats.next_time, 300);
-            }
-        }
         auto ret = _it->second->readFrame(keyFrame, eof);
-        // Cut-tail: if the frame DTS has reached the stop offset for this file,
-        // force EOF so we switch to the next file immediately.
-        if (ret && !eof) {
-            auto stop_it = _demuxer_stop_offsets.find(_it->first);
-            if (stop_it != _demuxer_stop_offsets.end() && ret->dts() >= stop_it->second) {
-                eof = true;
-                ret = nullptr;
-            }
-        }
-
         if (ret) {
             ret->setIndex(ret->getTrackType());
             auto it = _tracks.find(ret->getIndex());
-            auto start_it = _demuxer_start_cuts.find(_it->first);
             if (it != _tracks.end()) {
                 auto ret2 = std::make_shared<FrameStamp>(ret);
-                ret2->setStamp(_it->first + ret->dts() - start_it->second, _it->first + ret->pts() - start_it->second);
+                ret2->setStamp(_it->first + ret->dts(), _it->first + ret->pts());
                 ret = std::move(ret2);
                 it->second->inputFrame(ret);
-            }
+            } 
         }
-
         if (eof && _it != _demuxers.end()) {
             // Switch to the next file
             if (++_it == _demuxers.end()) {
-                // Batch exhausted — use pre-fetched batch if available
-                if (_next_batch.ready) {
-                    openNextSegmentBatch();
-                    if (_demuxers.empty()) {
-                        // No more segment available, signal EOF
-                        eof = true;
-                        return nullptr;
-                    }
-                    _it = _demuxers.begin();
-                } else {
-                    // No more batch available, signal EOF
+                // Find next segment
+                auto offset = findNextSegment();
+                if (offset < 0) {
+                    // It's the last file
                     eof = true;
                     return nullptr;
                 }
+                _it = _demuxers.begin();
             }
             // The next file starts from scratch
-            // Note: do not seek here; the next file should already be seeked to the correct offset if needed (e.g. for lo fill with start_cut)
-            refreshTracksIfChanged();
+            _it->second->seekTo(0);
             continue;
         }
         return ret;
     }
-}
-
-bool MultiMP4Demuxer::refreshTracksIfChanged() {
-    if (!_on_tracks_changed) {
-        return false;
-    }
-    auto new_tracks = _it->second->getTracks(false);
-    bool changed = (new_tracks.size() != _tracks.size());
-    if (!changed) {
-        for (auto &new_track : new_tracks) {
-            auto it = _tracks.find(new_track->getTrackType());
-            if (it == _tracks.end() || it->second->getCodecId() != new_track->getCodecId()) {
-                changed = true;
-                break;
-            }
-            // Also check extra data (SPS/PPS for H264/H265, AudioSpecificConfig for AAC)
-            auto old_extra = it->second->getExtraData();
-            auto new_extra = new_track->getExtraData();
-            bool old_has = old_extra && old_extra->size() > 0;
-            bool new_has = new_extra && new_extra->size() > 0;
-            if (old_has != new_has) {
-                changed = true;
-                break;
-            }
-            if (old_has && new_has) {
-                if (old_extra->size() != new_extra->size() ||
-                    memcmp(old_extra->data(), new_extra->data(), old_extra->size()) != 0) {
-                    changed = true;
-                    break;
-                }
-            }
-        }
-    }
-    if (!changed) {
-        return false;
-    }
-    _tracks.clear();
-    std::vector<Track::Ptr> updated_tracks;
-    DebugL << "Tracks changed for new segment batch, refreshing tracks map and notifying: ";
-    for (auto &track : new_tracks) {
-        auto clone_track = track->clone();
-        clone_track->setIndex(clone_track->getTrackType());
-        _tracks.emplace(clone_track->getIndex(), clone_track);
-        updated_tracks.emplace_back(clone_track);
-        DebugL << "track index: " << track->getIndex() << " -> " << clone_track->getIndex();
-    }
-    _on_tracks_changed(updated_tracks);
-    return true;
 }
 
 }//namespace mediakit

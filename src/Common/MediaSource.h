@@ -459,7 +459,8 @@ public:
     static void for_each_media(const std::function<void(const Ptr &src)> &cb, const std::string &schema = "", const std::string &vhost = "", const std::string &app = "", const std::string &stream = "");
     // Generate MediaSource from mp4 file
     static MediaSource::Ptr createFromMP4(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &file_path = "", bool check_app = true);
-    static MediaSource::Ptr createFromMP4ByApp(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &params, const std::string &file_path = "", bool check_app = true);
+    // Generate a quality-aware FMP4 source (dual-stream hi/lo switching) for app-level requests.
+    static MediaSource::Ptr createFromMP4ByApp(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &params, bool check_app = true);
 
 protected:
     // Media registration

@@ -157,24 +157,40 @@ void installManagerHook () {
         invoker(duration, files);
     });
 
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetRecordedMP4, [](BroadcastGetRecordedMP4Args) {
+        TimeQuery::Ptr query;
+        std::map<std::string, std::map<uint64_t, std::string>> files;
+        try {
+            query = make_shared<TimeQuery>(args);
+        } catch(...) {}
+        
+        if (query) {
+            query->getRecordedTimePeriod(stamp, stamp + max_duration, [&](vector<TimeBlock> &ret) {
+                for (const auto &block : ret) {
+                    files[block.stream()][block.start_time()] = decodeBase64(block.file_path());
+                }
+            });
+        }
+        invoker(files);
+    });
+
+#endif // ENABLE_MP4
+
     // Query stream quality map (PrimaryStream→hi stream_id, SecondaryStream→lo stream_id)
     // for a device that may currently be offline. Reads info.txt via StatisticRecorder.
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetStreamQuality, [](BroadcastGetStreamQualityArgs) {
-        auto stats_imp = StatisticRecorder::Instance().getRecorder(device_id);
-        if (!stats_imp) {
-            invoker({});
-            return;
-        }
-        auto params = stats_imp->getParams();
         std::map<int, std::string> result;
-        for (auto &kv : params.stream_map) {
-            if (!kv.second.stream_id.empty()) {
-                result[kv.first] = kv.second.stream_id;
+        auto recorder = StatisticRecorder::Instance().getRecorder(device_id);
+        if (recorder) {
+            auto params = recorder->getParams();
+            for (const auto &kv : params.stream_map) {
+                if (!kv.second.stream_id.empty()) {
+                    result[kv.first] = kv.second.stream_id;
+                }
             }
         }
         invoker(result);
     });
-#endif // ENABLE_MP4
 
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
         auto device_id = args.app;
@@ -357,7 +373,13 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
         option.keepArchivedMaxFor = option.keepArchivedMaxFor * 3600;
 
         GET_OPTION_PROPERTY(option, motionPreRecordSec, rc, motionPreRecordSec)
+        if (option.motionPreRecordSec <= 5) {
+            option.motionPreRecordSec = 5;
+        }
         GET_OPTION_PROPERTY(option, motionPostRecordSec, rc, motionPostRecordSec)
+        if (option.motionPostRecordSec <= 5) {
+            option.motionPostRecordSec = 5;
+        }
     }
 
     if (data.isMember("cameraAdvanceConfig") && !data["cameraAdvanceConfig"].isNull()) {
