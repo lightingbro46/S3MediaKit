@@ -51,6 +51,8 @@ namespace managerkit {
     XX(CODE_PTZ_GOTO_PRESET_FAILED,         "PTZ Goto preset failed",           500,         300017) \
     XX(CODE_PTZ_GOTO_USER_PRESET_FAILED,    "PTZ Goto preset failed",           500,         300018) \
     XX(CODE_DEVICE_NO_SUPPORT_PTZ_PRESET,   "Device does not support PTZ Preset", 500,       300019) \
+    XX(CODE_STREAM_READER_ON_MSERVER_LIMITED, "Stream reader on media server reached limit ", 429, 300020) \
+    XX(CODE_STREAM_READER_PER_CAMERA_LIMITED, "Stream reader on device reached limit", 429,  300021) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
@@ -80,6 +82,11 @@ const char* getDefaultMessage(ApiErrCode code = ApiErrCode::CODE_SUCCESS);
  * Get http code by codeid
  */
 int getStatusCode(ApiErrCode code = ApiErrCode::CODE_SUCCESS);
+
+/**
+ * Get ApiErrCode by permission code
+ */
+ApiErrCode getApiErrCodeWithPermission(const std::string &code);
 
 } // namespace managerkit
 

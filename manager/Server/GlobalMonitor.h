@@ -46,6 +46,14 @@ public:
 
     ReaderCountInfoMap getReaderUsage();
 
+    int getReaderTotalCount();
+
+    int getReaderTotalCount(const std::string &camera_id);
+
+    bool isReaderCountAvailable(const std::string &camera_id);
+
+    bool isReaderCountAvailable();
+
     void setRestartConfig(const RestartSchedulerConfig &cfg);
 
     RestartSchedulerConfig getRestartConfig() const;

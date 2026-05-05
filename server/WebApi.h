@@ -274,10 +274,23 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     }
 
 #define RETURN_API_RESPONSE(code, msg)                                                                                                                         \
+    std::string message(msg);                                                                                                                                  \
+    if (message.empty()) {                                                                                                                                     \
+        message = getDefaultMessage(static_cast<ApiErrCode>(code));                                                                                            \
+    }                                                                                                                                                          \
     val["code"] = code;                                                                                                                                        \
-    val["msg"] = !msg ? msg : getDefaultMessage(static_cast<ApiErrCode>(code));                                                                                \
+    val["msg"] = message;                                                                                                                                      \
     auto status_code = getStatusCode(static_cast<ApiErrCode>(code));                                                                                           \
     invoker(status_code, headerOut, val.toStyledString());
+
+#define CHECK_USER_PERMISSION(...)                                                                                                                             \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
+            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
+            checkPermissionCode(token_cache, ##__VA_ARGS__);                                                                                                   \
+        } while (false);                                                                                                                                       \
+    }
 
 #define CHECK_PLAYBACK_PERMISSION()                                                                                                                            \
     if (enable_authorize) {                                                                                                                                    \

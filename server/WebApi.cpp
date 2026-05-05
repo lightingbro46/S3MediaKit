@@ -266,6 +266,22 @@ static bool checkUserAuthor(const string &resource_id, const string &jwt_token) 
     return permit == UserAuthorPermit::ACCEPT;
 }
 
+static bool checkPermissionCode(UserSessionCache::Ptr &session, const std::string &key) {
+    auto ret = session->hasPermissionCode(key);
+    if (!ret) {
+        std::string key_str(key); 
+        auto code = getApiErrCodeWithPermission(key_str);
+        auto message = getDefaultMessage(code);
+        throw AuthException(message, code);
+    }
+    return ret;
+}
+
+template<typename ...KeyTypes>
+static bool checkPermissionCode(UserSessionCache::Ptr &session, const std::string &key, const KeyTypes &...keys) {
+    return checkPermissionCode(session, key) && checkPermissionCode(session, keys...);
+}
+
 extern uint64_t getTotalMemUsage();
 extern uint64_t getTotalMemBlock();
 extern uint64_t getThisThreadMemUsage();
@@ -3417,6 +3433,32 @@ void installWebApi() {
                 val["result"] = flag ? 0 : -1;                                                                                                                                                                                                                                                                                                
                 invoker(200, headerOut, val.toStyledString());
             });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, on_access);
+    });
+
+    api_regist("/media/mserver/reader/available", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(LIVE_VIEW_PERMISSION_CODE, PLAYBACK_PERMISSION_CODE);
+        CHECK_ARGS_("deviceId");
+        string device_id = allArgs["deviceId"];
+
+        auto on_access = [allArgs, val, invoker, headerOut, device_id]() mutable {
+
+            auto flag_on_mserver = GlobalMonitor::Instance().isReaderCountAvailable();
+            if (!flag_on_mserver) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STREAM_READER_ON_MSERVER_LIMITED, "Stream reader is limited due to too many readers on media server");
+                return;
+            }
+
+            auto flag_per_camera = GlobalMonitor::Instance().isReaderCountAvailable(device_id);
+            if (!flag_per_camera) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STREAM_READER_PER_CAMERA_LIMITED, "Stream reader is limited due to too many readers on camer");
+                return;
+            }
+            // Stream reader is available
+            invoker(200, headerOut, val.toStyledString());
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, on_access);

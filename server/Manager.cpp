@@ -1231,6 +1231,9 @@ Json::Value makeSystemStatisticJson() {
         val["disks"].append(disk);
     }
 
+    auto reader_count = GlobalMonitor::Instance().getReaderTotalCount();
+    val["reader"]["used"] = (Json::UInt)reader_count;
+    
     auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
     val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
     val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
@@ -1240,6 +1243,9 @@ Json::Value makeSystemStatisticJson() {
     auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
     val["threshold"]["disk_levelLow"] = hdd_threshold.first;
     val["threshold"]["disk_levelMedium"] = hdd_threshold.second;
+    auto reader_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::READER);
+    val["threshold"]["reader_levelLow"] = reader_threshold.first;
+    val["threshold"]["reader_levelMedium"] = reader_threshold.second;
     
     return val;
 }
@@ -1406,6 +1412,10 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
                     item["controller"] = Json::nullValue;
                 }
                 item["options"] = makeCameraOptionJson(option);
+
+                // Get stream reader count
+                item["readerAvailableOnMServer"] = GlobalMonitor::Instance().isReaderCountAvailable();
+                item["readerAvailablePerCamera"] = GlobalMonitor::Instance().isReaderCountAvailable(params.tuple.device_id);
             }
         }
     }

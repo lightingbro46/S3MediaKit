@@ -101,6 +101,14 @@ ReaderCountInfoMap GlobalMonitor::getReaderUsage() {
     return _reader_monitor->getCurrentUsage();
 }
 
+int GlobalMonitor::getReaderTotalCount() {
+    return _reader_monitor->totalReaderCount();
+}
+
+int GlobalMonitor::getReaderTotalCount(const std::string &camera_id) {
+    return _reader_monitor->totalReaderCount(camera_id);
+}
+
 string GlobalMonitor::getLocalIps() {
     auto net_usage = _net_monitor->getCurrentUsage();
     vector<string> ips;
@@ -201,6 +209,22 @@ bool GlobalMonitor::isReaderCountLimit(const string &camera_id, bool record_stre
     bool ret = false;
     if (_reader_monitor) {
         ret = _reader_monitor->isReaderCountLimit(camera_id, record_stream);
+    }
+    return ret;
+}
+
+bool GlobalMonitor::isReaderCountAvailable(const string &camera_id) {
+    bool ret = true;
+    if (_reader_monitor) {
+        ret = _reader_monitor->isReaderCountAvailable(camera_id);
+    }
+    return ret;
+}
+
+bool GlobalMonitor::isReaderCountAvailable() {
+    bool ret = true;
+    if (_reader_monitor) {
+        ret = _reader_monitor->isReaderCountAvailable();
     }
     return ret;
 }

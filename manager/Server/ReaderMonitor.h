@@ -28,6 +28,12 @@ public:
 
     int totalReaderCount();
 
+    int totalReaderCount(const std::string &camera_id);
+
+    bool isReaderCountAvailable(const std::string &camera_id);
+
+    bool isReaderCountAvailable();
+
 private:
     void start() override;
 

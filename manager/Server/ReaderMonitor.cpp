@@ -19,6 +19,19 @@ int ReaderMonitor::totalReaderCount() {
     return _total_reader.load();
 }
 
+int ReaderMonitor::totalReaderCount(const std::string &camera_id) {
+    int ret = 0;
+    {
+        lock_guard<mutex> lck(_mtx);
+        auto it = _map_reader.find(camera_id);
+        if (it != _map_reader.end()) {
+            auto count = it->second;
+            ret = count.first + count.second;
+        }
+    }
+    return ret;
+}
+
 static int totalReaderCountFromMap(const ReaderCountInfoMap &map_reader) {
     int ret = 0; 
     for (const auto &it : map_reader) {
@@ -117,7 +130,7 @@ bool ReaderMonitor::isReaderCountLimit(const string &camera_id, bool record) {
         if (it != _map_reader.end()) {
             auto count = it->second;
             int current_count = count.first + count.second;
-            if (_stream_reader_critical_threshold > 0 && current_count >= _stream_reader_critical_threshold) {
+            if (_stream_reader_critical_threshold > 0 && current_count + 1 >= _stream_reader_critical_threshold) {
                 WarnL << "Camera " << camera_id << " has reader count that reached the critical threshold " << current_count << "/"  << _stream_reader_critical_threshold << ". Ignore new reader";
                 return true;
             }
@@ -125,6 +138,29 @@ bool ReaderMonitor::isReaderCountLimit(const string &camera_id, bool record) {
     }
     
     return false;
+}
+
+bool ReaderMonitor::isReaderCountAvailable(const string &camera_id) {
+    lock_guard<mutex> lck(_mtx);
+    auto it = _map_reader.find(camera_id);
+    if (it != _map_reader.end()) {
+        auto count = it->second;
+        int current_count = count.first + count.second;
+        if (_stream_reader_warning_threshold > 0 && current_count + 1 >= _stream_reader_warning_threshold) {
+            WarnL << "Camera " << camera_id << " has reader count that reached the warning threshold " << current_count << "/"  << _stream_reader_warning_threshold << ". Ignore new reader";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ReaderMonitor::isReaderCountAvailable() {
+    auto total_count = totalReaderCount();
+    if (_warning_threshold > 0 && total_count + 1 > _warning_threshold) {
+        WarnL << "Total reader count has reached the warning threshold " << total_count << "/" << _warning_threshold << ". Ignore new reader";
+        return false;
+    }
+    return true;
 }
 
 } // namespace managerkit
