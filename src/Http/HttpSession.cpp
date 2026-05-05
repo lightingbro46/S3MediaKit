@@ -233,6 +233,13 @@ bool HttpSession::checkWebSocket() {
         return true;
     }
 
+    // Determine whether it is websocket-fmp4
+    if (checkLiveStreamFMP4ByApp(res_cb)) {
+        // This is a websocket-fmp4 live request with only app name
+        res_immediately();
+        return true;
+    }
+
     // This is a normal websocket connection
     if (!onWebSocketConnect(_parser)) {
         sendResponse(501, true, nullptr, headerOut);
@@ -1163,9 +1170,9 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
     _media_info.parse(schema + "://" + _parser["Host"] + url);
 
     // note: app are required for live stream, but stream name can be empty (e.g. for motion stream)
-    GET_CONFIG(string, appRecord, Record::kAppName)
-    auto is_replay = _media_info.app == appRecord;
-    if (_media_info.app.empty() || (is_replay && _media_info.stream.empty())) {
+    GET_CONFIG(string, record_app, Record::kAppName);
+    auto is_vod = _media_info.app == record_app;
+    if (_media_info.app.empty() || (is_vod && _media_info.stream.empty())) {
         // URL is invalid
         return false;
     }

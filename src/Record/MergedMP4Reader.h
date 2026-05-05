@@ -58,9 +58,16 @@ public:
      * @param hi_dropout_ms How long (ms) to wait after last hi IDR before
      *                      falling back to lo. Default 3000 ms.
      */
-    MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller = nullptr);
+    /**
+     * @param gop_cache  When true (default), Lo frames are buffered per-GOP while
+     *                   playing Hi, and the cached GOP is flushed instantly on
+     *                   Hi→Lo transition to eliminate the visual gap.  When false,
+     *                   the GOP cache is disabled and the reader burst-reads the Lo
+     *                   demuxer to find the next IDR on each Hi→Lo switch.
+     */
+    MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller = nullptr, bool gop_cache = true);
     
-    MergedMP4Reader(const MediaTuple &tuple, const ProtocolOption &option, toolkit::EventPoller::Ptr poller = nullptr);
+    MergedMP4Reader(const MediaTuple &tuple, const ProtocolOption &option, toolkit::EventPoller::Ptr poller = nullptr, bool gop_cache = true);
 
     ~MergedMP4Reader();
 
@@ -92,7 +99,7 @@ public:
      * @param sample_ms Timer tick interval (ms).  Smaller values reduce latency but increase CPU usage.  Default 0 ms.
      * @param ref_self If true, the timer holds a strong reference to this object, ensuring it stays alive until replay finishes.  If false, the caller must keep a reference to this object until replay finishes.  Default true.
      */
-    void openForReplay(uint64_t sample_ms = 0, bool ref_self = true);
+    void openForReplay(uint64_t sample_ms = 0, bool ref_self = true, bool file_repeat = false);
 
     /**
      * Stop replay and release all resources.
@@ -100,7 +107,7 @@ public:
     void stopReplay();
 
 private:
-    void setup(const MediaTuple &tuple, const ProtocolOption &option, toolkit::EventPoller::Ptr poller, int hi_dropout_ms = 3000);
+    void setup(const MediaTuple &tuple, const ProtocolOption &option, toolkit::EventPoller::Ptr poller, bool gop_cache = true, int hi_dropout_ms = 3000);
 
     void initOutputMuxer(const std::vector<Track::Ptr> &tracks);
 
@@ -109,12 +116,16 @@ private:
     void onHiFrame(const Frame::Ptr &frame);
     void onLoFrame(const Frame::Ptr &frame);
 
+    // Commit staged lo segments on startup (first full GOP buffered before sending)
+    void flushLoStage();
+
     // Commit staged hi segments (STAGE_SEGS reached or timeout)
     void flushHiStage();
 
     // Drop all staged hi segments and return to lo
     void abortHiStage();
 
+    // Check if hi dropout threshold is exceeded and switch to lo if necessary
     void checkHiDropout();
 
     // Replay helpers
@@ -138,6 +149,13 @@ private:
     // the frame index is not found (e.g. audio on a video-only Hi stream).
     void onTrackFrame(TrackMap &map, const Frame::Ptr &frame, const std::function<void(const Frame::Ptr &)> &cb);
 
+    // Seek to the specified timestamp in the replay timeline.  Returns true if successful, false if the timestamp is out of range or an error occurs.
+    bool seekTo(uint32_t stamp_seek);
+
+    // Get/set the current playback position (ms), accounting for speed and pause.
+    uint32_t getCurrentStamp();
+    void setCurrentStamp(uint32_t new_stamp);
+
 private:
     //MediaSourceEvent override
     bool seekTo(MediaSource &sender,uint32_t stamp) override;
@@ -153,21 +171,32 @@ private:
 private:
     // ── Members ────────────────────────────────────────────────────────────
     enum class State {
+        StagingLo,      ///< Buffering lo frames on startup (first GOP not yet complete)
         PlayingLo,      ///< Forwarding lo frames
         StagingHi,      ///< Buffering hi segments, not yet committed
         PlayingHi,      ///< Forwarding hi frames
         SwitchingToLo,  ///< Waiting for next lo IDR
     };
-    State _state = State::PlayingLo;
+    State _state = State::StagingLo;
     int _hi_dropout_ms;
     uint64_t _last_hi_idr_wall_ms = 0;   ///< wall-clock ms of last hi IDR
-    int   _hi_staged_segs = 0;           ///< segments accumulated in staging
-
+    int   _hi_staged_segs = 0;           ///< segments accumulated in hi staging
+    int   _lo_staged_segs = 0;           ///< IDR count during lo staging
+    
     // Staged hi frames (buffered while waiting for STAGE_SEGS threshold)
     std::vector<Frame::Ptr> _hi_stage;
+    // Staged lo frames (buffered during startup until first full GOP is ready)
+    std::vector<Frame::Ptr> _lo_stage;
 
-    // Last lo IDR cached while PLAYING_HI — used for instant lo fallback
-    Frame::Ptr _lo_idr_cache;
+    // When true, Lo frames are accumulated per-GOP while playing Hi and flushed
+    // immediately on Hi→Lo transition (zero visual gap).  When false, the Lo
+    // demuxer is burst-read to find the next IDR instead (lower memory cost).
+    bool _lo_gop_cache_enabled = true;
+
+    // All Lo frames since the last IDR, cached while PLAYING_HI/STAGING_HI.
+    // On Hi→Lo transition the full GOP is flushed before the new IDR so the
+    // client sees a seamless picture (no visual gap equal to one GOP duration).
+    std::vector<Frame::Ptr> _lo_gop_cache;
     int64_t _lo_dts_origin = -1;
 
     // Frames that exceeded the tick boundary on the previous tick.
@@ -196,6 +225,12 @@ private:
     uint64_t                 _replay_current_ms = 0;     ///< current output position (ms)
     uint64_t                 _replay_start_time_s = 0;   ///< replay start unix timestamp (s)
     uint64_t                 _replay_total_dur_s = 0;    ///< total duration of all segments (s)
+    bool                     _replay_file_repeat        = false; // Whether the replay should loop back to the first segment 
+                                                                 // after reaching the end of the last segment in replay mode
+    bool                     _replay_paused = false;
+    float                    _replay_speed = 1.0;
+    uint32_t                 _replay_seek_to = 0;
+    toolkit::Ticker          _replay_seek_ticker;
 
     /// One event-based Hi recording (may cover only part of the total replay window).
     struct HiSegment {

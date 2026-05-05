@@ -550,7 +550,7 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
 
     vector<MediaSource::Ptr> results;
     MediaSource::for_each_media([&](const MediaSource::Ptr &src) { results.emplace_back(src); },
-        schema, vhost, app, "" /*empty = all streams*/);
+        schema, vhost, app, id /*empty = all streams*/);
 
     if(!results.size() && from_mp4 && schema == FMP4_SCHEMA){
         // Quality-aware dual-stream replay (FMP4 only, stream = "<app>/vod/<ts>")
