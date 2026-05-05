@@ -216,8 +216,15 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
     }
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
         // only emit event when stream status changed
-        auto &src = *_src;
-        NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, src);
+        std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
+        EventPollerPool::Instance().getPoller(false)->async([weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return;
+            }
+            auto &src = *strong_self->_src;
+            NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, src);
+        });
     }
 }
 
@@ -234,11 +241,19 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
-    {
-        auto &src = *_src;
-        auto params = strong_statistic->getParams();
-        NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, params.device_stats.device_caps, src);
-    }
+    std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
+    EventPollerPool::Instance().getPoller(false)->async([weak_self]() {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        auto &src = *strong_self->_src;
+        auto strong_statistic = strong_self->_statistic.lock();
+        if (strong_statistic) {
+            auto params = strong_statistic->getParams();
+            NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, params.device_stats.device_caps, src);
+        }
+    });
 }
 
 void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
