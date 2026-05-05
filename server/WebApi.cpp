@@ -2427,7 +2427,7 @@ void installWebApi() {
     api_regist("/media/esc/recordedThumnail", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_PLAYBACK_PERMISSION();
-        CHECK_ARGS_("cameraId", "streamId", "pos");
+        CHECK_ARGS_("cameraId", "pos");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             string camera_id = allArgs["cameraId"];
@@ -2452,14 +2452,22 @@ void installWebApi() {
                             auto stats_imp = ptr->getCameraStatisticImp();
                             if (stats_imp) {
                                 auto params = stats_imp->getParams();
-                                if (params.storage_map.find(tuple.stream) != params.storage_map.end()) {
-                                    auto last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
-                                    if (last_archived_time > 0) {
-                                        auto block = query->getLastBlock(last_archived_time);
-                                        if (block) {
-                                            pos_time = block->start_time();
-                                            src_path = decodeBase64(block->file_path());
+                                uint64_t last_archived_time = 0;
+                                if (!tuple.stream.empty() && params.storage_map.find(tuple.stream) != params.storage_map.end()) {
+                                    last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
+                                    
+                                } else if (tuple.stream.empty()) {
+                                    for (const auto &pr : params.storage_map) {
+                                        if (pr.second.archiveEndTime > last_archived_time) {
+                                            last_archived_time = pr.second.archiveEndTime;
                                         }
+                                    }
+                                }
+                                if (last_archived_time > 0) {
+                                    auto block = query->getLastBlock(last_archived_time);
+                                    if (block) {
+                                        pos_time = block->start_time();
+                                        src_path = decodeBase64(block->file_path());
                                     }
                                 }
                             }
