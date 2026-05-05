@@ -752,10 +752,17 @@ function activateTab(tabId, push) {
                     '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#888;font-size:0.82rem;z-index:9">Video.js không tải được (kiểm tra kết nối mạng)</div>');
                 return;
             }
-            const player = new S3ProPlayer({
-                videojs:   window.videojs,
-                videoElId: 'vjs-player',
+            // Create VideoJS player instance (s3pro plugin is auto-registered
+            // by s3pro-player.js when videojs is present on window)
+            const vp = videojs('vjs-player', {
+                controls:    false,
+                autoplay:    'any',
+                preload:     'auto',
+                muted:       true,
+                playsinline: true,
             });
+            // Get the s3pro plugin instance for this player
+            const player = vp.s3pro();
             initPlayerControls(player);
         }, 1000);
     }

@@ -1,6 +1,7 @@
 // =============================================================================
 // player-controls.js - Mode switch (Live/Replay) + Stream fetch + Timeline
-// Requires a S3ProPlayer instance passed as argument.
+// Requires an S3ProPlugin instance (vp.s3pro()) passed as argument.
+// Compatible with s3pro-player.js VideoJS plugin API.
 // =============================================================================
 
 function initPlayerControls(player) {
@@ -129,6 +130,29 @@ function initPlayerControls(player) {
         if (errOverlay) errOverlay.classList.add('show');
     });
 
+    // Loading overlay element (spinner shown while connecting/buffering)
+    var loadingOverlay = document.getElementById('player-loading');
+
+    player.on('statechange', function (state) {
+        // Show spinner for both connecting and buffering; hide on playing/stopped/error/idle
+        var isLoading = (state === 'connecting' || state === 'buffering');
+        if (loadingOverlay) {
+            loadingOverlay.classList.toggle('show', isLoading);
+            // Buffering uses reduced opacity so the frame stays visible underneath
+            loadingOverlay.classList.toggle('buffering', state === 'buffering');
+        }
+        // Clear error overlay when playback resumes
+        if (state === 'playing' || state === 'buffering') {
+            if (errOverlay) errOverlay.classList.remove('show');
+        }
+        // Update _stopped flag so the play/pause PCB button stays consistent
+        if (state === 'stopped' || state === 'idle' || state === 'error') {
+            _stopped = true;
+        } else if (state === 'connecting' || state === 'playing' || state === 'buffering') {
+            _stopped = false;
+        }
+    });
+
     function _friendlyCodec(mime) {
         if (!mime) return '';
         var m = mime.match(/codecs="([^"]+)"/);
@@ -201,7 +225,7 @@ function initPlayerControls(player) {
             return domain + '/media/live/' + encodeURIComponent(cameraId)
                  + '/' + encodeURIComponent(streamId) + '.live.mp4';
         }
-        return domain + '/media/live/' + encodeURIComponent(cameraId) + '.live.mp4?quality=auto&prefered=hi';
+        return domain + '/media/live/' + encodeURIComponent(cameraId) + '.live2.mp4?quality=auto&prefered=hi';
     }
 
     function _buildVodUrl(domain, cameraId, streamId, stampSec) {
@@ -210,7 +234,7 @@ function initPlayerControls(player) {
                  + '/' + encodeURIComponent(streamId) + '/vod/' + stampSec + '.live.mp4';
         }
         return domain + '/media/record/' + encodeURIComponent(cameraId)
-             + '/vod/' + stampSec + '.live.mp4?quality=auto&prefered=hi';
+             + '/vod/' + stampSec + '.live2.mp4?quality=auto&prefered=hi';
     }
 
     // =========================================================================
@@ -609,6 +633,15 @@ function initPlayerControls(player) {
         if (!videoEl.currentTime) return;
         moveCursorToWallTime(_replayStartTime + videoEl.currentTime);
     }, 200);
+
+    // DTS event: update timeline cursor + PCB timebar during replay
+    // dtsMs comes from moof tfdt (baseMediaDecodeTime / 90) — relative to VOD segment start
+    player.on('dts', function (dtsMs /*, codec */) {
+        if (_mode !== 'replay' || !_replayStartTime) return;
+        var wallTime = _replayStartTime + dtsMs / 1000;
+        moveCursorToWallTime(wallTime);
+        _pcbMoveCursor(wallTime);
+    });
 
     // =========================================================================
     // Seek to exact wall-clock time
@@ -1132,7 +1165,7 @@ function initPlayerControls(player) {
             var friendly2 = _friendlyCodec(pState.codec);
             if (friendly2) {
                 if (infoEl) {
-                    var bl = pState.buffered || 0;
+                    var bl = pState.bufferLen || 0;
                     infoEl.textContent = 'codec: ' + friendly2
                         + ' | bufferLen: ' + (bl > 0 ? bl.toFixed(2) + 's' : '--');
                 }
