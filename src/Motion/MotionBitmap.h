@@ -223,7 +223,7 @@ public:
       * @param overlay_grid Whether to draw grid lines
       * @return
      */
-    static void draw_motion_grid_yuv420p(AVFrame *frame, const MotionBitmap &mb, const GridBoundaryPtr &grid = nullptr, bool overlay_motion = true, bool overlay_grid = true) {
+    static void draw_motion_grid_yuv420p(AVFrame *frame, const MotionBitmap &mb, const GridBoundaryPtr &grid = nullptr, bool overlay_motion = true, bool overlay_grid = true, int line_thickness = 1) {
         if (!frame || (!overlay_motion && !overlay_grid)) return;
         if (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) return;
         if (mb.rows <= 0 || mb.cols <= 0) return;
@@ -273,9 +273,30 @@ public:
         auto uv_y0_of = [&](int r) { return use_grid ? grid->uv_y[r] : ((int64_t)r * H / mb.rows) >> 1; };
         auto uv_y1_of = [&](int r) { return use_grid ? grid->uv_y[r + 1] : ((int64_t)(r + 1) * H / mb.rows) >> 1; };
 
-        auto blend_u8 = [](uint8_t dst, uint8_t src, int a) -> uint8_t {
-            return static_cast<uint8_t>((dst * (255 - a) + src * a) >> 8);
-        };
+        // ==============================
+        // PERF: Precompute blend LUTs — eliminates per-pixel multiply in hot pixel loops.
+        // lut[dst] = (dst * (255 - alpha) + src * alpha) >> 8
+        // ==============================
+        const bool use_red_line = true;
+        uint8_t lut_Y_mot[256], lut_U_mot[256], lut_V_mot[256];
+        uint8_t lut_Y_line[256], lut_U_line[256], lut_V_line[256];
+        {
+            const int inv_a  = 255 - alpha;
+            const int inv_la = 255 - line_alpha;
+            const int Y_msrc = Y_red * alpha,  U_msrc = U_red * alpha,  V_msrc = V_red * alpha;
+            const uint8_t Yl = use_red_line ? Y_red : Y_white;
+            const uint8_t Ul = use_red_line ? U_red : U_white;
+            const uint8_t Vl = use_red_line ? V_red : V_white;
+            const int Y_lsrc = Yl * line_alpha, U_lsrc = Ul * line_alpha, V_lsrc = Vl * line_alpha;
+            for (int i = 0; i < 256; ++i) {
+                lut_Y_mot[i]  = static_cast<uint8_t>((i * inv_a  + Y_msrc) >> 8);
+                lut_U_mot[i]  = static_cast<uint8_t>((i * inv_a  + U_msrc) >> 8);
+                lut_V_mot[i]  = static_cast<uint8_t>((i * inv_a  + V_msrc) >> 8);
+                lut_Y_line[i] = static_cast<uint8_t>((i * inv_la + Y_lsrc) >> 8);
+                lut_U_line[i] = static_cast<uint8_t>((i * inv_la + U_lsrc) >> 8);
+                lut_V_line[i] = static_cast<uint8_t>((i * inv_la + V_lsrc) >> 8);
+            }
+        }
 
         // ==============================
         // 1️⃣ Fill motion cells
@@ -300,9 +321,8 @@ public:
                     // ---- Y plane ----
                     for (int y = y0; y < y1; ++y) {
                         uint8_t* row = Y + y * Y_stride;
-                        for (int x = x0; x < x1; ++x) {
-                            row[x] = blend_u8(row[x], Y_red, alpha);
-                        }
+                        for (int x = x0; x < x1; ++x)
+                            row[x] = lut_Y_mot[row[x]];
                     }
 
                     // ---- UV plane (subsampled 2x2) ----
@@ -310,61 +330,71 @@ public:
                         uint8_t* u_row = U + y * U_stride;
                         uint8_t* v_row = V + y * V_stride;
                         for (int x = uv_x0; x < uv_x1; ++x) {
-                            u_row[x] = blend_u8(u_row[x], U_red, alpha);
-                            v_row[x] = blend_u8(v_row[x], V_red, alpha);
+                            u_row[x] = lut_U_mot[u_row[x]];
+                            v_row[x] = lut_V_mot[v_row[x]];
                         }
                     }
                 }
             }
             TraceL << "Motion grid drawn, total motion cells: " << count;
         }
-        
+
         // ==============================
-        // 2️⃣ Draw grid lines (thickness = 1)
+        // 2️⃣ Draw grid lines (configurable thickness)
         // ==============================
-        bool use_red_line = true; // Set to true to use red lines for grid, false to use white lines
         if (overlay_grid) {
+            const int lt        = std::max(1, line_thickness);
+            const int uv_half_w = W >> 1;
+            const int uv_half_h = H >> 1;
+
             // Vertical lines
             for (int c = 0; c <= mb.cols; ++c) {
-                int x = x0_of(c);
+                int x    = x0_of(c);
+                int uv_x = use_grid ? grid->uv_x[c] : (x >> 1);
                 if (x < 0 || x >= W) continue;
 
-                // Y plane
-                for (int y = 0; y < H; ++y)
-                    Y[y * Y_stride + x] = blend_u8(Y[y * Y_stride + x], use_red_line ? Y_red : Y_white, line_alpha);
-
-                // UV plane
-                int uv_x = use_grid ? grid->uv_x[c] : (x >> 1);
-                if (uv_x >= 0 && uv_x < (W >> 1)) {
-                    for (int y = 0; y < (H >> 1); ++y) {
-                        U[y * U_stride + uv_x] = blend_u8(U[y * U_stride + uv_x], use_red_line ? U_red : U_white, line_alpha);
-                        V[y * V_stride + uv_x] = blend_u8(V[y * V_stride + uv_x], use_red_line ? V_red : V_white, line_alpha);
+                for (int t = 0; t < lt && (x + t) < W; ++t) {
+                    const int xi = x + t;
+                    for (int y = 0; y < H; ++y)
+                        Y[y * Y_stride + xi] = lut_Y_line[Y[y * Y_stride + xi]];
+                }
+                const int uv_x1t = std::min(uv_half_w, uv_x + ((lt + 1) >> 1));
+                for (int ux = uv_x; ux < uv_x1t; ++ux) {
+                    if (ux < 0) continue;
+                    for (int y = 0; y < uv_half_h; ++y) {
+                        U[y * U_stride + ux] = lut_U_line[U[y * U_stride + ux]];
+                        V[y * V_stride + ux] = lut_V_line[V[y * V_stride + ux]];
                     }
                 }
             }
 
             // Horizontal lines
             for (int r = 0; r <= mb.rows; ++r) {
-                int y = y0_of(r);
+                int y    = y0_of(r);
+                int uv_y = use_grid ? grid->uv_y[r] : (y >> 1);
                 if (y < 0 || y >= H) continue;
 
-                // Y plane
-                for (int x = 0; x < W; ++x)
-                    Y[y * Y_stride + x] = blend_u8(Y[y * Y_stride + x], use_red_line ? Y_red : Y_white, line_alpha);
-
-                // UV plane
-                int uv_y = use_grid ? grid->uv_y[r] : (y >> 1);
-                if (uv_y >= 0 && uv_y < (H >> 1)) {
-                    for (int x = 0; x < (W >> 1); ++x) {
-                        U[uv_y * U_stride + x] = blend_u8(U[uv_y * U_stride + x], use_red_line ? U_red : U_white, line_alpha);
-                        V[uv_y * V_stride + x] = blend_u8(V[uv_y * V_stride + x], use_red_line ? V_red : V_white, line_alpha);
+                for (int t = 0; t < lt && (y + t) < H; ++t) {
+                    const int yi = y + t;
+                    uint8_t* Yrow = Y + yi * Y_stride;
+                    for (int x = 0; x < W; ++x)
+                        Yrow[x] = lut_Y_line[Yrow[x]];
+                }
+                const int uv_y1t = std::min(uv_half_h, uv_y + ((lt + 1) >> 1));
+                for (int uy = uv_y; uy < uv_y1t; ++uy) {
+                    if (uy < 0) continue;
+                    uint8_t* Urow = U + uy * U_stride;
+                    uint8_t* Vrow = V + uy * V_stride;
+                    for (int x = 0; x < uv_half_w; ++x) {
+                        Urow[x] = lut_U_line[Urow[x]];
+                        Vrow[x] = lut_V_line[Vrow[x]];
                     }
                 }
             }
         }
     }
 
-    static void draw_roi_border_yuv420p(AVFrame *frame, const ROIMask &roi, const GridBoundaryPtr &grid = nullptr, bool fill_border = false, bool draw_level = false) {
+    static void draw_roi_border_yuv420p(AVFrame *frame, const ROIMask &roi, const GridBoundaryPtr &grid = nullptr, bool fill_border = false, bool draw_level = false, int line_thickness = 1) {
         if (!frame) return;
         if (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) return;
         if (roi.rows <= 0 || roi.cols <= 0) return;
@@ -382,9 +412,11 @@ public:
         const int U_stride = frame->linesize[1];
         const int V_stride = frame->linesize[2];
 
-        const uint8_t Y_white = 235;
-        const uint8_t U_white = 128;
-        const uint8_t V_white = 128;
+        // Per-level border colors in YUV BT.601:
+        // Level 1=green, 2=yellow, 3=orange, 4=red, 5=magenta
+        static const uint8_t LEVEL_YC[6] = {235, 117, 226, 173,  76, 105};
+        static const uint8_t LEVEL_UC[6] = {128,  62,   1,  30,  85, 212};
+        static const uint8_t LEVEL_VC[6] = {128,  44, 149, 186, 255, 235};
 
         const bool use_grid =
             grid &&
@@ -397,62 +429,98 @@ public:
 
         auto x_of = [&](int c) { return use_grid ? grid->x[c] : static_cast<int>((int64_t)c * W / roi.cols); };
         auto y_of = [&](int r) { return use_grid ? grid->y[r] : static_cast<int>((int64_t)r * H / roi.rows); };
-        // auto uv_x_of = [&](int c) { return use_grid ? grid->uv_x[c] : (x_of(c) >> 1); };
-        // auto uv_y_of = [&](int r) { return use_grid ? grid->uv_y[r] : (y_of(r) >> 1); };
 
         auto at = [&](int r, int c) -> uint8_t {
             if (r < 0 || r >= roi.rows || c < 0 || c >= roi.cols) return 0;
             return roi.mask[r * roi.cols + c];
         };
 
-        auto draw_vline = [&](int x, int y0, int y1) {
-            if (x < 0 || x >= W) return;
+        const int lt        = std::max(1, line_thickness);
+        const int uv_half_w = W >> 1;
+        const int uv_half_h = H >> 1;
+
+        auto draw_vline = [&](int x, int y0, int y1, uint8_t Yc, uint8_t Uc, uint8_t Vc) {
             y0 = std::max(0, y0); y1 = std::min(H, y1);
-            for (int y = y0; y < y1; ++y) Y[y * Y_stride + x] = Y_white;
-
-            const int uvx = x >> 1;
-            if (uvx < 0 || uvx >= (W >> 1)) return;
-            const int uvy0 = std::max(0, y0 >> 1);
-            const int uvy1 = std::min(H >> 1, (y1 + 1) >> 1);
-            for (int y = uvy0; y < uvy1; ++y) {
-                U[y * U_stride + uvx] = U_white;
-                V[y * V_stride + uvx] = V_white;
+            for (int t = 0; t < lt && (x + t) < W; ++t) {
+                const int xi = x + t;
+                if (xi < 0) continue;
+                for (int y = y0; y < y1; ++y) Y[y * Y_stride + xi] = Yc;
+                const int uvx = xi >> 1;
+                if (uvx < 0 || uvx >= uv_half_w) continue;
+                const int uvy0 = std::max(0, y0 >> 1);
+                const int uvy1 = std::min(uv_half_h, (y1 + 1) >> 1);
+                for (int y = uvy0; y < uvy1; ++y) {
+                    U[y * U_stride + uvx] = Uc;
+                    V[y * V_stride + uvx] = Vc;
+                }
             }
         };
 
-        auto draw_hline = [&](int y, int x0, int x1) {
-            if (y < 0 || y >= H) return;
+        auto draw_hline = [&](int y, int x0, int x1, uint8_t Yc, uint8_t Uc, uint8_t Vc) {
             x0 = std::max(0, x0); x1 = std::min(W, x1);
-            uint8_t* yrow = Y + y * Y_stride;
-            for (int x = x0; x < x1; ++x) yrow[x] = Y_white;
-
-            const int uvy = y >> 1;
-            if (uvy < 0 || uvy >= (H >> 1)) return;
-            const int uvx0 = std::max(0, x0 >> 1);
-            const int uvx1 = std::min(W >> 1, (x1 + 1) >> 1);
-            uint8_t* urow = U + uvy * U_stride;
-            uint8_t* vrow = V + uvy * V_stride;
-            for (int x = uvx0; x < uvx1; ++x) {
-                urow[x] = U_white;
-                vrow[x] = V_white;
+            for (int t = 0; t < lt && (y + t) < H; ++t) {
+                const int yi = y + t;
+                if (yi < 0) continue;
+                uint8_t* yrow = Y + yi * Y_stride;
+                for (int x = x0; x < x1; ++x) yrow[x] = Yc;
+                const int uvy = yi >> 1;
+                if (uvy < 0 || uvy >= uv_half_h) continue;
+                const int uvx0 = std::max(0, x0 >> 1);
+                const int uvx1 = std::min(uv_half_w, (x1 + 1) >> 1);
+                uint8_t* urow = U + uvy * U_stride;
+                uint8_t* vrow = V + uvy * V_stride;
+                for (int x = uvx0; x < uvx1; ++x) {
+                    urow[x] = Uc;
+                    vrow[x] = Vc;
+                }
             }
         };
 
+        // ==============================
+        // 1️⃣ Dim non-ROI background (fill_border)
+        // ==============================
+        if (fill_border) {
+            uint8_t dim_lut[256];
+            for (int i = 0; i < 256; ++i) dim_lut[i] = static_cast<uint8_t>(i >> 1);
+
+            for (int r = 0; r < roi.rows; ++r) {
+                const int y0 = y_of(r), y1 = y_of(r + 1);
+                for (int c = 0; c < roi.cols; ++c) {
+                    if (at(r, c) != 0) continue;
+                    const int x0 = x_of(c), x1 = x_of(c + 1);
+                    for (int y = y0; y < y1; ++y) {
+                        uint8_t* row = Y + y * Y_stride;
+                        for (int x = x0; x < x1; ++x)
+                            row[x] = dim_lut[row[x]];
+                    }
+                }
+            }
+        }
+
+        // ==============================
+        // 2️⃣ Draw ROI borders with per-level color
+        // ==============================
         for (int r = 0; r < roi.rows; ++r) {
             const int y0 = y_of(r);
             const int y1 = y_of(r + 1);
 
             for (int c = 0; c < roi.cols; ++c) {
-                if (at(r, c) == 0) continue;
+                const uint8_t lv = at(r, c);
+                if (lv == 0) continue;
+
+                const int idx    = std::min<int>(lv, 5);
+                const uint8_t Yc = LEVEL_YC[idx];
+                const uint8_t Uc = LEVEL_UC[idx];
+                const uint8_t Vc = LEVEL_VC[idx];
 
                 const int x0 = x_of(c);
                 const int x1 = x_of(c + 1);
 
-                // Chỉ vẽ cạnh tiếp giáp vùng non-ROI để giảm overdraw
-                if (at(r - 1, c) == 0) draw_hline(y0, x0, x1);      // top
-                if (at(r + 1, c) == 0) draw_hline(y1 - 1, x0, x1);  // bottom
-                if (at(r, c - 1) == 0) draw_vline(x0, y0, y1);      // left
-                if (at(r, c + 1) == 0) draw_vline(x1 - 1, y0, y1);  // right
+                // Draw edges wherever the adjacent cell has a different level (includes 0=non-ROI and transitions between levels)
+                if (at(r - 1, c) != lv) draw_hline(y0,      x0, x1, Yc, Uc, Vc); // top
+                if (at(r + 1, c) != lv) draw_hline(y1 - lt, x0, x1, Yc, Uc, Vc); // bottom
+                if (at(r, c - 1) != lv) draw_vline(x0,      y0, y1, Yc, Uc, Vc); // left
+                if (at(r, c + 1) != lv) draw_vline(x1 - lt, y0, y1, Yc, Uc, Vc); // right
             }
         }
 
