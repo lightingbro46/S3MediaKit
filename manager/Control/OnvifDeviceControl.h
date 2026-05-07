@@ -210,6 +210,16 @@ private:
      */
     bool getPTZPresets();
 
+    /**
+     * get the camera's time by soap protocol
+     */
+    bool getCameraTime(time_t& time_utc);
+
+    /**
+     * modify WS-Security (wsu:Created, wsu:Expires) before sending the request.
+     */
+    void installSoapHook(struct soap* soap, time_t offset);
+
 private:
     // Device information
     OnvifDeviceInfo _deviceInfo;

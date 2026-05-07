@@ -450,11 +450,148 @@ void OnvifControl::reportError() {
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
+bool OnvifControl::getCameraTime(time_t& time_utc) {
+    if (!_proxyDevice || !_m_soap) {
+        return false;
+    }
+    _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(_m_soap, -1);
+    _tds__GetSystemDateAndTimeResponse resp;    
+
+    if (_proxyDevice->GetSystemDateAndTime(req, resp)) {
+        reportError();
+        return false;
+    }
+
+    if (!resp.SystemDateAndTime) {
+        WarnL << "Invalid camera time response";
+        return false;
+    }
+
+    auto buildTime = [](tt__DateTime* dt, bool isUtc) -> time_t
+    {
+        if (!dt || !dt->Date || !dt->Time)
+            return 0;
+
+        struct tm t{};
+        t.tm_year = dt->Date->Year - 1900;
+        t.tm_mon  = dt->Date->Month - 1;
+        t.tm_mday = dt->Date->Day;
+        t.tm_hour = dt->Time->Hour;
+        t.tm_min  = dt->Time->Minute;
+        t.tm_sec  = dt->Time->Second;
+
+        if (isUtc) {
+            return timegm(&t);
+        } else {
+            return mktime(&t);
+        }
+    };
+
+    if (resp.SystemDateAndTime->UTCDateTime) {
+        time_t t = buildTime(resp.SystemDateAndTime->UTCDateTime, true);
+        if (t > 0) {
+            time_utc = t;
+            return true;
+        }
+    }
+
+    if (resp.SystemDateAndTime->LocalDateTime) {
+        time_t t = buildTime(resp.SystemDateAndTime->LocalDateTime, false);
+        if (t > 0) {
+            time_utc = t;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+struct SoapHookContext {
+    int (*original_fsend)(struct soap*, const char*, size_t);
+    time_t offset;
+};
+
+void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
+    if (!soap || !soap->fsend)
+        return;
+
+    if (soap->user) {
+        auto ctx = static_cast<SoapHookContext*>(soap->user);
+        ctx->offset = offset;
+        return;
+    }
+
+    auto ctx = (SoapHookContext*)soap_malloc(soap, sizeof(SoapHookContext));
+    ctx->original_fsend = soap->fsend;
+    ctx->offset = offset;
+
+    soap->user = ctx;
+
+    soap->fsend = [](struct soap* soap, const char* buf, size_t len) -> int {
+        auto ctx = static_cast<SoapHookContext*>(soap->user);
+        if (!ctx || !ctx->original_fsend)
+            return SOAP_ERR;
+
+        // create UTC string (format: Y-m-dTH:M:SZ)
+        auto makeUtcTime = [](time_t t) -> std::string {
+            struct tm gmt;
+            gmtime_r(&t, &gmt);
+
+            char buf[64];
+            strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &gmt);
+            return std::string(buf);
+        };
+
+        auto replaceTagValue = [](std::string& xml, const std::string& tag, const std::string& value) {
+            std::string open  = "<" + tag + ">";
+            std::string close = "</" + tag + ">";
+
+            size_t pos = 0;
+            while ((pos = xml.find(open, pos)) != std::string::npos) {
+                size_t end = xml.find(close, pos);
+                if (end == std::string::npos) break;
+
+                xml.replace(pos, end - pos + close.length(), open + value + close);
+
+                pos += value.length();
+            }
+        };
+
+        std::string xml(buf, len);
+
+        if (xml.find("wsse:Security") != std::string::npos) {
+
+            time_t now = time(nullptr) + ctx->offset;
+
+            std::string created = makeUtcTime(now);
+            std::string expires = makeUtcTime(now + 10);
+
+            replaceTagValue(xml, "wsu:Created", created);
+            replaceTagValue(xml, "wsu:Expires", expires);
+        }
+
+        return ctx->original_fsend(soap, xml.c_str(), xml.size());
+    };
+}
+
 bool OnvifControl::setCredentials() {
     soap_wsse_delete_Security(_m_soap);
     // Access with username, password and lifetime
-    if (soap_wsse_add_Timestamp(_m_soap, "Time", 10) ||
-        soap_wsse_add_UsernameTokenDigest(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str())) {
+    bool need_update_time = false;
+    time_t cam_time = 0;
+    time_t offset_time = 0;
+    if (getCameraTime(cam_time)) {
+        offset_time = cam_time - time(nullptr);
+        if (abs(offset_time) >= 5) {
+            installSoapHook(_m_soap, offset_time);
+            need_update_time = true;
+        }
+    }
+
+    const int ret = need_update_time ? (soap_wsse_add_UsernameTokenDigest_at(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), cam_time)) 
+                                     : (soap_wsse_add_UsernameTokenDigest(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str()));
+
+    if (soap_wsse_add_Timestamp(_m_soap, "Time", 10) || ret) {
         reportError();
         return false;
     }
