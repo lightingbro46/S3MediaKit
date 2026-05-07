@@ -47,7 +47,7 @@ public:
      * @param path http access path
      * @return For example, MY_SESSION=XXXXXX;expires=Wed, Jun 12 2019 06:30:48 GMT;path=/index/files/
      */
-    std::string getCookie(const std::string &path) const;
+    std::string getCookie(const std::string &path, bool is_secure = false) const;
 
     /**
      * Get cookie random string

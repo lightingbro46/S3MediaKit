@@ -33,6 +33,8 @@ struct HttpCookieAttachment {
     string _err_msg;
     // Other information during hls live broadcast, mainly used for player count and traffic count
     HlsCookieData::Ptr _hls_data;
+    // Whether the cookie is used in a secure context (HTTPS), used to determine whether to add "SameSite=None; Secure; HttpOnly" attributes to the cookie
+    bool _is_secure = false;
 };
 
 const string &HttpFileManager::getContentType(const char *name) {
@@ -337,11 +339,12 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
     }
 
     bool is_hls = media_info.schema == HLS_SCHEMA || media_info.schema == HLS_FMP4_SCHEMA;
+    bool is_secure = sender.overSsl();
 
     weak_ptr<Session> weak_session = static_pointer_cast<Session>(sender.shared_from_this());
 
     // This user has never obtained a cookie, at this time we broadcast whether to allow this user to access this http directory
-    HttpSession::HttpAccessPathInvoker accessPathInvoker = [callback, uid, path, is_dir, is_hls, media_info, weak_session]
+    HttpSession::HttpAccessPathInvoker accessPathInvoker = [callback, uid, path, is_dir, is_hls, media_info, weak_session, is_secure]
             (const string &err_msg, const string &cookie_path_in, int life_second) {
         auto strong_session = weak_session.lock();
         if (!strong_session) {
@@ -362,6 +365,7 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
             attach->_path = cookie_path;
             // Record whether access is allowed
             attach->_err_msg = err_msg;
+            attach->_is_secure = is_secure;
             if (is_hls) {
                 // hls related information
                 attach->_hls_data = std::make_shared<HlsCookieData>(media_info, strong_session);
@@ -443,7 +447,8 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
         if (!err_msg.empty()) {
             StrCaseMap headerOut;
             if (cookie) {
-                headerOut["Set-Cookie"] = cookie->getCookie(cookie->getAttach<HttpCookieAttachment>()._path);
+                auto &att = cookie->getAttach<HttpCookieAttachment>();
+                headerOut["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
             }
             if (err_msg == "MaxRequest") {
                 // 429 Too Many Requests
@@ -458,7 +463,8 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
         auto response_file = [is_hls](const HttpServerCookie::Ptr &cookie, const HttpFileManager::invoker &cb, const string &file_path, const Parser &parser, const string &file_content = "") {
             StrCaseMap httpHeader;
             if (cookie) {
-                httpHeader["Set-Cookie"] = cookie->getCookie(cookie->getAttach<HttpCookieAttachment>()._path);
+                auto &att = cookie->getAttach<HttpCookieAttachment>();
+                httpHeader["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
             }
             HttpSession::HttpResponseInvoker invoker = [&](int code, const StrCaseMap &headerOut, const HttpBody::Ptr &body) {
                 if (cookie && body) {
@@ -554,6 +560,24 @@ static string getFilePath(const Parser &parser,const MediaInfo &media_info, Sess
         GET_CONFIG(string, hlsSavePath, Protocol::kHlsSavePath);
         path = hlsSavePath;
         url = parser.url();
+        // Trim the url prefix
+        string url_prefix = "/media";
+        if (start_with(url, url_prefix)) {
+            url.erase(0, url_prefix.size());
+            virtual_app += url_prefix.substr(1);
+        }
+        // Trim the appName prefix
+        GET_CONFIG(string, appName, Protocol::kAppName)
+        if (!appName.empty()) {
+            auto app_prefix = "/" + appName;
+            if (start_with(url, app_prefix)) {
+                url.erase(0, url_prefix.size());
+                virtual_app += app_prefix;
+            }
+        }
+        if (!virtual_app.empty()) {
+            virtual_app += "/";
+        }
     }
 
     for (auto &ch : url) {
@@ -618,7 +642,8 @@ void HttpFileManager::onAccessPath(Session &sender, Parser &parser, MediaInfo &i
             }
             StrCaseMap headerOut;
             if (cookie) {
-                headerOut["Set-Cookie"] = cookie->getCookie(cookie->getAttach<HttpCookieAttachment>()._path);
+                auto &att = cookie->getAttach<HttpCookieAttachment>();
+                headerOut["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
             }
             cb(err_msg.empty() ? 200 : 401, "text/html", headerOut, std::make_shared<HttpStringBody>(strMenu));
         });

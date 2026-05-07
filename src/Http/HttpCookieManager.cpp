@@ -31,8 +31,8 @@ const string &HttpServerCookie::getUid() const {
     return _uid;
 }
 
-string HttpServerCookie::getCookie(const string &path) const {
-    return (StrPrinter << _cookie_name << "=" << _cookie_uuid << ";expires=" << cookieExpireTime() << ";path=" << path);
+string HttpServerCookie::getCookie(const string &path, bool is_secure) const {
+    return (StrPrinter << _cookie_name << "=" << _cookie_uuid << ";expires=" << cookieExpireTime() << ";path=" << path << (is_secure ? "; SameSite=None; Secure; HttpOnly;" : ";"));
 }
 
 const string &HttpServerCookie::getCookie() const {

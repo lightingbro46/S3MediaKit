@@ -616,9 +616,6 @@ bool HttpSession::checkLiveStreamHls() {
         schema = HLS_FMP4_SCHEMA;
     }
 
-    // Set url without prefix and suffix
-    _parser.setUrl(url);  
-
     // Url with parameters
     if (!_parser.params().empty()) {
         url += "?";
