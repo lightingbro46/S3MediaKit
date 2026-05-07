@@ -3383,6 +3383,7 @@ void installWebApi() {
         string ts_suffix = ".live.ts";
         string flv_suffix = ".live.flv";
         string fmp4_suffix = ".live.mp4"; 
+        string fmp4_merged_suffix = ".live2.mp4"; 
         auto prefix_size = url_prefix.size();
         if (prefix_size > 0) {
             if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
@@ -3396,6 +3397,9 @@ void installWebApi() {
         if (end_with(url, fmp4_suffix)) {
             schema = FMP4_SCHEMA;
             url.erase(url.size() - fmp4_suffix.size());
+        } else if (end_with(url, fmp4_merged_suffix)) {
+            schema = FMP4_SCHEMA;
+            url.erase(url.size() - fmp4_merged_suffix.size());
         } else if (end_with(url, ts_suffix)) {
             schema = TS_SCHEMA;
             url.erase(url.size() - ts_suffix.size());
