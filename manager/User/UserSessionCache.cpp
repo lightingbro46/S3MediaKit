@@ -161,6 +161,8 @@ UserSessionCache::UserSessionCache(const string &token, const string &user_agent
 }
 
 bool UserSessionCache::hasPermissionCode(std::string code) {
+    if (_level == SYSTEM_ADMIN_LEVEL) 
+        return true;
     for (string c: _permissions){
         if (c == code) return true;
     }
