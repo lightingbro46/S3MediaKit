@@ -516,9 +516,14 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         duration_start = start;
         duration_end = end;
     });
-    DebugL << duration_start << " " << duration_end;
+    if (_duration == 0) {
+        WarnL << "No data in time period: " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.start_time) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.end_time)
+              << ", camera_id: " << _tuple.app << ", stream_id: " << _tuple.stream;
+        return;
+    }
     auto save_format = getFileExtension(_options.filename);
     _save_path = File::absolutePath(key + "." + save_format, root_path);
+    DebugL << "Make video extract of device " << _tuple.app << "/" << _tuple.stream << " duration: " << formatDuration(_duration) << "s, save path: " << _save_path;
 
     char cmd[2048] = { 0 };
     snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
