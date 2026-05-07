@@ -65,7 +65,7 @@ public:
      *                   the GOP cache is disabled and the reader burst-reads the Lo
      *                   demuxer to find the next IDR on each Hi→Lo switch.
      */
-    MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller = nullptr, bool gop_cache = true);
+    MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller = nullptr, bool gop_cache = true, bool enable_audio = true, bool add_mute_audio = true);
     
     MergedMP4Reader(const MediaTuple &tuple, const ProtocolOption &option, toolkit::EventPoller::Ptr poller = nullptr, bool gop_cache = true);
 
@@ -155,6 +155,14 @@ private:
     // Get/set the current playback position (ms), accounting for speed and pause.
     uint32_t getCurrentStamp();
     void setCurrentStamp(uint32_t new_stamp);
+
+    // Forward a frame to the output muxer and, if a mute audio maker is active,
+    // also drive it with video frames to generate synchronised silent audio.
+    void inputFrame(const Frame::Ptr &frame);
+
+    // If _add_mute_audio is true and `tracks` has video but no audio, appends a
+    // synthetic AAC track to `tracks` and initialises _mute_audio_maker.
+    void setupMuteAudio(std::vector<Track::Ptr> &tracks);
 
 private:
     //MediaSourceEvent override
@@ -246,6 +254,13 @@ private:
     // Track sets for each source
     std::vector<Track::Ptr>  _hi_tracks;
     std::vector<Track::Ptr>  _lo_tracks;
+    bool                     _have_video_hi = false; ///< hi stream has at least one video track
+    bool                     _have_video_lo = false; ///< lo stream has at least one video track
+
+    // Mute audio
+    bool                     _enable_audio   = true; ///< when false, audio tracks and frames are suppressed entirely
+    bool                     _add_mute_audio = true; ///< when true, add silent AAC track if stream has video but no audio
+    MuteAudioMaker::Ptr      _mute_audio_maker;      ///< generates mute AAC frames driven by video timestamps
 
     // Track maps — one per source path.  Built in onTrackReady(); cleared in stopReplay().
     TrackMap _lo_track_map;

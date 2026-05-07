@@ -4,6 +4,8 @@
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 #include "Extension/Frame.h"
+#include "Extension/Factory.h"
+#include <algorithm>
 
 using namespace std;
 using namespace toolkit;
@@ -14,7 +16,20 @@ namespace mediakit {
 static const int STAGE_SEGS_LIVE   = 2;  // live: need to confirm stream stable
 static const int STAGE_SEGS_REPLAY = 1;  // replay: file guaranteed stable
 
-MergedMP4Reader::MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller, bool gop_cache) {
+// Mute audio constants (mirror of MediaSink.cpp)
+static const int    MUTE_AUDIO_INDEX  = 0xFFFF;
+static uint8_t      s_mute_adts_cfg[] = { 0x15, 0x88 }; // AAC-LC 44100Hz stereo
+
+// Returns true only for IDR boundaries that should gate state transitions.
+// When a stream has video, only video keyframes mark IDR boundaries because
+// audio frames always report keyFrame()==true, which would trigger spurious
+// Hi/Lo state-machine transitions.
+static bool isVideoIDR(const Frame::Ptr &frame, bool have_video) {
+    if (!frame->keyFrame() || frame->configFrame()) return false;
+    return !have_video || frame->getTrackType() == TrackVideo;
+}
+
+MergedMP4Reader::MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::Ptr poller, bool gop_cache, bool enable_audio, bool add_mute_audio) {
     ProtocolOption option;
     // Read mp4 file and stream it, do not regenerate mp4/hls file repeatedly
     option.enable_mp4 = false;
@@ -22,6 +37,8 @@ MergedMP4Reader::MergedMP4Reader(const MediaTuple &tuple, toolkit::EventPoller::
     option.enable_hls_fmp4 = false;
     // mp4 supports multiple tracks
     option.max_track = 16;
+    option.enable_audio = enable_audio;
+    option.add_mute_audio = add_mute_audio;
     setup(tuple, option, std::move(poller), gop_cache);
 }
 
@@ -51,6 +68,8 @@ void MergedMP4Reader::setup(const MediaTuple &tuple, const ProtocolOption &optio
     _option = option;
     _hi_dropout_ms = hi_dropout_ms;
     _lo_gop_cache_enabled = gop_cache;
+    _enable_audio   = option.enable_audio;
+    _add_mute_audio = option.add_mute_audio;
 
     GET_CONFIG(string, app_name, Record::kAppName);
     if (tuple.app == app_name) {
@@ -61,12 +80,54 @@ void MergedMP4Reader::setup(const MediaTuple &tuple, const ProtocolOption &optio
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal: output muxer management
 // ─────────────────────────────────────────────────────────────────────────────
+void MergedMP4Reader::setupMuteAudio(std::vector<Track::Ptr> &tracks) {
+    _mute_audio_maker = nullptr;
+    if (!_add_mute_audio || !_enable_audio) return;
+    bool has_video = false, has_audio = false;
+    for (auto &t : tracks) {
+        if (t->getTrackType() == TrackVideo) has_video = true;
+        if (t->getTrackType() == TrackAudio) has_audio = true;
+    }
+    if (!has_video || has_audio) return; // nothing to do
+    // Create a synthetic mute AAC track (same config as MediaSink::addMuteAudioTrack())
+    auto audio = Factory::getTrackByCodecId(CodecAAC);
+    audio->setIndex(MUTE_AUDIO_INDEX);
+    audio->setExtraData(s_mute_adts_cfg, sizeof(s_mute_adts_cfg));
+    tracks.push_back(audio);
+    // MuteAudioMaker generates silent AAC frames keyed to video timestamps.
+    // Frames are injected directly into the muxer by index.
+    auto maker = std::make_shared<MuteAudioMaker>();
+    maker->addDelegate([this](const Frame::Ptr &frame) {
+        return _muxer->inputFrame(frame);
+    });
+    _mute_audio_maker = std::move(maker);
+    TraceL << "Mute AAC track added (video-only stream)";
+}
+
+void MergedMP4Reader::inputFrame(const Frame::Ptr &frame) {
+    if (!_enable_audio && frame->getTrackType() == TrackAudio) {
+        return; // audio disabled — drop audio frames
+    }
+    _muxer->inputFrame(frame);
+    if (_mute_audio_maker && frame->getTrackType() == TrackVideo) {
+        _mute_audio_maker->inputFrame(frame);
+    }
+}
+
 void MergedMP4Reader::initOutputMuxer(const std::vector<Track::Ptr> &tracks) {
     if (!_muxer) {
         _muxer = std::make_shared<FMP4MediaSourceMuxer>(_tuple, _option);
     }
 
-    for (auto &t : tracks) {
+    auto track_list = tracks; // mutable copy — setupMuteAudio may append a track
+    if (!_enable_audio) {
+        // Strip audio tracks before passing to the muxer (mirror MediaSink::addTrack)
+        track_list.erase(std::remove_if(track_list.begin(), track_list.end(),
+            [](const Track::Ptr &t) { return t->getTrackType() == TrackAudio; }),
+            track_list.end());
+    }
+    setupMuteAudio(track_list);
+    for (auto &t : track_list) {
         _muxer->addTrack(t);
     }
     _muxer->addTrackCompleted();
@@ -74,7 +135,7 @@ void MergedMP4Reader::initOutputMuxer(const std::vector<Track::Ptr> &tracks) {
     // FMP4MediaSourceMuxer::addTrackCompleted() writes the moov box synchronously —
     // no pre-fill loop needed; inputFrame() works immediately after this call.
     _muxer->setListener(shared_from_this());
-    DebugL << "Output muxer initialized with " << tracks.size() << " track(s)";
+    DebugL << "Output muxer initialized with " << track_list.size() << " track(s)";
 }
 
 // Transition to a new track set: triggers resetTracks() which saves DTS offset,
@@ -84,12 +145,19 @@ void MergedMP4Reader::switchToMuxer(const std::vector<Track::Ptr> &new_tracks) {
         initOutputMuxer(new_tracks);
         return;
     }
+    auto track_list = new_tracks; // mutable copy — setupMuteAudio may append a track
+    if (!_enable_audio) {
+        track_list.erase(std::remove_if(track_list.begin(), track_list.end(),
+            [](const Track::Ptr &t) { return t->getTrackType() == TrackAudio; }),
+            track_list.end());
+    }
+    setupMuteAudio(track_list);
     _muxer->resetTracks();
-    for (auto &t : new_tracks) {
+    for (auto &t : track_list) {
         _muxer->addTrack(t);
     }
     _muxer->addTrackCompleted();
-    DebugL << "Track switch: " << new_tracks.size() << " track(s)";
+    DebugL << "Track switch: " << track_list.size() << " track(s)";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +236,7 @@ void MergedMP4Reader::onHiFrame(const Frame::Ptr &frame) {
 
     checkHiDropout();
 
-    if (frame->keyFrame() && !frame->configFrame()) {
+    if (isVideoIDR(frame, _have_video_hi)) {
         _last_hi_idr_wall_ms = getCurrentMillisecond();
     }
 
@@ -178,7 +246,7 @@ void MergedMP4Reader::onHiFrame(const Frame::Ptr &frame) {
             // Hi IDR arrived — begin staging.
             // If Lo was staging, flush whatever we have buffered first so the
             // client gets something to decode before the Hi switch.
-            if (frame->keyFrame() && !frame->configFrame()) {
+            if (isVideoIDR(frame, _have_video_hi)) {
                 if (_state == State::StagingLo && !_lo_stage.empty()) {
                     flushLoStage(); // state → PlayingLo; sends buffered Lo GOP
                 }
@@ -197,7 +265,7 @@ void MergedMP4Reader::onHiFrame(const Frame::Ptr &frame) {
         case State::StagingHi:
             _hi_stage.push_back(frame);
             // Count IDR boundaries as segment markers
-            if (frame->keyFrame() && !frame->configFrame()) {
+            if (isVideoIDR(frame, _have_video_hi)) {
                 _hi_staged_segs++;
                 int stage_segs = _replay_mode ? STAGE_SEGS_REPLAY : STAGE_SEGS_LIVE;
                 if (_hi_staged_segs >= stage_segs) {
@@ -208,7 +276,7 @@ void MergedMP4Reader::onHiFrame(const Frame::Ptr &frame) {
 
         case State::PlayingHi:
             // Normal hi forwarding
-            _muxer->inputFrame(frame);
+            inputFrame(frame);
             break;
 
         case State::SwitchingToLo:
@@ -224,11 +292,11 @@ void MergedMP4Reader::onLoFrame(const Frame::Ptr &frame) {
         case State::StagingLo:
             // Buffer frames until a full GOP is ready before sending to client.
             // Pre-IDR frames are dropped — they cannot be decoded without a reference.
-            if (_lo_stage.empty() && !(frame->keyFrame() && !frame->configFrame())) {
+            if (_lo_stage.empty() && !isVideoIDR(frame, _have_video_lo)) {
                 break; // skip until first IDR
             }
             _lo_stage.push_back(frame);
-            if (frame->keyFrame() && !frame->configFrame()) {
+            if (isVideoIDR(frame, _have_video_lo)) {
                 _lo_staged_segs++;
                 int stage_segs = _replay_mode ? STAGE_SEGS_REPLAY : STAGE_SEGS_LIVE;
                 if (_lo_staged_segs > stage_segs) {
@@ -238,7 +306,7 @@ void MergedMP4Reader::onLoFrame(const Frame::Ptr &frame) {
             break;
 
         case State::PlayingLo:
-            _muxer->inputFrame(frame);
+            inputFrame(frame);
             break;
         
         case State::PlayingHi:
@@ -246,7 +314,7 @@ void MergedMP4Reader::onLoFrame(const Frame::Ptr &frame) {
             // Accumulate full GOP so we can flush it instantly on Hi→Lo transition.
             // On a new IDR reset the buffer (old GOP is no longer needed).
             if (_lo_gop_cache_enabled) {
-                if (frame->keyFrame() && !frame->configFrame()) {
+                if (isVideoIDR(frame, _have_video_lo)) {
                     _lo_gop_cache.clear();
                 }
                 _lo_gop_cache.push_back(frame);
@@ -265,18 +333,18 @@ void MergedMP4Reader::onLoFrame(const Frame::Ptr &frame) {
                     switchToMuxer(_lo_tracks);
                 }
                 for (auto &f : _lo_gop_cache) {
-                    _muxer->inputFrame(f);
+                    inputFrame(f);
                 }
                 _lo_gop_cache.clear();
-                _muxer->inputFrame(frame);
+                inputFrame(frame);
                 InfoL << "Switched to lo immediately (flushed GOP cache)";
-            } else if (frame->keyFrame() && !frame->configFrame()) {
+            } else if (isVideoIDR(frame, _have_video_lo)) {
                 // No cache: wait for IDR for a clean decode start
                 _state = State::PlayingLo;
                 if (!_lo_tracks.empty()) {
                     switchToMuxer(_lo_tracks);
                 }
-                _muxer->inputFrame(frame);
+                inputFrame(frame);
                 InfoL << "Switched to lo at IDR (burst-read)";
             }
             break;
@@ -287,7 +355,7 @@ void MergedMP4Reader::flushLoStage() {
     _state = State::PlayingLo;
     // Feed all staged frames into the output muxer
     for (auto &f : _lo_stage) {
-        _muxer->inputFrame(f);
+        inputFrame(f);
     }
     _lo_stage.clear();
     _lo_staged_segs = 0;
@@ -298,7 +366,7 @@ void MergedMP4Reader::flushHiStage() {
     _state = State::PlayingHi;
     // Feed all staged frames into the output muxer
     for (auto &f : _hi_stage) {
-        _muxer->inputFrame(f);
+        inputFrame(f);
     }
     _hi_stage.clear();
     _hi_staged_segs = 0;
@@ -331,7 +399,7 @@ void MergedMP4Reader::checkHiDropout() {
             switchToMuxer(_lo_tracks);
         }
         for (auto &f : _lo_gop_cache) {
-            _muxer->inputFrame(f);
+            inputFrame(f);
         }
         _lo_gop_cache.clear();
         InfoL << "Switched to lo from GOP cache";
@@ -380,6 +448,10 @@ void MergedMP4Reader::openForReplay(uint64_t sample_ms, bool ref_self, bool file
         try {
             _lo_demuxer->openMP4(lo_vod_path);
             _lo_tracks = _lo_demuxer->getTracks(false);
+            _have_video_lo = false;
+            for (auto &t : _lo_tracks) {
+                if (t->getTrackType() == TrackVideo) { _have_video_lo = true; break; }
+            }
             _replay_total_dur_s = _lo_demuxer->getDurationMS() / 1000;
             // _lo_demuxer->seekTo(0); // Ensure demuxer is ready at the start of the timeline
             DebugL << "Lo demuxer opened: " << lo_vod_path << ", duration=" << _replay_total_dur_s << "s, tracks=" << _lo_tracks.size();
@@ -706,6 +778,10 @@ void MergedMP4Reader::queryHiSegments(const MediaTuple &hi_tuple, uint64_t start
     // Capture Hi tracks from the first segment for use in initOutputMuxer.
     if (!_hi_segments.empty() && _hi_segments[0].demuxer) {
         _hi_tracks = _hi_segments[0].demuxer->getTracks(false);
+        _have_video_hi = false;
+        for (auto &t : _hi_tracks) {
+            if (t->getTrackType() == TrackVideo) { _have_video_hi = true; break; }
+        }
     }
 
     DebugL << "Hi segments queued: " << _hi_segments.size();
