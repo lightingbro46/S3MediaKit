@@ -308,6 +308,8 @@
             this._pendingQ    = [];
             this._msOpen      = false;  // true after MediaSource.sourceopen fires
             this._pendingInit = null;   // {mime, initBuf} waiting for sourceopen
+            this._nudgedAt   = 0;      // timestamp of last readyState nudge (0 = never)
+            this._nudgeCount = 0;      // how many nudges fired so far
 
             // --- Box assembly ---
             this._ftypBuf = null;
@@ -764,12 +766,15 @@
 
             // Buffer diagnostic
             if (sb.buffered.length > 0) {
-                const bStart = sb.buffered.start(0);
-                const bEnd   = sb.buffered.end(sb.buffered.length - 1);
+                const bStart  = sb.buffered.start(0);
+                const bEnd    = sb.buffered.end(sb.buffered.length - 1);
+                const bufDur  = (bEnd - bStart).toFixed(2);
                 this._log('info', '[fmp4] updateend ct=' + v.currentTime.toFixed(2)
                     + ' buffered=[' + bStart.toFixed(2) + '..' + bEnd.toFixed(2) + ']'
+                    + ' bufDur=' + bufDur + 's'
                     + ' readyState=' + v.readyState
-                    + ' paused=' + v.paused);
+                    + ' paused=' + v.paused
+                    + ' nudges=' + this._nudgeCount);
             } else {
                 this._log('info', '[fmp4] updateend — buffer empty, ct=' + v.currentTime.toFixed(2)
                     + ' readyState=' + v.readyState);
@@ -790,12 +795,59 @@
             }
 
             // Autoplay: once buffered data is available, resume playback.
-            // sequence mode guarantees currentTime is always inside the buffer,
-            // so no seek correction is needed before calling play().
-            if (sb.buffered.length > 0 && v.paused) {
-                const vp = this._tech && this._tech.player_;
-                const playPromise = vp ? vp.play() : v.play();
-                if (playPromise && playPromise.catch) playPromise.catch(() => {});
+            // Call v.play() directly (not vp.play()) — calling the VJS player's
+            // play() can trigger another handleSource invocation and orphan the
+            // MediaSource.  VJS will pick up the native 'play'/'playing' events.
+            //
+            // IMPORTANT: seek ct to bStart unconditionally (not just when paused).
+            // VJS calls play() very early, before any data arrives, so v.paused
+            // is already false on the first updateend.  In sequence mode the
+            // browser assigns timestamps starting at ~0.09 s (not 0.00 s), so
+            // ct=0.00 < bStart means ct is outside the buffered range, which
+            // keeps readyState at 1 forever even though the SourceBuffer is full.
+            if (sb.buffered.length > 0) {
+                const bStart = sb.buffered.start(0);
+                const bEnd   = sb.buffered.end(sb.buffered.length - 1);
+                const bufDur = bEnd - bStart;
+
+                // Periodic nudge: when buffer has ≥2 s of data but readyState is
+                // still < 3 (HAVE_FUTURE_DATA), seek currentTime forward so Chrome
+                // re-evaluates the decode position.  A tiny offset (0.001) often
+                // snaps back because the first decodable IDR may be at ≥0.033 s in
+                // sequence-mode.  Use a generous starting offset (0.5 s) and retry
+                // with increasing offsets every 3 s until playback starts.
+                if (bufDur >= 2.0 && v.readyState < 3) {
+                    const nowMs = performance.now();
+                    const msSinceNudge = nowMs - this._nudgedAt;
+                    // First nudge fires immediately; subsequent nudges every 3 s.
+                    if (this._nudgedAt === 0 || msSinceNudge >= 3000) {
+                        this._nudgeCount++;
+                        this._nudgedAt = nowMs;
+                        // Offsets: 0.5 s, 1.5 s, 3.0 s, then cap at bEnd-0.1
+                        const offsets = [0.5, 1.5, 3.0];
+                        const rawOff  = offsets[Math.min(this._nudgeCount - 1, offsets.length - 1)];
+                        const nudgeTarget = Math.min(bStart + rawOff, bEnd - 0.1);
+                        // Also log v.buffered to detect divergence from sb.buffered
+                        const vbStr = v.buffered.length > 0
+                            ? v.buffered.start(0).toFixed(4) + '..' + v.buffered.end(v.buffered.length - 1).toFixed(4)
+                            : 'empty';
+                        this._log('info', '[fmp4] NUDGE #' + this._nudgeCount
+                            + ': bufDur=' + bufDur.toFixed(2)
+                            + 's readyState=' + v.readyState
+                            + ' sb.buf=[' + bStart.toFixed(6) + '..' + bEnd.toFixed(4) + ']'
+                            + ' v.buf=[' + vbStr + ']'
+                            + ' → ct=' + nudgeTarget.toFixed(4));
+                        v.currentTime = nudgeTarget;
+                    }
+                }
+
+                if (v.currentTime < bStart) {
+                    v.currentTime = bStart;
+                }
+                if (v.paused) {
+                    const playPromise = v.play();
+                    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+                }
             }
 
             // Notify playing state once the element has enough data.
@@ -852,6 +904,11 @@
             try {
                 this._log('info', '[fmp4] MediaSource.endOfStream()');
                 this._ms.endOfStream();
+                // Pause the video element when it fires 'ended' to prevent the
+                // browser or VJS (autoplay:'any') from calling play() again and
+                // seeking back to currentTime=0, which would replay the buffer.
+                const v = this._videoEl;
+                if (v) v.addEventListener('ended', () => { v.pause(); }, { once: true });
             } catch (e) {
                 this._log('warn', '[fmp4] endOfStream: ' + e.message);
             }
@@ -916,21 +973,30 @@
                 this._waitLogSince = 0;
             }
 
-            // Stall detection & nudge
-            if (v.buffered.length > 0) {
-                const bStart = v.buffered.start(0);
-                const bEnd   = v.buffered.end(v.buffered.length - 1);
+            // Stall detection & nudge.
+            // v.buffered may be empty while sb.buffered already has data because
+            // Chrome (MSE sequence-mode) doesn't mark a GOP as buffered until the
+            // next IDR arrives.  Fall back to sb.buffered so that stall detection
+            // keeps running even while the first GOP is accumulating.
+            const _stBuf = v.buffered.length > 0 ? v.buffered
+                         : (this._sb && this._sb.buffered.length > 0 ? this._sb.buffered : v.buffered);
+            if (_stBuf.length > 0) {
+                const bStart = _stBuf.start(0);
+                const bEnd   = _stBuf.end(_stBuf.length - 1);
                 // ct past buffer end (sequence-mode quirk: readyState may stay 4
-                // even though decoder has no frames left) — reset to buffer start
+                // even though decoder has no frames left) — reset to buffer start.
+                // Skip this correction when httpEnded: the stream legitimately
+                // finished and the video should stay paused at the last frame.
                 if (v.currentTime > bEnd + 0.1) {
-                    if (!this._stallSince) this._stallSince = performance.now();
-                    if (performance.now() - this._stallSince > 300) {
-                        this._log('info', '[fmp4] stall-skip ct=' + v.currentTime.toFixed(2) +
-                            ' past bEnd=' + bEnd.toFixed(2) + ', reset to bStart=' + bStart.toFixed(2));
-                        v.currentTime    = bStart;
-                        this._stallSince = 0;
-                        const vp = this._tech && this._tech.player_;
-                        if (v.paused) (vp ? vp.play() : v.play()).catch(() => {});
+                    if (!this._httpEnded) {
+                        if (!this._stallSince) this._stallSince = performance.now();
+                        if (performance.now() - this._stallSince > 300) {
+                            this._log('info', '[fmp4] stall-skip ct=' + v.currentTime.toFixed(2) +
+                                ' past bEnd=' + bEnd.toFixed(2) + ', reset to bStart=' + bStart.toFixed(2));
+                            v.currentTime    = bStart;
+                            this._stallSince = 0;
+                            if (v.paused) v.play().catch(() => {});
+                        }
                     }
                 } else if (rs >= 3) {
                     this._stallSince = 0;
@@ -944,8 +1010,7 @@
                                 ' before bStart=' + bStart.toFixed(2));
                             v.currentTime    = bStart;
                             this._stallSince = 0;
-                            const vp = this._tech && this._tech.player_;
-                            if (v.paused) (vp ? vp.play() : v.play()).catch(() => {});
+                            if (v.paused) v.play().catch(() => {});
                         }
                     } else if (stallMs > 800) {
                         // ct within buffer but decoder stalled — nudge forward
@@ -954,8 +1019,7 @@
                             ' -> ' + nudge.toFixed(2));
                         v.currentTime    = nudge;
                         this._stallSince = 0;
-                        const vp = this._tech && this._tech.player_;
-                        if (v.paused) (vp ? vp.play() : v.play()).catch(() => {});
+                        if (v.paused) v.play().catch(() => {});
                     }
                 }
             } else {
@@ -1002,6 +1066,17 @@
                 const vjsPlayer = tech.player_;
                 const plugin = _pendingPlugin
                     || (_pluginRegistry && vjsPlayer ? _pluginRegistry.get(vjsPlayer) : null);
+
+                // Guard: VJS sometimes calls handleSource a second time when
+                // player.play() is invoked on a freshly-set src (e.g. because
+                // readyState is still 0 and VJS retries the source load).
+                // Without this guard a second MediaSource (MS2) is created and
+                // attached to the video element while the original handler keeps
+                // appending to MS1 — video element sees empty MS2 → readyState=1
+                // forever even though sb.buffered grows to 30 s.
+                if (!_pendingPlugin && plugin && plugin._handler && plugin._handler.running) {
+                    return plugin._handler;
+                }
 
                 const cb      = plugin ? plugin._makeHandlerCb() : _makeFallbackCb();
                 const handler = new S3ProFmp4Handler(source, tech, options, cb);
@@ -1106,8 +1181,11 @@
             _pendingPlugin = this;
             this._player.src({ src: url, type });
             _pendingPlugin = null;
-
-            this._player.play().catch(() => {});
+            // Do NOT call player.play() here: on a freshly-set src with
+            // readyState=0, VJS re-invokes the source handler to reload,
+            // creating an orphaned duplicate MediaSource (see handleSource guard).
+            // Autoplay is triggered from _handleUpdateEnd once the first data
+            // is buffered, at which point the video element is ready.
         }
 
         stop() {

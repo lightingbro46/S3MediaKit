@@ -27,7 +27,7 @@ function initPlayerControls(player) {
         if (badgeLive)   badgeLive.classList.toggle('show',   m === 'live');
         if (badgeReplay) badgeReplay.classList.toggle('show', m === 'replay');
         // In replay mode: HLS is not supported — silently switch transport to MP4
-        if (m === 'replay' && _selectedTransport !== 'mp4') {
+        if (m === 'replay' && _selectedTransport === 'hls') {
             _selectedTransport = 'mp4';
             _updateTransportMenu();
         }
@@ -112,13 +112,27 @@ function initPlayerControls(player) {
     var errOverlay = document.getElementById('player-error');
     var errMsgEl   = document.getElementById('player-error-msg');
 
+    // Devtools console log — default OFF; enable via setConsoleLogEnabled(true)
+    var _consoleLogEnabled = false;
+
+    // Expose so external callers can do: initPlayerControls(player).setConsoleLogEnabled(true)
+    var _publicApi = {
+        setConsoleLogEnabled: function (enabled) { _consoleLogEnabled = !!enabled; },
+    };
+
     player.on('log', function (level, msg) {
-        if (!logEl) return;
-        var d = document.createElement('div');
-        d.className   = 'log-' + level;
-        d.textContent = msg;
-        logEl.appendChild(d);
-        logEl.scrollTop = logEl.scrollHeight;
+        // Always write to the UI log panel
+        if (logEl) {
+            var d = document.createElement('div');
+            d.className   = 'log-' + level;
+            d.textContent = msg;
+            logEl.appendChild(d);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        // Optionally mirror to browser devtools Console
+        if (_consoleLogEnabled) {
+            (console[level] || console.log)('[s3pro]', msg);
+        }
     });
 
     player.on('error', function (msg) {
@@ -133,6 +147,33 @@ function initPlayerControls(player) {
     // Loading overlay element (spinner shown while connecting/buffering)
     var loadingOverlay = document.getElementById('player-loading');
 
+    // =========================================================================
+    // Freeze-frame canvas: capture last video frame when stream ends
+    // =========================================================================
+    var freezeCanvas = document.getElementById('player-freeze');
+
+    /** Draw current video frame onto the canvas and show it. */
+    function _captureFrame() {
+        var v = document.querySelector('.vjs-tech');
+        if (!freezeCanvas || !v || v.videoWidth === 0 || v.readyState < 2) return false;
+        freezeCanvas.width  = v.videoWidth;
+        freezeCanvas.height = v.videoHeight;
+        try {
+            freezeCanvas.getContext('2d').drawImage(v, 0, 0);
+            freezeCanvas.classList.add('show');
+            return true;
+        } catch (_) { return false; }
+    }
+
+    /** Hide and clear the freeze canvas. */
+    function _clearFrame() {
+        if (!freezeCanvas) return;
+        freezeCanvas.classList.remove('show');
+        // Clear pixels so stale content doesn’t flash on the next stream
+        var ctx = freezeCanvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, freezeCanvas.width, freezeCanvas.height);
+    }
+
     player.on('statechange', function (state) {
         // Show spinner for both connecting and buffering; hide on playing/stopped/error/idle
         var isLoading = (state === 'connecting' || state === 'buffering');
@@ -144,6 +185,16 @@ function initPlayerControls(player) {
         // Clear error overlay when playback resumes
         if (state === 'playing' || state === 'buffering') {
             if (errOverlay) errOverlay.classList.remove('show');
+        }
+        // When stream ends naturally (server closed): capture last frame and show
+        // stopped overlay with the frozen image underneath.
+        // When a new stream starts: clear frozen frame immediately.
+        if (state === 'stopped') {
+            _captureFrame();
+            showStoppedOverlay();
+        } else if (state === 'connecting') {
+            _clearFrame();
+            hideStoppedOverlay();
         }
         // Update _stopped flag so the play/pause PCB button stays consistent
         if (state === 'stopped' || state === 'idle' || state === 'error') {
@@ -199,7 +250,7 @@ function initPlayerControls(player) {
     // =========================================================================
     // 'auto' = no specific stream; otherwise contains the streamId string
     let _selectedStreamId  = 'auto';
-    let _selectedTransport = 'mp4'; // 'mp4' | 'hls'
+    let _selectedTransport = 'mp4'; // 'mp4' | 'hls' | 'ws-fmp4'
 
     // Cached stream profiles fetched from device statistic API
     let _deviceStreamProfiles = [];
@@ -212,6 +263,12 @@ function initPlayerControls(player) {
     // =========================================================================
     // URL builder helpers
     // =========================================================================
+
+    /** Convert an http(s):// domain to ws(s):// for WebSocket transport. */
+    function _toWsUrl(domain) {
+        return domain.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+    }
+
     function _buildLiveUrl(domain, cameraId, streamId) {
         if (_selectedTransport === 'hls') {
             if (streamId) {
@@ -221,6 +278,14 @@ function initPlayerControls(player) {
             // HLS master playlist — quality selection handled by the HLS manifest itself
             return domain + '/media/live/' + encodeURIComponent(cameraId) + '/hls.master.m3u8';
         }
+        if (_selectedTransport === 'ws-fmp4') {
+            var wsDomain = _toWsUrl(domain);
+            if (streamId) {
+                return wsDomain + '/media/live/' + encodeURIComponent(cameraId)
+                     + '/' + encodeURIComponent(streamId) + '.live.mp4';
+            }
+            return wsDomain + '/media/live/' + encodeURIComponent(cameraId) + '.live2.mp4?quality=auto&prefered=hi';
+        }
         if (streamId) {
             return domain + '/media/live/' + encodeURIComponent(cameraId)
                  + '/' + encodeURIComponent(streamId) + '.live.mp4';
@@ -229,11 +294,12 @@ function initPlayerControls(player) {
     }
 
     function _buildVodUrl(domain, cameraId, streamId, stampSec) {
+        var base = (_selectedTransport === 'ws-fmp4') ? _toWsUrl(domain) : domain;
         if (streamId) {
-            return domain + '/media/record/' + encodeURIComponent(cameraId)
+            return base + '/media/record/' + encodeURIComponent(cameraId)
                  + '/' + encodeURIComponent(streamId) + '/vod/' + stampSec + '.live.mp4';
         }
-        return domain + '/media/record/' + encodeURIComponent(cameraId)
+        return base + '/media/record/' + encodeURIComponent(cameraId)
              + '/vod/' + stampSec + '.live2.mp4?quality=auto&prefered=hi';
     }
 
@@ -277,6 +343,7 @@ function initPlayerControls(player) {
         player.stop();
         if (e.isTrusted) {
             hideNoData();
+            _clearFrame();         // user explicitly stopped → clear freeze frame
             showStoppedOverlay();
         }
     }, true /* capture */);
@@ -286,6 +353,7 @@ function initPlayerControls(player) {
         _stopped = false;
         hideNoData();
         hideStoppedOverlay();
+        _clearFrame();             // new stream → clear any frozen image
         if (errOverlay) errOverlay.classList.remove('show');
         var url = document.getElementById('url-input')
             ? document.getElementById('url-input').value.trim() : '';
@@ -443,7 +511,7 @@ function initPlayerControls(player) {
         secDiv.className = 'qm-section';
         secDiv.textContent = 'Transport';
         pcbQualMenu.appendChild(secDiv);
-        [{ id: 'mp4', label: 'MP4 (FMP4)' }, { id: 'hls', label: 'HLS' }].forEach(function (t) {
+        [{ id: 'mp4', label: 'MP4 (FMP4)' }, { id: 'ws-fmp4', label: 'WS (FMP4)' }, { id: 'hls', label: 'HLS' }].forEach(function (t) {
             var div = document.createElement('div');
             div.className = 'qm-item' + (t.id === _selectedTransport ? ' active' : '');
             div.dataset.transport = t.id;
@@ -468,7 +536,7 @@ function initPlayerControls(player) {
                 // Show error, revert to MP4
                 _selectedTransport = 'mp4';
                 _updateTransportMenu();
-                if (errMsgEl)   errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4';
+                if (errMsgEl)   errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4 hoặc WS';
                 if (errOverlay) errOverlay.classList.add('show');
                 return;
             }
@@ -1180,4 +1248,6 @@ function initPlayerControls(player) {
             }
         }
     }, 200);
+
+    return _publicApi;
 }

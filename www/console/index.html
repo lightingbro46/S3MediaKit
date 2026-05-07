@@ -220,15 +220,29 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 }
 #player-nodata.show { display: flex; }
 #player-nodata svg { width: 46px; height: 46px; }
-/* stopped overlay */
+/* stopped overlay: transparent bg so freeze canvas shows through */
 #player-stopped {
     position: absolute; inset: 0; display: none;
     flex-direction: column; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.72); z-index: 5;
-    color: #666; font-size: 0.82rem; gap: 10px; border-radius: 6px;
+    background: transparent; z-index: 5;
+    color: #ccc; font-size: 0.82rem; gap: 10px; border-radius: 6px;
 }
 #player-stopped.show { display: flex; }
+#player-stopped .ps-icon {
+    background: rgba(0,0,0,0.55); border-radius: 50%; padding: 12px;
+    display: flex; align-items: center; justify-content: center;
+}
 #player-stopped svg { width: 42px; height: 42px; }
+#player-stopped .ps-label {
+    background: rgba(0,0,0,0.55); padding: 3px 10px; border-radius: 4px;
+}
+/* freeze-frame canvas: last video frame preserved on stream end */
+#player-freeze {
+    position: absolute; inset: 0; display: none;
+    z-index: 2; border-radius: 6px; width: 100%; height: 100%;
+    object-fit: contain;
+}
+#player-freeze.show { display: block; }
 /* connection error overlay */
 #player-error {
     position: absolute; inset: 0; display: none;
@@ -537,6 +551,8 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
         <div class="player-left">
             <div id="player-wrap">
                 <video id="vjs-player" class="video-js vjs-big-play-centered" muted playsinline></video>
+                <!-- Freeze-frame canvas: shows last decoded frame when stream ends -->
+                <canvas id="player-freeze"></canvas>
                 <div id="player-nodata">
                     <svg viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5" stroke-linecap="round">
                         <circle cx="12" cy="12" r="10"/>
@@ -545,10 +561,12 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
                     <span>Không có dữ liệu</span>
                 </div>
                 <div id="player-stopped">
-                    <svg viewBox="0 0 24 24" fill="#777" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="5" y="5" width="14" height="14" rx="2"/>
-                    </svg>
-                    <span>Đã dừng</span>
+                    <div class="ps-icon">
+                        <svg viewBox="0 0 24 24" fill="#ddd" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="5" y="5" width="14" height="14" rx="2"/>
+                        </svg>
+                    </div>
+                    <span class="ps-label">Đã dừng</span>
                 </div>
                 <!-- Motion MJPEG overlay -->
                 <img id="motion-overlay" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
