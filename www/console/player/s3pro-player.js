@@ -209,6 +209,58 @@
         return `video/mp4; codecs="${codecs}"`;
     }
 
+    /**
+     * Check whether a moov box contains an mvex child (required for FMP4 / MSE).
+     * A moov without mvex is a non-fragmented MP4 — Chrome MSE rejects it.
+     */
+    function hasMvex(buf) {
+        const bytes = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer,
+                                     buf.byteOffset || 0, buf.byteLength);
+        const dv    = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let pos = 8; // skip moov box header
+        while (pos + 8 <= bytes.byteLength) {
+            const size = dv.getUint32(pos);
+            if (size < 8 || pos + size > bytes.byteLength) break;
+            const type = String.fromCharCode(bytes[pos+4], bytes[pos+5],
+                                             bytes[pos+6], bytes[pos+7]);
+            if (type === 'mvex') return true;
+            pos += size;
+        }
+        return false;
+    }
+
+    /**
+     * For AVC (H.264) codecs with level > 4.0 (0x28), return a new MIME string
+     * with level clamped to High Profile Level 4.0 (avc1.640028).
+     * Chrome picks a hardware decoder based on the MIME codec string; Level 4.0
+     * has broad hardware support. Level 5.1 can cause immediate SourceBuffer
+     * decode errors on platforms where the GPU driver doesn't support it, even
+     * when isTypeSupported() returns true.
+     * Returns null if no permissive alternative is needed.
+     */
+    function _avcPermissiveMime(mime) {
+        const m = mime.match(/codecs="([^"]+)"/);
+        if (!m) return null;
+        const parts = m[1].split(',').map(c => c.trim());
+        let changed = false;
+        const newParts = parts.map(c => {
+            if (/^(avc1|avc3)\./i.test(c) && c.length >= 11) {
+                const levelHex = c.slice(-2);
+                if (parseInt(levelHex, 16) > 0x28) { // > Level 4.0
+                    changed = true;
+                    // Preserve original profile+constraint bytes, clamp only the level.
+                    // e.g. avc1.4d0033 (Main 5.1) → avc1.4d0028 (Main 4.0)
+                    //      avc1.640033 (High 5.1) → avc1.640028 (High 4.0)
+                    // Switching to a different profile (e.g. forced High) causes a
+                    // profile mismatch and the SourceBuffer decode error repeats.
+                    return c.slice(0, -2) + '28';
+                }
+            }
+            return c;
+        });
+        return changed ? 'video/mp4; codecs="' + newParts.join(',') + '"' : null;
+    }
+
     // =========================================================================
     // § 2 — Default user-facing error messages (English)
     // =========================================================================
@@ -238,6 +290,247 @@
         if (/vp09|vp9/i.test(codecs))  return msg.vp9Unsupported  + codecs;
         if (/vp8/i.test(codecs))       return msg.vp8Unsupported  + codecs;
         return msg.codecUnsupported + codecs;
+    }
+
+    /**
+     * Close VJS's ErrorDisplay modal and remove the vjs-error CSS class via
+     * every available mechanism (VJS API + direct DOM) so the overlay hides
+     * regardless of VJS version.
+     */
+    function _closeVjsErrorDisplay(player) {
+        try {
+            // VJS public API — works in most versions
+            const ed = (player.errorDisplay) || (typeof player.getChild === 'function' && player.getChild('ErrorDisplay'));
+            if (ed && typeof ed.close === 'function') ed.close();
+        } catch (_) {}
+        try {
+            // Direct DOM: the ErrorDisplay ModalDialog uses vjs-modal-dialog-open
+            const errEl = player.el().querySelector('.vjs-error-display');
+            if (errEl) {
+                errEl.classList.remove('vjs-modal-dialog-open');
+                errEl.setAttribute('aria-hidden', 'true');
+            }
+        } catch (_) {}
+    }
+
+    /**
+     * Walk moov/trak/.../avc1|avc3 and return the raw avcC box payload
+     * (the bytes after the 8-byte box header) as a Uint8Array.
+     * Used as the `description` field for VideoDecoder.configure().
+     * Returns null if the initBuf contains no AVC track.
+     */
+    function _extractAvcDescription(initBuf) {
+        if (!initBuf) return null;
+        const bytes = new Uint8Array(initBuf instanceof ArrayBuffer ? initBuf : initBuf.buffer,
+                                     initBuf.byteOffset || 0, initBuf.byteLength);
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const s4 = off => String.fromCharCode(bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]);
+        function find(start, end) {
+            let pos = start;
+            while (pos + 8 <= end) {
+                const size = dv.getUint32(pos);
+                if (size < 8 || pos + size > end) break;
+                const type = s4(pos + 4);
+                if (['moov','trak','mdia','minf','stbl'].includes(type)) {
+                    const r = find(pos + 8, pos + size);
+                    if (r) return r;
+                } else if (type === 'stsd') {
+                    const r = find(pos + 16, pos + size);
+                    if (r) return r;
+                } else if (type === 'avc1' || type === 'avc3') {
+                    let inner = pos + 86;
+                    while (inner + 8 <= pos + size) {
+                        const is = dv.getUint32(inner);
+                        if (is >= 8 && s4(inner + 4) === 'avcC') {
+                            return bytes.slice(inner + 8, inner + is);
+                        }
+                        if (is < 8) break;
+                        inner += is;
+                    }
+                }
+                pos += size;
+            }
+            return null;
+        }
+        return find(0, bytes.byteLength);
+    }
+
+    /**
+     * Scan moov to find the track ID of the first video (handler type 'vide') track.
+     * Used to filter audio sample entries when `_parseMoofSamples` processes a
+     * multiplexed FMP4 moof that contains both video and audio traf boxes.
+     * Returns the track ID (integer ≥ 1), or 1 if no video trak is found.
+     *
+     * @param {ArrayBuffer|Uint8Array} initBuf  moov (or ftyp+moov) init segment
+     * @returns {number}
+     */
+    function _findVideoTrackId(initBuf) {
+        if (!initBuf) return 1;
+        const b  = new Uint8Array(initBuf instanceof ArrayBuffer ? initBuf
+                                  : initBuf.buffer, initBuf.byteOffset || 0, initBuf.byteLength);
+        const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+        const s4 = o => String.fromCharCode(b[o], b[o+1], b[o+2], b[o+3]);
+
+        // Scan children of a container box, invoking cb(pos, end) for each
+        // matching box type; returns first non-null cb result.
+        function scanFor(pos, end, targetType, cb) {
+            while (pos + 8 <= end) {
+                const sz = dv.getUint32(pos);
+                if (sz < 8 || pos + sz > end) break;
+                if (s4(pos + 4) === targetType) {
+                    const r = cb(pos, pos + sz);
+                    if (r !== null) return r;
+                }
+                pos += sz;
+            }
+            return null;
+        }
+
+        // Walk moov → each trak; return track ID of first 'vide' trak.
+        const result = scanFor(0, b.byteLength, 'moov', (moovPos, moovEnd) =>
+            scanFor(moovPos + 8, moovEnd, 'trak', (trakPos, trakEnd) => {
+                let trackId = null, isVideo = false;
+                let p = trakPos + 8;
+                while (p + 8 <= trakEnd) {
+                    const sz = dv.getUint32(p);
+                    if (sz < 8 || p + sz > trakEnd) break;
+                    const t = s4(p + 4);
+                    if (t === 'tkhd') {
+                        // tkhd FullBox: 8B hdr + 1B ver; track_ID at +20 (v0) or +28 (v1)
+                        trackId = dv.getUint32(b[p + 8] === 1 ? p + 28 : p + 20);
+                    } else if (t === 'mdia') {
+                        // look for hdlr inside mdia to check handler_type
+                        let mp = p + 8;
+                        while (mp + 8 <= p + sz) {
+                            const ms = dv.getUint32(mp);
+                            if (ms < 8 || mp + ms > p + sz) break;
+                            if (s4(mp + 4) === 'hdlr') {
+                                // hdlr FullBox: 8B hdr + 4B ver/flags + 4B pre_defined + 4B handler_type
+                                if (s4(mp + 16) === 'vide') isVideo = true;
+                                break;
+                            }
+                            mp += ms;
+                        }
+                    }
+                    p += sz;
+                }
+                return (isVideo && trackId !== null) ? trackId : null;
+            })
+        );
+        return result !== null ? result : 1;
+    }
+
+    /**
+     * Parse a moof+mdat pair and extract individual video samples.
+     * Reads tfhd (default durations/sizes/flags), tfdt (base decode time),
+     * and trun (per-sample list) from the moof box, then slices the mdat data.
+     *
+     * @param {Uint8Array|ArrayBuffer} moofBuf
+     * @param {Uint8Array|ArrayBuffer} mdatBuf      full mdat box (includes 8-byte header)
+     * @param {number|null}           videoTrackId  if non-null, only return samples from
+     *                                              this track (skips audio traf entries)
+     * @returns {{ data:Uint8Array, timestamp:number, duration:number, isKey:boolean }[]}
+     *   timestamp and duration are in microseconds (assumes 90 kHz timescale).
+     */
+    function _parseMoofSamples(moofBuf, mdatBuf, videoTrackId = null) {
+        const m   = (moofBuf instanceof Uint8Array) ? moofBuf
+                  : new Uint8Array(moofBuf.buffer || moofBuf, moofBuf.byteOffset || 0, moofBuf.byteLength);
+        const dv  = new DataView(m.buffer, m.byteOffset, m.byteLength);
+        const s4  = off => String.fromCharCode(m[off], m[off+1], m[off+2], m[off+3]);
+        const mdat = (mdatBuf instanceof Uint8Array) ? mdatBuf
+                   : new Uint8Array(mdatBuf.buffer || mdatBuf, mdatBuf.byteOffset || 0, mdatBuf.byteLength);
+
+        // Per-traf state — reset on each tfhd so that multi-track moof boxes
+        // don't bleed values from one traf into another.
+        let currentTrackId = 0;
+        let defDuration    = 0;
+        let defSize        = 0;
+        let defFlags       = 0;
+        let baseDecodeTime = 0;
+
+        // Each run carries its own baseDecodeTime so multi-track boxes are correct.
+        const runs = []; // { dataOffset, entries, baseDecodeTime }
+
+        function walk(pos, end) {
+            while (pos + 8 <= end) {
+                const size = dv.getUint32(pos);
+                if (size < 8 || pos + size > end) break;
+                const type = s4(pos + 4);
+                if (type === 'moof' || type === 'traf') {
+                    walk(pos + 8, pos + size);
+                } else if (type === 'tfhd') {
+                    currentTrackId = dv.getUint32(pos + 12); // track_ID field
+                    // Reset per-traf defaults so audio traf doesn't corrupt video state
+                    defDuration = defSize = defFlags = 0;
+                    const flags = (m[pos+9] << 16) | (m[pos+10] << 8) | m[pos+11];
+                    let p = pos + 16; // 8B hdr + 4B ver/flags + 4B track_ID
+                    if (flags & 0x000001) p += 8;  // base-data-offset-present
+                    if (flags & 0x000002) p += 4;  // sample-description-index-present
+                    if (flags & 0x000008) { defDuration = dv.getUint32(p); p += 4; }
+                    if (flags & 0x000010) { defSize     = dv.getUint32(p); p += 4; }
+                    if (flags & 0x000020) { defFlags    = dv.getUint32(p); }
+                } else if (type === 'tfdt') {
+                    const ver = m[pos + 8];
+                    baseDecodeTime = (ver === 1)
+                        ? dv.getUint32(pos+12) * 4294967296 + dv.getUint32(pos+16)
+                        : dv.getUint32(pos + 12);
+                } else if (type === 'trun') {
+                    // Skip this traf entirely if it belongs to a non-video track
+                    // (e.g. audio track in a multiplexed video+audio FMP4 segment).
+                    if (videoTrackId !== null && currentTrackId !== videoTrackId) {
+                        pos += size;
+                        continue;
+                    }
+                    const flags = (m[pos+9] << 16) | (m[pos+10] << 8) | m[pos+11];
+                    const count = dv.getUint32(pos + 12);
+                    let p = pos + 16;
+                    let dataOffset = 0, firstFlags = defFlags;
+                    if (flags & 0x001) { dataOffset = dv.getInt32(p);  p += 4; }
+                    if (flags & 0x004) { firstFlags = dv.getUint32(p); p += 4; }
+                    const entries = [];
+                    for (let i = 0; i < count; i++) {
+                        let dur = defDuration, siz = defSize;
+                        let flg = (i === 0) ? firstFlags : defFlags;
+                        if (flags & 0x100) { dur = dv.getUint32(p); p += 4; }
+                        if (flags & 0x200) { siz = dv.getUint32(p); p += 4; }
+                        if (flags & 0x400) { flg = dv.getUint32(p); p += 4; }
+                        if (flags & 0x800) p += 4; // composition-time-offset, unused
+                        entries.push({ dur, siz, flg });
+                    }
+                    runs.push({ dataOffset, entries, baseDecodeTime });
+                }
+                pos += size;
+            }
+        }
+        walk(0, m.byteLength);
+
+        const TIMESCALE = 90000; // standard 90 kHz video timescale
+        const result    = [];
+
+        for (const run of runs) {
+            // data_offset is relative to the start of the moof box (position 0 in m).
+            // mdatBuf starts at position m.byteLength in the combined stream and
+            // its first 8 bytes are the mdat box header (size[4] + type[4]).
+            // So: offset_into_mdatBuf = data_offset - m.byteLength
+            // Example: data_offset = m.byteLength + 8  →  off = 8 (first payload byte) ✓
+            let off = run.dataOffset - m.byteLength;
+            let dts = run.baseDecodeTime;
+            for (const entry of run.entries) {
+                if (entry.siz > 0 && off >= 0 && off + entry.siz <= mdat.byteLength) {
+                    // sample_is_non_sync_sample = bit 16 of sample_flags
+                    const isKey = !((entry.flg >> 16) & 0x1);
+                    result.push({
+                        data:      mdat.slice(off, off + entry.siz),
+                        timestamp: Math.round(dts * 1000000 / TIMESCALE), // µs
+                        duration:  Math.round(entry.dur * 1000000 / TIMESCALE),
+                        isKey,
+                    });
+                }
+                off += entry.siz;
+                dts += entry.dur;
+            }
+        }
+        return result;
     }
 
     // =========================================================================
@@ -310,6 +603,11 @@
             this._pendingInit = null;   // {mime, initBuf} waiting for sourceopen
             this._nudgedAt   = 0;      // timestamp of last readyState nudge (0 = never)
             this._nudgeCount = 0;      // how many nudges fired so far
+            this._sbFallbackTried  = false; // true after one permissive-MIME retry
+            this._initBuf         = null;   // saved init segment for fallback retry
+            this._wc               = null;   // S3ProWebCodecsFallback, set when MSE fails
+            this._wcFallbackTried  = false;  // true after WebCodecs fallback attempted
+            this._wcDisposePending = null;   // WC canvas kept as frozen cover during WC→MSE transition
 
             // --- Box assembly ---
             this._ftypBuf = null;
@@ -342,6 +640,8 @@
         get moovReceived()     { return this._moovReceived; }
         get segmentsReceived() { return this._segmentsReceived; }
         get httpEnded()        { return this._httpEnded; }
+        /** True while VideoDecoder (WebCodecs) fallback is rendering to the canvas overlay. */
+        get webCodecsActive()  { return this._wc !== null; }
 
         // -----------------------------------------------------------------------
         // Transport
@@ -516,6 +816,11 @@
             const mime = parseMimeFromInitSegment(boxBuf) || 'video/mp4; codecs="avc1.42E01E,mp4a.40.2"';
             this._log('info', '[fmp4] moov codec=' + mime);
 
+            if (!hasMvex(boxBuf)) {
+                this._log('warn', '[fmp4] moov has no mvex box — stream is not fragmented MP4; ' +
+                    'Chrome MSE will likely reject the init segment');
+            }
+
             const codecErr = checkCodecSupport(mime, this._cb.messages);
             if (codecErr) {
                 this._log('error', '[fmp4] ' + codecErr);
@@ -524,8 +829,13 @@
                 return;
             }
 
+            // Emit 'buffering' only on the first moov (stream start).
+            // Subsequent moov boxes are codec/resolution changes — suppress the
+            // loading overlay for those to avoid a flash between the playing state.
+            if (!this._moovReceived) {
+                this._cb.onState('buffering');
+            }
             this._moovReceived = true;
-            this._cb.onState('buffering');
 
             // Build init segment: ftyp (if any) + moov
             const initBuf = this._ftypBuf
@@ -535,6 +845,65 @@
 
             // Discard any orphaned moof from the previous codec segment
             this._moofBuf = null;
+
+            // ── WebCodecs active: live codec / resolution change ──────────────
+            // Always try MSE first for codec changes — the new codec may have a
+            // level/profile that the hardware decoder can handle even though the
+            // previous one could not.  Keep the WC canvas visible as a frozen
+            // cover while MSE initialises so there is no blank frame.
+            // WC reinit is the fallback only when MediaSource.isTypeSupported()
+            // returns false for the new codec.
+            if (this._wc) {
+                const mseSupportsMime = (typeof MediaSource !== 'undefined') &&
+                    (() => { try { return MediaSource.isTypeSupported(mime); } catch (_) { return false; } })();
+
+                if (mseSupportsMime) {
+                    this._log('info', '[wc→mse] codec change -> ' + mime + '; trying MSE first');
+                    // Freeze canvas as visual cover — stop feeding old decoder.
+                    this._wcDisposePending = this._wc;
+                    this._wc              = null;
+                    this._sbFallbackTried = false;
+                    this._wcFallbackTried = false;
+                    this._segmentsReceived = 0;
+                    this._pendingQ        = [];
+                    this._setupMS(mime, initBuf);
+                    return;
+                }
+
+                // MSE cannot handle this codec — reinitialise VideoDecoder directly.
+                const wcNewCodec = (mime.match(/codecs="([^"]+)"/) || [])[1]
+                    ?.split(',').map(s => s.trim())
+                    .find(c => !/^mp4a|^opus|^ac-3/.test(c));
+                if (wcNewCodec && /^avc1|^avc3/i.test(wcNewCodec)) {
+                    this._log('info', '[wc] in-stream codec change detected -> ' + wcNewCodec
+                        + '; reinitialising VideoDecoder');
+                    this._initBuf = new Uint8Array(initBuf);
+                    const oldWc  = this._wc;
+                    const wcDesc = _extractAvcDescription(new Uint8Array(initBuf));
+                    const newWc  = new S3ProWebCodecsFallback(
+                        this._videoEl, (lv, msg) => this._log(lv, msg));
+                    newWc.start(wcNewCodec, wcDesc, initBuf, () => this._cb.onState('playing')).then(ok => {
+                        // Dispose old decoder AFTER new canvas is mounted so
+                        // there is no frame where both canvases are visible.
+                        oldWc.dispose();
+                        if (ok) {
+                            this._wc = newWc;
+                            this._log('info', '[wc] VideoDecoder re-configured for ' + wcNewCodec);
+                            this._cb.onState('buffering');
+                        } else {
+                            newWc.dispose();
+                            this._wc = null;
+                            this._log('warn', '[wc] VideoDecoder reinit failed for ' + wcNewCodec);
+                            this._cb.showError('Codec change: VideoDecoder does not support ' + wcNewCodec);
+                            this._cb.onState('error');
+                        }
+                    });
+                } else {
+                    this._log('warn', '[wc] in-stream codec change to unsupported codec: ' + mime);
+                }
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────────
 
             if (!this._sb) {
                 // First moov: SourceBuffer not yet created.
@@ -575,6 +944,21 @@
 
         _onMdat(boxBuf) {
             if (!this._moofBuf) return;
+
+            // WebCodecs path — active when MSE has been replaced by VideoDecoder fallback.
+            // Feed the raw moof+mdat separately so _parseMoofSamples can slice samples.
+            if (this._wc) {
+                const moofBuf = this._moofBuf;
+                const mdatBuf = new Uint8Array(boxBuf);
+                this._moofBuf = null;
+                this._segmentsReceived++;
+                const dtsMs = readTfdt(moofBuf);
+                if (dtsMs !== null) this._cb.onDts(dtsMs, this._currentMime || '');
+                this._log('info', '[fmp4] segment #' + this._segmentsReceived
+                    + ' (wc) dts=' + (dtsMs !== null ? dtsMs.toFixed(0) + 'ms' : 'n/a'));
+                this._wc.feedSegment(moofBuf, mdatBuf);
+                return;
+            }
 
             const segment = concat(this._moofBuf, new Uint8Array(boxBuf));
             this._moofBuf = null;
@@ -682,6 +1066,7 @@
             this._pendingQ = [...preSegments];
             this._moofBuf = null;
             this._teardownMS();
+            this._cb.onState('buffering'); // recreating MediaSource — show loading overlay
             this._setupMS(mime, initBuf);
         }
 
@@ -710,12 +1095,92 @@
 
                 this._sb.addEventListener('error', () => {
                     this._log('error', '[fmp4] SourceBuffer decode error (' + mime + ')');
+                    // If the error fired before any segment was decoded (init-segment
+                    // rejection), try once with a Level-4.0 MIME string.
+                    // This fixes: avc1.4d0033 (H.264 Level 5.1) — Chrome reports
+                    // isTypeSupported=true but the GPU driver rejects Level > 4.0,
+                    // causing an immediate SourceBuffer error on the init append.
+                    if (this._segmentsReceived === 0 && !this._sbFallbackTried) {
+                        const fallbackMime = _avcPermissiveMime(mime);
+                        if (fallbackMime) {
+                            this._sbFallbackTried = true;
+                            this._log('warn', '[fmp4] init-decode error — hardware decoder rejected ' +
+                                mime + '; retrying with ' + fallbackMime);
+                            const savedInitBuf = this._initBuf;
+                            this._teardownMS();
+                            this._setupMS(fallbackMime, savedInitBuf);
+                            return;
+                        }
+                    }
+                    // WebCodecs fallback — VideoDecoder with prefer-software bypasses
+                    // hardware decoder level restrictions that cause MSE to fail
+                    // (e.g. H.264 Level 5.1 on GPUs capped at Level 4.0).
+                    if (!this._wcFallbackTried && S3ProWebCodecsFallback.isSupported()) {
+                        this._wcFallbackTried = true;
+                        // Always derive the video codec from the ORIGINAL init segment,
+                        // not from `mime` which may be the permissive-fallback value
+                        // (e.g. avc1.4d0028) when the second SB attempt also fails.
+                        // VideoDecoder with prefer-software handles any H.264 level, so
+                        // using the correct original descriptor (e.g. avc1.4d0033) is
+                        // more accurate and avoids a level mismatch with the avcC bytes.
+                        const wcOrigMime = (this._initBuf
+                            ? parseMimeFromInitSegment(this._initBuf) : null) || mime;
+                        const wcCodec = (wcOrigMime.match(/codecs="([^"]+)"/) || [])[1]
+                            ?.split(',').map(s => s.trim())
+                            .find(c => !/^mp4a|^opus|^ac-3/.test(c));
+                        if (wcCodec && /^avc1|^avc3/i.test(wcCodec)) {
+                            const wcDesc = _extractAvcDescription(this._initBuf);
+                            this._log('warn', '[fmp4] MSE decode failed — starting VideoDecoder ' +
+                                '(prefer-software) fallback for ' + wcCodec);
+                            // ── Suppress the MEDIA_ERR_SRC_NOT_SUPPORTED that Chrome
+                            // fires SYNCHRONOUSLY as the SourceBuffer error propagates up
+                            // to the video element — BEFORE wc.start() resolves.
+                            // clearError() sets _suppressMseError=true and registers a
+                            // capture-phase blocker on the <video> element right now, so
+                            // both the blocker and the player.on('error') guard are in
+                            // place before the async error arrives.
+                            if (this._cb.clearError) this._cb.clearError();
+                            const wc = new S3ProWebCodecsFallback(
+                                this._videoEl, (lv, msg) => this._log(lv, msg));
+                            wc.start(wcCodec, wcDesc, this._initBuf, () => this._cb.onState('playing')).then(ok => {
+                                // Dispose any pending WC canvas kept as cover during a
+                                // prior WC→MSE attempt that MSE failed to handle.
+                                if (this._wcDisposePending) {
+                                    this._wcDisposePending.dispose();
+                                    this._wcDisposePending = null;
+                                }
+                                if (ok) {
+                                    this._wc = wc;
+                                    // Skip endOfStream() — SourceBuffer is already in error
+                                    // state; calling it would trigger MEDIA_ERR_SRC_NOT_SUPPORTED
+                                    // on the video element and show a VJS error overlay.
+                                    const savedMime = wcOrigMime; // preserve before teardown clears it
+                                    this._teardownMS(true);
+                                    this._currentMime = savedMime; // restore for onDts callbacks
+                                    // Clear the VJS error overlay that was shown when the
+                                    // video element fired its error event due to MSE failure.
+                                    if (this._cb.clearError) this._cb.clearError();
+                                    this._cb.onState('buffering');
+                                    this._log('info', '[wc] VideoDecoder fallback active');
+                                } else {
+                                    wc.dispose();
+                                    this._stop();
+                                    this._cb.showError('Media decode error (' + mime + ')');
+                                    this._cb.onState('error');
+                                }
+                            });
+                            return;
+                        }
+                    }
+                    // Save mime before _stop() clears this._currentMime
+                    const errMime = mime;
                     this._stop();
-                    this._cb.showError('Media decode error (' + this._currentMime + ')');
+                    this._cb.showError('Media decode error (' + errMime + ')');
                     this._cb.onState('error');
                 });
 
                 this._log('info', '[fmp4] SourceBuffer created: ' + mime);
+                this._initBuf = initBuf; // saved for fallback retry
                 this._pendingQ.unshift({ buf: initBuf });
                 this._log('info', '[fmp4] init segment queued, size=' + initBuf.byteLength);
                 this._drainQueue();
@@ -732,10 +1197,12 @@
             this._currentMime = mime;
             this._msOpen      = false;
             this._pendingInit = null;
-            const ms     = new MediaSource();
-            this._ms     = ms;
-            this._objUrl = URL.createObjectURL(ms);
+            const ms      = new MediaSource();
+            this._ms      = ms;
+            const prevUrl = this._objUrl; // may be non-null in WC→MSE transition path
+            this._objUrl  = URL.createObjectURL(ms);
             this._videoEl.src = this._objUrl;
+            if (prevUrl) URL.revokeObjectURL(prevUrl); // safe: video already uses new URL
             ms.addEventListener('sourceopen', () => {
                 if (this._ms !== ms) return;  // stale: a newer MS replaced this one
                 this._msOpen = true;
@@ -743,14 +1210,22 @@
             }, { once: true });
         }
 
-        _teardownMS() {
+        _teardownMS(skipEndOfStream = false) {
             if (this._sb && this._onUpdateEnd) {
                 try { this._sb.removeEventListener('updateend', this._onUpdateEnd); } catch (_) {}
             }
-            try {
-                if (this._ms && this._ms.readyState === 'open') this._ms.endOfStream();
-            } catch (_) {}
-            if (this._objUrl) { URL.revokeObjectURL(this._objUrl); this._objUrl = null; }
+            if (!skipEndOfStream) {
+                try {
+                    if (this._ms && this._ms.readyState === 'open') this._ms.endOfStream();
+                } catch (_) {}
+            }
+            // When skipEndOfStream is true (WebCodecs fallback path) we deliberately
+            // keep the blob URL alive.  Revoking it would make the video element's src
+            // invalid, causing the browser to fire another MEDIA_ERR_SRC_NOT_SUPPORTED
+            // event which re-shows the VJS error overlay even after clearError().
+            // The blob URL (and the abandoned MediaSource) are reclaimed by GC once the
+            // video element is reset in a subsequent _stop() → _teardownMS() call.
+            if (this._objUrl && !skipEndOfStream) { URL.revokeObjectURL(this._objUrl); this._objUrl = null; }
             this._ms          = null;
             this._sb          = null;
             this._currentMime = '';
@@ -816,7 +1291,7 @@
                 // snaps back because the first decodable IDR may be at ≥0.033 s in
                 // sequence-mode.  Use a generous starting offset (0.5 s) and retry
                 // with increasing offsets every 3 s until playback starts.
-                if (bufDur >= 2.0 && v.readyState < 3) {
+                if (bufDur >= 2.0 && v.readyState < 3 && !this._httpEnded) {
                     const nowMs = performance.now();
                     const msSinceNudge = nowMs - this._nudgedAt;
                     // First nudge fires immediately; subsequent nudges every 3 s.
@@ -844,7 +1319,10 @@
                 if (v.currentTime < bStart) {
                     v.currentTime = bStart;
                 }
-                if (v.paused) {
+                // Guard: do NOT call play() after a VOD/replay stream has finished.
+                // Without this, the trim's updateend chain resumes after v.pause(),
+                // and Chrome reacts to play()-on-ended by seeking back to position 0.
+                if (v.paused && !this._httpEnded) {
                     const playPromise = v.play();
                     if (playPromise && playPromise.catch) playPromise.catch(() => {});
                 }
@@ -854,6 +1332,13 @@
             // VJS 'playing' event may be delayed on some configs — emit here so
             // the loading overlay is hidden as soon as the decoder can start.
             if (sb.buffered.length > 0 && v.readyState >= 3) {
+                // Complete WC→MSE transition: frozen canvas cover is no longer needed.
+                if (this._wcDisposePending) {
+                    this._wcDisposePending.dispose();
+                    this._wcDisposePending = null;
+                    if (this._cb.disableMseSuppress) this._cb.disableMseSuppress();
+                    this._log('info', '[wc→mse] MSE playing, WebCodecs canvas removed');
+                }
                 this._cb.onState('playing');
             }
 
@@ -922,6 +1407,8 @@
             this._running = false;
             if (this._fetchCtrl) { this._fetchCtrl.abort(); this._fetchCtrl = null; }
             if (this._ws)        { this._ws.close();        this._ws = null;        }
+            if (this._wc)              { this._wc.dispose();              this._wc = null;              }
+            if (this._wcDisposePending){ this._wcDisposePending.dispose(); this._wcDisposePending = null; }
             if (this._stagingTimer) { clearTimeout(this._stagingTimer); this._stagingTimer = null; }
             this._pendingQ         = [];
             this._moofBuf          = null;
@@ -932,6 +1419,9 @@
             this._noDataSince      = 0;
             this._waitLogSince     = 0;
             this._segmentsReceived = 0;
+            this._sbFallbackTried  = false;
+            this._wcFallbackTried  = false;
+            this._initBuf          = null;
             this._teardownMS();
         }
 
@@ -1010,7 +1500,7 @@
                                 ' before bStart=' + bStart.toFixed(2));
                             v.currentTime    = bStart;
                             this._stallSince = 0;
-                            if (v.paused) v.play().catch(() => {});
+                            if (v.paused && !this._httpEnded) v.play().catch(() => {});
                         }
                     } else if (stallMs > 800) {
                         // ct within buffer but decoder stalled — nudge forward
@@ -1019,7 +1509,7 @@
                             ' -> ' + nudge.toFixed(2));
                         v.currentTime    = nudge;
                         this._stallSince = 0;
-                        if (v.paused) v.play().catch(() => {});
+                        if (v.paused && !this._httpEnded) v.play().catch(() => {});
                     }
                 }
             } else {
@@ -1039,8 +1529,242 @@
     } // end S3ProFmp4Handler
 
     // =========================================================================
+    // § 4b — S3ProWebCodecsFallback
+    //
+    // Activated by S3ProFmp4Handler when MSE SourceBuffer fails to decode
+    // (typically because the GPU driver rejects a codec level that
+    // MediaSource.isTypeSupported() falsely reported as supported).
+    //
+    // Uses VideoDecoder with hardwareAcceleration:'prefer-software' — the same
+    // software fallback path that native <video> uses — and renders decoded
+    // VideoFrames to a Canvas overlay placed on top of the <video> element.
+    //
+    // Audio: MSE is torn down after this class starts, so audio goes silent.
+    // For most surveillance / monitoring use-cases this is acceptable.
+    // =========================================================================
+    class S3ProWebCodecsFallback {
+
+        /** Feature-detect: returns true if WebCodecs VideoDecoder is available. */
+        static isSupported() {
+            return typeof VideoDecoder      !== 'undefined' &&
+                   typeof EncodedVideoChunk !== 'undefined' &&
+                   typeof VideoDecoder.isConfigSupported === 'function';
+        }
+
+        /**
+         * @param {HTMLVideoElement} videoEl  — the player's <video> element
+         * @param {Function}         log      — (level, msg) logger
+         */
+        constructor(videoEl, log) {
+            this._videoEl      = videoEl;
+            this._log          = log;
+            this._decoder      = null;
+            this._canvas       = null;
+            this._ctx          = null;
+            this._running      = false;
+            this._videoTrackId = 1; // video track ID parsed from moov, default 1
+            // Frame scheduling — frames are queued and rendered via requestAnimationFrame
+            // so that each frame is displayed at its correct stream timestamp rather than
+            // all at once (which causes a burst-then-freeze artefact).
+            this._frameQueue   = []; // pending VideoFrame objects, in timestamp order
+            this._rafId        = null; // pending requestAnimationFrame id
+            this._epochWall    = null; // performance.now() when the first frame arrived (ms)
+            this._epochTs = null; // VideoDecoder timestamp of the first frame (µs)
+            
+            this._onFirstFrame    = null;
+            this._firstFrameFired = false;
+        }
+
+        /**
+         * Configure the VideoDecoder and mount a Canvas overlay.
+         *
+         * @param {string}                codec        e.g. 'avc1.4d0033'
+         * @param {Uint8Array|null}        description  avcC payload from _extractAvcDescription()
+         * @param {ArrayBuffer|Uint8Array|null} initBuf moov init segment (for track ID extraction)
+         * @returns {Promise<boolean>} true on success, false if unsupported
+         */
+        async start(codec, description, initBuf = null, onFirstFrame = null) {
+            // Identify video track ID so feedSegment can ignore audio traf entries
+            // in multiplexed (video+audio) FMP4 segments.
+            this._videoTrackId = _findVideoTrackId(initBuf);
+            const config = {
+                codec,
+                hardwareAcceleration: 'prefer-software',
+            };
+            if (description && description.byteLength > 0) {
+                // VideoDecoder.configure() expects an ArrayBuffer (BufferSource)
+                config.description = description.buffer.slice(
+                    description.byteOffset,
+                    description.byteOffset + description.byteLength
+                );
+            }
+
+            try {
+                const support = await VideoDecoder.isConfigSupported(config);
+                if (!support.supported) {
+                    this._log('warn', '[wc] VideoDecoder (prefer-software) does not support: ' + codec);
+                    return false;
+                }
+            } catch (e) {
+                this._log('warn', '[wc] isConfigSupported error: ' + e.message);
+                return false;
+            }
+
+            this._decoder = new VideoDecoder({
+                output: frame  => this._onFrame(frame),
+                error:  err    => this._log('error', '[wc] decoder error: ' + err.message),
+            });
+            this._decoder.configure(config);
+
+            // Mount canvas overlay on top of the video element
+            const parent = this._videoEl && this._videoEl.parentElement;
+            if (parent) {
+                this._canvas = document.createElement('canvas');
+                this._canvas.style.cssText =
+                    'position:absolute;top:0;left:0;width:100%;height:100%;' +
+                    'background:#000;z-index:1;pointer-events:none;';
+                parent.style.position = 'relative';
+                parent.appendChild(this._canvas);
+                this._ctx = this._canvas.getContext('2d');
+            }
+
+            this._onFirstFrame    = onFirstFrame || null;
+            this._firstFrameFired = false;
+            this._running         = true;
+            this._log('info', '[wc] VideoDecoder started (prefer-software), codec=' + codec);
+            return true;
+        }
+
+        /**
+         * Parse samples from a moof+mdat pair and feed them to the VideoDecoder.
+         * @param {Uint8Array} moofBuf
+         * @param {Uint8Array} mdatBuf
+         */
+        feedSegment(moofBuf, mdatBuf) {
+            if (!this._running || !this._decoder || this._decoder.state === 'closed') return;
+            const samples = _parseMoofSamples(moofBuf, mdatBuf, this._videoTrackId);
+            for (const s of samples) {
+                try {
+                    this._decoder.decode(new EncodedVideoChunk({
+                        type:      s.isKey ? 'key' : 'delta',
+                        timestamp: s.timestamp,
+                        duration:  s.duration,
+                        data:      s.data,
+                    }));
+                } catch (e) {
+                    this._log('warn', '[wc] decode chunk error: ' + e.message);
+                }
+            }
+        }
+
+        /** Called by VideoDecoder for each decoded frame. */
+        _onFrame(frame) {
+            if (!this._running) { frame.close(); return; }
+
+            // Establish wall-clock epoch on the first frame so subsequent frames
+            // can be scheduled relative to real time.
+            if (this._epochTs === null) {
+                this._epochWall = performance.now();
+                this._epochTs   = frame.timestamp; // µs
+            }
+
+            // Safety cap: if the decoder is running far ahead of the display (e.g.
+            // a large segment was decoded all at once), discard old frames to keep
+            // memory bounded and shift the epoch so rendering catches up quickly.
+            const MAX_QUEUE = 12;
+            if (this._frameQueue.length >= MAX_QUEUE) {
+                // Re-anchor epoch to now so all queued frames are treated as "due".
+                this._epochWall = performance.now()
+                    - (this._frameQueue[0].timestamp - this._epochTs) / 1000;
+                // Drop the oldest half to avoid a prolonged display-burst.
+                const keep = Math.floor(MAX_QUEUE / 2);
+                while (this._frameQueue.length > keep) {
+                    this._frameQueue.shift().close();
+                }
+            }
+
+            this._frameQueue.push(frame);
+            if (!this._rafId) {
+                this._rafId = requestAnimationFrame(() => this._renderLoop());
+            }
+
+            if (this._onFirstFrame && !this._firstFrameFired) {
+                this._firstFrameFired = true;
+                this._onFirstFrame();
+            }
+        }
+
+        /**
+         * rAF-driven render loop: draw the latest frame whose scheduled wall-clock
+         * time has arrived, discard earlier frames, reschedule if more are pending.
+         */
+        _renderLoop() {
+            this._rafId = null;
+            if (!this._running) {
+                while (this._frameQueue.length) this._frameQueue.shift().close();
+                return;
+            }
+
+            const now = performance.now();
+            let   frameToRender = null;
+
+            // Walk the queue: consume all frames whose scheduled time ≤ now,
+            // keeping only the most recent one to render (drop skipped frames).
+            while (this._frameQueue.length) {
+                const f = this._frameQueue[0];
+                // Scheduled wall-clock time for this frame (epoch + offset from first frame)
+                const scheduled = this._epochWall + (f.timestamp - this._epochTs) / 1000;
+                if (scheduled <= now + 2) { // 2 ms lookahead tolerance
+                    if (frameToRender) frameToRender.close(); // release skipped frame
+                    frameToRender = this._frameQueue.shift();
+                } else {
+                    break; // this frame is still in the future
+                }
+            }
+
+            if (frameToRender) {
+                if (this._ctx && this._canvas) {
+                    const w = frameToRender.displayWidth, h = frameToRender.displayHeight;
+                    if (this._canvas.width !== w || this._canvas.height !== h) {
+                        this._canvas.width  = w;
+                        this._canvas.height = h;
+                    }
+                    this._ctx.drawImage(frameToRender, 0, 0);
+                }
+                frameToRender.close();
+            }
+
+            // Reschedule if there are frames still waiting in the queue.
+            if (this._frameQueue.length) {
+                this._rafId = requestAnimationFrame(() => this._renderLoop());
+            }
+        }
+
+        /** Tear down the decoder and remove the canvas overlay. */
+        dispose() {
+            this._running = false;
+            if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+            while (this._frameQueue.length) this._frameQueue.shift().close();
+            this._frameQueue = [];
+            if (this._decoder && this._decoder.state !== 'closed') {
+                try { this._decoder.close(); } catch (_) {}
+            }
+            this._decoder = null;
+            if (this._canvas && this._canvas.parentElement) {
+                this._canvas.parentElement.removeChild(this._canvas);
+            }
+            this._canvas = null;
+            this._ctx    = null;
+        }
+    } // end S3ProWebCodecsFallback
+
+    // =========================================================================
     // § 5 — SourceHandler registration (once per Html5Tech class)
     // =========================================================================
+
+    // Module-level debug flag — controls _makeFallbackCb console output.
+    // Enabled when any S3ProPlugin instance has _debugLog=true (see constructor).
+    let _globalDebug = false;
 
     // WeakMap: vjsPlayer -> S3ProPlugin
     const _pluginRegistry  = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
@@ -1058,8 +1782,9 @@
         Html5Tech.registerSourceHandler({
             canHandleSource(source) {
                 if (!source.src) return '';
-                if (source.type === 'application/x-fmp4live')     return 'probably';
-                if (/\.(live|live2)\.mp4(\?.*)?$/.test(source.src)) return 'maybe';
+                if (source.type === 'application/x-fmp4live')    return 'probably';
+                if (/^wss?:\/\//i.test(source.src))              return 'probably';
+                if (/\.live2\.mp4(\?.*)?$/.test(source.src))    return 'maybe';
                 return '';
             },
             handleSource(source, tech, options) {
@@ -1088,11 +1813,12 @@
 
     function _makeFallbackCb() {
         return {
-            log:      (lv, msg) => (console[lv] || console.log)('[s3pro]', msg),
-            showError:(msg) => console.error('[s3pro] fatal:', msg),
-            onState:  () => {},
-            onDts:    () => {},
-            messages: null,
+            log:               (lv, msg) => { if (_globalDebug) (console[lv] || console.log)('[s3pro]', msg); },
+            showError:         (msg) => console.error('[s3pro] fatal:', msg),
+            disableMseSuppress:() => {},
+            onState:           () => {},
+            onDts:             () => {},
+            messages:          null,
         };
     }
 
@@ -1118,12 +1844,21 @@
     class S3ProPlugin {
 
         constructor(player, opts) {
-            this._player    = player;
-            this._opts      = opts || {};
-            this._handler   = null;
-            this._state     = 'idle';
-            this._listeners = {};
-            this._pollTimer = null;
+            this._player          = player;
+            this._opts            = opts || {};
+            this._handler         = null;
+            this._state           = 'idle';
+            this._listeners       = {};
+            this._pollTimer       = null;
+            // Set to true when the WebCodecs canvas fallback becomes active so that
+            // the async MEDIA_ERR_SRC_NOT_SUPPORTED from the abandoned SourceBuffer
+            // is suppressed in player.on('error').  Survives handler disposal.
+            this._suppressMseError = false;
+
+            // When true, all 'log' events are also printed to the browser console.
+            // Controlled by opts.debug at construction time and setDebug() at runtime.
+            this._debugLog = !!(opts.debug);
+            if (this._debugLog) _globalDebug = true;
 
             // Convenience shorthand wiring
             if (opts.onLog)         this.on('log',         opts.onLog);
@@ -1141,6 +1876,28 @@
             player.on('playing', () => this._setState('playing'));
             player.on('ended',   () => this._setState('stopped'));
             player.on('error',   () => {
+                // While the WebCodecs fallback canvas is active, the abandoned
+                // MediaSource may fire a delayed MEDIA_ERR_SRC_NOT_SUPPORTED on
+                // the video element.  Suppress it — the canvas overlay is
+                // rendering correctly and the VJS error overlay must stay hidden.
+                //
+                // Use this._suppressMseError (a plugin-level flag) rather than
+                // this._handler.webCodecsActive because this._handler may already
+                // be null by the time the async error fires (e.g. VJS called
+                // handleSource again and replaced the handler reference).
+                if (this._suppressMseError) {
+                    try { player.error(null); } catch (_) {}
+                    try { player.removeClass('vjs-error'); } catch (_) {}
+                    _closeVjsErrorDisplay(player);
+                    setTimeout(() => {
+                        if (this._suppressMseError) {
+                            try { player.error(null); } catch (_) {}
+                            try { player.removeClass('vjs-error'); } catch (_) {}
+                            _closeVjsErrorDisplay(player);
+                        }
+                    }, 0);
+                    return;
+                }
                 const err = player.error();
                 if (err) {
                     this._emit('log', 'error', '[vjs] ' + err.message);
@@ -1166,6 +1923,7 @@
         play(url) {
             this._emit('log', 'info', '=== play: ' + url + ' ===');
             this._emit('error', null);
+            this._suppressMseError = false; // reset for new stream
             this._player.pause();
             this._stopHandler();
             // Clear any VJS error overlay from the previous stream without
@@ -1174,9 +1932,15 @@
             try { this._player.error(null); } catch (_) {}
             this._setState('connecting');
 
-            const type = /\.m3u8(\?.*)?$/i.test(url)
-                ? 'application/x-mpegURL'
-                : 'application/x-fmp4live';
+            let type;
+            if (/\.m3u8(\?.*)?$/i.test(url)) {
+                // type = 'application/x-mpegURL';
+                type = "application/vnd.apple.mpegurl";
+            } else if (/^wss?:\/\//i.test(url) || /\.live2\.mp4(\?.*)?$/i.test(url)) {
+                type = 'application/x-fmp4live';  // plugin
+            } else {
+                type = 'video/mp4';               // .live.mp4, .mp4, ... → VJS native
+            }
 
             _pendingPlugin = this;
             this._player.src({ src: url, type });
@@ -1190,6 +1954,7 @@
 
         stop() {
             this._emit('log', 'info', '=== stop ===');
+            this._suppressMseError = false;
             this._player.pause();
             this._stopHandler();
             this._player.reset();
@@ -1201,6 +1966,21 @@
             this._stopHandler();
             if (_pluginRegistry && this._player) _pluginRegistry.delete(this._player);
         }
+
+        /**
+         * Enable or disable console log output at runtime.
+         * Equivalent to passing { debug: true } in the constructor options.
+         *
+         *   sp.setDebug(true);   // turn on
+         *   sp.setDebug(false);  // turn off
+         */
+        setDebug(enable) {
+            this._debugLog = !!enable;
+            if (enable) _globalDebug = true;
+            return this; // chainable
+        }
+
+        get debug() { return this._debugLog; }
 
         getState() {
             const h  = this._handler;
@@ -1236,6 +2016,11 @@
         // -----------------------------------------------------------------------
 
         _emit(event, ...args) {
+            // When debug mode is on, mirror every log message to the browser console.
+            if (event === 'log' && this._debugLog) {
+                const [level, msg] = args;
+                (console[level] || console.log)('[s3pro]', msg);
+            }
             const cbs = this._listeners[event];
             if (!cbs) return;
             cbs.forEach(cb => { try { cb(...args); } catch (_) {} });
@@ -1254,8 +2039,49 @@
         /** Build the cb object for S3ProFmp4Handler. */
         _makeHandlerCb() {
             return {
-                log:      (level, msg) => this._emit('log', level, msg),
-                showError:(msg) => { this._setState('error'); this._emit('error', msg); },
+                log:        (level, msg) => this._emit('log', level, msg),
+                showError:  (msg) => { this._setState('error'); this._emit('error', msg); },
+                clearError: () => {
+                    // Dismiss the VJS error overlay without changing plugin state.
+                    // Called when a fallback (e.g. WebCodecs) takes over after MSE fails.
+
+                    // Raise plugin-level flag FIRST so player.on('error') can suppress
+                    // the incoming async MEDIA_ERR_SRC_NOT_SUPPORTED even if
+                    // this._handler is already null when that event fires.
+                    this._suppressMseError = true;
+
+                    try { this._player.error(null); } catch (_) {}
+                    try { this._player.removeClass('vjs-error'); } catch (_) {}
+
+                    // Belt-and-suspenders: also install a one-shot CAPTURE-PHASE
+                    // interceptor on the raw <video> element.  Capture fires before
+                    // VJS's bubble-phase Tech listener, so stopImmediatePropagation()
+                    // prevents VJS from ever calling player.error() for this event.
+                    try {
+                        const _self = this;
+                        const tech  = this._player.tech && this._player.tech(false);
+                        const vEl   = (tech && typeof tech.el === 'function')
+                                    ? tech.el()
+                                    : this._player.el().querySelector('video');
+                        if (vEl) {
+                            const blocker = (e) => {
+                                vEl.removeEventListener('error', blocker, true);
+                                if (!_self._suppressMseError) return;
+                                const code = e.target && e.target.error && e.target.error.code;
+                                if (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
+                                    e.stopImmediatePropagation();
+                                    try { _self._player.error(null); } catch (_) {}
+                                    try { _self._player.removeClass('vjs-error'); } catch (_) {}
+                                    _closeVjsErrorDisplay(_self._player);
+                                }
+                            };
+                            vEl.addEventListener('error', blocker, true);
+                        }
+                    } catch (_) {}
+
+                    if (this._state === 'error') this._setState('buffering');
+                },
+                disableMseSuppress: () => { this._suppressMseError = false; },
                 onState:  (s) => {
                     if (s === 'playing') {
                         this._setState('playing');

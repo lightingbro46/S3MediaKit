@@ -300,7 +300,7 @@ function initPlayerControls(player) {
                  + '/' + encodeURIComponent(streamId) + '/vod/' + stampSec + '.live.mp4';
         }
         return base + '/media/record/' + encodeURIComponent(cameraId)
-             + '/vod/' + stampSec + '.live2.mp4?quality=auto&prefered=hi';
+             + '/vod/' + stampSec + '.live2.mp4?quality=auto';
     }
 
     // =========================================================================
@@ -511,7 +511,7 @@ function initPlayerControls(player) {
         secDiv.className = 'qm-section';
         secDiv.textContent = 'Transport';
         pcbQualMenu.appendChild(secDiv);
-        [{ id: 'mp4', label: 'MP4 (FMP4)' }, { id: 'ws-fmp4', label: 'WS (FMP4)' }, { id: 'hls', label: 'HLS' }].forEach(function (t) {
+        [{ id: 'mp4', label: 'HTTP (FMP4)' }, { id: 'ws-fmp4', label: 'WS (FMP4)' }, { id: 'hls', label: 'HLS' }].forEach(function (t) {
             var div = document.createElement('div');
             div.className = 'qm-item' + (t.id === _selectedTransport ? ' active' : '');
             div.dataset.transport = t.id;
@@ -542,6 +542,12 @@ function initPlayerControls(player) {
             }
             if (_mode === 'live') {
                 document.getElementById('btn-play').click();
+            } else if (_mode === 'replay' && _replayStartTime > 0) {
+                // Rebuild VOD URL with the new transport and restart at the
+                // current playback position (same logic as onProfileSelect).
+                var videoEl = document.querySelector('.vjs-tech');
+                var offset  = (videoEl && videoEl.currentTime > 0) ? videoEl.currentTime : 0;
+                seekToWallTime(_replayStartTime + offset);
             }
         }
     };
