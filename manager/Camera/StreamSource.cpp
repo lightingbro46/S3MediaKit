@@ -63,7 +63,86 @@ void StreamSource::start() {
     createPlayer();
 }
 
+/**
+ * Validates the full URL syntax for RTSP, RTMP, or HTTP streams.
+ * Checks: valid schema (rtsp/rtsps/rtmp/rtmps/http/https), presence of "://",
+ * non-empty host, and valid port number (1-65535) if specified.
+ */
+static bool isValidStreamUrl(const std::string &url) {
+    // Supported schemas (ordered by likelihood)
+    static const std::string valid_schemas[] = {
+        "rtsp://", "rtsps://", "rtmp://", "rtmps://", "http://", "https://"
+    };
+
+    std::string after_schema;
+    bool schema_found = false;
+    for (const auto &schema : valid_schemas) {
+        if (url.size() > schema.size() && url.compare(0, schema.size(), schema) == 0) {
+            after_schema = url.substr(schema.size());
+            schema_found = true;
+            break;
+        }
+    }
+    if (!schema_found || after_schema.empty()) return false;
+
+    // Skip optional user:pass@ credentials 
+    std::string host_part = after_schema;
+    auto at_pos = host_part.find('@');
+    if (at_pos != std::string::npos) {
+        host_part = host_part.substr(at_pos + 1);
+    }
+    if (host_part.empty()) return false;
+
+    // Separate host[:port] from /path
+    auto slash_pos = host_part.find('/');
+    std::string host_port = (slash_pos != std::string::npos)
+                            ? host_part.substr(0, slash_pos)
+                            : host_part;
+    if (host_port.empty()) return false;
+
+    // Handle IPv6 address: [::1] or [::1]:port
+    std::string host;
+    std::string port_str;
+    if (host_port.front() == '[') {
+        auto bracket_end = host_port.find(']');
+        if (bracket_end == std::string::npos) return false;
+        host = host_port.substr(1, bracket_end - 1);
+        if (bracket_end + 1 < host_port.size()) {
+            if (host_port[bracket_end + 1] != ':') return false;
+            port_str = host_port.substr(bracket_end + 2);
+        }
+    } else {
+        auto colon_pos = host_port.rfind(':');
+        if (colon_pos != std::string::npos) {
+            host = host_port.substr(0, colon_pos);
+            port_str = host_port.substr(colon_pos + 1);
+        } else {
+            host = host_port;
+        }
+    }
+
+    if (host.empty()) return false;
+
+    // Validate port range if present
+    if (!port_str.empty()) {
+        for (unsigned char c : port_str) {
+            if (!std::isdigit(c)) return false;
+        }
+        int port = std::stoi(port_str);
+        if (port <= 0 || port > 65535) return false;
+    }
+
+    return true;
+}
+
 void StreamSource::createPlayer() {
+    if (!isValidStreamUrl(_full_url)) {
+        WarnL << "Invalid stream URL syntax (expected rtsp/rtmp/http): " << _full_url;
+        setState(false, "Invalid url");
+        onStreamReady(false, "Invalid url", nullptr);
+        return;
+    }
+
     string params = "quality=" + string((_type == StreamType::PrimaryStream) ? "hi" : "lo");
     MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, params);
 
@@ -120,7 +199,7 @@ void StreamSource::createPlayer() {
             }
 
             const auto live = false;
-            const std::string status = "self-disconnect";
+            const std::string status = "stream disconnect";
             strong_self->setState(live, status);
             TraceL << "setOnDisconnect: live=" << live << " status=" << status;
 
@@ -135,7 +214,7 @@ void StreamSource::createPlayer() {
             }
 
             auto live = !ex;
-            auto status = ex ? ex.what() : "closed";
+            auto status = ex ? ex.what() : "player closed";
             strong_self->setState(live, status);
             TraceL << "setOnClose: live=" << live << " status=" << status;
             strong_self->onStreamReady(live, status, nullptr);
