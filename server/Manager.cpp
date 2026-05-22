@@ -1195,6 +1195,24 @@ void loadServerStartedConfigJson(const Json::Value &data) {
     }
 }
 
+struct ReaderDeviceStats {
+    std::string name;
+    std::string ipAddress;
+    int total_count = 0;
+    int live_count = 0;
+    int playback_count = 0;
+};
+
+static Json::Value makeReaderDeviceStatsJson(const ReaderDeviceStats &stats) {
+    Json::Value val;
+    val["name"] = stats.name;
+    val["ipAddress"] = stats.ipAddress;
+    val["liveStreamCount"] = stats.live_count;
+    val["playbackStreamCount"] = stats.playback_count;
+    val["totalStreamCount"] = stats.total_count;
+    return val;
+}
+
 Json::Value makeSystemStatisticJson() {
     Json::Value val;
     auto osinfo = GlobalMonitor::Instance().getOsInfo();
@@ -1239,9 +1257,42 @@ Json::Value makeSystemStatisticJson() {
         val["disks"].append(disk);
     }
 
-    auto reader_count = GlobalMonitor::Instance().getReaderTotalCount();
-    val["reader"]["used"] = (Json::UInt)reader_count;
-    
+    auto reader_usage = GlobalMonitor::Instance().getReaderUsage();
+    int totalReaderCount = 0;
+    int liveReaderCount = 0;
+    int playbackReaderCount = 0;
+    int activeViewingDeviceCount = 0;    
+    std::vector<ReaderDeviceStats> readerDeviceStatsList;
+
+    for (const auto &item : reader_usage) {
+        auto recorder = StatisticRecorder::Instance().getRecorder(item.first, false);
+        if (recorder) {
+            auto params = recorder->getParams();
+            ReaderDeviceStats stats;
+            stats.name = params.option.name;
+            stats.ipAddress = params.option.ip;
+            stats.live_count = item.second.first;
+            stats.playback_count = item.second.second;
+            stats.total_count = item.second.first + item.second.second;
+
+            liveReaderCount += stats.live_count;
+            playbackReaderCount += stats.playback_count;
+            totalReaderCount += stats.total_count;
+            activeViewingDeviceCount += (stats.total_count > 0) ? 1 : 0;
+
+            readerDeviceStatsList.push_back(std::move(stats));
+        }
+    }
+
+    val["reader"]["totalStreamCount"] = (Json::UInt)totalReaderCount;
+    val["reader"]["liveStreamCount"] = (Json::UInt)liveReaderCount;
+    val["reader"]["playbackStreamCount"] = (Json::UInt)playbackReaderCount;
+    val["reader"]["activeViewingDeviceCount"] = (Json::UInt)activeViewingDeviceCount;
+    val["reader"]["devices"] = Json::arrayValue;
+    for (const auto &stats : readerDeviceStatsList) {
+        val["reader"]["devices"].append(makeReaderDeviceStatsJson(stats));
+    }
+
     auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
     val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
     val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
