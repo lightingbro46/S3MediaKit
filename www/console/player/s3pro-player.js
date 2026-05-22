@@ -261,6 +261,81 @@
         return changed ? 'video/mp4; codecs="' + newParts.join(',') + '"' : null;
     }
 
+    /**
+     * Build a permissive HEVC MIME string for SourceBuffer / VideoDecoder fallback.
+     * Some cameras advertise a too-low level (e.g. L60 = Level 2.0) while the
+     * actual bitstream is encoded at Level 4.0+.  Chrome's hardware decoder
+     * rejects the NAL units because they exceed the declared level.
+     * Strategy: bump to L153 (Level 5.1, covers 1080p60 / 4K30); if already
+     * ≥ L153 bump to L183 (Level 6.1).  Returns null if no change is needed.
+     */
+    function _hevcPermissiveMime(mime) {
+        const m = mime.match(/codecs="([^"]+)"/);
+        if (!m) return null;
+        const parts = m[1].split(',').map(c => c.trim());
+        let changed = false;
+        const newParts = parts.map(c => {
+            if (/^(hvc1|hev1)\./i.test(c)) {
+                const lm = c.match(/\.L(\d+)\./);
+                if (lm) {
+                    const cur    = parseInt(lm[1]);
+                    const target = cur < 153 ? 153 : 183;
+                    if (target !== cur) {
+                        changed = true;
+                        return c.replace(/\.L\d+\./, '.L' + target + '.');
+                    }
+                }
+            }
+            return c;
+        });
+        return changed ? 'video/mp4; codecs="' + newParts.join(',') + '"' : null;
+    }
+
+    // =========================================================================
+    // DtsTracker — monotonic DTS smoothing (owned by S3ProPlugin)
+    //
+    // Tracks the most recent decoded timestamp and interpolates elapsed time
+    // between server packets using the real wall clock.
+    // =========================================================================
+    class DtsTracker {
+        constructor() { this.reset(); }
+
+        reset() {
+            this._base   = null;  // first raw tfdt of current session (ms)
+            this._last   = 0;     // most recent raw tfdt (ms)
+            this._accum  = 0;     // accumulated time across tfdt resets (ms)
+            this._lastMs = 0;     // monotonic ms at last feed() call
+            this._realTs = 0;     // Date.now() at last feed() call
+        }
+
+        /** Ingest a raw tfdt value (ms). Returns the current monotonic offset. */
+        feed(rawMs) {
+            if (this._base === null) {
+                this._base = rawMs; this._last = rawMs; this._accum = 0;
+            } else if (rawMs < this._last - 1000) {
+                // tfdt jumped backward by > 1 s — codec switch / server reset
+                this._accum += this._last - this._base;
+                this._base   = rawMs;
+            }
+            this._last   = rawMs;
+            this._lastMs = this._accum + (rawMs - this._base);
+            this._realTs = Date.now();
+            return this._lastMs;
+        }
+
+        /**
+         * Monotonic elapsed ms, interpolated at wall-clock speed since the last
+         * feed() call. Capped at 5 s of extrapolation to avoid runaway when paused.
+         */
+        get elapsed() {
+            if (this._realTs === 0) return 0;
+            return this._lastMs + Math.min(Date.now() - this._realTs, 5000);
+        }
+
+        /** True once the first feed() has been called for this session. */
+        get hasData() { return this._realTs > 0; }
+    }
+
     // =========================================================================
     // § 2 — Default user-facing error messages (English)
     // =========================================================================
@@ -342,6 +417,48 @@
                     while (inner + 8 <= pos + size) {
                         const is = dv.getUint32(inner);
                         if (is >= 8 && s4(inner + 4) === 'avcC') {
+                            return bytes.slice(inner + 8, inner + is);
+                        }
+                        if (is < 8) break;
+                        inner += is;
+                    }
+                }
+                pos += size;
+            }
+            return null;
+        }
+        return find(0, bytes.byteLength);
+    }
+
+    /**
+     * Walk moov/trak/.../hvc1|hev1 and return the raw hvcC box payload
+     * (the bytes after the 8-byte box header) as a Uint8Array.
+     * Used as the `description` field for VideoDecoder.configure() with HEVC.
+     * Returns null if the initBuf contains no HEVC track.
+     */
+    function _extractHevcDescription(initBuf) {
+        if (!initBuf) return null;
+        const bytes = new Uint8Array(initBuf instanceof ArrayBuffer ? initBuf : initBuf.buffer,
+                                     initBuf.byteOffset || 0, initBuf.byteLength);
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const s4 = off => String.fromCharCode(bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]);
+        function find(start, end) {
+            let pos = start;
+            while (pos + 8 <= end) {
+                const size = dv.getUint32(pos);
+                if (size < 8 || pos + size > end) break;
+                const type = s4(pos + 4);
+                if (['moov','trak','mdia','minf','stbl'].includes(type)) {
+                    const r = find(pos + 8, pos + size);
+                    if (r) return r;
+                } else if (type === 'stsd') {
+                    const r = find(pos + 16, pos + size);
+                    if (r) return r;
+                } else if (type === 'hvc1' || type === 'hev1') {
+                    let inner = pos + 86;
+                    while (inner + 8 <= pos + size) {
+                        const is = dv.getUint32(inner);
+                        if (is >= 8 && s4(inner + 4) === 'hvcC') {
                             return bytes.slice(inner + 8, inner + is);
                         }
                         if (is < 8) break;
@@ -608,6 +725,8 @@
             this._wc               = null;   // S3ProWebCodecsFallback, set when MSE fails
             this._wcFallbackTried  = false;  // true after WebCodecs fallback attempted
             this._wcDisposePending = null;   // WC canvas kept as frozen cover during WC→MSE transition
+            this._csCanvas           = null;   // freeze-frame canvas shown during cross-family codec switch
+            this._pendingCodecSwitch = false;  // true: changeType path waiting for async remove to complete
 
             // --- Box assembly ---
             this._ftypBuf = null;
@@ -619,12 +738,13 @@
             this._stagingTimer = null;
 
             // --- Diagnostics ---
-            this._segmentsReceived = 0;
-            this._moovReceived     = false;
-            this._httpEnded        = false;
-            this._noDataSince      = 0;
-            this._waitLogSince     = 0;
-            this._stallSince       = 0;
+            this._segmentsReceived  = 0;
+            this._moovReceived      = false;
+            this._httpEnded         = false;
+            this._noDataSince       = 0;
+            this._waitLogSince      = 0;
+            this._stallSince        = 0;
+            this._mseInitStallSince = 0; // for proactive HEVC→WebCodecs fallback
 
             this._start();
         }
@@ -874,12 +994,15 @@
                 const wcNewCodec = (mime.match(/codecs="([^"]+)"/) || [])[1]
                     ?.split(',').map(s => s.trim())
                     .find(c => !/^mp4a|^opus|^ac-3/.test(c));
-                if (wcNewCodec && /^avc1|^avc3/i.test(wcNewCodec)) {
+                if (wcNewCodec && /^avc1|^avc3|^hvc1|^hev1/i.test(wcNewCodec)) {
                     this._log('info', '[wc] in-stream codec change detected -> ' + wcNewCodec
                         + '; reinitialising VideoDecoder');
                     this._initBuf = new Uint8Array(initBuf);
                     const oldWc  = this._wc;
-                    const wcDesc = _extractAvcDescription(new Uint8Array(initBuf));
+                    const wcNewBuf = new Uint8Array(initBuf);
+                    const wcDesc = /^hvc1|^hev1/i.test(wcNewCodec)
+                        ? _extractHevcDescription(wcNewBuf)
+                        : _extractAvcDescription(wcNewBuf);
                     const newWc  = new S3ProWebCodecsFallback(
                         this._videoEl, (lv, msg) => this._log(lv, msg));
                     newWc.start(wcNewCodec, wcDesc, initBuf, () => this._cb.onState('playing')).then(ok => {
@@ -1025,15 +1148,28 @@
                 try {
                     try { this._sb.abort(); } catch (_) {}
                     this._sb.changeType(mime);
+                    const _prevMime = this._currentMime;
                     this._currentMime = mime;
-                    this._stallSince  = 0;
+                    this._cb.onCodecChange(mime, _prevMime);
+                    // Reset per-session state — identical to the cross-family path.
+                    // Stale values cause two classes of bug after a same-family switch:
+                    //  1. _mseInitStallSince left non-zero → the 3 s WC-fallback timer
+                    //     may fire immediately after changeType() empties the buffer.
+                    //  2. _nudgeCount left at the previous session's value → first nudge
+                    //     uses the 3.0 s offset, forcing Chrome to decode many delta
+                    //     frames before showing the first frame and leaving < 0.1 s of
+                    //     buffer ahead, causing a visible freeze.
+                    this._stallSince        = 0;
+                    this._mseInitStallSince = 0;
+                    this._nudgeCount        = 0;
+                    this._nudgedAt          = 0;
+                    this._noDataSince       = 0;
+                    this._segmentsReceived  = 0;
+                    this._sbFallbackTried   = false;
+                    this._wcFallbackTried   = false;
 
-                    // sequence mode: timestampOffset resets to 0 after changeType().
-                    // Set it to currentTime so the new segments are placed starting
-                    // at the current playhead — no gap, no backward jump.
                     const ct = (this._videoEl && this._videoEl.currentTime > 0)
                         ? this._videoEl.currentTime : 0;
-                    try { this._sb.timestampOffset = ct; } catch (_) {}
 
                     // Remove old-codec frames ahead of the playhead.
                     // Without this, the buffer still contains old Lo frames from
@@ -1044,11 +1180,23 @@
                     if (this._sb.buffered.length > 0) {
                         const bufEnd = this._sb.buffered.end(this._sb.buffered.length - 1);
                         if (bufEnd > ct + 0.1) {
-                            // Async remove: _handleUpdateEnd → _drainQueue picks up pendingQ
+                            // Async remove path: do NOT set timestampOffset yet.
+                            // _handleUpdateEnd will set it to the live currentTime
+                            // once the remove (and any trim) has completed.
+                            // For HEVC, Chrome can take 2+ s to process a large IDR,
+                            // advancing ct by that much between now and when
+                            // _drainQueue finally fires; using the stale ct from here
+                            // would place the new-codec init segment behind the live
+                            // playhead, causing an immediate buffer-underrun freeze.
+                            this._pendingCodecSwitch = true;
                             this._sb.remove(ct, Infinity);
                             return;
                         }
                     }
+                    // No async remove needed: set timestampOffset now.
+                    // sequence mode: offset was reset to 0 by changeType(); restore
+                    // it to currentTime so the new segments start at the playhead.
+                    try { this._sb.timestampOffset = ct; } catch (_) {}
                     this._drainQueue();
                     return;
                 } catch (e) {
@@ -1063,11 +1211,52 @@
             } else {
                 this._log('warn', '[fmp4] recreating MediaSource -> ' + mime);
             }
+            const _prevMimeRec = this._currentMime;
             this._pendingQ = [...preSegments];
             this._moofBuf = null;
+            // Reset per-session state so the new MSE instance starts clean.
+            // Without this, stale values from the prior codec session cause two problems:
+            //  1. _sbFallbackTried/_wcFallbackTried may suppress the correct fallback
+            //     on re-entry (e.g. hvc1→avc1→hvc1 second attempt).
+            //  2. _nudgeCount carries the previous session's offset index.  With
+            //     nudgeCount=2 the first nudge uses the 3.0 s offset (capped to
+            //     bEnd−0.1 ≈ 1.9 s), forcing Chrome to software-decode ~57 HEVC delta
+            //     frames from the IDR before showing the first frame and leaving only
+            //     ~0.1 s of buffer ahead — causing a visible 3–5 s freeze.  A fresh
+            //     nudgeCount=0 uses the gentle 0.5 s offset, leaves 1.5 s of buffer
+            //     ahead, and lets Chrome reach readyState=4 immediately after decoding
+            //     just 15 frames.
+            this._segmentsReceived   = 0;
+            this._sbFallbackTried    = false;
+            this._wcFallbackTried    = false;
+            this._nudgeCount         = 0;
+            this._nudgedAt           = 0;
+            this._stallSince         = 0;
+            this._mseInitStallSince  = 0;
+            this._pendingCodecSwitch = false; // cancel any in-flight same-family switch
+            // Capture a freeze-frame canvas before tearing down — keeps the last
+            // decoded frame visible instead of flashing black while the new
+            // MediaSource is being set up.  Removed in _handleUpdateEnd once
+            // readyState >= 3 (new codec is rendering).
+            const _csParent = this._videoEl && this._videoEl.parentElement;
+            if (_csParent && this._videoEl.readyState >= 2 && this._videoEl.videoWidth > 0) {
+                try {
+                    const _cv = document.createElement('canvas');
+                    _cv.width  = this._videoEl.videoWidth;
+                    _cv.height = this._videoEl.videoHeight;
+                    _cv.getContext('2d').drawImage(this._videoEl, 0, 0);
+                    _cv.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;' +
+                        'background:#000;z-index:1;pointer-events:none;';
+                    _csParent.style.position = 'relative';
+                    _csParent.appendChild(_cv);
+                    this._csCanvas = _cv;
+                } catch (_) {}
+            }
             this._teardownMS();
-            this._cb.onState('buffering'); // recreating MediaSource — show loading overlay
+            // Skip 'buffering' spinner — freeze-frame canvas covers the video.
+            // onState('playing') fires in _handleUpdateEnd when readyState >= 3.
             this._setupMS(mime, initBuf);
+            this._cb.onCodecChange(mime, _prevMimeRec);
         }
 
         // -----------------------------------------------------------------------
@@ -1101,7 +1290,7 @@
                     // isTypeSupported=true but the GPU driver rejects Level > 4.0,
                     // causing an immediate SourceBuffer error on the init append.
                     if (this._segmentsReceived === 0 && !this._sbFallbackTried) {
-                        const fallbackMime = _avcPermissiveMime(mime);
+                        const fallbackMime = _avcPermissiveMime(mime) || _hevcPermissiveMime(mime);
                         if (fallbackMime) {
                             this._sbFallbackTried = true;
                             this._log('warn', '[fmp4] init-decode error — hardware decoder rejected ' +
@@ -1125,11 +1314,23 @@
                         // more accurate and avoids a level mismatch with the avcC bytes.
                         const wcOrigMime = (this._initBuf
                             ? parseMimeFromInitSegment(this._initBuf) : null) || mime;
-                        const wcCodec = (wcOrigMime.match(/codecs="([^"]+)"/) || [])[1]
+                        let wcCodec = (wcOrigMime.match(/codecs="([^"]+)"/) || [])[1]
                             ?.split(',').map(s => s.trim())
                             .find(c => !/^mp4a|^opus|^ac-3/.test(c));
-                        if (wcCodec && /^avc1|^avc3/i.test(wcCodec)) {
-                            const wcDesc = _extractAvcDescription(this._initBuf);
+                        // For HEVC the declared level may be wrong (e.g. L60 = Level 2.0
+                        // from cameras that send incorrect codec strings).  Bump to a
+                        // permissive level so Chrome's isConfigSupported check passes;
+                        // VideoDecoder uses the hvcC description box for actual params.
+                        if (wcCodec && /^(hvc1|hev1)/i.test(wcCodec)) {
+                            const permMime = _hevcPermissiveMime('video/mp4; codecs="' + wcCodec + '"');
+                            if (permMime) {
+                                wcCodec = (permMime.match(/codecs="([^"]+)"/) || [])[1] || wcCodec;
+                            }
+                        }
+                        if (wcCodec && /^avc1|^avc3|^hvc1|^hev1/i.test(wcCodec)) {
+                            const wcDesc = /^hvc1|^hev1/i.test(wcCodec)
+                                ? _extractHevcDescription(this._initBuf)
+                                : _extractAvcDescription(this._initBuf);
                             this._log('warn', '[fmp4] MSE decode failed — starting VideoDecoder ' +
                                 '(prefer-software) fallback for ' + wcCodec);
                             // ── Suppress the MEDIA_ERR_SRC_NOT_SUPPORTED that Chrome
@@ -1255,12 +1456,16 @@
                     + ' readyState=' + v.readyState);
             }
 
-            // Trim old frames: keep 30 s behind currentTime.
-            // In sequence mode the buffered range grows linearly from 0, so
-            // trimming by wall position keeps memory bounded.
-            if (v.currentTime > 60 && sb.buffered.length > 0) {
+            // Trim old frames: keep at most 5 s behind currentTime.
+            // Begin trimming as soon as there is > 6 s of history (guard = bStart+1).
+            // Without this, the SourceBuffer accumulates the entire stream from t=0.
+            // For HEVC, Chrome's growing decode ring causes a multi-second delay
+            // in updateend after each large IDR, letting _pendingQ grow to 60+ items
+            // (~7 s of content) before the chain resumes.
+            // Trim fires at most once per ~1 s of playback (negligible overhead).
+            if (sb.buffered.length > 0) {
                 try {
-                    const trimTo = v.currentTime - 30;
+                    const trimTo = v.currentTime - 5;
                     const bStart = sb.buffered.start(0);
                     if (trimTo > bStart + 1) {
                         sb.remove(bStart, trimTo);
@@ -1298,10 +1503,21 @@
                     if (this._nudgedAt === 0 || msSinceNudge >= 3000) {
                         this._nudgeCount++;
                         this._nudgedAt = nowMs;
-                        // Offsets: 0.5 s, 1.5 s, 3.0 s, then cap at bEnd-0.1
+                        // Offsets: 0.5 s, 1.5 s, 3.0 s
                         const offsets = [0.5, 1.5, 3.0];
                         const rawOff  = offsets[Math.min(this._nudgeCount - 1, offsets.length - 1)];
-                        const nudgeTarget = Math.min(bStart + rawOff, bEnd - 0.1);
+                        const ct      = v.currentTime;
+                        // Two cases:
+                        //  a) Initial-decode stall (HEVC, ct near bStart): seek
+                        //     FORWARD from bStart to force Chrome to commit the
+                        //     buffered range.
+                        //  b) Active-playback buffer underrun (ct >> bStart):
+                        //     seek BACKWARD from ct to give the decoder a tiny
+                        //     run-up.  Seeking all the way back to bStart would
+                        //     jump the user back seconds in a VOD stream.
+                        const nudgeTarget = ct > bStart + 1.0
+                            ? Math.max(ct - rawOff, bStart + 0.1)
+                            : Math.min(bStart + rawOff, bEnd - 0.1);
                         // Also log v.buffered to detect divergence from sb.buffered
                         const vbStr = v.buffered.length > 0
                             ? v.buffered.start(0).toFixed(4) + '..' + v.buffered.end(v.buffered.length - 1).toFixed(4)
@@ -1339,7 +1555,26 @@
                     if (this._cb.disableMseSuppress) this._cb.disableMseSuppress();
                     this._log('info', '[wc→mse] MSE playing, WebCodecs canvas removed');
                 }
+                // Complete codec-switch freeze-frame: new video is rendering.
+                if (this._csCanvas) {
+                    this._csCanvas.remove();
+                    this._csCanvas = null;
+                    this._log('info', '[fmp4] codec-switch freeze-frame canvas removed');
+                }
                 this._cb.onState('playing');
+            }
+
+            // After a same-family (changeType) codec switch the timestampOffset
+            // was intentionally NOT set during the async remove phase.  Now that
+            // all remove/trim operations have completed, set it to the live
+            // currentTime so the new-codec init segment lands at the playhead.
+            // Using the ct from the switch call would be stale: for HEVC, Chrome
+            // takes 2+ s to process a large IDR, advancing ct by that amount
+            // before _drainQueue fires, which would place the init segment behind
+            // the live position and cause an immediate buffer-underrun freeze.
+            if (this._pendingCodecSwitch) {
+                this._pendingCodecSwitch = false;
+                try { this._sb.timestampOffset = v.currentTime; } catch (_) {}
             }
 
             this._drainQueue();
@@ -1409,19 +1644,22 @@
             if (this._ws)        { this._ws.close();        this._ws = null;        }
             if (this._wc)              { this._wc.dispose();              this._wc = null;              }
             if (this._wcDisposePending){ this._wcDisposePending.dispose(); this._wcDisposePending = null; }
+            if (this._csCanvas)        { this._csCanvas.remove();          this._csCanvas = null;         }
             if (this._stagingTimer) { clearTimeout(this._stagingTimer); this._stagingTimer = null; }
-            this._pendingQ         = [];
-            this._moofBuf          = null;
-            this._ftypBuf          = null;
-            this._stagingCodec     = null;
-            this._moovReceived     = false;
-            this._httpEnded        = false;
-            this._noDataSince      = 0;
-            this._waitLogSince     = 0;
-            this._segmentsReceived = 0;
-            this._sbFallbackTried  = false;
-            this._wcFallbackTried  = false;
-            this._initBuf          = null;
+            this._pendingQ          = [];
+            this._moofBuf           = null;
+            this._ftypBuf           = null;
+            this._stagingCodec      = null;
+            this._moovReceived      = false;
+            this._httpEnded         = false;
+            this._noDataSince       = 0;
+            this._waitLogSince      = 0;
+            this._segmentsReceived  = 0;
+            this._sbFallbackTried   = false;
+            this._wcFallbackTried   = false;
+            this._mseInitStallSince = 0;
+            this._pendingCodecSwitch = false;
+            this._initBuf           = null;
             this._teardownMS();
         }
 
@@ -1449,6 +1687,62 @@
                 }
             } else {
                 this._noDataSince = 0;
+            }
+
+            // Proactive HEVC MSE → WebCodecs fallback.
+            // Chrome's software HEVC decoder accepts the SourceBuffer but is too
+            // slow to produce a committed buffered range, leaving readyState=1 for
+            // 15-20 s.  If sb.buffered duration stays near zero for 3 s after data
+            // started arriving, switch to WebCodecs which renders the first frame
+            // on the very next keyframe (typically < 1 s after start).
+            if (this._sb && !this._wc && !this._wcFallbackTried &&
+                    this._segmentsReceived > 0 && rs <= 2 && !this._httpEnded &&
+                    S3ProWebCodecsFallback.isSupported()) {
+                // rs <= 2 covers two stall patterns:
+                //  (a) Init stall  — readyState never left 1; sbDur near 0;
+                //      HEVC decoder never committed a buffered range.
+                //  (b) Post-play stall — readyState briefly reached 4 (one frame
+                //      shown), then fell to 2 (HAVE_CURRENT_DATA); sbDur > 0;
+                //      HEVC software decoder decoded first IDR but is too slow
+                //      to keep up with the stream rate.
+                // In both cases a 3-second timeout without rs reaching 3 is a
+                // reliable signal that MSE cannot play this stream in real-time.
+                if (!this._mseInitStallSince) this._mseInitStallSince = performance.now();
+                    if (performance.now() - this._mseInitStallSince > 3000) {
+                        this._mseInitStallSince = 0;
+                        this._wcFallbackTried   = true;
+                        this._log('warn', '[fmp4] HEVC MSE init stall 3 s — switching to WebCodecs');
+                        const wcOrigMime = (this._initBuf
+                            ? parseMimeFromInitSegment(this._initBuf) : null) || this._currentMime;
+                        const wcCodec = (wcOrigMime.match(/codecs="([^"]+)"/) || [])[1]
+                            ?.split(',').map(s => s.trim())
+                            .find(c => !/^mp4a|^opus|^ac-3/.test(c));
+                        if (wcCodec && /^avc1|^avc3|^hvc1|^hev1/i.test(wcCodec)) {
+                            const wcDesc = /^hvc1|^hev1/i.test(wcCodec)
+                                ? _extractHevcDescription(this._initBuf)
+                                : _extractAvcDescription(this._initBuf);
+                            if (this._cb.clearError) this._cb.clearError();
+                            const wc = new S3ProWebCodecsFallback(
+                                this._videoEl, (lv, msg) => this._log(lv, msg));
+                            wc.start(wcCodec, wcDesc, this._initBuf,
+                                    () => this._cb.onState('playing')).then(ok => {
+                                if (ok) {
+                                    this._wc = wc;
+                                    const savedMime = wcOrigMime;
+                                    this._teardownMS(true);
+                                    this._currentMime = savedMime;
+                                    if (this._cb.clearError) this._cb.clearError();
+                                    this._cb.onState('buffering');
+                                    this._log('info', '[wc] VideoDecoder active (HEVC MSE stall)');
+                                } else {
+                                    wc.dispose();
+                                    this._log('warn', '[wc] VideoDecoder fallback failed — MSE continues');
+                                }
+                            });
+                        }
+                    }
+            } else {
+                this._mseInitStallSince = 0;
             }
 
             // Periodic "waiting for first segment" diagnostic
@@ -1563,14 +1857,17 @@
             this._ctx          = null;
             this._running      = false;
             this._videoTrackId = 1; // video track ID parsed from moov, default 1
+            this._codec        = '';    // codec string passed to start(), used for NAL detection
+            this._hasKeyFrame  = false; // true once the first key frame has been sent to the decoder
             // Frame scheduling — frames are queued and rendered via requestAnimationFrame
             // so that each frame is displayed at its correct stream timestamp rather than
             // all at once (which causes a burst-then-freeze artefact).
             this._frameQueue   = []; // pending VideoFrame objects, in timestamp order
             this._rafId        = null; // pending requestAnimationFrame id
             this._epochWall    = null; // performance.now() when the first frame arrived (ms)
-            this._epochTs = null; // VideoDecoder timestamp of the first frame (µs)
-            
+            this._epochTs      = null; // VideoDecoder timestamp of the first frame (µs)
+            this._description  = null; // saved codec description for decoder recovery
+
             this._onFirstFrame    = null;
             this._firstFrameFired = false;
         }
@@ -1587,6 +1884,9 @@
             // Identify video track ID so feedSegment can ignore audio traf entries
             // in multiplexed (video+audio) FMP4 segments.
             this._videoTrackId = _findVideoTrackId(initBuf);
+            this._codec        = codec;
+            this._description  = description || null; // saved for decoder error recovery
+            this._hasKeyFrame  = false;
             const config = {
                 codec,
                 hardwareAcceleration: 'prefer-software',
@@ -1611,8 +1911,15 @@
             }
 
             this._decoder = new VideoDecoder({
-                output: frame  => this._onFrame(frame),
-                error:  err    => this._log('error', '[wc] decoder error: ' + err.message),
+                output: frame => this._onFrame(frame),
+                error:  err   => {
+                    this._log('error', '[wc] decoder error: ' + err.message);
+                    // VideoDecoder enters 'closed' on any error — frames stop.
+                    // Clear the reference and reset the keyframe gate so that
+                    // feedSegment will recreate the decoder on the next IDR.
+                    this._decoder     = null;
+                    this._hasKeyFrame = false;
+                },
             });
             this._decoder.configure(config);
 
@@ -1622,7 +1929,10 @@
                 this._canvas = document.createElement('canvas');
                 this._canvas.style.cssText =
                     'position:absolute;top:0;left:0;width:100%;height:100%;' +
-                    'background:#000;z-index:1;pointer-events:none;';
+                    'background:transparent;z-index:1;pointer-events:none;';
+                // Transparent background: before the first WC frame is drawn the
+                // underlying <video> element (showing the last MSE frame at
+                // readyState=2) remains visible, avoiding a black flash.
                 parent.style.position = 'relative';
                 parent.appendChild(this._canvas);
                 this._ctx = this._canvas.getContext('2d');
@@ -1641,12 +1951,52 @@
          * @param {Uint8Array} mdatBuf
          */
         feedSegment(moofBuf, mdatBuf) {
-            if (!this._running || !this._decoder || this._decoder.state === 'closed') return;
+            if (!this._running) return;
+            // Decoder may be null after an error — try to recreate it.
+            if (!this._decoder) {
+                const cfg = { codec: this._codec, hardwareAcceleration: 'prefer-software' };
+                const desc = this._description;
+                if (desc && desc.byteLength > 0) {
+                    cfg.description = desc.buffer.slice(
+                        desc.byteOffset, desc.byteOffset + desc.byteLength);
+                }
+                try {
+                    const dec = new VideoDecoder({
+                        output: frame => this._onFrame(frame),
+                        error:  err   => {
+                            this._log('error', '[wc] decoder error (recovery): ' + err.message);
+                            this._decoder     = null;
+                            this._hasKeyFrame = false;
+                        },
+                    });
+                    dec.configure(cfg);
+                    this._decoder = dec;
+                    this._log('info', '[wc] VideoDecoder recreated after error, waiting for next keyframe');
+                } catch (e) {
+                    this._log('warn', '[wc] decoder recreation failed: ' + e.message);
+                    return;
+                }
+            }
+            if (this._decoder.state === 'closed') return;
             const samples = _parseMoofSamples(moofBuf, mdatBuf, this._videoTrackId);
             for (const s of samples) {
+                // Cross-check keyframe status from the NAL unit type.
+                // Some HEVC encoders do not set trun.first_sample_flags (bit 0x004)
+                // and leave default_sample_flags=0x00010000 (non-sync) in tfhd,
+                // causing _parseMoofSamples to mark the IDR frame as delta.
+                // Feeding a delta chunk to a freshly-configured VideoDecoder closes
+                // the decoder with DataError — all subsequent calls silently return.
+                const isKey = s.isKey || this._isIrapFrame(s.data);
+
+                // Hold off until the decoder has received at least one key frame.
+                if (!this._hasKeyFrame) {
+                    if (!isKey) continue; // skip leading delta frames
+                    this._hasKeyFrame = true;
+                }
+
                 try {
                     this._decoder.decode(new EncodedVideoChunk({
-                        type:      s.isKey ? 'key' : 'delta',
+                        type:      isKey ? 'key' : 'delta',
                         timestamp: s.timestamp,
                         duration:  s.duration,
                         data:      s.data,
@@ -1654,6 +2004,31 @@
                 } catch (e) {
                     this._log('warn', '[wc] decode chunk error: ' + e.message);
                 }
+            }
+        }
+
+        /**
+         * Detect whether the first NAL unit in an AVCC/HVCC sample is an IRAP
+         * (Intra Random Access Point) by reading the NAL unit type from the header.
+         * This is used to override isKey when sample_flags are misleading.
+         *
+         * @param {Uint8Array} data  raw sample bytes (4-byte length prefix + NAL data)
+         * @returns {boolean}
+         */
+        _isIrapFrame(data) {
+            if (!data || data.byteLength < 5) return false;
+            if (/^hvc1|^hev1/i.test(this._codec)) {
+                // HEVC NAL header: byte0 = forbidden(1) | nal_unit_type(6) | layer_id high bit
+                // nal_unit_type = (byte0 >> 1) & 0x3F
+                // IRAP types 16-23: BLA_W_LP, BLA_W_RADL, BLA_N_LP, IDR_W_RADL,
+                //                   IDR_N_LP, CRA_NUT, RSV_IRAP_VCL22, RSV_IRAP_VCL23
+                const nalType = (data[4] >> 1) & 0x3F;
+                return nalType >= 16 && nalType <= 23;
+            } else {
+                // AVC NAL header: byte0 = forbidden(1) | nal_ref_idc(2) | nal_unit_type(5)
+                // IDR slice = 5
+                const nalType = data[4] & 0x1F;
+                return nalType === 5;
             }
         }
 
@@ -1818,6 +2193,7 @@
             disableMseSuppress:() => {},
             onState:           () => {},
             onDts:             () => {},
+            onCodecChange:     () => {},
             messages:          null,
         };
     }
@@ -1854,6 +2230,11 @@
             // the async MEDIA_ERR_SRC_NOT_SUPPORTED from the abandoned SourceBuffer
             // is suppressed in player.on('error').  Survives handler disposal.
             this._suppressMseError = false;
+
+            // Monotonic DTS tracking — keeps the emitted 'dts' value always
+            // increasing regardless of codec switches or tfdt resets.
+            // Reset only on play(new url) or stop().
+            this._dts = new DtsTracker();
 
             // When true, all 'log' events are also printed to the browser console.
             // Controlled by opts.debug at construction time and setDebug() at runtime.
@@ -1924,6 +2305,8 @@
             this._emit('log', 'info', '=== play: ' + url + ' ===');
             this._emit('error', null);
             this._suppressMseError = false; // reset for new stream
+            // Reset monotonic DTS so the new stream starts from 0.
+            this._dts.reset();
             this._player.pause();
             this._stopHandler();
             // Clear any VJS error overlay from the previous stream without
@@ -1955,6 +2338,7 @@
         stop() {
             this._emit('log', 'info', '=== stop ===');
             this._suppressMseError = false;
+            this._dts.reset();
             this._player.pause();
             this._stopHandler();
             this._player.reset();
@@ -1983,9 +2367,8 @@
         get debug() { return this._debugLog; }
 
         getState() {
-            const h  = this._handler;
-            const el = this._player.el && this._player.el();
-            const v  = el ? el.querySelector('video') : null;
+            const h = this._handler;
+            const v = this.videoEl;
             let   bufLen = 0;
             if (v && v.buffered) {
                 for (let i = 0; i < v.buffered.length; i++)
@@ -1997,6 +2380,65 @@
                 bufferLen:   bufLen,
                 currentTime: v ? v.currentTime : 0,
             };
+        }
+
+        // -- New clean API: direct player-state getters -------------------------
+
+        /** The underlying &lt;video&gt; element (null before VJS initialises). */
+        get videoEl() {
+            const el = this._player.el && this._player.el();
+            return el ? el.querySelector('video') : null;
+        }
+
+        /** Monotonic DTS elapsed ms since play() (interpolates between packets). */
+        get elapsedMs() { return this._dts.elapsed; }
+
+        /** Current plugin state string. */
+        get state() { return this._state; }
+
+        /** Raw MIME string of the active codec (e.g. 'video/mp4; codecs="avc1...."'). */
+        get codec() { return this._handler ? this._handler.currentMime : ''; }
+
+        /** Total buffered seconds in the video element. */
+        get bufferLen() {
+            const v = this.videoEl;
+            if (!v || !v.buffered) return 0;
+            let n = 0;
+            for (let i = 0; i < v.buffered.length; i++) n += v.buffered.end(i) - v.buffered.start(i);
+            return n;
+        }
+
+        /** Video frame dimensions, or {width:0, height:0} when no frame yet. */
+        get videoSize() {
+            const v = this.videoEl;
+            return v ? { width: v.videoWidth, height: v.videoHeight } : { width: 0, height: 0 };
+        }
+
+        /** Current volume [0..1]. */
+        get volume() { const v = this.videoEl; return v ? v.volume : 1; }
+        set volume(val) { const v = this.videoEl; if (v) { v.volume = val; v.muted = (val === 0); } }
+
+        /** Muted state. */
+        get muted() { const v = this.videoEl; return v ? v.muted : false; }
+        set muted(val) { const v = this.videoEl; if (v) v.muted = val; }
+
+        /** True when the video element is paused or not yet initialised. */
+        get paused() { const v = this.videoEl; return v ? v.paused : true; }
+
+        /**
+         * Capture the current video frame and return a PNG data URL, or null if
+         * no frame is available. Works with both MSE and WebCodecs paths.
+         */
+        snapshot() {
+            const v = this.videoEl;
+            if (!v || !v.videoWidth) return null;
+            const c = document.createElement('canvas');
+            c.width  = v.videoWidth;
+            c.height = v.videoHeight;
+            try {
+                c.getContext('2d').drawImage(v, 0, 0);
+                return c.toDataURL('image/png');
+            } catch (_) { return null; }
         }
 
         on(event, cb) {
@@ -2093,15 +2535,20 @@
                         this._setState('error');
                     }
                 },
-                onDts:    (dtsMs, codec) => this._emit('dts', dtsMs, codec),
+                onDts: (dtsMs, codec) => {
+                    const mono = this._dts.feed(dtsMs);
+                    this._emit('dts', mono, codec);
+                },
+                onCodecChange: (newMime, oldMime) => {
+                    this._emit('codecchange', newMime, oldMime);
+                },
                 messages: this._opts.messages || null,
             };
         }
 
         /** 200 ms poll: emit timeupdate, drive stall detection. */
         _poll() {
-            const el = this._player.el && this._player.el();
-            const v  = el ? el.querySelector('video') : null;
+            const v = this.videoEl;
             if (!v) return;
 
             const h      = this._handler;
@@ -2111,7 +2558,8 @@
                 for (let i = 0; i < v.buffered.length; i++)
                     bufLen += v.buffered.end(i) - v.buffered.start(i);
             }
-            this._emit('timeupdate', v.currentTime, fmtTime(v.currentTime), mime, bufLen);
+            this._emit('timeupdate', this._dts.elapsed, mime, bufLen,
+                       { width: v.videoWidth, height: v.videoHeight });
 
             if (!h || !h.running) return;
 

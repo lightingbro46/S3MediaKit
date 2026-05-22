@@ -656,11 +656,11 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
             <input id="url-input" type="hidden">
 
             <div class="player-controls">
-                <label class="ctrl-label" for="camera-id">Camera ID</label>
-                <input id="camera-id"    class="ctrl-input" type="text" placeholder="camera-id">
-
                 <label class="ctrl-label" for="media-domain">Media Server</label>
                 <input id="media-domain" class="ctrl-input" type="text" value="http://localhost:8080">
+
+                <label class="ctrl-label" for="camera-id">Camera ID</label>
+                <input id="camera-id"    class="ctrl-input" type="text" placeholder="camera-id">
 
                 <label class="ctrl-label" for="auth-token">Token</label>
                 <input id="auth-token"   class="ctrl-input" type="text" placeholder="Bearer ... (tuỳ chọn)">
@@ -733,6 +733,10 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 <!-- ================================================================== -->
 <script src="https://vjs.zencdn.net/8.10.0/video.min.js" onerror="window._vjsLoadFailed=true"></script>
 <script src="player/s3pro-player.js"></script>
+<script src="player/pc-hud.js"></script>
+<script src="player/pc-stream-select.js"></script>
+<script src="player/pc-timeline.js"></script>
+<script src="player/pc-control-bar.js"></script>
 <script src="player/player-controls.js"></script>
 <script src="dashboard/dashboard.js"></script>
 <script src="mjpeg/mjpeg.js"></script>
@@ -780,7 +784,7 @@ function activateTab(tabId, push) {
                 playsinline: true,
             });
             // Get the s3pro plugin instance for this player
-            const player = vp.s3pro();
+            const player = vp.s3pro({debug: true});
             initPlayerControls(player);
         }, 1000);
     }
