@@ -2,6 +2,7 @@
 #include "Record/Recorder.h"
 #include "TimeQuery.h"
 #include "Common/StrUtil.h"
+#include "StatisticRecorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -9,7 +10,8 @@ using namespace mediakit;
 
 namespace managerkit {
 
-TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path) {
+TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path, bool use_statistic) {
+    _use_statistic = use_statistic;
     _file_path = path;
     if (_file_path.empty()) {
         GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
@@ -69,6 +71,41 @@ bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const 
 
 void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const TimeBlockImp &cb) {
     lock_guard<recursive_mutex> lck(_mtx);
+
+    // per_stream_norms is only populated when querying all streams with statistic clamping.
+    // When non-empty, each block is checked against its own stream's archive bounds.
+    unordered_map<string, QueryTimeRange> per_stream_norms;
+
+    if (_use_statistic) {
+        if (!_tuple.stream.empty()) {
+            // Single stream: clamp query window to that stream's archive bounds
+            auto norm = StatisticRecorder::Instance().normalizeArchiveTimeRange(_tuple.app, _tuple.stream, start_time, end_time);
+            if (!norm.isValid()) {
+                return;
+            }
+            start_time = norm.start;
+            end_time   = norm.end;
+            DebugL << "Normalized time range: " << getTimeStr("%Y-%m-%d %H:%M:%S", start_time) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", end_time);
+        } else {
+            // All streams: each stream has its own archive bounds.
+            // Build per-stream map and use the union window for seeking.
+            per_stream_norms = StatisticRecorder::Instance().getArchiveTimeRangesPerStream(_tuple.app, start_time, end_time);
+
+            uint64_t union_start = 0, union_end = 0;
+            for (const auto &kv : per_stream_norms) {
+                if (kv.second.isValid()) {
+                    if (union_start == 0 || kv.second.start < union_start) union_start = kv.second.start;
+                    if (kv.second.end > union_end) union_end = kv.second.end;
+                }
+            }
+            if (union_start == 0 || union_start >= union_end) {
+                return;
+            }
+            start_time = union_start;
+            end_time   = union_end;
+            DebugL << "Normalized time range (all streams): " << getTimeStr("%Y-%m-%d %H:%M:%S", start_time) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", end_time);
+        }
+    }
     if (_demuxer) {
         if (!seekTo(start_time)) {
             return;
@@ -78,6 +115,17 @@ void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const TimeBlockI
         // (which only looks at the last element) always works correctly.
         vector<TimeBlock> collected;
         readBlockList(start_time, end_time, [&](const TimeBlock &block) {
+            if (!per_stream_norms.empty()) {
+                // Filter each block against its stream's own archive bounds
+                auto it = per_stream_norms.find(block.stream());
+                if (it != per_stream_norms.end()) {
+                    const auto &snorm = it->second;
+                    if (!snorm.isValid()) return;
+                    if (block.start_time() + block.time_len() <= snorm.start) return;
+                    if (block.start_time() >= snorm.end) return;
+                }
+                // Stream not in map: no stats available → include the block
+            }
             collected.push_back(block);
         });
         sort(collected.begin(), collected.end(), [](const TimeBlock &a, const TimeBlock &b) {

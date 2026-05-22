@@ -6,5 +6,5 @@ message TimeBlock {
   uint64 start_time = 3;
   uint32 time_len = 4;
   uint64 file_size = 5;
-  string file_path = 6;
+  bytes  file_path = 6;
 }

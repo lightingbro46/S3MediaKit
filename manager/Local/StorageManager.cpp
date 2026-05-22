@@ -14,6 +14,7 @@
 #include "Storage/UserSession.h"
 #include "Storage/Bookmark.h"
 #include "Common/StrUtil.h"
+#include "MotionBlockManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -324,6 +325,12 @@ static void removeExpiredBookmark(const KeepTimeMap &keep_time_map) {
     InfoL << "Remove expired bookmark. Finished";
 }
 
+static void removeExpiredMotionBlock(const KeepTimeMap &keep_time_map) {
+    auto device_time_map = getKeepTimeMapByDevice(keep_time_map);
+    MotionBlockManager::Instance().removeExpiredMotionBlocks(device_time_map);
+    InfoL << "Remove expired motion block. Finished";
+}
+
 void StorageManager::enforceStoragePolicy() {
     // asynchronous delete expired segment by scanning folder and removing file which start time over threshold
     weak_ptr<StorageManager> weak_self = shared_from_this();
@@ -374,12 +381,10 @@ void StorageManager::enforceStoragePolicy() {
                   << " , expect: " << format_bytes_human_readable(space_reclaim);
         }
 
-        if (removed_bytes > 0) {
-            // recreate time file according to keep time map
-            recreateTimeFile(keep_time_map);
-        } else {
-            DebugL << "No expired segment removed, skip recreate time file";
-        }
+        // recreate time file according to keep time map
+        recreateTimeFile(keep_time_map);
+        // remove expired motion block associated with media segment
+        removeExpiredMotionBlock(keep_time_map);
 
         InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
 
@@ -396,7 +401,7 @@ void StorageManager::start() {
 
     weak_ptr<StorageManager> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
-        300.0f,
+        60.0f,
         [weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {

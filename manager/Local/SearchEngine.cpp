@@ -21,6 +21,9 @@ void SearchEngine::findTimePeriod(
     int period_type, int detail, bool include_motion,
     const function<void(const SockException &, const Value &)> &cb)
 {
+    DebugL << "Find time period for device: " << tuple.shortUrl() << ". Time range: [" << getTimeStr("%Y-%m-%d %H:%M:%S", start_time) 
+            << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", end_time) << "]. Period type: " << period_type 
+            << ". Detail: " << detail << ". Include motion: " << include_motion;
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     Value result;
 

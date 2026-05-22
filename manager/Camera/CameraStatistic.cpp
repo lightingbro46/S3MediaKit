@@ -1,6 +1,7 @@
 #include "CameraStatistic.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
+#include "Local/TierStorageManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -250,6 +251,39 @@ static StreamTuple getStreamTuple(const Json::Value &data, const DeviceTuple &tu
     return stream;
 }
 
+// MotionStorageStats
+static Json::Value makeMotionStorageStatsJson(const MotionStorageStats &stats) {
+    Json::Value ret = Json::objectValue;
+    ret["archiveStartTime"] = stats.archiveStartTime;
+    ret["archiveEndTime"] = stats.archiveEndTime;
+    return ret;
+}
+
+static MotionStorageStats getMotionStorageStats(const Json::Value &data) {
+    MotionStorageStats stats;
+    stats.archiveStartTime = !data["archiveStartTime"].empty() ? data["archiveStartTime"].asUInt64() : 0;
+    stats.archiveEndTime = !data["archiveEndTime"].isNull() ? data["archiveEndTime"].asUInt64() : 0;
+    return stats;
+}
+
+// TierStorageStats
+static Json::Value makeTierStorageStatsJson(const unordered_map<int, TierStorageStats> stats_map, int tier_type) {
+    Json::Value ret = Json::objectValue;
+    auto it_statistic = stats_map.find(tier_type);
+    if (it_statistic != stats_map.end()) {
+        ret["archiveStartTime"] = it_statistic->second.archiveStartTime;
+        ret["archiveEndTime"] = it_statistic->second.archiveEndTime;
+    }
+    return ret;
+}
+
+static TierStorageStats getTierStorageStats(const Json::Value &data) {
+    TierStorageStats stats;
+    stats.archiveStartTime = !data["archiveStartTime"].empty() ? data["archiveStartTime"].asUInt64() : 0;
+    stats.archiveEndTime = !data["archiveEndTime"].empty() ? data["archiveEndTime"].asUInt64() : 0;
+    return stats;
+}
+
 // ################### CameraStatisticHelper ###########################
 
 bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &stats) {
@@ -351,6 +385,16 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
             Json::Value device_stats_json;
             StrJsonUtils::readJsonString(it["value"].asString(), device_stats_json);
             stats.device_stats = getDeviceStatistic(device_stats_json);
+        } else if (it["name"] == "motionStorageStats") {
+            Json::Value motion_storage_json;
+            StrJsonUtils::readJsonString(it["value"].asString(), motion_storage_json);
+            stats.motion_stats = getMotionStorageStats(motion_storage_json);
+        } else if (it["name"] == "tierStorageStats") {
+            Json::Value tier_storage_json;
+            StrJsonUtils::readJsonString(it["value"].asString(), tier_storage_json);
+            stats.tier_storage_map[HotTier] = getTierStorageStats(tier_storage_json[HotTier]);
+            stats.tier_storage_map[WarmTier] = getTierStorageStats(tier_storage_json[WarmTier]);
+            stats.tier_storage_map[ColdTier] = getTierStorageStats(tier_storage_json[ColdTier]);
         }
     }
 
@@ -429,6 +473,15 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 
     Json::Value device_stats_json = makeDeviceStatisticJson(stats.device_stats);
     params.append(makeJsonKeyValue("deviceStatistic", StrJsonUtils::writeJsonString(device_stats_json)));
+
+    Json::Value motion_storage_json = makeMotionStorageStatsJson(stats.motion_stats);
+    params.append(makeJsonKeyValue("motionStorageStats", StrJsonUtils::writeJsonString(motion_storage_json)));
+
+    Json::Value tier_storage_json = Json::arrayValue;
+    tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, HotTier));
+    tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, WarmTier));
+    tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, ColdTier));
+    params.append(makeJsonKeyValue("tierStorageStats", StrJsonUtils::writeJsonString(tier_storage_json)));
 
     root["addParams"] = params;
 
@@ -712,6 +765,31 @@ void CameraStatisticImp::addUserPresets(const std::string &preset_token, const s
         } else {
             WarnL << "Camera " << tuple.shortUrl() << " do not have user preset with token: " << preset_token << ". Ignore remove user preset.";
         }
+    }
+    save();
+}
+
+void CameraStatisticImp::addMotionKeepThreshold(bool start, uint64_t threshold) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    if (start) {
+        motion_stats.archiveStartTime = threshold;
+        DebugL << "Camera " << tuple.shortUrl() << " set motion keep start threshold: " << threshold << " => " << getTimeStr("%Y-%m-%d %H:%M:%S", threshold);
+    } else {
+        motion_stats.archiveEndTime = threshold;
+        DebugL << "Camera " << tuple.shortUrl() << " set motion keep end threshold: " << threshold << " => " << getTimeStr("%Y-%m-%d %H:%M:%S", threshold);
+    }
+    save();
+}
+
+void CameraStatisticImp::addTierKeepThreshold(int tier_type, bool start, uint64_t threshold) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    auto &tier_stats = tier_storage_map[tier_type];
+    if (start) {
+        tier_stats.archiveStartTime = threshold;
+        DebugL << "Camera " << tuple.shortUrl() << " set tier " << getTierTypeString(tier_type) << " keep start threshold: " << threshold << " seconds";
+    } else {
+        tier_stats.archiveEndTime = threshold;
+        DebugL << "Camera " << tuple.shortUrl() << " set tier " << getTierTypeString(tier_type) << " keep end threshold: " << threshold << " seconds";
     }
     save();
 }

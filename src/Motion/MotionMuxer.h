@@ -126,6 +126,8 @@ private:
     std::vector<TimeOrderedBlock> buildOrderedBlocks(
         const std::vector<MotionEventBlock> &seg_events) const;
 
+    void emitEvent(bool start, uint64_t seg_end_ms);
+
 private:
     MotionMeta  _meta;
     std::string _base_path;

@@ -132,6 +132,8 @@ void MotionMuxer::onSegmentCommit(const RecordInfo &info) {
     while (!_raw_buffer.empty() && _raw_buffer.front().stamp() <= seg_end_ms) {
         _raw_buffer.pop_front();
     }
+
+    emitEvent(false, seg_end_ms);
 }
 
 // ── buildOrderedBlocks ────────────────────────────────────────────────────────
@@ -166,6 +168,11 @@ MotionMuxer::buildOrderedBlocks(const std::vector<MotionEventBlock> &seg_events)
     while (si < summaries.size())  ordered.push_back(std::make_shared<MotionSummaryBlock>(std::move(summaries[si++])));
 
     return ordered;
+}
+
+void MotionMuxer::emitEvent(bool start, uint64_t seg_end_ms) {
+    uint64_t threshold_s = seg_end_ms / 1000;
+    NOTICE_EMIT(BroadcastMotionKeepThresholdArgs, Broadcast::kBroadcastMotionKeepThreshold, _meta.device_id, start, threshold_s);
 }
 
 } // namespace mediakit

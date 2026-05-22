@@ -87,6 +87,8 @@ const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
 const string kBroadcastHealthCheckService = "kBroadcastHealthCheckService";
 const string kBroadcastRecordMotion = "kBroadcastRecordMotion";
+const string kBroadcastMotionKeepThreshold = "kBroadcastMotionKeepThreshold";
+const string kBroadcastTierKeepThreshold = "kBroadcastTierKeepThreshold";
 
 } // namespace Broadcast
 

@@ -19,6 +19,11 @@ public:
      */
     size_t rebuildTimeLine(const KeepTimeMap &map);
 
+    /**
+     * Remove expired file, not include boundary file, and update time file with new start time of boundary file
+     */
+    size_t rebuildTimeLineWithoutRecreate(const KeepTimeMap &map, bool is_boundary_file = false);
+
 private:
     /**
      * Create template file 
@@ -44,7 +49,7 @@ public:
     using Ptr = std::shared_ptr<MultiTimeRebuilder>;
     using KeepTimeMap = TimeRebuilder::KeepTimeMap;
 
-    MultiTimeRebuilder(const std::string &src_path);
+    MultiTimeRebuilder(const std::string &src_path, bool recreate_file_mode = false);
 
     ~MultiTimeRebuilder() = default;
 
@@ -61,6 +66,7 @@ private:
 
 private:
     std::string _src_path;
+    bool _recreate_file_mode = false;
     std::map<uint64_t, std::string> _timefiles_map;
 };
 

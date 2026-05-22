@@ -5,6 +5,7 @@
 #include "Motion/MotionBitmap.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
+#include "StatisticRecorder.h"
 #include "Util/logger.h"
 #include "Util/util.h"
 
@@ -16,8 +17,8 @@ using namespace mediakit;
 
 namespace managerkit {
 
-MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
-    : _tuple(tuple) {
+MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path, bool use_statistic)
+    : _tuple(tuple), _use_statistic(use_statistic) {
     if (!base_path.empty()) {
         _base_path = base_path;
     } else {
@@ -40,6 +41,15 @@ MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
 void MotionSearch::query(uint64_t start_ms, uint64_t end_ms,
                           const function<void(uint64_t, uint64_t)> &cb) {
     if (!_demuxer || _demuxer->isEmpty()) return;
+
+    if (_use_statistic) {
+        auto norm = StatisticRecorder::Instance().normalizeMotionTimeRange(
+            _tuple.app, start_ms / 1000, end_ms / 1000);
+        if (!norm.isValid()) return;
+        start_ms = norm.start * 1000;
+        end_ms   = norm.end   * 1000;
+        DebugL << "Normalized motion time range: " << getTimeStr("%Y-%m-%d %H:%M:%S", norm.start) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", norm.end);
+    }
 
     auto intervals = _demuxer->getMotionIntervals(start_ms, end_ms);
     for (const auto &iv : intervals) {

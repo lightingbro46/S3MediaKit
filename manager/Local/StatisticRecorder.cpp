@@ -23,14 +23,15 @@ StatisticRecorder::~StatisticRecorder() {
     _cam_stats_map.clear();
 }
 
-CameraStatisticImp::Ptr StatisticRecorder::getRecorder(const string &device_id) {
+CameraStatisticImp::Ptr StatisticRecorder::getRecorder(const string &device_id, bool create_if_not_exist) {
+    CHECK(!device_id.empty());
     {
         std::lock_guard<std::mutex> lock(_mtx_stats);
         if (_cam_stats_map.find(device_id) != _cam_stats_map.end()) {
             return _cam_stats_map[device_id];
         }
     }
-    return addRecorder(device_id);
+    return create_if_not_exist ? addRecorder(device_id) : nullptr;
 }
 
 CameraStatisticImp::Ptr StatisticRecorder::addRecorder(const string &device_id) {
@@ -109,5 +110,105 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
         return true;
     });
 }
+
+void StatisticRecorder::addMotionKeepThreshold(const std::string &device_id, bool start,  uint64_t threshold) {
+    auto recorder = getRecorder(device_id);
+    recorder->addMotionKeepThreshold(start, threshold);
+}
+
+void StatisticRecorder::addTierKeepThreshold(const std::string &device_id, int tier_type, bool start, uint64_t threshold) {
+    auto recorder = getRecorder(device_id);
+    recorder->addTierKeepThreshold(tier_type, start, threshold);
+}
+
+QueryTimeRange StatisticRecorder::normalizeArchiveTimeRange(const string &device_id, const string &stream_id, uint64_t start_time, uint64_t end_time) {
+    QueryTimeRange result;
+    result.start = start_time;
+    result.end   = end_time;
+
+    auto stats = getRecorder(device_id, false);
+    if (!stats) {
+        return result;
+    }
+
+    uint64_t archive_start = 0, archive_end = 0;
+    auto params = stats->getParams();
+    const auto &storage_map = params.storage_map;
+    if (stream_id.empty()) {
+        for (const auto &s : storage_map) {
+            if (s.second.archiveStartTime > 0 && (archive_start == 0 || s.second.archiveStartTime < archive_start)) {
+                archive_start = s.second.archiveStartTime;
+            }
+            if (s.second.archiveEndTime > archive_end) {
+                archive_end = s.second.archiveEndTime;
+            }
+        }
+    } else {
+        auto it = storage_map.find(stream_id);
+        if (it != storage_map.end()) {
+            archive_start = it->second.archiveStartTime;
+            archive_end   = it->second.archiveEndTime;
+        }
+    }
+
+    if (archive_start > 0) result.start = MAX(start_time, archive_start);
+    if (archive_end   > 0) result.end   = MIN(end_time,   archive_end);
+    return result;
+}
+
+std::unordered_map<std::string, QueryTimeRange> StatisticRecorder::getArchiveTimeRangesPerStream(const string &device_id, uint64_t start_time, uint64_t end_time) {
+    std::unordered_map<std::string, QueryTimeRange> result;
+
+    auto stats = getRecorder(device_id, false);
+    if (!stats) {
+        return result;
+    }
+
+    auto params = stats->getParams();
+    for (const auto &s : params.storage_map) {
+        QueryTimeRange norm;
+        norm.start = s.second.archiveStartTime > 0 ? MAX(start_time, s.second.archiveStartTime) : start_time;
+        norm.end   = s.second.archiveEndTime   > 0 ? MIN(end_time,   s.second.archiveEndTime)   : end_time;
+        result[s.first] = norm;
+    }
+    return result;
+}
+
+QueryTimeRange StatisticRecorder::normalizeMotionTimeRange(const string &device_id, uint64_t start_time, uint64_t end_time) {
+    QueryTimeRange result;
+    result.start = start_time;
+    result.end   = end_time;
+
+    auto stats = getRecorder(device_id, false);
+    if (!stats) {
+        return result;
+    }
+
+    auto params = stats->getParams();
+    auto motion_start = params.motion_stats.archiveStartTime;
+    auto motion_end   = params.motion_stats.archiveEndTime;
+
+    if (motion_start > 0) result.start = MAX(start_time, motion_start);
+    if (motion_end   > 0) result.end   = MIN(end_time,   motion_end);
+    return result;
+}
+
+static void* s_tag;
+
+static onceToken g_token(
+[]() {
+    NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastMotionKeepThreshold, [](BroadcastMotionKeepThresholdArgs) {
+        auto recorder = StatisticRecorder::Instance().getRecorder(device_id);
+        recorder->addMotionKeepThreshold(start, threshold);
+    });
+    NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold, [](BroadcastTierKeepThresholdArgs) {
+        auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id);
+        recorder->addTierKeepThreshold(tier_type, start, threshold);
+    });
+}, 
+[]() {
+    NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastMotionKeepThreshold);
+    NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold);
+});
 
 } // namespace managerkit

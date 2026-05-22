@@ -191,6 +191,12 @@ extern const std::string kBroadcastSystemAuditLog;
 extern const std::string kBroadcastUserAuditLog;
 #define BroadcastUserAuditLogArgs const std::string &event, const std::string &resource_id, const UserAuditLogArgs &args, const UserSessionCache::Ptr &session
 
+extern const std::string kBroadcastMotionKeepThreshold;
+#define BroadcastMotionKeepThresholdArgs const std::string &device_id, bool &start, uint64_t &threshold
+
+extern const std::string kBroadcastTierKeepThreshold;
+#define BroadcastTierKeepThresholdArgs const DeviceTuple &args, int &tier_type, bool start, uint64_t &threshold
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

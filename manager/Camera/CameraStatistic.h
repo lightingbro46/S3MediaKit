@@ -45,6 +45,16 @@ struct DeviceStatistic {
     OnvifPTZProfile::PTZPresetMap user_presets;
 };
 
+struct MotionStorageStats {
+    uint64_t archiveStartTime = 0;
+    uint64_t archiveEndTime = 0;
+};
+
+struct TierStorageStats {
+    uint64_t archiveStartTime = 0;
+    uint64_t archiveEndTime = 0;
+};
+
 struct CameraStatistic;
 class CameraStatisticHelper {
 public:
@@ -60,6 +70,8 @@ struct CameraStatistic {
     BookmarkStats bm;
     std::unordered_map<std::string, StreamStorageStats> storage_map;
     std::unordered_map<int, StreamStatistic> sinfo_map;
+    MotionStorageStats motion_stats;
+    std::unordered_map<int, TierStorageStats> tier_storage_map;
     DeviceStatistic device_stats;
     uint64_t created_at;
     uint64_t updated_at;
@@ -95,6 +107,10 @@ public:
     void addDeviceCapabilities(bool connect, std::string status, const DeviceCapabilities *device_caps = nullptr);
 
     void addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add = true);
+
+    void addMotionKeepThreshold(bool start, uint64_t threshold);
+
+    void addTierKeepThreshold(int tier_type, bool start, uint64_t threshold);
 
 public:
     CameraStatistic getParams();

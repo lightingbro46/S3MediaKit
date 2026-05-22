@@ -20,7 +20,7 @@ public:
     using TimeBlockListPtr = std::shared_ptr<TimeQuery>;
     using TimeBlockImp = std::function<void(const TimeBlock &block)>;
 
-    TimeQuery(const mediakit::MediaTuple &tuple, const std::string &file_path = "");
+    TimeQuery(const mediakit::MediaTuple &tuple, const std::string &file_path = "", bool use_statistic = true);
 
     ~TimeQuery();
 
@@ -80,6 +80,7 @@ private:
     mediakit::MediaTuple _tuple;
     uint64_t _last_time = 0;
     std::string _file_path;
+    bool _use_statistic = false;
     std::recursive_mutex _mtx;
     MultiTimeDemuxer::Ptr _demuxer;
 };
