@@ -31,7 +31,8 @@ extern const std::string kSessionExpiryDays;
 extern const std::string kMaxStreamTimeoutSec;
 // Bypass authentication realm, directly allow access
 extern const std::string kBypassAuthRealm;
-
+// Support auto profile switch when the stream is unstable, which may cause stream quality degradation but improve stream stability
+extern const std::string kEnableAutoProfile;
 } // namespace Manager
 
 } // namespace managerkit

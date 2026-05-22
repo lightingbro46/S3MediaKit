@@ -453,6 +453,8 @@ static onceToken token([]() {
 //////////////Motion detection configuration///////////
 namespace Motion {
 #define MOTION_FIELD "motion."
+// Whether to enable motion detection
+const string kEnableMotion = MOTION_FIELD "enableMotion";
 // Sensitivity of motion detection, the larger the value, the more sensitive
 const string kSensitivity = MOTION_FIELD "sensitivity";
 // Minimum interval time for motion detection trigger, in milliseconds
@@ -475,6 +477,7 @@ const string kSummaryWindowMS = MOTION_FIELD "summaryWindowMS";
 const string kOverlapInterval = MOTION_FIELD "overlapInterval";
 
 static onceToken token([]() {
+    mINI::Instance()[kEnableMotion] = true;
     mINI::Instance()[kSensitivity] = "0.15,0.1,0.08,0.05,0.02";
     mINI::Instance()[kIntervalMS] = 200;
     mINI::Instance()[kMinDurationMS] = 1000;

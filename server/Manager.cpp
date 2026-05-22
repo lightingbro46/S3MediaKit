@@ -40,6 +40,7 @@ const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 const string kMaxStreamTimeoutSec = MANAGER_FIELD"maxStreamTimeoutSec";
 const string kBypassAuthRealm = MANAGER_FIELD"bypassAuthRealm";
+const string kEnableAutoProfile = MANAGER_FIELD"enableAutoProfile";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
@@ -53,6 +54,7 @@ static onceToken token([]() {
     mINI::Instance()[kSessionExpiryDays] = 180;
     mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
     mINI::Instance()[kBypassAuthRealm] = "";
+    mINI::Instance()[kEnableAutoProfile] = true;
 });
 } // namespace Manager
 
@@ -670,6 +672,7 @@ static Json::Value exampleJson() {
     device["cameraAdvanceConfig"]["streamSettings"]["keepConfigProfileAndStream"] = false;
     device["cameraAdvanceConfig"]["streamSettings"]["disableMainStream"] = false;
     device["cameraAdvanceConfig"]["streamSettings"]["disableSubStream"] = false;
+    device["cameraAdvanceConfig"]["streamSettings"]["notRecordMainStream"] = false;
     device["cameraAdvanceConfig"]["streamSettings"]["notRecordSubStream"] = false;
     device["cameraAdvanceConfig"]["streamSettings"]["disableAudio"] = false;
     device["cameraAdvanceConfig"]["onvif"] = Json::objectValue;
@@ -735,7 +738,7 @@ static Json::Value exampleJson() {
         "00003333333333333333333333333333333333300000"  // row 30
         "00003333333333333333333333333333333333330000"  // row 31
         ;
-    // device["motionDetectConfig"]["value"] = "";
+    // device["motionDetectConfig"]["value"] = "0000000000000333333333333333333333333333333300000000000003333333333333333333333333333333000000000000033333333333333333333333333333330000000000000333333333333333333333333333333300000000000003333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333444444444433333333333333333330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003333333333333333333322222222233300000000000033333333333333333333222222222333000000000000333333333333333333332222222223330000000000003333333333333333333322222222233333333333333333333333333333333333222222222333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333";
 
     data["devices"].append(device);
 
@@ -1027,10 +1030,15 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 data["onvifProfiles"] = onvifProfileJson;
             }
 #ifdef ENABLE_MOTION
-            data["motionDetection"]["mediaSupport"] = true;
+            GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
+            data["motionDetection"]["mediaSupport"] = enableMotion;
 #else
             data["motionDetection"]["mediaSupport"] = false;
 #endif
+            GET_CONFIG(bool, enableAutoProfile, Manager::kEnableAutoProfile);
+            data["enableAutoProfile"] = enableAutoProfile ? true : false;
+            // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
+            data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
         }
     }
     return data;

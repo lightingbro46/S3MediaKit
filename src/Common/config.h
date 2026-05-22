@@ -566,6 +566,8 @@ extern const std::string kAddrMulticast;
 
 /////////////Motion detection configuration///////////
 namespace Motion {
+// Whether to enable motion detection
+extern const std::string kEnableMotion;
 // Sensitivity of motion detection, the larger the value, the more sensitive
 extern const std::string kSensitivity;
 // Minimum interval time for motion detection trigger, in milliseconds
