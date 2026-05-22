@@ -128,8 +128,7 @@ RecordScheduler::Ptr RecordScheduler::create(const DeviceTuple &tuple, const std
     return scheduler;
 }
 
-RecordScheduler::RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _profile(profile) {
-    _poller = poller ? poller : EventPollerPool::Instance().getPoller();
+RecordScheduler::RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _profile(profile), _poller(poller) {
     _items = parseRecordScheduleStr(profile);
 }
 

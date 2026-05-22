@@ -1,6 +1,7 @@
 #include "GenericRtspCameraImp.h"
 #include "server/WebApiErrCode.h"
 #include "Common/config.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -10,7 +11,18 @@ namespace managerkit {
 
 GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::unordered_map<int, StreamTuple>& stream_map, const CameraStatisticImp::Ptr& statistic)
     : _statistic(statistic) {
-    _poller = EventPollerPool::Instance().getPoller();
+    // Use WorkThreadPool so camera management (ONVIF, timers, stream monitoring) runs
+    // on a poller isolated from proxy-player I/O. EventPollerPool pollers are saturated
+    // by stream frames when proxy count is high. Sharing _poller across CameraController,
+    // StreamSink and RecordScheduler eliminates all mutex requirements on internal state,
+    // identical to the single-poller design used by MediaSource.
+    _poller = WorkThreadPool::Instance().getPoller();
+    if (!_poller) {
+        // Fallback: WorkThreadPool has no threads (hardware_concurrency() == 0).
+        // This should never happen on a real system, but guard against startup failure.
+        WarnL << "WorkThreadPool returned nullptr poller, falling back to EventPollerPool";
+        _poller = EventPollerPool::Instance().getPoller();
+    }
     _src = std::make_shared<GenericRtspCamera>(tuple, stream_map);
     statistic->setDeviceTuple(tuple);
     statistic->setStreamTuples(stream_map);
@@ -216,8 +228,12 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
     }
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
         // only emit event when stream status changed
+        // Dispatch on _poller (camera's WorkThread) so that NOTICE_EMIT listeners
+        // (e.g. do_http_hook) run on an uncontested poller, not on a proxy-player-saturated
+        // EventPollerPool poller. Reuse _poller instead of calling getPoller() again to
+        // guarantee the same thread and avoid a potential null return.
         std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
-        EventPollerPool::Instance().getPoller(false)->async([weak_self]() {
+        _poller->async([weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
@@ -241,8 +257,12 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
+    // Dispatch on _poller (camera's WorkThread) so that NOTICE_EMIT listeners
+    // (e.g. do_http_hook) run on an uncontested poller, not on a proxy-player-saturated
+    // EventPollerPool poller. Reuse _poller instead of calling getPoller() again to
+    // guarantee the same thread and avoid a potential null return.
     std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
-    EventPollerPool::Instance().getPoller(false)->async([weak_self]() {
+    _poller->async([weak_self]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;

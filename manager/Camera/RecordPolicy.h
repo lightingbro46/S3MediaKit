@@ -44,9 +44,9 @@ public:
     using Ptr = std::shared_ptr<RecordScheduler>;
     using RecordScheduleMap = std::unordered_map<std::string, RecordScheduleItem>;
 
-    static RecordScheduler::Ptr create(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller = nullptr);
+    static RecordScheduler::Ptr create(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller);
 
-    RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller = nullptr);
+    RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller);
     ~RecordScheduler();
 
     void setListener(const std::shared_ptr<DeviceSourceEvent> &delegate);

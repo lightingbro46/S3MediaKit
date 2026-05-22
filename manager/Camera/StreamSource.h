@@ -69,7 +69,7 @@ class StreamSource : public DeviceSourceEventInterceptor, public std::enable_sha
 public:
     using Ptr = std::shared_ptr<StreamSource>;
 
-    StreamSource(int type, const StreamOption &option);
+    StreamSource(int type, const StreamOption &option, const toolkit::EventPoller::Ptr &poller);
 
     ~StreamSource();
 
@@ -95,9 +95,8 @@ public:
      * Records pre_record_ms of buffered history (GOP backfill) before the
      * event and writes frames continuously thereafter.  Call stopRecord()
      * when the event ends so the clip is finalised with a post-event tail.
-     * @return session handle (nullptr on failure).
      */
-    mediakit::EventRecordSession::Ptr startEventRecord();
+    void startEventRecord();
 
     /**
      * Extend the active event-recording window while the event is still
@@ -120,7 +119,10 @@ public:
      * extend the current clip or start a fresh one.
      */
     bool hasActiveEventSession() const {
-        return _event_session && _event_session->isActive();
+        // Also true while the async startEventRecord dispatch is in flight but
+        // _event_session has not yet been stored on the camera poller.
+        return _event_starting.load(std::memory_order_acquire)
+            || (_event_session && _event_session->isActive());
     }
 
     /**
@@ -156,7 +158,9 @@ private:
     std::atomic_bool _live {false};
     std::shared_ptr<const std::string> _status {std::make_shared<const std::string>("init")};
     std::weak_ptr<mediakit::PlayerProxy> _player;
+    toolkit::EventPoller::Ptr _poller; ///< WorkThread poller (same as GenericRtspCameraImp::_poller)
     mediakit::EventRecordSession::Ptr _event_session;
+    std::atomic<bool> _event_starting {false}; ///< true while startEventRecord dispatch is in-flight
     std::atomic<uint64_t> _last_record_end {0};
 };
 

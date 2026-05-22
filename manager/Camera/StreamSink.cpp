@@ -110,7 +110,7 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
         }
         _monitor_map.erase(type);
     }
-    auto monitor = std::make_shared<StreamSource>(type, new_cfg);
+    auto monitor = std::make_shared<StreamSource>(type, new_cfg, _poller);
     monitor->setListener(shared_from_this());
     monitor->start();
     _monitor_map.emplace(type, monitor);

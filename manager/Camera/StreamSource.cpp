@@ -24,8 +24,8 @@ bool isValidStreamType(int type) {
     return type >= StreamType::PrimaryStream && type < StreamType::StreamMax;
 }
 
-StreamSource::StreamSource(int type, const StreamOption &option)
-    : _type(type), _option(option) {
+StreamSource::StreamSource(int type, const StreamOption &option, const toolkit::EventPoller::Ptr &poller)
+    : _type(type), _option(option), _poller(poller) {
 
     _full_url = _option.tuple.full_url;
 
@@ -235,44 +235,98 @@ bool StreamSource::setupRecord(int type, bool start, bool replay_gop) {
     return true;
 }
 
-mediakit::EventRecordSession::Ptr StreamSource::startEventRecord() {
+void StreamSource::startEventRecord() {
+    if (_event_starting.load(std::memory_order_acquire)) {
+        // Dispatch already in flight — treat as extend so the clip stays open.
+        if (_event_session && _event_session->isActive()) {
+            _event_session->resume();
+        }
+        return;
+    }
+    if (_event_session && _event_session->isActive()) {
+        // Already recording — caller should use extendEventRecord instead.
+        _event_session->resume();
+        return;
+    }
+
     if (!_option.record_mp4) {
         WarnL << "MP4 recording is disabled, cannot start event record: " << _option.tuple.shortUrl();
-        return nullptr;
+        return;
     }
 
     auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
     if (!media_src) {
         WarnL << "MediaSource not found for event record: " << _option.tuple.shortUrl();
-        return nullptr;
+        return;
     }
 
     auto muxer = media_src->getMuxer();
     if (!muxer) {
         WarnL << "MediaSourceMuxer not found for event record: " << _option.tuple.shortUrl();
-        return nullptr;
+        return;
     }
 
     if (!muxer->isRingEnabled()) {
         WarnL << "GOP cache not available for event record: " << _option.tuple.shortUrl();
-        return nullptr;
+        return;
     }
 
-    auto type = Recorder::type_mp4;
-    uint32_t back_ms =  MIN(_option.protocol.pre_record_ms, getCurrentMillisecond(true) - _last_record_end.load(std::memory_order_relaxed));
-    // forward_ms = 0 → infinite clip; terminated by stopRecord() when event ends.
-    auto session = muxer->startEventRecord(type, back_ms, 0 /*infinite*/);
-    std::weak_ptr<StreamSource> weak_self = shared_from_this();
-    session->setOnStop([weak_self]() {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
+    uint32_t back_ms = MIN(_option.protocol.pre_record_ms,
+                           static_cast<uint32_t>(getCurrentMillisecond(true) - _last_record_end.load(std::memory_order_relaxed)));
+
+    // Signal that a start is in flight so hasActiveEventSession() returns true
+    // during the async window, preventing a duplicate start from a concurrent call.
+    _event_starting.store(true, std::memory_order_release);
+
+    // RingBuffer::attach() requires isCurrentThread() on the muxer's owner EventPoller
+    // (see RingBuffer.h line 266-267). Dispatch there, then store the session back on
+    // _camera_poller (WorkThread) so _event_session remains single-threaded.
+    auto muxer_poller = muxer->getOwnerPoller(*media_src);
+    weak_ptr<StreamSource> weak_self = shared_from_this();
+    auto poller = _poller;
+    muxer_poller->async([weak_self, poller, muxer, back_ms]() {
+        EventRecordSession::Ptr session;
+        try {
+            // forward_ms = 0 → infinite clip; terminated by stopEventRecord() when event ends.
+            session = muxer->startEventRecord(Recorder::type_mp4, back_ms, 0 /*infinite*/);
+        } catch (const std::exception &e) {
+            WarnL << "startEventRecord on EventPoller failed: " << e.what();
+        }
+        if (!session) {
+            poller->async([weak_self]() {
+                if (auto s = weak_self.lock()) {
+                    s->_event_starting.store(false, std::memory_order_release);
+                }
+            });
             return;
         }
-        strong_self->_last_record_end.store(getCurrentMillisecond(true), std::memory_order_release); // update last record end time to now, used for calculating back time for next event record
+        weak_ptr<StreamSource> ws = weak_self;
+        session->setOnStop([ws]() {
+            if (auto s = ws.lock()) {
+                // _last_record_end is atomic — safe to write from any thread.
+                s->_last_record_end.store(getCurrentMillisecond(true), std::memory_order_release);
+            }
+        });
+        auto tuple_url = muxer->getMediaTuple().shortUrl();
+        // Dispatch back to camera_poller so _event_session is always written on WorkThread.
+        poller->async([weak_self, session, back_ms, tuple_url]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                // StreamSource was destroyed while dispatch was queued — stop immediately.
+                if (session->isActive()) session->stop(0);
+                return;
+            }
+            if (!strong_self->_event_starting.load(std::memory_order_acquire)) {
+                // cancelEventRecord() was called before we arrived — discard session.
+                if (session->isActive()) session->stop(0);
+                return;
+            }
+            strong_self->_event_session = session;
+            strong_self->_event_starting.store(false, std::memory_order_release);
+            InfoL << "Event record started: stream=" << tuple_url
+                  << ", back_ms=" << back_ms << " ms, forward_ms=infinite";
+        });
     });
-    _event_session = session;
-    InfoL << "Event record started: stream=" << _option.tuple.shortUrl() << ", back_ms=" << back_ms << " ms, forward_ms=infinite";
-    return session;
 }
 
 void StreamSource::extendEventRecord() {
@@ -301,6 +355,7 @@ void StreamSource::stopEventRecord(uint32_t extra_overlap_ms) {
 }
 
 void StreamSource::cancelEventRecord() {
+    _event_starting.store(false, std::memory_order_release);
     if (_event_session) {
         if (_event_session->isActive()) {
             // stop(0) sets end_dts = last_written_dts, so the ring-reader lambda

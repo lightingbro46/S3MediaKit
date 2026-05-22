@@ -125,7 +125,9 @@ void CameraController::onManager() {
 
     auto onvif_ctr = _onvif_ctr;
     auto weak_self = weak_from_this();
-    EventPollerPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
+    // ONVIF connect() is a blocking SOAP/HTTP call — dispatch on WorkThreadPool,
+    // not EventPollerPool, to avoid blocking stream I/O pollers.
+    WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
@@ -254,7 +256,8 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             return;
         }
 
-        EventPollerPool::Instance().getPoller()->doDelayTask(timeout_sec * 1000, [ptr, cb]() {
+        // PTZ_Stop() is a blocking SOAP call — schedule on WorkThreadPool, not EventPollerPool.
+        WorkThreadPool::Instance().getPoller()->doDelayTask(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
                 cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
                 return 0;
@@ -297,7 +300,13 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     int ptz_speed = speed < 0 ? speed : static_cast<int>(_ptzSpeed);
 
     if (_onvif_ctr && _ready.load()) {
-        onvifPTZMove(_onvif_ctr, _ptzMode, direct, ptz_speed, cb);
+        // Read state on _poller before dispatching to avoid data races.
+        auto onvif_ctr = _onvif_ctr;
+        int ptz_mode   = _ptzMode;
+        // Blocking SOAP — dispatch to a fresh WorkThread so _poller stays responsive.
+        WorkThreadPool::Instance().getPoller()->async([onvif_ctr, ptz_mode, direct, ptz_speed, cb]() {
+            onvifPTZMove(onvif_ctr, ptz_mode, direct, ptz_speed, cb);
+        });
         return;
     }
     // todo: add more ptz function from manufacturer sdk
@@ -382,22 +391,34 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
         }
         auto &preset = it->second;
         if (_onvif_ctr && _ready.load()) {
-            if (!_onvif_ctr->PTZ_AbsoluteMove(preset.absPan, preset.absTilt, preset.absZoom)) {
-                cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + _onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED));
-                return;
-            }
-            return cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
+            auto onvif_ctr = _onvif_ctr;
+            float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
+            // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
+            WorkThreadPool::Instance().getPoller()->async([onvif_ctr, pan, tilt, zoom, cb]() {
+                if (!onvif_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
+                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED));
+                    return;
+                }
+                cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
+            });
+            return;
         } else {
             cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
             return;
         }
     } else {
         if (_onvif_ctr && _ready.load()) {
-            if (!_onvif_ctr->PTZ_GotoPreset(presetToken, 0.5, 0.5, 0.5)) {
-                cb(SockException(Err_other, "Device execute ptz goto preset failed: " + _onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED));
-                return;
-            }
-            return cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
+            auto onvif_ctr = _onvif_ctr;
+            string token = presetToken;
+            // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
+            WorkThreadPool::Instance().getPoller()->async([onvif_ctr, token, cb]() {
+                if (!onvif_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
+                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED));
+                    return;
+                }
+                cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
+            });
+            return;
         } else {
             cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
             return;

@@ -2,6 +2,7 @@
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
+#include "Thread/WorkThreadPool.h"
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Http/HttpSession.h"
@@ -494,50 +495,59 @@ static void reportServerStatistic() {
         }
 
         if (!s_config_loaded.load()) {
-            ArgsType body;
-            do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
-                if (err.empty()) {
-                    TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
-                    InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
-
-                    EventPollerPool::Instance().getPoller()->async([obj]() {
-                        // Load server config success
-                        loadServerConfigJson(obj);
-                    });
-                } else {
-                    // Load server config failed
-                    TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
-                    WarnL << "Load server config failed:" << err;
-                }
-            });
             s_last_report_time = now_time;
             s_config_loaded = true;
             s_report_statistic = false;
+            // Dispatch on WorkThread so that HttpRequester picks the WorkThread's isolated
+            // EventPoller instead of a proxy-player-saturated EventPollerPool poller.
+            // EventPollerPool::getPoller(prefer_current_thread=true) returns the current
+            // thread's poller; running from a WorkThread gives an uncontested poller.
+            WorkThreadPool::Instance().getPoller()->async([]() {
+                ArgsType body;
+                do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
+                    if (err.empty()) {
+                        TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
+                        InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
+                        // loadServerConfigJson is thread-safe (uses its own mutex), no need to dispatch to a specific poller
+                        loadServerConfigJson(obj);
+                    } else {
+                        // Load server config failed
+                        TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
+                        WarnL << "Load server config failed:" << err;
+                    }
+                });
+            });
             return true;
         }
 
         if (!s_report_statistic.load()) {
-            getServerStatisticJson([](const Value &data) {
-                int online_count = 0, offline_count = 0;
-                countDeviceStatusJson(data, online_count, offline_count);
-                InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
+            s_report_statistic = true;
+            // Dispatch on WorkThread to:
+            // 1. Avoid blocking the EventPoller with synchronous device iteration.
+            // 2. Ensure HttpRequester uses WorkThread's isolated EventPoller so that
+            //    HTTP I/O is not queued behind proxy-player stream events.
+            WorkThreadPool::Instance().getPoller()->async([]() {
+                getServerStatisticJson([](const Value &data) {
+                    int online_count = 0, offline_count = 0;
+                    countDeviceStatusJson(data, online_count, offline_count);
+                    InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
 
-                ArgsType body;
-                body["data"] = data;
-                // Execute hook
-                do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
-                    if (err.empty()) {
-                        // Report server statistic success
-                        TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
-                        InfoL << "Report server statistic success";
-                    } else {
-                        // Report server statistic failed
-                        TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
-                        WarnL << "Report server statistic failed:" << err;
-                    }
+                    ArgsType body;
+                    body["data"] = data;
+                    // Execute hook
+                    do_http_hook(hook_api_url + hook_server_report, body, [](const Value &obj, const string &err) {
+                        if (err.empty()) {
+                            // Report server statistic success
+                            TraceL << "hook " << hook_api_url + hook_server_report << " success:" << obj.toStyledString();
+                            InfoL << "Report server statistic success";
+                        } else {
+                            // Report server statistic failed
+                            TraceL << "hook " <<  hook_api_url + hook_server_report << " failed:" << err;
+                            WarnL << "Report server statistic failed:" << err;
+                        }
+                    });
                 });
             });
-            s_report_statistic = true;
             return true;
         }
         return true;
