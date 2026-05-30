@@ -599,37 +599,52 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     }
 }
 
+static void fromJson(MServerInfo &info, const Json::Value &data) {
+    info.id = data["id"].asString();
+    info.name = data["name"].asString();
+    info.domain = data["domain"].asString();
+    info.ip = data["ip"].asString();
+    info.httpPort = data["http_port"].asInt();
+    info.httpsPort = data["https_port"].asInt();
+    info.rtspPort = data["rtsp_port"].asInt();
+    info.rtmpPort = data["rtmp_port"].asInt();
+    info.isAutoHttpPort = data["isAutoHttpPort"].asBool();
+    info.isAutoHttpsPort = data["isAutoHttpsPort"].asBool();
+    info.isAutoRtspPort = data["isAutoRtspPort"].asBool();
+    info.isAutoRtmpPort = data["isAutoRtmpPort"].asBool();
+    info.natHttpPort = data["nat_http_port"].asInt();
+    info.natHttpsPort = data["nat_https_port"].asInt();
+    info.natRtspPort = data["nat_rtsp_port"].asInt();
+    info.natRtmpPort = data["nat_rtmp_port"].asInt();
+    info.clientUseSsl = data["clientUseSsl"].asBool();
+    info.useWebDomain = data["useWebDomain"].asBool();
+    info.useDomain = data["useDomain"].asBool();
+    info.useCustomPath = data["useCustomPath"].asBool();
+    info.customPath = data["customPath"].asString();
+    info.hasFailover = data["hasFailover"].asBool();
+}
+
 static void loadServerClusterFromJson(const Json::Value &data) {
-    // std::unordered_set<std::string> new_ids;
-    // GET_CONFIG(std::string, mediaServerId, General::kMediaServerId);
-     
-    // std::vector<string> list_ids = ClusterManager::Instance().getListMediaServerIds(false);
-    // for (const auto &server_info : data) {
-    //     //WarnL << data.toStyledString();
+    auto current_mserver = ClusterManager::Instance().getMediaServerIds();
 
-    //     std::string active_id = server_info["id"].asString();
+    for (const auto &server : data) {
+        std::string active_id = server["id"].asString();
 
-    //     // add active server
-    //     ClusterManager::Instance().addMediaServer(server_info);
+        // add active server
+        MServerInfo mserver;
+        fromJson(mserver, server);
+        ClusterManager::Instance().addMediaServer(active_id, mserver);
 
-    //     // remove active server from list
-    //     list_ids.erase(std::remove(list_ids.begin(), list_ids.end(), active_id), list_ids.end());
-    // }
+        // remove active server from list
+        current_mserver.erase(std::remove(current_mserver.begin(), current_mserver.end(), active_id), current_mserver.end());
+    }
 
-    // // remove in-active server
-    // for (const auto &id : list_ids) {
-    //     ClusterManager::Instance().delServer(id);
-    // }
+    // remove in-active server
+    for (const auto &id : current_mserver) {
+        ClusterManager::Instance().removeMediaServer(id);
+    }
 
-    // // Check thông luồng
-    // ClusterManager::Instance().healthCheck();
-
-    // // addMediaServer: thêm vào server
-    // ClusterManager::Instance().saveServerInfoToESC();
-
-    // // Đồng bộ db sau khi có danh sách cluster
-    // //AntiEntropyManager::Instance().pullEscStateFromCluster();
-    // AntiEntropyManager::Instance().checkMultiDiffAndSync();
+    DebugL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
 }
 
 static Json::Value exampleJson() {
