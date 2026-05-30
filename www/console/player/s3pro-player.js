@@ -300,20 +300,59 @@
     class DtsTracker {
         constructor() { this.reset(); }
 
+        /**
+         * Reset all tracking state.  Elapsed resets to 0 and the timer is
+         * stopped — call resume() to start counting again.
+         */
         reset() {
-            this._base   = null;  // first raw tfdt of current session (ms)
-            this._last   = 0;     // most recent raw tfdt (ms)
-            this._accum  = 0;     // accumulated time across tfdt resets (ms)
-            this._lastMs = 0;     // monotonic ms at last feed() call
-            this._realTs = 0;     // Date.now() at last feed() call
+            this._base         = null;  // first raw tfdt of current session (ms)
+            this._last         = 0;     // most recent raw tfdt (ms)
+            this._accum        = 0;     // accumulated time across tfdt resets (ms)
+            this._lastMs       = 0;     // monotonic ms at last feed() call
+            this._realTs       = 0;     // Date.now() at last feed() call
+            this._elapsedMs    = 0;     // accumulated playing-time ms
+            this._playingStart = 0;     // Date.now() when last resumed; 0 = paused
         }
 
-        /** Ingest a raw tfdt value (ms). Returns the current monotonic offset. */
+        /**
+         * Start (or resume) the elapsed-time counter.
+         * Called when plugin state transitions to 'playing'.
+         * Safe to call while already running (idempotent).
+         */
+        resume() {
+            if (this._playingStart === 0) {
+                this._playingStart = Date.now();
+            }
+        }
+
+        /**
+         * Freeze the elapsed-time counter.
+         * Called when plugin leaves 'playing': buffering, codec switch, stop, error.
+         * Safe to call while already paused (idempotent).
+         */
+        pause() {
+            if (this._playingStart > 0) {
+                this._elapsedMs   += Date.now() - this._playingStart;
+                this._playingStart  = 0;
+            }
+        }
+
+        /**
+         * Ingest a raw tfdt value (ms). Returns the current monotonic offset.
+         * rawMs may be null when the moof has no tfdt box — the accumulator
+         * is left unchanged but _realTs is updated.
+         */
         feed(rawMs) {
+            const now = Date.now();
+            if (rawMs === null) { this._realTs = now; return this._lastMs; }
             if (this._base === null) {
-                this._base = rawMs; this._last = rawMs; this._accum = 0;
-            } else if (rawMs < this._last - 1000) {
-                // tfdt jumped backward by > 1 s — codec switch / server reset
+                this._base    = rawMs; this._last = rawMs; this._accum = 0;
+            } else if (rawMs < this._last - 100) {
+                // tfdt jumped backward by > 100 ms — codec switch / server reset.
+                // Threshold is kept at 100 ms (not 1000 ms) because cameras that
+                // use a slow/non-standard timescale accumulate only a few hundred ms
+                // of DTS in the first ~30 s; a 1000 ms threshold would miss the
+                // reset and silently zero out the accumulated history.
                 this._accum += this._last - this._base;
                 this._base   = rawMs;
             }
@@ -324,12 +363,15 @@
         }
 
         /**
-         * Monotonic elapsed ms, interpolated at wall-clock speed since the last
-         * feed() call. Capped at 5 s of extrapolation to avoid runaway when paused.
+         * Elapsed playing-time ms.  Only accumulates while the player is
+         * in the 'playing' state — frozen during connecting, buffering,
+         * codec switch, and stop.
          */
         get elapsed() {
-            if (this._realTs === 0) return 0;
-            return this._lastMs + Math.min(Date.now() - this._realTs, 5000);
+            if (this._playingStart > 0) {
+                return this._elapsedMs + (Date.now() - this._playingStart);
+            }
+            return this._elapsedMs;
         }
 
         /** True once the first feed() has been called for this session. */
@@ -745,6 +787,11 @@
             this._waitLogSince      = 0;
             this._stallSince        = 0;
             this._mseInitStallSince = 0; // for proactive HEVC→WebCodecs fallback
+            // Ring-buffer of raw {moofBuf, mdatBuf} pairs saved before segments
+            // are consumed by MSE.  Used by tickPoll()'s WC fallback to replay
+            // video data after WC activates for VOD streams where _httpEnded is
+            // already true and no further _onMdat() calls will come.
+            this._wcSegReplay = []; // [{moofBuf: Uint8Array, mdatBuf: Uint8Array}]
 
             this._start();
         }
@@ -998,19 +1045,25 @@
                     this._log('info', '[wc] in-stream codec change detected -> ' + wcNewCodec
                         + '; reinitialising VideoDecoder');
                     this._initBuf = new Uint8Array(initBuf);
-                    const oldWc  = this._wc;
+                    const oldWc   = this._wc;
                     const wcNewBuf = new Uint8Array(initBuf);
                     const wcDesc = /^hvc1|^hev1/i.test(wcNewCodec)
                         ? _extractHevcDescription(wcNewBuf)
                         : _extractAvcDescription(wcNewBuf);
-                    const newWc  = new S3ProWebCodecsFallback(
+                    const newWc   = new S3ProWebCodecsFallback(
                         this._videoEl, (lv, msg) => this._log(lv, msg));
+                    const prevMime = this._currentMime;
                     newWc.start(wcNewCodec, wcDesc, initBuf, () => this._cb.onState('playing')).then(ok => {
                         // Dispose old decoder AFTER new canvas is mounted so
                         // there is no frame where both canvases are visible.
                         oldWc.dispose();
                         if (ok) {
                             this._wc = newWc;
+                            // Update currentMime so _poll() and onDts() report the
+                            // new codec, and notify the plugin via onCodecChange so
+                            // the DTS timer is paused until onState('playing') fires.
+                            this._currentMime = mime;
+                            this._cb.onCodecChange(mime, prevMime);
                             this._log('info', '[wc] VideoDecoder re-configured for ' + wcNewCodec);
                             this._cb.onState('buffering');
                         } else {
@@ -1076,22 +1129,36 @@
                 this._moofBuf = null;
                 this._segmentsReceived++;
                 const dtsMs = readTfdt(moofBuf);
-                if (dtsMs !== null) this._cb.onDts(dtsMs, this._currentMime || '');
+                // Always call onDts — even when dtsMs is null (no tfdt box).
+                // The tracker uses the call to anchor the wall-clock epoch that
+                // powers elapsed(), so the first call MUST reach feed() regardless.
+                this._cb.onDts(dtsMs, this._currentMime || '');
                 this._log('info', '[fmp4] segment #' + this._segmentsReceived
                     + ' (wc) dts=' + (dtsMs !== null ? dtsMs.toFixed(0) + 'ms' : 'n/a'));
                 this._wc.feedSegment(moofBuf, mdatBuf);
                 return;
             }
 
+            // Save a copy for WC replay BEFORE this._moofBuf is consumed below.
+            // tickPoll()'s 3-second WC fallback activates after MSE has already
+            // drained _pendingQ (Chrome accepts compressed HEVC bitstream fast).
+            // For VOD streams _httpEnded is true so no further _onMdat() calls
+            // will come — without this replay buffer the WC decoder never receives
+            // any data and the canvas stays transparent (frozen on the first frame).
+            // Keep last 120 entries (~12 s at 10 fps) to bound memory usage.
+            this._wcSegReplay.push({
+                moofBuf: this._moofBuf.slice(),       // Uint8Array.slice() = copy
+                mdatBuf: new Uint8Array(boxBuf).slice(), // copy via slice
+            });
+            if (this._wcSegReplay.length > 120) this._wcSegReplay.shift();
+
             const segment = concat(this._moofBuf, new Uint8Array(boxBuf));
             this._moofBuf = null;
 
-            // Emit DTS for timebar
+            // Always call onDts — even when dtsMs is null (no tfdt box).
             const dtsMs = readTfdt(segment);
-            if (dtsMs !== null) {
-                this._cb.onDts(dtsMs,
-                    this._currentMime || (this._stagingCodec && this._stagingCodec.mime) || '');
-            }
+            this._cb.onDts(dtsMs,
+                this._currentMime || (this._stagingCodec && this._stagingCodec.mime) || '');
 
             if (this._stagingCodec) {
                 this._stagingCodec.segments.push({ buf: segment.buffer });
@@ -1496,7 +1563,19 @@
                 // snaps back because the first decodable IDR may be at ≥0.033 s in
                 // sequence-mode.  Use a generous starting offset (0.5 s) and retry
                 // with increasing offsets every 3 s until playback starts.
-                if (bufDur >= 2.0 && v.readyState < 3 && !this._httpEnded) {
+                //
+                // Guard: only nudge when there is meaningful buffer AHEAD of the
+                // playhead (≥ 0.5 s).  If bEnd − ct < 0.5 s the low readyState is
+                // caused by a genuine buffer underrun — the queue hasn't drained yet
+                // — NOT a decoder stall.  Nudging backward in that case forces an
+                // unnecessary seek, jumps the timeline cursor backward, and slows
+                // recovery because the browser must re-evaluate a new position.
+                const bufferAhead = bEnd - v.currentTime;
+                // Use !v.ended instead of !this._httpEnded: for VOD clips on fast
+                // networks, _httpEnded becomes true before the first updateend fires,
+                // so the httpEnded guard would silently suppress every nudge even
+                // when the decoder is genuinely stalled and needs one.
+                if (bufDur >= 2.0 && v.readyState < 3 && !v.ended && bufferAhead >= 0.5) {
                     const nowMs = performance.now();
                     const msSinceNudge = nowMs - this._nudgedAt;
                     // First nudge fires immediately; subsequent nudges every 3 s.
@@ -1535,10 +1614,14 @@
                 if (v.currentTime < bStart) {
                     v.currentTime = bStart;
                 }
-                // Guard: do NOT call play() after a VOD/replay stream has finished.
-                // Without this, the trim's updateend chain resumes after v.pause(),
-                // and Chrome reacts to play()-on-ended by seeking back to position 0.
-                if (v.paused && !this._httpEnded) {
+                // Guard: do NOT call play() after the video element has ended.
+                // Using v.ended (not _httpEnded) so that VOD clips on fast networks
+                // still auto-play: _httpEnded becomes true before the first updateend
+                // fires, blocking play() and leaving the video paused on frame 0.
+                // v.ended is only true after 'ended' fires (playback reached buffer
+                // end + endOfStream called), which is the correct guard against the
+                // trim's updateend chain causing a seek-to-0 replay.
+                if (v.paused && !v.ended) {
                     const playPromise = v.play();
                     if (playPromise && playPromise.catch) playPromise.catch(() => {});
                 }
@@ -1649,6 +1732,7 @@
             this._pendingQ          = [];
             this._moofBuf           = null;
             this._ftypBuf           = null;
+            this._wcSegReplay       = [];
             this._stagingCodec      = null;
             this._moovReceived      = false;
             this._httpEnded         = false;
@@ -1695,18 +1779,47 @@
             // 15-20 s.  If sb.buffered duration stays near zero for 3 s after data
             // started arriving, switch to WebCodecs which renders the first frame
             // on the very next keyframe (typically < 1 s after start).
-            if (this._sb && !this._wc && !this._wcFallbackTried &&
-                    this._segmentsReceived > 0 && rs <= 2 && !this._httpEnded &&
-                    S3ProWebCodecsFallback.isSupported()) {
-                // rs <= 2 covers two stall patterns:
+            //
+            // Distinguish three readyState ≤ 2 scenarios by how much buffer
+            // exists AHEAD of the current playhead:
+            //   _wcBufAhead < 0      → no buffer committed yet (initial HEVC
+            //                          decode stall) → WC helps
+            //   _wcBufAhead ≥ 0.5 s  → buffer full ahead but decoder can't keep
+            //                          up (post-play decoder stall) → WC helps
+            //   0 ≤ _wcBufAhead < 0.5 → genuine underrun: ct caught up with
+            //                          bEnd, more data is in-flight in _pendingQ.
+            //                          WC is NOT the fix — just wait for segments.
+            //
+            // Timer semantics (3-second stall accumulator):
+            //   rs ≤ 2  → decoder stalled:  timer ticks forward.
+            //   rs == 3 → brief burst decode (one frame, then freezes again):
+            //             HOLD the timer — don't start, don't reset.  Chrome's
+            //             slow HEVC software decoder oscillates between rs=2 and
+            //             rs=3 without making real progress; resetting here would
+            //             prevent WC from ever activating.
+            //   rs == 4 → genuine playback:  reset timer.
+            const _wcSbLen    = this._sb ? this._sb.buffered.length : 0;
+            const _wcBufAhead = _wcSbLen > 0
+                ? this._sb.buffered.end(_wcSbLen - 1) - v.currentTime : -1;
+            const _wcWouldHelp = _wcBufAhead < 0 || _wcBufAhead >= 0.5;
+            // _httpEnded is intentionally excluded here: for short VOD clips the
+            // entire HTTP response finishes downloading within 1-2 s (before HEVC
+            // decoding catches up), so gating on !_httpEnded prevents WC from ever
+            // activating even though the decoder is genuinely stalled.
+            // _wcWouldHelp already guards against activating at end-of-stream:
+            // if ct ≥ bEnd - 0.5 s there is no buffer ahead and WC cannot help.
+            const _wcEligible  = !!(this._sb && !this._wc && !this._wcFallbackTried &&
+                    this._segmentsReceived > 0 &&
+                    _wcWouldHelp && S3ProWebCodecsFallback.isSupported());
+            if (_wcEligible && rs <= 2) {
+                // Timer ticks: decoder is stalled (rs ≤ 2) and WC would help.
                 //  (a) Init stall  — readyState never left 1; sbDur near 0;
                 //      HEVC decoder never committed a buffered range.
                 //  (b) Post-play stall — readyState briefly reached 4 (one frame
-                //      shown), then fell to 2 (HAVE_CURRENT_DATA); sbDur > 0;
-                //      HEVC software decoder decoded first IDR but is too slow
-                //      to keep up with the stream rate.
-                // In both cases a 3-second timeout without rs reaching 3 is a
-                // reliable signal that MSE cannot play this stream in real-time.
+                //      shown), then fell to 2 (HAVE_CURRENT_DATA); buffer has
+                //      data ahead but HEVC decoder is too slow to keep up.
+                // Accumulate 3 continuous-or-intermittent seconds of rs ≤ 2
+                // before concluding MSE cannot play this stream in real-time.
                 if (!this._mseInitStallSince) this._mseInitStallSince = performance.now();
                     if (performance.now() - this._mseInitStallSince > 3000) {
                         this._mseInitStallSince = 0;
@@ -1734,6 +1847,21 @@
                                     if (this._cb.clearError) this._cb.clearError();
                                     this._cb.onState('buffering');
                                     this._log('info', '[wc] VideoDecoder active (HEVC MSE stall)');
+                                    // Replay segments that were already consumed by MSE.
+                                    // For VOD streams _httpEnded=true means no new _onMdat()
+                                    // calls will arrive, so the decoder must be seeded from
+                                    // the saved ring-buffer.  feedSegment() skips non-IDR
+                                    // frames until the first keyframe, so feeding all saved
+                                    // entries is safe regardless of where the first IDR is.
+                                    const replaySegs = this._wcSegReplay;
+                                    this._wcSegReplay = [];
+                                    if (replaySegs.length > 0) {
+                                        this._log('info', '[wc] replaying ' + replaySegs.length
+                                            + ' saved segment(s) to VideoDecoder');
+                                        for (const seg of replaySegs) {
+                                            wc.feedSegment(seg.moofBuf, seg.mdatBuf);
+                                        }
+                                    }
                                 } else {
                                     wc.dispose();
                                     this._log('warn', '[wc] VideoDecoder fallback failed — MSE continues');
@@ -1741,7 +1869,10 @@
                             });
                         }
                     }
-            } else {
+            } else if (!_wcEligible || rs >= 4) {
+                // Genuine playback (rs=4) or WC no longer needed — reset timer.
+                // rs==3 falls through without touching the timer: brief burst
+                // decodes should not erase accumulated stall time.
                 this._mseInitStallSince = 0;
             }
 
@@ -1794,7 +1925,7 @@
                                 ' before bStart=' + bStart.toFixed(2));
                             v.currentTime    = bStart;
                             this._stallSince = 0;
-                            if (v.paused && !this._httpEnded) v.play().catch(() => {});
+                            if (v.paused && !v.ended) v.play().catch(() => {});
                         }
                     } else if (stallMs > 800) {
                         // ct within buffer but decoder stalled — nudge forward
@@ -1803,7 +1934,7 @@
                             ' -> ' + nudge.toFixed(2));
                         v.currentTime    = nudge;
                         this._stallSince = 0;
-                        if (v.paused && !this._httpEnded) v.play().catch(() => {});
+                        if (v.paused && !v.ended) v.play().catch(() => {});
                     }
                 }
             } else {
@@ -2147,6 +2278,9 @@
     const _registeredTechs = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
     // Synchronous slot: set while vjsPlayer.src() is executing
     let _pendingPlugin = null;
+    // URL-based slot: { src, plugin } set in play(); survives async handleSource calls
+    // because it does NOT depend on tech.player_ identity — it matches by source URL.
+    let _pendingSource = null;
 
     function _registerSourceHandler(vjsLib) {
         const Html5Tech = vjsLib.getTech && vjsLib.getTech('Html5');
@@ -2164,8 +2298,32 @@
             },
             handleSource(source, tech, options) {
                 const vjsPlayer = tech.player_;
+
+                // URL-based lookup — the only mechanism that works when VJS 8
+                // calls handleSource asynchronously (after _pendingPlugin=null)
+                // AND when tech.player_ is undefined/mismatched (VJS 8.10.x).
+                const srcPlugin = (_pendingSource && _pendingSource.src === source.src)
+                    ? _pendingSource.plugin : null;
+                if (srcPlugin) _pendingSource = null; // consume the one-shot slot
+
+                // Plugin lookup — four-tier fallback in order of reliability:
+                //  1. _pendingPlugin   — synchronous: VJS calls handleSource inline
+                //  2. srcPlugin        — URL-based: works across async/await boundary
+                //  3. _s3proInstance   — direct property; doesn't use WeakMap identity
+                //  4. _pluginRegistry  — WeakMap: last-resort for unusual configs
                 const plugin = _pendingPlugin
+                    || srcPlugin
+                    || (vjsPlayer && vjsPlayer._s3proInstance ? vjsPlayer._s3proInstance : null)
                     || (_pluginRegistry && vjsPlayer ? _pluginRegistry.get(vjsPlayer) : null);
+
+                if (_globalDebug) {
+                    console.log('[s3pro:handleSource] src=' + source.src
+                        + ' | pendingPlugin=' + !!_pendingPlugin
+                        + ' | srcPlugin=' + !!srcPlugin
+                        + ' | vjsPlayer=' + !!vjsPlayer
+                        + ' | s3proInstance=' + !!(vjsPlayer && vjsPlayer._s3proInstance)
+                        + ' | plugin=' + !!plugin);
+                }
 
                 // Guard: VJS sometimes calls handleSource a second time when
                 // player.play() is invoked on a freshly-set src (e.g. because
@@ -2236,6 +2394,11 @@
             // Reset only on play(new url) or stop().
             this._dts = new DtsTracker();
 
+            // Last known codec MIME string, kept in sync via onDts / onCodecChange.
+            // Used by _poll() so the timeupdate 'codec' argument is available even
+            // during the brief window where this._handler is being replaced.
+            this._currentCodec = '';
+
             // When true, all 'log' events are also printed to the browser console.
             // Controlled by opts.debug at construction time and setDebug() at runtime.
             this._debugLog = !!(opts.debug);
@@ -2290,6 +2453,9 @@
             });
 
             if (_pluginRegistry) _pluginRegistry.set(player, this);
+            // Also store directly on the player so handleSource can find the plugin
+            // when VJS 8 calls it asynchronously (after _pendingPlugin is cleared).
+            try { player._s3proInstance = this; } catch (_) {}
 
             this._pollTimer = setInterval(() => this._poll(), 200);
         }
@@ -2305,8 +2471,11 @@
             this._emit('log', 'info', '=== play: ' + url + ' ===');
             this._emit('error', null);
             this._suppressMseError = false; // reset for new stream
-            // Reset monotonic DTS so the new stream starts from 0.
+            // Reset monotonic DTS.  The elapsed timer starts only when the
+            // handler reports 'playing' (first frames rendered), so the HUD
+            // shows 00:00:00 during the connecting/buffering phase.
             this._dts.reset();
+            this._currentCodec = '';
             this._player.pause();
             this._stopHandler();
             // Clear any VJS error overlay from the previous stream without
@@ -2326,8 +2495,12 @@
             }
 
             _pendingPlugin = this;
+            _pendingSource = { src: url, plugin: this };
             this._player.src({ src: url, type });
             _pendingPlugin = null;
+            // Note: _pendingSource is intentionally NOT cleared here.
+            // handleSource may be called asynchronously by VJS 8 after this
+            // line; it will consume and clear _pendingSource when it runs.
             // Do NOT call player.play() here: on a freshly-set src with
             // readyState=0, VJS re-invokes the source handler to reload,
             // creating an orphaned duplicate MediaSource (see handleSource guard).
@@ -2338,7 +2511,9 @@
         stop() {
             this._emit('log', 'info', '=== stop ===');
             this._suppressMseError = false;
+            _pendingSource = null; // discard any unconsumed URL slot
             this._dts.reset();
+            this._currentCodec = '';
             this._player.pause();
             this._stopHandler();
             this._player.reset();
@@ -2349,6 +2524,7 @@
             if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
             this._stopHandler();
             if (_pluginRegistry && this._player) _pluginRegistry.delete(this._player);
+            try { if (this._player._s3proInstance === this) delete this._player._s3proInstance; } catch (_) {}
         }
 
         /**
@@ -2471,6 +2647,12 @@
         _setState(s) {
             if (this._state === s) return;
             this._state = s;
+            // Drive the playing-time counter: only accumulate while actually playing.
+            if (s === 'playing') {
+                this._dts.resume();
+            } else {
+                this._dts.pause();
+            }
             this._emit('statechange', s);
         }
 
@@ -2526,6 +2708,11 @@
                 disableMseSuppress: () => { this._suppressMseError = false; },
                 onState:  (s) => {
                     if (s === 'playing') {
+                        // Always call resume() directly here — not just through
+                        // _setState — because after a codec switch the plugin
+                        // state is already 'playing' so _setState's guard would
+                        // skip the resume() call.
+                        this._dts.resume();
                         this._setState('playing');
                     } else if (s === 'buffering' && this._state === 'connecting') {
                         this._setState('buffering');
@@ -2537,9 +2724,19 @@
                 },
                 onDts: (dtsMs, codec) => {
                     const mono = this._dts.feed(dtsMs);
-                    this._emit('dts', mono, codec);
+                    // Keep plugin-level codec cache current so _poll() always
+                    // has a codec to report, even between handler replacements.
+                    if (codec) this._currentCodec = codec;
+                    if (dtsMs !== null) this._emit('dts', mono, codec);
                 },
                 onCodecChange: (newMime, oldMime) => {
+                    // Update codec cache immediately on switch so _poll() shows
+                    // the new codec as soon as the switch is committed.
+                    this._currentCodec = newMime;
+                    // Freeze the elapsed counter while the codec switch completes.
+                    // It will resume when onState('playing') fires after the
+                    // new codec is rendering.
+                    this._dts.pause();
                     this._emit('codecchange', newMime, oldMime);
                 },
                 messages: this._opts.messages || null,
@@ -2551,8 +2748,17 @@
             const v = this.videoEl;
             if (!v) return;
 
+            // Do not emit timeupdate (or run stall detection) when no stream is
+            // active.  The timer stays running so it is ready the moment play()
+            // is called, but there is nothing useful to report while idle/stopped
+            // and the constant firing wastes CPU and spams HUD listeners.
+            if (this._state === 'idle' || this._state === 'stopped') return;
+
             const h      = this._handler;
-            const mime   = h ? h.currentMime : '';
+            // Prefer the handler's live value; fall back to the cached codec
+            // (updated via onDts / onCodecChange) for the brief window where
+            // the handler is being replaced or the first moov hasn't arrived.
+            const mime   = (h ? h.currentMime : '') || this._currentCodec;
             let   bufLen = 0;
             if (v.buffered) {
                 for (let i = 0; i < v.buffered.length; i++)

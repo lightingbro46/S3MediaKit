@@ -121,10 +121,17 @@ function initTimeline(player, state) {
         _playerPlaying = (s === 'playing');
     });
 
-    player.on('dts', function (dtsMs /*, codec */) {
+    player.on('dts', function (/* dtsMs, codec */) {
         if (!_playerPlaying) return;
         if (state.mode !== 'replay' || !state.replayStartTime) return;
-        const wallTime = state.replayStartTime + dtsMs / 1000;
+        // Use player.elapsedMs (real wall-clock playing time) instead of the raw
+        // DTS value.  readTfdt() always divides by 90, so dtsMs only equals real
+        // milliseconds when the stream uses a 90 kHz timescale.  Streams that use
+        // other timescales (e.g. 1000 Hz) produce a dtsMs that is far smaller than
+        // the actual playback position, causing the cursor to oscillate between
+        // the (wrong) DTS-based position and the (correct) position emitted by the
+        // 200 ms poll in pc-control-bar.js.
+        var wallTime = state.replayStartTime + player.elapsedMs / 1000;
         moveCursorToWallTime(wallTime);
         if (state.pcbMoveCursor) state.pcbMoveCursor(wallTime);
     });
