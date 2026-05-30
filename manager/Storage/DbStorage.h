@@ -143,6 +143,10 @@ protected:
     }
 
     virtual bool updateById(const T& obj) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to update entity without primary key, operation not allowed. Entity type: " << typeid(T).name();
+            return false;
+        }
         auto cols = EntityTraits<T>::getColumns();
         auto vals = EntityTraits<T>::getValues(obj);
 
@@ -166,6 +170,10 @@ protected:
     } 
 
     virtual bool removeById(const T& obj) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to delete entity without primary key, operation not allowed. Entity type: " << typeid(T).name();
+            return false;
+        }
         std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
         std::ostringstream whereClause;
         for (size_t i = 0; i < primaryKeys.size(); ++i) {
@@ -179,6 +187,10 @@ protected:
     }
 
     virtual std::vector<T> findById(const T& obj) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to query entity without primary key, operation not allowed. Entity type: " << typeid(T).name();
+            return {};
+        }
         std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
         std::ostringstream whereClause;
         for (size_t i = 0; i < primaryKeys.size(); ++i) {

@@ -26,7 +26,6 @@ protected:
 };
 
 class UserEntityImp : public UserEntityRepository {
-
 public:
     using Ptr = std::shared_ptr<UserEntityImp>;
     UserEntityImp() : UserEntityRepository() {}

@@ -70,6 +70,10 @@ public:
         save(resource);
     }
 
+    void remove(const std::string &guid) {
+        removeByGuid(guid);
+    }
+
     int findStatus(const std::string &guid) {
         auto ret = findByGuid(guid);
         if (ret.size() > 0) {

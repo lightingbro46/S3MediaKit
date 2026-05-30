@@ -27,12 +27,12 @@ public:
     LocalResourceRepository() : SqliteRepository<LocalResource>(Database::kMediaServerDb) {}
 
 protected:
-    std::vector<LocalResource> findByPropertyName(const std::string &resoure_id, const std::string &property_name) {
+    std::vector<LocalResource> findByPropertyName(const std::string &resource_id, const std::string &property_name) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "resoure_id = ? AND property_name = ?";
-        whereParams.push_back(resoure_id);
+        whereClause << "resource_id = ? AND property_name = ?";
+        whereParams.push_back(resource_id);
         whereParams.push_back(property_name);
 
         auto query = toolkit::QueryBuilder()
@@ -47,12 +47,12 @@ protected:
         return ret;
     }
 
-    std::vector<LocalResource> findByResourceId(const std::string &resoure_id) {
+    std::vector<LocalResource> findByResourceId(const std::string &resource_id) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "resoure_id = ?";
-        whereParams.push_back(resoure_id);
+        whereClause << "resource_id = ?";
+        whereParams.push_back(resource_id);
 
         auto query = toolkit::QueryBuilder()
                          .select(EntityTraits<LocalResource>::getColumns())
@@ -66,12 +66,12 @@ protected:
         return ret;
     }
 
-    bool removeByResourceId(const std::string &resoure_id) {
+    bool removeByResourceId(const std::string &resource_id) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "resoure_id = ?";
-        whereParams.push_back(resoure_id);
+        whereClause << "resource_id = ?";
+        whereParams.push_back(resource_id);
 
         auto query = toolkit::QueryBuilder()
                             .deleteFrom(EntityTraits<LocalResource>::tableName())
@@ -85,14 +85,29 @@ public:
     using Ptr = std::shared_ptr<LocalResourceImp>;
     LocalResourceImp() : LocalResourceRepository() {}
 
-    void add(LocalResource &resource) {
+    // Single upsert với dirty check
+    bool add(LocalResource &resource) {
         auto ret = findByPropertyName(resource.resource_id, resource.property_name);
-        if (ret.size() > 0) {
+        if (!ret.empty()) {
+            if (ret[0].property_value == resource.property_value) return false; // ← dirty check
             resource.id = ret[0].id;
             updateById(resource);
-            return;
+            return true;
         }
         save(resource);
+        return true;
+    }
+
+    // Batch upsert trong 1 SQLite transaction (không có transaction log)
+    void addBatch(std::vector<LocalResource> &props) {
+        if (props.empty()) return;
+        for (auto &prop : props) {
+            add(prop);   // dirty check bên trong
+        }
+    }
+
+    void remove(const std::string &resource_id) {
+        removeByResourceId(resource_id);
     }
 
     std::vector<LocalResource> findAllProperty(const std::string &resoure_id) {

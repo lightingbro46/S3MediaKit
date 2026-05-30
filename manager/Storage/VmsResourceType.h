@@ -48,6 +48,6 @@ public:
     VmsResourceTypeImp() : VmsResourceTypeRepository() {}
 };
 
-}
+} // namespace managerkit
 
 #endif // S3MANAGERKIT_VMSRESOURCETYPE_H

@@ -2,8 +2,10 @@
 #define S3MANAGERKIT_VMSRESOURCE_H
 
 #include <string>
+#include <json/json.h>
 #include "DbStorage.h"
 #include "Util/util.h"
+#include "TransactionLog.h"
 
 namespace managerkit {
 
@@ -14,6 +16,17 @@ struct VmsResource {
     std::string name;
     std::string url;
     std::string xtype_guid;
+
+    Json::Value toJson() const {
+        Json::Value v;
+        v["id"]          = id;
+        v["guid"]        = guid;
+        v["parent_guid"] = parent_guid;
+        v["name"]        = name;
+        v["url"]         = url;
+        v["xtype_guid"]  = xtype_guid;
+        return v;
+    }
 };
 
 DECLARE_ENTITY(VmsResource, "vms_resource",
@@ -30,7 +43,6 @@ class VmsResourceRepository : public SqliteRepository<VmsResource> {
 public:
     VmsResourceRepository() : SqliteRepository<VmsResource>(Database::kEdgeStorageControllerDb) {}
 
-protected:
     std::vector<VmsResource> findByGuid(const std::string &guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -62,22 +74,74 @@ protected:
                             .where(whereClause.str(), whereParams);
         return _executor->execDML(query) > 0;
     }
+
+    std::vector<VmsResource> findByParentGuidAndXType(const std::string &guid, const std::string &xtype_guid) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        whereClause << "parent_guid = ? AND xtype_guid = ?";
+        whereParams.push_back(guid);
+        whereParams.push_back(xtype_guid);
+
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<VmsResource>::getColumns())
+                         .from(EntityTraits<VmsResource>::tableName())
+                         .where(whereClause.str(), whereParams);
+        auto rows = _executor->executeRaw(query);
+        std::vector<VmsResource> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<VmsResource>::fromRow(row));
+        }
+        return ret;
+    }
 };
 
 class VmsResourceImp : public VmsResourceRepository {
 public:
     using Ptr = std::shared_ptr<VmsResourceImp>;
-    VmsResourceImp() : VmsResourceRepository() {}
+    VmsResourceImp() : VmsResourceRepository() {
+        _log_impl = std::make_shared<TransactionLogImp>();
+    }
 
-    void add(VmsResource &resource) {
+    void add(VmsResource &resource, bool append_log = true) {
         auto ret = findByGuid(resource.guid);
+        bool changed = false;
         if (ret.size() > 0) {
             resource.id = ret[0].id;
-            updateById(resource);
-            return;
+            if (!equal(resource, ret[0])) {
+                updateById(resource);
+                changed = true;
+            }
+        } else {
+            save(resource);
+            changed = true;
         }
-        save(resource);
+        if (changed && append_log) {
+            _log_impl->appendLocalDataMutation(EntityTraits<VmsResource>::tableName(), TRAN_DATA_OP_UPSERT, resource.toJson());
+        }
     }
+
+    void remove(const std::string &guid, bool append_log = true) {
+        removeByGuid(guid);
+        if (append_log) {
+            Json::Value payload;
+            payload["guid"] = guid;
+            _log_impl->appendLocalDataMutation(EntityTraits<VmsResource>::tableName(), TRAN_DATA_OP_DELETE, payload);
+        }
+    }
+
+    
+
+private:
+    bool equal(const VmsResource &r1, const VmsResource &r2) {
+        return r1.parent_guid == r2.parent_guid
+            && r1.name == r2.name
+            && r1.url == r2.url
+            && r1.xtype_guid == r2.xtype_guid;
+    }
+
+private:
+    TransactionLogImp::Ptr _log_impl;
 };
 
 } // namespace managerkit

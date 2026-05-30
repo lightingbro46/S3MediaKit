@@ -146,6 +146,9 @@ struct EntityTraits<EntityType> {                                               
     static std::vector<std::string> getPrimaryKey() {                                                                                                      \
         return PrimaryKey;                                                                                                                                 \
     }                                                                                                                                                      \
+    static bool hasPrimaryKey() {                                                                                                                          \
+        return !std::vector<std::string>(PrimaryKey).empty();                                                                                              \
+    }                                                                                                                                                      \
     static std::vector<std::string> getPrimaryKeyValue(const EntityType &obj) {                                                                            \
         return getPrimaryKeyValuesImpl(obj, PrimaryKey, __VA_ARGS__);                                                                                      \
     }                                                                                                                                                      \
@@ -153,6 +156,11 @@ struct EntityTraits<EntityType> {                                               
         return fromVectorImpl<EntityType>(row, __VA_ARGS__);                                                                                               \
     }                                                                                                                                                      \
 };
+
+// For entity without primary key, we can use DECLARE_ENTITY_NO_PK 
+// and it will generate empty primary key list
+#define DECLARE_ENTITY_NO_PK(EntityType, TableName, ...) \
+    DECLARE_ENTITY(EntityType, TableName, {}, __VA_ARGS__)
 
 // getColumnsImpl 
 // Base case
