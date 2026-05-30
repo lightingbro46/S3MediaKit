@@ -1014,8 +1014,9 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
                 data["onvifProfiles"] = onvifProfileJson;
             } else {
-                data["manufacturer"] = !option.manufacturer.empty() ? option.manufacturer : GENERIC_RTSP_CAMERA;
-                data["model"] = !option.model.empty() ? option.model : GENERIC_RTSP_CAMERA;
+                // note: keep manufacturer and model field if camera is added by user with ip
+                data["manufacturer"] = option.manufacturer.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.manufacturer;
+                data["model"] = option.model.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.model;
                 data["serialNumber"] = "";
                 data["firmwareVersion"] = "";
                 data["hardwareId"] = "";
