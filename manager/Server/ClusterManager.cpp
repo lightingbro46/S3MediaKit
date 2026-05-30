@@ -4,6 +4,7 @@
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
 #include "Storage/VmsKvPair.h"
+#include "Storage/SyncManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -124,6 +125,7 @@ void ClusterManager::removeMediaServer(const std::string &id) {
         _map_server_info.erase(id);
         TraceL << "Removed media server: " << id;
     }
+    SyncManager::Instance().removePeer(id);
 }
 
 static void savePeerList(const std::unordered_map<std::string, std::string> &peer_url_map) {

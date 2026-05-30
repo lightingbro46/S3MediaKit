@@ -79,6 +79,9 @@
 #include "WebApiErrCode.h"
 #include "Common/StrUtil.h"
 #include "Control/SubnetScan.h"
+#include "Storage/SyncManager.h"
+#include "Storage/TransactionLog.h"
+#include "Storage/MiscData.h"
 
 using namespace std;
 using namespace Json;
@@ -2938,6 +2941,11 @@ void installWebApi() {
         }
 
         auto origin_urls = UriUtils::getUriList(apiDomain, apiIp, httpPort, httpsPort, preferSSL);
+        string origin_urls_str;
+        for (size_t i = 0; i < origin_urls.size(); i++) {
+            if (i > 0) origin_urls_str += ",";
+            origin_urls_str += origin_urls[i];
+        }
 
         Broadcast::HealthInvoker on_health_check = [allArgs, origin_urls, mediaServerDomain, mediaServerCert, val, headerOut, invoker](const string& err, const int& idx) mutable {
             if (!err.empty()) {
@@ -2988,7 +2996,7 @@ void installWebApi() {
             invoker(200, headerOut, val.toStyledString());
         };
         
-        auto flag = NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls, on_health_check);
+        auto flag = NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls_str, on_health_check);
         if (!flag) {
             // Nobody to handle health check service, just return failed
             on_health_check("No handler to handle health check api service", -1);
@@ -3539,6 +3547,87 @@ void installWebApi() {
         }
 
         val["data"] = makeDeviceStatisticJson(device);
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/sync/changes", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS_("since", "limit", "peer", "db");
+
+        int since_seq = allArgs["since"];
+        int limit = allArgs["limit"];
+        string peer_id = allArgs["peer"];
+        string db_guid = allArgs["db"];
+
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (peer_id != mediaServerId) {
+            // todo: forward request to other media server if node_id is not current media server id
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
+            return;
+        }
+
+        auto impl = make_shared<TransactionLogImp>();
+        auto ret = impl->findSinceSeq(peer_id, db_guid, since_seq, limit);
+
+        Value log_rows = Json::arrayValue;
+        for (const TransactionLog &b : ret) {
+            Json::Value item;
+            item["sequence"] = b.sequence;
+            item["peer_guid"] = b.peer_guid;
+            item["db_guid"] = b.db_guid;
+            item["timestamp"] = b.timestamp;
+            item["tran_guid"] = b.tran_guid;
+            item["tran_data"] = b.tran_data;
+            item["tran_type"] = b.tran_type;
+            item["timestamp_hi"] = b.timestamp_hi;
+            log_rows.append(item);
+        }
+
+        val["data"] = log_rows;
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/sync/snapshot", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS_("peer");
+        string peer_id = allArgs["peer"];
+
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (peer_id != mediaServerId) {
+            // todo: forward request to other media server if node_id is not current media server id
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
+            return;
+        }
+
+        auto snap = SyncManager::Instance().buildLocalSnapshot();
+        if (snap.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
+            return;
+        }
+        Value snap_json = SnapshotBuilder::serialize(snap);
+        val["data"] = snap_json;
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/esc/sync/misc", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS_("peer");
+        string peer_id = allArgs["peer"];
+
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+        if (peer_id != mediaServerId) {
+            // todo: forward request to other media server if node_id is not current media server id
+            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
+            return;
+        }
+
+        auto imp = std::make_shared<MiscDataImp>();
+        auto ret = imp->findAll();
+        Json::Value misc_json;
+        for (const auto &r : ret) {
+            if (r.key.empty() || r.value.empty()) {
+                continue;
+            }
+            misc_json[r.key] = r.value;
+        }
+        val["data"] = misc_json;
         invoker(200, headerOut, val.toStyledString());
     });
 }

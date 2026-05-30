@@ -60,6 +60,8 @@ const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
 const string kOnServerHealthCheck = HOOK_FIELD "on_server_health_check";
 const string kOnDeviceChanged = HOOK_FIELD "on_device_changed";
 const string kOnDeviceCapsChanged = HOOK_FIELD "on_device_caps_changed";
+const string kOnSyncChanges = HOOK_FIELD "on_sync_changes";
+const string kOnSyncSnapshot = HOOK_FIELD "on_sync_snapshot";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -96,6 +98,8 @@ static onceToken token([]() {
     mINI::Instance()[kOnServerHealthCheck] = "/api/actuator/health";
     mINI::Instance()[kOnDeviceChanged] = "";
     mINI::Instance()[kOnDeviceCapsChanged] = "/api/media-server/media-device-info";
+    mINI::Instance()[kOnSyncChanges] = "/media/esc/sync/changes";
+    mINI::Instance()[kOnSyncSnapshot] = "/media/esc/sync/snapshot";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -662,6 +666,60 @@ static void healthCheckServiceFromOrigin(const vector<string> &urls, size_t inde
             return;
         }
         healthCheckServiceFromOrigin(urls, index + 1, failed_cnt, callback);
+    });
+}
+
+static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+    
+    do_http_hook(url, body, [=](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // Fetch data from origin success
+            callback("", index % urls.size(), obj);
+        }
+
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "fetch data from origin server final failed: " << ss.str();
+            callback("All origin stations have been retried", -1, Json::nullValue);
+        }
+
+        fetchDataFromOrigin(urls, body, index + 1, failed_cnt, callback);
+    });
+}
+
+static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+    
+    do_http_hook(url, params, [=](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // Fetch data from origin success
+            callback("", index % urls.size(), obj);
+        }
+
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "fetch data from origin server final failed: " << ss.str();
+            callback("All origin stations have been retried", -1, Json::nullValue);
+        }
+
+        fetchDataFromOrigin(urls, params, index + 1, failed_cnt, callback);
     });
 }
 
@@ -1271,7 +1329,7 @@ void installWebHook() {
         }
 
         vector<string> urls;
-        for (const auto &u : origin_urls) {
+        for (const auto &u : split(origin_urls, ",")) {
             string full_url = StrPrinter << u << hook_server_healthcheck;
             urls.push_back(full_url);
         }
@@ -1379,6 +1437,61 @@ void installWebHook() {
 
         // Execute hook
         do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);
+    });
+
+    // Listen to sync change events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncChanges, [](BroadcastSyncChangesArgs) {
+        GET_CONFIG(string, hook_sync_changes, Hook::kOnSyncChanges);
+        if (!hook_enable || hook_sync_changes.empty()) {
+            invoker("Sync changes skipped, hook_sync_changes is empty", -1, Json::nullValue);
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            invoker("Sync changes skipped, origin_urls is empty", -1, Json::nullValue);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            string full_url = StrPrinter << u << hook_sync_changes;
+            urls.push_back(full_url);
+        }
+
+        HttpArgs params;
+        params["peer"] = peer_id;
+        params["db"] = db_guid;
+        params["since"] = since_id;
+        params["limit"] = batch_limit;
+
+        // Execute hook
+        fetchDataFromOrigin(urls, params, 0, 0, invoker); 
+    });
+
+    // Listen to sync snapshot events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncSnapshot, [](BroadcastSyncSnapshotArgs) {
+        GET_CONFIG(string, hook_sync_snapshot, Hook::kOnSyncSnapshot);
+        if (!hook_enable || hook_sync_snapshot.empty()) {
+            invoker("Sync snapshot skipped, hook_sync_snapshot is empty", -1, Json::nullValue);
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            invoker("Sync snapshot skipped, origin_urls is empty", -1, Json::nullValue);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            string full_url = StrPrinter << u << hook_sync_snapshot;
+            urls.push_back(full_url);
+        }
+
+        HttpArgs params;
+        params["peer"] = peer_id;
+
+        // Execute hook
+        fetchDataFromOrigin(urls, params, 0, 0, invoker); 
     });
 
     // Report server restart

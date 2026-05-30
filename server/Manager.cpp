@@ -10,6 +10,7 @@
 #include "Local/TimeRecorderManager.h"
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
+#include "Storage/MiscData.h"
 #include "Local/StorageManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Extension/Benchmark.h"
@@ -315,6 +316,10 @@ void migrateDatabase() {
     auto escDbMigrate = make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
     GET_CONFIG(string, escUpdateSavePath, Database::kESCMigrationSavePath)
     escDbMigrate->migrate(escUpdateSavePath);
+
+    TraceL << "Init misc data";
+    auto miscDataImp = make_shared<MiscDataImp>();
+    miscDataImp->initMiscData();
 }
 
 #define GET_OPTION_PROPERTY(dst, name, src, key)                                                                                                               \
@@ -599,7 +604,7 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     }
 }
 
-static void fromJson(MServerInfo &info, const Json::Value &data) {
+static void fromJson(MediaServerInfo &info, const Json::Value &data) {
     info.id = data["id"].asString();
     info.name = data["name"].asString();
     info.domain = data["domain"].asString();
@@ -631,7 +636,7 @@ static void loadServerClusterFromJson(const Json::Value &data) {
         std::string active_id = server["id"].asString();
 
         // add active server
-        MServerInfo mserver;
+        MediaServerInfo mserver;
         fromJson(mserver, server);
         ClusterManager::Instance().addMediaServer(active_id, mserver);
 

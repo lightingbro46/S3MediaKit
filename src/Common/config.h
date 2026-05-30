@@ -6,6 +6,7 @@
 #include "Util/onceToken.h"
 #include "macros.h"
 #include <functional>
+#include <json/json.h>
 
 namespace mediakit {
 
@@ -180,7 +181,7 @@ extern const std::string kBroadcastReloadApiConfig;
 using HealthInvoker = std::function<void(const std::string&, const int&)>;
 // Healthcheck service event broadcast. Control healthcheck service through this event.
 extern const std::string kBroadcastHealthCheckService;
-#define BroadcastHealthCheckServiceArgs const std::vector<std::string> &origin_urls, const Broadcast::HealthInvoker &invoker
+#define BroadcastHealthCheckServiceArgs const std::string &origin_urls, const Broadcast::HealthInvoker &invoker
 
 extern const std::string kBroadcastRecordMotion;
 #define BroadcastRecordMotionArgs const MediaTuple &args, const bool &bActive
@@ -196,6 +197,13 @@ extern const std::string kBroadcastMotionKeepThreshold;
 
 extern const std::string kBroadcastTierKeepThreshold;
 #define BroadcastTierKeepThresholdArgs const DeviceTuple &args, int &tier_type, bool start, uint64_t &threshold
+
+using OnResInvoker = std::function<void(const std::string&, const int&, const Json::Value&)>;
+extern const std::string kBroadcastSyncChanges;
+#define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const int &since_id, const int &batch_limit, const Broadcast::OnResInvoker &invoker
+
+extern const std::string kBroadcastSyncSnapshot;
+#define BroadcastSyncSnapshotArgs const std::string &origin_urls, const std::string &peer_id, const Broadcast::OnResInvoker &invoker
 
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \

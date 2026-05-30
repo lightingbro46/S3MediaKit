@@ -11,14 +11,22 @@
 #include "DbSchema.h"
 
 namespace Database {
-
+// Database save paths
 extern const std::string kDbSavePath;
+// Migration save paths for MediaServer and EdgeStorageController
 extern const std::string kMServerMigrationSavePath;
 extern const std::string kESCMigrationSavePath;
-
+// Database names
 extern const std::string kMediaServerDb;
 extern const std::string kEdgeStorageControllerDb;
-
+// Whether to enable sync database
+extern const std::string kEnableSyncDb;
+// Interval for pull loop, in seconds
+extern const std::string kPullIntervalSec;
+// Limit for each pull batch, to avoid pulling too much data at once
+extern const std::string kBatchLimit;
+// Peer list for sync, in format of "peer_id1:base_url1,peer_id2:base_url2,..."
+extern const std::string kPeerList;
 } // namespace Database
 
 namespace managerkit {

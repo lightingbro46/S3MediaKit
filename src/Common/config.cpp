@@ -89,6 +89,8 @@ const string kBroadcastHealthCheckService = "kBroadcastHealthCheckService";
 const string kBroadcastRecordMotion = "kBroadcastRecordMotion";
 const string kBroadcastMotionKeepThreshold = "kBroadcastMotionKeepThreshold";
 const string kBroadcastTierKeepThreshold = "kBroadcastTierKeepThreshold";
+const string kBroadcastSyncChanges = "kBroadcastSyncChanges";
+const string kBroadcastSyncSnapshot = "kBroadcastSyncSnapshot";
 
 } // namespace Broadcast
 
