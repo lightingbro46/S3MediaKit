@@ -36,6 +36,9 @@ struct StreamStatistic {
     int sample_rate = 0;
     int channel_no = 0;
     int sample_bit = 0;
+    // bool transcoding_required = false;
+    // int encoder_index = -1;
+    // std::vector<std::string> transports;
 };
 
 struct DeviceStatistic {
@@ -86,7 +89,7 @@ class CameraStatisticImp : private CameraStatistic {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;
 
-    CameraStatisticImp(const std::string &src_path);
+    CameraStatisticImp(const std::string &src_path, int sync_interval_sec = 30);
     
     ~CameraStatisticImp();
 
@@ -117,6 +120,8 @@ public:
 
     void remove();
 
+    static bool syncFromEsc(std::string &guid, CameraStatistic &resource);
+
 private:
     void setup(const std::string &src_path);
 
@@ -124,10 +129,18 @@ private:
 
     void save();
 
+    void syncToEsc();
+
+    void assignResource(bool regist = true);
+
+    void syncResourceStatus();
+
 private:
     std::mutex _mtx;
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
     std::function<void(const std::string&)> _on_remove;
+    int _sync_interval_sec = 30;
+    uint64_t _last_sync_time = 0;
 };
 
 } // namespace managerkit

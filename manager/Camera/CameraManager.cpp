@@ -3,6 +3,7 @@
 #include "Util/util.h"
 #include "Thread/WorkThreadPool.h"
 #include "Local/StatisticRecorder.h"
+#include "Extension/Resource.h"
 
 using namespace std;
 using namespace toolkit;
@@ -101,21 +102,39 @@ bool CameraManager::delCamera(const string &key) {
             auto stats_imp = imp->getCameraStatisticImp();
             if (stats_imp) {
                 if (option.enableFailover) {
-                    DebugL << "Device " << key << " is not active and failover mode is enabled. Check storage data to decide whether to keep device";
                     auto params = stats_imp->getParams();
-                    size_t total_archive_size = 0;
-                    for (const auto &it : params.storage_map) {
-                        total_archive_size += it.second.archiveSizeB;
-                    }
-                    if (total_archive_size > 0) {
-                        DebugL << "Device " << key << " has archived data: " << format_bytes_human_readable(total_archive_size) << " bytes. Keep device in list";
-                        return false;
+                    VmsResourceAssignment out;
+                    auto ret = ResourceManager::Instance().getCurrentResourceAssignment(params.tuple.device_id, out);
+                    if (ret) {
+                        DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
+                                << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
+                                << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
+                        GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+                        GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
+                        bool last_assign = out.owner_peer_id == mediaServerId && (time(nullptr) - out.released_at) > failoverActiveDelaySec;
+                        if (!last_assign) {
+                            DebugL << "Device " << key << " has assigned to media server " << out.owner_peer_id << " within failover active delay time. Keep device in list and wait for active status change";
+                            return false;
+                        }
+                        // Device disable active and disable failover mode, remove it out of list
+                        DebugL << "Device " << key << " is not active and has not assign to another media server. Remove device out of list";
+                    } else {
+                        // fallback to check storage data if there is no resource assignment data, since resource assignment data may be missing in cases of camera relocation or failover back to main server
+                        DebugL << "Device " << key << " is not active and failover mode is enabled. Check storage data to decide whether to keep device";
+                        size_t total_archive_size = 0;
+                        for (const auto &it : params.storage_map) {
+                            total_archive_size += it.second.archiveSizeB;
+                        }
+                        if (total_archive_size > 0) {
+                            DebugL << "Device " << key << " has archived data: " << format_bytes_human_readable(total_archive_size) << " bytes. Keep device in list";
+                            return false;
+                        }
+                        // Device disable active and disable failover mode, remove it out of list
+                        DebugL << "Device " << key << " is not active and has no archived data. Remove device out of list";
                     }
                 }
             }
-           
-            // Device disable active and disable failover mode, remove it out of list
-            DebugL << "Device " << key << " is not active and has no archived data. Remove device out of list";
+            // Remove it out of list
             stats_imp->remove();
             _gcImp.erase(key);
         }

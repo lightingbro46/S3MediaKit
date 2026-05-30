@@ -6,6 +6,8 @@
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
 #include "Storage/VmsKvPair.h"
+#include "Storage/VmsResourceAssignment.h"
+#include "Storage/LocalResource.h"
 
 namespace managerkit {
 
@@ -28,7 +30,32 @@ enum class ResourceStatus : uint8_t {
     UNKNOWN = 0,
     OFFLINE = 1,
     ONLINE = 2,
-    UNAUTHORIZED = 3
+    UNAUTHORIZED = 3,
+};
+
+template<typename T>
+struct ResourceAdapter {
+    virtual ~ResourceAdapter() = default;
+
+    std::string getXtypeId() {
+        throw std::runtime_error("getXtypeId not implemented for this type" + std::string(typeid(T).name()));
+    }
+
+    VmsResource toVmsResource(const T &data) {
+        throw std::runtime_error("toVmsResource not implemented for this type" + std::string(typeid(T).name()));
+    }
+
+    std::vector<VmsKvPair> toKvPairs(const T &data) {
+        throw std::runtime_error("toKvPairs not implemented for this type" + std::string(typeid(T).name()));
+    }
+
+    std::vector<LocalResource> toLocalProps(const T &data) {
+        throw std::runtime_error("toLocalProps not implemented for this type" + std::string(typeid(T).name()));
+    }
+
+    T fromVmsResource(const VmsResource &data, const std::vector<VmsKvPair> &kvs, const std::vector<LocalResource> &props) {
+        throw std::runtime_error("fromVmsResource not implemented for this type" + std::string(typeid(T).name()));
+    }
 };
 
 class ResourceManager {
@@ -36,27 +63,127 @@ public:
     static ResourceManager &Instance();
     ~ResourceManager() = default;
 
-    template <typename Type, typename Helper>
-    void addResourceProperty(Type resource);
+    // Upsert: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    template <typename T>
+    void addResource(T data, bool append_log = true) {
+        auto ret = ResourceAdapter<T>::toVmsResource(data);
+        _resource_imp->add(ret, append_log);
 
-    template <typename Type, typename Helper>
-    void getResourceProperty(const std::string &guid);
+        for (auto kv : ResourceAdapter<T>::toKvPairs(data)) {
+            kv.resource_guid = ret.guid;   // ensure guid set
+            _kvpair_imp->add(kv, append_log);
+        }
 
-    template <typename Type, typename Helper>
-    void getAllResource(const std::string type);
+        for (auto prop : ResourceAdapter<T>::toLocalProps(data)) {
+            prop.resource_id = ret.guid;
+            _local_imp->add(prop);
+        }
+        DebugL << "Added/updated resource with guid " << ret.guid;
+    }
 
-    void setResourceStatus(const std::string &guid, ResourceStatus state);
+    // Remove: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    void removeResource(const std::string &guid) {
+        _local_imp->remove(guid); // local-only first
+        _rstatus_imp->remove(guid);
+        _kvpair_imp->remove(guid);
+        _resource_imp->remove(guid);
+        DebugL << "Removed resource with guid " << guid;
+    }
 
-    ResourceStatus getResourceStatus(const std::string &guid);
+    // Get: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    template<typename T>
+    bool getResource(const std::string &guid, T &out) {
+        auto ret = _resource_imp->findByGuid(guid);
+        if (ret.empty()) return false;
+        auto kvs   = _kvpair_imp->findAllKeyValue(guid);
+        auto props = _local_imp->findAllProperty(guid);
+        out = ResourceAdapter<T>::fromVmsResource(ret[0], kvs, props);
+        return true;
+    }
+
+    // Lấy tất cả resource theo xtype_guid (phân biệt loại thiết bị)
+    template<typename T>
+    void getAllResource(const std::string peer_id, std::vector<T> &out) {
+        auto xtype_id = ResourceAdapter<T>::getXtypeId();
+        auto ret = _resource_imp->findByParentGuidAndXType(peer_id, xtype_id);
+        for (const auto &res : ret) {
+            auto kvs   = _kvpair_imp->findAllKeyValue(res.guid);
+            auto props = _local_imp->findAllProperty(res.guid);
+            out.push_back(ResourceAdapter<T>::fromVmsData(res, kvs, props));
+        }
+    }
+
+    void setResourceStatus(const std::string &guid, ResourceStatus status) {
+        VmsResourceStatus r_status;
+        r_status.guid = guid;
+        r_status.status = static_cast<int>(status);
+        _rstatus_imp->add(r_status);
+        DebugL << "Set resource status to " << static_cast<int>(status) << " for resource with guid " << guid;
+    }
+
+    ResourceStatus getResourceStatus(const std::string &guid) {
+        return static_cast<ResourceStatus>(_rstatus_imp->findStatus(guid));
+    }
+
+    void assignResource(const std::string &resource_guid, const std::string &peer_id, ResourceAssignType type) {
+        auto current = _assign_imp->findCurrentAssign(resource_guid);
+        if (!current.empty()) {
+            auto assign = current[0];
+            if (assign.owner_peer_id == peer_id) {
+                InfoL << "Resource " << resource_guid << " is already assigned to the same peer " << peer_id;
+                return; // already assigned to the same peer, no-op
+            }
+            WarnL << "Resource " << resource_guid << " is already assigned to peer " << assign.owner_peer_id << ", release it before re-assigning";
+            // release current assignment
+            assign.released_at = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+            _assign_imp->update(assign);
+        }
+
+        VmsResourceAssignment assign;
+        assign.resource_guid  = resource_guid;
+        assign.owner_peer_id  = peer_id;
+        assign.assigned_at    = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+        assign.released_at    = 0;
+        assign.assign_type    = static_cast<int>(type);
+        _assign_imp->add(assign);
+        InfoL << "Assigning resource " << resource_guid << " to peer " << peer_id;
+    }
+
+    void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
+        // tìm assignment hiện tại và set released_at
+        auto current = _assign_imp->findCurrentAssign(resource_guid);
+        if (!current.empty()) {
+            auto assign = current[0];
+            if (assign.owner_peer_id != peer_id) {
+                WarnL << "Resource " << resource_guid << " is assigned to peer " << assign.owner_peer_id << ", cannot be released by peer " << peer_id;
+                return; // assigned to a different peer, cannot release
+            }
+            assign.released_at = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+            _assign_imp->update(assign);
+            WarnL << "Resource " << resource_guid << " is already assigned to peer " << assign.owner_peer_id;
+            return;
+        }
+        WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
+    }
+
+    bool getCurrentResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
+        auto current = _assign_imp->findCurrentAssign(resource_guid);
+        if (!current.empty()) {
+            out = current[0];
+            return true;
+        }
+        return false;
+    }
 
 private:
     ResourceManager();
 
 private:
-    std::recursive_mutex _mtx;
     VmsResourceImp::Ptr _resource_imp;
     VmsResourceStatusImp::Ptr _rstatus_imp;
     VmsKvPairImp::Ptr _kvpair_imp;
+    LocalResourceImp::Ptr _local_imp;
+    VmsResourceAssignmentImp::Ptr _assign_imp;
 };
 
 } // namespace managerkit

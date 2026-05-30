@@ -37,6 +37,7 @@ const string kMaxAvailableDevices = MANAGER_FIELD"maxAvailableDevices";
 const string kServerLocationId = MANAGER_FIELD"serverLocationId";
 const string kEnableFailover = MANAGER_FIELD"enableFailover";
 const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
+const string kFailoverActiveDelaySec = MANAGER_FIELD"failoverActiveDelaySec";
 const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 const string kMaxStreamTimeoutSec = MANAGER_FIELD"maxStreamTimeoutSec";
@@ -50,6 +51,7 @@ static onceToken token([]() {
     mINI::Instance()[kMaxAvailableDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
+    mINI::Instance()[kFailoverActiveDelaySec] = 300;
     mINI::Instance()[kEnableAuthorize] = true;
     mINI::Instance()[kJwtPublicKey] = "";
     mINI::Instance()[kSessionExpiryDays] = 180;
