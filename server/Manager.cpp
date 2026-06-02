@@ -76,6 +76,14 @@ static void loadSavedDeviceInfo() {
     });
 }
 
+static void loadSavedMediaServerInfo() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
+        DebugL << "Cluster manager has been started health-checking persisted peers";
+        ClusterManager::Instance().loadSavedMediaServerInfo();
+        return 0;
+    });
+}
+
 static void *manager_hook_tag = nullptr;
 
 void installManagerHook () {
@@ -185,7 +193,7 @@ void installManagerHook () {
     // for a device that may currently be offline. Reads info.txt via StatisticRecorder.
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetStreamQuality, [](BroadcastGetStreamQualityArgs) {
         std::map<int, std::string> result;
-        auto recorder = StatisticRecorder::Instance().getRecorder(device_id);
+        auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
         if (recorder) {
             auto params = recorder->getParams();
             for (const auto &kv : params.stream_map) {
@@ -293,6 +301,8 @@ void installManagerHook () {
     enforceStoragePolicy();
 
     loadSavedDeviceInfo();
+
+    loadSavedMediaServerInfo();
 }
 
 static void releaseAllDevice() {

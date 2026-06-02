@@ -1,5 +1,6 @@
 #include "ClusterManager.h"
 #include "Common/config.h"
+#include "Common/StrUtil.h"
 #include "Storage/VmsResource.h"
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
@@ -21,11 +22,44 @@ static onceToken token([]() {
 
 namespace managerkit {
 
+static void savePeerList(const std::unordered_map<std::string, MediaServerInfo> &peer_map) {
+    Json::Value peer_list(Json::arrayValue);
+    for (const auto &pr : peer_map) {
+        peer_list.append(pr.second.toJson());
+    }
+    mINI::Instance()[Peer::kPeerList] = peer_list.toStyledString();
+    // Save to file
+    mINI::Instance().dumpFile();
+}
+
+/**
+ * ClusterManager manages the cluster of media servers, including:
+ * 1) Keeping track of media server info and health status, and saving to config file
+ * 2) Providing API to get media server info and healthy peer URLs for sync and broadcast
+ * 3) Performing health check for media servers and updating peer URLs accordingly
+ * 4) Syncing peer list to other peers when peer is added/removed or media server info is updated
+ * 5) Removing peer from SyncManager when peer is removed
+ * Note: ClusterManager does not handle auto-discovery of media servers, and relies on external API to add/remove media servers and update their info. 
+ * Health check is performed based on the info provided by external API, and ClusterManager does not automatically resolve 
+ * or update media server URLs based on IP/domain changes or port mapping changes.
+ */
 INSTANCE_IMP(ClusterManager)
+
+ClusterManager::ClusterManager() {
+    // _timer = std::make_shared<Timer>(
+    //     60.0f,
+    //     [this]() { 
+    //         onManager();
+    //         return true;
+    //     },
+    //     nullptr);
+}
 
 ClusterManager::~ClusterManager() {
     std::lock_guard<std::mutex> lck(_mtx);
+    _timer.reset();
     _map_server_info.clear();
+    _map_peer_url.clear();
 }
 
 std::vector<std::string> ClusterManager::getMediaServerIds(){
@@ -96,7 +130,18 @@ static std::string buildOrginUrls(const MediaServerInfo &info) {
     return base_url;
 }
 
-void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo &info) {
+std::string ClusterManager::getPeerUrl(const std::string &id) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    auto it = _map_peer_url.find(id);
+    return it != _map_peer_url.end() ? it->second : "";
+}
+
+std::unordered_map<std::string, std::string> ClusterManager::getPeerUrls() {
+    std::lock_guard<std::mutex> lck(_mtx);
+    return _map_peer_url;
+}
+
+void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo &info, bool skip_save) {
     bool new_peer = false;
     {
         std::lock_guard<std::mutex> lck(_mtx);
@@ -112,10 +157,16 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
             it->second = info;
         }
         TraceL << "Added media server: " << id << ", name: " << info.name;
+        if (!skip_save) {
+            savePeerList(_map_server_info);
+        }
     }
 
     if (new_peer) {
-        healthCheck(id);
+        auto origin_urls = buildOrginUrls(info);
+        WorkThreadPool::Instance().getPoller()->async([this, id, origin_urls]() {
+            healthCheck(id, origin_urls);
+        });
     }
 }
     
@@ -128,31 +179,7 @@ void ClusterManager::removeMediaServer(const std::string &id) {
     SyncManager::Instance().removePeer(id);
 }
 
-static void savePeerList(const std::unordered_map<std::string, std::string> &peer_url_map) {
-    Json::Value peer_list(Json::arrayValue);
-    for (const auto &pr : peer_url_map) {
-        Json::Value peer_info;
-        peer_info["id"] = pr.first;
-        peer_info["url"] = pr.second;
-        peer_list.append(peer_info);
-    }
-    mINI::Instance()[Peer::kPeerList] = peer_list.toStyledString();
-    // Save to file
-    mINI::Instance().dumpFile();
-}
-
-void ClusterManager::healthCheck(const std::string &id) {
-    std::string origin_urls;
-    {
-        std::lock_guard<std::mutex> lck(_mtx);
-        auto it = _map_server_info.find(id);
-        if (it == _map_server_info.end()) {
-            WarnL << "Media server not found for health check: " << id;
-            return;
-        }
-        origin_urls = buildOrginUrls(it->second);
-    }
-
+void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls) {
     weak_ptr<ClusterManager> weak_self = shared_from_this();
     Broadcast::HealthInvoker invoker = [weak_self, origin_urls, id](const std::string& err, const int& idx) {
         auto self = weak_self.lock();
@@ -170,7 +197,6 @@ void ClusterManager::healthCheck(const std::string &id) {
                 std::lock_guard<std::mutex> lck(self->_mtx);
                 if (self->_map_server_info.find(id) != self->_map_server_info.end()) {
                     self->_map_peer_url[id] = urls[idx];
-                    savePeerList(self->_map_peer_url);
                 }
             }
             SyncManager::Instance().addPeer(id, url);
@@ -180,6 +206,45 @@ void ClusterManager::healthCheck(const std::string &id) {
     };
 
     NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls, invoker);
+}
+
+void ClusterManager::loadSavedMediaServerInfo() {
+    GET_CONFIG(string, peer_list_json, Peer::kPeerList);
+    if (peer_list_json.empty() || peer_list_json == "[]") return;
+
+    Json::Value list;
+    if (!StrJsonUtils::readJsonString(peer_list_json, list) || !list.isArray()) {
+        WarnL << "ClusterManager: failed to parse persisted peer list";
+        return;
+    }
+
+    for (const auto &item : list) {
+        if (!item.isObject()) {
+            WarnL << "ClusterManager: invalid peer item in persisted peer list, skip";
+            continue;
+        }
+        auto info = MediaServerInfo::fromJson(item);
+        std::string id = info.id;
+        DebugL << "ClusterManager: loading persisted peer " << id << " with url " << buildOrginUrls(info);
+        addMediaServer(id, info, true);
+    }
+}
+
+void ClusterManager::onManager() {
+    std::unordered_map<std::string, std::string> peer_url_copy;
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        for (const auto &pr : _map_server_info) {
+            peer_url_copy.emplace(pr.first, buildOrginUrls(pr.second));
+        }
+    }
+    for (const auto &item : peer_url_copy) {
+        string id = item.first;
+        string origin_urls = item.second;
+        WorkThreadPool::Instance().getPoller()->async([this, id, origin_urls]() {
+            healthCheck(id, origin_urls);
+        });
+    }
 }
 
 } // namespace managerkit               
