@@ -37,13 +37,8 @@ void StreamSink::createTimer() {
 }
 
 void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOption &option) {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self, type, tuple, option]() {
-            self->setupMonitor(type, tuple, option);
-        });
-        return;
-    }
+    // Caller: GenericRtspCameraImp::setupStreamSink() via setCameraOption() which asserts isCurrentThread.
+    CHECK(_poller->isCurrentThread(), "setupMonitor must be called on the owner poller");
 
     if (!isValidStreamType(type)) {
         WarnL << "Invalid stream type: " << type;
@@ -117,13 +112,7 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
 }
 
 void StreamSink::stopMonitor(int type) {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self, type]() {
-            self->stopMonitor(type);
-        });
-        return;
-    }
+    CHECK(_poller->isCurrentThread(), "stopMonitor must be called on the owner poller");
 
     if (!isValidStreamType(type)) {
         return;

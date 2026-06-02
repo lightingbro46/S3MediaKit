@@ -43,7 +43,10 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
         auto gc = it->second;
         if (gc) {
             if (equalCameraConfig(gc, tuple, stream_map)) {
-                gc->setCameraOption(option);
+                auto poller = gc->getOwnerPoller(DeviceSource::NullDeviceSource());
+                poller->async([gc, option]() {
+                    gc->setCameraOption(option);
+                });
                 return true;
             }
             // configuration changed, remove old one
@@ -54,7 +57,10 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
     // create new one
     auto stats_imp = StatisticRecorder::Instance().getRecorder(tuple.device_id);
     auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats_imp);
-    imp->setCameraOption(option);
+    auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+    poller->async([imp, option]() {
+        imp->setCameraOption(option);
+    });
     _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
 }
@@ -73,7 +79,10 @@ bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
 
     // create new one
     auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats);
-    imp->setCameraOption(option);
+    auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+    poller->async([imp, option]() { 
+        imp->setCameraOption(option); 
+    });
     _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
 }
@@ -96,7 +105,10 @@ bool CameraManager::delCamera(const string &key) {
             DebugL << "Device " << key << " is active: " << imp->isEnabled() << ". Enable failover mode";
             option.enableFailover = true;
             option.enableActive = false;
-            imp->setCameraOption(option);
+            auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+            poller->async([imp, option]() {
+                imp->setCameraOption(option);
+            });
         } else {
             // Device disable active, check whether to keep device in list
             auto stats_imp = imp->getCameraStatisticImp();

@@ -34,13 +34,8 @@ bool CameraController::isReady() const {
 }
 
 void CameraController::setupController(const CameraOption &option) {
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self, option]() {
-            self->setupController(option);
-        });
-        return;
-    }
+    // Caller: GenericRtspCameraImp::setupController() via setCameraOption() which asserts isCurrentThread.
+    CHECK(_poller->isCurrentThread(), "setupController must be called on the owner poller");
 
     if (_onvif_ctr) {
         if (ControllerOption::from(option) == _ctrl_option) {
@@ -94,13 +89,7 @@ void CameraController::setupController(const CameraOption &option) {
 }
 
 void CameraController::stopController() {  
-    if (!_poller->isCurrentThread()) {
-        auto self = shared_from_this();
-        _poller->async([self]() {
-            self->stopController();
-        });
-        return;
-    }
+    CHECK(_poller->isCurrentThread(), "stopController must be called on the owner poller");
 
     onControllerReady(false, "Stop", nullptr);
     
