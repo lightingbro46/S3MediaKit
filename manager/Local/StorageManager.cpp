@@ -401,7 +401,7 @@ void StorageManager::start() {
 
     weak_ptr<StorageManager> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
-        60.0f,
+        300.0f,
         [weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {

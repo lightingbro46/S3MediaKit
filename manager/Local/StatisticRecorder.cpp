@@ -61,22 +61,38 @@ bool StatisticRecorder::removeRecorder(const string &device_id) {
 }
 
 void StatisticRecorder::addArchiveSize(const string &device_id, const string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received archive size update for device " << device_id << " stream "<< stream_id << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addArchiveSize(stream_id, count, size, archive_start_time, archive_end_time, add);
 }
 
 void StatisticRecorder::addBookmarkCount(const string &device_id, uint64_t created_at, bool add) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received bookmark count update for device " << device_id << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addBookmarkCount(created_at, 0, add);
 }
 
 void StatisticRecorder::addDeviceCapabilities(const string &device_id, bool connected, const string &status, const DeviceCapabilities *device_caps) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received device capabilities update for device " << device_id << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addDeviceCapabilities(connected, status, device_caps);
 }
 
 void StatisticRecorder::addStreamStatistic(const string &device_id, int stream_type, bool live, const string &status, const TranslationInfo *info) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received stream statistic update for device " << device_id << " stream type " << stream_type << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addStreamStatistic(stream_type, live, status, info);
 }
 
@@ -111,12 +127,20 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
 }
 
 void StatisticRecorder::addMotionKeepThreshold(const std::string &device_id, bool start,  uint64_t threshold) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received motion keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addMotionKeepThreshold(start, threshold);
 }
 
 void StatisticRecorder::addTierKeepThreshold(const std::string &device_id, int tier_type, bool start, uint64_t threshold) {
-    auto recorder = getRecorder(device_id);
+    auto recorder = getRecorder(device_id, false);
+    if (!recorder) {
+        WarnL << "Received tier keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
+        return;
+    }
     recorder->addTierKeepThreshold(tier_type, start, threshold);
 }
 
@@ -197,11 +221,19 @@ static void* s_tag;
 static onceToken g_token(
 []() {
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastMotionKeepThreshold, [](BroadcastMotionKeepThresholdArgs) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(device_id);
+        auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
+        if (!recorder) {
+            WarnL << "Received motion keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
+            return;
+        }
         recorder->addMotionKeepThreshold(start, threshold);
     });
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold, [](BroadcastTierKeepThresholdArgs) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id);
+        auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id, false);
+        if (recorder) {
+            WarnL << "Received tier keep threshold update for device " << args.device_id << " but no statistic recorder found. Ignore update.";
+            return;
+        }
         recorder->addTierKeepThreshold(tier_type, start, threshold);
     });
 }, 

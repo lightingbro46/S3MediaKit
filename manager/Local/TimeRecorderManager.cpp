@@ -42,6 +42,7 @@ bool TimeRecorderManager::addBlock(const TimeBlock &block) {
 }
 
 TimeRecorder::Ptr TimeRecorderManager::getRecorder(const string &device_id) {
+    CHECK(!device_id.empty());
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if (_recorders.find(device_id) != _recorders.end()) {
