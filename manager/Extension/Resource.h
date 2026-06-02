@@ -11,6 +11,11 @@
 
 namespace managerkit {
 
+#define RESOURCE_TYPE_USER "User"
+#define RESOURCE_TYPE_SERVER "Server"
+#define RESOURCE_TYPE_CAMERA "Camera"
+#define RESOURCE_TYPE_SPEAKER "Speaker"
+
 class ResourceTypeManager {
 public:
     static ResourceTypeManager &Instance();
@@ -32,6 +37,8 @@ enum class ResourceStatus : uint8_t {
     ONLINE = 2,
     UNAUTHORIZED = 3,
 };
+
+std::string getResourceStatusString(ResourceStatus status);
 
 template<typename T>
 struct ResourceAdapter {
@@ -69,16 +76,17 @@ public:
         auto ret = ResourceAdapter<T>::toVmsResource(data);
         _resource_imp->add(ret, append_log);
 
-        for (auto kv : ResourceAdapter<T>::toKvPairs(data)) {
+        auto kvs = ResourceAdapter<T>::toKvPairs(data);
+        for (auto &kv : kvs) {
             kv.resource_guid = ret.guid;   // ensure guid set
-            _kvpair_imp->add(kv, append_log);
         }
+        _kvpair_imp->addBatch(kvs, append_log);
 
         for (auto prop : ResourceAdapter<T>::toLocalProps(data)) {
             prop.resource_id = ret.guid;
             _local_imp->add(prop);
         }
-        DebugL << "Added/updated resource with guid " << ret.guid;
+        DebugL << "Upsert resource with guid " << ret.guid;
     }
 
     // Remove: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
@@ -86,6 +94,7 @@ public:
         _local_imp->remove(guid); // local-only first
         _rstatus_imp->remove(guid);
         _kvpair_imp->remove(guid);
+        _assign_imp->remove(guid);
         _resource_imp->remove(guid);
         DebugL << "Removed resource with guid " << guid;
     }
@@ -118,15 +127,15 @@ public:
         r_status.guid = guid;
         r_status.status = static_cast<int>(status);
         _rstatus_imp->add(r_status);
-        DebugL << "Set resource status to " << static_cast<int>(status) << " for resource with guid " << guid;
+        DebugL << "Set resource status to " << getResourceStatusString(status) << " for resource with guid " << guid;
     }
 
     ResourceStatus getResourceStatus(const std::string &guid) {
         return static_cast<ResourceStatus>(_rstatus_imp->findStatus(guid));
     }
 
-    void assignResource(const std::string &resource_guid, const std::string &peer_id, ResourceAssignType type) {
-        auto current = _assign_imp->findCurrentAssign(resource_guid);
+    void assignResource(const std::string &resource_guid, const std::string &peer_id, const std::string &db_guid, ResourceAssignType type) {
+        auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
             if (assign.owner_peer_id == peer_id) {
@@ -135,14 +144,15 @@ public:
             }
             WarnL << "Resource " << resource_guid << " is already assigned to peer " << assign.owner_peer_id << ", release it before re-assigning";
             // release current assignment
-            assign.released_at = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+            assign.released_at = static_cast<int64_t>(time(nullptr));
             _assign_imp->update(assign);
         }
 
         VmsResourceAssignment assign;
         assign.resource_guid  = resource_guid;
         assign.owner_peer_id  = peer_id;
-        assign.assigned_at    = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+        assign.owner_db_guid  = db_guid;
+        assign.assigned_at    = static_cast<int64_t>(time(nullptr));
         assign.released_at    = 0;
         assign.assign_type    = static_cast<int>(type);
         _assign_imp->add(assign);
@@ -151,23 +161,23 @@ public:
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
         // tìm assignment hiện tại và set released_at
-        auto current = _assign_imp->findCurrentAssign(resource_guid);
+        auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
             if (assign.owner_peer_id != peer_id) {
                 WarnL << "Resource " << resource_guid << " is assigned to peer " << assign.owner_peer_id << ", cannot be released by peer " << peer_id;
                 return; // assigned to a different peer, cannot release
             }
-            assign.released_at = static_cast<int64_t>(toolkit::getCurrentMillisecond());
+            assign.released_at = static_cast<int64_t>(time(nullptr));
             _assign_imp->update(assign);
-            WarnL << "Resource " << resource_guid << " is already assigned to peer " << assign.owner_peer_id;
+            InfoL << "Resource " << resource_guid << " is already released from peer " << assign.owner_peer_id;
             return;
         }
         WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
     }
 
     bool getCurrentResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
-        auto current = _assign_imp->findCurrentAssign(resource_guid);
+        auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             out = current[0];
             return true;
@@ -175,8 +185,14 @@ public:
         return false;
     }
 
+    const std::string getSelfNodeId() const { return _self_node_id; }
+
+    const std::string getSelfDbGuid() const { return _self_db_guid; }
+
 private:
     ResourceManager();
+
+    void load();
 
 private:
     VmsResourceImp::Ptr _resource_imp;
@@ -184,6 +200,9 @@ private:
     VmsKvPairImp::Ptr _kvpair_imp;
     LocalResourceImp::Ptr _local_imp;
     VmsResourceAssignmentImp::Ptr _assign_imp;
+
+    std::string _self_node_id;
+    std::string _self_db_guid;
 };
 
 } // namespace managerkit

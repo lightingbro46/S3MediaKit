@@ -131,6 +131,8 @@ private:
 
     void syncToEsc();
 
+    void removeFromEsc();
+
     void assignResource(bool regist = true);
 
     void syncResourceStatus();
@@ -140,6 +142,7 @@ private:
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
     std::function<void(const std::string&)> _on_remove;
     int _sync_interval_sec = 30;
+    bool _sync_start = false;
     uint64_t _last_sync_time = 0;
 };
 

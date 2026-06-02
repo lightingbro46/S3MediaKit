@@ -1,12 +1,15 @@
 #include "SyncManager.h"
 #include "Storage/TransactionSequence.h"
 #include "Storage/TransactionLog.h"
+#include "Storage/TransactionPeerAckLog.h"
 #include "Storage/VmsResource.h"
 #include "Storage/VmsKvPair.h"
 #include "Storage/VmsResourceAssignment.h"
+#include "Storage/BookmarkIndex.h"
 #include "Storage/MiscData.h"
 #include "Common/StrUtil.h"
 #include "Common/config.h"
+#include "Extension/Resource.h"
 
 using namespace std;
 using namespace toolkit;
@@ -102,14 +105,14 @@ static Json::Value vmsResourceAssignmentToJson(const VmsResourceAssignment &assi
 
 static Json::Value transactionLogToJson(const TransactionLog &log) {
     Json::Value v;
-    v["peer_guid"]  = log.peer_guid;
-    v["db_guid"]    = log.db_guid;
-    v["sequence"]   = log.sequence;
-    v["timestamp"]   = log.timestamp;
-    v["tran_guid"]  = log.tran_guid;
-    v["tran_data"] = log.tran_data;
-    v["peer_guid"]  = log.peer_guid;
-    v["timestamp_hi"]  = log.timestamp_hi;
+    v["peer_guid"]    = log.peer_guid;
+    v["db_guid"]      = log.db_guid;
+    v["sequence"]     = log.sequence;
+    v["timestamp"]    = log.timestamp;
+    v["tran_guid"]    = log.tran_guid;
+    v["tran_data"]    = log.tran_data;
+    v["tran_type"]    = log.tran_type;
+    v["timestamp_hi"] = log.timestamp_hi;
     return v;
 }
 
@@ -221,6 +224,28 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                 snap.vms_kvpair.append(vmsKvPairToJson(EntityTraits<VmsKvPair>::fromRow(r)));
             }
         }
+        // Step 4: vms_resource_assignment
+        {
+            auto sql = QueryBuilder()
+                           .select(EntityTraits<VmsResourceAssignment>::getColumns())
+                           .from(EntityTraits<VmsResourceAssignment>::tableName())
+                           .build();
+            auto rows = executor->executeRawWithTxn(txn, sql);
+            for (const auto &r : rows) {
+                snap.resource_assignment.append(vmsResourceAssignmentToJson(EntityTraits<VmsResourceAssignment>::fromRow(r)));
+            }
+        }
+        // Step 5: bookmark_index
+        {
+            auto sql = QueryBuilder()
+                           .select(EntityTraits<BookmarkIndex>::getColumns())
+                           .from(EntityTraits<BookmarkIndex>::tableName())
+                           .build();
+            auto rows = executor->executeRawWithTxn(txn, sql);
+            for (const auto &r : rows) {
+                snap.bookmark_index.append(EntityTraits<BookmarkIndex>::fromRow(r).toJson());
+            }
+        }
         txn->commit();
     } catch (const std::exception &ex) {
         WarnL << "[Snapshot] build failed: " << ex.what();
@@ -231,11 +256,13 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
 
 string SnapshotBuilder::serialize(const SnapshotData &snap) {
     Json::Value root;
-    root["peer_id"]               = snap.peer_id;
-    root["db_guid"]               = snap.db_guid;
-    root["sequences"] = snap.sequences;
-    root["vms_resource"]          = snap.vms_resource;
-    root["vms_kvpair"]            = snap.vms_kvpair;
+    root["peer_id"]            = snap.peer_id;
+    root["db_guid"]             = snap.db_guid;
+    root["sequences"]           = snap.sequences;
+    root["vms_resource"]        = snap.vms_resource;
+    root["vms_kvpair"]          = snap.vms_kvpair;
+    root["resource_assignment"] = snap.resource_assignment;
+    root["bookmark_index"]      = snap.bookmark_index;
     return StrJsonUtils::writeJsonString(root);
 }
 
@@ -246,11 +273,13 @@ SnapshotData SnapshotBuilder::deserialize(const string &json_body) {
         WarnL << "[Snapshot] deserialize: invalid JSON";
         return snap; // snap.empty() == true
     }
-    snap.peer_id               = root["peer_id"].asString();
-    snap.db_guid               = root["db_guid"].asString();
-    snap.sequences             = root["sequences"];
-    snap.vms_resource          = root["vms_resource"];
-    snap.vms_kvpair            = root["vms_kvpair"];
+    snap.peer_id             = root["peer_id"].asString();
+    snap.db_guid             = root["db_guid"].asString();
+    snap.sequences           = root["sequences"];
+    snap.vms_resource        = root["vms_resource"];
+    snap.vms_kvpair          = root["vms_kvpair"];
+    snap.resource_assignment = root["resource_assignment"];
+    snap.bookmark_index      = root["bookmark_index"];
     return snap;
 }
 
@@ -260,7 +289,6 @@ void SyncManager::start() {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(bool,   enable_sync,   Database::kEnableSyncDb);
     GET_CONFIG(int,    interval_sec,  Database::kPullIntervalSec);
-    GET_CONFIG(string, peer_list,     Database::kPeerList);
 
     if (!enable_sync) {
         WarnL << "Sync database opration disabled by config";
@@ -269,36 +297,14 @@ void SyncManager::start() {
 
     {
         lock_guard<mutex> lock(_mtx);
-        _self_node_id = mediaServerId;
-        _self_db_id   = findDbGuid(_self_node_id);
-        CHECK(_self_node_id.empty() || _self_db_id.empty());
+        _self_node_id = ResourceManager::Instance().getSelfNodeId();
+        _self_db_id   = ResourceManager::Instance().getSelfDbGuid();
         _running      = true;
         _peers.clear();
         _bootstrapping.clear();
-
-        // Parse peer list config
-        if (!peer_list.empty()) {
-            auto peers = split(peer_list, ",");
-            for (const auto &p : peers) {
-                auto sep = p.find('@');
-                if (sep != string::npos) {
-                    string peer_id  = p.substr(0, sep);
-                    string base_url = p.substr(sep + 1);
-                    if (peer_id.empty() || base_url.empty()) {
-                        WarnL << "Invalid peer config (empty peer_id or base_url): " << p;
-                        continue;
-                    }
-                    if (peer_id == _self_node_id) {
-                        WarnL << "Ignore adding self to peer list";
-                        continue;
-                    }
-                    _peers[peer_id] = base_url;
-                    InfoL << "Added peer from config: " << peer_id << " (" << base_url << ")";
-                } else {
-                    WarnL << "Invalid peer config (missing '@'): " << p;
-                }
-            }
-        }
+        // Peers are populated by ClusterManager::addPeer() after health checks.
+        // ClusterManager::healthCheckPersistedPeers() handles re-connecting to
+        // known peers on restart without SyncManager loading the list directly.
     }
 
     weak_ptr<SyncManager> weak_self = shared_from_this();
@@ -460,45 +466,16 @@ void SyncManager::onTick() {
         return; // don't pull yet; wait for bootstrap to complete
     }
 
-    // ── Pull phase: incremental pull from ALL peers ────────────────────────
+    // ── Pull phase: gossip relay ───────────────────────────────────────────
+    // Every bootstrapped node pulls from ALL configured peers using the full
+    // local cursor map. Each peer returns log entries for all peers it has
+    // relayed, so after 1-2 ticks every node converges to the same state.
+    // No mini-bootstrap needed: new peer discovery is implicit via relay data.
     for (const auto &pair : peers_copy) {
-        const string &pid = pair.first;
-        const string &url = pair.second;
-        auto db_guid = findDbGuid(pid);
-        if (db_guid.empty()) {
-            // Peer has no known db_guid yet (new node joining after initial bootstrap).
-            // Trigger a per-peer mini-bootstrap to establish its cursor before pulling.
-            bool already;
-            {
-                lock_guard<mutex> lock(_mtx);
-                already = _bootstrapping.count(pid) > 0;
-                if (!already) {
-                    _bootstrapping.insert(pid);
-                }
-            }
-            if (already) {
-                TraceL << "Mini-bootstrap for peer " << pid << " already in progress, skipping";
-                continue;
-            }
-            InfoL << "New peer " << pid << " has no db_guid yet, triggering mini-bootstrap";
-            weak_ptr<SyncManager> weak_self = shared_from_this();
-            doMiniBootstrap(pid, url, [weak_self, pid](bool ok) {
-                auto self = weak_self.lock();
-                if (!self) return;
-                {
-                    lock_guard<mutex> lock(self->_mtx);
-                    self->_bootstrapping.erase(pid);
-                }
-                if (ok) {
-                    InfoL << "Mini-bootstrap done for new peer=" << pid;
-                } else {
-                    WarnL << "Mini-bootstrap failed for peer=" << pid << ", will retry next tick";
-                }
-            });
-        } else {
-            pullFromPeer(pid, db_guid, url);
-        }
+        pullFromRelay(pair.first, pair.second);
     }
+    // After pulling from all peers, check if we can prune old transaction logs
+    maybePruneLog();
 }
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
@@ -553,49 +530,10 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
     }
 }
 
-// Mini-bootstrap: only registers the new peer's cursor in transaction_sequence.
-// Does NOT apply vms_resource / vms_kvpair to avoid two data hazards:
-//   1. Resurrection of records deleted since our last snapshot (stale data overwrites delete)
-//   2. Cursor regression: applying older sequence values from a lagging peer would
-//      reset our pull cursor backwards causing duplicate row processing.
-// After the cursor is established, the normal incremental pull loop (pullFromPeer)
-// will fetch all of the peer's transaction_log rows from sequence 0 onwards.
-void SyncManager::doMiniBootstrap(const string &peer_id, const string &base_url, DoneCb cb) {
-    InfoL << "Mini-bootstrapping from " << peer_id << " (base_url=" << base_url << ")";
-
-    weak_ptr<SyncManager> weak_self = shared_from_this();
-    Broadcast::OnResInvoker onRes = [weak_self, peer_id, cb](const string &err, const int &idx, const Json::Value &data) {
-        auto self = weak_self.lock();
-        if (!self) return;
-
-        if (!err.empty()) {
-            WarnL << "Mini-bootstrap request to " << peer_id << " failed: " << err;
-            if (cb) cb(false);
-            return;
-        }
-        try {
-            auto snap = SnapshotBuilder::deserialize(data["data"].asString());
-            if (snap.peer_id.empty() || snap.db_guid.empty()) {
-                WarnL << "Mini-bootstrap: empty peer_id or db_guid in snapshot from " << peer_id;
-                if (cb) cb(false);
-                return;
-            }
-            // Register cursor for the new peer only if no entry exists yet.
-            // Starting at sequence 0 ensures we pull all of the peer's history.
-            insertIfNotExistsCursorSeq(snap.peer_id, snap.db_guid, 0);
-            if (cb) cb(true);
-        } catch (std::exception &ex) {
-            WarnL << "Mini-bootstrap failed from " << peer_id << ": " << ex.what();
-            if (cb) cb(false);
-        }
-    };
-
-    auto flag = NOTICE_EMIT(BroadcastSyncSnapshotArgs, Broadcast::kBroadcastSyncSnapshot, base_url, peer_id, onRes);
-    if (!flag) {
-        WarnL << "No listener for kBroadcastSyncSnapshot, cannot mini-bootstrap from " << peer_id;
-        if (cb) cb(false);
-    }
-}
+// Mini-bootstrap removed: peer discovery in gossip relay is implicit.
+// When a node receives log entries via relay, TransactionLogImp::add() automatically
+// registers the source peer's cursor in transaction_sequence, so new peers are
+// discovered without a dedicated bootstrap round-trip.
 
 void SyncManager::applySnapshot(const SnapshotData &snap) {
     {
@@ -626,6 +564,15 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         }
     }
     {
+        if (!snap.bookmark_index.empty() && snap.bookmark_index.isArray()) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            for (const auto &v : snap.bookmark_index) {
+                auto idx = BookmarkIndex::fromJson(v);
+                imp->add(idx, false); // remote data — do not append to local transaction_log
+            }
+        }
+    }
+    {
         if (!snap.sequences.empty() && snap.sequences.isArray()) {
             auto imp = std::make_shared<TransactionSequenceImp>();
             for (const auto &v : snap.sequences) {
@@ -638,54 +585,63 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
 
 // ─── incremental pull ──────────────────────────────────────────────────────
 
-void SyncManager::pullFromPeer(const string &peer_id, const string &db_guid, const string &base_url) {
-    CHECK(!db_guid.empty(), StrPrinter << "Cannot find db_guid for peer " << peer_id << ", cannot pull");
-    int last_seq = findCursorSeq(peer_id, db_guid);
-    
-    InfoL << "Pulling from peer " << peer_id << " (db_guid= " << db_guid << ", base_url= " << base_url << ") since sequence: " << last_seq;
-    
-    weak_ptr<SyncManager> weak_ptr = shared_from_this();
-    Broadcast::OnResInvoker onRes = [weak_ptr, peer_id, db_guid, last_seq](const string &err, const int &idx, const Json::Value &data) {
-        auto self = weak_ptr.lock();
+// ─── Gossip relay pull ────────────────────────────────────────────────────
+//
+// Sends the full local cursor map (peer_guid|db_guid → since_seq) to the relay
+// peer. The relay returns log entries for ALL peers in its transaction_log that
+// are newer than the corresponding cursor. This means:
+//   • After round 1 (full-mesh pull) every node has a complete cursor map.
+//   • From round 2 onwards, pulling from a single relay that already has the
+//     full dataset is sufficient for convergence within 1-2 ticks.
+void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_url) {
+    // Build cursor map from all locally known sequences.
+    auto seq_imp = make_shared<TransactionSequenceImp>();
+    auto all_seqs = seq_imp->findAll();
+
+    TraceL << "Relay pull from " << relay_peer_id << " with " << all_seqs.size() << " cursors";
+
+    weak_ptr<SyncManager> weak_self = shared_from_this();
+    Broadcast::OnResInvoker onRes = [weak_self, relay_peer_id](const string &err, const int &idx, const Json::Value &data) {
+        auto self = weak_self.lock();
         if (!self) return;
 
         if (!err.empty()) {
-            WarnL << "Pull sync changes request to peer " << peer_id << " failed: " << err;
+            WarnL << "Relay pull from " << relay_peer_id << " failed: " << err;
             return;
         }
 
-        auto rows = data["data"]; 
+        const Json::Value &rows = data["data"];
         if (!rows.isArray() || rows.empty()) return;
 
+        InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id;
         self->applyBatch(rows);
-        InfoL << "Pulled " << rows.size() << " changes from peer " << peer_id << " for db " << db_guid;
-
-        // Advance cursor to max sequence seen in this batch
-        int max_seq = last_seq;
-        for (const auto &row : rows) {
-            int seq = row["sequence"].asInt();
-            if (seq > max_seq) {
-                max_seq = seq;
-            }
-        }
-
-        if (max_seq > last_seq) {
-            upsertCursorSeq(peer_id, db_guid, max_seq);
-            DebugL << "Updated trans seq for peer=" << peer_id << ", db=" << db_guid << ", cursor=" << max_seq;
-        }
     };
 
     GET_CONFIG(int, batch_limit, Database::kBatchLimit);
-    auto flag = NOTICE_EMIT(BroadcastSyncChangesArgs, Broadcast::kBroadcastSyncChanges, base_url, peer_id, db_guid, last_seq, batch_limit, onRes);
+    auto flag = NOTICE_EMIT(BroadcastSyncChangesArgs, Broadcast::kBroadcastSyncChanges,
+                            base_url, _self_node_id, _self_db_id, all_seqs, batch_limit, onRes);
     if (!flag) {
-        WarnL << "No listener for kBroadcastSyncChanges, cannot pull sync changes from " << peer_id;
+        WarnL << "No listener for kBroadcastSyncChanges, cannot relay pull from " << relay_peer_id;
     }
 }
 
 void SyncManager::applyBatch(const Json::Value &rows) {
-    auto log_imp = make_shared<TransactionLogImp>();
+    auto log_imp       = make_shared<TransactionLogImp>();
+    auto res_imp       = make_shared<VmsResourceImp>();
+    auto kv_imp        = make_shared<VmsKvPairImp>();
+    auto assign_imp    = make_shared<VmsResourceAssignmentImp>();
+    auto bk_idx_imp    = make_shared<BookmarkIndexImp>();
 
     for (const auto &it : rows) {
+        // Dedup first — exact duplicate check before any work (e.g. restart replay,
+        // or same entry received via multiple relay paths).
+        string tran_guid_early = it["tran_guid"].asString();
+        if (!tran_guid_early.empty() && log_imp->existsByTranGuid(tran_guid_early)) {
+            TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
+            continue;
+        }
+
+        ApplyDecision apply_decision = ApplyDecision::Apply;
         int tran_type = it["tran_type"].asInt();
         if (tran_type == static_cast<int>(TranType::DataMutation)) {
             // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
@@ -696,16 +652,19 @@ void SyncManager::applyBatch(const Json::Value &rows) {
                 continue;
             }
 
-            string table              = tran_data["table"].asString();
-            string op                 = tran_data["op"].asString();
+            string table               = tran_data["table"].asString();
+            string op                  = tran_data["op"].asString();
             const Json::Value &payload = tran_data["payload"];
+            int64_t log_ts             = it["timestamp"].asInt64();
 
-            if (!shouldApply(table, payload)) {
-                continue; // skip based on conflict resolution
+            apply_decision = shouldApply(table, op, payload, log_ts);
+
+            if (apply_decision == ApplyDecision::Skip) {
+                continue; // stale write — local version is newer
             }
 
             if (table == EntityTraits<VmsResource>::tableName()) {
-                auto imp = make_shared<VmsResourceImp>();
+                auto &imp = res_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
                     auto r = jsonToVmsResource(payload);
                     imp->add(r, false); // remote data — do not append to local transaction_log
@@ -717,7 +676,7 @@ void SyncManager::applyBatch(const Json::Value &rows) {
                     continue;
                 }
             } else if (table == EntityTraits<VmsKvPair>::tableName()) {
-                auto imp = make_shared<VmsKvPairImp>();
+                auto &imp = kv_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
                     auto kv = jsonToVmsKvPair(payload);
                     imp->add(kv, false); // remote data — do not append to local transaction_log
@@ -735,13 +694,25 @@ void SyncManager::applyBatch(const Json::Value &rows) {
                     continue;
                 }
             } else if (table == EntityTraits<VmsResourceAssignment>::tableName()) {
-                auto imp = make_shared<VmsResourceAssignmentImp>();
+                auto &imp = assign_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
                     auto assign = jsonToVmsResourceAssignment(payload);
                     imp->add(assign, false); // remote data — do not append to local transaction_log
                 } else if (op == TRAN_DATA_OP_DELETE) {
-                    string assignment_guid = payload["assignment_guid"].asString();
-                    if (!assignment_guid.empty()) imp->remove(assignment_guid, false); // remote data — do not re-log
+                    string resource_guid = payload["resource_guid"].asString();
+                    if (!resource_guid.empty()) imp->remove(resource_guid, false); // remote data — do not re-log
+                } else {
+                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
+                    continue;
+                }
+            } else if (table == EntityTraits<BookmarkIndex>::tableName()) {
+                auto &imp = bk_idx_imp;
+                if (op == TRAN_DATA_OP_UPSERT) {
+                    auto idx = BookmarkIndex::fromJson(payload);
+                    imp->add(idx, false); // remote data — do not re-log
+                } else if (op == TRAN_DATA_OP_DELETE) {
+                    string guid = payload["bookmark_guid"].asString();
+                    if (!guid.empty()) imp->remove(guid, false); // remote data — do not re-log
                 } else {
                     WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
                     continue;
@@ -755,15 +726,106 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             continue;
         }
 
-        // Record the transaction in local log, update sequence of the remote peer
+        // Record the transaction in local log, update sequence of the remote peer.
+        // If this entry won a conflict (newer than a previously accepted entry for
+        // the same row), flag it with timestamp_hi=1 for audit purposes.
         auto log = jsonToTransactionLog(it);
+        if (apply_decision == ApplyDecision::ApplyWinner) {
+            log.timestamp_hi = 1;
+        }
         log_imp->add(log);
     }
 }
 
-bool SyncManager::shouldApply(const string & /*table*/, const Json::Value & /*row*/) {
-    // Transaction-log sequence is the authoritative ordering; always apply
-    return true;
+SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const std::string &op, const Json::Value &payload, int64_t log_ts) {
+    // Derive a stable per-row key, keyed strictly by table schema.
+    string row_key;
+
+    if (table == EntityTraits<VmsResource>::tableName()) {
+        // PK: guid
+        row_key = payload["guid"].asString();
+
+    } else if (table == EntityTraits<VmsKvPair>::tableName()) {
+        // Composite key: resource_guid + name (no single-column PK that
+        // identifies the logical row across nodes)
+        row_key = payload["resource_guid"].asString() + ":" + payload["name"].asString();
+
+    } else if (table == EntityTraits<VmsResourceAssignment>::tableName()) {
+        // PK: assignment_guid
+        row_key = payload["assignment_guid"].asString();
+
+    } else if (table == EntityTraits<BookmarkIndex>::tableName()) {
+        // PK: bookmark_guid
+        row_key = payload["bookmark_guid"].asString();
+
+    } else {
+        // Unknown table — always apply (safe default, no LWW tracking).
+        return ApplyDecision::Apply;
+    }
+
+    if (row_key.empty()) {
+        // Payload is missing the required key field — skip to avoid corrupt state.
+        WarnL << "shouldApply: missing row key for table=" << table << " op=" << op;
+        return ApplyDecision::Skip;
+    }
+
+    const string map_key = table + ":" + row_key;
+
+    // DELETE ops do not carry a meaningful timestamp for LWW; always apply.
+    if (op == TRAN_DATA_OP_DELETE) {
+        _applied_ts.erase(map_key); // row is gone, remove from LWW cache
+        return ApplyDecision::Apply;
+    }
+
+    auto it = _applied_ts.find(map_key);
+    if (it == _applied_ts.end()) {
+        _applied_ts[map_key] = log_ts;
+        return ApplyDecision::Apply;
+    }
+
+    if (log_ts <= it->second) {
+        TraceL << "shouldApply skip stale: " << map_key
+               << " incoming_ts=" << log_ts
+               << " local_ts=" << it->second;
+        return ApplyDecision::Skip;
+    }
+
+    TraceL << "shouldApply conflict winner: " << map_key
+           << " incoming_ts=" << log_ts
+           << " prev_ts=" << it->second;
+    it->second = log_ts;
+    return ApplyDecision::ApplyWinner;
+}
+
+// ─── GC watermark ────────────────────────────────────────────────────────────
+
+void SyncManager::recordRelayAck(vector<PeerAckLog> &ack_logs) {
+    auto ack_imp = make_shared<PeerAckLogImp>();
+    for (auto &log : ack_logs) {
+        ack_imp->add(log);
+    }
+}
+
+void SyncManager::maybePruneLog() {
+    // Collect active peer list under lock
+    unordered_set<string> active_peers;
+    {
+        lock_guard<mutex> lock(_mtx);
+        for (const auto &pair : _peers) {
+            active_peers.insert(pair.first);
+        }
+    }
+    if (active_peers.empty()) return;
+
+    auto ack_imp = make_shared<PeerAckLogImp>();
+    auto safe_seqs = ack_imp->findMinAckedSeq(active_peers);
+
+    auto log_imp = make_shared<TransactionLogImp>();
+
+    for (const auto &seq : safe_seqs) {
+        log_imp->pruneAckedLogs(seq.peer_guid, seq.db_guid, seq.sequence);
+        TraceL << "Pruned logs for source peer=" << seq.peer_guid << " db_guid=" << seq.db_guid << " up to seq=" << seq.sequence;
+    }
 }
 
 } // namespace managerkit

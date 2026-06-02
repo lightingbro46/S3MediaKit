@@ -3551,22 +3551,35 @@ void installWebApi() {
     });
 
     api_regist("/media/esc/sync/changes", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS_("since", "limit", "peer", "db");
+        CHECK_ARGS_("cursors", "ack_cursors", "limit", "peer", "db");
 
-        int since_seq = allArgs["since"];
-        int limit = allArgs["limit"];
-        string peer_id = allArgs["peer"];
-        string db_guid = allArgs["db"];
+        string peer_id      = allArgs["peer"];
+        string db_guid      = allArgs["db"];
+        int limit           = allArgs["limit"];
+        Value cursors_json  = allArgs["cursors"];
+        Value ack_cursors_json = allArgs["ack_cursors"];
 
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        if (peer_id != mediaServerId) {
-            // todo: forward request to other media server if node_id is not current media server id
-            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
-            return;
+        std::vector<TransactionSequence> cursors;
+        {
+            if (!cursors_json.empty() &&cursors_json.isArray()) {
+                for (const auto &c : cursors_json) {
+                    cursors.push_back(TransactionSequence::fromJson(c));
+                }
+            }
         }
 
+        std::vector<PeerAckLog> ack_cursors;
+        {
+            if (!ack_cursors_json.empty() && ack_cursors_json.isArray()) {
+                for (const auto &c : ack_cursors_json) {
+                    ack_cursors.push_back(PeerAckLog::fromJson(c));
+                }
+            }
+        }
+        SyncManager::Instance().recordRelayAck(ack_cursors);
+
         auto impl = make_shared<TransactionLogImp>();
-        auto ret = impl->findSinceSeq(peer_id, db_guid, since_seq, limit);
+        auto ret = impl->findAllSince(cursors, limit);
 
         Value log_rows = Json::arrayValue;
         for (const TransactionLog &b : ret) {

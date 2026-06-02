@@ -15,6 +15,7 @@
 #include "Manager.h"
 #include "User/UserAuthorManager.h"
 #include "Storage/Bookmark.h"
+#include "Storage/TransactionSequence.h"
 #include "Server/ClusterManager.h"
 #include "Camera/CameraManager.h"
 #include "Server/ReaderMonitor.h"
@@ -62,6 +63,8 @@ const string kOnDeviceChanged = HOOK_FIELD "on_device_changed";
 const string kOnDeviceCapsChanged = HOOK_FIELD "on_device_caps_changed";
 const string kOnSyncChanges = HOOK_FIELD "on_sync_changes";
 const string kOnSyncSnapshot = HOOK_FIELD "on_sync_snapshot";
+const string kOnSyncBookmarkIndex = HOOK_FIELD "on_sync_bookmark_index";
+const string kOnSyncTimeline = HOOK_FIELD "on_sync_timeline";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -100,6 +103,8 @@ static onceToken token([]() {
     mINI::Instance()[kOnDeviceCapsChanged] = "/api/media-server/media-device-info";
     mINI::Instance()[kOnSyncChanges] = "/media/esc/sync/changes";
     mINI::Instance()[kOnSyncSnapshot] = "/media/esc/sync/snapshot";
+    mINI::Instance()[kOnSyncBookmarkIndex] = "/media/esc/bookmark/detail";
+    mINI::Instance()[kOnSyncTimeline] = "/media/esc/recordedTimePeriod";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -696,11 +701,65 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
     });
 }
 
+static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+    
+    do_http_hook(url, body, header, [=](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // Fetch data from origin success
+            callback("", index % urls.size(), obj);
+        }
+
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "fetch data from origin server final failed: " << ss.str();
+            callback("All origin stations have been retried", -1, Json::nullValue);
+        }
+
+        fetchDataFromOrigin(urls, body, index + 1, failed_cnt, callback);
+    });
+}
+
 static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
     do_http_hook(url, params, [=](const Value &obj, const string &err) mutable {
+        if (err.empty()) {
+            // Fetch data from origin success
+            callback("", index % urls.size(), obj);
+        }
+
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "fetch data from origin server final failed: " << ss.str();
+            callback("All origin stations have been retried", -1, Json::nullValue);
+        }
+
+        fetchDataFromOrigin(urls, params, index + 1, failed_cnt, callback);
+    });
+}
+
+static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+    
+    do_http_hook(url, params, header, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
             callback("", index % urls.size(), obj);
@@ -1458,14 +1517,17 @@ void installWebHook() {
             urls.push_back(full_url);
         }
 
-        HttpArgs params;
-        params["peer"] = peer_id;
-        params["db"] = db_guid;
-        params["since"] = since_id;
-        params["limit"] = batch_limit;
+        ArgsType body;
+        body["peer"] = peer_id;
+        body["db"] = db_guid;
+        body["cursors"] = Json::arrayValue;
+        for (const auto &item : since_cursors) {
+            body["cursors"].append(item.toJson());
+        }
+        body["limit"] = batch_limit;
 
         // Execute hook
-        fetchDataFromOrigin(urls, params, 0, 0, invoker); 
+        fetchDataFromOrigin(urls, body, 0, 0, invoker); 
     });
 
     // Listen to sync snapshot events

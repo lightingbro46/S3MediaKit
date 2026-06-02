@@ -498,7 +498,6 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 CameraStatisticImp::CameraStatisticImp(const std::string &src_path, int sync_interval_sec) : _sync_interval_sec(sync_interval_sec) {
     CHECK(!src_path.empty(), "Source path cannot be empty");
     setup(src_path);
-    _last_sync_time = time(nullptr);
 }
 
 CameraStatisticImp::~CameraStatisticImp() {}
@@ -590,6 +589,7 @@ void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTup
 void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
     std::lock_guard<std::mutex> lck(_mtx);
     option = input_option;
+    _sync_start = true;
     save();
 
     if (option.enableActive) {
@@ -728,6 +728,9 @@ void CameraStatisticImp::remove() {
             removed = true;
         }
     }
+
+    removeFromEsc();
+
     if (_on_remove && removed) {
         _on_remove(tuple.device_id);
     }
@@ -813,6 +816,24 @@ struct ResourceAdapter<CameraStatistic> {
         res.guid = stats.tuple.device_id;
         res.parent_guid = stats.option.preferedMediaServer; // Use preferedMediaServer as parent_guid to associate camera resource with media server resource in VMS
         res.name = stats.tuple.name;
+        // For camera resource, use stream url as resource url if ip is not configured, so that VMS can pull stream directly from camera. 
+        // If ip is configured, use http url with ip and web port as resource url for VMS to access camera info and control api, and pull stream through media server.
+        std::string url;
+        if (stats.option.ip.empty()) {
+            auto it = stats.stream_map.find(PrimaryStream);
+            if (it != stats.stream_map.end()) {
+                url = it->second.full_url;
+            }
+            if (url.empty()) {
+                auto it = stats.stream_map.find(SecondaryStream);
+                if (it != stats.stream_map.end()) {
+                    url = it->second.full_url;
+                }
+            }
+        } else {
+            url = StrPrinter << "http://" << stats.option.ip << ":" << (!stats.option.autoMediaPort ? std::to_string(stats.option.webPort) : "");
+        }
+        res.url = url; 
         res.xtype_guid = getXtypeId();
         return res;
     }
@@ -882,14 +903,14 @@ struct ResourceAdapter<CameraStatistic> {
 
         // ── stream urls (synced so peers know where to pull) ──────────────
         Json::Value streamUrls = Json::objectValue;
-        streamUrls[PrimaryStream]   = makeStreamTupleJson(stats.stream_map, PrimaryStream);
-        streamUrls[SecondaryStream] = makeStreamTupleJson(stats.stream_map, SecondaryStream);
+        streamUrls[std::to_string(PrimaryStream)]   = makeStreamTupleJson(stats.stream_map, PrimaryStream);
+        streamUrls[std::to_string(SecondaryStream)] = makeStreamTupleJson(stats.stream_map, SecondaryStream);
         kvs.push_back(make("streamUrls", StrJsonUtils::writeJsonString(streamUrls)));
 
         // ── stream statistic (synced so peers know where to pull) ──────────────
         Json::Value mediaStreams = Json::objectValue;
-        mediaStreams[PrimaryStream] = makeStreamStatisticJson(stats.sinfo_map, PrimaryStream);
-        mediaStreams[SecondaryStream] = makeStreamStatisticJson(stats.sinfo_map, SecondaryStream);;
+        mediaStreams[std::to_string(PrimaryStream)]   = makeStreamStatisticJson(stats.sinfo_map, PrimaryStream);
+        mediaStreams[std::to_string(SecondaryStream)] = makeStreamStatisticJson(stats.sinfo_map, SecondaryStream);
         kvs.push_back(make("mediaStreams", StrJsonUtils::writeJsonString(mediaStreams)));
 
         // ── storage info (synced so peers know where to pull) ──────────────
@@ -955,144 +976,160 @@ struct ResourceAdapter<CameraStatistic> {
 
         // Camera Option
         for (const auto &kv : kvs) {
-            if (kv.name == "name") {
-                stats.option.name = kv.value;
-            } else if (kv.name == "ip") {
-                stats.option.ip = kv.value;
-            } else if (kv.name == "port") {
-                stats.option.port = std::stoi(kv.value);
-            } else if (kv.name == "manufacturer") {
-                stats.option.manufacturer = kv.value;
-            } else if (kv.name == "model") {
-                stats.option.model = kv.value;
-            } else if (kv.name == "username") {
-                stats.option.username = kv.value;
-            } else if (kv.name == "password") {
-                stats.option.password = kv.value;
-            } else if (kv.name == "webPort") {
-                stats.option.webPort = std::stoi(kv.value);
-            } else if (kv.name == "autoWebPort") {
-                stats.option.autoWebPort = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "disablePrimaryStream") {
-                stats.option.disablePrimaryStream = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "disableSecondaryStream") {
-                stats.option.disableSecondaryStream = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "disableAudio") {
-                stats.option.disableAudio = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "rtpTransport") {
-                stats.option.rtpTransport = std::stoi(kv.value);
-            } else if (kv.name == "autoMediaPort") { 
-                stats.option.autoMediaPort = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "mediaPort") {
-                stats.option.mediaPort = std::stoi(kv.value);
-            } else if (kv.name == "enableActive") {
-                stats.option.enableActive = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "enableRecord") {
-                stats.option.enableRecord = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "doNotRecordPrimaryStream") {
-                stats.option.doNotRecordPrimaryStream = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "doNotRecordSecondaryStream") {
-                stats.option.doNotRecordSecondaryStream = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "keepArchivedMaxFor") {
-                stats.option.keepArchivedMaxFor = std::stoi(kv.value);
-            } else if (kv.name == "keepArchivedMaxForAuto") {
-                stats.option.keepArchivedMaxForAuto = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "keepArchivedMinFor") {
-                stats.option.keepArchivedMinFor = std::stoi(kv.value);
-            } else if (kv.name == "keepArchivedMinForAuto") {
-                stats.option.keepArchivedMinForAuto = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "recordSchedules") {
-                stats.option.recordSchedules = kv.value;
-            } else if (kv.name == "keepConfigProfileAndStream") {
-                stats.option.keepConfigProfileAndStream = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "enableFailover") {
-                stats.option.enableFailover = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "preferedMediaServer") {
-                stats.option.preferedMediaServer = kv.value;
-            } else if (kv.name == "enablePTZControl") {
-                stats.option.enablePTZControl = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "reversePanAxis") {
-                stats.option.reversePanAxis = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "reverseTiltAxis") {
-                stats.option.reverseTiltAxis = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "ptzMode") {
-                stats.option.ptzMode = std::stoi(kv.value);
-            } else if (kv.name == "ptzSpeed") {
-                stats.option.ptzSpeed = std::stof(kv.value);
-            } else if (kv.name == "onvifMainProfile") {
-                stats.option.onvifMainProfile = kv.value;
-            } else if (kv.name == "onvifSubProfile") {
-                stats.option.onvifSubProfile = kv.value;
-            } else if (kv.name == "enableMotion") {
-                stats.option.enableMotion = static_cast<bool>(std::stoi(kv.value));
-            } else if (kv.name == "roiValue") {
-                stats.option.roiValue = kv.value;
-            } else if (kv.name == "motionDetectOnStream") {
-                stats.option.motionDetectOnStream = std::stoi(kv.value);
-            } else if (kv.name == "motionPreRecordSec") {
-                stats.option.motionPreRecordSec = std::stoi(kv.value);
-            } else if (kv.name == "motionPostRecordSec") {
-                stats.option.motionPostRecordSec = std::stoi(kv.value);
-            } else if (kv.name == "streamUrls") {
-                Json::Value streamUrls_json;
-                StrJsonUtils::readJsonString(kv.value, streamUrls_json);
-                stats.stream_map[PrimaryStream] = getStreamTuple(streamUrls_json[PrimaryStream], stats.tuple, PrimaryStream);
-                stats.stream_map[SecondaryStream] = getStreamTuple(streamUrls_json[SecondaryStream], stats.tuple, SecondaryStream);
-            } else if (kv.name == "mediaStreams") {
-                Json::Value mediaStreams_json;
-                StrJsonUtils::readJsonString(kv.value, mediaStreams_json);
-                stats.sinfo_map[PrimaryStream] = getStreamStatistic(mediaStreams_json[PrimaryStream]);
-                stats.sinfo_map[SecondaryStream] = getStreamStatistic(mediaStreams_json[SecondaryStream]);
-            } else if (kv.name == "storageInfos") {
-                Json::Value storage_info_json;
-                StrJsonUtils::readJsonString(kv.value, storage_info_json);
-                stats.bm = getBookmarkStats(storage_info_json["bookmarkStats"]);
-                stats.motion_stats = getMotionStorageStats(storage_info_json["motionStats"]);
-                for (const auto &stream_storage_json : storage_info_json["streamStorageInfos"]) {
-                    auto stream_id = stream_storage_json["key"].asString();
-                    auto storage_stats = getStreamStorageStats(stream_storage_json["value"]);
-                    stats.storage_map[stream_id] = storage_stats;
+            try {
+                if (kv.name == "name") {
+                    stats.option.name = kv.value;
+                } else if (kv.name == "ip") {
+                    stats.option.ip = kv.value;
+                } else if (kv.name == "port") {
+                    stats.option.port = std::stoi(kv.value);
+                } else if (kv.name == "manufacturer") {
+                    stats.option.manufacturer = kv.value;
+                } else if (kv.name == "model") {
+                    stats.option.model = kv.value;
+                } else if (kv.name == "username") {
+                    stats.option.username = kv.value;
+                } else if (kv.name == "password") {
+                    stats.option.password = kv.value;
+                } else if (kv.name == "webPort") {
+                    stats.option.webPort = std::stoi(kv.value);
+                } else if (kv.name == "autoWebPort") {
+                    stats.option.autoWebPort = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "disablePrimaryStream") {
+                    stats.option.disablePrimaryStream = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "disableSecondaryStream") {
+                    stats.option.disableSecondaryStream = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "disableAudio") {
+                    stats.option.disableAudio = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "rtpTransport") {
+                    stats.option.rtpTransport = std::stoi(kv.value);
+                } else if (kv.name == "autoMediaPort") { 
+                    stats.option.autoMediaPort = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "mediaPort") {
+                    stats.option.mediaPort = std::stoi(kv.value);
+                } else if (kv.name == "enableActive") {
+                    stats.option.enableActive = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableRecord") {
+                    stats.option.enableRecord = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "doNotRecordPrimaryStream") {
+                    stats.option.doNotRecordPrimaryStream = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "doNotRecordSecondaryStream") {
+                    stats.option.doNotRecordSecondaryStream = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "keepArchivedMaxFor") {
+                    stats.option.keepArchivedMaxFor = std::stoull(kv.value);
+                } else if (kv.name == "keepArchivedMaxForAuto") {
+                    stats.option.keepArchivedMaxForAuto = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "keepArchivedMinFor") {
+                    stats.option.keepArchivedMinFor = std::stoull(kv.value);
+                } else if (kv.name == "keepArchivedMinForAuto") {
+                    stats.option.keepArchivedMinForAuto = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "recordSchedules") {
+                    stats.option.recordSchedules = kv.value;
+                } else if (kv.name == "keepConfigProfileAndStream") {
+                    stats.option.keepConfigProfileAndStream = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableFailover") {
+                    stats.option.enableFailover = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "preferedMediaServer") {
+                    stats.option.preferedMediaServer = kv.value;
+                } else if (kv.name == "enablePTZControl") {
+                    stats.option.enablePTZControl = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "reversePanAxis") {
+                    stats.option.reversePanAxis = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "reverseTiltAxis") {
+                    stats.option.reverseTiltAxis = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "ptzMode") {
+                    stats.option.ptzMode = std::stoi(kv.value);
+                } else if (kv.name == "ptzSpeed") {
+                    stats.option.ptzSpeed = std::stof(kv.value);
+                } else if (kv.name == "onvifMainProfile") {
+                    stats.option.onvifMainProfile = kv.value;
+                } else if (kv.name == "onvifSubProfile") {
+                    stats.option.onvifSubProfile = kv.value;
+                } else if (kv.name == "enableMotion") {
+                    stats.option.enableMotion = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "roiValue") {
+                    stats.option.roiValue = kv.value;
+                } else if (kv.name == "motionDetectOnStream") {
+                    stats.option.motionDetectOnStream = std::stoi(kv.value);
+                } else if (kv.name == "motionPreRecordSec") {
+                    stats.option.motionPreRecordSec = std::stoi(kv.value);
+                } else if (kv.name == "motionPostRecordSec") {
+                    stats.option.motionPostRecordSec = std::stoi(kv.value);
+                } else if (kv.name == "streamUrls") {
+                    Json::Value streamUrls_json;
+                    StrJsonUtils::readJsonString(kv.value, streamUrls_json);
+                    stats.stream_map[PrimaryStream]   = getStreamTuple(streamUrls_json[std::to_string(PrimaryStream)],   stats.tuple, PrimaryStream);
+                    stats.stream_map[SecondaryStream] = getStreamTuple(streamUrls_json[std::to_string(SecondaryStream)], stats.tuple, SecondaryStream);
+                } else if (kv.name == "mediaStreams") {
+                    Json::Value mediaStreams_json;
+                    StrJsonUtils::readJsonString(kv.value, mediaStreams_json);
+                    stats.sinfo_map[PrimaryStream]   = getStreamStatistic(mediaStreams_json[std::to_string(PrimaryStream)]);
+                    stats.sinfo_map[SecondaryStream] = getStreamStatistic(mediaStreams_json[std::to_string(SecondaryStream)]);
+                } else if (kv.name == "storageInfos") {
+                    Json::Value storage_info_json;
+                    StrJsonUtils::readJsonString(kv.value, storage_info_json);
+                    stats.bm = getBookmarkStats(storage_info_json["bookmarkStats"]);
+                    stats.motion_stats = getMotionStorageStats(storage_info_json["motionStats"]);
+                    for (const auto &stream_storage_json : storage_info_json["streamStorageInfos"]) {
+                        auto stream_id = stream_storage_json["key"].asString();
+                        auto storage_stats = getStreamStorageStats(stream_storage_json["value"]);
+                        stats.storage_map[stream_id] = storage_stats;
+                    }
                 }
+            } catch (const std::exception &e) {
+                WarnL << "Failed to parse KV pair '" << kv.name << "' = '" << kv.value << "': " << e.what();
             }
         }
         return stats;
     }
 
     static std::string getXtypeId() {
-        return ResourceTypeManager::Instance().getResourceTypeGuid("Camera");
+        auto xtypeId = ResourceTypeManager::Instance().getResourceTypeGuid(RESOURCE_TYPE_CAMERA);
+        CHECK(!xtypeId.empty(), "XtypeId for Camera cannot be empty");
+        return xtypeId;
     }
 };
 
 void CameraStatisticImp::syncToEsc() {
-    auto sync_time = time(nullptr);
-    if (sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
-        TraceL << "Camera statistic sync to ESC skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+    if (!_sync_start) {
         return;
     }
-    auto params = getParams();
+    auto sync_time = time(nullptr);
+    if (sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
+        TraceL << "Sync to ESC skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+        return;
+    }
+
+    auto params = static_cast<const CameraStatistic &>(*this);
     ResourceManager::Instance().addResource<CameraStatistic>(params, true);
     _last_sync_time = time(nullptr);
-    DebugL << "Camera statistic sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+    DebugL << "Sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+}
+
+void CameraStatisticImp::removeFromEsc() {
+    ResourceManager::Instance().removeResource(tuple.device_id);
+    DebugL << "Removed camera resource from ESC for camera " << tuple.shortUrl();
 }
 
 bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
     DebugL << "Get camera statistic from ESC for camera with guid " << guid;
     auto ret = ResourceManager::Instance().getResource<CameraStatistic>(guid, stats);
     if (ret) {
-        DebugL << "Camera statistic sync from ESC for camera " << stats.tuple.shortUrl();
+        DebugL << "Sync from ESC for camera " << stats.tuple.shortUrl();
     } else {
-        WarnL << "Camera statistic from ESC for camera " << guid << " not found";
+        WarnL << "Camera " << guid << " not found. Sync from ESC failed";
     }
     return ret;
 }
 
 void CameraStatisticImp::assignResource(bool regist) {
-    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    auto node_id = ResourceManager::Instance().getSelfNodeId();
     if (regist) {
-        auto assign_type = (option.enableFailover && option.preferedMediaServer != mediaServerId) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
-        ResourceManager::Instance().assignResource(tuple.device_id, mediaServerId, assign_type);
+        auto db_guid = ResourceManager::Instance().getSelfDbGuid();
+        auto assign_type = (option.enableFailover && option.preferedMediaServer != node_id) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
+        ResourceManager::Instance().assignResource(tuple.device_id, node_id, db_guid, assign_type);
     } else {
-        ResourceManager::Instance().releaseResource(tuple.device_id, mediaServerId);
+        ResourceManager::Instance().releaseResource(tuple.device_id, node_id);
     }
 }
 

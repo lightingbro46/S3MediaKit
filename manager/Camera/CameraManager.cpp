@@ -118,18 +118,22 @@ bool CameraManager::delCamera(const string &key) {
                     VmsResourceAssignment out;
                     auto ret = ResourceManager::Instance().getCurrentResourceAssignment(params.tuple.device_id, out);
                     if (ret) {
-                        DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
-                                << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
-                                << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
-                        GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+                        // DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
+                        //         << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
+                        //         << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
+                        auto self_node_id = ResourceManager::Instance().getSelfNodeId();
                         GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
-                        bool last_assign = out.owner_peer_id == mediaServerId && (time(nullptr) - out.released_at) > failoverActiveDelaySec;
+                        bool last_assign = out.owner_peer_id == self_node_id && (time(nullptr) - out.released_at) > failoverActiveDelaySec;
                         if (!last_assign) {
-                            DebugL << "Device " << key << " has assigned to media server " << out.owner_peer_id << " within failover active delay time. Keep device in list and wait for active status change";
+                            if (out.owner_peer_id != self_node_id) {
+                                DebugL << "Device " << key << " is currently assigned to another media server " << out.owner_peer_id << ". Keep device in list and wait for active status change";
+                            } else {
+                                DebugL << "Device " << key << " was released from self media server before and within failover active delay time. Keep device in list and wait for active status change";
+                            }
                             return false;
                         }
                         // Device disable active and disable failover mode, remove it out of list
-                        DebugL << "Device " << key << " is not active and has not assign to another media server. Remove device out of list";
+                        WarnL << "Device " << key << " is not active and has not assign to another media server. Remove device out of list";
                     } else {
                         // fallback to check storage data if there is no resource assignment data, since resource assignment data may be missing in cases of camera relocation or failover back to main server
                         DebugL << "Device " << key << " is not active and failover mode is enabled. Check storage data to decide whether to keep device";
@@ -142,7 +146,7 @@ bool CameraManager::delCamera(const string &key) {
                             return false;
                         }
                         // Device disable active and disable failover mode, remove it out of list
-                        DebugL << "Device " << key << " is not active and has no archived data. Remove device out of list";
+                        WarnL << "Device " << key << " is not active and has no archived data. Remove device out of list";
                     }
                 }
             }

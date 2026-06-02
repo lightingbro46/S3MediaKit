@@ -9,6 +9,7 @@
 #include <json/json.h>
 #include "Poller/Timer.h"
 #include "Storage/DbStorage.h"
+#include "Storage/TransactionPeerAckLog.h"
 
 namespace managerkit {
 
@@ -21,10 +22,11 @@ struct SnapshotData {
     std::string peer_id;
     std::string db_guid;
     // Transaction_sequence at time of snapshot
-    Json::Value  sequences;       // Json::arrayValue
-    Json::Value  vms_resource;    // Json::arrayValue
-    Json::Value  vms_kvpair;      // Json::arrayValue
+    Json::Value  sequences;           // Json::arrayValue
+    Json::Value  vms_resource;        // Json::arrayValue
+    Json::Value  vms_kvpair;          // Json::arrayValue
     Json::Value  resource_assignment; // Json::arrayValue
+    Json::Value  bookmark_index;      // Json::arrayValue — cluster-wide bookmark summary
 
     bool empty() const { return sequences.empty(); }
 };
@@ -70,14 +72,23 @@ public:
     // Expose for HTTP handler: build snapshot of local DB
     SnapshotData buildLocalSnapshot();
 
+    void recordRelayAck(std::vector<PeerAckLog> &ack_cursors);
+
+    // GC: compute safe prune watermark and delete old transaction_log entries.
+    void maybePruneLog();
+
 private:
     SyncManager() = default;
 
     // ── Pull tick ──────────────────────────────
     void onTick();
 
-    // ── Incremental pull (normal path) ─────────
-    void pullFromPeer(const std::string &peer_id, const std::string &db_guid, const std::string &base_url);
+    // ── Incremental pull (gossip relay) ────────
+    // Sends the full local cursor map to relay_peer_id, which returns log entries
+    // for ALL peers it has accumulated (not just its own). Peer discovery is
+    // implicit: new peers appear as relay entries and their cursors are
+    // automatically registered when applyBatch processes the entries.
+    void pullFromRelay(const std::string &relay_peer_id, const std::string &base_url);
     void applyBatch(const Json::Value &rows);
 
     // ── Bootstrap path ─────────────────────────
@@ -87,14 +98,18 @@ private:
     void markBootstrapDone();
     // Full bootstrap from a single peer: fetches all tables, used for initial cluster join.
     void doBootstrap(const std::string &peer_id, const std::string &base_url, DoneCb cb = nullptr);
-    // Mini-bootstrap for a new peer joining an existing cluster: registers cursor only,
-    // does NOT apply vms_resource/vms_kvpair to avoid overwriting newer local data.
-    void doMiniBootstrap(const std::string &peer_id, const std::string &base_url, DoneCb cb = nullptr);
     void applySnapshot(const SnapshotData &snap);
 
     // ── Conflict resolution ─────────────────────
-    // Last-Write-Wins: compare sequence between local and incoming
-    bool shouldApply(const std::string &table_name, const Json::Value &incoming_row);
+    // 3-way decision for incoming log entries:
+    //   Skip        — local version is newer, discard incoming
+    //   Apply       — no prior entry for this row, apply normally
+    //   ApplyWinner — conflict detected, incoming wins; caller sets timestamp_hi=1
+    enum class ApplyDecision : int { Skip = 0, Apply = 1, ApplyWinner = 2 };
+
+    // Last-Write-Wins by wall-clock timestamp (TransactionLog::timestamp, ms).
+    // Updates _applied_ts on accept (Apply / ApplyWinner).
+    ApplyDecision shouldApply(const std::string &table_name, const std::string &op, const Json::Value &payload, int64_t log_ts);
 
 private:
     toolkit::Timer::Ptr                          _timer;
@@ -108,6 +123,12 @@ private:
     std::string                                  _self_node_id; // media server's own node_id
     std::string                                  _self_db_id; // media server's own db_guid
     bool                                         _running      = false;
+
+    // LWW map: key = "table:row_key" → last accepted log_ts (ms).
+    // Prevents stale writes when two nodes concurrently modify the same row.
+    // Volatile (cleared on restart); safe because the pull cursor prevents
+    // re-applying already-processed log entries after a clean restart.
+    std::unordered_map<std::string, int64_t>     _applied_ts;
 };
 
 } // namespace managerkit
