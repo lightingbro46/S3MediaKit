@@ -53,7 +53,7 @@ void CameraController::setupController(const CameraOption &option) {
         _ready = false;
     }
 
-    if (option.manufacturer == GENERIC_RTSP_CAMERA) {
+    if (option.manufacturer == GENERIC_RTSP_CAMERA && option.ip.empty()) {
         WarnL << "Generic RTSP camera controller is not implemented yet";
         return;
     }
