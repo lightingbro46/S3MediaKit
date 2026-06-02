@@ -3,11 +3,12 @@ CREATE TABLE IF NOT EXISTS "vms_resourcetype" (
     "name" varchar(200) NOT NULL,
     "description" varchar(200) NULL,
     "manufacture_id" integer NULL, guid BLOB(16));
-INSERT INTO vms_resourcetype VALUES(1,'User',NULL,NULL,X'774e6ecdffc6ae8801658f4a6d0eafa7');
-INSERT INTO vms_resourcetype VALUES(2,'Server',NULL,NULL,X'be5d1ee0b92c3b3486d9bca2dab7826f');
-INSERT INTO vms_resourcetype VALUES(3,'Storage',NULL,NULL,X'f8544a40880e9442b78a9da6db6862b4');
-INSERT INTO vms_resourcetype VALUES(4,'Local',NULL,NULL,X'62aae8c0d28ed28030319bcc8153a749');
-INSERT INTO vms_resourcetype VALUES(5,'Camera',NULL,NULL,X'1b7181ce0227d3f79443c86aab922d96');
+INSERT INTO vms_resourcetype VALUES(1,'User',NULL,NULL,'774e6ecdffc6ae8801658f4a6d0eafa7');
+INSERT INTO vms_resourcetype VALUES(2,'Server',NULL,NULL,'be5d1ee0b92c3b3486d9bca2dab7826f');
+INSERT INTO vms_resourcetype VALUES(3,'Storage',NULL,NULL,'f8544a40880e9442b78a9da6db6862b4');
+INSERT INTO vms_resourcetype VALUES(4,'Local',NULL,NULL,'62aae8c0d28ed28030319bcc8153a749');
+INSERT INTO vms_resourcetype VALUES(5,'Camera',NULL,NULL,'1b7181ce0227d3f79443c86aab922d96');
+INSERT INTO vms_resourcetype VALUES(6,'Speaker',NULL,NULL,'76cfa478e99445cb8eb5beb00438d46e');
 
 CREATE UNIQUE INDEX idx_resourcetype_guid ON vms_resourcetype(guid);
 

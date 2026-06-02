@@ -3,6 +3,7 @@
 
 #include <string>
 #include "DbStorage.h"
+#include "json/json.h"
 
 namespace managerkit {
 
@@ -10,6 +11,22 @@ struct TransactionSequence {
     std::string peer_guid;
     std::string db_guid;
     int sequence;
+
+    Json::Value toJson() const {
+        Json::Value v;
+        v["peer_guid"] = peer_guid;
+        v["db_guid"] = db_guid;
+        v["sequence"] = sequence;
+        return v;
+    }
+
+    static TransactionSequence fromJson(const Json::Value &v) {
+        TransactionSequence seq;
+        seq.peer_guid = v["peer_guid"].asString();
+        seq.db_guid = v["db_guid"].asString();
+        seq.sequence = v["sequence"].asInt();
+        return seq;
+    }
 };
 
 DECLARE_ENTITY_NO_PK(TransactionSequence, "transaction_sequence",
@@ -76,16 +93,21 @@ public:
         return _executor->execDML(query) > 0;
     }
 
-    int findMinSequence() {
+    // Return all known (peer_guid, db_guid, sequence) cursors.
+    // Used by gossip relay to build the cursor map for pullFromRelay.
+    std::vector<TransactionSequence> findAll() {
         auto query = toolkit::QueryBuilder()
-                            .select({"MIN(sequence)"})
-                            .from(EntityTraits<TransactionSequence>::tableName());
+                        .select(EntityTraits<TransactionSequence>::getColumns())
+                        .from(EntityTraits<TransactionSequence>::tableName())
+                        .build();
         auto rows = _executor->executeRaw(query);
-        if (rows.size() > 0 && rows[0].size() > 0) {
-            return std::stoi(rows[0][0]);
+        std::vector<TransactionSequence> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<TransactionSequence>::fromRow(row));
         }
-        return 0;
+        return ret;
     }
+
 };
 
 class TransactionSequenceImp : public TransactionSequenceRepository {

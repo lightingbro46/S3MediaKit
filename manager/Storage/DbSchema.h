@@ -104,11 +104,13 @@ inline FieldType parse_sql_value(const std::string& s, FieldType);
 
 template<>
 inline int parse_sql_value<int>(const std::string& s, int) {
+    if (s.empty() || s == "NULL") return 0;
     return std::stoi(s);
 }
 
 template<>
 inline int64_t parse_sql_value<int64_t>(const std::string& s, int64_t) {
+    if (s.empty() || s == "NULL") return 0;
     return std::stol(s);
 }
 
@@ -125,6 +127,10 @@ inline Optional<T> parse_sql_value(const std::string& s, Optional<T> mem) {
     if (s == "NULL") return Optional<T>();
     return Optional<T>(parse_sql_value<T>(s, T{}));
 }
+
+// Helper to declare composite primary keys without confusing the preprocessor.
+// Usage: MAKE_PK("col1", "col2")  →  expands to {"col1", "col2"}
+#define MAKE_PK(...) {__VA_ARGS__}
 
 // Macro DECLARE_ENTITY
 
@@ -160,7 +166,7 @@ struct EntityTraits<EntityType> {                                               
 // For entity without primary key, we can use DECLARE_ENTITY_NO_PK 
 // and it will generate empty primary key list
 #define DECLARE_ENTITY_NO_PK(EntityType, TableName, ...) \
-    DECLARE_ENTITY(EntityType, TableName, {}, __VA_ARGS__)
+    DECLARE_ENTITY(EntityType, TableName, MAKE_PK(), __VA_ARGS__)
 
 // getColumnsImpl 
 // Base case

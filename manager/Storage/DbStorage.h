@@ -25,8 +25,14 @@ extern const std::string kEnableSyncDb;
 extern const std::string kPullIntervalSec;
 // Limit for each pull batch, to avoid pulling too much data at once
 extern const std::string kBatchLimit;
-// Peer list for sync, in format of "peer_id1:base_url1,peer_id2:base_url2,..."
-extern const std::string kPeerList;
+// Number of peers selected in each gossip round.
+// A larger value increases propagation speed and convergence,
+// but also generates more network traffic and processing overhead.
+// Example:
+//   fanout = 1 : slower convergence, minimal network usage.
+//   fanout = 3 : balanced for most clusters.
+//   fanout = N : broadcast to all peers.
+extern const std::string kGossipFanout;
 } // namespace Database
 
 namespace managerkit {

@@ -52,6 +52,20 @@ DECLARE_ENTITY(VmsResourceAssignment, "vms_resource_assignment",
 class VmsResourceAssignmentRepository : public SqliteRepository<VmsResourceAssignment> {
 public:
     VmsResourceAssignmentRepository() : SqliteRepository<VmsResourceAssignment>(Database::kEdgeStorageControllerDb) {}
+
+protected:
+    bool removeByResourceId(const std::string &resource_guid) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        whereClause << "resource_guid = ?";
+        whereParams.push_back(resource_guid);
+
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsResourceAssignment>::tableName())
+                            .where(whereClause.str(), whereParams);
+        return _executor->execDML(query) > 0;
+    }
 };
 
 class VmsResourceAssignmentImp : public VmsResourceAssignmentRepository {
@@ -78,25 +92,29 @@ public:
         }
     }
 
-    void remove(const std::string &assignment_guid, bool append_log = true) {
-        VmsResourceAssignment assign;
-        assign.assignment_guid = assignment_guid;
-        removeById(assign);
+    void remove(const std::string &resource_guid, bool append_log = true) {
+        removeByResourceId(resource_guid);
         if (append_log) {
             Json::Value payload;
-            payload["assignment_guid"] = assignment_guid;
+            payload["resource_guid"] = resource_guid;
             _log_impl->appendLocalDataMutation(EntityTraits<VmsResourceAssignment>::tableName(), TRAN_DATA_OP_DELETE, payload);
         }
     }
 
-    std::vector<VmsResourceAssignment> findAssignmentByRange(const std::string &resource_guid, int64_t start_time, int64_t end_time) {
+
+    /**
+     * Find all assignments whose active window overlaps with [start_time, end_time].
+     * An assignment overlaps if:
+     *   assigned_at <= end_time  AND  (released_at = 0 OR released_at >= start_time)
+     */
+    std::vector<VmsResourceAssignment> findAssignmentsOverlappingRange(const std::string &resource_guid, int64_t start_time, int64_t end_time) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "resource_guid = ? AND assigned_at BETWEEN ? AND ?";
+        whereClause << "resource_guid = ? AND assigned_at <= ? AND (released_at = 0 OR released_at >= ?)";
         whereParams.push_back(resource_guid);
-        whereParams.push_back(std::to_string(start_time));
         whereParams.push_back(std::to_string(end_time));
+        whereParams.push_back(std::to_string(start_time));
 
         auto query = toolkit::QueryBuilder()
                             .select(EntityTraits<VmsResourceAssignment>::getColumns())
@@ -110,7 +128,7 @@ public:
         return ret;
     }
 
-    std::vector<VmsResourceAssignment> findCurrentAssign(const std::string &resource_guid) {
+    std::vector<VmsResourceAssignment> findCurrentAssignment(const std::string &resource_guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 

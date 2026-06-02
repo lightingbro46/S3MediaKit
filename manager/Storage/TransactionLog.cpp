@@ -1,7 +1,7 @@
 #include "TransactionLog.h"
 #include "Common/StrUtil.h"
 #include "Common/config.h"
-#include "MiscData.h"
+#include "Extension/Resource.h"
 
 using namespace std;
 using namespace toolkit;
@@ -9,30 +9,18 @@ using namespace mediakit;
 
 namespace managerkit {
 
-void TransactionLogImp::loadSelfInfo() {
-    if (_self_node_id.empty()) {
-        GET_CONFIG(std::string, mediaServerId, mediakit::General::kMediaServerId);
-        _self_node_id = mediaServerId;
-    }
-    if (_self_db_guid.empty()) {
-        auto imp = std::make_shared<MiscDataImp>();
-        auto ret = imp->findByKey(MISC_DATA_DB_INSTANCE_ID_KEY);
-        if (!ret.empty()) {
-            _self_db_guid = ret[0].value;
-        }
-    }
-    CHECK(!_self_node_id.empty() && !_self_db_guid.empty());
-}
-
 void TransactionLogImp::appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload) {
-    auto current_seq = _seq_impl->findSeqByPeerIdAndDbGuid(_self_node_id, _self_db_guid);
+    auto self_node_id = ResourceManager::Instance().getSelfNodeId();
+    auto self_db_guid = ResourceManager::Instance().getSelfDbGuid();
+
+    auto current_seq = _seq_impl->findSeqByPeerIdAndDbGuid(self_node_id, self_db_guid);
 
     TransactionLog log;
-    log.peer_guid = _self_node_id;
-    log.db_guid = _self_db_guid;
+    log.peer_guid = self_node_id;
+    log.db_guid = self_db_guid;
     log.sequence = current_seq + 1;
-    log.timestamp = static_cast<int64_t>(toolkit::getCurrentMillisecond());
-    log.timestamp_hi = 0; // todo
+    log.timestamp = static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
+    log.timestamp_hi = 0; // default to 0, can be set to 1 to indicate this log wins in conflict resolution regardless of timestamp
     log.tran_guid = toolkit::makeUuidStr();
     log.tran_type = static_cast<int>(TranType::DataMutation);
 

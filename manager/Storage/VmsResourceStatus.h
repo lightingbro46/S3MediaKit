@@ -67,7 +67,7 @@ public:
             updateById(resource);
             return;
         }
-        save(resource);
+        save(resource, true);
     }
 
     void remove(const std::string &guid) {

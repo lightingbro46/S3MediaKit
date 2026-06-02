@@ -19,16 +19,16 @@ const string kEdgeStorageControllerDb = "esc";
 const string kEnableSyncDb = DATABASE_FIELD"enable_sync_db";
 const string kPullIntervalSec = DATABASE_FIELD"pull_interval_sec";
 const string kBatchLimit = DATABASE_FIELD"batch_limit";
-const string kPeerList = DATABASE_FIELD"peer_list";
+const string kGossipFanout = DATABASE_FIELD"gossip_fanout";
 
 static onceToken token([]() { 
     mINI::Instance()[kDbSavePath] = "./db";
     mINI::Instance()[kMServerMigrationSavePath] = "./mserver_updates";
     mINI::Instance()[kESCMigrationSavePath] = "./updates";
     mINI::Instance()[kEnableSyncDb] = false;
-    mINI::Instance()[kPullIntervalSec] = "30";
-    mINI::Instance()[kBatchLimit] = "100";
-    mINI::Instance()[kPeerList] = "";
+    mINI::Instance()[kPullIntervalSec] = 30;
+    mINI::Instance()[kBatchLimit] = 100;
+    mINI::Instance()[kGossipFanout] = 3;
 });
 
 } // namespace Database

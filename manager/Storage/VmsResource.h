@@ -130,8 +130,6 @@ public:
         }
     }
 
-    
-
 private:
     bool equal(const VmsResource &r1, const VmsResource &r2) {
         return r1.parent_guid == r2.parent_guid

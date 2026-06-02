@@ -101,13 +101,18 @@ public:
     // Single upsert — giữ backward compat, ghi 1 log nếu changed
     void add(VmsKvPair &kv, bool append_log = true) {
         auto ret = findByResourceIdAndKey(kv.resource_guid, kv.name);
-        if (ret.size() > 0) {
+        bool changed = false;
+        if (!ret.empty()) {
             kv.id = ret[0].id;
-            updateById(kv);
+            if (ret[0].value != kv.value) {
+                updateById(kv);
+                changed = true;
+            }
         } else {
             save(kv);
+            changed = true;
         }
-        if (append_log) {
+        if (changed && append_log) {
             _log_impl->appendLocalDataMutation(EntityTraits<VmsKvPair>::tableName(), TRAN_DATA_OP_UPSERT, kv.toJson());
         }
     }

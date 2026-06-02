@@ -5,8 +5,10 @@
 #include "DbStorage.h"
 #include "BookmarkTag.h"
 #include "BookmarkStats.h"
+#include "BookmarkIndex.h"
 #include "Util/util.h"
 #include "Local/StatisticRecorder.h"
+#include "Extension/Resource.h"
 
 namespace managerkit {
 
@@ -21,6 +23,36 @@ struct Bookmark {
     Optional<int> timeout;
     Optional<std::string> creator_guid;
     Optional<int64_t> created;
+
+    Json::Value toJson() const {
+        Json::Value v;
+        v["guid"] = guid;
+        v["camera_guid"] = camera_guid;
+        v["start_time"] = static_cast<Json::Int64>(start_time);
+        v["duration"] = duration;
+        if (end_time.has_value()) v["end_time"] = static_cast<Json::Int64>(end_time.value());
+        if (name.has_value()) v["name"] = name.value();
+        if (description.has_value()) v["description"] = description.value();
+        if (timeout.has_value()) v["timeout"] = timeout.value();
+        if (creator_guid.has_value()) v["creator_guid"] = creator_guid.value();
+        if (created.has_value()) v["created"] = static_cast<Json::Int64>(created.value());
+        return v;
+    }
+
+    static Bookmark fromJson(const Json::Value &v) {
+        Bookmark b;
+        b.guid = v["guid"].asString();
+        b.camera_guid = v["camera_guid"].asString();
+        b.start_time = v["start_time"].asInt64();
+        b.duration = v["duration"].asInt();
+        if (v.isMember("end_time")) b.end_time = Optional<int64_t>(v["end_time"].asInt64());
+        if (v.isMember("name")) b.name = Optional<std::string>(v["name"].asString());
+        if (v.isMember("description")) b.description = Optional<std::string>(v["description"].asString());
+        if (v.isMember("timeout")) b.timeout = Optional<int>(v["timeout"].asInt());
+        if (v.isMember("creator_guid")) b.creator_guid = Optional<std::string>(v["creator_guid"].asString());
+        if (v.isMember("created")) b.created = Optional<int64_t>(v["created"].asInt64());
+        return b;
+    }
 };
 
 DECLARE_ENTITY(Bookmark, "bookmarks",
@@ -124,6 +156,30 @@ protected:
         return rows.empty() ? 0 : std::stoi(rows[0][0].c_str());
     }
 
+    std::vector<Bookmark> findByIds(const std::vector<std::string> &guids) {
+        if (guids.empty()) return {};
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+        whereClause << "guid IN (";
+        for (size_t i = 0; i < guids.size(); i++) {
+            whereClause << "?";
+            if (i + 1 < guids.size()) whereClause << ",";
+            whereParams.push_back(guids[i]);
+        }
+        whereClause << ")";
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<Bookmark>::getColumns())
+                         .from(EntityTraits<Bookmark>::tableName())
+                         .where(whereClause.str(), whereParams);
+        auto rows = _executor->executeRaw(query);
+        std::vector<Bookmark> ret;
+        ret.reserve(rows.size());
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<Bookmark>::fromRow(row));
+        }
+        return ret;
+    }
+
     std::vector<Bookmark> findByTimeCreated(const std::vector<std::string> &camera_guids, const std::string &user_id, int limit, std::string &sort) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -192,6 +248,7 @@ public:
     BookmarkImp() : BookmarkRepository() {
         _bTag = std::make_shared<BookmarkTagImp>();
         _bStats = std::make_shared<BookmarkStatsImp>();
+        _bIdx  = std::make_shared<BookmarkIndexImp>();
     }
 
     void add(Bookmark &bm, const std::string &tags) { 
@@ -203,11 +260,39 @@ public:
         _bTag->add(bm.guid, tags);
         _bStats->add(bm.camera_guid, 1);
         StatisticRecorder::Instance().addBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, true);
+
+        // Write summary to ESC DB so all cluster nodes can query this bookmark.
+        BookmarkIndex idx;
+        idx.bookmark_guid  = bm.guid;
+        idx.camera_guid    = bm.camera_guid;
+        idx.owner_peer_id  = ResourceManager::Instance().getSelfNodeId();
+        idx.start_time     = bm.start_time;
+        idx.end_time       = bm.end_time ? bm.end_time.value() : (bm.start_time + bm.duration * 1000LL);
+        idx.name           = bm.name ? bm.name.value() : "";
+        idx.description    = bm.description ? bm.description.value() : "";
+        idx.tags_csv       = tags;          
+        idx.creator_guid   = bm.creator_guid ? bm.creator_guid.value() : "";
+        idx.created        = bm.created ? bm.created.value() : 0;
+        _bIdx->add(idx);
     }
 
     void update(Bookmark &bm, const std::string &tags) { 
         updateById(bm);
         _bTag->add(bm.guid, tags, true);
+
+        // Keep ESC DB index in sync with updated values.
+        BookmarkIndex idx;
+        idx.bookmark_guid  = bm.guid;
+        idx.camera_guid    = bm.camera_guid;
+        idx.owner_peer_id  = ResourceManager::Instance().getSelfNodeId();
+        idx.start_time     = bm.start_time;
+        idx.end_time       = bm.end_time ? bm.end_time.value() : (bm.start_time + bm.duration * 1000LL);
+        idx.name           = bm.name ? bm.name.value() : "";
+        idx.description    = bm.description ? bm.description.value() : "";
+        idx.tags_csv       = tags;
+        idx.creator_guid   = bm.creator_guid ? bm.creator_guid.value() : "";
+        idx.created        = bm.created ? bm.created.value() : 0;
+        _bIdx->add(idx);
     }
 
     void remove(const std::string &guid) {
@@ -218,6 +303,7 @@ public:
             _bTag->remove(guid);
             _bStats->add(bm.camera_guid, -1);
             StatisticRecorder::Instance().addBookmarkCount(bm.camera_guid, bm.created ? bm.created.value() : 0, false);
+            _bIdx->remove(guid);
         }
     }
 
@@ -225,6 +311,12 @@ public:
         Bookmark bm_search;
         bm_search.guid = id;
         return BookmarkRepository::findById(bm_search);
+    }
+
+    // Fetch multiple bookmarks in a single query by a list of GUIDs.
+    // Result order matches the DB row order (not the input order).
+    std::vector<Bookmark> findByGuids(const std::vector<std::string> &guids) {
+        return BookmarkRepository::findByIds(guids);
     }
 
     std::vector<Bookmark> search(int64_t start_time, int64_t end_time, const std::string &camera_guids, const std::string &user_id, 
@@ -279,8 +371,9 @@ public:
     }
 
 private:
-    BookmarkTagImp::Ptr _bTag;
+    BookmarkTagImp::Ptr   _bTag;
     BookmarkStatsImp::Ptr _bStats;
+    BookmarkIndexImp::Ptr _bIdx;
 };
 
 } // namespace managerkit 
