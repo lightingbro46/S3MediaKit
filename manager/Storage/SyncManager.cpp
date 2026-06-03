@@ -10,6 +10,7 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
+#include <random>
 
 using namespace std;
 using namespace toolkit;
@@ -471,7 +472,15 @@ void SyncManager::onTick() {
     // local cursor map. Each peer returns log entries for all peers it has
     // relayed, so after 1-2 ticks every node converges to the same state.
     // No mini-bootstrap needed: new peer discovery is implicit via relay data.
-    for (const auto &pair : peers_copy) {
+    GET_CONFIG(int, fanout, Database::kGossipFanout);
+    vector<pair<string,string>> peers_vec(peers_copy.begin(), peers_copy.end());
+
+    // Shuffle to choose random peers when fanout is enabled (fanout=0 means all peers). This also helps distribute load when multiple nodes start simultaneously.
+    static std::mt19937 rng(std::random_device{}());
+    std::shuffle(peers_vec.begin(), peers_vec.end(), rng);
+    int n = (fanout > 0) ? min((int)peers_vec.size(), fanout) : (int)peers_vec.size();
+    for (int i = 0; i < n; ++i) {
+        const auto &pair = peers_vec[i];
         pullFromRelay(pair.first, pair.second);
     }
     // After pulling from all peers, check if we can prune old transaction logs
