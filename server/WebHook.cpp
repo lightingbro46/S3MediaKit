@@ -20,6 +20,8 @@
 #include "Server/ReaderMonitor.h"
 #include "User/UserAuditLog.h"
 #include "Util/base64.h"
+#include "Storage/TransactionSequence.h"
+#include "Storage/TransactionPeerAckLog.h"
 
 using namespace std;
 using namespace Json;
@@ -1614,8 +1616,12 @@ void installWebHook() {
         body["peer"] = peer_id;
         body["db"] = db_guid;
         body["cursors"] = Json::arrayValue;
-        for (const auto &item : since_cursors) {
-            body["cursors"].append(item.toJson());
+        for (const auto &item_seq : since_cursors) {
+            body["cursors"].append(item_seq.toJson());
+        }
+        body["ack_cursors"] = Json::arrayValue;
+        for (const auto &item_ack : ack_cursors) {
+            body["ack_cursors"].append(item_ack.toJson());
         }
         body["limit"] = batch_limit;
 

@@ -607,6 +607,9 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
     auto seq_imp = make_shared<TransactionSequenceImp>();
     auto all_seqs = seq_imp->findAll();
 
+    auto ack_log_imp = make_shared<PeerAckLogImp>();
+    auto all_acks = ack_log_imp->findAll();
+
     TraceL << "Relay pull from " << relay_peer_id << " with " << all_seqs.size() << " cursors";
 
     weak_ptr<SyncManager> weak_self = shared_from_this();
@@ -628,7 +631,7 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
 
     GET_CONFIG(int, batch_limit, Database::kBatchLimit);
     auto flag = NOTICE_EMIT(BroadcastSyncChangesArgs, Broadcast::kBroadcastSyncChanges,
-                            base_url, _self_node_id, _self_db_id, all_seqs, batch_limit, onRes);
+                            base_url, _self_node_id, _self_db_id, all_seqs, all_acks, batch_limit, onRes);
     if (!flag) {
         WarnL << "No listener for kBroadcastSyncChanges, cannot relay pull from " << relay_peer_id;
     }

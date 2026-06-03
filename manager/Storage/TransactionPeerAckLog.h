@@ -30,7 +30,7 @@ struct PeerAckLog {
     int         acked_seq;
     int64_t     updated_at;
 
-    Json::Value toJson() { 
+    Json::Value toJson() const {
         Json::Value v;
         v["peer_guid"] = peer_guid;
         v["db_guid"]   = db_guid;
@@ -41,7 +41,7 @@ struct PeerAckLog {
         return v;
     }
 
-    static PeerAckLog fromJson(Json::Value v) {
+    static PeerAckLog fromJson(const Json::Value &v) {
         PeerAckLog ack_log;
         ack_log.peer_guid = v["peer_guid"].asString();
         ack_log.db_guid = v["db_guid"].asString();
@@ -168,6 +168,19 @@ public:
             result.push_back(aseq);
         }
         return result;
+    }
+
+    std::vector<PeerAckLog> findAll() {
+        auto query = toolkit::QueryBuilder()
+                        .select(EntityTraits<PeerAckLog>::getColumns())
+                        .from(EntityTraits<PeerAckLog>::tableName());
+        auto rows = _executor->executeRaw(query);
+
+        std::vector<PeerAckLog> ack_logs;
+        for (const auto &row : rows) {
+            ack_logs.push_back(EntityTraits<PeerAckLog>::fromRow(row));
+        }
+        return ack_logs;
     }
 };
 
