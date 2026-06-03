@@ -150,6 +150,42 @@ protected:
                          .where("bookmark_guid = ?", {guid});
         return _executor->execDML(query) > 0;
     }
+
+    std::vector<BookmarkIndex> findByTimeCreated(const std::vector<std::string> &camera_guids, const std::string &user_id, int limit, std::string &sort) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        if (camera_guids.size() > 0) {
+            whereClause << " camera_guid IN (";
+            for (size_t i = 0; i < camera_guids.size(); i++) {
+                whereClause << " ? ";
+                if (i + 1 < camera_guids.size()) whereClause << ",";
+                whereParams.push_back(camera_guids[i]);
+            }
+            whereClause << ")";
+        }
+
+        if (!user_id.empty()) {
+            if (!whereClause.str().empty()) {
+                whereClause << " AND ";
+            }
+            whereClause << " creator_guid = ?";
+            whereParams.push_back(user_id);
+        }
+
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<BookmarkIndex>::getColumns())
+                         .from(EntityTraits<BookmarkIndex>::tableName())
+                         .where(whereClause.str(), whereParams)
+                         .limit(limit)
+                         .orderBy("created " + sort);
+        auto rows = _executor->executeRaw(query);
+        std::vector<BookmarkIndex> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<BookmarkIndex>::fromRow(row));
+        }
+        return ret;
+    }
 };
 
 class BookmarkIndexImp : public BookmarkIndexRepository {
@@ -182,6 +218,13 @@ public:
         }
     }
 
+    // Look up a single bookmark_index entry by its primary key.
+    std::vector<BookmarkIndex> findByBookmarkGuid(const std::string &guid) {
+        BookmarkIndex key;
+        key.bookmark_guid = guid;
+        return findById(key);
+    }
+
     // Paginated search. page is 0-based (consistent with BookmarkImp::search).
     std::vector<BookmarkIndex> search(int64_t start_time, int64_t end_time,
                                       const std::string &camera_guid, const std::string &creator_guid,
@@ -196,6 +239,15 @@ public:
     int count(int64_t start_time, int64_t end_time, const std::string &camera_guid,
               const std::string &creator_guid, const std::string &search_term = "") {
         return countByTimeRange(start_time, end_time, camera_guid, creator_guid, search_term);
+    }
+
+    std::vector<BookmarkIndex> findRecentByCameraGuid(const std::string &camera_guids, const std::string &user_id, int size, std::string sort) {
+        std::vector<std::string> _camera_guids;
+        if (!camera_guids.empty()) {
+            _camera_guids = toolkit::split(camera_guids, ",");
+        }
+        std::string _sort = toolkit::strToLower(sort) == "desc" ? "DESC" : "ASC";
+        return findByTimeCreated(_camera_guids, user_id, size, _sort);
     }
 
 private:

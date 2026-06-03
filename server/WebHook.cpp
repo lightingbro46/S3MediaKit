@@ -15,7 +15,6 @@
 #include "Manager.h"
 #include "User/UserAuthorManager.h"
 #include "Storage/Bookmark.h"
-#include "Storage/TransactionSequence.h"
 #include "Server/ClusterManager.h"
 #include "Camera/CameraManager.h"
 #include "Server/ReaderMonitor.h"
@@ -65,6 +64,11 @@ const string kOnSyncChanges = HOOK_FIELD "on_sync_changes";
 const string kOnSyncSnapshot = HOOK_FIELD "on_sync_snapshot";
 const string kOnSyncBookmarkIndex = HOOK_FIELD "on_sync_bookmark_index";
 const string kOnSyncTimeline = HOOK_FIELD "on_sync_timeline";
+const string kOnSyncThumbnail = HOOK_FIELD "on_sync_thumbnail";
+const string kOnSyncBookmarkCreate = HOOK_FIELD "on_sync_bookmark_create";
+const string kOnSyncBookmarkUpdate = HOOK_FIELD "on_sync_bookmark_update";
+const string kOnSyncBookmarkDelete = HOOK_FIELD "on_sync_bookmark_delete";
+const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -105,6 +109,11 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncSnapshot] = "/media/esc/sync/snapshot";
     mINI::Instance()[kOnSyncBookmarkIndex] = "/media/esc/bookmark/detail";
     mINI::Instance()[kOnSyncTimeline] = "/media/esc/recordedTimePeriod";
+    mINI::Instance()[kOnSyncThumbnail] = "/media/esc/recordedThumnail";
+    mINI::Instance()[kOnSyncBookmarkCreate] = "/media/esc/bookmark/create";
+    mINI::Instance()[kOnSyncBookmarkUpdate] = "/media/esc/bookmark/update";
+    mINI::Instance()[kOnSyncBookmarkDelete] = "/media/esc/bookmark/delete";
+    mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -322,6 +331,61 @@ void do_http_hook(const std::string &url, const HttpArgs &param, const function<
 void do_http_hook(const std::string &url, const HttpArgs &param, const HeaderType &header, const function<void(const Json::Value &, const string &)> &func) {
     GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
     do_http_hook(url, param, header, func, hook_retry);
+}
+
+void do_http_proxy(const string &url, const HttpArgs &param, const HeaderType &header, const mediakit::HttpSession::HttpResponseInvoker &func, uint32_t retry) {
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
+    GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
+
+    const_cast<HttpArgs &>(param)["mediaServerId"] = mediaServerId;
+    const_cast<HttpArgs &>(param)["hook_index"] = (Json::UInt64)(s_hook_index++);
+
+    auto requester = std::make_shared<HttpRequester>();
+    requester->setMethod("GET");
+    auto paramStr = to_string(param);
+    auto full_url = url + "?" + paramStr;
+    for (const auto &it : header) {
+        requester->addHeader(it.first, it.second);
+    }
+    requester->addHeader("Content-Type", getContentType(param));
+    auto vhost = getVhost(param);
+    if (!vhost.empty()) {
+        requester->addHeader("X-VHOST", vhost);
+    }
+    Ticker ticker;
+    requester->startRequester(full_url, [url, func, paramStr, param, header, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
+        onceToken token(nullptr, [&]() mutable { requester.reset(); });
+        bool should_retry = true;
+        bool hook_failed = ex || res.status() != "200";
+        if (hook_failed) {
+            // Hook failed
+            WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << ex.what() << ":" << paramStr;
+            if (retry-- > 0 && should_retry) {
+                requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, header, func, retry] {
+                    do_http_proxy(url, param, header, func, retry);
+                    return 0;
+                });
+                // Retry does not need to trigger callback
+                return;
+            }
+
+        } else if (ticker.elapsedTime() > 1000) {
+            // Hook succeeded, but hook response exceeded 1000ms, print warning log
+            DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << paramStr;
+        }
+
+        // Directly return the response body to the callback, and let the callback decide how to parse it
+        StrCaseMap out_hdr = res.getHeader();
+        string out_content = res.content();
+        func(ex ? 500 : stoi(res.status()), out_hdr, out_content);
+    
+    }, hook_timeoutSec);
+}
+
+void do_http_proxy(const std::string &url, const HttpArgs &param, const HeaderType &header, const mediakit::HttpSession::HttpResponseInvoker &func) {
+    GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
+    do_http_proxy(url, param, header, func, hook_retry);
 }
 
 void dumpMediaTuple(const MediaTuple &tuple, Json::Value& item);
@@ -779,6 +843,35 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
         }
 
         fetchDataFromOrigin(urls, params, index + 1, failed_cnt, callback);
+    });
+}
+
+void proxyDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const mediakit::HttpSession::HttpResponseInvoker &callback) {
+    auto url = urls[index % urls.size()];
+    DebugL << "proxy data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
+    
+    do_http_proxy(url, params, header, [=](int status_code, const StrCaseMap &headers, const string &content) mutable {
+        if (status_code == 200) {
+            // Proxy data from origin success
+            callback(status_code, headers, content);
+            return;
+        }
+
+        if (++failed_cnt == urls.size()) {
+            // All origin stations have been retried
+            ostringstream ss;
+            for (int i = 0; i < (int)urls.size(); ++i) {
+                ss << urls[i];
+                if (i < (int)urls.size() - 1) {
+                    ss << ", ";
+                }
+            }
+            WarnL << "proxy data from origin server final failed: " << ss.str();
+            callback(status_code, headers, content);
+            return;
+        }
+
+        proxyDataFromOrigin(urls, params, header, index + 1, failed_cnt, callback);
     });
 }
 
@@ -1554,6 +1647,213 @@ void installWebHook() {
 
         // Execute hook
         fetchDataFromOrigin(urls, params, 0, 0, invoker); 
+    });
+
+    // Listen to sync bookmark index events — fetch full bookmark detail from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncBookmarkIndex, [](BroadcastSyncBookmarkIndexArgs) {
+        GET_CONFIG(string, hook_sync_bookmark_index, Hook::kOnSyncBookmarkIndex);
+        if (!hook_enable || hook_sync_bookmark_index.empty()) {
+            invoker("Sync bookmark index skipped, kOnSyncBookmarkIndex is empty", -1, Json::nullValue);
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            invoker("Sync bookmark index skipped, origin_urls is empty", -1, Json::nullValue);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            string full_url = StrPrinter << u << hook_sync_bookmark_index;
+            urls.push_back(full_url);
+        }
+
+        // Build ids query param from the bookmark GUID list
+        string ids;
+        for (size_t i = 0; i < bm_ids.size(); ++i) {
+            if (i) ids += ',';
+            ids += bm_ids[i];
+        }
+
+        HttpArgs params;
+        params["ids"] = ids;
+
+        // Attach JWT token if provided so the target node can authenticate the request
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        fetchDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to sync timeline events — fetch recordedTimePeriod from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncTimeline, [](BroadcastSyncTimelineArgs) {
+        GET_CONFIG(string, hook_sync_timeline, Hook::kOnSyncTimeline);
+        if (!hook_enable || hook_sync_timeline.empty()) {
+            invoker("Sync timeline skipped, kOnSyncTimeline is empty", -1, Json::nullValue);
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            invoker("Sync timeline skipped, origin_urls is empty", -1, Json::nullValue);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            urls.push_back(StrPrinter << u << hook_sync_timeline);
+        }
+
+        HttpArgs params;
+        params["cameraId"]   = camera_id;
+        params["startTime"]  = to_string(start_time);
+        params["endTime"]    = to_string(end_time);
+        params["periodType"] = to_string(period_type);
+        params["detail"]     = to_string(detail);
+        if (include_motion) params["motion"] = "1";
+
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        fetchDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to sync thumbnail events — fetch thumbnail image from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncThumbnail, [](BroadcastSyncThumbnailArgs) {
+        GET_CONFIG(string, hook_sync_thumbnail, Hook::kOnSyncThumbnail);
+        if (!hook_enable || hook_sync_thumbnail.empty()) {
+            StrCaseMap out_hdr;
+            invoker(500, out_hdr, "Sync thumbnail skipped, kOnSyncThumbnail is empty") ;
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            StrCaseMap out_hdr;
+            invoker(500, out_hdr, "Sync thumbnail skipped, origin_urls is empty");
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            urls.push_back(StrPrinter << u << hook_sync_thumbnail);
+        }
+
+        HttpArgs params;
+        params["cameraId"] = camera_id;
+        params["streamId"] = stream_id;
+        params["pos"] = pos_time;
+
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        proxyDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to sync bookmark thumbnail events — fetch thumbnail image from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncBookmarkThumbnail, [](BroadcastSyncBookmarkThumbnailArgs) {
+        GET_CONFIG(string, hook_sync_bookmark_thumbnail, Hook::kOnSyncBookmarkThumbnail);
+        if (!hook_enable || hook_sync_bookmark_thumbnail.empty()) {
+            StrCaseMap out_hdr;
+            invoker(500, out_hdr, "Sync bookmark thumbnail skipped, kOnSyncBookmarkThumbnail is empty") ;
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            StrCaseMap out_hdr;
+            invoker(500, out_hdr, "Sync bookmark thumbnail skipped, origin_urls is empty");
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            urls.push_back(StrPrinter << u << hook_sync_bookmark_thumbnail);
+        }
+
+        HttpArgs params;
+        params["id"] = bookmark_id;
+
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        proxyDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to sync bookmark create events — fetch recordedTimePeriod from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncBookmarkCreateOrUpdate, [](BroadcastSyncBookmarkCreateOrUpdateArgs) {
+        GET_CONFIG(string, hook_sync_bookmark_create, Hook::kOnSyncBookmarkCreate);
+        GET_CONFIG(string, hook_sync_bookmark_update, Hook::kOnSyncBookmarkUpdate);
+        if (is_create) {
+            if (!hook_enable || hook_sync_bookmark_create.empty()) {
+                invoker("Sync bookmark create skipped, kOnSyncBookmarkCreate is empty", -1, Json::nullValue);
+                return;
+            }
+        } else {
+            if (!hook_enable || hook_sync_bookmark_update.empty()) {
+                invoker("Sync bookmark update skipped, kOnSyncBookmarkUpdate is empty", -1, Json::nullValue);
+                return;
+            }
+        }
+
+        if (origin_urls.empty()) {
+            if (is_create) {
+                invoker("Sync bookmark create skipped, origin_urls is empty", -1, Json::nullValue);
+            } else {
+                invoker("Sync bookmark update skipped, origin_urls is empty", -1, Json::nullValue);
+            }
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            if (is_create) {
+                urls.push_back(StrPrinter << u << hook_sync_bookmark_create);
+            } else {
+                urls.push_back(StrPrinter << u << hook_sync_bookmark_update);
+            }
+        }
+
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        fetchDataFromOrigin(urls, body, headers, 0, 0, invoker);
+    });
+
+    // Listen to sync bookmark delete events — fetch recordedTimePeriod from a peer node
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncBookmarkDelete, [](BroadcastSyncBookmarkDeleteArgs) {
+        GET_CONFIG(string, hook_sync_bookmark_delete, Hook::kOnSyncBookmarkDelete);
+        if (!hook_enable || hook_sync_bookmark_delete.empty()) {
+            invoker("Sync bookmark delete skipped, kOnSyncBookmarkDelete is empty", -1, Json::nullValue);
+            return;
+        }
+
+        if (origin_urls.empty()) {
+            invoker("Sync bookmark delete skipped, origin_urls is empty", -1, Json::nullValue);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            urls.push_back(StrPrinter << u << hook_sync_bookmark_delete);
+        }
+
+        HeaderType headers;
+        if (!jwt_token.empty()) {
+            headers["Authorization"] = "Bearer " + jwt_token;
+        }
+
+        HttpArgs params;
+        params["id"] = bookmark_id;
+
+        fetchDataFromOrigin(urls, params, headers, 0, 0, invoker);
     });
 
     // Report server restart

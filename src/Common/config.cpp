@@ -91,6 +91,12 @@ const string kBroadcastMotionKeepThreshold = "kBroadcastMotionKeepThreshold";
 const string kBroadcastTierKeepThreshold = "kBroadcastTierKeepThreshold";
 const string kBroadcastSyncChanges = "kBroadcastSyncChanges";
 const string kBroadcastSyncSnapshot = "kBroadcastSyncSnapshot";
+const string kBroadcastSyncBookmarkIndex = "kBroadcastSyncBookmarkIndex";
+const string kBroadcastSyncTimeline = "kBroadcastSyncTimeline";
+const string kBroadcastSyncThumbnail = "kBroadcastSyncThumbnail";
+const string kBroadcastSyncBookmarkCreateOrUpdate = "kBroadcastSyncBookmarkCreateOrUpdate";
+const string kBroadcastSyncBookmarkDelete = "kBroadcastSyncBookmarkDelete";
+const string kBroadcastSyncBookmarkThumbnail = "kBroadcastSyncBookmarkThumbnail";
 
 } // namespace Broadcast
 

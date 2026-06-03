@@ -351,7 +351,7 @@ public:
         return oss.str();
     }
 
-    std::vector<Bookmark> findRecentById(const std::string &camera_guids, const std::string &user_id, int size, std::string sort) {
+    std::vector<Bookmark> findRecentByCameraGuid(const std::string &camera_guids, const std::string &user_id, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {
             _camera_guids = toolkit::split(camera_guids, ",");

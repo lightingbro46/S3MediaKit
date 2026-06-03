@@ -200,10 +200,28 @@ extern const std::string kBroadcastTierKeepThreshold;
 
 using OnResInvoker = std::function<void(const std::string&, const int&, const Json::Value&)>;
 extern const std::string kBroadcastSyncChanges;
-#define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const int &since_id, const int &batch_limit, const Broadcast::OnResInvoker &invoker
+#define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const std::vector<TransactionSequence> &since_cursors, const int &batch_limit, const Broadcast::OnResInvoker &invoker
 
 extern const std::string kBroadcastSyncSnapshot;
 #define BroadcastSyncSnapshotArgs const std::string &origin_urls, const std::string &peer_id, const Broadcast::OnResInvoker &invoker
+
+extern const std::string kBroadcastSyncBookmarkIndex;
+#define BroadcastSyncBookmarkIndexArgs const std::string &origin_urls, const std::vector<std::string> &bm_ids, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
+
+extern const std::string kBroadcastSyncTimeline;
+#define BroadcastSyncTimelineArgs const std::string &origin_urls, const std::string &camera_id, uint64_t start_time, uint64_t end_time, int period_type, int detail, bool include_motion, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
+
+extern const std::string kBroadcastSyncThumbnail;
+#define BroadcastSyncThumbnailArgs const std::string &origin_urls, const std::string &camera_id, const std::string &stream_id, const std::string &pos_time, const std::string &jwt_token, const mediakit::HttpSession::HttpResponseInvoker &invoker
+
+extern const std::string kBroadcastSyncBookmarkThumbnail;
+#define BroadcastSyncBookmarkThumbnailArgs const std::string &origin_urls, const std::string &bookmark_id, const std::string &jwt_token, const mediakit::HttpSession::HttpResponseInvoker &invoker
+
+extern const std::string kBroadcastSyncBookmarkCreateOrUpdate;
+#define BroadcastSyncBookmarkCreateOrUpdateArgs const std::string &origin_urls, const HttpArgs &body, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker, bool &is_create
+
+extern const std::string kBroadcastSyncBookmarkDelete;
+#define BroadcastSyncBookmarkDeleteArgs const std::string &origin_urls, const std::string &bookmark_id, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
 
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \

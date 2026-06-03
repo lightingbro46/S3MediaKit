@@ -2,11 +2,21 @@
 
 #include "Common/config.h"
 #include "Util/logger.h"
+#include "Util/NoticeCenter.h"
 #include "server/WebApiErrCode.h"
+#include "Storage/VmsResourceAssignment.h"
+#include "Storage/BookmarkIndex.h"
+#include "Storage/Bookmark.h"
+#include "Storage/UserEntity.h"
+#include "Server/ClusterManager.h"
 
+#include <algorithm>
+#include <map>
 #include <set>
 #include <vector>
 #include <unordered_map>
+#include <atomic>
+#include <mutex>
 
 using namespace std;
 using namespace Json;
@@ -15,7 +25,178 @@ using namespace mediakit;
 
 namespace managerkit {
 
-void SearchEngine::findTimePeriod(
+// ---------------------------------------------------------------------------
+// Internal helper: resolve owner peer from VmsResourceAssignment.
+// Returns {peer_id, peer_url}; peer_url is empty when owner is the local node.
+// ---------------------------------------------------------------------------
+static std::pair<std::string, std::string> resolveOwner(
+    const std::string &camera_id,
+    const std::vector<VmsResourceAssignment> &assignments)
+{
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    if (assignments.empty()) return {"", ""};
+    // Pick the most recently started assignment.
+    const VmsResourceAssignment *best = &assignments[0];
+    for (const auto &a : assignments) {
+        if (a.assigned_at > best->assigned_at) best = &a;
+    }
+    if (best->owner_peer_id == mediaServerId || best->owner_peer_id.empty())
+        return {"", ""};
+    string peer_url = ClusterManager::Instance().getPeerUrl(best->owner_peer_id);
+    return {best->owner_peer_id, peer_url};
+}
+
+std::pair<std::string, std::string> SearchEngine::findOwnerNodeForBookmark(
+    const std::string &bookmark_guid)
+{
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+    BookmarkIndexImp idx_imp;
+    auto entries = idx_imp.findByBookmarkGuid(bookmark_guid);
+    if (entries.empty()) return {"", ""};
+    const string &owner_id = entries[0].owner_peer_id;
+    if (owner_id == mediaServerId || owner_id.empty()) return {"", ""};
+    string peer_url = ClusterManager::Instance().getPeerUrl(owner_id);
+    return {owner_id, peer_url};
+}
+
+std::pair<std::string, std::string> SearchEngine::findOwnerNodeAtTime(
+    const std::string &camera_id, int64_t pos_time)
+{
+    VmsResourceAssignmentImp assign_imp;
+    auto assignments = assign_imp.findAssignmentsOverlappingRange(camera_id, pos_time, pos_time);
+    return resolveOwner(camera_id, assignments);
+}
+
+std::pair<std::string, std::string> SearchEngine::findCurrentOwnerNode(
+    const std::string &camera_id)
+{
+    VmsResourceAssignmentImp assign_imp;
+    auto assignments = assign_imp.findCurrentAssignment(camera_id);
+    return resolveOwner(camera_id, assignments);
+}
+
+// ---------------------------------------------------------------------------
+// Merge a remote findTimePeriod JSON response into the local result (in-place).
+// ---------------------------------------------------------------------------
+static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type, int detail) {
+    if (src.isNull() || !src.isObject()) return;
+
+    if (period_type == 0) {
+        if (src.isMember("periods") && src["periods"].isArray()) {
+            for (const auto &p : src["periods"]) {
+                dst["periods"].append(p);
+            }
+        }
+    } else if (period_type == 1) {
+        if (detail == 0) {
+            if (src.isMember("periods") && src["periods"].isArray()) {
+                for (const auto &p : src["periods"]) {
+                    dst["periods"].append(p);
+                }
+            }
+        } else {
+            if (src.isMember("streams") && src["streams"].isArray()) {
+                for (const auto &src_stream : src["streams"]) {
+                    string sid = src_stream["streamId"].asString();
+                    bool found = false;
+                    for (auto &dst_stream : dst["streams"]) {
+                        if (dst_stream["streamId"].asString() == sid) {
+                            if (src_stream.isMember("periods") && src_stream["periods"].isArray()) {
+                                for (const auto &p : src_stream["periods"]) {
+                                    dst_stream["periods"].append(p);
+                                }
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        dst["streams"].append(src_stream);
+                    }
+                }
+            }
+        }
+    } else if (period_type == 2) {
+        if (detail == 0) {
+            if (src.isMember("periods") && src["periods"].isObject()) {
+                for (const auto &date_key : src["periods"].getMemberNames()) {
+                    const auto &src_hours = src["periods"][date_key];
+                    if (!dst["periods"].isMember(date_key)) {
+                        dst["periods"][date_key] = src_hours;
+                    } else {
+                        auto &dst_hours = dst["periods"][date_key];
+                        for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
+                            if (src_hours[h].asInt() > 0) {
+                                dst_hours[h] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            if (src.isMember("streams") && src["streams"].isArray()) {
+                for (const auto &src_stream : src["streams"]) {
+                    string sid = src_stream["streamId"].asString();
+                    Value *dst_stream_ptr = nullptr;
+                    for (auto &s : dst["streams"]) {
+                        if (s["streamId"].asString() == sid) {
+                            dst_stream_ptr = &s;
+                            break;
+                        }
+                    }
+                    if (!dst_stream_ptr) {
+                        dst["streams"].append(src_stream);
+                    } else if (src_stream.isMember("dates") && src_stream["dates"].isObject()) {
+                        for (const auto &date_key : src_stream["dates"].getMemberNames()) {
+                            const auto &src_hours = src_stream["dates"][date_key];
+                            if (!(*dst_stream_ptr)["dates"].isMember(date_key)) {
+                                (*dst_stream_ptr)["dates"][date_key] = src_hours;
+                            } else {
+                                auto &dst_hours = (*dst_stream_ptr)["dates"][date_key];
+                                for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
+                                    if (src_hours[h].isArray()) {
+                                        for (const auto &p : src_hours[h]) {
+                                            dst_hours[h].append(p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Merge motionPeriods if present
+    if (src.isMember("motionPeriods")) {
+        const auto &src_motion = src["motionPeriods"];
+        if (src_motion.isArray()) {
+            for (const auto &p : src_motion) {
+                dst["motionPeriods"].append(p);
+            }
+        } else if (src_motion.isObject()) {
+            for (const auto &date_key : src_motion.getMemberNames()) {
+                const auto &src_hours = src_motion[date_key];
+                if (!dst["motionPeriods"].isMember(date_key)) {
+                    dst["motionPeriods"][date_key] = src_hours;
+                } else {
+                    auto &dst_hours = dst["motionPeriods"][date_key];
+                    for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
+                        if (src_hours[h].asInt() > 0) {
+                            dst_hours[h] = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Local-only query (all period_types / detail modes).  Returns result via cb.
+// ---------------------------------------------------------------------------
+static void findTimePeriodLocal(
     const MediaTuple &tuple,
     uint64_t start_time, uint64_t end_time,
     int period_type, int detail, bool include_motion,
@@ -251,6 +432,443 @@ void SearchEngine::findTimePeriod(
     return cb(SockException(Err_success), result);
 }
 
+// ---------------------------------------------------------------------------
+// Public API: VmsResourceAssignment-driven sub-range dispatch.
+//   1. Query VmsResourceAssignment to find per-peer ownership windows.
+//   2. If query start falls before the oldest assignment, query local timefiles
+//      for that pre-assignment gap.
+//   3. For each assignment window: local timefile read (sync) or remote API
+//      call (async) depending on owner_peer_id.
+//   4. Merge all results and invoke cb.
+// ---------------------------------------------------------------------------
+void SearchEngine::findTimePeriod(
+    const MediaTuple &tuple,
+    uint64_t start_time, uint64_t end_time,
+    int period_type, int detail, bool include_motion,
+    const string &jwt_token,
+    const function<void(const SockException &, const Value &)> &cb)
+{
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+
+    // 1. Query VmsResourceAssignment for all assignments overlapping [start_time, end_time].
+    VmsResourceAssignmentImp assign_imp;
+    auto assignments = assign_imp.findAssignmentsOverlappingRange(tuple.app, (int64_t)start_time, (int64_t)end_time);
+
+    // Sort by assigned_at ascending to detect the pre-assignment gap.
+    sort(assignments.begin(), assignments.end(),
+        [](const VmsResourceAssignment &a, const VmsResourceAssignment &b) {
+            return a.assigned_at < b.assigned_at;
+        });
+
+    // 2. Build sub-range lists.
+    //    local_ranges : time windows to query via findTimePeriodLocal.
+    //    remote_ranges: peer_id → time windows to fetch via remote API.
+    vector<pair<uint64_t, uint64_t>> local_ranges;
+    map<string, vector<pair<uint64_t, uint64_t>>> remote_ranges;
+
+    if (assignments.empty()) {
+        // No assignment records at all – query local for the full range.
+        local_ranges.push_back({start_time, end_time});
+    } else {
+        // Pre-assignment gap: [start_time, oldest_assigned_at)
+        uint64_t oldest = (uint64_t)assignments.front().assigned_at;
+        if (start_time < oldest) {
+            local_ranges.push_back({start_time, oldest - 1});
+        }
+
+        for (const auto &a : assignments) {
+            uint64_t from = MAX(start_time, (uint64_t)a.assigned_at);
+            uint64_t to   = (a.released_at == 0) ? end_time : MIN(end_time, (uint64_t)a.released_at);
+            if (from > to) continue;
+
+            if (a.owner_peer_id == mediaServerId) {
+                local_ranges.push_back({from, to});
+            } else {
+                string peer_url = ClusterManager::Instance().getPeerUrl(a.owner_peer_id);
+                if (!peer_url.empty()) {
+                    remote_ranges[a.owner_peer_id].push_back({from, to});
+                } else {
+                    WarnL << "Peer " << a.owner_peer_id << " has no registered URL, skipping sub-range [" << from << "," << to << "]";
+                }
+            }
+        }
+    }
+
+    // 3. Run all local sub-range queries synchronously and merge.
+    auto merged = make_shared<Value>(Json::objectValue);
+    (*merged)["cameraId"] = tuple.app;
+
+    for (const auto &lr : local_ranges) {
+        findTimePeriodLocal(tuple, lr.first, lr.second, period_type, detail, include_motion,
+            [&](const SockException &ex, const Value &data) {
+                if (!ex) {
+                    mergeTimePeriodResult(*merged, data, period_type, detail);
+                } else {
+                    WarnL << "findTimePeriodLocal failed for [" << lr.first << "," << lr.second << "]: " << ex.what();
+                }
+            });
+    }
+
+    // 4. No remote peers – reply immediately.
+    if (remote_ranges.empty()) {
+        return cb(SockException(Err_success), *merged);
+    }
+
+    // 5. Fan-out via kBroadcastSyncTimeline — one emit per peer per sub-range.
+    //    The webhook listener (WebHook.cpp) resolves origin_url and calls the
+    //    remote /media/esc/recordedTimePeriod endpoint, returning the data JSON.
+    int total = 0;
+    for (const auto &kv : remote_ranges) total += (int)kv.second.size();
+
+    auto pending   = make_shared<atomic<int>>(total);
+    auto merge_mtx = make_shared<mutex>();
+
+    for (const auto &kv : remote_ranges) {
+        const string &peer_id = kv.first;
+        string base_url = ClusterManager::Instance().getPeerUrl(peer_id);
+
+        for (const auto &sr : kv.second) {
+            uint64_t sr_start = sr.first;
+            uint64_t sr_end   = sr.second;
+
+            Broadcast::OnResInvoker res_invoker =
+                [peer_id, merged, merge_mtx, pending, period_type, detail, cb]
+                (const string &err, const int &code, const Value &data) mutable {
+                    if (err.empty() && code == 0 && !data.isNull()) {
+                        lock_guard<mutex> lk(*merge_mtx);
+                        mergeTimePeriodResult(*merged, data, period_type, detail);
+                    } else if (!err.empty()) {
+                        WarnL << "recordedTimePeriod from peer " << peer_id << " failed: " << err;
+                    }
+
+                    if (--(*pending) == 0) {
+                        Value result_copy;
+                        {
+                            lock_guard<mutex> lk(*merge_mtx);
+                            result_copy = *merged;
+                        }
+                        cb(SockException(Err_success), result_copy);
+                    }
+                };
+
+            auto flag = NOTICE_EMIT(BroadcastSyncTimelineArgs, Broadcast::kBroadcastSyncTimeline,
+                base_url, tuple.app, sr_start, sr_end, period_type, detail, include_motion, jwt_token, res_invoker);
+            // If no webhook listener is installed yet, fire the invoker ourselves
+            // so pending is decremented and cb is eventually called.
+            if (!flag) {
+                WarnL << "kBroadcastSyncTimeline has no listeners — skipping remote peer " << peer_id;
+                res_invoker("no webhook listener", -1, Json::nullValue);
+            }
+        }
+    }
+}
+
+void SearchEngine::findBookmarks(
+    const string &camera_id,
+    int64_t start_time, int64_t end_time,
+    const string &search,
+    const string &user_id,
+    int page, int size, const string &sort,
+    const string &jwt_token,
+    const function<void(const SockException &, const Value &)> &cb)
+{
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+
+    // ── 1. Query the cluster-wide index (ESC DB, available on every node) ──
+    BookmarkIndexImp idx_imp;
+    int total   = idx_imp.count(start_time, end_time, camera_id, user_id, search);
+    int offset  = page * size;
+    auto index_page = idx_imp.search(start_time, end_time, camera_id, user_id, search, page, size, sort);
+
+    Value result;
+    result["data"]        = Json::arrayValue;
+    result["currentPage"] = page;
+    result["totalItems"]  = total;
+    result["totalPages"]  = (size > 0) ? static_cast<int>(std::ceil(static_cast<double>(total) / size)) : 0;
+    result["partial"]     = false;
+
+    if (index_page.empty()) {
+        return cb(SockException(Err_success), result);
+    }
+
+    // ── 2. Partition index entries by owner node ──
+    // local_guids  : bookmark GUIDs whose full detail lives on this node
+    // remote_groups: peer_id → list of bookmark GUIDs on that peer
+    vector<string>                   local_guids;
+    map<string, vector<string>>      remote_groups;
+    // Preserve original order from sorted index page
+    vector<string>                   ordered_guids;
+
+    for (const auto &idx : index_page) {
+        ordered_guids.push_back(idx.bookmark_guid);
+        if (idx.owner_peer_id == mediaServerId) {
+            local_guids.push_back(idx.bookmark_guid);
+        } else {
+            remote_groups[idx.owner_peer_id].push_back(idx.bookmark_guid);
+        }
+    }
+
+    // ── 3. Fetch local detail ──
+    // detail_map: bookmark_guid → JSON object (assembled below then merged in order)
+    auto detail_map  = make_shared<unordered_map<string, Value>>();
+    auto partial_flag = make_shared<bool>(false);
+    auto merge_mtx   = make_shared<mutex>();
+
+    {
+        BookmarkImp bm_imp;
+        UserEntityImp user_imp;
+        auto local_bms = bm_imp.findByGuids(local_guids);
+        // Build a map for O(1) lookup
+        std::unordered_map<std::string, Bookmark> bm_map;
+        for (const auto &b : local_bms) bm_map[b.guid] = b;
+
+        for (const auto &guid : local_guids) {
+            auto it = bm_map.find(guid);
+            if (it == bm_map.end()) continue;
+            const Bookmark &b = it->second;
+
+            Value bj;
+            bj["id"]           = b.guid;
+            bj["camera_id"]    = b.camera_guid;
+            bj["start_time"]   = static_cast<Json::Int64>(b.start_time);
+            bj["duration"]     = b.duration;
+            bj["name"]         = b.name        ? b.name.value()        : "";
+            bj["end_time"]     = b.end_time    ? static_cast<Json::Int64>(b.end_time.value()) : -1;
+            bj["description"]  = b.description ? b.description.value() : "";
+            bj["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
+            bj["created"]      = b.created ? static_cast<Json::Int64>(b.created.value()) : -1;
+            bj["owner_peer_id"] = mediaServerId;
+
+            string username;
+            if (b.creator_guid) {
+                auto users = user_imp.findById(b.creator_guid.value());
+                if (!users.empty())
+                    username = users[0].userName ? users[0].userName.value() : "";
+            }
+            bj["creator"] = username;
+            bj["tags"]    = bm_imp.findTagsByBookmark(b.guid);
+
+            (*detail_map)[b.guid] = std::move(bj);
+        }
+    }
+
+    // ── 4. No remote peers – assemble and reply ──
+    auto assemble_and_reply = [=]() mutable {
+        Value data = Json::arrayValue;
+        for (const auto &guid : ordered_guids) {
+            auto it = detail_map->find(guid);
+            if (it == detail_map->end()) continue;
+            data.append(it->second);
+        }
+        Value res = result;
+        res["data"]    = data;
+        res["partial"] = *partial_flag;
+        cb(SockException(Err_success), res);
+    };
+
+    if (remote_groups.empty()) {
+        return assemble_and_reply();
+    }
+
+    // ── 5. Fan-out to remote peers via broadcast (one emit per distinct owner node) ──
+    int total_remote = (int)remote_groups.size();
+    auto pending     = make_shared<atomic<int>>(total_remote);
+
+    for (const auto &kv : remote_groups) {
+        const string &peer_id    = kv.first;
+        const auto   &peer_guids = kv.second;
+        string base_url = ClusterManager::Instance().getPeerUrl(peer_id);
+
+        if (base_url.empty()) {
+            WarnL << "findBookmarks: no URL for peer " << peer_id << ", skipping " << peer_guids.size() << " bookmarks";
+            {
+                lock_guard<mutex> lk(*merge_mtx);
+                *partial_flag = true;
+            }
+            if (--(*pending) == 0) assemble_and_reply();
+            continue;
+        }
+
+        // Copy guid list into a vector for the broadcast args
+        vector<string> guid_vec(peer_guids.begin(), peer_guids.end());
+
+        Broadcast::OnResInvoker on_res = [peer_id, detail_map, merge_mtx, partial_flag, pending, assemble_and_reply]
+            (const string &err, const int &idx, const Json::Value &data) mutable {
+                if (err.empty() && data.isMember("data") && data["data"].isArray()) {
+                    lock_guard<mutex> lk(*merge_mtx);
+                    for (const auto &bj : data["data"])
+                        (*detail_map)[bj["id"].asString()] = bj;
+                } else {
+                    WarnL << "findBookmarks: peer " << peer_id
+                          << (err.empty() ? " returned no data field" : (" error: " + err));
+                    lock_guard<mutex> lk(*merge_mtx);
+                    *partial_flag = true;
+                }
+                if (--(*pending) == 0) assemble_and_reply();
+            };
+
+        auto flag = NOTICE_EMIT(BroadcastSyncBookmarkIndexArgs, Broadcast::kBroadcastSyncBookmarkIndex, base_url, guid_vec, jwt_token, on_res);
+        if (!flag) {
+            WarnL << "findBookmarks: no listener for kBroadcastSyncBookmarkIndex, peer=" << peer_id;
+            {
+                lock_guard<mutex> lk(*merge_mtx);
+                *partial_flag = true;
+            }
+            if (--(*pending) == 0) assemble_and_reply();
+        }
+    }
+}
+
+void SearchEngine::findRecentBookmarks(
+    const string &camera_id,
+    const string &user_id,
+    int size,
+    const string &sort,
+    const string &jwt_token,
+    const function<void(const SockException &, const Value &)> &cb)
+{
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+
+    // ── 1. Query the cluster-wide index (ESC DB, available on every node) ──
+    BookmarkIndexImp idx_imp;
+    auto index_page = idx_imp.findRecentByCameraGuid(camera_id, user_id, size, sort);
+
+    Value result;
+    result["data"]        = Json::arrayValue;
+    result["partial"]     = false;
+
+    if (index_page.empty()) {
+        return cb(SockException(Err_success), result);
+    }
+
+    // ── 2. Partition index entries by owner node ──
+    // local_guids  : bookmark GUIDs whose full detail lives on this node
+    // remote_groups: peer_id → list of bookmark GUIDs on that peer
+    vector<string>                   local_guids;
+    map<string, vector<string>>      remote_groups;
+    // Preserve original order from sorted index page
+    vector<string>                   ordered_guids;
+
+    for (const auto &idx : index_page) {
+        ordered_guids.push_back(idx.bookmark_guid);
+        if (idx.owner_peer_id == mediaServerId) {
+            local_guids.push_back(idx.bookmark_guid);
+        } else {
+            remote_groups[idx.owner_peer_id].push_back(idx.bookmark_guid);
+        }
+    }
+
+    // ── 3. Fetch local detail ──
+    // detail_map: bookmark_guid → JSON object (assembled below then merged in order)
+    auto detail_map  = make_shared<unordered_map<string, Value>>();
+    auto partial_flag = make_shared<bool>(false);
+    auto merge_mtx   = make_shared<mutex>();
+
+    {
+        BookmarkImp bm_imp;
+        UserEntityImp user_imp;
+        auto local_bms = bm_imp.findByGuids(local_guids);
+        // Build a map for O(1) lookup
+        std::unordered_map<std::string, Bookmark> bm_map;
+        for (const auto &b : local_bms) bm_map[b.guid] = b;
+
+        for (const auto &guid : local_guids) {
+            auto it = bm_map.find(guid);
+            if (it == bm_map.end()) continue;
+            const Bookmark &b = it->second;
+
+            Value bj;
+            bj["id"]           = b.guid;
+            bj["camera_id"]    = b.camera_guid;
+            bj["start_time"]   = static_cast<Json::Int64>(b.start_time);
+            bj["duration"]     = b.duration;
+            bj["name"]         = b.name        ? b.name.value()        : "";
+            bj["end_time"]     = b.end_time    ? static_cast<Json::Int64>(b.end_time.value()) : -1;
+            bj["description"]  = b.description ? b.description.value() : "";
+            bj["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
+            bj["created"]      = b.created ? static_cast<Json::Int64>(b.created.value()) : -1;
+            bj["owner_peer_id"] = mediaServerId;
+
+            string username;
+            if (b.creator_guid) {
+                auto users = user_imp.findById(b.creator_guid.value());
+                if (!users.empty())
+                    username = users[0].userName ? users[0].userName.value() : "";
+            }
+            bj["creator"] = username;
+            bj["tags"]    = bm_imp.findTagsByBookmark(b.guid);
+
+            (*detail_map)[b.guid] = std::move(bj);
+        }
+    }
+
+    // ── 4. No remote peers – assemble and reply ──
+    auto assemble_and_reply = [=]() mutable {
+        Value data = Json::arrayValue;
+        for (const auto &guid : ordered_guids) {
+            auto it = detail_map->find(guid);
+            if (it == detail_map->end()) continue;
+            data.append(it->second);
+        }
+        Value res = result;
+        res["data"]    = data;
+        res["partial"] = *partial_flag;
+        cb(SockException(Err_success), res);
+    };
+
+    if (remote_groups.empty()) {
+        return assemble_and_reply();
+    }
+
+    // ── 5. Fan-out to remote peers via broadcast (one emit per distinct owner node) ──
+    int total_remote = (int)remote_groups.size();
+    auto pending     = make_shared<atomic<int>>(total_remote);
+
+    for (const auto &kv : remote_groups) {
+        const string &peer_id    = kv.first;
+        const auto   &peer_guids = kv.second;
+        string base_url = ClusterManager::Instance().getPeerUrl(peer_id);
+
+        if (base_url.empty()) {
+            WarnL << "findBookmarks: no URL for peer " << peer_id << ", skipping " << peer_guids.size() << " bookmarks";
+            {
+                lock_guard<mutex> lk(*merge_mtx);
+                *partial_flag = true;
+            }
+            if (--(*pending) == 0) assemble_and_reply();
+            continue;
+        }
+
+        // Copy guid list into a vector for the broadcast args
+        vector<string> guid_vec(peer_guids.begin(), peer_guids.end());
+
+        Broadcast::OnResInvoker on_res = [peer_id, detail_map, merge_mtx, partial_flag, pending, assemble_and_reply]
+            (const string &err, const int &idx, const Json::Value &data) mutable {
+                if (err.empty() && data.isMember("data") && data["data"].isArray()) {
+                    lock_guard<mutex> lk(*merge_mtx);
+                    for (const auto &bj : data["data"])
+                        (*detail_map)[bj["id"].asString()] = bj;
+                } else {
+                    WarnL << "findBookmarks: peer " << peer_id
+                          << (err.empty() ? " returned no data field" : (" error: " + err));
+                    lock_guard<mutex> lk(*merge_mtx);
+                    *partial_flag = true;
+                }
+                if (--(*pending) == 0) assemble_and_reply();
+            };
+
+        auto flag = NOTICE_EMIT(BroadcastSyncBookmarkIndexArgs, Broadcast::kBroadcastSyncBookmarkIndex, base_url, guid_vec, jwt_token, on_res);
+        if (!flag) {
+            WarnL << "findBookmarks: no listener for kBroadcastSyncBookmarkIndex, peer=" << peer_id;
+            {
+                lock_guard<mutex> lk(*merge_mtx);
+                *partial_flag = true;
+            }
+            if (--(*pending) == 0) assemble_and_reply();
+        }
+    }
+}
+
 void SearchEngine::findMotionPeriodByRoi(
     const MediaTuple &tuple,
     uint64_t start_time, uint64_t end_time,
@@ -282,6 +900,57 @@ void SearchEngine::findMotionPeriodByRoi(
     WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
     return cb(SockException(Err_other, "Motion feature is not enabled", CODE_FEATURE_NOT_SUPPORTED), result);
 #endif // ENABLE_MOTION
+}
+
+// ---------------------------------------------------------------------------
+// getBookmarkDetail — fetch full bookmark records for a list of local GUIDs.
+// ---------------------------------------------------------------------------
+void SearchEngine::getBookmarkDetail(
+    const std::vector<std::string> &guids,
+    const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb)
+{
+    BookmarkImp   bm_imp;
+    UserEntityImp user_imp;
+
+    // Single batch query instead of N individual findById calls
+    auto bms = bm_imp.findByGuids(guids);
+
+    // Index by guid for ordered output
+    std::unordered_map<std::string, Bookmark> bm_map;
+    for (const auto &b : bms) bm_map[b.guid] = b;
+
+    Value result;
+    result["data"] = Json::arrayValue;
+
+    for (const auto &guid : guids) {
+        auto it = bm_map.find(guid);
+        if (it == bm_map.end()) continue;
+        const Bookmark &b = it->second;
+
+        Value bj;
+        bj["id"]           = b.guid;
+        bj["camera_id"]    = b.camera_guid;
+        bj["start_time"]   = static_cast<Json::Int64>(b.start_time);
+        bj["duration"]     = b.duration;
+        bj["name"]         = b.name        ? b.name.value()        : "";
+        bj["end_time"]     = b.end_time    ? static_cast<Json::Int64>(b.end_time.value()) : -1;
+        bj["description"]  = b.description ? b.description.value() : "";
+        bj["creator_guid"] = b.creator_guid ? b.creator_guid.value() : "";
+        bj["created"]      = b.created     ? static_cast<Json::Int64>(b.created.value()) : -1;
+
+        string username;
+        if (b.creator_guid) {
+            auto users = user_imp.findById(b.creator_guid.value());
+            if (!users.empty())
+                username = users[0].userName ? users[0].userName.value() : "";
+        }
+        bj["creator"] = username;
+        bj["tags"]    = bm_imp.findTagsByBookmark(b.guid);
+
+        result["data"].append(std::move(bj));
+    }
+
+    cb(SockException(Err_success), result);
 }
 
 } // namespace managerkit

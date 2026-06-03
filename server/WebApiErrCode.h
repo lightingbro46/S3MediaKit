@@ -54,6 +54,9 @@ namespace managerkit {
     XX(CODE_STREAM_READER_ON_MSERVER_LIMITED, "Stream reader on media server reached limit ", 429, 300020) \
     XX(CODE_STREAM_READER_PER_CAMERA_LIMITED, "Stream reader on device reached limit", 429,  300021) \
     XX(CODE_SNAPSHOT_EMPTY,                 "Snapshot is empty",                404,         300022) \
+    XX(CODE_BOOKMARK_CREATE_FAILED,         "Bookmark creation failed",         500,         300023) \
+    XX(CODE_BOOKMARK_UPDATE_FAILED,         "Bookmark update failed",           500,         300024) \
+    XX(CODE_BOOKMARK_DELETE_FAILED,         "Bookmark delete failed",           500,         300025) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \
