@@ -589,16 +589,17 @@ void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTup
 void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
     std::lock_guard<std::mutex> lck(_mtx);
     option = input_option;
-    _sync_start = true;
-    save();
 
     if (option.enableActive) {
+        _sync_start = true;
         // Active camera need to assign resource
         assignResource(true);
     } else if (option.enableFailover) {
+        _sync_start = false;
         // Camera is inactive but enable failover, also need to release resource
         assignResource(false);
     }
+    save();
 }
 
 void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {
@@ -831,7 +832,7 @@ struct ResourceAdapter<CameraStatistic> {
                 }
             }
         } else {
-            url = StrPrinter << "http://" << stats.option.ip << ":" << (!stats.option.autoMediaPort ? std::to_string(stats.option.webPort) : "");
+            url = StrPrinter << "http://" << stats.option.ip << ":" << (!stats.option.autoMediaPort ? std::to_string(stats.option.webPort) : std::to_string(stats.option.port));
         }
         res.url = url; 
         res.xtype_guid = getXtypeId();

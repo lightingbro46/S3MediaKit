@@ -20,6 +20,7 @@
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
 #include "User/UserSessionCache.h"
+#include "Extension/SyncManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -80,6 +81,8 @@ static void loadSavedMediaServerInfo() {
     EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
         DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
+        DebugL << "Sync manager has been started";
+        SyncManager::Instance().start();
         return 0;
     });
 }

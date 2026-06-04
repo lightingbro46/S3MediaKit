@@ -79,7 +79,7 @@
 #include "WebApiErrCode.h"
 #include "Common/StrUtil.h"
 #include "Control/SubnetScan.h"
-#include "Storage/SyncManager.h"
+#include "Extension/SyncManager.h"
 #include "Storage/TransactionLog.h"
 #include "Storage/MiscData.h"
 
@@ -3693,27 +3693,21 @@ void installWebApi() {
         string peer_id      = allArgs["peer"];
         string db_guid      = allArgs["db"];
         int limit           = allArgs["limit"];
-        Value cursors_json  = allArgs["cursors"];
-        Value ack_cursors_json = allArgs["ack_cursors"];
-
-        std::vector<TransactionSequence> cursors;
-        {
-            if (!cursors_json.empty() &&cursors_json.isArray()) {
-                for (const auto &c : cursors_json) {
-                    cursors.push_back(TransactionSequence::fromJson(c));
-                }
-            }
-        }
+        string cursors_str  = allArgs["cursors"];
+        string ack_cursors_str = allArgs["ack_cursors"];
 
         {
+            // Save ack_cursors to local db for prune old logs later
             try {
+                Json::Value ret;
+                StrJsonUtils::readJsonString(ack_cursors_str, ret);
                 std::vector<PeerAckLog> ack_cursors;
-                if (!ack_cursors_json.empty() && ack_cursors_json.isArray()) {
-                    for (const auto &c : ack_cursors_json) {
+                if (!ret.empty() && ret.isArray()) {
+                    for (const auto &c : ret) {
                         ack_cursors.push_back(PeerAckLog::fromJson(c));
                     }
                 }
-                if (!cursors.empty()) {
+                if (!ack_cursors.empty()) {
                     SyncManager::Instance().recordRelayAck(ack_cursors);
                 }
             } catch (const std::exception &ex) {
@@ -3721,8 +3715,40 @@ void installWebApi() {
             }
         }
 
-        auto impl = make_shared<TransactionLogImp>();
-        auto ret = impl->findAllSince(cursors, limit);
+        std::vector<TransactionSequence> cursors;
+        std::unordered_set<std::string> peer_pairs;
+        {
+            // Parse cursors from request
+            try {
+                Json::Value ret;
+                StrJsonUtils::readJsonString(cursors_str, ret);
+                if (!ret.empty() && ret.isArray()) {
+                    for (const auto &c : ret) {
+                        cursors.push_back(TransactionSequence::fromJson(c));
+                        peer_pairs.insert(c["peer_guid"].asString() + "_" + c["db_guid"].asString());
+                    }
+                }
+            } catch (const std::exception &ex) {
+                WarnL << "Failed to parse cursors: " << ex.what();
+            }
+        }
+        // If there is no cursor for the peer/db pair, add a default cursor with sequence 0, 
+        // otherwise the peer will never get any log because the server doesn't know the peer's cursor and thinks the peer has already got all logs
+        auto seq_impl = make_shared<TransactionSequenceImp>();
+        auto seq_ret = seq_impl->findAll();
+        for (const auto &s : seq_ret) {
+            std::string key = s.peer_guid + "_" + s.db_guid;
+            if (peer_pairs.find(key) == peer_pairs.end()) {
+                TransactionSequence seq;
+                seq.peer_guid = s.peer_guid;
+                seq.db_guid = s.db_guid;
+                seq.sequence = 0;
+                cursors.push_back(seq);
+            }
+        }  
+
+        auto log_impl = make_shared<TransactionLogImp>();
+        auto ret = log_impl->findAllSince(cursors, limit);
 
         Value log_rows = Json::arrayValue;
         for (const TransactionLog &b : ret) {

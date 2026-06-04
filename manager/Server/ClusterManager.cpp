@@ -5,7 +5,7 @@
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
 #include "Storage/VmsKvPair.h"
-#include "Storage/SyncManager.h"
+#include "Extension/SyncManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -27,9 +27,9 @@ static void savePeerList(const std::unordered_map<std::string, MediaServerInfo> 
     for (const auto &pr : peer_map) {
         peer_list.append(pr.second.toJson());
     }
-    mINI::Instance()[Peer::kPeerList] = peer_list.toStyledString();
+    mINI::Instance()[Peer::kPeerList] = StrJsonUtils::writeJsonString(peer_list);
     // Save to file
-    mINI::Instance().dumpFile();
+    mINI::Instance().dumpFile(g_ini_file);
 }
 
 /**
@@ -174,7 +174,9 @@ void ClusterManager::removeMediaServer(const std::string &id) {
     {
         std::lock_guard<std::mutex> lck(_mtx);
         _map_server_info.erase(id);
-        TraceL << "Removed media server: " << id;
+        _map_peer_url.erase(id);
+        savePeerList(_map_server_info);
+        DebugL << "Removed media server: " << id;
     }
     SyncManager::Instance().removePeer(id);
 }
@@ -182,7 +184,7 @@ void ClusterManager::removeMediaServer(const std::string &id) {
 void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls) {
     GET_CONFIG(string, kMediaServerId, General::kMediaServerId);
     if (id == kMediaServerId) {
-        DebugL << "Skip health check for self node " << id;
+        TraceL << "Skip health check for self node " << id;
         return;
     }
     weak_ptr<ClusterManager> weak_self = shared_from_this();

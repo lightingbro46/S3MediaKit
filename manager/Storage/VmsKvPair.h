@@ -22,6 +22,15 @@ struct VmsKvPair {
         v["value"]         = value;
         return v;
     }
+
+    static VmsKvPair fromJson(const Json::Value &v) {
+        VmsKvPair kv;
+        kv.id            = v["id"].asString();
+        kv.resource_guid = v["resource_guid"].asString();
+        kv.name          = v["name"].asString();
+        kv.value         = v["value"].asString();
+        return kv;
+    }
 };
 
 DECLARE_ENTITY(VmsKvPair, "vms_kvpair",

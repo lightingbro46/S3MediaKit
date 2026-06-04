@@ -25,7 +25,7 @@ static onceToken token([]() {
     mINI::Instance()[kDbSavePath] = "./db";
     mINI::Instance()[kMServerMigrationSavePath] = "./mserver_updates";
     mINI::Instance()[kESCMigrationSavePath] = "./updates";
-    mINI::Instance()[kEnableSyncDb] = false;
+    mINI::Instance()[kEnableSyncDb] = true;
     mINI::Instance()[kPullIntervalSec] = 30;
     mINI::Instance()[kBatchLimit] = 100;
     mINI::Instance()[kGossipFanout] = 3;

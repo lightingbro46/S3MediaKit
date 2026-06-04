@@ -4,12 +4,27 @@
 #include <string>
 #include "DbStorage.h"
 #include "Util/util.h"
+#include "json/json.h"
 
 namespace managerkit {
 
 struct VmsResourceStatus {
     std::string guid;
     int status;
+
+    Json::Value toJson() const {
+        Json::Value v;
+        v["guid"] = guid;
+        v["status"] = status;
+        return v;
+    }
+
+    static VmsResourceStatus fromJson(const Json::Value &v) {
+        VmsResourceStatus resource;
+        resource.guid = v["guid"].asString();
+        resource.status = v["status"].asInt();
+        return resource;
+    }
 };
 
 DECLARE_ENTITY(VmsResourceStatus, "vms_resource_status",

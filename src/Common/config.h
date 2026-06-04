@@ -204,7 +204,7 @@ extern const std::string kBroadcastTierKeepThreshold;
 
 using OnResInvoker = std::function<void(const std::string&, const int&, const Json::Value&)>;
 extern const std::string kBroadcastSyncChanges;
-#define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const std::vector<TransactionSequence> &since_cursors, const std::vector<PeerAckLog> &ack_cursors, const int &batch_limit, const Broadcast::OnResInvoker &invoker
+#define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const Json::Value &since_cursors, const Json::Value &ack_cursors, const int &batch_limit, const Broadcast::OnResInvoker &invoker
 
 extern const std::string kBroadcastSyncSnapshot;
 #define BroadcastSyncSnapshotArgs const std::string &origin_urls, const std::string &peer_id, const Broadcast::OnResInvoker &invoker

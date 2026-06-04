@@ -20,115 +20,7 @@ namespace managerkit {
 
 INSTANCE_IMP(SyncManager)
 
-// ─── Entity ↔ JSON helpers ──────────────────────────────────────────────────
-
-static Json::Value transactionSequenceToJson(const TransactionSequence &seq) {
-    Json::Value v;
-    v["peer_guid"] = seq.peer_guid;
-    v["db_guid"]   = seq.db_guid;
-    v["sequence"]  = seq.sequence;
-    return v;
-}
-
-static TransactionSequence jsonToTransactionSequence(const Json::Value &v) {
-    TransactionSequence seq;
-    seq.peer_guid = v["peer_guid"].asString();
-    seq.db_guid   = v["db_guid"].asString();
-    seq.sequence  = v["sequence"].asInt();
-    return seq;
-}
-
-static Json::Value vmsResourceToJson(const VmsResource &r) {
-    Json::Value v;
-    v["id"]          = r.id;
-    v["guid"]        = r.guid;
-    v["parent_guid"] = r.parent_guid;
-    v["name"]        = r.name;
-    v["url"]         = r.url;
-    v["xtype_guid"]  = r.xtype_guid;
-    return v;
-}
-
-static VmsResource jsonToVmsResource(const Json::Value &v) {
-    VmsResource r;
-    r.id          = v["id"].asString();
-    r.guid        = v["guid"].asString();
-    r.parent_guid = v["parent_guid"].asString();
-    r.name        = v["name"].asString();
-    r.url         = v["url"].asString();
-    r.xtype_guid  = v["xtype_guid"].asString();
-    return r;
-}
-
-static Json::Value vmsKvPairToJson(const VmsKvPair &kv) {
-    Json::Value v;
-    v["id"]            = kv.id;
-    v["resource_guid"] = kv.resource_guid;
-    v["name"]          = kv.name;
-    v["value"]         = kv.value;
-    return v;
-}
-
-static VmsKvPair jsonToVmsKvPair(const Json::Value &v) {
-    VmsKvPair kv;
-    kv.id            = v["id"].asString();
-    kv.resource_guid = v["resource_guid"].asString();
-    kv.name          = v["name"].asString();
-    kv.value         = v["value"].asString();
-    return kv;
-}
-
-static VmsResourceAssignment jsonToVmsResourceAssignment(const Json::Value &v) {
-    VmsResourceAssignment assign;
-    assign.assignment_guid = v["assignment_guid"].asString();
-    assign.resource_guid   = v["resource_guid"].asString();
-    assign.owner_peer_id   = v["owner_peer_id"].asString();
-    assign.owner_db_guid   = v["owner_db_guid"].asString();
-    assign.assigned_at     = v["assigned_at"].asInt64();
-    assign.released_at     = v["released_at"].asInt64();
-    assign.assign_type     = v["assign_type"].asInt();
-    assign.prev_peer_id    = v["prev_peer_id"].asString();
-    return assign;
-}
-
-static Json::Value vmsResourceAssignmentToJson(const VmsResourceAssignment &assign) {
-    Json::Value v;
-    v["assignment_guid"] = assign.assignment_guid;
-    v["resource_guid"]   = assign.resource_guid;
-    v["owner_peer_id"]   = assign.owner_peer_id;
-    v["owner_db_guid"]   = assign.owner_db_guid;
-    v["assigned_at"]     = assign.assigned_at;
-    v["released_at"]     = assign.released_at;
-    v["assign_type"]     = assign.assign_type;
-    v["prev_peer_id"]    = assign.prev_peer_id;
-    return v;
-}
-
-static Json::Value transactionLogToJson(const TransactionLog &log) {
-    Json::Value v;
-    v["peer_guid"]    = log.peer_guid;
-    v["db_guid"]      = log.db_guid;
-    v["sequence"]     = log.sequence;
-    v["timestamp"]    = log.timestamp;
-    v["tran_guid"]    = log.tran_guid;
-    v["tran_data"]    = log.tran_data;
-    v["tran_type"]    = log.tran_type;
-    v["timestamp_hi"] = log.timestamp_hi;
-    return v;
-}
-
-static TransactionLog jsonToTransactionLog(const Json::Value &v) {
-    TransactionLog log;
-    log.peer_guid  = v["peer_guid"].asString();
-    log.db_guid    = v["db_guid"].asString();
-    log.sequence   = v["sequence"].asInt();
-    log.timestamp   = v["timestamp"].asInt64();
-    log.tran_guid  = v["tran_guid"].asString();
-    log.tran_data  = v["tran_data"].asString();
-    log.tran_type  = v["tran_type"].asInt();
-    log.timestamp_hi = v["timestamp_hi"].asInt();
-    return log;
-}
+// ── TransactionSequence helpers ─────────────────────────────────────────────
 
 // Workaround for TransactionSequenceImp::add upsert: call add() for insert,
 // updateByPeerGuidAndDbGuid() directly for update (avoids the now-fixed but
@@ -200,7 +92,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                            .build();
             auto rows = executor->executeRawWithTxn(txn, sql);
             for (const auto &r : rows) {
-                snap.sequences.append(transactionSequenceToJson(EntityTraits<TransactionSequence>::fromRow(r)));
+                snap.sequences.append(EntityTraits<TransactionSequence>::fromRow(r).toJson());
             }
         }
         // Step 2: vms_resource
@@ -211,7 +103,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                            .build();
             auto rows = executor->executeRawWithTxn(txn, sql);
             for (const auto &r : rows) {
-                snap.vms_resource.append(vmsResourceToJson(EntityTraits<VmsResource>::fromRow(r)));
+                snap.vms_resource.append(EntityTraits<VmsResource>::fromRow(r).toJson());
             }
         }
         // Step 3: vms_kvpair
@@ -222,7 +114,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                            .build();
             auto rows = executor->executeRawWithTxn(txn, sql);
             for (const auto &r : rows) {
-                snap.vms_kvpair.append(vmsKvPairToJson(EntityTraits<VmsKvPair>::fromRow(r)));
+                snap.vms_kvpair.append(EntityTraits<VmsKvPair>::fromRow(r).toJson());
             }
         }
         // Step 4: vms_resource_assignment
@@ -233,7 +125,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                            .build();
             auto rows = executor->executeRawWithTxn(txn, sql);
             for (const auto &r : rows) {
-                snap.resource_assignment.append(vmsResourceAssignmentToJson(EntityTraits<VmsResourceAssignment>::fromRow(r)));
+                snap.resource_assignment.append(EntityTraits<VmsResourceAssignment>::fromRow(r).toJson());
             }
         }
         // Step 5: bookmark_index
@@ -309,7 +201,7 @@ void SyncManager::start() {
     }
 
     weak_ptr<SyncManager> weak_self = shared_from_this();
-    float _interval_sec = interval_sec > 0 ? interval_sec *1.0f : 30.0f; // default to 30s if config is invalid
+    float _interval_sec = interval_sec > 0 ? interval_sec * 1.0f : 30.0f; // default to 30s if config is invalid
     _timer = make_shared<Timer>(_interval_sec, [weak_self]() {
         auto self = weak_self.lock();
         if (self) self->onTick();
@@ -483,8 +375,11 @@ void SyncManager::onTick() {
         const auto &pair = peers_vec[i];
         pullFromRelay(pair.first, pair.second);
     }
-    // After pulling from all peers, check if we can prune old transaction logs
-    maybePruneLog();
+    // Periodically prune logs every hour (only if there are peers, to avoid pruning healthy logs on a node that's temporarily isolated)
+    if (_last_prune_time == 0 || time(nullptr) - _last_prune_time >= 3600) {
+        maybePruneLog();
+        _last_prune_time = time(nullptr);
+    }
 }
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
@@ -549,7 +444,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         if (!snap.vms_resource.empty() && snap.vms_resource.isArray()) {
             auto imp = std::make_shared<VmsResourceImp>();
             for (const auto &v : snap.vms_resource) {
-                auto r = jsonToVmsResource(v);
+                auto r = VmsResource::fromJson(v);
                 imp->add(r, false); // remote data — do not append to local transaction_log
             }
         }
@@ -558,7 +453,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         if (!snap.vms_kvpair.empty() && snap.vms_kvpair.isArray()) {
             auto imp = std::make_shared<VmsKvPairImp>();
             for (const auto &v : snap.vms_kvpair) {
-                auto kv = jsonToVmsKvPair(v);
+                auto kv = VmsKvPair::fromJson(v);
                 imp->add(kv, false); // remote data — do not append to local transaction_log
             }
         }
@@ -567,7 +462,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         if (!snap.resource_assignment.empty() && snap.resource_assignment.isArray()) {
             auto imp = std::make_shared<VmsResourceAssignmentImp>();
             for (const auto &v : snap.resource_assignment) {
-                auto seq = jsonToVmsResourceAssignment(v);
+                auto seq = VmsResourceAssignment::fromJson(v);
                 imp->add(seq, false); // remote data — do not append to local transaction_log
             }
         }
@@ -585,7 +480,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         if (!snap.sequences.empty() && snap.sequences.isArray()) {
             auto imp = std::make_shared<TransactionSequenceImp>();
             for (const auto &v : snap.sequences) {
-                auto seq = jsonToTransactionSequence(v);
+                auto seq = TransactionSequence::fromJson(v);
                 imp->add(seq);
             }
         }
@@ -607,9 +502,6 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
     auto seq_imp = make_shared<TransactionSequenceImp>();
     auto all_seqs = seq_imp->findAll();
 
-    auto ack_log_imp = make_shared<PeerAckLogImp>();
-    auto all_acks = ack_log_imp->findAll();
-
     TraceL << "Relay pull from " << relay_peer_id << " with " << all_seqs.size() << " cursors";
 
     weak_ptr<SyncManager> weak_self = shared_from_this();
@@ -630,8 +522,28 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
     };
 
     GET_CONFIG(int, batch_limit, Database::kBatchLimit);
+    Json::Value all_seqs_json = Json::arrayValue;
+    Json::Value all_acks_json = Json::arrayValue;
+
+    for (const auto &seq : all_seqs) {
+        // Note: we send the full cursor map on every pull, even for peers that are not the source of the relay data. This is because:
+        // 1) It allows all nodes to converge to the same cursor map after 1-2 ticks, even if they pull from different subsets of peers due to fanout or dynamic peer changes.
+        // 2) The cursor map is relatively small (one entry per peer/db), so the overhead is minimal compared to the benefit of faster convergence and simpler logic without needing to track which peers have which data.
+        all_seqs_json.append(seq.toJson());
+        // For each cursor we send, we can also include an ack log entry indicating the last sequence we've successfully received from that peer/db. 
+        // This allows the relay peer to update its ack logs and potentially prune old data sooner. Note that the acked_seq is based on what we've applied, not just what we've pulled, so it reflects the actual state of our database.
+        PeerAckLog ack;
+        ack.peer_guid = _self_node_id;
+        ack.db_guid = _self_db_id;
+        ack.src_peer_guid = seq.peer_guid;
+        ack.src_db_guid = seq.db_guid;
+        ack.acked_seq = seq.sequence;
+        ack.updated_at = time(nullptr);
+        all_acks_json.append(ack.toJson());
+    }
+
     auto flag = NOTICE_EMIT(BroadcastSyncChangesArgs, Broadcast::kBroadcastSyncChanges,
-                            base_url, _self_node_id, _self_db_id, all_seqs, all_acks, batch_limit, onRes);
+                            base_url, _self_node_id, _self_db_id, all_seqs_json, all_acks_json, batch_limit, onRes);
     if (!flag) {
         WarnL << "No listener for kBroadcastSyncChanges, cannot relay pull from " << relay_peer_id;
     }
@@ -678,7 +590,7 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             if (table == EntityTraits<VmsResource>::tableName()) {
                 auto &imp = res_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
-                    auto r = jsonToVmsResource(payload);
+                    auto r = VmsResource::fromJson(payload);
                     imp->add(r, false); // remote data — do not append to local transaction_log
                 } else if (op == TRAN_DATA_OP_DELETE) {
                     string guid = payload["guid"].asString();
@@ -690,12 +602,12 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             } else if (table == EntityTraits<VmsKvPair>::tableName()) {
                 auto &imp = kv_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
-                    auto kv = jsonToVmsKvPair(payload);
+                    auto kv = VmsKvPair::fromJson(payload);
                     imp->add(kv, false); // remote data — do not append to local transaction_log
                 } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
                     std::vector<VmsKvPair> kvs;
                     for (const auto &item : payload["items"]) {
-                        kvs.push_back(jsonToVmsKvPair(item));
+                        kvs.push_back(VmsKvPair::fromJson(item));
                     }
                     imp->addBatch(kvs, false);
                 } else if (op == TRAN_DATA_OP_DELETE) {
@@ -708,7 +620,7 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             } else if (table == EntityTraits<VmsResourceAssignment>::tableName()) {
                 auto &imp = assign_imp;
                 if (op == TRAN_DATA_OP_UPSERT) {
-                    auto assign = jsonToVmsResourceAssignment(payload);
+                    auto assign = VmsResourceAssignment::fromJson(payload);
                     imp->add(assign, false); // remote data — do not append to local transaction_log
                 } else if (op == TRAN_DATA_OP_DELETE) {
                     string resource_guid = payload["resource_guid"].asString();
@@ -741,7 +653,7 @@ void SyncManager::applyBatch(const Json::Value &rows) {
         // Record the transaction in local log, update sequence of the remote peer.
         // If this entry won a conflict (newer than a previously accepted entry for
         // the same row), flag it with timestamp_hi=1 for audit purposes.
-        auto log = jsonToTransactionLog(it);
+        auto log = TransactionLog::fromJson(it);
         if (apply_decision == ApplyDecision::ApplyWinner) {
             log.timestamp_hi = 1;
         }

@@ -35,6 +35,19 @@ struct VmsResourceAssignment {
         v["prev_peer_id"]    = prev_peer_id;
         return v;
     }
+
+    static VmsResourceAssignment fromJson(const Json::Value &v) {
+        VmsResourceAssignment assign;
+        assign.assignment_guid = v["assignment_guid"].asString();
+        assign.resource_guid   = v["resource_guid"].asString();
+        assign.owner_peer_id   = v["owner_peer_id"].asString();
+        assign.owner_db_guid   = v["owner_db_guid"].asString();
+        assign.assigned_at     = v["assigned_at"].asInt64();
+        assign.released_at     = v["released_at"].asInt64();
+        assign.assign_type     = v["assign_type"].asInt();
+        assign.prev_peer_id    = v["prev_peer_id"].asString();
+        return assign;
+    }
 };
 
 DECLARE_ENTITY(VmsResourceAssignment, "vms_resource_assignment",

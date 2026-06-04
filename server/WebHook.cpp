@@ -20,8 +20,7 @@
 #include "Server/ReaderMonitor.h"
 #include "User/UserAuditLog.h"
 #include "Util/base64.h"
-#include "Storage/TransactionSequence.h"
-#include "Storage/TransactionPeerAckLog.h"
+#include "Common/StrUtil.h"
 
 using namespace std;
 using namespace Json;
@@ -750,6 +749,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
         if (err.empty()) {
             // Fetch data from origin success
             callback("", index % urls.size(), obj);
+            return;
         }
 
         if (++failed_cnt == urls.size()) {
@@ -763,6 +763,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
             }
             WarnL << "fetch data from origin server final failed: " << ss.str();
             callback("All origin stations have been retried", -1, Json::nullValue);
+            return;
         }
 
         fetchDataFromOrigin(urls, body, index + 1, failed_cnt, callback);
@@ -777,6 +778,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
         if (err.empty()) {
             // Fetch data from origin success
             callback("", index % urls.size(), obj);
+            return;
         }
 
         if (++failed_cnt == urls.size()) {
@@ -790,6 +792,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
             }
             WarnL << "fetch data from origin server final failed: " << ss.str();
             callback("All origin stations have been retried", -1, Json::nullValue);
+            return;
         }
 
         fetchDataFromOrigin(urls, body, index + 1, failed_cnt, callback);
@@ -804,6 +807,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
         if (err.empty()) {
             // Fetch data from origin success
             callback("", index % urls.size(), obj);
+            return;
         }
 
         if (++failed_cnt == urls.size()) {
@@ -817,6 +821,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
             }
             WarnL << "fetch data from origin server final failed: " << ss.str();
             callback("All origin stations have been retried", -1, Json::nullValue);
+            return;
         }
 
         fetchDataFromOrigin(urls, params, index + 1, failed_cnt, callback);
@@ -831,6 +836,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
         if (err.empty()) {
             // Fetch data from origin success
             callback("", index % urls.size(), obj);
+            return;
         }
 
         if (++failed_cnt == urls.size()) {
@@ -844,6 +850,7 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
             }
             WarnL << "fetch data from origin server final failed: " << ss.str();
             callback("All origin stations have been retried", -1, Json::nullValue);
+            return;
         }
 
         fetchDataFromOrigin(urls, params, index + 1, failed_cnt, callback);
@@ -1639,14 +1646,8 @@ void installWebHook() {
         ArgsType body;
         body["peer"] = peer_id;
         body["db"] = db_guid;
-        body["cursors"] = Json::arrayValue;
-        for (const auto &item_seq : since_cursors) {
-            body["cursors"].append(item_seq.toJson());
-        }
-        body["ack_cursors"] = Json::arrayValue;
-        for (const auto &item_ack : ack_cursors) {
-            body["ack_cursors"].append(item_ack.toJson());
-        }
+        body["cursors"] = StrJsonUtils::writeJsonString(since_cursors);
+        body["ack_cursors"] = StrJsonUtils::writeJsonString(ack_cursors);
         body["limit"] = batch_limit;
 
         // Execute hook

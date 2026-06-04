@@ -27,6 +27,17 @@ struct VmsResource {
         v["xtype_guid"]  = xtype_guid;
         return v;
     }
+
+    static VmsResource fromJson(const Json::Value &v) {
+        VmsResource r;
+        r.id          = v["id"].asString();
+        r.guid        = v["guid"].asString();
+        r.parent_guid = v["parent_guid"].asString();
+        r.name        = v["name"].asString();
+        r.url         = v["url"].asString();
+        r.xtype_guid  = v["xtype_guid"].asString();
+        return r;
+    }
 };
 
 DECLARE_ENTITY(VmsResource, "vms_resource",

@@ -13,6 +13,8 @@ namespace Peer {
 extern const std::string kPeerList;
 } // namespace Peer
 
+extern std::string g_ini_file;
+
 namespace managerkit {
 
 struct MediaServerInfo {

@@ -123,6 +123,7 @@ private:
     std::string                                  _self_node_id; // media server's own node_id
     std::string                                  _self_db_id; // media server's own db_guid
     bool                                         _running      = false;
+    uint64_t                                     _last_prune_time = 0;
 
     // LWW map: key = "table:row_key" → last accepted log_ts (ms).
     // Prevents stale writes when two nodes concurrently modify the same row.
