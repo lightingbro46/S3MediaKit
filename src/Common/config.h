@@ -179,9 +179,13 @@ extern const std::string kBroadcastReloadApiConfig;
 #define BroadcastReloadApiConfigArgs void
 
 using HealthInvoker = std::function<void(const std::string&, const int&)>;
-// Healthcheck service event broadcast. Control healthcheck service through this event.
-extern const std::string kBroadcastHealthCheckService;
-#define BroadcastHealthCheckServiceArgs const std::string &origin_urls, const Broadcast::HealthInvoker &invoker
+// Healthcheck api service event broadcast. Control healthcheck api service through this event.
+extern const std::string kBroadcastHealthCheckApiService;
+#define BroadcastHealthCheckApiServiceArgs const std::string &origin_urls, const Broadcast::HealthInvoker &invoker
+
+// Healthcheck media service event broadcast. Control healthcheck media service through this event.
+extern const std::string kBroadcastHealthCheckMediaService;
+#define BroadcastHealthCheckMediaServiceArgs const std::string &origin_urls, const Broadcast::HealthInvoker &invoker
 
 extern const std::string kBroadcastRecordMotion;
 #define BroadcastRecordMotionArgs const MediaTuple &args, const bool &bActive

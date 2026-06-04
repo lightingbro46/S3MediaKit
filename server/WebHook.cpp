@@ -71,6 +71,7 @@ const string kOnSyncBookmarkCreate = HOOK_FIELD "on_sync_bookmark_create";
 const string kOnSyncBookmarkUpdate = HOOK_FIELD "on_sync_bookmark_update";
 const string kOnSyncBookmarkDelete = HOOK_FIELD "on_sync_bookmark_delete";
 const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
+const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_check";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -116,6 +117,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncBookmarkUpdate] = "/media/esc/bookmark/update";
     mINI::Instance()[kOnSyncBookmarkDelete] = "/media/esc/bookmark/delete";
     mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
+    mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -732,7 +734,7 @@ static void healthCheckServiceFromOrigin(const vector<string> &urls, size_t inde
                     ss << ", ";
                 }
             }
-            WarnL << "health check origin server final failed: " << ss.str();
+            TraceL << "health check origin server final failed: " << ss.str();
             callback("All origin stations have been retried", -1);
             return;
         }
@@ -1470,8 +1472,8 @@ void installWebHook() {
         s_config_loaded = false;
     });
 
-    // Listen to call health check event
-    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHealthCheckService, [](BroadcastHealthCheckServiceArgs) {
+    // Listen to call health check api service event
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHealthCheckApiService, [](BroadcastHealthCheckApiServiceArgs) {
         GET_CONFIG(string, hook_server_healthcheck, Hook::kOnServerHealthCheck);
         if (!hook_enable || hook_server_healthcheck.empty()) {
             invoker("Health check skipped, hook_server_healthcheck is empty", -1);
@@ -1490,6 +1492,28 @@ void installWebHook() {
 
         healthCheckServiceFromOrigin(urls, 0, 0, invoker);
     });
+
+    // Listen to call health check media service event
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHealthCheckMediaService, [](BroadcastHealthCheckMediaServiceArgs) {
+        GET_CONFIG(string, hook_media_server_healthcheck, Hook::kOnMediaServerHealthCheck);
+        if (!hook_enable || hook_media_server_healthcheck.empty()) {
+            invoker("Health check skipped, hook_media_server_healthcheck is empty", -1);
+            return;
+        }
+        if (origin_urls.empty()) {
+            invoker("Health check skipped, origin_urls is empty", -1);
+            return;
+        }
+
+        vector<string> urls;
+        for (const auto &u : split(origin_urls, ",")) {
+            string full_url = StrPrinter << u << hook_media_server_healthcheck;
+            urls.push_back(full_url);
+        }
+
+        healthCheckServiceFromOrigin(urls, 0, 0, invoker);
+    });
+
 
     // Listen to device registration or deregistration events
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceChanged, [](BroadcastDeviceChangedArgs) {

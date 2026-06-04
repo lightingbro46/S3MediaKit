@@ -3133,7 +3133,7 @@ void installWebApi() {
             invoker(200, headerOut, val.toStyledString());
         };
         
-        auto flag = NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls_str, on_health_check);
+        auto flag = NOTICE_EMIT(BroadcastHealthCheckApiServiceArgs, Broadcast::kBroadcastHealthCheckApiService, origin_urls_str, on_health_check);
         if (!flag) {
             // Nobody to handle health check service, just return failed
             on_health_check("No handler to handle health check api service", -1);
