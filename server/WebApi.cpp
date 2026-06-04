@@ -3705,15 +3705,21 @@ void installWebApi() {
             }
         }
 
-        std::vector<PeerAckLog> ack_cursors;
         {
-            if (!ack_cursors_json.empty() && ack_cursors_json.isArray()) {
-                for (const auto &c : ack_cursors_json) {
-                    ack_cursors.push_back(PeerAckLog::fromJson(c));
+            try {
+                std::vector<PeerAckLog> ack_cursors;
+                if (!ack_cursors_json.empty() && ack_cursors_json.isArray()) {
+                    for (const auto &c : ack_cursors_json) {
+                        ack_cursors.push_back(PeerAckLog::fromJson(c));
+                    }
                 }
+                if (!cursors.empty()) {
+                    SyncManager::Instance().recordRelayAck(ack_cursors);
+                }
+            } catch (const std::exception &ex) {
+                WarnL << "Failed to save ack_cursors: " << ex.what();
             }
         }
-        SyncManager::Instance().recordRelayAck(ack_cursors);
 
         auto impl = make_shared<TransactionLogImp>();
         auto ret = impl->findAllSince(cursors, limit);
