@@ -10,6 +10,7 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
+#include "Extension/TableSyncHandler.h"
 #include <random>
 
 using namespace std;
@@ -215,7 +216,19 @@ void SyncManager::start() {
         InfoL << "Database already populated, skipping bootstrap";
     }
 
+    // Register sync handlers for all synced tables.
+    // To add a new synced table: implement makeSyncHandler() on its Imp class
+    // and add one registerTable() call here.
+    registerTable(EntityTraits<VmsResource>::tableName(),           VmsResourceImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsKvPair>::tableName(),             VmsKvPairImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsResourceAssignment>::tableName(), VmsResourceAssignmentImp::makeSyncHandler());
+    registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
+
     InfoL << "Sync database started, node=" << mediaServerId << ", bootstrapped=" << _bootstrapped << ", interval=" << interval_sec << "s";
+}
+
+void SyncManager::registerTable(const std::string &table_name, TableSyncHandler handler) {
+    _table_handlers[table_name] = std::move(handler);
 }
 
 void SyncManager::stop() {
@@ -440,49 +453,28 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
 // discovered without a dedicated bootstrap round-trip.
 
 void SyncManager::applySnapshot(const SnapshotData &snap) {
-    {
-        if (!snap.vms_resource.empty() && snap.vms_resource.isArray()) {
-            auto imp = std::make_shared<VmsResourceImp>();
-            for (const auto &v : snap.vms_resource) {
-                auto r = VmsResource::fromJson(v);
-                imp->add(r, false); // remote data — do not append to local transaction_log
-            }
-        }
+    // Map named SnapshotData fields to their table names, then dispatch via registry.
+    const std::pair<std::string, const Json::Value *> snap_tables[] = {
+        {EntityTraits<VmsResource>::tableName(),           &snap.vms_resource},
+        {EntityTraits<VmsKvPair>::tableName(),             &snap.vms_kvpair},
+        {EntityTraits<VmsResourceAssignment>::tableName(), &snap.resource_assignment},
+        {EntityTraits<BookmarkIndex>::tableName(),         &snap.bookmark_index},
+    };
+
+    for (const auto &entry : snap_tables) {
+        const Json::Value &arr = *entry.second;
+        if (arr.empty() || !arr.isArray()) continue;
+        auto hit = _table_handlers.find(entry.first);
+        if (hit == _table_handlers.end() || !hit->second.onSnapshot) continue;
+        hit->second.onSnapshot(arr);
     }
-    {
-        if (!snap.vms_kvpair.empty() && snap.vms_kvpair.isArray()) {
-            auto imp = std::make_shared<VmsKvPairImp>();
-            for (const auto &v : snap.vms_kvpair) {
-                auto kv = VmsKvPair::fromJson(v);
-                imp->add(kv, false); // remote data — do not append to local transaction_log
-            }
-        }
-    }
-    {
-        if (!snap.resource_assignment.empty() && snap.resource_assignment.isArray()) {
-            auto imp = std::make_shared<VmsResourceAssignmentImp>();
-            for (const auto &v : snap.resource_assignment) {
-                auto seq = VmsResourceAssignment::fromJson(v);
-                imp->add(seq, false); // remote data — do not append to local transaction_log
-            }
-        }
-    }
-    {
-        if (!snap.bookmark_index.empty() && snap.bookmark_index.isArray()) {
-            auto imp = std::make_shared<BookmarkIndexImp>();
-            for (const auto &v : snap.bookmark_index) {
-                auto idx = BookmarkIndex::fromJson(v);
-                imp->add(idx, false); // remote data — do not append to local transaction_log
-            }
-        }
-    }
-    {
-        if (!snap.sequences.empty() && snap.sequences.isArray()) {
-            auto imp = std::make_shared<TransactionSequenceImp>();
-            for (const auto &v : snap.sequences) {
-                auto seq = TransactionSequence::fromJson(v);
-                imp->add(seq);
-            }
+
+    // Sequences are infrastructure state — not dispatched through the table registry.
+    if (!snap.sequences.empty() && snap.sequences.isArray()) {
+        auto imp = std::make_shared<TransactionSequenceImp>();
+        for (const auto &v : snap.sequences) {
+            auto seq = TransactionSequence::fromJson(v);
+            imp->add(seq);
         }
     }
 }
@@ -550,11 +542,7 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
 }
 
 void SyncManager::applyBatch(const Json::Value &rows) {
-    auto log_imp       = make_shared<TransactionLogImp>();
-    auto res_imp       = make_shared<VmsResourceImp>();
-    auto kv_imp        = make_shared<VmsKvPairImp>();
-    auto assign_imp    = make_shared<VmsResourceAssignmentImp>();
-    auto bk_idx_imp    = make_shared<BookmarkIndexImp>();
+    auto log_imp = make_shared<TransactionLogImp>();
 
     for (const auto &it : rows) {
         // Dedup first — exact duplicate check before any work (e.g. restart replay,
@@ -565,88 +553,50 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             continue;
         }
 
-        ApplyDecision apply_decision = ApplyDecision::Apply;
         int tran_type = it["tran_type"].asInt();
-        if (tran_type == static_cast<int>(TranType::DataMutation)) {
-            // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
-            string raw = it["tran_data"].asString();
-            Json::Value tran_data;
-            if (!StrJsonUtils::readJsonString(raw, tran_data)) {
-                WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
-                continue;
-            }
-
-            string table               = tran_data["table"].asString();
-            string op                  = tran_data["op"].asString();
-            const Json::Value &payload = tran_data["payload"];
-            int64_t log_ts             = it["timestamp"].asInt64();
-
-            apply_decision = shouldApply(table, op, payload, log_ts);
-
-            if (apply_decision == ApplyDecision::Skip) {
-                continue; // stale write — local version is newer
-            }
-
-            if (table == EntityTraits<VmsResource>::tableName()) {
-                auto &imp = res_imp;
-                if (op == TRAN_DATA_OP_UPSERT) {
-                    auto r = VmsResource::fromJson(payload);
-                    imp->add(r, false); // remote data — do not append to local transaction_log
-                } else if (op == TRAN_DATA_OP_DELETE) {
-                    string guid = payload["guid"].asString();
-                    if (!guid.empty()) imp->remove(guid, false); // remote data — do not re-log
-                } else {
-                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-                    continue;
-                }
-            } else if (table == EntityTraits<VmsKvPair>::tableName()) {
-                auto &imp = kv_imp;
-                if (op == TRAN_DATA_OP_UPSERT) {
-                    auto kv = VmsKvPair::fromJson(payload);
-                    imp->add(kv, false); // remote data — do not append to local transaction_log
-                } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-                    std::vector<VmsKvPair> kvs;
-                    for (const auto &item : payload["items"]) {
-                        kvs.push_back(VmsKvPair::fromJson(item));
-                    }
-                    imp->addBatch(kvs, false);
-                } else if (op == TRAN_DATA_OP_DELETE) {
-                    string resource_guid = payload["resource_guid"].asString();
-                    if (!resource_guid.empty()) imp->remove(resource_guid, false); // remote data — do not re-log
-                } else {
-                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-                    continue;
-                }
-            } else if (table == EntityTraits<VmsResourceAssignment>::tableName()) {
-                auto &imp = assign_imp;
-                if (op == TRAN_DATA_OP_UPSERT) {
-                    auto assign = VmsResourceAssignment::fromJson(payload);
-                    imp->add(assign, false); // remote data — do not append to local transaction_log
-                } else if (op == TRAN_DATA_OP_DELETE) {
-                    string resource_guid = payload["resource_guid"].asString();
-                    if (!resource_guid.empty()) imp->remove(resource_guid, false); // remote data — do not re-log
-                } else {
-                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-                    continue;
-                }
-            } else if (table == EntityTraits<BookmarkIndex>::tableName()) {
-                auto &imp = bk_idx_imp;
-                if (op == TRAN_DATA_OP_UPSERT) {
-                    auto idx = BookmarkIndex::fromJson(payload);
-                    imp->add(idx, false); // remote data — do not re-log
-                } else if (op == TRAN_DATA_OP_DELETE) {
-                    string guid = payload["bookmark_guid"].asString();
-                    if (!guid.empty()) imp->remove(guid, false); // remote data — do not re-log
-                } else {
-                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-                    continue;
-                }
-            } else {
-                WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
-                continue;
-            }
-        } else {
+        if (tran_type != static_cast<int>(TranType::DataMutation)) {
             WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
+            continue;
+        }
+
+        // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
+        string raw = it["tran_data"].asString();
+        Json::Value tran_data;
+        if (!StrJsonUtils::readJsonString(raw, tran_data)) {
+            WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
+            continue;
+        }
+
+        string table               = tran_data["table"].asString();
+        string op                  = tran_data["op"].asString();
+        const Json::Value &payload = tran_data["payload"];
+        int64_t log_ts             = it["timestamp"].asInt64();
+
+        auto hit = _table_handlers.find(table);
+        if (hit == _table_handlers.end()) {
+            WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
+            continue;
+        }
+        const TableSyncHandler &h = hit->second;
+
+        ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts);
+        if (apply_decision == ApplyDecision::Skip) {
+            continue; // stale write — local version is newer
+        }
+
+        if (op == TRAN_DATA_OP_UPSERT) {
+            if (h.onUpsert) h.onUpsert(payload);
+        } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+            if (h.onUpsertBatch) {
+                h.onUpsertBatch(payload);
+            } else {
+                WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
+                continue;
+            }
+        } else if (op == TRAN_DATA_OP_DELETE) {
+            if (h.onDelete) h.onDelete(payload);
+        } else {
+            WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
             continue;
         }
 
@@ -662,33 +612,20 @@ void SyncManager::applyBatch(const Json::Value &rows) {
 }
 
 SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const std::string &op, const Json::Value &payload, int64_t log_ts) {
-    // Derive a stable per-row key, keyed strictly by table schema.
-    string row_key;
-
-    if (table == EntityTraits<VmsResource>::tableName()) {
-        // PK: guid
-        row_key = payload["guid"].asString();
-
-    } else if (table == EntityTraits<VmsKvPair>::tableName()) {
-        // Composite key: resource_guid + name (no single-column PK that
-        // identifies the logical row across nodes)
-        row_key = payload["resource_guid"].asString() + ":" + payload["name"].asString();
-
-    } else if (table == EntityTraits<VmsResourceAssignment>::tableName()) {
-        // PK: assignment_guid
-        row_key = payload["assignment_guid"].asString();
-
-    } else if (table == EntityTraits<BookmarkIndex>::tableName()) {
-        // PK: bookmark_guid
-        row_key = payload["bookmark_guid"].asString();
-
-    } else {
-        // Unknown table — always apply (safe default, no LWW tracking).
+    // UPSERT_BATCH covers multiple rows with a single timestamp; skip per-row LWW.
+    if (op == TRAN_DATA_OP_UPSERT_BATCH) {
         return ApplyDecision::Apply;
     }
 
+    // Derive a stable per-row key via the registered handler.
+    auto hit = _table_handlers.find(table);
+    if (hit == _table_handlers.end() || !hit->second.rowKey) {
+        // Unknown table or no LWW tracking — always apply (safe default).
+        return ApplyDecision::Apply;
+    }
+
+    string row_key = hit->second.rowKey(payload);
     if (row_key.empty()) {
-        // Payload is missing the required key field — skip to avoid corrupt state.
         WarnL << "shouldApply: missing row key for table=" << table << " op=" << op;
         return ApplyDecision::Skip;
     }

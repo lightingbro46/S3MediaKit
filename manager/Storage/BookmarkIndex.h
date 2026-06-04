@@ -6,6 +6,7 @@
 #include "DbStorage.h"
 #include "TransactionLog.h"
 #include "Util/util.h"
+#include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
 
@@ -252,6 +253,33 @@ public:
 
 private:
     TransactionLogImp::Ptr _log_impl;
+
+public:
+    static TableSyncHandler makeSyncHandler() {
+        TableSyncHandler h;
+        h.rowKey = [](const Json::Value &p) -> std::string {
+            return p["bookmark_guid"].asString();
+        };
+        h.onUpsert = [](const Json::Value &p) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            auto idx = BookmarkIndex::fromJson(p);
+            imp->add(idx, false);
+        };
+        h.onUpsertBatch = nullptr;
+        h.onDelete = [](const Json::Value &p) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            std::string guid = p["bookmark_guid"].asString();
+            if (!guid.empty()) imp->remove(guid, false);
+        };
+        h.onSnapshot = [](const Json::Value &arr) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            for (const auto &v : arr) {
+                auto idx = BookmarkIndex::fromJson(v);
+                imp->add(idx, false);
+            }
+        };
+        return h;
+    }
 };
 
 } // namespace managerkit

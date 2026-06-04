@@ -10,6 +10,7 @@
 #include "Poller/Timer.h"
 #include "Storage/DbStorage.h"
 #include "Storage/TransactionPeerAckLog.h"
+#include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
 
@@ -74,6 +75,10 @@ public:
 
     void recordRelayAck(std::vector<PeerAckLog> &ack_cursors);
 
+    // Register a sync handler for a table. Must be called before start().
+    // Replaces any previously registered handler for the same table name.
+    void registerTable(const std::string &table_name, TableSyncHandler handler);
+
     // GC: compute safe prune watermark and delete old transaction_log entries.
     void maybePruneLog();
 
@@ -130,6 +135,9 @@ private:
     // Volatile (cleared on restart); safe because the pull cursor prevents
     // re-applying already-processed log entries after a clean restart.
     std::unordered_map<std::string, int64_t>     _applied_ts;
+
+    // Plugin registry: table_name → sync handler.
+    std::unordered_map<std::string, TableSyncHandler> _table_handlers;
 };
 
 } // namespace managerkit

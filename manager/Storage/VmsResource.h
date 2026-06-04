@@ -6,6 +6,7 @@
 #include "DbStorage.h"
 #include "Util/util.h"
 #include "TransactionLog.h"
+#include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
 
@@ -139,6 +140,32 @@ public:
             payload["guid"] = guid;
             _log_impl->appendLocalDataMutation(EntityTraits<VmsResource>::tableName(), TRAN_DATA_OP_DELETE, payload);
         }
+    }
+
+    static TableSyncHandler makeSyncHandler() {
+        TableSyncHandler h;
+        h.rowKey = [](const Json::Value &p) -> std::string {
+            return p["guid"].asString();
+        };
+        h.onUpsert = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsResourceImp>();
+            auto r = VmsResource::fromJson(p);
+            imp->add(r, false);
+        };
+        h.onUpsertBatch = nullptr;
+        h.onDelete = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsResourceImp>();
+            std::string guid = p["guid"].asString();
+            if (!guid.empty()) imp->remove(guid, false);
+        };
+        h.onSnapshot = [](const Json::Value &arr) {
+            auto imp = std::make_shared<VmsResourceImp>();
+            for (const auto &v : arr) {
+                auto r = VmsResource::fromJson(v);
+                imp->add(r, false);
+            }
+        };
+        return h;
     }
 
 private:

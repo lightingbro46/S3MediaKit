@@ -4,6 +4,7 @@
 #include <string>
 #include "DbStorage.h"
 #include "TransactionLog.h"
+#include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
 
@@ -164,6 +165,33 @@ public:
 
 private:
     TransactionLogImp::Ptr _log_impl;
+
+public:
+    static TableSyncHandler makeSyncHandler() {
+        TableSyncHandler h;
+        h.rowKey = [](const Json::Value &p) -> std::string {
+            return p["assignment_guid"].asString();
+        };
+        h.onUpsert = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsResourceAssignmentImp>();
+            auto assign = VmsResourceAssignment::fromJson(p);
+            imp->add(assign, false);
+        };
+        h.onUpsertBatch = nullptr;
+        h.onDelete = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsResourceAssignmentImp>();
+            std::string resource_guid = p["resource_guid"].asString();
+            if (!resource_guid.empty()) imp->remove(resource_guid, false);
+        };
+        h.onSnapshot = [](const Json::Value &arr) {
+            auto imp = std::make_shared<VmsResourceAssignmentImp>();
+            for (const auto &v : arr) {
+                auto assign = VmsResourceAssignment::fromJson(v);
+                imp->add(assign, false);
+            }
+        };
+        return h;
+    }
 };
 
 } // namespace managerkit

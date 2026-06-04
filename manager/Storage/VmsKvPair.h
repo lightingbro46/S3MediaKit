@@ -5,6 +5,7 @@
 #include "DbStorage.h"
 #include "TransactionLog.h"
 #include "Util/util.h"
+#include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
 
@@ -157,6 +158,40 @@ public:
 
     std::vector<VmsKvPair> findAllKeyValue(const std::string &resoure_id) {
         return findByResourceId(resoure_id);
+    }
+
+    static TableSyncHandler makeSyncHandler() {
+        TableSyncHandler h;
+        h.rowKey = [](const Json::Value &p) -> std::string {
+            // Composite key; used only for single UPSERT (UPSERT_BATCH skips LWW)
+            return p["resource_guid"].asString() + ":" + p["name"].asString();
+        };
+        h.onUpsert = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            auto kv = VmsKvPair::fromJson(p);
+            imp->add(kv, false);
+        };
+        h.onUpsertBatch = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            std::vector<VmsKvPair> kvs;
+            for (const auto &item : p["items"]) {
+                kvs.push_back(VmsKvPair::fromJson(item));
+            }
+            imp->addBatch(kvs, false);
+        };
+        h.onDelete = [](const Json::Value &p) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            std::string resource_guid = p["resource_guid"].asString();
+            if (!resource_guid.empty()) imp->remove(resource_guid, false);
+        };
+        h.onSnapshot = [](const Json::Value &arr) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            for (const auto &v : arr) {
+                auto kv = VmsKvPair::fromJson(v);
+                imp->add(kv, false);
+            }
+        };
+        return h;
     }
 
 private:
