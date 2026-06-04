@@ -50,7 +50,7 @@ static bool deleteMotionBlockPair(const std::string &block_path) {
         replace(index_path, ".mblk", ".idx");
         File::delete_file(index_path);
     }
-    File::delete_file(block_path);
+    File::delete_file(block_path, true);
     DebugL << "Deleted motion block files: " << block_path;
     return true;
 }
@@ -59,8 +59,9 @@ void MotionBlockManager::removeExpiredMotionBlocks(const string &record_path, ui
     GET_CONFIG(string, app_name, Record::kArchiveName);
     auto archive_path = File::absolutePath(app_name, record_path);
     auto motion_block_path = archive_path + "/motion";
-    if (!File::is_dir(motion_block_path))
+    if (!File::is_dir(motion_block_path)) {
         return;
+    }
 
     auto star_of_day = StampUtils::getStartOfDay(threshold);
 
