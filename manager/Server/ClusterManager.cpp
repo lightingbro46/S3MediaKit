@@ -46,13 +46,13 @@ static void savePeerList(const std::unordered_map<std::string, MediaServerInfo> 
 INSTANCE_IMP(ClusterManager)
 
 ClusterManager::ClusterManager() {
-    // _timer = std::make_shared<Timer>(
-    //     60.0f,
-    //     [this]() { 
-    //         onManager();
-    //         return true;
-    //     },
-    //     nullptr);
+    _timer = std::make_shared<Timer>(
+        60.0f,
+        [this]() { 
+            onManager();
+            return true;
+        },
+        nullptr);
 }
 
 ClusterManager::~ClusterManager() {
@@ -151,12 +151,12 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
             new_peer = true;
         }  else {
             if (it->second == info) {
-                DebugL << "Media server info is the same as existing one, skip update";
+                TraceL << "Media server info is the same as existing one, skip update";
                 return;
             }
             it->second = info;
         }
-        TraceL << "Added media server: " << id << ", name: " << info.name;
+        DebugL << "Added media server: " << id << ", name: " << info.name;
         if (!skip_save) {
             savePeerList(_map_server_info);
         }
@@ -180,6 +180,11 @@ void ClusterManager::removeMediaServer(const std::string &id) {
 }
 
 void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls) {
+    GET_CONFIG(string, kMediaServerId, General::kMediaServerId);
+    if (id == kMediaServerId) {
+        DebugL << "Skip health check for self node " << id;
+        return;
+    }
     weak_ptr<ClusterManager> weak_self = shared_from_this();
     Broadcast::HealthInvoker invoker = [weak_self, origin_urls, id](const std::string& err, const int& idx) {
         auto self = weak_self.lock();
@@ -205,7 +210,7 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
         }
     };
 
-    NOTICE_EMIT(BroadcastHealthCheckServiceArgs, Broadcast::kBroadcastHealthCheckService, origin_urls, invoker);
+    NOTICE_EMIT(BroadcastHealthCheckMediaServiceArgs, Broadcast::kBroadcastHealthCheckMediaService, origin_urls, invoker);
 }
 
 void ClusterManager::loadSavedMediaServerInfo() {
@@ -235,6 +240,14 @@ void ClusterManager::onManager() {
     {
         std::lock_guard<std::mutex> lck(_mtx);
         for (const auto &pr : _map_server_info) {
+            if (pr.first == mINI::Instance()[General::kMediaServerId]) {
+                // Skip self node
+                continue;
+            }
+            if (_map_peer_url.find(pr.first) != _map_peer_url.end()) {
+                // Skip healthy peer
+                continue;
+            }
             peer_url_copy.emplace(pr.first, buildOrginUrls(pr.second));
         }
     }

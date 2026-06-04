@@ -78,7 +78,7 @@ static void loadSavedDeviceInfo() {
 
 static void loadSavedMediaServerInfo() {
     EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
-        DebugL << "Cluster manager has been started health-checking persisted peers";
+        DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
         return 0;
     });
@@ -782,6 +782,61 @@ static Json::Value exampleJson() {
     data["media_server"]["restartConfig"]["dayOfWeek"] = "";
     data["media_server"]["restartConfig"]["everyHours"] = "";
     data["media_server"]["restartConfig"]["timezone"] = Json::nullValue;
+
+    data["list_media_server"] = Json::arrayValue;
+    Json::Value self_server = Json::objectValue;
+    {
+        self_server["id"] = mINI::Instance()[General::kMediaServerId];
+        self_server["name"] = "Media Server 1";
+        self_server["domain"] = "";
+        self_server["ip"] = "localhost";
+        self_server["http_port"] = 8080;
+        self_server["https_port"] = 443;
+        self_server["rtsp_port"] = 554;
+        self_server["rtmp_port"] = 1935;
+        self_server["isAutoHttpPort"] = true;
+        self_server["isAutoHttpsPort"] = true;
+        self_server["isAutoRtspPort"] = true;
+        self_server["isAutoRtmpPort"] = true;
+        self_server["nat_http_port"] = 80;
+        self_server["nat_https_port"] = 443;
+        self_server["nat_rtsp_port"] = 554;
+        self_server["nat_rtmp_port"] = 1935;
+        self_server["clientUseSsl"] = false;
+        self_server["useWebDomain"] = false;
+        self_server["useDomain"] = false;
+        self_server["useCustomPath"] = false;
+        self_server["customPath"] = "";
+        self_server["hasFailover"] = false;
+    }
+    data["list_media_server"].append(self_server);
+
+    Json::Value remote_server = Json::objectValue;
+    {
+        remote_server["id"] = "qNqgJohB1VmfvNY9Obnhv9rYcklEueJ8";
+        remote_server["name"] = "Media Server 2";
+        remote_server["domain"] = "";
+        remote_server["ip"] = "localhost";
+        remote_server["http_port"] = 8081;
+        remote_server["https_port"] = 443;
+        remote_server["rtsp_port"] = 554;
+        remote_server["rtmp_port"] = 1935;
+        remote_server["isAutoHttpPort"] = true;
+        remote_server["isAutoHttpsPort"] = true;
+        remote_server["isAutoRtspPort"] = true;
+        remote_server["isAutoRtmpPort"] = true;
+        remote_server["nat_http_port"] = 80;
+        remote_server["nat_https_port"] = 443;
+        remote_server["nat_rtsp_port"] = 554;
+        remote_server["nat_rtmp_port"] = 1935;
+        remote_server["clientUseSsl"] = false;
+        remote_server["useWebDomain"] = false;
+        remote_server["useDomain"] = false;
+        remote_server["useCustomPath"] = false;
+        remote_server["customPath"] = "";
+        remote_server["hasFailover"] = true;
+    }
+    data["list_media_server"].append(remote_server);
 
     return data;
 }
