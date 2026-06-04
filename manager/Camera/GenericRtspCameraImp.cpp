@@ -234,11 +234,23 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         return;
     }
 
+    // Snapshot state before update to detect changes
+    auto old_params = strong_statistic->getParams();
+    bool prev_connect = old_params.device_stats.connect;
+    DeviceCapabilities prev_caps = old_params.device_stats.device_caps;
+
     const DeviceCapabilities *caps = nullptr;
     if (data.is<DeviceCapabilities>()) {
         caps = &data.get<DeviceCapabilities>();
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
+
+    // Emit only on restart (false → true) or when caps actually changed
+    bool is_restart = !prev_connect && connect;
+    bool caps_changed = caps && (*caps != prev_caps);
+    if (!is_restart && !caps_changed) {
+        return;
+    }
 
     std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
     WorkThreadPool::Instance().getPoller()->async([weak_self]() {

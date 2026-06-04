@@ -17,6 +17,13 @@ struct OnvifDeviceInfo {
     std::string serialNumber;
     std::string hardwareId;
     std::string macAddress;
+
+    bool operator==(const OnvifDeviceInfo &o) const {
+        return manufacturer == o.manufacturer && model == o.model
+            && firmwareVersion == o.firmwareVersion && serialNumber == o.serialNumber
+            && hardwareId == o.hardwareId && macAddress == o.macAddress;
+    }
+    bool operator!=(const OnvifDeviceInfo &o) const { return !(*this == o); }
 };
 
 struct OnvifPTZProfile {
@@ -52,11 +59,37 @@ struct OnvifPTZProfile {
         float absPan = -1;
         float absTilt = -1;
         float absZoom = -1;
+
+        bool operator==(const PTZPreset &o) const {
+            return Token == o.Token && Name == o.Name
+                && absPan == o.absPan && absTilt == o.absTilt && absZoom == o.absZoom;
+        }
     };
     using PTZPresetMap = std::unordered_map<std::string /*Token*/, PTZPreset>;
     PTZPresetMap presetMap; // pair of preset token and preset name
     bool isHomePresetEnable = false;
     std::string homePresetToken;
+
+    bool operator==(const OnvifPTZProfile &o) const {
+        return strMediaProfileToken == o.strMediaProfileToken
+            && isAbsMoveEnable == o.isAbsMoveEnable
+            && absMinPan == o.absMinPan && absMaxPan == o.absMaxPan
+            && absMinTilt == o.absMinTilt && absMaxTilt == o.absMaxTilt
+            && absMinZoom == o.absMinZoom && absMaxZoom == o.absMaxZoom
+            && isConsMoveEnable == o.isConsMoveEnable
+            && consMinPan == o.consMinPan && consMaxPan == o.consMaxPan
+            && consMinTilt == o.consMinTilt && consMaxTilt == o.consMaxTilt
+            && consMinZoom == o.consMinZoom && consMaxZoom == o.consMaxZoom
+            && isRelMoveEnable == o.isRelMoveEnable
+            && relMinPan == o.relMinPan && relMaxPan == o.relMaxPan
+            && relMinTilt == o.relMinTilt && relMaxTilt == o.relMaxTilt
+            && relMinZoom == o.relMinZoom && relMaxZoom == o.relMaxZoom
+            && isPresetEnable == o.isPresetEnable
+            && presetMap == o.presetMap
+            && isHomePresetEnable == o.isHomePresetEnable
+            && homePresetToken == o.homePresetToken;
+    }
+    bool operator!=(const OnvifPTZProfile &o) const { return !(*this == o); }
 };
 
 struct OnvifMediaProfile {
@@ -80,8 +113,24 @@ struct OnvifMediaProfile {
         std::vector<std::pair<int,int> > ResAvailable;
         std::pair<int,int> BitRateRange;
         std::pair<int,int> QualityRange;
+
+        bool operator==(const VideoConfigOption &o) const {
+            return FrameRateRange == o.FrameRateRange && ResAvailable == o.ResAvailable
+                && BitRateRange == o.BitRateRange && QualityRange == o.QualityRange;
+        }
     };
     VideoConfigOption vOption;
+
+    bool operator==(const OnvifMediaProfile &o) const {
+        return token == o.token && url == o.url
+            && hasVideo == o.hasVideo && vcodec == o.vcodec
+            && width == o.width && height == o.height
+            && bitrate == o.bitrate && fps == o.fps && quality == o.quality
+            && hasAudio == o.hasAudio && acodec == o.acodec
+            && channelNo == o.channelNo && sampleRate == o.sampleRate
+            && sampleBit == o.sampleBit && vOption == o.vOption;
+    }
+    bool operator!=(const OnvifMediaProfile &o) const { return !(*this == o); }
 };
 
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;

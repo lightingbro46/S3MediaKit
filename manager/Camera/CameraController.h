@@ -10,11 +10,23 @@ struct OnvifProfile {
     std::vector<OnvifMediaProfile> mediaProfiles;
     OnvifPTZProfile ptzProfile;
     OnvifDeviceInfo deviceInfo;
+
+    bool operator==(const OnvifProfile &o) const {
+        return mediaProfiles == o.mediaProfiles
+            && ptzProfile == o.ptzProfile
+            && deviceInfo == o.deviceInfo;
+    }
+    bool operator!=(const OnvifProfile &o) const { return !(*this == o); }
 };
 
 struct DeviceCapabilities {
     bool isOnvifDevice = false;
     OnvifProfile onvifProfile;
+
+    bool operator==(const DeviceCapabilities &o) const {
+        return isOnvifDevice == o.isOnvifDevice && onvifProfile == o.onvifProfile;
+    }
+    bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }
 };
 
 // Connection-relevant fields that require a full controller recreate when changed.
