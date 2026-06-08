@@ -222,7 +222,7 @@ bool HttpSession::checkWebSocket() {
     // Determine whether it is websocket-fmp4
     if (checkLiveStreamFMP4(res_cb)) {
         // This is a websocket-fmp4 live request
-        // res_immediately();
+        res_immediately();
         return true;
     }
 

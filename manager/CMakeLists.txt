@@ -50,6 +50,7 @@ target_link_libraries(s3managerkit
     ssl
     crypto
     z
+    curl
     protocpp)
 
 target_include_directories(s3managerkit

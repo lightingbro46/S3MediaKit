@@ -33,6 +33,16 @@ else()
   target_link_libraries(MediaServer ${MK_LINK_LIBRARIES})
 endif()
 
+# Set RPATH so MediaServer finds .so files in the same directory as itself
+# ($ORIGIN) — works both in the build output dir and after deployment when
+# the .so files are copied alongside the binary.
+if(UNIX AND NOT APPLE)
+  set_target_properties(MediaServer PROPERTIES
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH             "$ORIGIN"
+    INSTALL_RPATH_USE_LINK_PATH FALSE)
+endif()
+
 if(MSVC)
   set(RESOURCE_FILE "${CMAKE_SOURCE_DIR}/resource.rc")
   set_source_files_properties(${RESOURCE_FILE} PROPERTIES LANGUAGE RC)  
