@@ -16,6 +16,174 @@ OnvifControl::~OnvifControl() {
     disconnect();
 }    
 
+static std::string ResRangeToString(const std::vector<std::pair<int, int>>& v)
+{
+    std::ostringstream oss;
+
+    bool first = true;
+    for (const auto& p : v)
+    {
+        if (!first) oss << " ";
+        oss << p.first << "x" << p.second;
+        first = false;
+    }
+
+    return oss.str();
+}
+
+static std::string bitrateRangeToString(int minBitrate, int maxBitrate) {
+    if (minBitrate <= 0 || maxBitrate < minBitrate)
+        return "";
+
+    int steps = (maxBitrate >= 8000) ? 8 : (maxBitrate / 1000);
+    steps = std::max(steps, 2);
+
+    double step = static_cast<double>(maxBitrate - minBitrate) / (steps - 1);
+
+    std::string result;
+
+    for (int i = 0; i < steps; ++i) {
+        int value;
+
+        if (i == 0) {
+            value = minBitrate;
+        } else if (i == steps - 1) {
+            value = maxBitrate;
+        } else {
+            int raw = static_cast<int>(minBitrate + i * step);
+            int rounded = (raw + 128) / 256 * 256;
+
+            value = std::max(minBitrate, std::min(maxBitrate, rounded));
+        }
+
+        if (!result.empty()) {
+            size_t pos = result.find_last_of(' ');
+            int last = (pos == std::string::npos) ? std::stoi(result) : std::stoi(result.substr(pos + 1));
+            if (last == value) continue;
+
+            result += " ";
+        }
+
+        result += std::to_string(value);
+    }
+    return result;
+}
+
+static int parse_timezone_offset_seconds(const std::string& tz) {
+    if (tz.empty()) return 0;
+
+    int sign = 1;
+    size_t pos = std::string::npos;
+
+    // ========================
+    // 1. Find the '+' or '-' sign (if any)
+    // ========================
+    size_t plus_pos  = tz.find('+');
+    size_t minus_pos = tz.find('-');
+
+    if (plus_pos != std::string::npos) {
+        sign = -1;
+        pos = plus_pos + 1;
+    } else if (minus_pos != std::string::npos) {
+        sign = +1;
+        pos = minus_pos + 1;
+    } else {
+        // ========================
+        // 2. If there is no '+' or '-' → find the first digi
+        // ========================
+        for (size_t i = 0; i < tz.size(); ++i) {
+            if (std::isdigit(tz[i])) {
+                pos = i;
+                break;
+            }
+        }
+        if (pos == std::string::npos) return 0;
+
+        sign = -1;
+    }
+
+    // The remaining part should contain only digits and ':' character
+    std::string num = tz.substr(pos);
+
+    int hour = 0, min = 0, sec = 0;
+
+    // ========================
+    // 3. If ':' is present
+    // ========================
+    if (num.find(':') != std::string::npos) {
+        size_t p1 = num.find(':');
+        size_t p2 = num.find(':', p1 + 1);
+
+        hour = std::atoi(num.substr(0, p1).c_str());
+
+        if (p2 != std::string::npos) {
+            // HH:MM:SS
+            min = std::atoi(num.substr(p1 + 1, p2 - p1 - 1).c_str());
+            sec = std::atoi(num.substr(p2 + 1).c_str());
+        } else {
+            // HH:MM
+            min = std::atoi(num.substr(p1 + 1).c_str());
+        }
+    }
+    // ========================
+    // 4. If ':' is not present → formats: H, HH, HMM, HHMM, HMMSS, HHMMSS
+    // ========================
+    else {
+        int len = num.length();
+
+        if (len <= 2) {
+            // HH
+            hour = std::atoi(num.c_str());
+        } 
+        else if (len == 3) {
+            // HMM (730 → 7:30)
+            hour = std::atoi(num.substr(0, 1).c_str());
+            min  = std::atoi(num.substr(1, 2).c_str());
+        } 
+        else if (len == 4) {
+            // HHMM (0730 → 07:30)
+            hour = std::atoi(num.substr(0, 2).c_str());
+            min  = std::atoi(num.substr(2, 2).c_str());
+        } 
+        else if (len == 5) {
+            // HMMSS (53000 → 5:30:00)
+            hour = std::atoi(num.substr(0, 1).c_str());
+            min  = std::atoi(num.substr(1, 2).c_str());
+            sec  = std::atoi(num.substr(3, 2).c_str());
+        } 
+        else if (len == 6) {
+            // HHMMSS (073000 → 07:30:00)
+            hour = std::atoi(num.substr(0, 2).c_str());
+            min  = std::atoi(num.substr(2, 2).c_str());
+            sec  = std::atoi(num.substr(4, 2).c_str());
+        } 
+        else {
+            return 0;
+        }
+    }
+
+    return sign * (hour * 3600 + min * 60 + sec);
+}
+
+static int get_system_offset_seconds() {
+    time_t now = time(nullptr);
+
+    struct tm gmt{};
+    struct tm local{};
+
+    gmtime_r(&now, &gmt);
+    localtime_r(&now, &local);
+
+    return (int)difftime(mktime(&local), mktime(&gmt));
+}
+
+static time_t build_camera_utc(const std::string& camera_tz, const time_t& time_point) {
+    int offset_camera = parse_timezone_offset_seconds(camera_tz);
+    int offset_system = get_system_offset_seconds();
+
+    return time_point + (offset_system - offset_camera);
+}
+
 bool OnvifControl::connect() {
     if (_m_soap != nullptr) {
         disconnect();
@@ -55,12 +223,14 @@ void OnvifControl::disconnect() {
     }
     delete _proxyDevice;
     delete _proxyMedia;
+    delete _proxyMedia2;
     delete _proxyImaging;
     delete _proxyPTZ;
 
     _m_soap = nullptr;
     _proxyDevice = nullptr;
     _proxyMedia = nullptr;
+    _proxyMedia2 = nullptr;
     _proxyImaging = nullptr;
     _proxyPTZ = nullptr;
 }
@@ -129,6 +299,8 @@ bool OnvifControl::getDeviceCapabilities() {
         TraceL << "Media XAddr:  " << strUrl;
         _proxyMedia = new MediaBindingProxy(_m_soap);
         _proxyMedia->soap_endpoint = strUrl.c_str();
+        _proxyMedia2 = new Media2BindingProxy(_m_soap);
+        _proxyMedia2->soap_endpoint = strUrl.c_str();
     }
 
     if (GetCapabilitiesResponse.Capabilities->Imaging != nullptr) {
@@ -240,7 +412,7 @@ bool OnvifControl::getDeviceCapabilities() {
 }
 
 bool OnvifControl::getMediaProfiles() {
-    if (_proxyMedia == nullptr) {
+    if (_proxyMedia == nullptr || _proxyMedia2 == nullptr) {
         WarnL << "Unknown proxyMedia";
         return false;
     }
@@ -274,53 +446,81 @@ bool OnvifControl::getMediaProfiles() {
             // profile has video source
             _profile.hasVideo = true;
 
-            // get video configuration in profile
-            switch (profile->VideoEncoderConfiguration->Encoding) {
-                case tt__VideoEncoding__JPEG: _profile.vcodec = "JPEG"; break;
-                case tt__VideoEncoding__MPEG4: _profile.vcodec = "MPEG4"; break;
-                case tt__VideoEncoding__H264: _profile.vcodec = "H264"; break;
-                default: _profile.vcodec = "UNKNOWN"; break;
+            ns1__GetConfiguration *GetVideoConfig  = soap_new_ns1__GetConfiguration(_m_soap);
+            GetVideoConfig->ProfileToken = &profile->token;
+            GetVideoConfig->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
+            _ns1__GetVideoEncoderConfigurationsResponse GetVideoConfigResponse;
+            if (!setCredentials()) {
+                disconnect();
+                return false;
+            }
+            if (_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
+                reportError();
+                disconnect();
+                return false;
             }
 
-            if (_profile.vcodec == "UNKNOWN") {
-                WarnL << "Unsupported video codec: " << profile->VideoEncoderConfiguration->Encoding << ". Ignore";
+            TraceL << "Get video encoder configuration for token " << profile->token << ", configurations size = " << GetVideoConfigResponse.Configurations.size();
+            auto tokenConfig = GetVideoConfigResponse.Configurations[0];
+            if (!tokenConfig) {
                 continue;
             }
 
-            TraceL << "Video Codec: " << profile->VideoEncoderConfiguration->Encoding;
-            _profile.bitrate = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->BitrateLimit : 0;
+            _profile.vcodec = tokenConfig->Encoding;
+            TraceL << "Video Codec: " << _profile.vcodec;
+            _profile.bitrate = tokenConfig->RateControl ? tokenConfig->RateControl->BitrateLimit : 0;
             TraceL << "Bitrate Limit: " << _profile.bitrate;
-            int framerate_limit = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
-            TraceL << "Frame Rate Limit: " << framerate_limit;
-            int encoding_interval = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->EncodingInterval : 0;
-            TraceL << "Encoding Interval: " << encoding_interval;
-            _profile.fps = encoding_interval ? framerate_limit / encoding_interval : 0.0f;
-            _profile.width = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Width : 0;
+            _profile.fps = tokenConfig->RateControl ? tokenConfig->RateControl->FrameRateLimit : 0;
+            TraceL << "Bitrate Limit: " << _profile.fps;
+            _profile.width = tokenConfig->Resolution ? tokenConfig->Resolution->Width : 0;
             TraceL << "Width: " << _profile.width;
-            _profile.height = profile->VideoEncoderConfiguration->Resolution ? profile->VideoEncoderConfiguration->Resolution->Height : 0;
+            _profile.height = tokenConfig->Resolution ? tokenConfig->Resolution->Height : 0;
             TraceL << "Height: " << _profile.height;
-            _profile.quality = profile->VideoEncoderConfiguration->Quality ? profile->VideoEncoderConfiguration->Quality : 0.0f;
+            _profile.quality = tokenConfig->Quality;
             TraceL << "Quality: " << _profile.quality;
 
             // get video configuration option in profile
-            // _trt__GetVideoEncoderConfigurationOptions* GetVideoConfigOptions = soap_new__trt__GetVideoEncoderConfigurationOptions(_m_soap);
-            // _trt__GetVideoEncoderConfigurationOptionsResponse GetVideoConfigOptionResponse;
-            // GetVideoConfigOptions->ProfileToken = &profile->token;
-            // GetVideoConfigOptions->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
-            // if (!setCredentials()) {
-            //     disconnect();
-            //     return false;
-            // }
+            ns1__GetConfiguration *GetVideoConfigOptions  = soap_new_ns1__GetConfiguration(_m_soap);
+            _ns1__GetVideoEncoderConfigurationOptionsResponse GetVideoConfigOptionResponse;
+            GetVideoConfigOptions->ProfileToken = &profile->token;
+            GetVideoConfigOptions->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
+            if (!setCredentials()) {
+                reportError();
+                return false;
+            }
 
-            // if (_proxyMedia->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
-            //     reportError();
-            //     disconnect();
-            //     return false;
-            // }
+            if (_proxyMedia2->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
+                reportError();
+                return false;
+            }
 
-            // if (_profile.vcodec == "JPEG") {
-            //     // DebugL << GetVideoConfigOptionResponse.Options->H264
-            // }
+            for (const auto &Option : GetVideoConfigOptionResponse.Options) {
+                if (!Option) {
+                    continue;
+                }
+                VideoEncoderConfigOption cfg_option;
+                for (size_t i = 0; i < Option->ResolutionsAvailable.size(); ++i)
+                {
+                    tt__VideoResolution2* r = Option->ResolutionsAvailable[i];
+                    cfg_option.ResolutionsAvailable.push_back(std::make_pair(r->Width, r->Height));
+                }
+                cfg_option.BitRateRange = bitrateRangeToString(Option->BitrateRange->Min, Option->BitrateRange->Max);
+                cfg_option.QualityRange = std::make_pair(Option->QualityRange->Min, Option->QualityRange->Max);
+                if (Option->FrameRatesSupported) {
+                    cfg_option.FrameRatesSupported = *Option->FrameRatesSupported;
+                }
+                cfg_option.FPSEditable = _profile.fps != 0 && !cfg_option.FrameRatesSupported.empty();
+                cfg_option.bitrateEditable = _profile.bitrate != 0 && Option->BitrateRange->Min != Option->BitrateRange->Max;
+                cfg_option.resolutionEditable = cfg_option.ResolutionsAvailable.size() > 1;
+                _profile.vEncoderOptionMap[Option->Encoding] = cfg_option;
+            }
+
+            _profile.videoEncEditable = _profile.vEncoderOptionMap.size() > 1;
+            bool editable = false;
+            for (const auto &it : _profile.vEncoderOptionMap) {
+                editable = it.second.bitrateEditable || it.second.FPSEditable || it.second.resolutionEditable;
+            }
+            _profile.videoConfigEditable = editable || _profile.videoEncEditable;
         }
 
         // if (profile->AudioSourceConfiguration && profile->AudioEncoderConfiguration) {
@@ -416,6 +616,125 @@ bool OnvifControl::getMediaProfiles() {
     return true;    
 }
 
+tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(const std::string& profileToken)
+{
+    if (_proxyMedia == nullptr || _proxyMedia2 == nullptr) {
+        WarnL << "Unknown proxyMedia";
+        return nullptr;
+    }
+
+    _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
+    _trt__GetProfilesResponse GetProfilesResponse;
+    if (!setCredentials()) {
+        disconnect();
+        return nullptr;
+    }
+
+    if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
+        reportError();
+        disconnect();
+        return nullptr;
+    }
+
+    for (auto profile : GetProfilesResponse.Profiles)
+    {
+        if (profile->token == profileToken)
+        {
+            ns1__GetConfiguration *GetVideoConfig  = soap_new_ns1__GetConfiguration(_m_soap);
+            GetVideoConfig->ProfileToken = &profile->token;
+            GetVideoConfig->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
+            _ns1__GetVideoEncoderConfigurationsResponse GetVideoConfigResponse;
+            if (!setCredentials()) {
+                disconnect();
+                return nullptr;
+            }
+            if (_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
+                reportError();
+                disconnect();
+                return nullptr;
+            }
+            return GetVideoConfigResponse.Configurations[0];
+        }
+    }
+
+    return nullptr;
+}
+
+bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew)
+{
+    auto config = getConfigVideoEncoder2ByToken(token);
+    if (!config) {
+        return false;
+    }
+
+    tt__VideoEncoder2Configuration* configToSet = soap_new_tt__VideoEncoder2Configuration(_m_soap);
+    *configToSet = *config;
+
+    configToSet->Encoding = vConfigNew.vcodec;
+
+    if (!configToSet->Resolution)
+        configToSet->Resolution = soap_new_tt__VideoResolution2(_m_soap);
+    configToSet->Resolution->Width = vConfigNew.width;
+    configToSet->Resolution->Height = vConfigNew.height;
+
+    if (!configToSet->RateControl)
+        configToSet->RateControl = soap_new_tt__VideoRateControl2(_m_soap);
+
+    configToSet->RateControl->FrameRateLimit = vConfigNew.fps;
+    configToSet->RateControl->BitrateLimit = vConfigNew.bitrate;
+
+    _ns1__SetVideoEncoderConfiguration* setReq = soap_new__ns1__SetVideoEncoderConfiguration(_m_soap);
+    ns1__SetConfigurationResponse setResp;
+
+    setReq->Configuration = configToSet;
+
+    if (!setCredentials()) {
+        disconnect();
+        return false;
+    }
+
+    if (_proxyMedia2->SetVideoEncoderConfiguration(setReq, setResp))
+    {
+        reportError();
+        return false;
+    }
+
+    _ns1__GetStreamUri *GetStreamUri = soap_new__ns1__GetStreamUri(_m_soap);
+    _ns1__GetStreamUriResponse GetStreamUriResponse;
+    GetStreamUri->ProfileToken = token;
+    GetStreamUri->Protocol = "RTSP";
+    if (!setCredentials()) {
+        disconnect();
+        return false;
+    }
+
+    if (_proxyMedia2->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
+        reportError();
+        disconnect();
+        return false;
+    }
+
+    InfoL << "The new config has been sent to the camera, current URI: " << GetStreamUriResponse.Uri;
+
+    return true;
+}
+
+bool OnvifControl::getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig) {
+    auto config = getConfigVideoEncoder2ByToken(token);
+    if (!config) {
+        return false;
+    }
+
+    vConfig.vcodec = config->Encoding;
+    vConfig.bitrate = config->RateControl ? config->RateControl->BitrateLimit : 0;
+    vConfig.fps = config->RateControl ? config->RateControl->FrameRateLimit : 0;
+    vConfig.width = config->Resolution ? config->Resolution->Width : 0;
+    vConfig.height = config->Resolution ? config->Resolution->Height : 0;
+    vConfig.quality = config->Quality;
+
+    return true;
+}
+
 bool OnvifControl::getNetworkInterfaces() {
     if (_proxyDevice == nullptr) {
         WarnL << "Unknown proxyDevice";
@@ -450,12 +769,12 @@ void OnvifControl::reportError() {
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
-bool OnvifControl::getCameraTime(time_t& time_utc) {
+bool OnvifControl::getCameraTime() {
     if (!_proxyDevice || !_m_soap) {
         return false;
     }
     _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(_m_soap, -1);
-    _tds__GetSystemDateAndTimeResponse resp;    
+    _tds__GetSystemDateAndTimeResponse resp;
 
     if (_proxyDevice->GetSystemDateAndTime(req, resp)) {
         reportError();
@@ -465,6 +784,10 @@ bool OnvifControl::getCameraTime(time_t& time_utc) {
     if (!resp.SystemDateAndTime) {
         WarnL << "Invalid camera time response";
         return false;
+    }
+
+    if (resp.SystemDateAndTime->TimeZone) {
+        _camTimeInfo.TZ = resp.SystemDateAndTime->TimeZone->TZ;
     }
 
     auto buildTime = [](tt__DateTime* dt, bool isUtc) -> time_t
@@ -490,7 +813,10 @@ bool OnvifControl::getCameraTime(time_t& time_utc) {
     if (resp.SystemDateAndTime->UTCDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->UTCDateTime, true);
         if (t > 0) {
-            time_utc = t;
+            _camTimeInfo.cam_time = t;
+            int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
+            int offset_sys = get_system_offset_seconds();
+            _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
             return true;
         }
     }
@@ -498,7 +824,8 @@ bool OnvifControl::getCameraTime(time_t& time_utc) {
     if (resp.SystemDateAndTime->LocalDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->LocalDateTime, false);
         if (t > 0) {
-            time_utc = t;
+            _camTimeInfo.cam_time = t;
+            _camTimeInfo.cam_sys_time = t;
             return true;
         }
     }
@@ -574,21 +901,77 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
     };
 }
 
+void OnvifControl::setCameraTimeManual() {
+    soap *soap = soap_new();
+    soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10; // timeout connection for 10 seconds
+    soap_register_plugin(soap, soap_wsse);
+
+    DeviceBindingProxy *proxy = new DeviceBindingProxy(soap);
+    proxy->soap_endpoint =_proxyDevice->soap_endpoint;
+
+    if (getCameraTime() && !_camTimeInfo.TZ.empty()) {
+        if (abs(_camTimeInfo.cam_sys_time - time(nullptr)) >= 10) {
+            time_t now = time(nullptr);
+            time_t camera_utc = build_camera_utc(_camTimeInfo.TZ, now);
+
+            struct tm utc_tm;
+            gmtime_r(&camera_utc, &utc_tm);
+
+            _tds__SetSystemDateAndTime req;
+            _tds__SetSystemDateAndTimeResponse resp;
+    
+            req.DateTimeType = tt__SetDateTimeType__Manual;
+            req.DaylightSavings = false;
+    
+            req.UTCDateTime = soap_new_tt__DateTime(soap);
+            req.UTCDateTime->Date = soap_new_tt__Date(soap);
+            req.UTCDateTime->Time = soap_new_tt__Time(soap);
+    
+            req.UTCDateTime->Date->Year  = utc_tm.tm_year + 1900;
+            req.UTCDateTime->Date->Month = utc_tm.tm_mon + 1;
+            req.UTCDateTime->Date->Day   = utc_tm.tm_mday;
+    
+            req.UTCDateTime->Time->Hour   = utc_tm.tm_hour;
+            req.UTCDateTime->Time->Minute = utc_tm.tm_min;
+            req.UTCDateTime->Time->Second = utc_tm.tm_sec;
+            
+            time_t offset_time = _camTimeInfo.cam_time - time(nullptr);
+            installSoapHook(soap, offset_time);
+    
+            if (soap_wsse_add_Timestamp(soap, "Time", 10) == SOAP_OK && soap_wsse_add_UsernameTokenDigest_at(soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time) == SOAP_OK) {
+                int ret = proxy->SetSystemDateAndTime(&req, resp);    
+                if (ret != SOAP_OK)
+                {
+                    WarnL << "Set camera time failed, ret " << ret;
+                }
+            }
+
+        }
+    
+        if (soap != nullptr) {
+            soap_destroy(soap);
+            soap_end(soap);
+            soap_free(soap);
+        }
+        delete proxy;
+        soap = nullptr;
+        proxy = nullptr;
+    }
+}
+
 bool OnvifControl::setCredentials() {
     soap_wsse_delete_Security(_m_soap);
     // Access with username, password and lifetime
     bool need_update_time = false;
-    time_t cam_time = 0;
-    time_t offset_time = 0;
-    if (getCameraTime(cam_time)) {
-        offset_time = cam_time - time(nullptr);
+    if (getCameraTime()) {
+        time_t offset_time = _camTimeInfo.cam_time - time(nullptr);
         if (abs(offset_time) >= 5) {
             installSoapHook(_m_soap, offset_time);
             need_update_time = true;
         }
     }
 
-    const int ret = need_update_time ? (soap_wsse_add_UsernameTokenDigest_at(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), cam_time)) 
+    const int ret = need_update_time ? (soap_wsse_add_UsernameTokenDigest_at(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time))
                                      : (soap_wsse_add_UsernameTokenDigest(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str()));
 
     if (soap_wsse_add_Timestamp(_m_soap, "Time", 10) || ret) {

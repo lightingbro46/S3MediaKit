@@ -4,6 +4,7 @@
 #include <map>
 #include "soapDeviceBindingProxy.h"
 #include "soapMediaBindingProxy.h"
+#include "soapMedia2BindingProxy.h"
 #include "soapImagingBindingProxy.h"
 #include "soapPTZBindingProxy.h"
 #include "Common/DeviceControl.h"
@@ -92,6 +93,58 @@ struct OnvifPTZProfile {
     bool operator!=(const OnvifPTZProfile &o) const { return !(*this == o); }
 };
 
+enum class VideoConfigSetState {NEW, PROCESSING, SUCCESS, FAILED, EXTERNAL};
+static std::unordered_map<VideoConfigSetState, std::string> configStateToString = {
+    {VideoConfigSetState::NEW, "NEW"},
+    {VideoConfigSetState::PROCESSING, "PROCESSING"},
+    {VideoConfigSetState::SUCCESS, "SUCCESS"},
+    {VideoConfigSetState::FAILED, "FAILED"},
+    {VideoConfigSetState::EXTERNAL, "EXTERNAL"}
+};
+
+struct VideoEncoderConfig {
+    std::string vcodec;
+    int width;
+    int height;
+    int bitrate;
+    float fps;
+    float quality;
+
+    struct ConfigState {
+        int retry_time = 5;
+        std::string status = configStateToString[VideoConfigSetState::EXTERNAL];
+    };
+    ConfigState state;
+    
+    bool operator==(const VideoEncoderConfig& other) const {
+        return vcodec   == other.vcodec &&
+               width    == other.width &&
+               height   == other.height &&
+               bitrate  == other.bitrate &&
+               isEqual(fps, other.fps);
+    }
+    
+    bool operator!=(const VideoEncoderConfig& other) const {
+        return !(*this == other);
+    }
+
+    using VideoEncoderConfigMap = std::unordered_map<std::string /*profile token*/, VideoEncoderConfig>;
+private:
+    static bool isEqual(float a, float b, float eps = 1e-6f) {
+        return std::fabs(a - b) < eps;
+    }
+};
+
+struct VideoEncoderConfigOption {
+    std::vector<std::pair<int,int> > ResolutionsAvailable;
+    std::string BitRateRange;
+    std::pair<float,float> QualityRange;
+    std::string FrameRatesSupported;
+    bool FPSEditable = false;
+    bool bitrateEditable = false;
+    bool resolutionEditable = false;
+};
+
 struct OnvifMediaProfile {
     std::string token;
     std::string url;
@@ -102,35 +155,42 @@ struct OnvifMediaProfile {
     int bitrate;
     float fps;
     float quality;
+    bool videoEncEditable = false;
+    bool videoConfigEditable = false;
     bool hasAudio = false;
     std::string acodec;
     int channelNo;
     std::string sampleRate;
     std::string sampleBit;
 
-    struct VideoConfigOption {
-        std::pair<int,int> FrameRateRange;
-        std::vector<std::pair<int,int> > ResAvailable;
-        std::pair<int,int> BitRateRange;
-        std::pair<int,int> QualityRange;
-
-        bool operator==(const VideoConfigOption &o) const {
-            return FrameRateRange == o.FrameRateRange && ResAvailable == o.ResAvailable
-                && BitRateRange == o.BitRateRange && QualityRange == o.QualityRange;
-        }
-    };
-    VideoConfigOption vOption;
+    std::unordered_map<std::string, VideoEncoderConfigOption> vEncoderOptionMap;
 
     bool operator==(const OnvifMediaProfile &o) const {
-        return token == o.token && url == o.url
-            && hasVideo == o.hasVideo && vcodec == o.vcodec
-            && width == o.width && height == o.height
-            && bitrate == o.bitrate && fps == o.fps && quality == o.quality
-            && hasAudio == o.hasAudio && acodec == o.acodec
-            && channelNo == o.channelNo && sampleRate == o.sampleRate
-            && sampleBit == o.sampleBit && vOption == o.vOption;
+        return token == o.token && url == o.url && 
+            hasVideo == o.hasVideo && 
+            vcodec == o.vcodec && 
+            width == o.width && 
+            height == o.height && 
+            bitrate == o.bitrate && 
+            fps == o.fps && 
+            quality == o.quality && 
+            videoEncEditable == o.videoEncEditable && 
+            videoConfigEditable == o.videoConfigEditable && 
+            hasAudio == o.hasAudio && 
+            acodec == o.acodec && 
+            channelNo == o.channelNo && 
+            sampleRate == o.sampleRate && 
+            sampleBit == o.sampleBit;
     }
     bool operator!=(const OnvifMediaProfile &o) const { return !(*this == o); }
+
+    bool isVideoConfigEqual(const VideoEncoderConfig &o) const {
+        return vcodec == o.vcodec && 
+            width == o.width && 
+            height == o.height && 
+            bitrate == o.bitrate && 
+            fps == o.fps;
+    }
 };
 
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
@@ -226,6 +286,29 @@ public:
      */
     bool PTZ_SetPreset(const std::string &presetName, const std::string &presetToken, float &pan, float &tilt, float &zoom);
 
+    /**
+    * @brief Send a request to set the video encoder configuration on the camera.
+    *
+    * @param token Profile token.
+    * @param vConfigNew New video encoder configuration.
+    * @return true if the request is sent successfully; otherwise, false.
+    */
+    bool setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew);
+
+    /**
+    * @brief Get the video encoder configuration by profile token.
+    *
+    * @param token Profile token.
+    * @param vConfig Output video encoder configuration.
+    * @return true if the configuration is retrieved successfully; otherwise, false.
+    */
+    bool getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig);
+
+    /**
+    * Set the camera time to match the current system time.
+    */
+    void setCameraTimeManual();
+
 private:
     void reportError();
 
@@ -262,12 +345,22 @@ private:
     /**
      * get the camera's time by soap protocol
      */
-    bool getCameraTime(time_t& time_utc);
+    bool getCameraTime();
 
     /**
      * modify WS-Security (wsu:Created, wsu:Expires) before sending the request.
      */
     void installSoapHook(struct soap* soap, time_t offset);
+
+    /**
+    * Get tt__VideoEncoder2Configuration by profile token.
+    */
+    tt__VideoEncoder2Configuration* getConfigVideoEncoder2ByToken(const std::string& profileToken);
+
+    /**
+    * Save the profile configuration token and profile capabilities to the database.
+    */
+    void saveProfileConfigToDB(const std::string& camera_id, const OnvifMediaProfile& mProfile);
 
 private:
     // Device information
@@ -281,10 +374,18 @@ private:
 
     std::string _soapErrMsg;
 
+    struct CamTimeInfo {
+        std::string TZ;
+        time_t cam_time;
+        time_t cam_sys_time;
+    };
+    CamTimeInfo _camTimeInfo;
+
 private:
     soap   *_m_soap = nullptr;  //Soap for onvif
     DeviceBindingProxy  *_proxyDevice  = nullptr;    //Device API
     MediaBindingProxy   *_proxyMedia   = nullptr;    //Media API
+    Media2BindingProxy   *_proxyMedia2   = nullptr;  //Media2 API
     ImagingBindingProxy *_proxyImaging = nullptr;    //Imaging API
     PTZBindingProxy     *_proxyPTZ     = nullptr;    //PTZ API
 

@@ -227,6 +227,9 @@ extern const std::string kBroadcastSyncBookmarkCreateOrUpdate;
 extern const std::string kBroadcastSyncBookmarkDelete;
 #define BroadcastSyncBookmarkDeleteArgs const std::string &origin_urls, const std::string &bookmark_id, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
 
+extern const std::string kBroadcastStreamSettingChange;
+#define BroadcastStreamSettingChangeArgs const DeviceTuple &args, const std::string &profile_token, const VideoEncoderConfig &video_encoder_config
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \

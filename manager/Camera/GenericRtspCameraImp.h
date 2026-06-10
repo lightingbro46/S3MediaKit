@@ -39,6 +39,10 @@ public:
 
     void PTZGotoPreset(const std::string &presetToken, bool isUserPreset, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    void setMediaProfile(const std::string &profileToken, VideoEncoderConfig &config, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    void getMediaProfile(const std::string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb);
+
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }

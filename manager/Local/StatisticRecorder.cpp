@@ -230,16 +230,25 @@ static onceToken g_token(
     });
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold, [](BroadcastTierKeepThresholdArgs) {
         auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id, false);
-        if (recorder) {
+        if (!recorder) {
             WarnL << "Received tier keep threshold update for device " << args.device_id << " but no statistic recorder found. Ignore update.";
             return;
         }
         recorder->addTierKeepThreshold(tier_type, start, threshold);
     });
+    NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastStreamSettingChange, [](BroadcastStreamSettingChangeArgs) {
+        auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id, false);
+        if (!recorder) {
+            WarnL << "Received stream setting change for device " << args.device_id << " but no statistic recorder found. Ignore update.";
+            return;
+        }
+        recorder->saveVideoEncoderConfig(profile_token, video_encoder_config);
+    });
 }, 
 []() {
     NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastMotionKeepThreshold);
     NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold);
+    NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastStreamSettingChange);
 });
 
 } // namespace managerkit

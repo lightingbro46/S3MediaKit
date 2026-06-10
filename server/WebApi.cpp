@@ -3489,6 +3489,120 @@ void installWebApi() {
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
     });
 
+    api_regist("/media/mserver/device/onvifSetVideoConfigs", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ADD_CAMERA_PERMISSION();
+        CHECK_ARGS_("deviceId");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            string token = allArgs["token"];
+            string encoding = allArgs["encoding"];
+            int width = allArgs["width"];
+            int height = allArgs["height"];
+            float fps = allArgs["fps"];
+            int bitrate = allArgs["bitrate"];
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                return;
+            }
+
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (impl) {
+                        VideoEncoderConfig vConfigSet;
+                        vConfigSet.vcodec = encoding;
+                        vConfigSet.width = width;
+                        vConfigSet.height = height;
+                        vConfigSet.bitrate = bitrate;
+                        vConfigSet.fps = fps;
+
+                        auto callback = [=](const SockException &ex, VideoEncoderConfig &vOldConfig) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                if (vConfigSet == vOldConfig) {
+                                    val["data"]["flag"] = false;
+                                    RETURN_API_RESPONSE(ApiErrCode::CODE_ONVIF_SET_CONFIG_NOT_CHANGE, "New config is the same as old config");
+                                    return;
+                                }
+
+                                impl->setMediaProfile(token, vConfigSet, [=](const SockException &ex) mutable {
+                                    if (ex) {
+                                        RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                                    } else {
+                                        val["msg"] = ex.what();
+                                        val["data"]["flag"] = true;
+                                        val["data"]["config"]["encoding"] = vConfigSet.vcodec;
+                                        val["data"]["config"]["fps"] = vConfigSet.fps;
+                                        val["data"]["config"]["bitrate"] = vConfigSet.bitrate;
+                                        val["data"]["config"]["resolution"]["width"] = vConfigSet.width;
+                                        val["data"]["config"]["resolution"]["height"] = vConfigSet.height;
+                                        invoker(200, headerOut, val.toStyledString());
+                                        // onvif->saveVideoEncoderConfigToFile(deviceId, token, vConfigSet, true);
+                                    }
+                                });
+                            }
+                        };
+                        // load current config and compare with new config, if same then return not change
+                        VideoEncoderConfig vConfig;
+                        auto stats_imp = impl->getCameraStatisticImp();
+                        if (stats_imp) {
+                            stats_imp->loadVideoEncoderConfig(token, vConfig);
+                            if (!vConfig.vcodec.empty()) {
+                                callback(SockException(Err_success), vConfig);
+                                return;
+                            }
+                        }
+                        if (vConfig.vcodec.empty()) {
+                            WarnL << "Failed to get current video encoder config, use media profile as fallback";
+                            impl->getMediaProfile(token, callback);
+                        }
+                    } else {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
+                    }
+                } else {
+                    /* Unreachable */
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    api_regist("/media/mserver/device/onvifGetConfigProfiles", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ADD_CAMERA_PERMISSION();
+        CHECK_ARGS_("deviceId");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                val["data"] = makeDeviceMediaProfileJson(ret);
+                invoker(200, headerOut, val.toStyledString());
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_READ_MSERVER_PERMISSION();

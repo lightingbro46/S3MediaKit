@@ -126,6 +126,27 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
         Json::Value mp_json = Json::objectValue;
         mp_json["token"] = mp.token;
         mp_json["url"] = mp.url;
+        mp_json["vcodec"] = mp.vcodec;
+        mp_json["width"] = mp.width;
+        mp_json["height"] = mp.height;
+        mp_json["bitrate"] = mp.bitrate;
+        mp_json["fps"] = mp.fps;
+        for (const auto &vo : mp.vEncoderOptionMap) {
+            mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
+            mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
+            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
+            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
+            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
+            for (const auto &r : vo.second.ResolutionsAvailable) {
+                Json::Value stream;
+                stream["width"] = r.first;
+                stream["height"] = r.second;
+                mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+            }
+            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
+        }
+        mp_json["videoEncEditable"] = mp.videoEncEditable;
+        mp_json["videoConfigEditable"] = mp.videoConfigEditable;
         mediaProfiles.append(mp_json);
     }
     ret["mediaProfiles"] = mediaProfiles;
@@ -159,12 +180,32 @@ static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities &caps) {
     return ret;
 }
 
+static Json::Value makeVideoEncoderConfigMapJson(const VideoEncoderConfig::VideoEncoderConfigMap &config_map) {
+    Json::Value ret = Json::objectValue;
+    for (const auto &it : config_map) {
+        const auto &profile_token = it.first;
+        const auto &config = it.second;
+        Json::Value config_json = Json::objectValue;
+        config_json["vcodec"] = config.vcodec;
+        config_json["width"] = config.width;
+        config_json["height"] = config.height;
+        config_json["bitrate"] = config.bitrate;
+        config_json["fps"] = config.fps;
+        config_json["quality"] = config.quality;
+        config_json["state"]["retry_time"] = config.state.retry_time;
+        config_json["state"]["status"] = config.state.status;
+        ret[profile_token] = config_json;
+    }
+    return ret;
+}
+
 static Json::Value makeDeviceStatisticJson(const DeviceStatistic &stats) {
     Json::Value ret = Json::objectValue;
     ret["connect"] = stats.connect;
     ret["status"] = stats.status;
     ret["capabilities"] = makeDeviceCapabilitiesJson(stats.device_caps);
     ret["user_presets"] = makeOnvifPTZPresetMapJson(stats.user_presets);
+    ret["stream_settings"] = makeVideoEncoderConfigMapJson(stats.stream_settings);
     return ret;
 }
 
@@ -191,6 +232,27 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
         OnvifMediaProfile mp;
         mp.token = mp_json["token"].asString();
         mp.url = mp_json["url"].asString();
+        mp.vcodec = mp_json["vcodec"].asString();
+        mp.width = mp_json["width"].asInt();
+        mp.height = mp_json["height"].asInt();
+        mp.bitrate = mp_json["bitrate"].asInt();
+        mp.fps = mp_json["fps"].asFloat();
+        for (const auto &vo_json : mp_json["videoEncoder"]["available"].getMemberNames()) {
+            VideoEncoderConfigOption vo;
+            vo.FrameRatesSupported = mp_json["videoEncoder"]["available"][vo_json]["fps"]["supported"].asString();
+            vo.FPSEditable = mp_json["videoEncoder"]["available"][vo_json]["fps"]["editable"].asBool();
+            vo.BitRateRange = mp_json["videoEncoder"]["available"][vo_json]["bitrate"]["supported"].asString();
+            vo.bitrateEditable = mp_json["videoEncoder"]["available"][vo_json]["bitrate"]["editable"].asBool();
+            for (const auto &r_json : mp_json["videoEncoder"]["available"][vo_json]["ResolutionsAvailable"]["supported"]) {
+                int width = r_json["width"].asInt();
+                int height = r_json["height"].asInt();
+                vo.ResolutionsAvailable.emplace_back(width, height);
+            }
+            vo.resolutionEditable = mp_json["videoEncoder"]["available"][vo_json]["ResolutionsAvailable"]["editable"].asBool();
+            mp.vEncoderOptionMap.emplace(vo_json, std::move(vo));
+        }
+        mp.videoEncEditable = mp_json["videoEncEditable"].asBool();
+        mp.videoConfigEditable = mp_json["videoConfigEditable"].asBool();
         profile.mediaProfiles.push_back(mp);
     }
     // ptzProfile
@@ -219,6 +281,25 @@ static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     return stats;
 }
 
+static VideoEncoderConfig::VideoEncoderConfigMap getVideoEncoderConfigMap(const Json::Value &data) {
+    VideoEncoderConfig::VideoEncoderConfigMap ret;
+    for (const auto &it : data.getMemberNames()) {
+        const auto &profile_token = it;
+        const auto &config_json = data[it];
+        VideoEncoderConfig config;
+        config.vcodec = config_json["vcodec"].asString();
+        config.width = config_json["width"].asInt();
+        config.height = config_json["height"].asInt();
+        config.bitrate = config_json["bitrate"].asInt();
+        config.fps = config_json["fps"].asFloat();
+        config.quality = config_json["quality"].asFloat();
+        config.state.retry_time = config_json["state"]["retry_time"].asInt();
+        config.state.status = config_json["state"]["status"].asString();
+        ret.emplace(profile_token, std::move(config));
+    }
+    return ret;
+}
+
 static DeviceStatistic getDeviceStatistic(const Json::Value &data) {
     DeviceStatistic stats;
     stats.connect = !data["connect"].empty() ? data["connect"].asBool() : false;
@@ -228,6 +309,9 @@ static DeviceStatistic getDeviceStatistic(const Json::Value &data) {
     }
     if (!data["user_presets"].empty()) {
         stats.user_presets = getOnvifPTZPresetMap(data["user_presets"]);
+    }
+    if (!data["stream_settings"].empty()) {
+        stats.stream_settings = getVideoEncoderConfigMap(data["stream_settings"]);
     }
     return stats;
 }
@@ -808,6 +892,25 @@ void CameraStatisticImp::addTierKeepThreshold(int tier_type, bool start, uint64_
         DebugL << "Camera " << tuple.shortUrl() << " set tier " << getTierTypeString(tier_type) << " keep end threshold: " << threshold << " seconds";
     }
     save();
+}
+
+void CameraStatisticImp::saveVideoEncoderConfig(const std::string token, const VideoEncoderConfig &config) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    device_stats.stream_settings[token] = config;
+    save();
+}
+
+bool CameraStatisticImp::loadVideoEncoderConfig(const std::string token, VideoEncoderConfig &config) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    auto it = device_stats.stream_settings.find(token);
+    if (it == device_stats.stream_settings.end()) {
+        return false;
+    }
+    config = it->second;
+    if (config.vcodec.empty()) {
+        return false;
+    }
+    return true;
 }
 
 template<>

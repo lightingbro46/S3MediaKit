@@ -57,6 +57,9 @@ namespace managerkit {
     XX(CODE_BOOKMARK_CREATE_FAILED,         "Bookmark creation failed",         500,         300023) \
     XX(CODE_BOOKMARK_UPDATE_FAILED,         "Bookmark update failed",           500,         300024) \
     XX(CODE_BOOKMARK_DELETE_FAILED,         "Bookmark delete failed",           500,         300025) \
+    XX(CODE_ONVIF_SET_CONFIG_NOT_CHANGE,    "New config is the same as old config", 409,     300026) \
+    XX(CODE_ONVIF_SET_CONFIG_FAILED,        "Failed to set new config",         500,         300027) \
+    XX(CODE_ONVIF_GET_CONFIG_FAILED,        "Failed to get config",             500,         300028) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \

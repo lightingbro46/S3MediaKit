@@ -96,6 +96,11 @@ inline std::string serialize_sql_value(const Optional<T>& val) {
     return val.has_value() ? serialize_sql_value(val.value()) : "NULL";
 }
 
+template<>
+inline std::string serialize_sql_value(const float& val) {
+    return std::to_string(val);
+}
+
 // ===============================
 // Parse value from string
 // ===============================
@@ -126,6 +131,11 @@ template<typename T>
 inline Optional<T> parse_sql_value(const std::string& s, Optional<T> mem) {
     if (s == "NULL") return Optional<T>();
     return Optional<T>(parse_sql_value<T>(s, T{}));
+}
+
+template<>
+inline float parse_sql_value<float>(const std::string& s, float) {
+    return std::stof(s);
 }
 
 // Helper to declare composite primary keys without confusing the preprocessor.

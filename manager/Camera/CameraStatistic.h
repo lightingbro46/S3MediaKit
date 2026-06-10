@@ -46,6 +46,7 @@ struct DeviceStatistic {
     std::string status;
     DeviceCapabilities device_caps;
     OnvifPTZProfile::PTZPresetMap user_presets;
+    VideoEncoderConfig::VideoEncoderConfigMap stream_settings;
 };
 
 struct MotionStorageStats {
@@ -114,6 +115,10 @@ public:
     void addMotionKeepThreshold(bool start, uint64_t threshold);
 
     void addTierKeepThreshold(int tier_type, bool start, uint64_t threshold);
+
+    void saveVideoEncoderConfig(const std::string token, const VideoEncoderConfig &config);
+
+    bool loadVideoEncoderConfig(const std::string token, VideoEncoderConfig &config);
 
 public:
     CameraStatistic getParams();

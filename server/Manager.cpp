@@ -624,23 +624,23 @@ static void fromJson(MediaServerInfo &info, const Json::Value &data) {
     info.name = data["name"].asString();
     info.domain = data["domain"].asString();
     info.ip = data["ip"].asString();
-    info.httpPort = data["http_port"].asInt();
-    info.httpsPort = data["https_port"].asInt();
-    info.rtspPort = data["rtsp_port"].asInt();
-    info.rtmpPort = data["rtmp_port"].asInt();
-    info.isAutoHttpPort = data["isAutoHttpPort"].asBool();
-    info.isAutoHttpsPort = data["isAutoHttpsPort"].asBool();
-    info.isAutoRtspPort = data["isAutoRtspPort"].asBool();
-    info.isAutoRtmpPort = data["isAutoRtmpPort"].asBool();
-    info.natHttpPort = data["nat_http_port"].asInt();
-    info.natHttpsPort = data["nat_https_port"].asInt();
-    info.natRtspPort = data["nat_rtsp_port"].asInt();
-    info.natRtmpPort = data["nat_rtmp_port"].asInt();
+    info.httpPort = data["httpPort"].asInt();
+    info.httpsPort = data["httpsPort"].asInt();
+    info.rtspPort = data["rtspPort"].asInt();
+    info.rtmpPort = data["rtmpPort"].asInt();
+    info.isAutoHttpPort = data["isHttpPortAuto"].asBool();
+    info.isAutoHttpsPort = data["isHttpsPortAuto"].asBool();
+    info.isAutoRtspPort = data["isRtspPortAuto"].asBool();
+    info.isAutoRtmpPort = data["isRtmpPortAuto"].asBool();
+    info.natHttpPort = data["httpPortNat"].asInt();
+    info.natHttpsPort = data["httpsPortNat"].asInt();
+    info.natRtspPort = data["rtspPortNat"].asInt();
+    info.natRtmpPort = data["rtmpPortNat"].asInt();
     info.clientUseSsl = data["clientUseSsl"].asBool();
-    info.useWebDomain = data["useWebDomain"].asBool();
-    info.useDomain = data["useDomain"].asBool();
-    info.useCustomPath = data["useCustomPath"].asBool();
-    info.customPath = data["customPath"].asString();
+    info.useWebDomain = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["useWebDomain"].asBool() : false;
+    info.useDomain = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["useDomain"].asBool() : false;
+    info.useCustomPath = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["useCustomPath"].asBool() : false;
+    info.customPath = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["customPath"].asString() : "";
     info.hasFailover = data["hasFailover"].asBool();
 }
 
@@ -793,23 +793,24 @@ static Json::Value exampleJson() {
         self_server["name"] = "Media Server 1";
         self_server["domain"] = "";
         self_server["ip"] = "localhost";
-        self_server["http_port"] = 8080;
-        self_server["https_port"] = 443;
-        self_server["rtsp_port"] = 554;
-        self_server["rtmp_port"] = 1935;
-        self_server["isAutoHttpPort"] = true;
-        self_server["isAutoHttpsPort"] = true;
-        self_server["isAutoRtspPort"] = true;
-        self_server["isAutoRtmpPort"] = true;
-        self_server["nat_http_port"] = 80;
-        self_server["nat_https_port"] = 443;
-        self_server["nat_rtsp_port"] = 554;
-        self_server["nat_rtmp_port"] = 1935;
+        self_server["httpPort"] = 8080;
+        self_server["httpsPort"] = 443;
+        self_server["rtspPort"] = 554;
+        self_server["rtmpPort"] = 1935;
+        self_server["isHttpPortAuto"] = true;
+        self_server["isHttpsPortAuto"] = true;
+        self_server["isRtspPortAuto"] = true;
+        self_server["isRtmpPortAuto"] = true;
+        self_server["httpPortNat"] = 80;
+        self_server["httpsPortNat"] = 443;
+        self_server["rtspPortNat"] = 554;
+        self_server["rtmpPortNat"] = 1935;
         self_server["clientUseSsl"] = false;
-        self_server["useWebDomain"] = false;
-        self_server["useDomain"] = false;
-        self_server["useCustomPath"] = false;
-        self_server["customPath"] = "";
+        self_server["dynamicDomain"] = Json::objectValue;
+        self_server["dynamicDomain"]["useWebDomain"] = false;
+        self_server["dynamicDomain"]["useDomain"] = false;
+        self_server["dynamicDomain"]["useCustomPath"] = false;
+        self_server["dynamicDomain"]["customPath"] = "";
         self_server["hasFailover"] = false;
     }
     data["list_media_server"].append(self_server);
@@ -820,23 +821,24 @@ static Json::Value exampleJson() {
         remote_server["name"] = "Media Server 2";
         remote_server["domain"] = "";
         remote_server["ip"] = "localhost";
-        remote_server["http_port"] = 8081;
-        remote_server["https_port"] = 443;
-        remote_server["rtsp_port"] = 554;
-        remote_server["rtmp_port"] = 1935;
-        remote_server["isAutoHttpPort"] = true;
-        remote_server["isAutoHttpsPort"] = true;
-        remote_server["isAutoRtspPort"] = true;
-        remote_server["isAutoRtmpPort"] = true;
-        remote_server["nat_http_port"] = 80;
-        remote_server["nat_https_port"] = 443;
-        remote_server["nat_rtsp_port"] = 554;
-        remote_server["nat_rtmp_port"] = 1935;
+        remote_server["httpPort"] = 8081;
+        remote_server["httpsPort"] = 443;
+        remote_server["rtspPort"] = 554;
+        remote_server["rtmpPort"] = 1935;
+        remote_server["isHttpPortAuto"] = true;
+        remote_server["isHttpsPortAuto"] = true;
+        remote_server["isRtspPortAuto"] = true;
+        remote_server["isRtmpPortAuto"] = true;
+        remote_server["httpPortNat"] = 80;
+        remote_server["httpsPortNat"] = 443;
+        remote_server["rtspPortNat"] = 554;
+        remote_server["rtmpPortNat"] = 1935;
         remote_server["clientUseSsl"] = false;
-        remote_server["useWebDomain"] = false;
-        remote_server["useDomain"] = false;
-        remote_server["useCustomPath"] = false;
-        remote_server["customPath"] = "";
+        remote_server["dynamicDomain"] = Json::objectValue;
+        remote_server["dynamicDomain"]["useWebDomain"] = false;
+        remote_server["dynamicDomain"]["useDomain"] = false;
+        remote_server["dynamicDomain"]["useCustomPath"] = false;
+        remote_server["dynamicDomain"]["customPath"] = "";
         remote_server["hasFailover"] = true;
     }
     data["list_media_server"].append(remote_server);
@@ -1066,6 +1068,22 @@ static Json::Value getOnvifProfileJsonArray(const std::vector<OnvifMediaProfile>
         profileJson["height"] = profile.height;
         profileJson["bitrate"] = profile.bitrate;
         profileJson["fps"] = profile.fps;
+        for (const auto &vo : profile.vEncoderOptionMap) {
+            profileJson["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
+            profileJson["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
+            profileJson["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
+            profileJson["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
+            profileJson["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
+            for (const auto &r : vo.second.ResolutionsAvailable) {
+                Json::Value stream;
+                stream["width"] = r.first;
+                stream["height"] = r.second;
+                profileJson["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+            }
+            profileJson["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
+        }
+        profileJson["videoEncEditable"] = profile.videoEncEditable;
+        profileJson["videoConfigEditable"] = profile.videoConfigEditable;
         profileJson["hasAudio"] = profile.hasAudio;
         profileJson["acodec"] = profile.acodec;
         profileJson["channelNo"] = profile.channelNo;
@@ -1130,6 +1148,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["enableAutoProfile"] = enableAutoProfile ? true : false;
             // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
             data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
+            data["supportsSdCardPlayback"] = false;
         }
     }
     return data;
@@ -1598,6 +1617,59 @@ Json::Value makeDevicePTZPresetJson(const DeviceSource::Ptr &device) {
                         preset["isUserDefined"] = true;
                         item.append(preset);
                     }
+                }
+            }
+        }
+    }
+    return item;
+}
+
+Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &device) {
+    Json::Value item;
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto stats_imp = impl->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                for (const auto &mp : params.device_stats.device_caps.onvifProfile.mediaProfiles) {
+                    Json::Value mp_json = Json::objectValue;
+                    mp_json["token"] = mp.token;
+                    mp_json["url"] = mp.url;
+                    mp_json["videoEncoder"]["vcodec"] = mp.vcodec;
+                    mp_json["videoEncoder"]["width"] = mp.width;
+                    mp_json["videoEncoder"]["height"] = mp.height;
+                    mp_json["videoEncoder"]["bitrate"] = mp.bitrate;
+                    mp_json["videoEncoder"]["fps"] = mp.fps;
+                    for (const auto &vo : mp.vEncoderOptionMap) {
+                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
+                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
+                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
+                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
+                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
+                        for (const auto &r : vo.second.ResolutionsAvailable) {
+                            Json::Value stream;
+                            stream["width"] = r.first;
+                            stream["height"] = r.second;
+                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+                        }
+                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
+                    }
+                    mp_json["videoEncEditable"] = mp.videoEncEditable;
+                    mp_json["videoConfigEditable"] = mp.videoConfigEditable;
+                    
+                    auto it = params.device_stats.stream_settings.find(mp.token);
+                    if (it != params.device_stats.stream_settings.end()) {
+                        const auto &config = it->second;
+                        mp_json["videoEncoder"]["configState"]["retry_time"] = config.state.retry_time;
+                        mp_json["videoEncoder"]["configState"]["status"] = config.state.status;
+                    } else {
+                        mp_json["videoEncoder"]["configState"]["retry_time"] = 5;
+                        mp_json["videoEncoder"]["configState"]["status"] = configStateToString[VideoConfigSetState::EXTERNAL];
+                    }
+
+                    item.append(mp_json);
                 }
             }
         }

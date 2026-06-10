@@ -21,7 +21,7 @@ GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::
 GenericRtspCameraImp::~GenericRtspCameraImp() {
     // stop camera if it's still running when destructing
     if (_enabled.load()) {
-        stop();
+        _poller->async([this]() { stop(); });
     }
 }
 
@@ -75,6 +75,14 @@ void GenericRtspCameraImp::setupController() {
                 for (auto &it : params.device_stats.user_presets) {
                     auto p = it.second;
                     _controller->addUserPTZPreset(p.Token, p.Name, p.absPan, p.absTilt, p.absZoom);
+                }
+            }
+            // add media profile config after controller constructor
+            if (!params.device_stats.stream_settings.empty()) {
+                for (auto &it : params.device_stats.stream_settings) {
+                    auto token = it.first;
+                    auto config = it.second;
+                    _controller->addProfileConfig(token, config, false);
                 }
             }
         }
@@ -322,6 +330,27 @@ void GenericRtspCameraImp::PTZGotoPreset(const std::string &presetToken, bool is
         return;
     }
     _controller->PTZGotoPreset(presetToken, isUserPreset, cb);
+}
+
+void GenericRtspCameraImp::setMediaProfile(const std::string &profileToken, VideoEncoderConfig &config, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setMediaProfile in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore set media profile request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->setMediaProfileAsync(profileToken, config, cb);
+}
+
+void GenericRtspCameraImp::getMediaProfile(const std::string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call getMediaProfile in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore get media profile request";
+        VideoEncoderConfig config;
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), config);
+        return;
+    }
+    _controller->getMediaProfileAsync(profileToken, cb);
 }
 
 } // namespace managerkit
