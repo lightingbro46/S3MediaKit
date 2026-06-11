@@ -23,30 +23,72 @@ const std::string EXTRACT_VIDEO = "EXTRACT_VIDEO";
 } // namespace UserAuditLogType
 
 struct UserAuditLogArgs {
-    std::string camera_name;
-    std::string stream_profile;
-    uint64_t start_time;
-    uint64_t end_time;
-    uint64_t duration;
-    uint64_t file_size;
-    uint64_t action_created_at;
-    uint64_t action_duration;
+    std::string user_id;
+    std::string user_name;
+    uint64_t action_created_at = 0;
+    uint64_t action_duration = 0;
     std::string message;
+
+    Json::Value toJson() {
+        Json::Value ret;
+        ret["user_id"] = user_id;
+        ret["user_name"] = user_name;
+        ret["action_created_at"] = (Json::UInt64)action_created_at;
+        ret["action_duration"] = (Json::UInt64)action_duration;
+        ret["message"] = message;
+        return ret;
+    }
 };
 
-inline Json::Value toJson(const UserAuditLogArgs &args) {
-    Json::Value json;
-    json["camera_name"] = args.camera_name;
-    json["stream_profile"] = args.stream_profile;
-    json["start_time"] = (Json::UInt64)args.start_time;
-    json["end_time"] = (Json::UInt64)args.end_time;
-    json["duration"] = (Json::UInt64)args.duration;
-    json["file_size"] = (Json::UInt64)args.file_size;
-    json["action_created_at"] = (Json::UInt64)args.action_created_at;
-    json["action_duration"] = (Json::UInt64)args.action_duration;
-    json["message"] = args.message;
-    return json;
-}
+struct ExtractAuditLogArgs : public UserAuditLogArgs {
+    std::string camera_id;
+    std::string camera_name;
+    std::string stream_id;
+    std::string stream_profile;
+    uint64_t start_time = 0;
+    uint64_t end_time = 0;
+    uint64_t duration = 0;
+    uint64_t file_size = 0;
+    std::string filename;
+    bool is_success = false;
+
+    Json::Value toJson() {
+        Json::Value ret = UserAuditLogArgs::toJson();
+        ret["camera_id"] = camera_id;
+        ret["camera_name"] = camera_name;
+        ret["stream_id"] = stream_id;
+        ret["stream_profile"] = stream_profile;
+        ret["start_time"] = (Json::UInt64)start_time;
+        ret["end_time"] = (Json::UInt64)end_time;
+        ret["duration"] = (Json::UInt64)duration;
+        ret["file_size"] = (Json::UInt64)file_size;
+        ret["filename"] = filename;
+        ret["is_success"] = is_success;
+        return ret;
+    }
+};
+
+struct LiveViewAuditLogArgs : public UserAuditLogArgs {
+    std::string camera_id;
+    std::string camera_name;
+    std::string stream_id;
+    std::string stream_profile;
+    uint64_t start_time = 0;
+    uint64_t end_time = 0;
+    uint64_t duration = 0;
+
+    Json::Value toJson() {
+        Json::Value ret = UserAuditLogArgs::toJson();
+        ret["camera_id"] = camera_id;
+        ret["camera_name"] = camera_name;
+        ret["stream_id"] = stream_id;
+        ret["stream_profile"] = stream_profile;
+        ret["start_time"] = (Json::UInt64)start_time;
+        ret["end_time"] = (Json::UInt64)end_time;
+        ret["duration"] = (Json::UInt64)duration;
+        return ret;
+    }
+};
 
 } // namespace managerkit
 

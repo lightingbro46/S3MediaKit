@@ -7,6 +7,7 @@
 #include "Process.h"
 #include "Util/TimeTicker.h"
 #include "Common/MediaSource.h"
+#include "User/UserAuthorManager.h"
 
 namespace FFmpeg {
     extern const std::string kSnap;
@@ -114,6 +115,12 @@ public:
     ~FFmpegExtractor();
 
     /**
+     * Set user session cache, which will be used for permission verification when creating recording tasks and generating download links. 
+     * If the session cache is not set, it will be considered as having no permission.
+     */
+    void setSessionCache(const managerkit::UserSessionCache::Ptr &session) { _session = session; }
+
+    /**
      * Set the active close callback
      */
     void setOnClose(const std::function<void()> &cb);
@@ -137,6 +144,8 @@ private:
     void closeAfterDelaySec();
     // Close
     bool close();
+    // Emit event to notify the result of the extract task
+    void emitEvent(bool success, const std::string &err_msg = "");
 
 private:
     mediakit::MediaTuple _tuple;
@@ -157,6 +166,7 @@ private:
     bool _finished = false;
     bool _success = false;
     std::string _err_msg;
+    managerkit::UserSessionCache::Ptr _session;
 };
 
 struct ProbeInfo {

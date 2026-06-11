@@ -35,7 +35,7 @@ string format_bytes_human_readable(uint64_t bytes) {
     return oss.str();
 }
 
-string formatDuration(int64_t milliseconds) {
+string format_duration_verbose(int64_t milliseconds) {
     int64_t ms = milliseconds % 1000;
     int64_t total_seconds = milliseconds / 1000;
     int64_t seconds = total_seconds % 60;

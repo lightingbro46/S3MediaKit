@@ -2574,7 +2574,7 @@ void installWebApi() {
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 
-    static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, const function<void(const SockException &ex, const string &key)> &cb) {
+    static auto addFFmpegExtractor = [](MediaTuple &tuple, ExtractOptions &options, managerkit::UserSessionCache::Ptr &session, const function<void(const SockException &ex, const string &key)> &cb) {
         auto full_key = tuple.shortUrl() + "/" + to_string(options.start_time) + "/" + to_string(options.end_time) + "/" + options.filename;
         auto key = MD5(full_key).hexdigest();
         if (s_ffmpeg_extractor.find(key)) {
@@ -2585,6 +2585,7 @@ void installWebApi() {
 
         auto ffmpeg = s_ffmpeg_extractor.make(key, tuple, options);
 
+        ffmpeg->setSessionCache(session);
         ffmpeg->setOnClose([key]() { s_ffmpeg_extractor.erase(key); });
 
         GET_CONFIG(string, extract_path, API::kExtractRoot)
@@ -2600,7 +2601,7 @@ void installWebApi() {
         CHECK_PLAYBACK_PERMISSION();
         CHECK_ARGS_("cameraId", "streamId", "startTime", "endTime", "filename");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto on_access = [allArgs, val, invoker, headerOut, token_cache]() mutable {
             auto camera_id = allArgs["cameraId"];
             auto stream_id = allArgs["streamId"];
             auto start_time = allArgs["startTime"];
@@ -2624,7 +2625,7 @@ void installWebApi() {
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
             ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
 
-            addFFmpegExtractor(tuple, options, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
+            addFFmpegExtractor(tuple, options, token_cache, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
                 if (ex) {
                     RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, ex.what());
                 } else {
@@ -2841,7 +2842,7 @@ void installWebApi() {
             fwd_body["end_time"]    = (string)allArgs["end_time"];
             fwd_body["duration"]    = (string)allArgs["duration"];
             fwd_body["tags"]        = (string)allArgs["tags"];
-            string jwt_token = allArgs["_jwt_token"];
+            string jwt_token        = allArgs["_jwt_token"];
 
             Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
                 if (!err.empty()) {

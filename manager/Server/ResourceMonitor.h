@@ -14,7 +14,7 @@ std::string format_double_2f(double value);
 
 std::string format_float_2f(float value);
 
-std::string formatDuration(int64_t milliseconds);
+std::string format_duration_verbose(int64_t milliseconds);
 
 std::string sanitize_for_json(double val);
 

@@ -194,7 +194,7 @@ extern const std::string kBroadcastSystemAuditLog;
 #define BroadcastSystemAuditLogArgs const std::string &event, const std::string &msg
 
 extern const std::string kBroadcastUserAuditLog;
-#define BroadcastUserAuditLogArgs const std::string &event, const std::string &resource_id, const UserAuditLogArgs &args, const UserSessionCache::Ptr &session
+#define BroadcastUserAuditLogArgs const std::string &event, const std::string &resource_id, const Json::Value &args_json, const UserSessionCache::Ptr &session
 
 extern const std::string kBroadcastMotionKeepThreshold;
 #define BroadcastMotionKeepThresholdArgs const std::string &device_id, bool &start, uint64_t &threshold
@@ -309,6 +309,10 @@ extern const std::string kUnreadyFrameCache;
 extern const std::string kBroadcastPlayerCountChanged;
 // Bound local network card ip
 extern const std::string kListenIP;
+// Whether to enable auto profile, when enabled, S3MediaKit will automatically select the appropriate stream profile (such as hi or lo) for the client 
+// based on the client's network status and device performance. 
+// This can improve the viewing experience and reduce unnecessary bandwidth usage.
+extern const std::string kEnableAutoProfile;
 } // namespace General
 
 namespace Protocol {

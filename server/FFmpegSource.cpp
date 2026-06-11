@@ -10,6 +10,8 @@
 #include "Local/TimeQuery.h"
 #include <iomanip>
 #include "Common/StrUtil.h"
+#include "User/UserAuditLog.h"
+#include "Local/StatisticRecorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -486,7 +488,7 @@ static std::string escape(const char* str) {
     return escape(std::string(str));
 }
 
-static std::string formatDuration(int64_t total_seconds) {
+static std::string format_duration_hms(int64_t total_seconds) {
     int64_t seconds = total_seconds % 60;
     int64_t total_minutes = total_seconds / 60;
     int64_t minutes = total_minutes % 60;
@@ -523,17 +525,17 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     }
     auto save_format = getFileExtension(_options.filename);
     _save_path = File::absolutePath(key + "." + save_format, root_path);
-    DebugL << "Make video extract of device " << _tuple.app << "/" << _tuple.stream << " duration: " << formatDuration(_duration) << "s, save path: " << _save_path;
+    DebugL << "Make video extract of device " << _tuple.app << "/" << _tuple.stream << " duration: " << format_duration_hms(_duration) << "s, save path: " << _save_path;
 
     char cmd[2048] = { 0 };
     snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
             _src_path.data(),
-            formatDuration(duration_start).data(),
-            formatDuration(duration_end).data(),
+            format_duration_hms(duration_start).data(),
+            format_duration_hms(duration_end).data(),
             escape(_options.filename).data(),
             escape(_options.description + " -- By -- " + _options.username).data(),
             escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
-            escape(kServerName).data(),
+            escape(kServerShortName).data(),
             _save_path.data());
     _log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
     _process.run(cmd, _log_file);
@@ -559,9 +561,12 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         strongSelf->_success = strongSelf->_process.exit_code() == 0;
         if (strongSelf->_success) {
             strongSelf->_progress = 100.0f;
+            strongSelf->emitEvent(true);
             cb(SockException());
         } else {
-            cb(SockException(Err_other, StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code()));            
+            string err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
+            strongSelf->emitEvent(false, err_msg);
+            cb(SockException(Err_other, err_msg));            
         }
         // close after process finished
         strongSelf->closeAfterDelaySec();
@@ -644,7 +649,7 @@ void FFmpegExtractor::startTimer() {
             strongSelf->_success = success;
             strongSelf->_progress = success ? 100.0f : strongSelf->_progress;
             strongSelf->_err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
-
+            strongSelf->emitEvent(success, strongSelf->_err_msg);
             // close after process finished
             strongSelf->closeAfterDelaySec();
             return false;
@@ -677,6 +682,47 @@ bool FFmpegExtractor::close() {
     File::delete_file(_src_path);
     File::delete_file(_save_path);
     return true;
+}
+
+void FFmpegExtractor::emitEvent(bool success, const string &err_msg) {
+    auto tuple = _tuple;
+    auto options = _options;
+    auto duration = _duration;
+    auto save_path = _save_path;
+    auto session = _session;
+    auto created_at = _created_at;
+
+    WorkThreadPool::Instance().getPoller()->async([tuple, options, duration, save_path, session, created_at, success, err_msg]() {
+        ExtractAuditLogArgs log;
+        log.camera_id = tuple.app;
+        log.stream_id = tuple.stream;
+        {
+            auto recorder = StatisticRecorder::Instance().getRecorder(tuple.app, false);
+            if (recorder) {
+                auto params = recorder->getParams();
+                log.camera_name = params.option.name;
+                for (const auto &it : params.stream_map) {
+                    if (it.second.stream_id == tuple.stream) {
+                        log.stream_profile = getStreamTypeString(it.first);
+                        break;
+                    }
+                }
+            }
+        }
+        log.start_time = options.start_time;
+        log.end_time = options.end_time;
+        log.duration = duration;
+        log.file_size = File::fileSize(save_path);
+        log.action_created_at = created_at;
+        log.action_duration = time(nullptr) - created_at;
+        log.filename = options.filename;
+        log.user_id = options.user_id;
+        log.user_name = options.username;
+        log.is_success = success;
+        log.message = success ? "Success" : err_msg;
+
+        NOTICE_EMIT(BroadcastUserAuditLogArgs, Broadcast::kBroadcastUserAuditLog, UserAuditLogType::EXTRACT_VIDEO, tuple.app, log.toJson(), session);
+    });
 }
 
 static bool parse_probe_log(ProbeInfo &info, const string &log_string) {

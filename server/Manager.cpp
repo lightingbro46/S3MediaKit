@@ -43,7 +43,6 @@ const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
 const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
 const string kMaxStreamTimeoutSec = MANAGER_FIELD"maxStreamTimeoutSec";
 const string kBypassAuthRealm = MANAGER_FIELD"bypassAuthRealm";
-const string kEnableAutoProfile = MANAGER_FIELD"enableAutoProfile";
 
 static onceToken token([]() {
     mINI::Instance()[kMediaServerDomain] = "";
@@ -58,7 +57,6 @@ static onceToken token([]() {
     mINI::Instance()[kSessionExpiryDays] = 180;
     mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
     mINI::Instance()[kBypassAuthRealm] = "";
-    mINI::Instance()[kEnableAutoProfile] = true;
 });
 } // namespace Manager
 
@@ -1144,7 +1142,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
 #else
             data["motionDetection"]["mediaSupport"] = false;
 #endif
-            GET_CONFIG(bool, enableAutoProfile, Manager::kEnableAutoProfile);
+            GET_CONFIG(bool, enableAutoProfile, General::kEnableAutoProfile);
             data["enableAutoProfile"] = enableAutoProfile ? true : false;
             // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
             data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;

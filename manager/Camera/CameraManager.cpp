@@ -197,7 +197,7 @@ void CameraManager::loadSavedCameraInfo() {
 
         StatisticRecorder::Instance().loadSavedCameraStatistics(invoker);
 
-        InfoL << "Loaded all saved camera. Finished. " << formatDuration(ticker.elapsedTime()) << " elapsed";
+        InfoL << "Loaded all saved camera. Finished. " << format_duration_verbose(ticker.elapsedTime()) << " elapsed";
         strong_self->setReady(true);
     });
 }

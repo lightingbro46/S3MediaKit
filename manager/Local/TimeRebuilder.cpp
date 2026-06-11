@@ -222,7 +222,7 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     }
 
     TraceL << "Recreated time file: " << _src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes)
-           << ". Elapsed: " << formatDuration(ticket.elapsedTime());
+           << ". Elapsed: " << format_duration_verbose(ticket.elapsedTime());
 
     return removed_bytes;    
 }
@@ -310,7 +310,7 @@ size_t TimeRebuilder::rebuildTimeLineWithoutRecreate(const KeepTimeMap &map, boo
     commitArchivedChanges(tmp_changes);
 
     TraceL << "Recreated time file: " << _src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes)
-           << ". Elapsed: " << formatDuration(ticket.elapsedTime());
+           << ". Elapsed: " << format_duration_verbose(ticket.elapsedTime());
 
     return removed_bytes;    
 }

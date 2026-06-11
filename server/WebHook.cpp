@@ -1601,10 +1601,10 @@ void installWebHook() {
             return;
         }
 
-        const string user_name = session->getUserName();
-        auto client_os = session->getClientOSInfo();
-        auto ip = session->getClientIp();
-        
+        const string user_name = session ? session->getUserName() : "Unknown";
+        const auto client_os = session ? session->getClientOSInfo() : ClientOSInfo();
+        const string ip = session ? session->getClientIp() : "Unknown";
+
         uint64_t created_stamp = time(nullptr) * 1000;
         GET_CONFIG(string, project_id, Manager::kMediaServerProjectId);
 
@@ -1618,7 +1618,7 @@ void installWebHook() {
         body["os"] = client_os.os;
         body["browser"] = client_os.browser;
         body["device"] = client_os.device;
-        body["descriptions"] = toJson(args);
+        body["descriptions"] = args_json;
 
         // Execute hook
         do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);

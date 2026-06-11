@@ -57,7 +57,7 @@ void StorageManager::cleanupTemporaryFiles() {
     cleanupFolder(extract_save_path);
     DebugL << "Cleanup extract save path";
 
-    InfoL << "Remove temporary files. Finished. " << formatDuration(_ticker.elapsedTime()) << " elapsed" ;
+    InfoL << "Remove temporary files. Finished. " << format_duration_verbose(_ticker.elapsedTime()) << " elapsed" ;
 }
 
 using KeepTimeMap = TimeRebuilder::KeepTimeMap;
@@ -288,7 +288,7 @@ static size_t removeExpiredSegment(const KeepTimeMap &keep_time_map) {
     for (const auto &it : path_threshold) {
         auto bytes = removeExpiredSegment(it.first, it.second);
         DebugL << "Remove expired file: " << it.first << ". Threshold: " << (it.second ? getTimeStr("%Y-%m-%d %H:%M:%S", it.second) : 0) 
-                << ". Removed bytes: " << format_bytes_human_readable(bytes) << ". Elapsed: " << formatDuration(ticket.elapsedTime());
+                << ". Removed bytes: " << format_bytes_human_readable(bytes) << ". Elapsed: " << format_duration_verbose(ticket.elapsedTime());
         removed_volume_bytes += bytes;
     }
     return removed_volume_bytes;
@@ -386,7 +386,7 @@ void StorageManager::enforceStoragePolicy() {
         // remove expired motion block associated with media segment
         removeExpiredMotionBlock(keep_time_map);
 
-        InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << formatDuration(strong_self->_ticker.elapsedTime());
+        InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << format_duration_verbose(strong_self->_ticker.elapsedTime());
 
         // remove expired items associated with media segment
         removeExpiredBookmark(keep_time_map);
