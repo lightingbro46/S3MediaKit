@@ -218,11 +218,20 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
         } \
     } while(false);
 
+#define CHECK_SECRET_OVERRIDE()                                                                                                                                \
+    try {                                                                                                                                                      \
+        CHECK_SECRET();                                                                                                                                        \
+        enable_authorize = false;                                                                                                                              \
+        break;                                                                                                                                                 \
+    } catch (...) {}
+
 #define CHECK_AUTH_TOKEN()                                                                                                                                     \
-    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             \
+    GET_CONFIG(bool, _enable_authorize, Manager::kEnableAuthorize);                                                                                            \
+    bool enable_authorize = _enable_authorize;                                                                                                                 \
     UserSessionCache::Ptr token_cache;                                                                                                                         \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
+            CHECK_SECRET_OVERRIDE();                                                                                                                           \
             CHECK_ARGS_("Authorization");                                                                                                                      \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \

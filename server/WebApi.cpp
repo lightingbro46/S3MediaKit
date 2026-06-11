@@ -81,6 +81,7 @@
 #include "Control/SubnetScan.h"
 #include "Extension/SyncManager.h"
 #include "Storage/TransactionLog.h"
+#include "Storage/TransactionPeerAckLog.h"
 #include "Storage/MiscData.h"
 
 using namespace std;
@@ -3151,6 +3152,69 @@ void installWebApi() {
         //     return;
         // }
         val["data"] = makeSystemStatisticJson();
+    });
+
+    api_regist("/media/mserver/getSyncStatus", [](API_ARGS_MAP) {
+        CHECK_AUTH_TOKEN();
+        CHECK_READ_MSERVER_PERMISSION();
+
+        GET_CONFIG(string, mediaServerId, General::kMediaServerId);
+
+        // 1. transaction_sequence — local cursors (what we have received from each peer)
+        auto seq_impl = std::make_shared<TransactionSequenceImp>();
+        auto seq_list = seq_impl->findAll();
+        Json::Value seq_json = Json::arrayValue;
+        for (const auto &s : seq_list) {
+            Json::Value item;
+            item["peer_guid"] = s.peer_guid;
+            item["db_guid"]   = s.db_guid;
+            item["sequence"]  = s.sequence;
+            seq_json.append(item);
+        }
+        val["data"]["transaction_sequence"] = seq_json;
+
+        // 2. transaction_peer_ack_log — how far each peer has pulled from us
+        auto ack_impl = std::make_shared<PeerAckLogImp>();
+        auto ack_list = ack_impl->findAll();
+        Json::Value ack_json = Json::arrayValue;
+        for (const auto &a : ack_list) {
+            Json::Value item;
+            item["peer_guid"]     = a.peer_guid;
+            item["db_guid"]       = a.db_guid;
+            item["src_peer_guid"] = a.src_peer_guid;
+            item["src_db_guid"]   = a.src_db_guid;
+            item["acked_seq"]     = a.acked_seq;
+            item["updated_at"]    = (Json::Int64)a.updated_at;
+            ack_json.append(item);
+        }
+        val["data"]["transaction_ack_log"] = ack_json;
+
+        // 3. transaction_log row count per (peer_guid, db_guid)
+        // Use cursors already fetched from transaction_sequence
+        Json::Value log_count_json = Json::arrayValue;
+        auto log_impl = std::make_shared<TransactionLogImp>();
+        for (const auto &s : seq_list) {
+            // Count rows with sequence > 0 (i.e., all) for this peer/db pair
+            auto rows_for_peer = log_impl->findSinceSeq(s.peer_guid, s.db_guid, 0, 0);
+            Json::Value lc;
+            lc["peer_guid"] = s.peer_guid;
+            lc["db_guid"]   = s.db_guid;
+            lc["count"]     = (Json::UInt)rows_for_peer.size();
+            log_count_json.append(lc);
+        }
+        val["data"]["transaction_log_counts"] = log_count_json;
+        
+        // 4. local node identity
+        auto imp = std::make_shared<MiscDataImp>();
+        auto ret = imp->findAll();
+        Json::Value misc_json;
+        for (const auto &r : ret) {
+            if (r.key.empty() || r.value.empty()) {
+                continue;
+            }
+            val["data"][r.key] = r.value;
+        }
+        val["data"]["mediaServerId"] = mediaServerId;
     });
 
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {

@@ -4,733 +4,622 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <base href="/console/">
-<title>S3MediaKit Player</title>
-<!-- Video.js CSS -->
+<title>S3MediaKit Console</title>
 <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* ═══════════════════════════════════════════════
+   CSS Variables
+═══════════════════════════════════════════════ */
+:root {
+    --c-bg:      #0d1117;
+    --c-surf:    #161b22;
+    --c-elev:    #21262d;
+    --c-border:  #30363d;
+    --c-text:    #e6edf3;
+    --c-muted:   #7d8590;
+    --c-accent:  #388bfd;
+    --c-success: #3fb950;
+    --c-warn:    #d29922;
+    --c-danger:  #f85149;
+    --sidebar-w: 220px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
 body {
-    background: #1a1a1a; color: #eee; font-family: sans-serif;
-    display: flex; flex-direction: column; align-items: center;
-    min-height: 100vh; padding: 16px;
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    overflow-x: hidden;
+}
+body.s3-loading { visibility: hidden; }
+
+/* ═══════════════ App Shell ═══════════════ */
+.s3-shell { display: flex; min-height: 100vh; }
+
+/* ── Sidebar ── */
+.s3-sidebar {
+    width: var(--sidebar-w); min-width: var(--sidebar-w);
+    background: var(--c-surf); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    flex-shrink: 0; z-index: 100;
+}
+.s3-logo {
+    display: flex; align-items: center; gap: 10px;
+    padding: 18px 16px 14px; border-bottom: 1px solid var(--c-border);
+}
+.s3-logo svg { width: 32px; height: 32px; flex-shrink: 0; }
+.s3-logo-text strong { display: block; font-size: 0.88rem; font-weight: 700; line-height: 1.2; }
+.s3-logo-text span { font-size: 0.66rem; color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.s3-nav { flex: 1; padding: 10px 0; display: flex; flex-direction: column; gap: 2px; }
+.s3-nav-lbl {
+    padding: 12px 14px 4px; font-size: 0.64rem; font-weight: 600;
+    color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.09em;
+}
+.s3-nav-btn {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; border-radius: 6px; margin: 0 6px;
+    color: var(--c-muted); cursor: pointer;
+    background: none; border: none; font-size: 0.84rem; font-weight: 500;
+    width: calc(100% - 12px); text-align: left;
+    transition: background 0.12s, color 0.12s; position: relative;
+}
+.s3-nav-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.s3-nav-btn:hover { background: var(--c-elev); color: var(--c-text); }
+.s3-nav-btn.active { background: rgba(56,139,253,0.12); color: var(--c-accent); }
+.s3-nav-btn.active::before {
+    content: ''; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 60%; background: var(--c-accent); border-radius: 0 2px 2px 0;
+}
+.s3-sidebar-bottom {
+    padding: 12px 10px; border-top: 1px solid var(--c-border);
+    display: flex; flex-direction: column; gap: 6px;
+}
+.s3-srv-badge {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 10px; background: var(--c-elev); border-radius: 6px;
+}
+.s3-srv-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--c-muted);
+    flex-shrink: 0; transition: background 0.3s;
+}
+.s3-srv-dot.online  { background: var(--c-success); box-shadow: 0 0 0 2px rgba(63,185,80,0.25); }
+.s3-srv-dot.offline { background: var(--c-danger); }
+.s3-srv-info { flex: 1; min-width: 0; }
+.s3-srv-url { font-size: 0.7rem; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
+.s3-srv-status { font-size: 0.64rem; color: var(--c-muted); }
+.s3-logout {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 7px 10px; background: none; border: 1px solid var(--c-border);
+    border-radius: 6px; color: var(--c-muted); font-size: 0.78rem;
+    cursor: pointer; width: 100%;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.s3-logout:hover { background: rgba(248,81,73,0.1); border-color: var(--c-danger); color: var(--c-danger); }
+.s3-logout svg { width: 14px; height: 14px; }
+
+/* ── Main ── */
+.s3-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.s3-topbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 24px; border-bottom: 1px solid var(--c-border);
+    background: var(--c-surf); min-height: 48px;
+    position: sticky; top: 0; z-index: 50;
+}
+.s3-topbar-title { font-size: 0.9rem; font-weight: 600; }
+.s3-topbar-spacer { flex: 1; }
+.s3-hamburger { display: none; background: none; border: none; color: var(--c-muted); cursor: pointer; padding: 4px; }
+.s3-hamburger svg { width: 20px; height: 20px; display: block; }
+
+.s3-section {
+    display: none; flex: 1; padding: 24px;
+    max-width: 1600px; width: 100%; margin: 0 auto;
+    animation: s3fade 0.15s ease;
+}
+.s3-section.active { display: block; }
+@keyframes s3fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* ═══════════════ Dashboard ═══════════════ */
+.dash-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr));
+    gap: 14px; margin-bottom: 24px;
+}
+.dash-card {
+    background: var(--c-surf); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 6px;
+}
+.dash-card-lbl { font-size: 0.7rem; color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
+.dash-card-val { font-size: 1.1rem; font-weight: 700; font-family: monospace; word-break: break-all; }
+.dash-card-val.sm { font-size: 0.82rem; }
+.dash-card-val.ok  { color: var(--c-success); }
+.dash-card-val.muted { color: var(--c-muted); }
+.dash-sec-title { font-size: 0.78rem; font-weight: 600; color: var(--c-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+.dash-protos { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+.dash-proto {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 20px; font-size: 0.74rem; font-weight: 600;
+    border: 1px solid transparent;
+}
+.dash-proto.on  { background: rgba(63,185,80,0.1);  color: var(--c-success); border-color: rgba(63,185,80,0.25); }
+.dash-proto.off { background: var(--c-elev); color: var(--c-muted); border-color: var(--c-border); }
+.dash-proto::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
+.dash-btn {
+    display: flex; align-items: center; gap: 7px; padding: 8px 14px;
+    border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--c-border); background: var(--c-surf); color: var(--c-text);
+    transition: background 0.12s, border-color 0.12s;
+}
+.dash-btn:hover { background: var(--c-elev); border-color: var(--c-accent); }
+.dash-btn svg { width: 15px; height: 15px; }
+.dash-btn.warn:hover { border-color: var(--c-warn); color: var(--c-warn); }
+.dash-btn.danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
+.dash-loading { display: flex; align-items: center; gap: 10px; padding: 40px; color: var(--c-muted); font-size: 0.85rem; }
+.dash-spinner {
+    display: inline-block; width: 18px; height: 18px;
+    border: 2px solid var(--c-border); border-top-color: var(--c-accent);
+    border-radius: 50%; animation: spin 0.65s linear infinite;
 }
 
-/* ── Tabs ── */
-.tab-bar {
-    display: flex; gap: 4px;
-    width: 100%; max-width: 1400px;
-    margin-bottom: 12px;
-}
-.tab-btn {
-    padding: 7px 20px; border: none; border-radius: 4px 4px 0 0;
-    background: #2d2d2d; color: #aaa; cursor: pointer; font-size: 0.85rem;
-    transition: background 0.15s, color 0.15s;
-}
-.tab-btn.active { background: #333; color: #eee; border-bottom: 2px solid #4a9de0; }
-.tab-btn:hover:not(.active) { background: #303030; color: #ccc; }
-
-.tab-panel { display: none; width: 100%; max-width: 1400px; }
-.tab-panel.active { display: block; }
-
-/* ── VideoJS tab ── */
-h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; }
-
-/* 2/1 split layout */
-.player-layout {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 16px;
-    width: 100%;
-    align-items: start;
-}
+/* ═══════════════ Player (original CSS preserved) ═══════════════ */
+.player-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; width: 100%; align-items: start; }
 .player-left { display: flex; flex-direction: column; gap: 8px; }
-
-#player-wrap {
-    position: relative; width: 100%;
-    background: #000; border-radius: 6px; overflow: hidden;
-    aspect-ratio: 16/9;
-}
-#vjs-player {
-    width: 100% !important; height: 100% !important;
-}
+#player-wrap { position: relative; width: 100%; background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; }
+#vjs-player { width: 100% !important; height: 100% !important; }
 .vjs-fluid { padding-top: 0 !important; }
-
-/* Controls grid below player */
 .player-controls {
-    display: grid;
-    grid-template-columns: 90px 1fr;
-    gap: 6px 10px;
-    align-items: center;
-    padding: 10px;
-    background: #1e1e1e;
-    border-radius: 6px;
+    display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; align-items: center;
+    padding: 10px; background: var(--c-surf); border: 1px solid var(--c-border); border-radius: 6px;
 }
-.ctrl-label {
-    font-size: 0.8rem; color: #888; white-space: nowrap; text-align: right;
-}
+.ctrl-label { font-size: 0.8rem; color: var(--c-muted); white-space: nowrap; text-align: right; }
 .ctrl-input {
-    width: 100%; padding: 6px 8px; background: #2a2a2a; border: 1px solid #444;
-    color: #eee; border-radius: 4px; font-size: 0.85rem;
+    width: 100%; padding: 6px 8px; background: var(--c-elev); border: 1px solid var(--c-border);
+    color: var(--c-text); border-radius: 4px; font-size: 0.85rem; outline: none;
+    transition: border-color 0.15s;
 }
+.ctrl-input:focus { border-color: var(--c-accent); }
 .ctrl-input::placeholder { color: #555; }
-
-/* Live / Replay toggle */
-.mode-switch {
-    display: flex; border-radius: 4px; overflow: hidden; border: 1px solid #444;
-}
-.mode-btn {
-    flex: 1; padding: 6px 0; border: none; background: #2a2a2a;
-    color: #888; cursor: pointer; font-size: 0.8rem; font-weight: 600;
-    transition: background 0.15s, color 0.15s;
-}
+.mode-switch { display: flex; border-radius: 4px; overflow: hidden; border: 1px solid var(--c-border); }
+.mode-btn { flex: 1; padding: 6px 0; border: none; background: var(--c-elev); color: var(--c-muted); cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: background 0.15s, color 0.15s; }
 .mode-btn.active { background: #1565c0; color: #fff; }
 .mode-btn:hover:not(.active) { background: #333; color: #ccc; }
-
-.ctrl-actions {
-    grid-column: 1 / -1;
-    display: flex; gap: 8px; margin-top: 4px;
-}
-.btn {
-    padding: 8px 20px; border: none; border-radius: 4px;
-    cursor: pointer; font-size: 0.85rem; font-weight: 600;
-}
-#btn-play { background: #2e7d32; color: #fff; }
-#btn-play:hover { background: #388e3c; }
-#btn-stop { background: #b71c1c; color: #fff; }
-#btn-stop:hover { background: #c62828; }
-
-#info-bar {
-    display: flex; gap: 16px; font-size: 0.75rem; font-family: monospace;
-    margin: 0; width: 100%; opacity: 0.5;
-}
-#time-display {
-    font-weight: bold; color: #7ec8e3; font-family: monospace; opacity: 1;
-}
-#log {
-    width: 100%; height: 160px; overflow-y: auto;
-    background: #111; border: 1px solid #333; border-radius: 4px;
-    padding: 6px 8px; font-size: 0.72rem; font-family: monospace;
-}
-.log-info  { color: #ccc; }
-.log-warn  { color: #ffd54f; }
-.log-error { color: #ef9a9a; }
-
-/* ── Timeline (right panel) ── */
-.player-right {
-    display: flex; flex-direction: column; gap: 8px;
-    background: #1e1e1e; border-radius: 6px; padding: 10px 6px;
-    position: sticky; top: 16px;
-}
-.player-right h3 {
-    font-size: 0.8rem; color: #aaa; margin: 0 0 4px;
-    font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
-}
-.timeline-header {
-    display: flex; gap: 6px; align-items: center;
-}
-#timeline-date {
-    flex: 1; padding: 5px 8px; background: #2a2a2a; border: 1px solid #444;
-    color: #eee; border-radius: 4px; font-size: 0.82rem; color-scheme: dark;
-}
-#timeline-fetch {
-    padding: 5px 10px; background: #1565c0; color: #fff; border: none;
-    border-radius: 4px; cursor: pointer; font-size: 0.78rem; font-weight: 600;
-}
-#timeline-fetch:hover { background: #1976d2; }
-#timeline-fetch:disabled { opacity: 0.5; cursor: default; }
+.ctrl-actions { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 4px; }
+.btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+#btn-play { background: #2e7d32; color: #fff; } #btn-play:hover { background: #388e3c; }
+#btn-stop { background: #b71c1c; color: #fff; } #btn-stop:hover { background: #c62828; }
+#info-bar { display: flex; gap: 16px; font-size: 0.75rem; font-family: monospace; margin: 0; width: 100%; opacity: 0.5; }
+#time-display { font-weight: bold; color: #7ec8e3; font-family: monospace; opacity: 1; }
+#log { width: 100%; height: 160px; overflow-y: auto; background: #111; border: 1px solid #333; border-radius: 4px; padding: 6px 8px; font-size: 0.72rem; font-family: monospace; }
+.log-info { color: #ccc; } .log-warn { color: #ffd54f; } .log-error { color: #ef9a9a; }
+.player-right { display: flex; flex-direction: column; gap: 8px; background: var(--c-surf); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 6px; position: sticky; top: 72px; }
+.player-right h3 { font-size: 0.8rem; color: var(--c-muted); margin: 0 0 4px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; }
+.timeline-header { display: flex; gap: 6px; align-items: center; }
+#timeline-date { flex: 1; padding: 5px 8px; background: var(--c-elev); border: 1px solid var(--c-border); color: var(--c-text); border-radius: 4px; font-size: 0.82rem; color-scheme: dark; outline: none; }
+#timeline-fetch { padding: 5px 10px; background: #1565c0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.78rem; font-weight: 600; }
+#timeline-fetch:hover { background: #1976d2; } #timeline-fetch:disabled { opacity: 0.5; cursor: default; }
 #timeline { display: flex; flex-direction: column; gap: 1px; position: relative; }
-/* Device statistic JSON panel */
-#device-stat-panel {
-    border: 1px solid #2a2a2a; border-radius: 4px;
-    overflow: hidden; margin-top: 4px;
-}
-.ds-header {
-    font-size: 0.68rem; color: #777; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; padding: 4px 8px; background: #252525;
-    border-bottom: 1px solid #2a2a2a;
-}
-#device-stat-json {
-    margin: 0; padding: 6px 8px;
-    font-size: 0.68rem; font-family: monospace; color: #9cdcfe;
-    background: #1a1a1a; white-space: pre-wrap; word-break: break-all;
-    max-height: 220px; overflow-y: auto;
-}
+#device-stat-panel { border: 1px solid #2a2a2a; border-radius: 4px; overflow: hidden; margin-top: 4px; }
+.ds-header { font-size: 0.68rem; color: #777; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 8px; background: #252525; border-bottom: 1px solid #2a2a2a; }
+#device-stat-json { margin: 0; padding: 6px 8px; font-size: 0.68rem; font-family: monospace; color: #9cdcfe; background: #1a1a1a; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; }
 .tl-row { display: flex; align-items: stretch; gap: 4px; }
-.tl-hour {
-    width: 18px; font-size: 0.66rem; color: #555; font-family: monospace;
-    text-align: right; flex-shrink: 0; padding-top: 3px;
-}
+.tl-hour { width: 18px; font-size: 0.66rem; color: #555; font-family: monospace; text-align: right; flex-shrink: 0; padding-top: 3px; }
 .tl-tracks { flex: 1; display: flex; flex-direction: column; gap: 0; }
-.tl-bar {
-    flex: 1; height: 18px; background: #252525; border-radius: 2px 2px 0 0;
-    position: relative; overflow: hidden; cursor: default;
-}
-.tl-segment {
-    position: absolute; top: 0; height: 100%;
-    background: #2e7d32; border-radius: 1px;
-    cursor: pointer; transition: background 0.12s;
-}
+.tl-bar { flex: 1; height: 18px; background: #252525; border-radius: 2px 2px 0 0; position: relative; overflow: hidden; cursor: default; }
+.tl-segment { position: absolute; top: 0; height: 100%; background: #2e7d32; border-radius: 1px; cursor: pointer; transition: background 0.12s; }
 .tl-segment:hover { background: #43a047; }
-/* motion lane — thin strip below recording bar, visual only */
-.tl-mbar {
-    height: 6px; background: #1e1e1e; border-radius: 0 0 2px 2px;
-    position: relative; overflow: hidden; pointer-events: none;
-}
-.tl-mseg {
-    position: absolute; top: 0; height: 100%;
-    background: rgba(255, 152, 0, 0.65); border-radius: 0;
-}
-/* legend */
-.tl-legend {
-    display: flex; gap: 14px; font-size: 0.68rem; color: #666;
-    padding: 0 0 2px 25px; align-items: center;
-}
+.tl-mbar { height: 6px; background: #1e1e1e; border-radius: 0 0 2px 2px; position: relative; overflow: hidden; pointer-events: none; }
+.tl-mseg { position: absolute; top: 0; height: 100%; background: rgba(255,152,0,0.65); }
+.tl-legend { display: flex; gap: 14px; font-size: 0.68rem; color: #666; padding: 0 0 2px 25px; align-items: center; }
 .tl-leg-rec { display: inline-block; width: 10px; height: 10px; background: #2e7d32; border-radius: 1px; vertical-align: middle; margin-right: 3px; }
-.tl-leg-mot { display: inline-block; width: 10px; height: 4px;  background: rgba(255,152,0,0.55); border-radius: 1px; vertical-align: middle; margin-right: 3px; }
-.tl-cursor {
-    position: absolute; top: 0; width: 2px; height: 100%;
-    background: #fff; opacity: 0.9;
-    z-index: 3; pointer-events: none;
-    transform: translateX(-50%);
-    display: none;
-}
-.tl-cursor::before {
-    content: '';
-    position: absolute; top: -4px; left: 50%;
-    transform: translateX(-50%);
-    border: 4px solid transparent;
-    border-top: 5px solid #fff;
-}
-/* floating time label above cursor */
-#tl-cursor-time {
-    position: absolute;
-    font-size: 0.64rem; font-family: monospace; color: #fff;
-    background: rgba(20,20,20,0.92); border: 1px solid #555;
-    padding: 1px 5px; border-radius: 3px;
-    pointer-events: none; z-index: 10; display: none;
-    transform: translateX(-50%);
-    white-space: nowrap; line-height: 1.7;
-}
-/* no-data overlay on player */
-#player-nodata {
-    position: absolute; inset: 0; display: none;
-    flex-direction: column; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.88); z-index: 5;
-    color: #555; font-size: 0.82rem; gap: 10px; border-radius: 6px;
-}
+.tl-leg-mot { display: inline-block; width: 10px; height: 4px; background: rgba(255,152,0,0.55); border-radius: 1px; vertical-align: middle; margin-right: 3px; }
+.tl-cursor { position: absolute; top: 0; width: 2px; height: 100%; background: #fff; opacity: 0.9; z-index: 3; pointer-events: none; transform: translateX(-50%); display: none; }
+.tl-cursor::before { content: ''; position: absolute; top: -4px; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top: 5px solid #fff; }
+#tl-cursor-time { position: absolute; font-size: 0.64rem; font-family: monospace; color: #fff; background: rgba(20,20,20,0.92); border: 1px solid #555; padding: 1px 5px; border-radius: 3px; pointer-events: none; z-index: 10; display: none; transform: translateX(-50%); white-space: nowrap; line-height: 1.7; }
+#player-nodata { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.88); z-index: 5; color: #555; font-size: 0.82rem; gap: 10px; border-radius: 6px; }
 #player-nodata.show { display: flex; }
 #player-nodata svg { width: 46px; height: 46px; }
-/* stopped overlay: transparent bg so freeze canvas shows through */
-#player-stopped {
-    position: absolute; inset: 0; display: none;
-    flex-direction: column; align-items: center; justify-content: center;
-    background: transparent; z-index: 5;
-    color: #ccc; font-size: 0.82rem; gap: 10px; border-radius: 6px;
-}
+#player-stopped { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: transparent; z-index: 5; color: #ccc; font-size: 0.82rem; gap: 10px; border-radius: 6px; }
 #player-stopped.show { display: flex; }
-#player-stopped .ps-icon {
-    background: rgba(0,0,0,0.55); border-radius: 50%; padding: 12px;
-    display: flex; align-items: center; justify-content: center;
-}
+#player-stopped .ps-icon { background: rgba(0,0,0,0.55); border-radius: 50%; padding: 12px; display: flex; align-items: center; justify-content: center; }
 #player-stopped svg { width: 42px; height: 42px; }
-#player-stopped .ps-label {
-    background: rgba(0,0,0,0.55); padding: 3px 10px; border-radius: 4px;
-}
-/* freeze-frame canvas: last video frame preserved on stream end */
-#player-freeze {
-    position: absolute; inset: 0; display: none;
-    z-index: 2; border-radius: 6px; width: 100%; height: 100%;
-    object-fit: contain;
-}
+#player-stopped .ps-label { background: rgba(0,0,0,0.55); padding: 3px 10px; border-radius: 4px; }
+#player-freeze { position: absolute; inset: 0; display: none; z-index: 2; border-radius: 6px; width: 100%; height: 100%; object-fit: contain; }
 #player-freeze.show { display: block; }
-/* connection error overlay */
-#player-error {
-    position: absolute; inset: 0; display: none;
-    flex-direction: column; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.88); z-index: 6;
-    color: #ef9a9a; font-size: 0.82rem; gap: 10px; border-radius: 6px;
-    padding: 16px; text-align: center;
-}
+#player-error { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.88); z-index: 6; color: #ef9a9a; font-size: 0.82rem; gap: 10px; border-radius: 6px; padding: 16px; text-align: center; }
 #player-error.show { display: flex; }
 #player-error svg { width: 46px; height: 46px; flex-shrink: 0; }
 #player-error span { max-width: 220px; line-height: 1.5; word-break: break-all; }
-
-/* ── Player status badges (top-right corner) ── */
-#player-badges {
-    position: absolute; top: 8px; right: 8px;
-    display: flex; gap: 6px; align-items: center;
-    z-index: 7; pointer-events: none;
-}
-.player-badge {
-    display: none; align-items: center; gap: 4px;
-    padding: 3px 7px; border-radius: 3px;
-    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em;
-    line-height: 1; white-space: nowrap;
-    backdrop-filter: blur(4px);
-}
+#player-badges { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; align-items: center; z-index: 7; pointer-events: none; }
+.player-badge { display: none; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 3px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; line-height: 1; white-space: nowrap; backdrop-filter: blur(4px); }
 .player-badge.show { display: flex; }
-/* LIVE badge — red blinking dot + label */
-#badge-live {
-    background: rgba(0,0,0,0.55); color: #ff4444; border: 1px solid rgba(255,68,68,0.5);
-}
-#badge-live::before {
-    content: '';
-    width: 6px; height: 6px; border-radius: 50%; background: #ff4444;
-    flex-shrink: 0;
-    animation: badge-blink 1.2s step-start infinite;
-}
+#badge-live { background: rgba(0,0,0,0.55); color: #ff4444; border: 1px solid rgba(255,68,68,0.5); }
+#badge-live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #ff4444; flex-shrink: 0; animation: badge-blink 1.2s step-start infinite; }
 @keyframes badge-blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
-/* REPLAY badge — blue, static */
-#badge-replay {
-    background: rgba(0,0,0,0.55); color: #64b5f6; border: 1px solid rgba(100,181,246,0.4);
-}
+@keyframes spin { to { transform: rotate(360deg); } }
+#badge-replay { background: rgba(0,0,0,0.55); color: #64b5f6; border: 1px solid rgba(100,181,246,0.4); }
 #badge-replay svg { width: 10px; height: 10px; flex-shrink: 0; }
-/* MOTION badge — clickable, gray default, red when active */
-#badge-motion {
-    pointer-events: all; cursor: pointer;
-    background: rgba(0,0,0,0.55); color: #777; border: 1px solid rgba(120,120,120,0.4);
-    transition: color 0.2s, border-color 0.2s;
-    user-select: none;
-}
+#badge-motion { pointer-events: all; cursor: pointer; background: rgba(0,0,0,0.55); color: #777; border: 1px solid rgba(120,120,120,0.4); transition: color 0.2s, border-color 0.2s; user-select: none; }
 #badge-motion svg { width: 11px; height: 11px; flex-shrink: 0; transition: fill 0.2s; }
-#badge-motion.motion-on      { color: #ef5350; border-color: rgba(239,83,80,0.6); }
-#badge-motion.motion-on svg  { fill: #ef5350; }
-/* offline: feature configured but stream down — show badge dimmed, no pointer */
+#badge-motion.motion-on { color: #ef5350; border-color: rgba(239,83,80,0.6); }
+#badge-motion.motion-on svg { fill: #ef5350; }
 #badge-motion.motion-offline { color: #555; border-color: rgba(80,80,80,0.4); cursor: default; opacity: 0.6; }
 #badge-motion:not(.motion-offline):hover { opacity: 0.85; }
-
-/* ── Motion MJPEG overlay ── */
-#motion-overlay {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: contain; display: none; z-index: 4;
-    background: #000;
-}
+#motion-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: none; z-index: 4; background: #000; }
 #motion-overlay.show { display: block; }
-
-/* ── Custom player control bar (YouTube-style) ── */
-#player-controls-bar {
-    position: absolute; bottom: 0; left: 0; right: 0;
-    z-index: 8;
-    padding: 0 10px 8px;
-    background: linear-gradient(transparent, rgba(0,0,0,0.75) 60%);
-    display: flex; flex-direction: column; gap: 5px;
-    opacity: 0;
-    transition: opacity 0.18s;
-    pointer-events: none;
-}
-#player-wrap:hover #player-controls-bar,
-#player-wrap.controls-pinned #player-controls-bar {
-    opacity: 1;
-    pointer-events: all;
-}
-/* Timebar row */
-#pcb-timebar-wrap {
-    position: relative; width: 100%; height: 20px;
-    display: flex; align-items: center; cursor: pointer;
-}
-#pcb-timebar-track {
-    position: absolute; left: 0; right: 0; height: 4px;
-    background: rgba(255,255,255,0.18); border-radius: 2px;
-    overflow: hidden;
-    transition: height 0.12s;
-}
+#player-controls-bar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 8; padding: 0 10px 8px; background: linear-gradient(transparent, rgba(0,0,0,0.75) 60%); display: flex; flex-direction: column; gap: 5px; opacity: 0; transition: opacity 0.18s; pointer-events: none; }
+#player-wrap:hover #player-controls-bar, #player-wrap.controls-pinned #player-controls-bar { opacity: 1; pointer-events: all; }
+#pcb-timebar-wrap { position: relative; width: 100%; height: 20px; display: flex; align-items: center; cursor: pointer; }
+#pcb-timebar-track { position: absolute; left: 0; right: 0; height: 4px; background: rgba(255,255,255,0.18); border-radius: 2px; overflow: hidden; transition: height 0.12s; }
 #pcb-timebar-wrap:hover #pcb-timebar-track { height: 6px; }
-/* recording segments inside timebar */
-.pcb-ts-seg {
-    position: absolute; top: 0; height: 100%;
-    background: rgba(255,255,255,0.45);
-    pointer-events: none;
-}
-/* motion segments in timebar */
-.pcb-tm-seg {
-    position: absolute; top: 0; height: 100%;
-    background: rgba(255,152,0,0.55);
-    pointer-events: none;
-}
-/* timebar cursor */
-#pcb-cursor {
-    position: absolute; top: 50%; width: 12px; height: 12px;
-    background: #fff; border-radius: 50%;
-    transform: translate(-50%, -50%);
-    pointer-events: none; display: none;
-    box-shadow: 0 0 3px rgba(0,0,0,0.6);
-    transition: opacity 0.1s;
-}
-/* hover-time tooltip on timebar */
-#pcb-hover-time {
-    position: absolute; bottom: 24px;
-    font-size: 0.68rem; font-family: monospace; color: #fff;
-    background: rgba(20,20,20,0.92); border: 1px solid #555;
-    padding: 1px 6px; border-radius: 3px;
-    pointer-events: none; display: none;
-    transform: translateX(-50%);
-    white-space: nowrap;
-}
-/* Bottom row: buttons */
-#pcb-btns {
-    display: flex; align-items: center; gap: 2px;
-}
-.pcb-btn {
-    display: flex; align-items: center; justify-content: center;
-    width: 32px; height: 32px; border: none; background: none;
-    color: #ddd; cursor: pointer; border-radius: 4px;
-    padding: 0; flex-shrink: 0;
-    transition: color 0.12s, background 0.12s;
-}
+.pcb-ts-seg { position: absolute; top: 0; height: 100%; background: rgba(255,255,255,0.45); pointer-events: none; }
+.pcb-tm-seg { position: absolute; top: 0; height: 100%; background: rgba(255,152,0,0.55); pointer-events: none; }
+#pcb-cursor { position: absolute; top: 50%; width: 12px; height: 12px; background: #fff; border-radius: 50%; transform: translate(-50%,-50%); pointer-events: none; display: none; box-shadow: 0 0 3px rgba(0,0,0,0.6); }
+#pcb-hover-time { position: absolute; bottom: 24px; font-size: 0.68rem; font-family: monospace; color: #fff; background: rgba(20,20,20,0.92); border: 1px solid #555; padding: 1px 6px; border-radius: 3px; pointer-events: none; display: none; transform: translateX(-50%); white-space: nowrap; }
+#pcb-btns { display: flex; align-items: center; gap: 2px; }
+.pcb-btn { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: none; background: none; color: #ddd; cursor: pointer; border-radius: 4px; padding: 0; flex-shrink: 0; transition: color 0.12s, background 0.12s; }
 .pcb-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
-.pcb-btn svg  { width: 18px; height: 18px; display: block; pointer-events: none; }
-/* Time display in control bar */
-#pcb-time {
-    font-size: 0.72rem; font-family: monospace; color: #ddd;
-    white-space: nowrap; padding: 0 4px; min-width: 70px;
-}
-/* Volume slider */
-#pcb-vol-wrap {
-    display: flex; align-items: center; gap: 4px;
-    overflow: hidden; max-width: 0;
-    transition: max-width 0.2s, opacity 0.2s;
-    opacity: 0;
-}
+.pcb-btn svg { width: 18px; height: 18px; display: block; pointer-events: none; }
+#pcb-time { font-size: 0.72rem; font-family: monospace; color: #ddd; white-space: nowrap; padding: 0 4px; min-width: 70px; }
+#pcb-vol-wrap { display: flex; align-items: center; gap: 4px; overflow: hidden; max-width: 0; transition: max-width 0.2s, opacity 0.2s; opacity: 0; }
 #pcb-vol-wrap.show { max-width: 80px; opacity: 1; }
-#pcb-vol {
-    -webkit-appearance: none; appearance: none;
-    width: 68px; height: 3px;
-    background: rgba(255,255,255,0.3); border-radius: 2px; outline: none;
-    cursor: pointer;
-}
-#pcb-vol::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 12px; height: 12px;
-    border-radius: 50%; background: #fff; cursor: pointer;
-}
-/* Quality picker popup */
+#pcb-vol { -webkit-appearance: none; appearance: none; width: 68px; height: 3px; background: rgba(255,255,255,0.3); border-radius: 2px; outline: none; cursor: pointer; }
+#pcb-vol::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; cursor: pointer; }
 #pcb-quality-wrap { position: relative; }
-#pcb-quality-menu {
-    display: none;
-    position: absolute; bottom: 38px; right: 0;
-    background: rgba(18,18,18,0.96); border: 1px solid #444;
-    border-radius: 6px; overflow: hidden; min-width: 110px;
-    font-size: 0.78rem; z-index: 20;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
-}
+#pcb-quality-menu { display: none; position: absolute; bottom: 38px; right: 0; background: rgba(18,18,18,0.96); border: 1px solid #444; border-radius: 6px; overflow: hidden; min-width: 110px; font-size: 0.78rem; z-index: 20; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
 #pcb-quality-menu.show { display: block; }
-#pcb-quality-menu .qm-title {
-    padding: 6px 12px 4px; color: #999; font-size: 0.7rem;
-    text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid #333;
-}
-.qm-item {
-    padding: 7px 12px; color: #ccc; cursor: pointer;
-    display: flex; align-items: center; gap: 8px;
-    transition: background 0.1s;
-}
+#pcb-quality-menu .qm-title { padding: 6px 12px 4px; color: #999; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid #333; }
+.qm-item { padding: 7px 12px; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.1s; }
 .qm-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .qm-item.active { color: #fff; font-weight: 600; }
-.qm-item .qm-check {
-    width: 14px; height: 14px; flex-shrink: 0; opacity: 0;
-}
+.qm-item .qm-check { width: 14px; height: 14px; flex-shrink: 0; opacity: 0; }
 .qm-item.active .qm-check { opacity: 1; }
-.qm-item .qm-info {
-    font-size: 0.68rem; color: #888; margin-left: auto;
-    white-space: nowrap; flex-shrink: 0;
-}
+.qm-item .qm-info { font-size: 0.68rem; color: #888; margin-left: auto; white-space: nowrap; flex-shrink: 0; }
 .qm-item.active .qm-info { color: #aaa; }
-.qm-dot {
-    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-    display: inline-block;
-}
-/* dot after label name — push it right against the info text */
-.qm-dot-right { margin-left: 4px; }
-.qm-dot-on  { background: #43a047; }
-.qm-dot-off { background: #b71c1c; }
-/* Transport section divider */
-.qm-section {
-    padding: 5px 12px 3px; color: #666; font-size: 0.65rem;
-    text-transform: uppercase; letter-spacing: 0.07em;
-    border-top: 1px solid #2a2a2a; margin-top: 2px; pointer-events: none;
-}
-/* quality fetch status */
-#qual-status {
-    font-size: 0.7rem; color: #888;
-    min-height: 1.2em;
-}
-/* spacer */
+.qm-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.qm-dot-right { margin-left: 4px; } .qm-dot-on { background: #43a047; } .qm-dot-off { background: #b71c1c; }
+.qm-section { padding: 5px 12px 3px; color: #666; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.07em; border-top: 1px solid #2a2a2a; margin-top: 2px; pointer-events: none; }
+#qual-status { font-size: 0.7rem; color: #888; min-height: 1.2em; }
 .pcb-spacer { flex: 1; }
-
-/* hide default VJS controls */
-.vjs-control-bar { display: none !important; }
-.vjs-big-play-button { display: none !important; }
-.vjs-loading-spinner { z-index: 4; }
-.vjs-poster { display: none !important; }
-
-
-/* validation error highlight */
+.vjs-control-bar { display: none !important; } .vjs-big-play-button { display: none !important; }
+.vjs-loading-spinner { z-index: 4; } .vjs-poster { display: none !important; }
 .ctrl-input-error { border-color: #c62828 !important; background: #2d1515 !important; }
 
-/* ── MJPEG tab ── */
-#mjpeg-controls {
-    display: flex; gap: 8px; width: 100%; margin: 10px 0;
-}
-#mjpeg-url {
-    flex: 1; padding: 8px 10px; background: #2a2a2a; border: 1px solid #444;
-    color: #eee; border-radius: 4px; font-size: 0.9rem;
-}
+/* ═══════════════ MJPEG ═══════════════ */
+#mjpeg-controls { display: flex; gap: 8px; width: 100%; margin: 0 0 10px; }
+#mjpeg-url { flex: 1; padding: 8px 10px; background: var(--c-elev); border: 1px solid var(--c-border); color: var(--c-text); border-radius: 4px; font-size: 0.9rem; outline: none; }
 #mjpeg-url::placeholder { color: #666; }
-#mjpeg-load {
-    padding: 8px 16px; background: #1565c0; color: #fff; border: none;
-    border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
-}
+#mjpeg-load { padding: 8px 16px; background: #1565c0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
 #mjpeg-load:hover { background: #1976d2; }
-#mjpeg-stop {
-    padding: 8px 16px; background: #555; color: #fff; border: none;
-    border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
-}
+#mjpeg-stop { padding: 8px 16px; background: #555; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
 #mjpeg-stop:hover { background: #666; }
-#mjpeg-frame {
-    width: 100%; max-width: 100%; border: 1px solid #333; border-radius: 4px;
-    background: #0d0d0d; display: block;
-    aspect-ratio: 16 / 9;
-    max-height: calc(100vh - 180px);
-    object-fit: contain;
-}
-#mjpeg-frame.no-src {
-    /* no-image placeholder — inline SVG mountain+sun icon */
-    background-color: #111;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 60'%3E%3Crect width='80' height='60' fill='%23111'/%3E%3Crect x='1' y='1' width='78' height='58' rx='3' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Ccircle cx='22' cy='20' r='8' fill='none' stroke='%23444' stroke-width='1.5'/%3E%3Ccircle cx='22' cy='20' r='4' fill='%23444'/%3E%3Cpolyline points='4,56 26,28 40,44 52,32 76,56' fill='none' stroke='%23444' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cline x1='4' y1='56' x2='76' y2='56' stroke='%23444' stroke-width='1'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: 30%;
-}
-#mjpeg-log {
-    width: 100%; height: 120px; overflow-y: auto;
-    background: #111; border: 1px solid #2a2a2a; border-radius: 4px;
-    padding: 6px 8px; font-size: 0.72rem; font-family: monospace;
-    margin-top: 8px;
-}
-#mjpeg-log .ml-info  { color: #aaa; }
-#mjpeg-log .ml-ok    { color: #66bb6a; }
-#mjpeg-log .ml-warn  { color: #ffd54f; }
-#mjpeg-log .ml-error { color: #ef9a9a; }
+#mjpeg-frame { width: 100%; max-width: 100%; border: 1px solid #333; border-radius: 4px; background: #0d0d0d; display: block; aspect-ratio: 16/9; max-height: calc(100vh - 180px); object-fit: contain; }
+#mjpeg-frame.no-src { background-color: #111; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 60'%3E%3Crect width='80' height='60' fill='%23111'/%3E%3Crect x='1' y='1' width='78' height='58' rx='3' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Ccircle cx='22' cy='20' r='8' fill='none' stroke='%23444' stroke-width='1.5'/%3E%3Ccircle cx='22' cy='20' r='4' fill='%23444'/%3E%3Cpolyline points='4,56 26,28 40,44 52,32 76,56' fill='none' stroke='%23444' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cline x1='4' y1='56' x2='76' y2='56' stroke='%23444' stroke-width='1'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: center; background-size: 30%; }
+#mjpeg-log { width: 100%; height: 120px; overflow-y: auto; background: #111; border: 1px solid #2a2a2a; border-radius: 4px; padding: 6px 8px; font-size: 0.72rem; font-family: monospace; margin-top: 8px; }
+#mjpeg-log .ml-info { color: #aaa; } #mjpeg-log .ml-ok { color: #66bb6a; } #mjpeg-log .ml-warn { color: #ffd54f; } #mjpeg-log .ml-error { color: #ef9a9a; }
 
-/* ── Dashboard tab ── */
-#dashboard-content {
-    padding: 32px 0;
-    text-align: center;
+/* ═══════════════ Config Editor ═══════════════ */
+.cfg-loading { display: flex; align-items: center; gap: 10px; padding: 40px; color: var(--c-muted); font-size: 0.85rem; }
+.cfg-spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--c-border); border-top-color: var(--c-accent); border-radius: 50%; animation: spin 0.65s linear infinite; }
+.cfg-error-box { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px; color: var(--c-danger); font-size: 0.85rem; text-align: center; }
+.cfg-error-box svg { width: 40px; height: 40px; }
+.cfg-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.cfg-search-wrap { display: flex; align-items: center; gap: 8px; background: var(--c-elev); border: 1px solid var(--c-border); border-radius: 6px; padding: 6px 10px; flex: 1; min-width: 200px; max-width: 360px; }
+.cfg-search-wrap svg { color: var(--c-muted); flex-shrink: 0; }
+.cfg-search { background: none; border: none; outline: none; color: var(--c-text); font-size: 0.85rem; width: 100%; }
+.cfg-search::placeholder { color: var(--c-muted); }
+.cfg-toolbar-actions { display: flex; gap: 8px; margin-left: auto; }
+.cfg-btn-secondary { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 6px; background: var(--c-elev); border: 1px solid var(--c-border); color: var(--c-text); font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+.cfg-btn-secondary:hover { background: var(--c-surf); border-color: var(--c-accent); }
+.cfg-btn-save-all { display: flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; background: var(--c-accent); border: none; color: #fff; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: background 0.12s; }
+.cfg-btn-save-all:hover { background: #1f6feb; }
+.cfg-sections-wrap { display: flex; flex-direction: column; gap: 10px; }
+.cfg-section { background: var(--c-surf); border: 1px solid var(--c-border); border-radius: 8px; overflow: hidden; transition: border-color 0.15s; }
+.cfg-section:focus-within { border-color: rgba(56,139,253,0.4); }
+.cfg-section-hd { display: flex; align-items: center; gap: 10px; padding: 12px 16px; width: 100%; background: none; border: none; cursor: pointer; color: var(--c-text); text-align: left; transition: background 0.12s; }
+.cfg-section-hd:hover { background: rgba(255,255,255,0.03); }
+.cfg-sec-name { font-size: 0.84rem; font-weight: 700; font-family: monospace; color: var(--c-accent); }
+.cfg-sec-meta { font-size: 0.72rem; color: var(--c-muted); margin-left: 6px; }
+.cfg-chevron { width: 20px; height: 20px; color: var(--c-muted); margin-left: auto; transition: transform 0.2s; }
+.cfg-section.collapsed .cfg-chevron { transform: rotate(-90deg); }
+.cfg-section.collapsed .cfg-section-body { display: none; }
+.cfg-section-body { border-top: 1px solid var(--c-border); }
+.cfg-items { display: flex; flex-direction: column; }
+.cfg-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--c-border); transition: background 0.1s; }
+.cfg-item:last-of-type { border-bottom: none; }
+.cfg-item:hover { background: rgba(255,255,255,0.02); }
+.cfg-item-meta { display: flex; align-items: center; gap: 7px; }
+.cfg-key-name { font-size: 0.82rem; font-weight: 600; font-family: monospace; color: var(--c-text); }
+.cfg-badge-ro { font-size: 0.66rem; padding: 1px 6px; border-radius: 10px; background: var(--c-elev); color: var(--c-muted); border: 1px solid var(--c-border); font-weight: 600; }
+.cfg-badge-warn { font-size: 0.66rem; padding: 1px 6px; border-radius: 10px; background: rgba(210,153,34,0.12); color: var(--c-warn); border: 1px solid rgba(210,153,34,0.3); font-weight: 600; }
+.cfg-desc { font-size: 0.75rem; color: var(--c-muted); line-height: 1.5; }
+.cfg-input-row { display: flex; gap: 6px; align-items: flex-start; }
+.cfg-input { flex: 1; padding: 6px 10px; background: var(--c-elev); border: 1px solid var(--c-border); color: var(--c-text); border-radius: 5px; font-size: 0.84rem; font-family: monospace; outline: none; min-width: 0; transition: border-color 0.15s, box-shadow 0.15s; }
+.cfg-input:focus { border-color: var(--c-accent); box-shadow: 0 0 0 3px rgba(56,139,253,0.12); }
+.cfg-input-ro { background: rgba(0,0,0,0.2); color: var(--c-muted); cursor: not-allowed; }
+.cfg-input-ro:focus { border-color: var(--c-border); box-shadow: none; }
+.cfg-input-changed { border-color: var(--c-warn) !important; background: rgba(210,153,34,0.06) !important; }
+textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; line-height: 1.5; }
+.cfg-reset-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 32px; border-radius: 4px; border: 1px solid var(--c-border); background: var(--c-elev); color: var(--c-muted); cursor: pointer; font-size: 0.9rem; flex-shrink: 0; transition: color 0.12s, background 0.12s; }
+.cfg-reset-btn:hover { color: var(--c-warn); background: rgba(210,153,34,0.1); }
+.cfg-section-footer { padding: 10px 16px; display: flex; justify-content: flex-end; border-top: 1px solid var(--c-border); background: rgba(0,0,0,0.15); }
+.cfg-btn-save { display: flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 5px; background: rgba(56,139,253,0.12); border: 1px solid rgba(56,139,253,0.3); color: var(--c-accent); font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+.cfg-btn-save:hover { background: rgba(56,139,253,0.2); border-color: var(--c-accent); }
+.cfg-toast { position: fixed; bottom: 28px; right: 28px; padding: 10px 18px; border-radius: 7px; font-size: 0.82rem; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,0.5); pointer-events: none; opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; z-index: 9999; }
+.cfg-toast.show { opacity: 1; transform: none; }
+.cfg-toast-success { background: rgba(63,185,80,0.95); color: #fff; }
+.cfg-toast-error   { background: rgba(248,81,73,0.95);   color: #fff; }
+.cfg-toast-info    { background: rgba(56,139,253,0.95);  color: #fff; }
+
+/* ═══════════════ Responsive ═══════════════ */
+@media (max-width: 900px) {
+    .player-layout { grid-template-columns: 1fr; }
+    .player-right  { position: static; }
 }
-.dashboard-placeholder {
-    color: #555;
-    font-size: 0.85rem;
-    line-height: 1.8;
+@media (max-width: 700px) {
+    :root { --sidebar-w: 200px; }
+    .s3-sidebar { position: fixed; left: -240px; transition: left 0.22s; z-index: 200; }
+    .s3-sidebar.open { left: 0; box-shadow: 4px 0 20px rgba(0,0,0,0.5); }
+    .s3-hamburger { display: flex; }
+    .s3-section { padding: 16px; }
+    .cfg-toolbar { flex-direction: column; align-items: stretch; }
+    .cfg-search-wrap { max-width: 100%; }
+    .cfg-toolbar-actions { margin-left: 0; }
 }
 </style>
 </head>
-<body>
+<body class="s3-loading">
 
-<!-- ── Tab bar ── -->
-<div class="tab-bar">
-    <button class="tab-btn active" data-tab="tab-dashboard">Dashboard</button>
-    <button class="tab-btn"       data-tab="tab-vjs">VideoJS Player</button>
-    <button class="tab-btn"       data-tab="tab-mjpeg">MJPEG Debug</button>
-</div>
+<!-- Auth utilities — must load first -->
+<script src="assets/auth.js"></script>
+<script>
+(function () {
+    var auth = window.S3Auth && S3Auth.get();
+    if (!auth) { window.location.replace('/console/login.html'); }
+    else { document.body.classList.remove('s3-loading'); }
+})();
+</script>
 
-<!-- ================================================================== -->
-<!-- Tab 1: Dashboard                                                      -->
-<!-- ================================================================== -->
-<div id="tab-dashboard" class="tab-panel active">
-    <h2>Dashboard</h2>
-    <div id="dashboard-content">
-        <p class="dashboard-placeholder">Dashboard đang phát triển.<br>Thêm widget tại <code>tabs/dashboard/dashboard.js</code></p>
-    </div>
-</div>
+<!-- ════════════════════ App Shell ════════════════════ -->
+<div class="s3-shell">
 
-<!-- ================================================================== -->
-<!-- Tab 2: VideoJS FMP4 live player                                      -->
-<!-- ================================================================== -->
-<div id="tab-vjs" class="tab-panel">
-    <div class="player-layout">
+    <!-- ── Sidebar ── -->
+    <aside class="s3-sidebar" id="s3-sidebar">
+        <div class="s3-logo">
+            <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="32" height="32" rx="7" fill="#161b22"/>
+                <path d="M4 11a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V11z" fill="#21262d" stroke="#388bfd" stroke-width="1.2"/>
+                <path d="M22 14l6-3v10l-6-3V14z" fill="#21262d" stroke="#388bfd" stroke-width="1.2" stroke-linejoin="round"/>
+                <circle cx="13" cy="16" r="3.5" fill="#388bfd" opacity="0.9"/>
+                <circle cx="13" cy="16" r="1.5" fill="#0d1117"/>
+            </svg>
+            <div class="s3-logo-text">
+                <strong>S3MediaKit</strong>
+                <span>Console</span>
+            </div>
+        </div>
 
-        <!-- ── Left: player + controls ── -->
-        <div class="player-left">
-            <div id="player-wrap">
-                <video id="vjs-player" class="video-js vjs-big-play-centered" muted playsinline></video>
-                <!-- Freeze-frame canvas: shows last decoded frame when stream ends -->
-                <canvas id="player-freeze"></canvas>
-                <div id="player-nodata">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5" stroke-linecap="round">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                    </svg>
-                    <span>Không có dữ liệu</span>
+        <nav class="s3-nav">
+            <div class="s3-nav-lbl">Tổng quan</div>
+            <button class="s3-nav-btn active" data-section="sec-dashboard">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+                Dashboard
+            </button>
+
+            <div class="s3-nav-lbl">Công cụ</div>
+            <button class="s3-nav-btn" data-section="sec-player">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                Video Player
+            </button>
+            <button class="s3-nav-btn" data-section="sec-mjpeg">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+                MJPEG Debug
+            </button>
+
+            <div class="s3-nav-lbl">Hệ thống</div>
+            <button class="s3-nav-btn" data-section="sec-cluster">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.5 6.375a4.125 4.125 0 1 1 8.25 0 4.125 4.125 0 0 1-8.25 0zM14.25 8.625a3.375 3.375 0 1 1 6.75 0 3.375 3.375 0 0 1-6.75 0zM1.5 19.125a7.125 7.125 0 0 1 14.25 0v.003l-.001.119a.75.75 0 0 1-.363.63 13.067 13.067 0 0 1-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 0 1-.364-.63l-.001-.122zM17.25 19.128l-.001.144a2.25 2.25 0 0 1-.233.96 10.088 10.088 0 0 0 5.06-1.01.75.75 0 0 0 .42-.643 4.875 4.875 0 0 0-6.957-4.611 8.586 8.586 0 0 1 1.71 5.157v.003z"/></svg>
+                Cluster
+            </button>
+            <button class="s3-nav-btn" data-section="sec-config">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                Cấu hình
+            </button>
+        </nav>
+
+        <div class="s3-sidebar-bottom">
+            <div class="s3-srv-badge">
+                <div class="s3-srv-dot" id="srv-dot"></div>
+                <div class="s3-srv-info">
+                    <div class="s3-srv-url" id="srv-url">—</div>
+                    <div class="s3-srv-status" id="srv-status">Đang kiểm tra…</div>
                 </div>
-                <div id="player-stopped">
-                    <div class="ps-icon">
-                        <svg viewBox="0 0 24 24" fill="#ddd" xmlns="http://www.w3.org/2000/svg">
-                            <rect x="5" y="5" width="14" height="14" rx="2"/>
-                        </svg>
-                    </div>
-                    <span class="ps-label">Đã dừng</span>
-                </div>
-                <!-- Motion MJPEG overlay -->
-                <img id="motion-overlay" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
-                <div id="player-error">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="#ef9a9a" stroke-width="1.8" stroke-linecap="round">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="8" x2="12" y2="12"/>
-                        <circle cx="12" cy="16" r="0.5" fill="#ef9a9a" stroke="none"/>
-                    </svg>
-                    <span id="player-error-msg">Lỗi kết nối</span>
-                </div>
+            </div>
+            <button class="s3-logout" onclick="doLogout()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                    <polyline points="16 17 21 12 16 7"/>
+                    <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+                Đăng xuất
+            </button>
+        </div>
+    </aside>
 
-                <!-- Status badges: top-right corner of player -->
-                <div id="player-badges">
-                    <!-- LIVE indicator -->
-                    <div id="badge-live" class="player-badge">LIVE</div>
-                    <!-- REPLAY indicator -->
-                    <div id="badge-replay" class="player-badge">
-                        <svg viewBox="0 0 24 24" fill="#64b5f6" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
-                        </svg>
-                        REPLAY
-                    </div>
-                    <!-- MOTION toggle button (hidden until camera reports enableMotion=true) -->
-                    <div id="badge-motion" class="player-badge" title="Xem luồng phân tích motion">
-                        <svg viewBox="0 0 24 24" fill="#777" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zM9.8 8.9L7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/>
-                        </svg>
-                        MOTION
-                    </div>
-                </div>
-                <!-- ── Custom YouTube-style control bar ── -->
-                <div id="player-controls-bar">
-                    <!-- Timebar showing recording data for the current hour -->
-                    <div id="pcb-timebar-wrap">
-                        <div id="pcb-timebar-track"></div>
-                        <div id="pcb-cursor"></div>
-                        <div id="pcb-hover-time"></div>
-                    </div>
-                    <!-- Buttons row -->
-                    <div id="pcb-btns">
-                        <!-- Play/Pause -->
-                        <button class="pcb-btn" id="pcb-playpause" title="Play/Pause">
-                            <svg id="pcb-icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                            <svg id="pcb-icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                        </button>
-                        <!-- Volume -->
-                        <button class="pcb-btn" id="pcb-vol-btn" title="Volume">
-                            <svg id="pcb-icon-vol" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+    <!-- ── Main ── -->
+    <div class="s3-main">
+        <header class="s3-topbar">
+            <button class="s3-hamburger" id="s3-hamburger" onclick="toggleSidebar()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+                </svg>
+            </button>
+            <span class="s3-topbar-title" id="topbar-title">Dashboard</span>
+        </header>
+
+        <!-- Dashboard -->
+        <div id="sec-dashboard" class="s3-section active">
+            <div id="dashboard-content">
+                <div class="dash-loading"><span class="dash-spinner"></span> Đang tải…</div>
+            </div>
+        </div>
+
+        <!-- Player -->
+        <div id="sec-player" class="s3-section">
+            <div class="player-layout">
+                <div class="player-left">
+                    <div id="player-wrap">
+                        <video id="vjs-player" class="video-js vjs-big-play-centered" muted playsinline></video>
+                        <canvas id="player-freeze"></canvas>
+                        <div id="player-nodata">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5" stroke-linecap="round">
+                                <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
                             </svg>
-                            <svg id="pcb-icon-mute" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-                                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-                            </svg>
-                        </button>
-                        <div id="pcb-vol-wrap">
-                            <input type="range" id="pcb-vol" min="0" max="1" step="0.02" value="0">
+                            <span>Không có dữ liệu</span>
                         </div>
-                        <!-- Time display -->
-                        <span id="pcb-time">--:--:--</span>
-                        <div class="pcb-spacer"></div>
-                        <!-- Quality / Profile picker -->
-                        <div id="pcb-quality-wrap">
-                            <button class="pcb-btn" id="pcb-quality-btn" title="Chất lượng">
-                                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 7L12 21.5 4.41 7H19.59zM12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4z" style="display:none"/><!-- gear --><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-                            </button>
-                            <div id="pcb-quality-menu">
-                                <div class="qm-title">Chất lượng</div>
-                                <div class="qm-item active" data-profile="auto">
-                                    <svg class="qm-check" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                                    Auto
-                                </div>
+                        <div id="player-stopped">
+                            <div class="ps-icon">
+                                <svg viewBox="0 0 24 24" fill="#ddd"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                            </div>
+                            <span class="ps-label">Đã dừng</span>
+                        </div>
+                        <img id="motion-overlay" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
+                        <div id="player-error">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="#ef9a9a" stroke-width="1.8" stroke-linecap="round">
+                                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+                                <circle cx="12" cy="16" r="0.5" fill="#ef9a9a" stroke="none"/>
+                            </svg>
+                            <span id="player-error-msg">Lỗi kết nối</span>
+                        </div>
+                        <div id="player-badges">
+                            <div id="badge-live" class="player-badge">LIVE</div>
+                            <div id="badge-replay" class="player-badge">
+                                <svg viewBox="0 0 24 24" fill="#64b5f6"><path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+                                REPLAY
+                            </div>
+                            <div id="badge-motion" class="player-badge" title="Xem luồng phân tích motion">
+                                <svg viewBox="0 0 24 24" fill="#777"><path d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zM9.8 8.9L7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/></svg>
+                                MOTION
                             </div>
                         </div>
-                        <!-- Capture screenshot -->
-                        <button class="pcb-btn" id="pcb-capture" title="Chụp ảnh">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 15.2A3.2 3.2 0 0 1 8.8 12 3.2 3.2 0 0 1 12 8.8 3.2 3.2 0 0 1 15.2 12 3.2 3.2 0 0 1 12 15.2M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9z"/></svg>
-                        </button>
-                        <!-- Fullscreen -->
-                        <button class="pcb-btn" id="pcb-fullscreen" title="Toàn màn hình">
-                            <svg id="pcb-icon-fs" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-                            <svg id="pcb-icon-exit-fs" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
-                        </button>
+                        <div id="player-controls-bar">
+                            <div id="pcb-timebar-wrap">
+                                <div id="pcb-timebar-track"></div>
+                                <div id="pcb-cursor"></div>
+                                <div id="pcb-hover-time"></div>
+                            </div>
+                            <div id="pcb-btns">
+                                <button class="pcb-btn" id="pcb-playpause" title="Play/Pause">
+                                    <svg id="pcb-icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                    <svg id="pcb-icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                </button>
+                                <button class="pcb-btn" id="pcb-vol-btn" title="Volume">
+                                    <svg id="pcb-icon-vol" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+                                    <svg id="pcb-icon-mute" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+                                </button>
+                                <div id="pcb-vol-wrap"><input type="range" id="pcb-vol" min="0" max="1" step="0.02" value="0"></div>
+                                <span id="pcb-time">--:--:--</span>
+                                <div class="pcb-spacer"></div>
+                                <div id="pcb-quality-wrap">
+                                    <button class="pcb-btn" id="pcb-quality-btn" title="Chất lượng">
+                                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                                    </button>
+                                    <div id="pcb-quality-menu">
+                                        <div class="qm-title">Chất lượng</div>
+                                        <div class="qm-item active" data-profile="auto">
+                                            <svg class="qm-check" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                                            Auto
+                                        </div>
+                                    </div>
+                                </div>
+                                <button class="pcb-btn" id="pcb-capture" title="Chụp ảnh">
+                                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 15.2A3.2 3.2 0 0 1 8.8 12 3.2 3.2 0 0 1 12 8.8 3.2 3.2 0 0 1 15.2 12 3.2 3.2 0 0 1 12 15.2M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9z"/></svg>
+                                </button>
+                                <button class="pcb-btn" id="pcb-fullscreen" title="Toàn màn hình">
+                                    <svg id="pcb-icon-fs" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                                    <svg id="pcb-icon-exit-fs" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                </div>            </div>
-            <!-- hidden URL field populated by player-controls.js -->
-            <input id="url-input" type="hidden">
 
-            <div class="player-controls">
-                <label class="ctrl-label" for="media-domain">Media Server</label>
-                <input id="media-domain" class="ctrl-input" type="text" value="http://localhost:8080">
+                    <input id="url-input" type="hidden">
 
-                <label class="ctrl-label" for="camera-id">Camera ID</label>
-                <input id="camera-id"    class="ctrl-input" type="text" placeholder="camera-id">
+                    <div class="player-controls">
+                        <label class="ctrl-label" for="media-domain">Media Server</label>
+                        <input id="media-domain" class="ctrl-input" type="text" value="http://localhost:8080">
+                        <label class="ctrl-label" for="camera-id">Camera ID</label>
+                        <input id="camera-id" class="ctrl-input" type="text" placeholder="camera-id">
+                        <label class="ctrl-label" for="auth-token">Token</label>
+                        <input id="auth-token" class="ctrl-input" type="text" placeholder="Bearer … (tuỳ chọn)">
+                        <label class="ctrl-label">Chất lượng</label>
+                        <div style="display:flex;flex-direction:column;gap:3px">
+                            <span id="qual-status">Nhập Camera ID và Domain rồi nhấn Load</span>
+                            <button id="btn-fetch-streams" class="btn" style="padding:5px 10px;background:#1565c0;font-size:0.78rem">Load Streams</button>
+                        </div>
+                        <input id="stream-id" type="hidden" value="">
+                        <label class="ctrl-label">Mode</label>
+                        <div class="mode-switch">
+                            <button id="mode-live" class="mode-btn active">Live</button>
+                            <button id="mode-replay" class="mode-btn">Replay</button>
+                        </div>
+                        <div class="ctrl-actions" style="display:none">
+                            <button id="btn-play" class="btn">Play</button>
+                            <button id="btn-stop" class="btn">Stop</button>
+                        </div>
+                    </div>
 
-                <label class="ctrl-label" for="auth-token">Token</label>
-                <input id="auth-token"   class="ctrl-input" type="text" placeholder="Bearer ... (tuỳ chọn)">
-
-                <label class="ctrl-label">Chất lượng</label>
-                <div style="display:flex;flex-direction:column;gap:3px">
-                    <span id="qual-status">Nhập Camera ID và Domain rồi nhấn Load</span>
-                    <button id="btn-fetch-streams" class="btn" style="padding:5px 10px;background:#1565c0;font-size:0.78rem">Load Streams</button>
+                    <div id="info-bar">
+                        <span id="time-display">00:00:00</span>
+                        <span id="info-text">codec: — | bufferLen: —</span>
+                    </div>
+                    <div id="log"></div>
                 </div>
-                <!-- hidden: set by quality picker -->
-                <input id="stream-id" type="hidden" value="">
 
-                <label class="ctrl-label">Mode</label>
-                <div class="mode-switch">
-                    <button id="mode-live"   class="mode-btn active">Live</button>
-                    <button id="mode-replay" class="mode-btn">Replay</button>
+                <div class="player-right">
+                    <h3>Recording Timeline</h3>
+                    <div class="timeline-header">
+                        <input id="timeline-date" type="date">
+                        <button id="timeline-fetch">Load</button>
+                    </div>
+                    <div class="tl-legend">
+                        <span><span class="tl-leg-rec"></span>Recording</span>
+                        <span><span class="tl-leg-mot"></span>Motion</span>
+                    </div>
+                    <div id="timeline"></div>
+                    <div id="device-stat-panel">
+                        <div class="ds-header">Device Statistic</div>
+                        <pre id="device-stat-json">Chưa tải — nhấn Load Streams để xem</pre>
+                    </div>
                 </div>
-
-                <div class="ctrl-actions" style="display:none">
-                    <button id="btn-play" class="btn">Play</button>
-                    <button id="btn-stop" class="btn">Stop</button>
-                </div>
-            </div>
-
-            <div id="info-bar">
-                <span id="time-display">00:00:00</span>
-                <span id="info-text">codec: — | bufferLen: —</span>
-            </div>
-            <div id="log"></div>
-        </div>
-
-        <!-- ── Right: recording timeline ── -->
-        <div class="player-right">
-            <h3>Recording Timeline</h3>
-            <div class="timeline-header">
-                <input id="timeline-date"  type="date">
-                <button id="timeline-fetch">Load</button>
-            </div>
-            <div class="tl-legend">
-                <span><span class="tl-leg-rec"></span>Recording</span>
-                <span><span class="tl-leg-mot"></span>Motion</span>
-            </div>
-            <div id="timeline"></div>
-            <!-- Device statistic JSON panel -->
-            <div id="device-stat-panel">
-                <div class="ds-header">Device Statistic</div>
-                <pre id="device-stat-json">Chưa tải — nhấn Load Streams để xem</pre>
             </div>
         </div>
 
-    </div>
-</div>
+        <!-- MJPEG -->
+        <div id="sec-mjpeg" class="s3-section">
+            <div id="mjpeg-controls">
+                <input id="mjpeg-url" type="text" placeholder="http://host/stream.mjpeg">
+                <button id="mjpeg-load">Load</button>
+                <button id="mjpeg-stop">Stop</button>
+            </div>
+            <img id="mjpeg-frame" class="no-src" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
+            <div id="mjpeg-log"></div>
+        </div>
 
-<!-- ================================================================== -->
-<!-- Tab 3: MJPEG debug                                                   -->
-<!-- ================================================================== -->
-<div id="tab-mjpeg" class="tab-panel">
-    <h2>MJPEG Debug</h2>
-    <div id="mjpeg-controls">
-        <input id="mjpeg-url" type="text" placeholder="http://host/stream.mjpeg">
-        <button id="mjpeg-load">Load</button>
-        <button id="mjpeg-stop">Stop</button>
-    </div>
-    <img id="mjpeg-frame" class="no-src" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="">
-    <div id="mjpeg-log"></div>
-</div>
+        <!-- Config -->
+        <div id="sec-config" class="s3-section">
+            <div id="config-content"></div>
+        </div>
 
-<!-- ================================================================== -->
-<!-- Scripts                                                              -->
-<!-- ================================================================== -->
+        <!-- Cluster -->
+        <div id="sec-cluster" class="s3-section">
+            <div id="cluster-content"></div>
+        </div>
+
+    </div><!-- /.s3-main -->
+</div><!-- /.s3-shell -->
+
+<!-- Scripts -->
 <script src="https://vjs.zencdn.net/8.10.0/video.min.js" onerror="window._vjsLoadFailed=true"></script>
 <script src="player/s3pro-player.js"></script>
 <script src="player/pc-hud.js"></script>
@@ -738,83 +627,126 @@ h2 { margin: 12px 0 8px; font-size: 1rem; letter-spacing: 0.05em; opacity: 0.7; 
 <script src="player/pc-timeline.js"></script>
 <script src="player/pc-control-bar.js"></script>
 <script src="player/player-controls.js"></script>
+<script src="config/config.js"></script>
 <script src="dashboard/dashboard.js"></script>
 <script src="mjpeg/mjpeg.js"></script>
+<script src="cluster/cluster.js"></script>
 <script>
-// ── Path ↔ tab mapping ──
-const TAB_PATHS = {
-    'tab-dashboard': '/console/dashboard',
-    'tab-vjs':       '/console/player',
-    'tab-mjpeg':     '/console/mjpeg',
+// ════════════════════════════════════════════
+// Section routing
+// ════════════════════════════════════════════
+const SEC_PATHS = {
+    'sec-dashboard': '/console/',
+    'sec-player':    '/console/player',
+    'sec-mjpeg':     '/console/mjpeg',
+    'sec-config':    '/console/config',
+    'sec-cluster':   '/console/cluster',
 };
-const PATH_TABS = {};
-Object.keys(TAB_PATHS).forEach(k => { PATH_TABS[TAB_PATHS[k]] = k; });
+const PATH_SECS = {};
+Object.keys(SEC_PATHS).forEach(k => { PATH_SECS[SEC_PATHS[k]] = k; });
 
-let _vjsInited = false;
-function activateTab(tabId, push) {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    const btn = document.querySelector('.tab-btn[data-tab="' + tabId + '"]');
-    if (btn) btn.classList.add('active');
-    const panel = document.getElementById(tabId);
-    if (panel) panel.classList.add('active');
-    const path = TAB_PATHS[tabId] || '/console/dashboard';
-    if (push) history.pushState({ tab: tabId }, '', path);
-    else      history.replaceState({ tab: tabId }, '', path);
-    // Lazy-init VideoJS player the first time the tab becomes visible.
-    // Must not init while display:none — VideoJS cannot calculate dimensions.
-    // setTimeout(0) ensures the browser has reflowed the panel to display:block
-    // before videojs() queries element dimensions.
-    if (tabId === 'tab-vjs' && !_vjsInited) {
+const SECTION_TITLES = {
+    'sec-dashboard': 'Dashboard',
+    'sec-player':    'Video Player',
+    'sec-mjpeg':     'MJPEG Debug',
+    'sec-config':    'Cấu hình',
+    'sec-cluster':   'Cluster',
+};
+
+let _vjsInited = false, _cfgInited = false, _clusterInited = false;
+
+function activateSection(secId, push) {
+    document.querySelectorAll('.s3-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === secId));
+    document.querySelectorAll('.s3-section').forEach(s => s.classList.toggle('active', s.id === secId));
+    const ttEl = document.getElementById('topbar-title');
+    if (ttEl) ttEl.textContent = SECTION_TITLES[secId] || secId;
+    const path = SEC_PATHS[secId] || '/console/';
+    if (push) history.pushState({ sec: secId }, '', path);
+    else      history.replaceState({ sec: secId }, '', path);
+
+    if (secId === 'sec-player' && !_vjsInited) {
         _vjsInited = true;
         setTimeout(function () {
             if (window._vjsLoadFailed || typeof videojs === 'undefined') {
-                const wrap = document.getElementById('player-wrap');
+                var wrap = document.getElementById('player-wrap');
                 if (wrap) wrap.insertAdjacentHTML('afterbegin',
                     '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#111;color:#888;font-size:0.82rem;z-index:9">Video.js không tải được (kiểm tra kết nối mạng)</div>');
                 return;
             }
-            // Create VideoJS player instance (s3pro plugin is auto-registered
-            // by s3pro-player.js when videojs is present on window)
-            const vp = videojs('vjs-player', {
-                controls:    false,
-                autoplay:    'any',
-                preload:     'auto',
-                muted:       true,
-                playsinline: true,
-            });
-            // Get the s3pro plugin instance for this player
-            const player = vp.s3pro({debug: true});
+            var vp = videojs('vjs-player', { controls: false, autoplay: 'any', preload: 'auto', muted: true, playsinline: true });
+            var player = vp.s3pro({ debug: true });
             initPlayerControls(player);
-        }, 1000);
+        }, 300);
     }
+    if (secId === 'sec-config' && !_cfgInited) {
+        _cfgInited = true;
+        initConfig();
+    }
+    if (secId === 'sec-cluster' && !_clusterInited) {
+        _clusterInited = true;
+        initCluster();
+    }
+    document.getElementById('s3-sidebar').classList.remove('open');
 }
 
-// ── Determine initial tab from ?tab= (stub redirect) or pathname ──
-const _tabParam = new URLSearchParams(location.search).get('tab');
-const _tabFromParam = { player: 'tab-vjs', mjpeg: 'tab-mjpeg', dashboard: 'tab-dashboard' }[_tabParam];
-const _tabFromPath  = PATH_TABS[location.pathname] || PATH_TABS[location.pathname.replace(/\/$/, '')];
-const _initialTab   = _tabFromParam || _tabFromPath || 'tab-dashboard';
-activateTab(_initialTab, false);
+function _secFromPath(p) {
+    if (!p) return 'sec-dashboard';
+    var c = p.replace(/\/$/, '');
+    return PATH_SECS[c] || PATH_SECS[p] || 'sec-dashboard';
+}
+var _urlParam = new URLSearchParams(location.search).get('tab');
+var _secFromParam = { player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config', dashboard: 'sec-dashboard', cluster: 'sec-cluster' }[_urlParam];
+var _initSec = _secFromParam || _secFromPath(location.pathname);
+activateSection(_initSec, false);
 
-// ── Tab click → pushState ──
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => activateTab(btn.dataset.tab, true));
+document.querySelectorAll('.s3-nav-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { activateSection(this.dataset.section, true); });
+});
+window.addEventListener('popstate', function (e) {
+    var sec = (e.state && e.state.sec) ? e.state.sec : _secFromPath(location.pathname);
+    activateSection(sec, false);
 });
 
-// ── Browser back / forward ──
-window.addEventListener('popstate', e => {
-    const tabId = (e.state && e.state.tab)
-        ? e.state.tab
-        : (PATH_TABS[location.pathname] || 'tab-dashboard');
-    activateTab(tabId, false);
+function toggleSidebar() { document.getElementById('s3-sidebar').classList.toggle('open'); }
+document.addEventListener('click', function (e) {
+    var sb = document.getElementById('s3-sidebar');
+    var hb = document.getElementById('s3-hamburger');
+    if (sb.classList.contains('open') && !sb.contains(e.target) && hb && !hb.contains(e.target)) {
+        sb.classList.remove('open');
+    }
 });
 
-// ── Init tabs ──
+// ════════════════════════════════════════════
+// Auth UI & server status
+// ════════════════════════════════════════════
+(function () {
+    var auth = S3Auth.get();
+    if (!auth) return;
+    var urlEl    = document.getElementById('srv-url');
+    var statusEl = document.getElementById('srv-status');
+    var dotEl    = document.getElementById('srv-dot');
+    if (urlEl) { urlEl.textContent = auth.serverUrl.replace(/^https?:\/\//, ''); urlEl.title = auth.serverUrl; }
+    var mediaDom = document.getElementById('media-domain');
+    if (mediaDom && auth.serverUrl) mediaDom.value = auth.serverUrl;
+
+    S3Auth.apiFetch('/index/api/getServerConfig')
+        .then(function (data) {
+            if (dotEl) dotEl.className = 's3-srv-dot online';
+            if (statusEl) statusEl.textContent = 'Online';
+            if (data.data && data.data[0]) window._s3Config = data.data[0];
+            if (document.getElementById('sec-dashboard').classList.contains('active')) initDashboard();
+        })
+        .catch(function () {
+            if (dotEl) dotEl.className = 's3-srv-dot offline';
+            if (statusEl) statusEl.textContent = 'Offline';
+        });
+})();
+
+function doLogout() { S3Auth.clear(); window.location.replace('/console/login.html'); }
+
+// Init
 initDashboard();
 initMjpeg();
-// S3ProPlayer + initPlayerControls are called lazily in activateTab
-// the first time tab-vjs is shown (VideoJS needs a visible element to init).
 </script>
 </body>
 </html>

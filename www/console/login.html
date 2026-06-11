@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S3MediaKit — Đăng nhập</title>
+<style>
+:root {
+    --bg:      #0d1117;
+    --surface: #161b22;
+    --elev:    #21262d;
+    --border:  #30363d;
+    --text:    #e6edf3;
+    --muted:   #7d8590;
+    --accent:  #388bfd;
+    --success: #3fb950;
+    --danger:  #f85149;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.login-logo {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+.login-logo svg {
+    width: 52px; height: 52px;
+    filter: drop-shadow(0 0 12px rgba(56,139,253,0.4));
+}
+.login-logo h1 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--text);
+}
+.login-logo span {
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.login-card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 28px 24px;
+}
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+.form-group label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.form-group input {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-group input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(56,139,253,0.15);
+}
+.form-group input.error { border-color: var(--danger); }
+.form-hint {
+    font-size: 0.74rem;
+    color: var(--muted);
+    margin-top: 2px;
+}
+.remember-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+.remember-row input[type=checkbox] {
+    width: 15px; height: 15px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.remember-row label {
+    font-size: 0.82rem;
+    color: var(--muted);
+    cursor: pointer;
+}
+.btn-login {
+    width: 100%;
+    padding: 10px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.92rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    position: relative;
+}
+.btn-login:hover:not(:disabled) { background: #1f6feb; }
+.btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-login .spinner {
+    display: none;
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.65s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+.btn-login.loading .spinner { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.error-msg {
+    display: none;
+    margin-top: 14px;
+    padding: 10px 12px;
+    background: rgba(248,81,73,0.12);
+    border: 1px solid rgba(248,81,73,0.35);
+    border-radius: 6px;
+    color: var(--danger);
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+.error-msg.show { display: block; }
+.divider {
+    height: 1px;
+    background: var(--border);
+    margin: 20px 0;
+}
+.login-footer {
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 20px;
+}
+</style>
+</head>
+<body>
+
+<div class="login-logo">
+    <!-- Camera / media icon -->
+    <svg viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="52" height="52" rx="12" fill="#161b22"/>
+        <path d="M8 17a4 4 0 0 1 4-4h20a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4V17z" fill="#21262d" stroke="#388bfd" stroke-width="1.5"/>
+        <path d="M36 21l8-4v18l-8-4V21z" fill="#21262d" stroke="#388bfd" stroke-width="1.5" stroke-linejoin="round"/>
+        <circle cx="22" cy="26" r="5" fill="#388bfd" opacity="0.9"/>
+        <circle cx="22" cy="26" r="2.5" fill="#0d1117"/>
+    </svg>
+    <h1>S3MediaKit</h1>
+    <span>Console Panel</span>
+</div>
+
+<div class="login-card">
+    <div class="form-group">
+        <label for="server-url">Địa chỉ Media Server</label>
+        <input type="url" id="server-url" placeholder="http://localhost:80" autocomplete="url" spellcheck="false">
+    </div>
+
+    <div class="form-group">
+        <label for="secret-key">Secret Key</label>
+        <input type="password" id="secret-key" placeholder="api.secret" autocomplete="current-password">
+    </div>
+
+    <div class="remember-row">
+        <input type="checkbox" id="remember-server" checked>
+        <label for="remember-server">Ghi nhớ địa chỉ server</label>
+    </div>
+
+    <button class="btn-login" id="btn-login">
+        <span class="spinner"></span>
+        Đăng nhập
+    </button>
+
+    <div class="error-msg" id="error-msg"></div>
+</div>
+
+<div class="login-footer">S3MediaKit Console · Chỉ dành cho quản trị viên</div>
+
+<script src="assets/auth.js"></script>
+<script>
+(function () {
+    // Pre-fill server URL from localStorage or current origin
+    const serverInput = document.getElementById('server-url');
+    const secretInput = document.getElementById('secret-key');
+    const rememberCb  = document.getElementById('remember-server');
+    const btnLogin    = document.getElementById('btn-login');
+    const errorMsg    = document.getElementById('error-msg');
+
+    const remembered = S3Auth.getRememberedServer() || window.location.origin;
+    if (remembered) serverInput.value = remembered;
+
+    function showError(msg) {
+        errorMsg.textContent = msg;
+        errorMsg.classList.add('show');
+        serverInput.classList.remove('error');
+        secretInput.classList.remove('error');
+    }
+    function clearError() { errorMsg.classList.remove('show'); }
+
+    function setLoading(on) {
+        btnLogin.disabled = on;
+        btnLogin.classList.toggle('loading', on);
+    }
+
+    async function doLogin() {
+        clearError();
+        const serverUrl = serverInput.value.trim();
+        const secret    = secretInput.value.trim();
+
+        if (!serverUrl) {
+            showError('Vui lòng nhập địa chỉ server.');
+            serverInput.classList.add('error');
+            serverInput.focus();
+            return;
+        }
+        if (!secret) {
+            showError('Vui lòng nhập Secret Key.');
+            secretInput.classList.add('error');
+            secretInput.focus();
+            return;
+        }
+
+        setLoading(true);
+        try {
+            await S3Auth.login(serverUrl, secret);
+            if (rememberCb.checked) S3Auth.rememberServer(serverUrl);
+            window.location.replace('/console/');
+        } catch (err) {
+            showError(err.message || 'Đăng nhập thất bại.');
+            setLoading(false);
+        }
+    }
+
+    btnLogin.addEventListener('click', doLogin);
+    [serverInput, secretInput].forEach(el => {
+        el.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+        el.addEventListener('input', clearError);
+    });
+
+    // If already logged in, skip to console
+    if (S3Auth.get()) window.location.replace('/console/');
+})();
+</script>
+</body>
+</html>
