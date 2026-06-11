@@ -19,6 +19,6 @@ const char kServerName[] =  "S3MediaKit-3.0(build in " __DATE__ " " __TIME__ ")"
 const char kServerName[] = "S3MediaKit(git hash:" COMMIT_HASH "/" COMMIT_TIME ",branch:" BRANCH_NAME ",build time:" BUILD_TIME ")";
 #endif
 
-const char kServerShortName[] =  "MediaServer-3.0";
+const char kServerShortName[] =  "MediaServer-3.1/" COMMIT_HASH;
 
 }//namespace mediakit
