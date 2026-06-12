@@ -1204,26 +1204,39 @@ void CameraStatisticImp::syncToEsc() {
         return;
     }
 
-    auto params = static_cast<const CameraStatistic &>(*this);
-    ResourceManager::Instance().addResource<CameraStatistic>(params, true);
-    _last_sync_time = time(nullptr);
-    DebugL << "Sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+    try {
+        auto params = static_cast<const CameraStatistic &>(*this);
+        ResourceManager::Instance().addResource<CameraStatistic>(params, true);
+        _last_sync_time = time(nullptr);
+        TraceL << "Sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+    } catch (const std::exception &e) {
+        ErrorL << "Failed to sync camera resource to ESC for camera " << tuple.shortUrl() << ": " << e.what();
+    }
 }
 
 void CameraStatisticImp::removeFromEsc() {
-    ResourceManager::Instance().removeResource(tuple.device_id);
-    DebugL << "Removed camera resource from ESC for camera " << tuple.shortUrl();
+    try {
+        ResourceManager::Instance().removeResource(tuple.device_id);
+        TraceL << "Removed camera resource from ESC for camera " << tuple.shortUrl();
+    } catch (const std::exception &e) {
+        ErrorL << "Failed to remove camera resource from ESC for camera " << tuple.shortUrl() << ": " << e.what();
+    }
 }
 
 bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
     DebugL << "Get camera statistic from ESC for camera with guid " << guid;
-    auto ret = ResourceManager::Instance().getResource<CameraStatistic>(guid, stats);
-    if (ret) {
-        DebugL << "Sync from ESC for camera " << stats.tuple.shortUrl();
-    } else {
-        WarnL << "Camera " << guid << " not found. Sync from ESC failed";
+    try {
+        auto ret = ResourceManager::Instance().getResource<CameraStatistic>(guid, stats);
+        if (ret) {
+            DebugL << "Sync from ESC for camera " << stats.tuple.shortUrl();
+        } else {
+            WarnL << "Camera " << guid << " not found. Sync from ESC failed";
+        }
+        return ret;
+    } catch (const std::exception &e) {
+        ErrorL << "Failed to sync camera resource from ESC for guid " << guid << ": " << e.what();
+        return false;
     }
-    return ret;
 }
 
 void CameraStatisticImp::assignResource(bool regist) {

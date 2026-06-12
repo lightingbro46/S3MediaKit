@@ -18,10 +18,47 @@ CREATE INDEX IF NOT EXISTS idx_bk_idx_camera_time ON bookmark_index (camera_guid
 CREATE INDEX IF NOT EXISTS idx_bk_idx_time        ON bookmark_index (start_time, end_time);
 CREATE INDEX IF NOT EXISTS idx_bk_idx_peer        ON bookmark_index (owner_peer_id);
 
+-- Cleanup to allow re-run safely
+DROP TRIGGER IF EXISTS bookmark_index_ai;
+DROP TRIGGER IF EXISTS bookmark_index_ad;
+DROP TRIGGER IF EXISTS bookmark_index_au;
+DROP TABLE IF EXISTS bookmark_index_fts;
+
 CREATE VIRTUAL TABLE bookmark_index_fts USING fts5(
     bookmark_guid UNINDEXED,
     search_text,                     -- name || ' ' || description || ' ' || tags_csv
     content='bookmark_index',
     tokenize='trigram'
 );
--- Backfill + triggers (AFTER INSERT/UPDATE/DELETE on bookmark_index)
+
+-- Backfill existing rows
+INSERT INTO bookmark_index_fts(rowid, bookmark_guid, search_text)
+    SELECT rowid,
+           bookmark_guid,
+           TRIM(COALESCE(name, '') || ' ' || COALESCE(description, '') || ' ' || COALESCE(tags_csv, ''))
+    FROM bookmark_index;
+
+-- Optimize FTS index after bulk load
+INSERT INTO bookmark_index_fts(bookmark_index_fts) VALUES('optimize');
+
+-- Trigger: new bookmark_index row inserted
+CREATE TRIGGER bookmark_index_ai AFTER INSERT ON bookmark_index BEGIN
+    INSERT INTO bookmark_index_fts(rowid, bookmark_guid, search_text)
+        VALUES (new.rowid,
+                new.bookmark_guid,
+                TRIM(COALESCE(new.name, '') || ' ' || COALESCE(new.description, '') || ' ' || COALESCE(new.tags_csv, '')));
+END;
+
+-- Trigger: bookmark_index row deleted
+CREATE TRIGGER bookmark_index_ad AFTER DELETE ON bookmark_index BEGIN
+    DELETE FROM bookmark_index_fts WHERE rowid = old.rowid;
+END;
+
+-- Trigger: bookmark_index row updated
+CREATE TRIGGER bookmark_index_au AFTER UPDATE ON bookmark_index BEGIN
+    DELETE FROM bookmark_index_fts WHERE rowid = old.rowid;
+    INSERT INTO bookmark_index_fts(rowid, bookmark_guid, search_text)
+        VALUES (new.rowid,
+                new.bookmark_guid,
+                TRIM(COALESCE(new.name, '') || ' ' || COALESCE(new.description, '') || ' ' || COALESCE(new.tags_csv, '')));
+END;

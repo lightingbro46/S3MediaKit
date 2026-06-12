@@ -78,7 +78,8 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
                                       ? static_cast<uint32_t>(option.motionPostRecordSec * 1000)
                                       : 0;
 #ifdef ENABLE_MOTION
-    new_cfg.protocol.enable_motion = option.enableMotion && option.motionDetectOnStream == type;
+    GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
+    new_cfg.protocol.enable_motion = enableMotion && option.enableMotion && option.motionDetectOnStream == type;
     new_cfg.protocol.roi_mask      = option.enableMotion ? option.roiValue : "";
     new_cfg.protocol.record_motion = option.enableMotion ? true : false;
     // Tell MotionMuxer to listen for kBroadcastRecordMP4 from the primary stream.

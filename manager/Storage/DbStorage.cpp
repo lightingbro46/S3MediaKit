@@ -70,7 +70,7 @@ SqlitePool::Ptr SqlitePoolMap::add(const std::string &tag) {
     auto db_name = tag + ".sqlite";
     auto full_path = File::absolutePath(db_name, _save_path);
     auto pool = std::make_shared<SqlitePool>();
-    pool->Init(full_path);
+    pool->Init(full_path, true);
     pool->setSize(3 + std::thread::hardware_concurrency());
     return _pools.emplace(tag, pool).first->second;
 }

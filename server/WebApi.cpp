@@ -3959,10 +3959,10 @@ void installWebApi() {
         }
 
         auto snap = SyncManager::Instance().buildLocalSnapshot();
-        if (snap.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
-            return;
-        }
+        // if (snap.empty()) {
+        //     RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
+        //     return;
+        // }
         Value snap_json = SnapshotBuilder::serialize(snap);
         val["data"] = snap_json;
         invoker(200, headerOut, val.toStyledString());
