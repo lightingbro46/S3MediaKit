@@ -225,16 +225,18 @@ void ClusterManager::loadSavedMediaServerInfo() {
         return;
     }
 
-    for (const auto &item : list) {
-        if (!item.isObject()) {
-            WarnL << "ClusterManager: invalid peer item in persisted peer list, skip";
-            continue;
+    WorkThreadPool::Instance().getPoller()->async([this, list]() {
+        for (const auto &item : list) {
+            if (!item.isObject()) {
+                WarnL << "ClusterManager: invalid peer item in persisted peer list, skip";
+                continue;
+            }
+            auto info = MediaServerInfo::fromJson(item);
+            std::string id = info.id;
+            DebugL << "ClusterManager: loading persisted peer " << id << " with url " << buildOrginUrls(info);
+            addMediaServer(id, info, true);
         }
-        auto info = MediaServerInfo::fromJson(item);
-        std::string id = info.id;
-        DebugL << "ClusterManager: loading persisted peer " << id << " with url " << buildOrginUrls(info);
-        addMediaServer(id, info, true);
-    }
+    });
 }
 
 void ClusterManager::onManager() {
