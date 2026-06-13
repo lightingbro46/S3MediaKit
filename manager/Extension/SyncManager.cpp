@@ -668,6 +668,18 @@ void SyncManager::recordRelayAck(vector<PeerAckLog> &ack_logs) {
 }
 
 void SyncManager::maybePruneLog() {
+    GET_CONFIG(int, log_keep_num, Database::kTransactionLogKeepLast)
+    if (_single_node)  {
+        auto seq_imp = make_shared<TransactionSequenceImp>();
+        auto current_seq = seq_imp->findSeqByPeerIdAndDbGuid(_self_node_id, _self_db_id);
+        auto safe_seq = current_seq - log_keep_num;
+        if (safe_seq > 0) {
+            auto log_imp = make_shared<TransactionLogImp>();
+            log_imp->pruneAckedLogs(_self_node_id, _self_db_id, safe_seq);
+            TraceL << "Pruned logs for single node mode up to seq=" << safe_seq;
+        }
+        return;
+    }
     // Collect active peer list under lock
     unordered_set<string> active_peers;
     {
@@ -684,9 +696,15 @@ void SyncManager::maybePruneLog() {
     auto log_imp = make_shared<TransactionLogImp>();
 
     for (const auto &seq : safe_seqs) {
+        auto safe_seq = seq.sequence - log_keep_num;
+        if (safe_seq <= 0) continue; // nothing to prune
         log_imp->pruneAckedLogs(seq.peer_guid, seq.db_guid, seq.sequence);
         TraceL << "Pruned logs for source peer=" << seq.peer_guid << " db_guid=" << seq.db_guid << " up to seq=" << seq.sequence;
     }
+}
+
+void SyncManager::setSingleNodeMode(bool single_node) {
+    _single_node = single_node;
 }
 
 } // namespace managerkit

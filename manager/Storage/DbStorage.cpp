@@ -20,6 +20,7 @@ const string kEnableSyncDb = DATABASE_FIELD"enable_sync_db";
 const string kPullIntervalSec = DATABASE_FIELD"pull_interval_sec";
 const string kBatchLimit = DATABASE_FIELD"batch_limit";
 const string kGossipFanout = DATABASE_FIELD"gossip_fanout";
+const string kTransactionLogKeepLast = DATABASE_FIELD"transaction_log_keep_last";
 
 static onceToken token([]() { 
     mINI::Instance()[kDbSavePath] = "./db";
@@ -29,6 +30,7 @@ static onceToken token([]() {
     mINI::Instance()[kPullIntervalSec] = 30;
     mINI::Instance()[kBatchLimit] = 100;
     mINI::Instance()[kGossipFanout] = 3;
+    mINI::Instance()[kTransactionLogKeepLast] = 1000;
 });
 
 } // namespace Database

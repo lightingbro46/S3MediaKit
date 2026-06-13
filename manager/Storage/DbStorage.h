@@ -33,6 +33,8 @@ extern const std::string kBatchLimit;
 //   fanout = 3 : balanced for most clusters.
 //   fanout = N : broadcast to all peers.
 extern const std::string kGossipFanout;
+// Number of transactions to keep in the transaction log for gossip synchronization.
+extern const std::string kTransactionLogKeepLast;
 } // namespace Database
 
 namespace managerkit {
@@ -221,6 +223,15 @@ protected:
             ret.push_back(EntityTraits<T>::fromRow(row));
         }
         return ret;
+    }
+
+    bool isCreated() {
+        auto query = toolkit::QueryBuilder()
+                         .select({"name"})
+                         .from("sqlite_master")
+                         .where("type='table' AND name=?", { serialize_sql_value(EntityTraits<T>::tableName()) });
+        auto rows =  _executor->executeRaw(query);
+        return !rows.empty();
     }
 
 protected:

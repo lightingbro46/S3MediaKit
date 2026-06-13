@@ -662,6 +662,8 @@ static void loadServerClusterFromJson(const Json::Value &data) {
         ClusterManager::Instance().removeMediaServer(id);
     }
 
+    SyncManager::Instance().setSingleNodeMode(ClusterManager::Instance().getMediaServerIds().size() == 1);
+
     DebugL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
 }
 

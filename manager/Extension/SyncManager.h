@@ -75,12 +75,7 @@ public:
 
     void recordRelayAck(std::vector<PeerAckLog> &ack_cursors);
 
-    // Register a sync handler for a table. Must be called before start().
-    // Replaces any previously registered handler for the same table name.
-    void registerTable(const std::string &table_name, TableSyncHandler handler);
-
-    // GC: compute safe prune watermark and delete old transaction_log entries.
-    void maybePruneLog();
+    void setSingleNodeMode(bool single_node);
 
 private:
     SyncManager() = default;
@@ -116,6 +111,13 @@ private:
     // Updates _applied_ts on accept (Apply / ApplyWinner).
     ApplyDecision shouldApply(const std::string &table_name, const std::string &op, const Json::Value &payload, int64_t log_ts);
 
+    // Register a sync handler for a table. Must be called before start().
+    // Replaces any previously registered handler for the same table name.
+    void registerTable(const std::string &table_name, TableSyncHandler handler);
+
+    // GC: compute safe prune watermark and delete old transaction_log entries.
+    void maybePruneLog();
+
 private:
     toolkit::Timer::Ptr                          _timer;
     std::mutex                                   _mtx;
@@ -138,6 +140,7 @@ private:
 
     // Plugin registry: table_name → sync handler.
     std::unordered_map<std::string, TableSyncHandler> _table_handlers;
+    bool _single_node = false;
 };
 
 } // namespace managerkit
