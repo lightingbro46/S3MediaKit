@@ -40,8 +40,8 @@ void PlayerProxy::setOnClose(function<void(const SockException &ex)> cb) {
     _on_close = cb ? std::move(cb) : [](const SockException &) {};
 }
 
-void PlayerProxy::setOnDisconnect(std::function<void()> cb) {
-    _on_disconnect = cb ? std::move(cb) : [] () {};
+void PlayerProxy::setOnDisconnect(std::function<void(const SockException &ex)> cb) {
+    _on_disconnect = cb ? std::move(cb) : [](const SockException &) {};
 }
 
 void PlayerProxy::setOnConnect(std::function<void(const TranslationInfo&)> cb) {
@@ -119,7 +119,7 @@ void PlayerProxy::play(const string &strUrlTmp) {
             InfoL << "play " << strUrlTmp << " success";
         } else if (*piFailedCnt < strongSelf->_retry_count || strongSelf->_retry_count < 0) {
             // Play failed, retry playing with delay
-            strongSelf->_on_disconnect();
+            strongSelf->_on_disconnect(err);
             strongSelf->rePlay(strUrlTmp, (*piFailedCnt)++);
         } else {
             // Reached the maximum number of retries, callback to close

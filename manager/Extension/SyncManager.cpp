@@ -705,6 +705,7 @@ void SyncManager::maybePruneLog() {
 
 void SyncManager::setSingleNodeMode(bool single_node) {
     _single_node = single_node;
+    InfoL << "SyncManager single node mode set to " << single_node;
 }
 
 } // namespace managerkit

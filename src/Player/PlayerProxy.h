@@ -78,7 +78,7 @@ public:
      * Set a callback for failed server connection
      * @param cb Callback object
     */
-    void setOnDisconnect(std::function<void()> cb);
+    void setOnDisconnect(std::function<void(const toolkit::SockException &ex)> cb);
 
     /**
      * Set a callback for a successful connection to the server
@@ -132,7 +132,7 @@ private:
     ProtocolOption _option;
     std::string _pull_url;
     toolkit::Timer::Ptr _timer;
-    std::function<void()> _on_disconnect;
+    std::function<void(const toolkit::SockException &ex)> _on_disconnect;
     std::function<void(const TranslationInfo &info)> _on_connect;
     std::function<void(const toolkit::SockException &ex)> _on_close;
     std::function<void(const toolkit::SockException &ex)> _on_play;

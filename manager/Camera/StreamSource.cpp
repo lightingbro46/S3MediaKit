@@ -166,17 +166,17 @@ void StreamSource::createPlayer() {
             (*player)[Client::kTimeoutMS] = strong_self->_option.timeout_sec * 1000;
         }
 
-        player->setPlayCallbackOnce([weak_self](const SockException &ex) {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) {
-                return;
-            }
+        // player->setPlayCallbackOnce([weak_self](const SockException &ex) {
+        //     auto strong_self = weak_self.lock();
+        //     if (!strong_self) {
+        //         return;
+        //     }
 
-            auto live = !ex;
-            auto status = ex ? ex.what() : "play callback success";
-            strong_self->setState(live, status);
-            TraceL << "setPlayCallbackOnce: live=" << live << " status=" << status;
-        });
+        //     auto live = !ex;
+        //     auto status = ex ? ex.what() : "success";
+        //     strong_self->setState(live, status);
+        //     TraceL << "setPlayCallbackOnce: live=" << live << " status=" << status;
+        // });
 
         player->setOnConnect([weak_self](const TranslationInfo &info) {
             auto strong_self = weak_self.lock();
@@ -185,21 +185,22 @@ void StreamSource::createPlayer() {
             }
 
             const auto live = true;
-            const std::string status = "play rtsp success";
+            const std::string status = "success";
             strong_self->setState(live, status);
             TraceL << "setOnConnect: live=" << live << " status=" << status;
             
             strong_self->onStreamReady(live, status, &info);
         });
 
-        player->setOnDisconnect([weak_self]() {
+        player->setOnDisconnect([weak_self](const SockException &ex) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
             }
 
             const auto live = false;
-            const std::string status = "stream disconnect";
+            const std::string status =  ex.what();
+
             strong_self->setState(live, status);
             TraceL << "setOnDisconnect: live=" << live << " status=" << status;
 
@@ -214,7 +215,7 @@ void StreamSource::createPlayer() {
             }
 
             auto live = !ex;
-            auto status = ex ? ex.what() : "player closed";
+            auto status = ex ? ex.what() : "player self-closed";
             strong_self->setState(live, status);
             TraceL << "setOnClose: live=" << live << " status=" << status;
             strong_self->onStreamReady(live, status, nullptr);
