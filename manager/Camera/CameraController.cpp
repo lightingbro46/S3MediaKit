@@ -296,13 +296,15 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     int ptz_speed = speed < 0 ? speed : static_cast<int>(_ptzSpeed);
 
     if (_onvif_ctr && _ready.load()) {
-        onceToken token1([&] {_isControlled = true;}, [&]() { _isControlled = false; });
+        _isControlled = true;
         // Read state on _poller before dispatching to avoid data races.
         auto onvif_ctr = _onvif_ctr;
         int ptz_mode   = _ptzMode;
+        std::weak_ptr<CameraController> weak_self = shared_from_this();
         // Blocking SOAP — dispatch to a fresh WorkThread so _poller stays responsive.
-        WorkThreadPool::Instance().getPoller()->async([onvif_ctr, ptz_mode, direct, ptz_speed, cb, &token1]() {
+        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, ptz_mode, direct, ptz_speed, cb]() {
             onvifPTZMove(onvif_ctr, ptz_mode, direct, ptz_speed, cb);
+            if (auto self = weak_self.lock()) { self->_isControlled = false; }
         });
         return;
     }
@@ -384,11 +386,13 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
         cb(SockException(Err_other, "Camera is configured to disable PTZ control", ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ));
         return;
     }
-    onceToken token1([&] {_isControlled = true;}, [&]() { _isControlled = false; });
+    _isControlled = true;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
 
     if (isUserPreset) {
         auto it = _userPresets.find(presetToken);
         if (it == _userPresets.end()) {
+            _isControlled = false;
             cb(SockException(Err_other, "User preset not found", ApiErrCode::CODE_PTZ_PRESET_NOT_FOUND));
             return;
         }
@@ -397,15 +401,17 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             auto onvif_ctr = _onvif_ctr;
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
             // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
-            WorkThreadPool::Instance().getPoller()->async([onvif_ctr, pan, tilt, zoom, cb, &token1]() mutable {
+            WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, pan, tilt, zoom, cb]() mutable {
                 if (!onvif_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
                     cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED));
-                    return;
+                } else {
+                    cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
                 }
-                cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
+                if (auto self = weak_self.lock()) { self->_isControlled = false; }
             });
             return;
         } else {
+            _isControlled = false;
             cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
             return;
         }
@@ -414,15 +420,17 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             auto onvif_ctr = _onvif_ctr;
             string token = presetToken;
             // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
-            WorkThreadPool::Instance().getPoller()->async([onvif_ctr, token, cb, &token1]() {
+            WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, cb]() {
                 if (!onvif_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
                     cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED));
-                    return;
+                } else {
+                    cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
                 }
-                cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
+                if (auto self = weak_self.lock()) { self->_isControlled = false; }
             });
             return;
         } else {
+            _isControlled = false;
             cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
             return;
         }
@@ -441,11 +449,13 @@ static void onvifGetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 void CameraController::getMediaProfileAsync(const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     // Caller (GenericRtspCameraImp::getMediaProfile) asserts isCurrentThread - no dispatch needed.
     if (_onvif_ctr && _ready.load()) {
-        onceToken token1([&] {_isControlled = true;}, [&]() { _isControlled = false; });
+        _isControlled = true;
         auto onvif_ctr = _onvif_ctr;
         string token = profileToken;
-        WorkThreadPool::Instance().getPoller()->async([onvif_ctr, token, cb, &token1]() {
+        std::weak_ptr<CameraController> weak_self = shared_from_this();
+        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, cb]() {
             onvifGetMediaProfile(onvif_ctr, token, cb);
+            if (auto self = weak_self.lock()) { self->_isControlled = false; }
         });
         return;
     }
@@ -467,7 +477,7 @@ static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 void CameraController::setMediaProfileAsync(const string &profileToken, VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
     // Caller (GenericRtspCameraImp::setMediaProfile) asserts isCurrentThread - no dispatch needed.
     if (_onvif_ctr && _ready.load()) {
-        onceToken token1([&] {_isControlled = true;}, [&]() { _isControlled = false; });
+        _isControlled = true;
 
         VideoEncoderConfig new_f_config;
         auto it = _profileConfigMap.find(profileToken);
@@ -487,6 +497,7 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
                 new_f_config.state.status = configStateToString[VideoConfigSetState::NEW];
             } else {
                 TraceL << "The config does not change";
+                _isControlled = false;
                 return cb(SockException(Err_other, "New config is the same as the current config", ApiErrCode::CODE_ONVIF_SET_CONFIG_NOT_CHANGE));
             }
         } else {
@@ -505,8 +516,9 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
             }
             self->addProfileConfig(profileToken, new_f_config);
         };
-        WorkThreadPool::Instance().getPoller()->async([onvif_ctr, profileToken, config, cb, &token1, on_success]() {
+        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, profileToken, config, cb, on_success]() {
             onvifSetMediaProfile(onvif_ctr, profileToken, config, cb, on_success);
+            if (auto self = weak_self.lock()) { self->_isControlled = false; }
         });
         return;
     }    

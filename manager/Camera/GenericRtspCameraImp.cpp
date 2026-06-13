@@ -19,9 +19,16 @@ GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::
 }
 
 GenericRtspCameraImp::~GenericRtspCameraImp() {
-    // stop camera if it's still running when destructing
+    // stop camera if it's still running when destructing.
+    // NOTE: stop() must run on the owner poller (stopMonitor/stopController assert isCurrentThread).
+    // We must NOT use async([this]) here because 'this' becomes a dangling pointer after the
+    // destructor returns, causing use-after-free. Use sync() so 'this' stays valid until stop() completes.
     if (_enabled.load()) {
-        _poller->async([this]() { stop(); });
+        if (_poller->isCurrentThread()) {
+            stop();
+        } else {
+            _poller->sync([this]() { stop(); });
+        }
     }
 }
 
@@ -153,6 +160,7 @@ void GenericRtspCameraImp::PTZMove(const std::string &strDirect, int speed, cons
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call PTZMove in it's owner poller");
     if (!_controller) {
         cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
     }
     _controller->PTZMove(strDirect, speed, cb);
 }
