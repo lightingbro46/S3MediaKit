@@ -41,14 +41,39 @@ static void cleanupFolder(const string folder) {
     });
 }
 
+static void cleanCrashFiles() {
+    vector<string> crash_file_paths;
+    auto root_path = File::absolutePath("./", "");
+    File::scanDir(root_path, [&](const string &path, bool isDir) {
+        if (isDir) return true;
+        auto filename = findSubString(path.data() + root_path.size(), nullptr, nullptr);
+        if (start_with(filename, "crash.")) {
+            crash_file_paths.push_back(path);
+        }
+        return true;
+    });
+
+    for (const auto &path : crash_file_paths) {
+        File::delete_file(path);
+    }
+}
+
 void StorageManager::cleanupTemporaryFiles() {
+    if (time(nullptr) < _next_cleanup_time) {
+        return;
+    }
+
     // reset ticker to elapse time
     _ticker.resetTime();
 
-    GET_CONFIG(string, hls_save_path, Protocol::kHlsSavePath)
-    cleanupFolder(hls_save_path);
-    DebugL << "Cleanup hls save path";
-
+    if (_next_cleanup_time == 0) {
+        // only cleanup hls save path when the manager is started for the first time, 
+        // to avoid deleting files created by other instances in cluster deployment
+        GET_CONFIG(string, hls_save_path, Protocol::kHlsSavePath)
+        cleanupFolder(hls_save_path);
+        DebugL << "Cleanup hls save path";
+    }
+    
     GET_CONFIG(string, snap_save_path, "api.snapRoot");
     cleanupFolder(snap_save_path);
     DebugL << "Cleanup snap save path";
@@ -57,7 +82,18 @@ void StorageManager::cleanupTemporaryFiles() {
     cleanupFolder(extract_save_path);
     DebugL << "Cleanup extract save path";
 
+    GET_CONFIG(string, ffmpeg_log, "ffmpeg.log")
+    auto parent_path = File::parentDir(ffmpeg_log);
+    cleanupFolder(parent_path);
+    DebugL << "Cleanup FFmpeg log files";
+
+    cleanCrashFiles();
+    DebugL << "Cleanup crash files";
+
     InfoL << "Remove temporary files. Finished. " << format_duration_verbose(_ticker.elapsedTime()) << " elapsed" ;
+
+    _next_cleanup_time = StampUtils::getStartOfDay(time(nullptr)) + 86400;
+    InfoL << "Next temporary files cleanup time: " << getTimeStr("%Y-%m-%d %H:%M:%S", _next_cleanup_time);
 }
 
 using KeepTimeMap = TimeRebuilder::KeepTimeMap;
@@ -409,6 +445,7 @@ void StorageManager::start() {
             }
             strong_self->enforceStoragePolicy();
             strong_self->removeExpiredUserSession();
+            strong_self->cleanupTemporaryFiles();
             return true;
         },
         _poller);

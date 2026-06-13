@@ -38,6 +38,7 @@ private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;
     toolkit::Ticker _ticker;
+    uint64_t _next_cleanup_time = 0;
 };
 
 } // namespace managerkit
