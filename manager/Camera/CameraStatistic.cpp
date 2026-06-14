@@ -1196,6 +1196,8 @@ struct ResourceAdapter<CameraStatistic> {
 
 void CameraStatisticImp::syncToEsc() {
     if (!_sync_start) {
+        // Only sync to ESC when recording is enabled or failover is enabled, to reduce unnecessary sync and resource assignment when camera is inactive.
+        _last_sync_time = time(nullptr);
         return;
     }
     auto sync_time = time(nullptr);
