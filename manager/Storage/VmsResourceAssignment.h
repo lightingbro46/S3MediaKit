@@ -92,8 +92,17 @@ public:
     void add(VmsResourceAssignment &assign, bool append_log = true) {
         if (assign.assignment_guid.empty()) {
             assign.assignment_guid = toolkit::makeUuidStr();
+            save(assign, true);
+        } else {
+            // assignment_guid is pre-set (sync/replay path): upsert to avoid
+            // PRIMARY KEY violation if the record was already received before.
+            auto existing = findById(assign);
+            if (!existing.empty()) {
+                updateById(assign);
+            } else {
+                save(assign, true);
+            }
         }
-        save(assign, true);
         if (append_log) {
             _log_impl->appendLocalDataMutation(EntityTraits<VmsResourceAssignment>::tableName(), TRAN_DATA_OP_UPSERT, assign.toJson());
         }

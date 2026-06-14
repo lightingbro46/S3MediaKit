@@ -5,6 +5,7 @@
 #include <climits>
 #include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 #include "DbStorage.h"
 #include "Common/config.h"
 #include "json/json.h"
@@ -195,6 +196,8 @@ public:
      */
     void add(PeerAckLog &entity) {
         if (entity.peer_guid.empty() || entity.src_peer_guid.empty() || entity.acked_seq <= 0) return;
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
         auto ret = findByPeerGuidAndSrcPeerGuid(entity.peer_guid, entity.src_peer_guid);
         if (ret.empty()) {
             // No existing entry, insert new one

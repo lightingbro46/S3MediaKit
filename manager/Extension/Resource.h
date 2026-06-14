@@ -2,6 +2,7 @@
 #define COMMON_RESOURCE_H
 
 #include <string>
+#include <mutex>
 #include "Storage/VmsResource.h"
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
@@ -71,8 +72,10 @@ public:
     ~ResourceManager() = default;
 
     // Upsert: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    // Thread-safe: serializes multi-table writes for the same resource guid.
     template <typename T>
     void addResource(T data, bool append_log = true) {
+        std::lock_guard<std::mutex> lk(_mtx);
         auto ret = ResourceAdapter<T>::toVmsResource(data);
         _resource_imp->add(ret, append_log);
 
@@ -90,7 +93,9 @@ public:
     }
 
     // Remove: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    // Thread-safe: serializes multi-table deletes for the same resource guid.
     void removeResource(const std::string &guid) {
+        std::lock_guard<std::mutex> lk(_mtx);
         _local_imp->remove(guid); // local-only first
         _rstatus_imp->remove(guid);
         _kvpair_imp->remove(guid);
@@ -99,9 +104,12 @@ public:
         DebugL << "Removed resource with guid " << guid;
     }
 
-    // Get: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local)
+    // Get: VmsResource + VmsKvPair (synced) + LocalResourceProperty (local).
+    // Locked to ensure a consistent multi-table snapshot per resource guid
+    // (prevents reading a half-written resource from a concurrent addResource).
     template<typename T>
     bool getResource(const std::string &guid, T &out) {
+        std::lock_guard<std::mutex> lk(_mtx);
         auto ret = _resource_imp->findByGuid(guid);
         if (ret.empty()) return false;
         auto kvs   = _kvpair_imp->findAllKeyValue(guid);
@@ -113,6 +121,7 @@ public:
     // Lấy tất cả resource theo xtype_guid (phân biệt loại thiết bị)
     template<typename T>
     void getAllResource(const std::string peer_id, std::vector<T> &out) {
+        std::lock_guard<std::mutex> lk(_mtx);
         auto xtype_id = ResourceAdapter<T>::getXtypeId();
         auto ret = _resource_imp->findByParentGuidAndXType(peer_id, xtype_id);
         for (const auto &res : ret) {
@@ -123,6 +132,7 @@ public:
     }
 
     void setResourceStatus(const std::string &guid, ResourceStatus status) {
+        std::lock_guard<std::mutex> lk(_mtx);
         VmsResourceStatus r_status;
         r_status.guid = guid;
         r_status.status = static_cast<int>(status);
@@ -134,7 +144,10 @@ public:
         return static_cast<ResourceStatus>(_rstatus_imp->findStatus(guid));
     }
 
+    // Thread-safe: the mutex prevents two concurrent assignResource calls for
+    // the same resource_guid from both seeing empty → both inserting a new row.
     void assignResource(const std::string &resource_guid, const std::string &peer_id, const std::string &db_guid, ResourceAssignType type) {
+        std::lock_guard<std::mutex> lk(_mtx);
         auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
@@ -160,7 +173,7 @@ public:
     }
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
-        // tìm assignment hiện tại và set released_at
+        std::lock_guard<std::mutex> lk(_mtx);
         auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
@@ -177,6 +190,7 @@ public:
     }
 
     bool getCurrentResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
+        std::lock_guard<std::mutex> lk(_mtx);
         auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             out = current[0];
@@ -195,6 +209,11 @@ private:
     void load();
 
 private:
+    // Serializes all multi-table write and logical-read operations.
+    // Per-table static mutexes in each ImpClass remain in place for callers
+    // that bypass ResourceManager (e.g. SyncManager direct table writes).
+    mutable std::mutex _mtx;
+
     VmsResourceImp::Ptr _resource_imp;
     VmsResourceStatusImp::Ptr _rstatus_imp;
     VmsKvPairImp::Ptr _kvpair_imp;

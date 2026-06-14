@@ -1242,31 +1242,41 @@ bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
 }
 
 void CameraStatisticImp::assignResource(bool regist) {
-    auto node_id = ResourceManager::Instance().getSelfNodeId();
-    if (regist) {
-        auto db_guid = ResourceManager::Instance().getSelfDbGuid();
-        auto assign_type = (option.enableFailover && option.preferedMediaServer != node_id) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
-        ResourceManager::Instance().assignResource(tuple.device_id, node_id, db_guid, assign_type);
-    } else {
-        ResourceManager::Instance().releaseResource(tuple.device_id, node_id);
+    DebugL << (regist ? "Assigning" : "Releasing") << " resource for camera " << tuple.shortUrl();
+    try {
+        auto node_id = ResourceManager::Instance().getSelfNodeId();
+        if (regist) {
+            auto db_guid = ResourceManager::Instance().getSelfDbGuid();
+            auto assign_type = (option.enableFailover && option.preferedMediaServer != node_id) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
+            ResourceManager::Instance().assignResource(tuple.device_id, node_id, db_guid, assign_type);
+        } else {
+            ResourceManager::Instance().releaseResource(tuple.device_id, node_id);
+        }
+    } catch (const std::exception &e) {
+        ErrorL << "Failed to " << (regist ? "assign" : "release") << " resource for camera " << tuple.shortUrl() << ": " << e.what();
     }
 }
 
 void CameraStatisticImp::syncResourceStatus() {
-    ResourceStatus state = ResourceStatus::OFFLINE;
-    for (const auto &sinfo_pair : sinfo_map) {
-        const auto &sinfo = sinfo_pair.second;
-        if (sinfo.live) {
-            state = ResourceStatus::ONLINE;
-            break;
+    try {
+        ResourceStatus state = ResourceStatus::OFFLINE;
+        for (const auto &sinfo_pair : sinfo_map) {
+            const auto &sinfo = sinfo_pair.second;
+            if (sinfo.live) {
+                state = ResourceStatus::ONLINE;
+                break;
+            }
+            if (sinfo.status.find("Unauthorized") != string::npos) {
+                state = ResourceStatus::UNAUTHORIZED;
+            } else {
+                state = ResourceStatus::OFFLINE;
+            }
         }
-        if (sinfo.status.find("Unauthorized") != string::npos) {
-            state = ResourceStatus::UNAUTHORIZED;
-        } else {
-            state = ResourceStatus::OFFLINE;
-        }
+        DebugL << "Sync resource status for camera " << tuple.shortUrl() << " as " << (state == ResourceStatus::ONLINE ? "ONLINE" : (state == ResourceStatus::UNAUTHORIZED ? "UNAUTHORIZED" : "OFFLINE"));
+        ResourceManager::Instance().setResourceStatus(tuple.device_id, state);
+    } catch (const std::exception &e) {
+        ErrorL << "Failed to sync resource status for camera " << tuple.shortUrl() << ": " << e.what();
     }
-    ResourceManager::Instance().setResourceStatus(tuple.device_id, state);
 }
 
 } // namespace managerkit

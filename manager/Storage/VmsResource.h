@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_VMSRESOURCE_H
 
 #include <string>
+#include <mutex>
 #include <json/json.h>
 #include "DbStorage.h"
 #include "Util/util.h"
@@ -116,6 +117,8 @@ public:
     }
 
     void add(VmsResource &resource, bool append_log = true) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
         auto ret = findByGuid(resource.guid);
         bool changed = false;
         if (ret.size() > 0) {

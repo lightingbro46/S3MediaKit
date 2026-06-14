@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_VMSKVPAIR_H
 
 #include <string>
+#include <mutex>
 #include "DbStorage.h"
 #include "TransactionLog.h"
 #include "Util/util.h"
@@ -197,6 +198,8 @@ public:
 private:
     // Trả về true nếu thực sự ghi DB
     bool addInternal(VmsKvPair &kv) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
         auto ret = findByResourceIdAndKey(kv.resource_guid, kv.name);
         if (!ret.empty()) {
             kv.id = ret[0].id;

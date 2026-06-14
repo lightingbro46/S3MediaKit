@@ -2,6 +2,7 @@
 #define STORAGE_MISC_DATA_H
 
 #include <string>
+#include <mutex>
 #include "DbStorage.h"
 #include "Util/util.h"
 #include "Common/macros.h"
@@ -82,6 +83,8 @@ public:
     MiscDataImp() : MiscDataRepository() {}
 
     void add(MiscData &entity, bool upsert = true) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
         auto entities = findByKey(entity.key);   
         if (entities.size() == 0) {
             save(entity);

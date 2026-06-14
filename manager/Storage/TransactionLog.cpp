@@ -2,6 +2,7 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
+#include <mutex>
 
 using namespace std;
 using namespace toolkit;
@@ -10,6 +11,13 @@ using namespace mediakit;
 namespace managerkit {
 
 void TransactionLogImp::appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload) {
+    // Serialize all callers (across every TransactionLogImp instance) to prevent
+    // a read-modify-write race where two concurrent calls both read the same
+    // current_seq, compute the same next sequence, and then one INSERT succeeds
+    // while the other hits the UNIQUE constraint on (peer_guid, db_guid, sequence).
+    static std::mutex s_append_mtx;
+    std::lock_guard<std::mutex> lk(s_append_mtx);
+
     auto self_node_id = ResourceManager::Instance().getSelfNodeId();
     auto self_db_guid = ResourceManager::Instance().getSelfDbGuid();
 

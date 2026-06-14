@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_VMSRESOURCESTATUS_H
 
 #include <string>
+#include <mutex>
 #include "DbStorage.h"
 #include "Util/util.h"
 #include "json/json.h"
@@ -77,6 +78,8 @@ public:
     VmsResourceStatusImp() : VmsResourceStatusRepository() {}
 
     void add(VmsResourceStatus &resource) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
         auto ret = findByGuid(resource.guid);
         if (ret.size() > 0) {
             updateById(resource);
