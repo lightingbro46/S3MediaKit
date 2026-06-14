@@ -467,6 +467,15 @@ void MergedMP4Reader::openForReplay(uint64_t sample_ms, bool ref_self, bool file
         queryHiSegments(hi_tuple, _replay_start_time_s, _replay_total_dur_s);
     }
 
+    // In Hi-only mode the Lo demuxer is unavailable so _replay_total_dur_s was
+    // never set above.  Use only the first Hi segment's end time so that seekTo()
+    // bounds-checks are constrained to the first segment's time range — matching
+    // the single-time-range behaviour of Lo mode.
+    if (!_lo_demuxer && !_hi_segments.empty()) {
+        _replay_total_dur_s = _hi_segments[0].rel_end_ms / 1000;
+        DebugL << "Hi-only: total duration set to first segment end: " << _replay_total_dur_s << "s";
+    }
+
     // If Hi is available from the very start of the replay window (rel_start_ms==0)
     // or Lo is entirely unavailable, initialise the muxer with Hi tracks directly
     // and pre-enter StagingHi.  This prevents emitting a moov(Lo) that would be
@@ -598,10 +607,19 @@ bool MergedMP4Reader::readReplayTick() {
             _hi_active_demuxer.reset();
             if (_state == State::PlayingHi || _state == State::StagingHi) {
                 abortHiStage();
-                _state = State::SwitchingToLo;
+                if (!_replay_lo_eof) {
+                    // Mixed/Lo mode: fall back to Lo.
+                    _state = State::SwitchingToLo;
+                }
+                // Hi-only mode: state is irrelevant — replay ends after this segment.
             }
-            InfoL << "Hi segment " << _hi_seg_idx << " expired, switching to Lo";
+            InfoL << "Hi segment " << _hi_seg_idx << " expired, " << (_replay_lo_eof ? "Hi-only EOF" : "switching to Lo");
             _hi_seg_idx++;
+            if (_replay_lo_eof) {
+                // Hi-only: one segment = one continuous "time range", just like Lo.
+                // Stop after the current segment ends; do not activate the next one.
+                _hi_seg_idx = _hi_segments.size();
+            }
         }
     }
 
@@ -630,10 +648,20 @@ bool MergedMP4Reader::readReplayTick() {
                     _hi_active_demuxer.reset();
                     if (_state == State::PlayingHi || _state == State::StagingHi) {
                         abortHiStage();
-                        _state = State::SwitchingToLo;
+                        if (!_replay_lo_eof) {
+                            // Mixed/Lo mode: fall back to Lo.
+                            _state = State::SwitchingToLo;
+                        }
+                        // Hi-only mode: state is irrelevant — replay ends after this segment.
                     }
-                    DebugL << "Hi segment " << _hi_seg_idx << " finished (EOF), switching to Lo";
-                    _hi_seg_idx++;
+                    DebugL << "Hi segment " << _hi_seg_idx << " finished (EOF), " << (_replay_lo_eof ? "Hi-only EOF" : "switching to Lo");
+                    if (_replay_lo_eof) {
+                        // Hi-only: one segment = one continuous "time range", just like Lo.
+                        // Stop after the current segment ends; do not activate the next one.
+                        _hi_seg_idx = _hi_segments.size();
+                    } else {
+                        _hi_seg_idx++;
+                    }
                     break;
                 }
                 if (!raw) break;
@@ -708,14 +736,20 @@ bool MergedMP4Reader::readReplayTick() {
     if (lo_last_dts > advanced_ms) advanced_ms = lo_last_dts;
     _replay_current_ms = advanced_ms;
 
+    // Replay is done when Lo is exhausted AND no more Hi segments remain.
+    // In Hi-only mode _replay_lo_eof is always true from the start, so we must
+    // also check that all Hi segments have been consumed before signalling EOF.
+    bool hi_avail = (_hi_seg_idx < _hi_segments.size()) || _hi_active_demuxer;
+    bool replay_done = _replay_lo_eof && !hi_avail;
+
     GET_CONFIG(bool, file_repeat, Record::kFileRepeat);
-    if (_replay_lo_eof && (file_repeat || _replay_file_repeat)) {
+    if (replay_done && (file_repeat || _replay_file_repeat)) {
         // Need to start from the beginning
         seekTo(0);
         return true;
     }
 
-    return !_replay_lo_eof;
+    return !replay_done;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -933,9 +967,14 @@ bool MergedMP4Reader::seekTo(uint32_t stamp_seek) {
     _lo_staged_segs = 0;
     _lo_gop_cache.clear();
 
-    // Enter StagingHi if we land inside a Hi segment, otherwise StagingLo
+    // Enter StagingHi if we land inside a Hi segment, otherwise StagingLo.
+    // In Hi-only mode (no Lo), always stay in StagingHi even when the seek
+    // position falls in a gap between Hi segments — onLoFrame() would never
+    // be called to progress out of StagingLo in that case.
     if (_hi_active_demuxer && !_hi_tracks.empty()) {
         _state = State::StagingHi;
+    } else if (_replay_lo_eof && !_hi_segments.empty()) {
+        _state = State::StagingHi; // Hi-only: wait for next segment to activate
     } else {
         _state = State::StagingLo;
     }
