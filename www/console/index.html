@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<base href="/console/">
+<script>(function(){var p=location.pathname,i=p.indexOf('/console');document.write('<base href="'+(i!==-1?p.substring(0,i)+'/console/':'/console/')+'">');})()</script>
 <title>S3MediaKit Console</title>
 <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
 <style>
@@ -375,7 +375,8 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 <script>
 (function () {
     var auth = window.S3Auth && S3Auth.get();
-    if (!auth) { window.location.replace('/console/login.html'); }
+    var _cb = (window.consoleBase ? consoleBase() : (function(){var p=location.pathname,i=p.indexOf('/console');return i!==-1?p.substring(0,i)+'/console/':'/console/';}()));
+    if (!auth) { window.location.replace(_cb + 'login.html'); }
     else { document.body.classList.remove('s3-loading'); }
 })();
 </script>
@@ -635,12 +636,13 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 // ════════════════════════════════════════════
 // Section routing
 // ════════════════════════════════════════════
+const _CBASE = (window.consoleBase ? consoleBase() : '/console/');
 const SEC_PATHS = {
-    'sec-dashboard': '/console/',
-    'sec-player':    '/console/player',
-    'sec-mjpeg':     '/console/mjpeg',
-    'sec-config':    '/console/config',
-    'sec-cluster':   '/console/cluster',
+    'sec-dashboard': _CBASE,
+    'sec-player':    _CBASE + 'player',
+    'sec-mjpeg':     _CBASE + 'mjpeg',
+    'sec-config':    _CBASE + 'config',
+    'sec-cluster':   _CBASE + 'cluster',
 };
 const PATH_SECS = {};
 Object.keys(SEC_PATHS).forEach(k => { PATH_SECS[SEC_PATHS[k]] = k; });
@@ -660,7 +662,7 @@ function activateSection(secId, push) {
     document.querySelectorAll('.s3-section').forEach(s => s.classList.toggle('active', s.id === secId));
     const ttEl = document.getElementById('topbar-title');
     if (ttEl) ttEl.textContent = SECTION_TITLES[secId] || secId;
-    const path = SEC_PATHS[secId] || '/console/';
+    const path = SEC_PATHS[secId] || _CBASE;
     if (push) history.pushState({ sec: secId }, '', path);
     else      history.replaceState({ sec: secId }, '', path);
 
@@ -742,7 +744,7 @@ document.addEventListener('click', function (e) {
         });
 })();
 
-function doLogout() { S3Auth.clear(); window.location.replace('/console/login.html'); }
+function doLogout() { S3Auth.clear(); window.location.replace(_CBASE + 'login.html'); }
 
 // Init
 initDashboard();

@@ -248,7 +248,7 @@ body {
         try {
             await S3Auth.login(serverUrl, secret);
             if (rememberCb.checked) S3Auth.rememberServer(serverUrl);
-            window.location.replace('/console/');
+            window.location.replace(window.consoleBase ? window.consoleBase() : '/console/');
         } catch (err) {
             showError(err.message || 'Đăng nhập thất bại.');
             setLoading(false);
@@ -262,7 +262,7 @@ body {
     });
 
     // If already logged in, skip to console
-    if (S3Auth.get()) window.location.replace('/console/');
+    if (S3Auth.get()) window.location.replace(window.consoleBase ? window.consoleBase() : '/console/');
 })();
 </script>
 </body>
