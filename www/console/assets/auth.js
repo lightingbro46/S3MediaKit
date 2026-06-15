@@ -7,6 +7,20 @@
     const AUTH_KEY  = 's3mk_auth';
     const SRV_KEY   = 's3mk_server';
 
+    /**
+     * Detect the console base path from the current URL.
+     * Works for /console/ or any prefix like /media1/console/
+     */
+    function _consoleBase() {
+        var p = location.pathname;
+        var idx = p.indexOf('/console');
+        if (idx !== -1) return p.substring(0, idx) + '/console/';
+        return '/console/';
+    }
+
+    /** Expose base for use by other pages (login.html, index.html) */
+    window.consoleBase = _consoleBase;
+
     const Auth = {
         /** Return current auth { serverUrl, secret } or null */
         get() {
@@ -27,7 +41,7 @@
         require() {
             const auth = this.get();
             if (!auth || !auth.secret) {
-                window.location.replace('/console/login.html');
+                window.location.replace(_consoleBase() + 'login.html');
                 return null;
             }
             return auth;
