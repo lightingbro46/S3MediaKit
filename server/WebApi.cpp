@@ -3158,9 +3158,8 @@ void installWebApi() {
         val["data"] = makeSystemStatisticJson();
     });
 
-    api_regist("/media/mserver/getSyncStatus", [](API_ARGS_MAP) {
-        CHECK_AUTH_TOKEN();
-        CHECK_READ_MSERVER_PERMISSION();
+    api_regist("/index/api/getSyncStatus", [](API_ARGS_MAP) {
+        CHECK_SECRET();
 
         GET_CONFIG(string, mediaServerId, General::kMediaServerId);
 
@@ -3219,6 +3218,111 @@ void installWebApi() {
             val["data"][r.key] = r.value;
         }
         val["data"]["mediaServerId"] = mediaServerId;
+    });
+
+    // List files/folders in a directory under api.downloadRoot
+    // GET /index/api/listFiles?secret=xxx&path=relative/path
+    api_regist("/index/api/listFiles", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+
+        GET_CONFIG_FUNC(std::string, download_root_str, API::kDownloadRoot, [](const string &str) -> std::string {
+            return str;
+        });
+        auto root_abs = File::absolutePath("", download_root_str, true);
+        // Remove trailing slash for consistent concat
+        if (!root_abs.empty() && root_abs.back() == '/') {
+            root_abs.pop_back();
+        }
+
+        string rel_path = allArgs["path"];
+        // Reject traversal attempts
+        if (rel_path.find("..") != std::string::npos) {
+            val["code"] = API::OtherFailed;
+            val["msg"] = "Path traversal not allowed";
+            return;
+        }
+        // Strip leading slash
+        if (!rel_path.empty() && rel_path.front() == '/') {
+            rel_path = rel_path.substr(1);
+        }
+
+        string dir_path = rel_path.empty() ? root_abs : (root_abs + "/" + rel_path);
+
+        // Verify directory exists
+        struct stat st;
+        if (::stat(dir_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+            val["code"] = API::OtherFailed;
+            val["msg"] = "Directory not found";
+            return;
+        }
+
+        Json::Value entries(Json::arrayValue);
+        File::scanDir(dir_path, [&](const string &entry_path, bool isDir) -> bool {
+            // Only immediate children (non-recursive)
+            string inside = entry_path.substr(dir_path.size());
+            if (inside.empty()) return true;
+            if (inside.front() == '/') inside = inside.substr(1);
+            if (inside.find('/') != std::string::npos) return true; // deeper level, skip
+
+            Json::Value item;
+            item["name"] = inside;
+            item["isDir"] = isDir;
+            if (!isDir) {
+                struct stat fs;
+                item["size"] = (::stat(entry_path.c_str(), &fs) == 0) ? (Json::Int64)fs.st_size : (Json::Int64)-1;
+                item["mtime"] = (::stat(entry_path.c_str(), &fs) == 0) ? (Json::Int64)fs.st_mtime : (Json::Int64)0;
+            } else {
+                item["size"] = (Json::Int64)-1;
+                item["mtime"] = (Json::Int64)0;
+            }
+            item["path"] = rel_path.empty() ? inside : (rel_path + "/" + inside);
+            item["absPath"] = entry_path;
+            entries.append(item);
+            return true;
+        }, false);
+
+        val["data"]["root"] = root_abs;
+        val["data"]["path"] = rel_path;
+        val["data"]["entries"] = entries;
+    });
+
+    // Download a file under api.downloadRoot (secret-auth, no on_http_access needed)
+    // GET /index/api/serveFile?secret=xxx&path=relative/path&save_name=foo.txt
+    api_regist("/index/api/serveFile", [](API_ARGS_MAP_ASYNC) {
+        CHECK_SECRET();
+        CHECK_ARGS("path");
+
+        GET_CONFIG_FUNC(std::string, download_root_str2, API::kDownloadRoot, [](const string &str) -> std::string {
+            return str;
+        });
+        auto root_abs2 = File::absolutePath("", download_root_str2, true);
+        if (!root_abs2.empty() && root_abs2.back() == '/') {
+            root_abs2.pop_back();
+        }
+
+        string rel = allArgs["path"];
+        if (rel.find("..") != std::string::npos) {
+            invoker(401, StrCaseMap{}, "Path traversal not allowed");
+            return;
+        }
+        if (!rel.empty() && rel.front() == '/') {
+            rel = rel.substr(1);
+        }
+
+        string abs_path = rel.empty() ? root_abs2 : (root_abs2 + "/" + rel);
+
+        struct stat st;
+        if (::stat(abs_path.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) {
+            invoker(404, StrCaseMap{}, "File not found");
+            return;
+        }
+
+        StrCaseMap res_header;
+        auto save_name = allArgs["save_name"];
+        if (!save_name.empty()) {
+            res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
+        }
+        invoker.responseFile(allArgs.parser.getHeader(), res_header, abs_path);
     });
 
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
@@ -3868,6 +3972,20 @@ void installWebApi() {
 
         val["data"] = makeDeviceStatisticJson(device);
         invoker(200, headerOut, val.toStyledString());
+    });
+
+    // List statistics for all camera devices
+    // GET /index/api/device/statisticsList?secret=xxx
+    api_regist("/index/api/device/statisticsList", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+
+        val["data"] = Json::arrayValue;
+        DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
+            auto item = makeDeviceStatisticJson(device);
+            if (!item.isNull() && item.isMember("deviceId")) {
+                val["data"].append(item);
+            }
+        });
     });
 
     api_regist("/media/esc/sync/changes", [](API_ARGS_MAP_ASYNC) {

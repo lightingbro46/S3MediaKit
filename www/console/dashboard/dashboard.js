@@ -102,6 +102,8 @@ var _dashState = {
     lastWorkThreads: [],
     initialized: false,
 };
+var _epAvgSeries = new RingBuffer(60);
+var _wtAvgSeries = new RingBuffer(60);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Dashboard entry point
@@ -158,18 +160,34 @@ function _buildDashboardLayout() {
         '</div>' +
 
         // ── Row 4: Event Poller threads ────────────────────────────────
-        '<div class="dash-row-title" style="margin-top:22px">Event Poller Threads</div>' +
+        '<div class="dash-row-title" style="margin-top:22px">' +
+            'Event Poller Threads ' +
+            '<span id="dash-ep-avg-badge" class="dash-badge-info">avg —%</span>' +
+            '<button class="dash-collapse-btn" onclick="_toggleThreadPanel(\'dash-ep-detail\')" id="dash-ep-toggle">▶ Chi tiết</button>' +
+        '</div>' +
         '<div class="dash-thread-panel" id="dash-panel-ep">' +
-            '<div id="dash-ep-bars" class="dash-ep-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
             '<div id="dash-ep-sparkline-wrap" class="dash-spark-mini-wrap">' +
                 '<svg id="dash-ep-spark" class="dash-spark-svg" style="height:44px"></svg>' +
                 '<div class="dash-spark-lbl">Avg load %</div>' +
             '</div>' +
         '</div>' +
+        '<div class="dash-thread-detail" id="dash-ep-detail" style="display:none">' +
+            '<div id="dash-ep-bars" class="dash-ep-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
+        '</div>' +
 
-        // ── Row 5: Work threads ────────────────────────────────────────
-        '<div class="dash-row-title" style="margin-top:22px">Work Threads</div>' +
+        // ── Row 5: Work threads ────────────────────────────────────────────────
+        '<div class="dash-row-title" style="margin-top:22px">' +
+            'Work Threads ' +
+            '<span id="dash-wt-avg-badge" class="dash-badge-info">avg —%</span>' +
+            '<button class="dash-collapse-btn" onclick="_toggleThreadPanel(\'dash-wt-detail\')" id="dash-wt-toggle">▶ Chi tiết</button>' +
+        '</div>' +
         '<div class="dash-thread-panel" id="dash-panel-wt">' +
+            '<div id="dash-wt-sparkline-wrap" class="dash-spark-mini-wrap">' +
+                '<svg id="dash-wt-spark" class="dash-spark-svg" style="height:44px"></svg>' +
+                '<div class="dash-spark-lbl">Avg load %</div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="dash-thread-detail" id="dash-wt-detail" style="display:none">' +
             '<div id="dash-wt-bars" class="dash-wt-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
         '</div>' +
 
@@ -231,7 +249,17 @@ function _updateStaticInfo() {
 // ────────────────────────────────────────────────────────────────────────────
 // Polling
 // ────────────────────────────────────────────────────────────────────────────
-var _epAvgSeries = new RingBuffer(60);
+
+function _toggleThreadPanel(detailId) {
+    var detail = document.getElementById(detailId);
+    if (!detail) return;
+    var isOpen = detail.style.display !== 'none';
+    detail.style.display = isOpen ? 'none' : 'block';
+    // Update toggle button label
+    var btnId = detailId === 'dash-ep-detail' ? 'dash-ep-toggle' : 'dash-wt-toggle';
+    var btn = document.getElementById(btnId);
+    if (btn) btn.textContent = isOpen ? '▶ Chi tiết' : '▼ Thu gọn';
+}var _epAvgSeries = new RingBuffer(60);
 
 function _startPolling() {
     _poll();
@@ -312,6 +340,12 @@ function _applyEventPoller(threads) {
     _epAvgSeries.push(avg);
     _updateSparkline('dash-ep-spark', _epAvgSeries.values(), '#388bfd', 100);
 
+    var badge = document.getElementById('dash-ep-avg-badge');
+    if (badge) {
+        badge.textContent = 'avg ' + avg + '%  (' + threads.length + ' threads)';
+        badge.className = avg > 80 ? 'dash-badge-warn' : 'dash-badge-info';
+    }
+
     // Combine fd_count into quick card
     var totalFd = threads.reduce(function(s, t) { return s + (t.fd_count || 0); }, 0);
     _setText('dash-card-fd', totalFd);
@@ -320,6 +354,18 @@ function _applyEventPoller(threads) {
 function _applyWorkThreads(threads) {
     _dashState.lastWorkThreads = threads;
     renderThreadBars('dash-wt-bars', threads);
+
+    var avg = threads.length
+        ? Math.round(threads.reduce(function(s, t) { return s + (t.load || 0); }, 0) / threads.length)
+        : 0;
+    _wtAvgSeries.push(avg);
+    _updateSparkline('dash-wt-spark', _wtAvgSeries.values(), '#3fb950', 100);
+
+    var badge = document.getElementById('dash-wt-avg-badge');
+    if (badge) {
+        badge.textContent = 'avg ' + avg + '%  (' + threads.length + ' threads)';
+        badge.className = avg > 80 ? 'dash-badge-warn' : 'dash-badge-info';
+    }
 }
 
 function _applySysStat(d) {
@@ -516,9 +562,21 @@ function _injectDashCSS() {
     /* ─── Thread panels ──────────────────────────────────────────── */
     .dash-thread-panel {
         background: var(--c-surf); border: 1px solid var(--c-border);
-        border-radius: 8px; padding: 14px 16px;
+        border-radius: 8px; padding: 10px 16px;
         display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap;
     }
+    .dash-thread-detail {
+        background: var(--c-surf); border: 1px solid var(--c-border);
+        border-top: none; border-radius: 0 0 8px 8px;
+        padding: 10px 16px 14px; margin-top: -4px;
+    }
+    .dash-collapse-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 2px 9px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+        cursor: pointer; border: 1px solid var(--c-border); background: var(--c-elev);
+        color: var(--c-muted); transition: background 0.1s, color 0.1s;
+    }
+    .dash-collapse-btn:hover { background: var(--c-surf); color: var(--c-text); border-color: var(--c-accent); }
     .dash-ep-bars-wrap, .dash-wt-bars-wrap { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 5px; }
     .dash-spark-mini-wrap { flex: 0 0 220px; }
     .dash-thr-loading { font-size: 0.78rem; color: var(--c-muted); }

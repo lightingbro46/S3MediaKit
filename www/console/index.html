@@ -351,6 +351,66 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 .cfg-toast-error   { background: rgba(248,81,73,0.95);   color: #fff; }
 .cfg-toast-info    { background: rgba(56,139,253,0.95);  color: #fff; }
 
+/* ── Config Restart button ── */
+.cfg-btn-restart {
+    display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+    border-radius: 6px; background: rgba(248,81,73,0.08);
+    border: 1px solid rgba(248,81,73,0.35); color: var(--c-danger);
+    font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+.cfg-btn-restart:hover { background: rgba(248,81,73,0.18); border-color: var(--c-danger); }
+
+/* ── Restart confirm dialog ── */
+.cfg-restart-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10000; backdrop-filter: blur(3px);
+}
+.cfg-restart-dialog {
+    background: var(--c-surf); border: 1px solid var(--c-border);
+    border-radius: 10px; padding: 24px; width: 380px; max-width: calc(100vw - 32px);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    display: flex; flex-direction: column; gap: 16px;
+}
+.cfg-restart-hd {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 0.96rem; font-weight: 700; color: var(--c-danger);
+}
+.cfg-restart-desc {
+    font-size: 0.83rem; color: var(--c-muted); line-height: 1.6;
+}
+.cfg-restart-desc strong { color: var(--c-text); }
+.cfg-restart-field { display: flex; flex-direction: column; gap: 6px; }
+.cfg-restart-lbl { font-size: 0.78rem; font-weight: 600; color: var(--c-muted); }
+.cfg-restart-input {
+    padding: 8px 10px; background: var(--c-elev); border: 1px solid var(--c-border);
+    color: var(--c-text); border-radius: 6px; font-size: 0.88rem; outline: none;
+    font-family: monospace; transition: border-color 0.15s;
+}
+.cfg-restart-input:focus { border-color: var(--c-accent); }
+.cfg-restart-err { font-size: 0.78rem; color: var(--c-danger); padding: 4px 0; }
+.cfg-restart-footer {
+    display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px;
+    border-top: 1px solid var(--c-border);
+}
+.cfg-restart-cancel {
+    padding: 7px 16px; border-radius: 6px; background: var(--c-elev);
+    border: 1px solid var(--c-border); color: var(--c-text);
+    font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    transition: background 0.12s;
+}
+.cfg-restart-cancel:hover { background: var(--c-surf); }
+.cfg-restart-confirm {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 16px; border-radius: 6px;
+    background: var(--c-danger); border: none; color: #fff;
+    font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    transition: background 0.12s;
+}
+.cfg-restart-confirm:hover { background: #e0443c; }
+.cfg-restart-confirm:disabled { opacity: 0.55; cursor: default; }
+
 /* ═══════════════ Responsive ═══════════════ */
 @media (max-width: 900px) {
     .player-layout { grid-template-columns: 1fr; }
@@ -425,6 +485,14 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
             <button class="s3-nav-btn" data-section="sec-config">
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
                 Cấu hình
+            </button>
+            <button class="s3-nav-btn" data-section="sec-devices">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+                Thiết bị
+            </button>
+            <button class="s3-nav-btn" data-section="sec-files">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+                Files
             </button>
         </nav>
 
@@ -617,6 +685,16 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
             <div id="cluster-content"></div>
         </div>
 
+        <!-- Devices -->
+        <div id="sec-devices" class="s3-section">
+            <div id="devices-content"></div>
+        </div>
+
+        <!-- Files -->
+        <div id="sec-files" class="s3-section">
+            <div id="files-content"></div>
+        </div>
+
     </div><!-- /.s3-main -->
 </div><!-- /.s3-shell -->
 
@@ -632,6 +710,8 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 <script src="dashboard/dashboard.js"></script>
 <script src="mjpeg/mjpeg.js"></script>
 <script src="cluster/cluster.js"></script>
+<script src="devices/devices.js"></script>
+<script src="files/files.js"></script>
 <script>
 // ════════════════════════════════════════════
 // Section routing
@@ -643,6 +723,8 @@ const SEC_PATHS = {
     'sec-mjpeg':     _CBASE + 'mjpeg',
     'sec-config':    _CBASE + 'config',
     'sec-cluster':   _CBASE + 'cluster',
+    'sec-devices':   _CBASE + 'devices',
+    'sec-files':     _CBASE + 'files',
 };
 const PATH_SECS = {};
 Object.keys(SEC_PATHS).forEach(k => { PATH_SECS[SEC_PATHS[k]] = k; });
@@ -653,9 +735,11 @@ const SECTION_TITLES = {
     'sec-mjpeg':     'MJPEG Debug',
     'sec-config':    'Cấu hình',
     'sec-cluster':   'Cluster',
+    'sec-devices':   'Thiết bị',
+    'sec-files':     'Files',
 };
 
-let _vjsInited = false, _cfgInited = false, _clusterInited = false;
+let _vjsInited = false, _cfgInited = false, _clusterInited = false, _filesInited = false, _devicesInited = false;
 
 function activateSection(secId, push) {
     document.querySelectorAll('.s3-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === secId));
@@ -688,6 +772,14 @@ function activateSection(secId, push) {
         _clusterInited = true;
         initCluster();
     }
+    if (secId === 'sec-devices' && !_devicesInited) {
+        _devicesInited = true;
+        initDevices();
+    }
+    if (secId === 'sec-files' && !_filesInited) {
+        _filesInited = true;
+        initFiles();
+    }
     document.getElementById('s3-sidebar').classList.remove('open');
 }
 
@@ -697,7 +789,7 @@ function _secFromPath(p) {
     return PATH_SECS[c] || PATH_SECS[p] || 'sec-dashboard';
 }
 var _urlParam = new URLSearchParams(location.search).get('tab');
-var _secFromParam = { player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config', dashboard: 'sec-dashboard', cluster: 'sec-cluster' }[_urlParam];
+var _secFromParam = { player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config', dashboard: 'sec-dashboard', cluster: 'sec-cluster', devices: 'sec-devices', files: 'sec-files' }[_urlParam];
 var _initSec = _secFromParam || _secFromPath(location.pathname);
 activateSection(_initSec, false);
 
