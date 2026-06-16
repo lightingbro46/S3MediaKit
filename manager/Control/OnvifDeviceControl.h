@@ -2,6 +2,7 @@
 #define S3PLUGINKIT_ONVIFCONTROL_H
 
 #include <map>
+#include <mutex>
 #include "soapDeviceBindingProxy.h"
 #include "soapMediaBindingProxy.h"
 #include "soapMedia2BindingProxy.h"
@@ -392,6 +393,19 @@ private:
     std::string _strDeviceIp;
     std::string _strUsername;
     std::string _strPassword;
+
+    // Cached endpoint URLs — member strings replace thread_local to avoid
+    // a dangling-pointer when soap_endpoint is accessed from a different
+    // thread than the one that ran connect().
+    std::string _strDeviceUrl;
+    std::string _strMediaUrl;
+    std::string _strImagingUrl;
+    std::string _strPTZUrl;
+
+    // Serialises all gSOAP operations on this instance.  recursive_mutex is
+    // required because public methods call other public methods
+    // (connect→disconnect, PTZ_SetPreset→PTZ_GetStatus, etc.).
+    mutable std::recursive_mutex _soap_mtx;
 };
 
 } // namespace managerkit

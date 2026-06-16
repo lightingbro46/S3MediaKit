@@ -185,6 +185,7 @@ static time_t build_camera_utc(const std::string& camera_tz, const time_t& time_
 }
 
 bool OnvifControl::connect() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_m_soap != nullptr) {
         disconnect();
     }
@@ -214,32 +215,27 @@ bool OnvifControl::connect() {
 }
 
 void OnvifControl::disconnect() {
-    // free all deserialized and managed data, we can still reuse the context and proxies after this
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    // Delete proxies BEFORE freeing the shared soap context.
+    // Proxy destructors may call soap_done() on the context they were created
+    // with; freeing the context first causes a use-after-free crash.
+    delete _proxyDevice;  _proxyDevice = nullptr;
+    delete _proxyMedia;   _proxyMedia = nullptr;
+    delete _proxyMedia2;  _proxyMedia2 = nullptr;
+    delete _proxyImaging; _proxyImaging = nullptr;
+    delete _proxyPTZ;     _proxyPTZ = nullptr;
     if (_m_soap != nullptr) {
         soap_destroy(_m_soap);
         soap_end(_m_soap);
-        // free the shared context, proxy classes must terminate as well after this
         soap_free(_m_soap);
+        _m_soap = nullptr;
     }
-    delete _proxyDevice;
-    delete _proxyMedia;
-    delete _proxyMedia2;
-    delete _proxyImaging;
-    delete _proxyPTZ;
-
-    _m_soap = nullptr;
-    _proxyDevice = nullptr;
-    _proxyMedia = nullptr;
-    _proxyMedia2 = nullptr;
-    _proxyImaging = nullptr;
-    _proxyPTZ = nullptr;
 }
 
 bool OnvifControl::getDeviceInformation() {
     // get device info and print
-    thread_local string strDeviceUrl;
-    strDeviceUrl = "http://" + _strDeviceIp + "/onvif/device_service";
-    _proxyDevice->soap_endpoint = strDeviceUrl.c_str();
+    _strDeviceUrl = "http://" + _strDeviceIp + "/onvif/device_service";
+    _proxyDevice->soap_endpoint = _strDeviceUrl.c_str();
     TraceL << "Onvif device url: " << _proxyDevice->soap_endpoint;
     _tds__GetDeviceInformation *GetDeviceInformation = soap_new__tds__GetDeviceInformation(_m_soap);
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
@@ -288,48 +284,45 @@ bool OnvifControl::getDeviceCapabilities() {
     }
 
     if (GetCapabilitiesResponse.Capabilities->Media != nullptr) {
-        thread_local string strUrl;
-        strUrl = GetCapabilitiesResponse.Capabilities->Media->XAddr;
-        int indexFooter = strUrl.find("/onvif");
+        _strMediaUrl = GetCapabilitiesResponse.Capabilities->Media->XAddr;
+        int indexFooter = _strMediaUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
-            strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strDeviceIp);
+            _strMediaUrl.erase(0, indexFooter);
+            _strMediaUrl.insert(0, "http://" + _strDeviceIp);
         }
-        TraceL << "Media XAddr:  " << strUrl;
+        TraceL << "Media XAddr:  " << _strMediaUrl;
         _proxyMedia = new MediaBindingProxy(_m_soap);
-        _proxyMedia->soap_endpoint = strUrl.c_str();
+        _proxyMedia->soap_endpoint = _strMediaUrl.c_str();
         _proxyMedia2 = new Media2BindingProxy(_m_soap);
-        _proxyMedia2->soap_endpoint = strUrl.c_str();
+        _proxyMedia2->soap_endpoint = _strMediaUrl.c_str();
     }
 
     if (GetCapabilitiesResponse.Capabilities->Imaging != nullptr) {
-        thread_local string strUrl;
-        strUrl = GetCapabilitiesResponse.Capabilities->Imaging->XAddr;
-        int indexFooter = strUrl.find("/onvif");
+        _strImagingUrl = GetCapabilitiesResponse.Capabilities->Imaging->XAddr;
+        int indexFooter = _strImagingUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
-            strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strDeviceIp);
+            _strImagingUrl.erase(0, indexFooter);
+            _strImagingUrl.insert(0, "http://" + _strDeviceIp);
         }
-        TraceL << "Imaging XAddr:  " << strUrl << endl;
+        TraceL << "Imaging XAddr:  " << _strImagingUrl << endl;
         _proxyImaging = new ImagingBindingProxy(_m_soap);
-        _proxyImaging->soap_endpoint = strUrl.c_str();
+        _proxyImaging->soap_endpoint = _strImagingUrl.c_str();
     }
 
     if (GetCapabilitiesResponse.Capabilities->PTZ != nullptr) {
-        thread_local string strUrl;
-        strUrl = GetCapabilitiesResponse.Capabilities->PTZ->XAddr;
-        int indexFooter = strUrl.find("/onvif");
+        _strPTZUrl = GetCapabilitiesResponse.Capabilities->PTZ->XAddr;
+        int indexFooter = _strPTZUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header
         if (indexFooter > 0) {
-            strUrl.erase(0, indexFooter);
-            strUrl.insert(0, "http://" + _strDeviceIp);
+            _strPTZUrl.erase(0, indexFooter);
+            _strPTZUrl.insert(0, "http://" + _strDeviceIp);
         }
-        TraceL << "PTZ XAddr:  " << strUrl << endl;
+        TraceL << "PTZ XAddr:  " << _strPTZUrl << endl;
 
         _proxyPTZ = new PTZBindingProxy(_m_soap);
-        _proxyPTZ->soap_endpoint = strUrl.c_str();
+        _proxyPTZ->soap_endpoint = _strPTZUrl.c_str();
 
         _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
         _trt__GetProfilesResponse GetProfilesResponse;
@@ -662,6 +655,7 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
 
 bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew)
 {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     auto config = getConfigVideoEncoder2ByToken(token);
     if (!config) {
         return false;
@@ -720,6 +714,7 @@ bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const 
 }
 
 bool OnvifControl::getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     auto config = getConfigVideoEncoder2ByToken(token);
     if (!config) {
         return false;
@@ -902,60 +897,66 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 }
 
 void OnvifControl::setCameraTimeManual() {
-    soap *soap = soap_new();
-    soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10; // timeout connection for 10 seconds
-    soap_register_plugin(soap, soap_wsse);
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (!_proxyDevice) return;
 
-    DeviceBindingProxy *proxy = new DeviceBindingProxy(soap);
-    proxy->soap_endpoint =_proxyDevice->soap_endpoint;
+    soap *local_soap = soap_new();
+    local_soap->connect_timeout = local_soap->recv_timeout = local_soap->send_timeout = 10; // timeout connection for 10 seconds
+    soap_register_plugin(local_soap, soap_wsse);
 
-    if (getCameraTime() && !_camTimeInfo.TZ.empty()) {
-        if (abs(_camTimeInfo.cam_sys_time - time(nullptr)) >= 10) {
-            time_t now = time(nullptr);
-            time_t camera_utc = build_camera_utc(_camTimeInfo.TZ, now);
+    // RAII guard: ensures local_soap and proxy are freed on ALL exit paths,
+    // including early returns when getCameraTime() fails or time is in sync.
+    // Proxy is deleted before soap_free to avoid a use-after-free in the
+    // proxy destructor.
+    struct Guard {
+        soap *s;
+        DeviceBindingProxy *p;
+        ~Guard() {
+            delete p;
+            if (s) { soap_destroy(s); soap_end(s); soap_free(s); }
+        }
+    } guard{local_soap, new DeviceBindingProxy(local_soap)};
+    DeviceBindingProxy *proxy = guard.p;
+    proxy->soap_endpoint = _proxyDevice->soap_endpoint;
 
-            struct tm utc_tm;
-            gmtime_r(&camera_utc, &utc_tm);
+    if (!getCameraTime() || _camTimeInfo.TZ.empty()) {
+        return;
+    }
 
-            _tds__SetSystemDateAndTime req;
-            _tds__SetSystemDateAndTimeResponse resp;
-    
-            req.DateTimeType = tt__SetDateTimeType__Manual;
-            req.DaylightSavings = false;
-    
-            req.UTCDateTime = soap_new_tt__DateTime(soap);
-            req.UTCDateTime->Date = soap_new_tt__Date(soap);
-            req.UTCDateTime->Time = soap_new_tt__Time(soap);
-    
-            req.UTCDateTime->Date->Year  = utc_tm.tm_year + 1900;
-            req.UTCDateTime->Date->Month = utc_tm.tm_mon + 1;
-            req.UTCDateTime->Date->Day   = utc_tm.tm_mday;
-    
-            req.UTCDateTime->Time->Hour   = utc_tm.tm_hour;
-            req.UTCDateTime->Time->Minute = utc_tm.tm_min;
-            req.UTCDateTime->Time->Second = utc_tm.tm_sec;
-            
-            time_t offset_time = _camTimeInfo.cam_time - time(nullptr);
-            installSoapHook(soap, offset_time);
-    
-            if (soap_wsse_add_Timestamp(soap, "Time", 10) == SOAP_OK && soap_wsse_add_UsernameTokenDigest_at(soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time) == SOAP_OK) {
-                int ret = proxy->SetSystemDateAndTime(&req, resp);    
-                if (ret != SOAP_OK)
-                {
-                    WarnL << "Set camera time failed, ret " << ret;
-                }
+    if (abs(_camTimeInfo.cam_sys_time - time(nullptr)) >= 10) {
+        time_t now = time(nullptr);
+        time_t camera_utc = build_camera_utc(_camTimeInfo.TZ, now);
+
+        struct tm utc_tm;
+        gmtime_r(&camera_utc, &utc_tm);
+
+        _tds__SetSystemDateAndTime req;
+        _tds__SetSystemDateAndTimeResponse resp;
+
+        req.DateTimeType = tt__SetDateTimeType__Manual;
+        req.DaylightSavings = false;
+
+        req.UTCDateTime = soap_new_tt__DateTime(local_soap);
+        req.UTCDateTime->Date = soap_new_tt__Date(local_soap);
+        req.UTCDateTime->Time = soap_new_tt__Time(local_soap);
+
+        req.UTCDateTime->Date->Year  = utc_tm.tm_year + 1900;
+        req.UTCDateTime->Date->Month = utc_tm.tm_mon + 1;
+        req.UTCDateTime->Date->Day   = utc_tm.tm_mday;
+
+        req.UTCDateTime->Time->Hour   = utc_tm.tm_hour;
+        req.UTCDateTime->Time->Minute = utc_tm.tm_min;
+        req.UTCDateTime->Time->Second = utc_tm.tm_sec;
+
+        time_t offset_time = _camTimeInfo.cam_time - time(nullptr);
+        installSoapHook(local_soap, offset_time);
+
+        if (soap_wsse_add_Timestamp(local_soap, "Time", 10) == SOAP_OK && soap_wsse_add_UsernameTokenDigest_at(local_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time) == SOAP_OK) {
+            int ret = proxy->SetSystemDateAndTime(&req, resp);
+            if (ret != SOAP_OK) {
+                WarnL << "Set camera time failed, ret " << ret;
             }
-
         }
-    
-        if (soap != nullptr) {
-            soap_destroy(soap);
-            soap_end(soap);
-            soap_free(soap);
-        }
-        delete proxy;
-        soap = nullptr;
-        proxy = nullptr;
     }
 }
 
@@ -982,6 +983,7 @@ bool OnvifControl::setCredentials() {
 }
 
 bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1014,6 +1016,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
 }
 
 bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1057,6 +1060,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
 }
 
 tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return tt__MoveStatus__UNKNOWN;
@@ -1097,6 +1101,7 @@ tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom)
 }
 
 bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1135,6 +1140,7 @@ bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int tim
 }
 
 bool OnvifControl::PTZ_Stop(bool panTilt, bool zoom) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1167,6 +1173,7 @@ bool OnvifControl::PTZ_Stop(bool panTilt, bool zoom) {
 }
 
 bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1199,6 +1206,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
 }
 
 bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1267,6 +1275,7 @@ vector<OnvifMediaProfile> OnvifControl::selectStreamUrls(bool include_secondary)
 }
 
 bool OnvifControl::PTZ_GotoPreset(const string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1301,6 +1310,7 @@ bool OnvifControl::PTZ_GotoPreset(const string &presetToken, float panSpeed, flo
 }
 
 bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetToken, float &pan, float &tilt, float &zoom) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
@@ -1340,6 +1350,7 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
 }
 
 bool  OnvifControl::PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
         return false;
