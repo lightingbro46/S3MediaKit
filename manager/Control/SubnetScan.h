@@ -41,6 +41,7 @@ struct DeviceScanResult {
         std::string url;
     };
     std::vector<StreamProfile> profiles;
+    std::string err_msg;
 };
 
 Json::Value toJsonValue(const DeviceScanResult &result);

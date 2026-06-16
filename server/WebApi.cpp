@@ -3338,6 +3338,7 @@ void installWebApi() {
 
         SubnetScan::discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const DeviceScanResult &data) mutable {
             if (ex) {
+                val["data"] = toJsonValue(data);
                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 return;
             }

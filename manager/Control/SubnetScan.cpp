@@ -29,6 +29,11 @@ namespace managerkit {
 
 Json::Value toJsonValue(const DeviceScanResult &result) {
     Json::Value ret;
+    if (!result.err_msg.empty()) {
+        ret["address"] = result.address;
+        ret["err_msg"] = result.err_msg;
+        return ret;
+    }
     ret["manufacturer"] = result.manufacturer;
     ret["model"] = result.model;
     ret["firmwareVersion"] = result.firmwareVersion;
@@ -82,6 +87,8 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
 
         FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
             if (!success) {
+                ret.address = url;
+                ret.err_msg = err_msg;
                 cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
             } else {
                 ret.manufacturer = GENERIC_RTSP_CAMERA;
@@ -117,6 +124,8 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
         string ipAddress = StrPrinter << ip << ":" << port;
         auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
         if (!onvif->connect()) {
+            ret.address = "http://" + ipAddress;
+            ret.err_msg = onvif->getSoapErrMsg();
             cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
             return;
         }
