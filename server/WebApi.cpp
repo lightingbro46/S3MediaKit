@@ -2448,7 +2448,7 @@ void installWebApi() {
             }
             if (!owner.second.empty()) {
                 string jwt_token = allArgs["_jwt_token"];
-                NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, camera_id, stream_id, pos_str, jwt_token, invoker);
+                NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, owner.second, camera_id, stream_id, pos_str, jwt_token, invoker);
                 return;
             }
 
@@ -3011,7 +3011,7 @@ void installWebApi() {
         auto on_access = [allArgs, val, invoker, headerOut, bm]() mutable {
             string camera_id = bm.camera_guid;
             string stream_id = ""; // TODO: support stream id in bookmark
-            int64_t start_time = bm.start_time;
+            uint64_t start_time = (uint64_t)bm.start_time;
             uint64_t diff_time = 0;
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };

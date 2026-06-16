@@ -88,6 +88,19 @@ static size_t countSubString(const std::string &str, const std::string &sub) {
     return count;
 }
 
+static std::string format_duration_hms(int64_t total_seconds) {
+    int64_t seconds = total_seconds % 60;
+    int64_t total_minutes = total_seconds / 60;
+    int64_t minutes = total_minutes % 60;
+    int64_t hours = total_minutes / 60;
+
+    _StrPrinter oss;
+    oss << std::setw(2) << std::setfill('0') << hours << ":"
+        << std::setw(2) << std::setfill('0') << minutes << ":"
+        << std::setw(2) << std::setfill('0') << seconds;
+    return oss;
+}
+
 void FFmpegSource::setupRecordFlag(bool enable_hls, bool enable_mp4){
     _enable_hls = enable_hls;
     _enable_mp4 = enable_mp4;
@@ -506,19 +519,6 @@ static std::string escape(const std::string &str) {
 
 static std::string escape(const char* str) {
     return escape(std::string(str));
-}
-
-static std::string format_duration_hms(int64_t total_seconds) {
-    int64_t seconds = total_seconds % 60;
-    int64_t total_minutes = total_seconds / 60;
-    int64_t minutes = total_minutes % 60;
-    int64_t hours = total_minutes / 60;
-
-    _StrPrinter oss;
-    oss << std::setw(2) << std::setfill('0') << hours << ":"
-        << std::setw(2) << std::setfill('0') << minutes << ":"
-        << std::setw(2) << std::setfill('0') << seconds;
-    return oss;
 }
 
 void FFmpegExtractor::makeExtract(const string &key, const string &root_path, const onExtract &cb) {
