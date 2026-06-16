@@ -2010,7 +2010,7 @@ void installWebApi() {
 
         // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
         auto new_snap_tmp = new_snap + ".tmp";
-        FFmpegSnap::makeSnap(allArgs["async"], allArgs["url"], new_snap_tmp, allArgs["timeout_sec"], [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+        FFmpegSnap::makeSnap(allArgs["async"], allArgs["url"], new_snap_tmp, 0, allArgs["timeout_sec"], [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
             if (!success) {
                 // Screenshot generation failed, there may be residual empty files
                 File::delete_file(new_snap_tmp);
@@ -2448,7 +2448,7 @@ void installWebApi() {
             }
             if (!owner.second.empty()) {
                 string jwt_token = allArgs["_jwt_token"];
-                // NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, camera_id, stream_id, pos_str, jwt_token, invoker);
+                NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, camera_id, stream_id, pos_str, jwt_token, invoker);
                 return;
             }
 
@@ -2460,6 +2460,7 @@ void installWebApi() {
 
             string src_path;
             uint64_t pos_time = 0;
+            uint64_t diff_time = 0;
             if (query) {
                 if (pos_str == "latest") {
                     // todo: get latest jpeg record
@@ -2484,7 +2485,8 @@ void installWebApi() {
                                 if (last_archived_time > 0) {
                                     auto block = query->getLastBlock(last_archived_time);
                                     if (block) {
-                                        pos_time = block->start_time();
+                                        pos_time = block->start_time() + block->time_len() - 1;
+                                        diff_time = pos_time - block->start_time();
                                         src_path = decodeBase64(block->file_path());
                                     }
                                 }
@@ -2495,12 +2497,12 @@ void installWebApi() {
                     pos_time = stoll(pos_str);
                     auto start_time = pos_time - 60;
                     auto end_time = pos_time + 60;
-                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path](const vector<TimeBlock> &blocks) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path, &diff_time](const vector<TimeBlock> &blocks) {
                         for (const auto &block : blocks) {
                             if (block.start_time() > pos_time) {
                                 break;
                             }
-                            pos_time = block.start_time();
+                            diff_time = pos_time - block.start_time();
                             src_path = decodeBase64(block.file_path());
                         }
                     });
@@ -2559,7 +2561,7 @@ void installWebApi() {
 
             // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
             auto new_snap_tmp = new_snap + ".tmp";
-            FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+            FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
                 if (!success) {
                     // Screenshot generation failed, there may be residual empty files
                     File::delete_file(new_snap_tmp);
@@ -2993,7 +2995,7 @@ void installWebApi() {
         auto owner = SearchEngine::findOwnerNodeForBookmark(bookmark_id);
         if (!owner.second.empty()) {
             string jwt_token = allArgs["_jwt_token"];
-            // NOTICE_EMIT(BroadcastSyncBookmarkThumbnailArgs, Broadcast::kBroadcastSyncBookmarkThumbnail, owner.second, bookmark_id, jwt_token, invoker);
+            NOTICE_EMIT(BroadcastSyncBookmarkThumbnailArgs, Broadcast::kBroadcastSyncBookmarkThumbnail, owner.second, bookmark_id, jwt_token, invoker);
             return;
         }
 
@@ -3010,6 +3012,7 @@ void installWebApi() {
             string camera_id = bm.camera_guid;
             string stream_id = ""; // TODO: support stream id in bookmark
             int64_t start_time = bm.start_time;
+            uint64_t diff_time = 0;
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
             TimeQuery::Ptr query;
@@ -3022,6 +3025,7 @@ void installWebApi() {
                 auto block = query->getLastBlock(start_time);
                 if (block) {
                     src_path = decodeBase64(block->file_path());
+                    diff_time = start_time > block->start_time() ? start_time - block->start_time() : 0;
                 }
             }
 
@@ -3033,7 +3037,7 @@ void installWebApi() {
             GET_CONFIG(string, snap_root, API::kSnapRoot);
             string snap_path = StrPrinter << File::absolutePath(camera_id + "/" + stream_id, snap_root) << "/" << start_time << ".jpeg";
 
-            FFmpegSnap::makeSnap(false, src_path, snap_path, 2, [invoker, val, headerOut, snap_path](bool success, const string &err_msg) mutable {
+            FFmpegSnap::makeSnap(false, src_path, snap_path, diff_time, 2, [invoker, val, headerOut, snap_path](bool success, const string &err_msg) mutable {
                 if (!success) {
                     RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, err_msg.data());
                     return;

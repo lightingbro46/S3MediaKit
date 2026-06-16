@@ -23,10 +23,11 @@ public:
      * @param async Whether to use asynchronous screenshot method (not the ffmpeg command line, but use the s3m API, but only the stream pull protocol supported by the s3m player)
      * @param play_url The playback URL address, as long as FFmpeg supports it
      * @param save_path The path to save the screenshot JPEG file
+     * @param seek_time The time position to seek to before taking the screenshot, in seconds
      * @param timeout_sec Timeout for generating the screenshot (to prevent blocking for too long)
      * @param cb Callback for whether the screenshot was generated successfully
      */
-    static void makeSnap(bool async, const std::string &play_url, const std::string &save_path, float timeout_sec, const onSnap &cb);
+    static void makeSnap(bool async, const std::string &play_url, const std::string &save_path, uint64_t seek_time, float timeout_sec, const onSnap &cb);
 
 private:
     FFmpegSnap() = delete;
