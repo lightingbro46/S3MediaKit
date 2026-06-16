@@ -2602,7 +2602,7 @@ void installWebApi() {
     api_regist("/media/esc/extractArchived/create", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_PLAYBACK_PERMISSION();
-        CHECK_ARGS_("cameraId", "streamId", "startTime", "endTime", "filename");
+        CHECK_ARGS_("cameraId", "startTime", "endTime", "filename");
 
         auto on_access = [allArgs, val, invoker, headerOut, token_cache]() mutable {
             auto camera_id = allArgs["cameraId"];

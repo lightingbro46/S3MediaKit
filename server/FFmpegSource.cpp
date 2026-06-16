@@ -475,27 +475,57 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         return cb(err, duration_start, duration_end);
     }
 
+    struct FileIndexs {
+        vector<string> file_path;
+        uint64_t dur_start;
+        uint64_t dur_end;
+    };
+    unordered_map<string, FileIndexs> file_indexs_map;
     MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
     auto query = std::make_shared<TimeQuery>(tuple);
-    query->getRecordedTimePeriod(start_time, end_time, [&duration_start, &duration_end, start_time, end_time, file_ptr](const vector<TimeBlock> &ret) {
+    query->getRecordedTimePeriod(start_time, end_time, [start_time, end_time, &file_indexs_map](const vector<TimeBlock> &ret) {
         for (const auto &block : ret) {
+            auto stream_id = block.stream();
+            auto &file_indexs = file_indexs_map[stream_id];
             uint64_t start_pos = block.start_time();
             uint64_t end_pos = block.start_time() + block.time_len();
             if (start_pos < start_time) {
-                duration_start += start_time - start_pos;
-                duration_end += duration_start;
+                file_indexs.dur_start += start_time - start_pos;
+                file_indexs.dur_end += file_indexs.dur_start;
                 start_pos = start_time;
             }
             if (end_pos > end_time) {
                 end_pos = end_time;
             }
-            duration_end += end_pos - start_pos;
-            auto line = "file '" + decodeBase64(block.file_path()) + "'\n";
-            fwrite(line.c_str(), line.size(), 1, file_ptr.get());
+            file_indexs.dur_end += end_pos - start_pos;
         }
     });
 
-    return cb((duration_end - duration_start) == 0 ? "No data in time period" : "", duration_start, duration_end);
+    uint64_t total_dur = 0;
+    // Find the stream with the longest duration in the time period, and then extract the video based on this stream
+    unordered_map<string, FileIndexs>::iterator file_indexs_it = file_indexs_map.end();
+    for (auto it = file_indexs_map.begin(); it != file_indexs_map.end(); ++it) {
+        auto &file_indexs = it->second;
+        if (file_indexs.dur_end - file_indexs.dur_start <= 0 || file_indexs.file_path.empty()) {
+            continue;
+        }
+
+        if (total_dur == 0 || file_indexs.dur_end - file_indexs.dur_start > total_dur) {
+            file_indexs_it = it;
+            total_dur = file_indexs.dur_end - file_indexs.dur_start;
+        }
+    }
+
+    if (file_indexs_it != file_indexs_map.end()) {
+        duration_start = file_indexs_it->second.dur_start;
+        duration_end = file_indexs_it->second.dur_end;
+        for (const auto &file_path : file_indexs_it->second.file_path) {
+            auto line = "file '" + decodeBase64(file_path) + "'\n";
+            fwrite(line.c_str(), line.size(), 1, file_ptr.get());
+        }
+    }
+    // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
+    return cb(total_dur == 0 ? "No data in time period" : "", duration_start, duration_end);
 }
 
 static std::string getFileExtension(const std::string &filename) {
