@@ -32,6 +32,7 @@ public:
      * @param detail         0 = summary  1 = per-stream detail (type 1 & 2 only)
      * @param include_motion When true, adds "motionPeriods" key to the result.
      * @param jwt_token      JWT bearer token forwarded to remote peers for auth.
+     * @param edge           When true, query only the local node (no remote calls).
      * @param cb             Invoked once with (SockException, merged Json::Value).
      */
     static void findTimePeriod(
@@ -39,6 +40,7 @@ public:
         uint64_t start_time, uint64_t end_time,
         int period_type, int detail, bool include_motion,
         const std::string &jwt_token,
+        bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 
     /**
@@ -60,6 +62,7 @@ public:
      * @param size        Items per page (> 0).
      * @param sort        "ASC" or "DESC" ordered by start_time.
      * @param jwt_token   JWT bearer token forwarded to remote peers for auth.
+     * @param edge        When true, query only the local node (no remote calls).
      * @param cb          Invoked once with the merged JSON:
      *                    {
      *                      "data":        [ { bookmark detail }, ... ],
@@ -76,6 +79,7 @@ public:
         const std::string &user_id,
         int page, int size, const std::string &sort,
         const std::string &jwt_token,
+        bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 
     /**
@@ -83,10 +87,12 @@ public:
      * Returns a JSON object { "data": [ { bookmark detail }, ... ] }.
      *
      * @param guids  List of bookmark GUIDs to fetch.
+     * @param edge   When true, query only the local node (no remote calls).
      * @param cb     Invoked once with (SockException, Json::Value).
      */
     static void getBookmarkDetail(
         const std::vector<std::string> &guids,
+        bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 
     /**
@@ -99,6 +105,7 @@ public:
         int size,
         const std::string &sort,
         const std::string &jwt_token,
+        bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 
     /**
@@ -141,6 +148,7 @@ public:
         const mediakit::MediaTuple &tuple,
         uint64_t start_time, uint64_t end_time,
         const std::string &roi_mask,
+        bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);
 };
 

@@ -741,10 +741,13 @@ static void healthCheckServiceFromOrigin(const vector<string> &urls, size_t inde
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, ArgsType &body, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    body["edge"] = "1";
+
     do_http_hook(url, body, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -770,10 +773,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, ArgsType &body, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
-    
+
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    body["edge"] = "1";
+
     do_http_hook(url, body, header, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -799,10 +805,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_hook(url, params, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -828,10 +837,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_hook(url, params, header, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -857,10 +869,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
     });
 }
 
-void proxyDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const mediakit::HttpSession::HttpResponseInvoker &callback) {
+void proxyDataFromOrigin(const vector<string> &urls, HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const mediakit::HttpSession::HttpResponseInvoker &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "proxy data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_proxy(url, params, header, [=](int status_code, const StrCaseMap &headers, const string &content) mutable {
         if (status_code == 200) {
             // Proxy data from origin success
@@ -1742,7 +1757,7 @@ void installWebHook() {
         params["endTime"]    = to_string(end_time);
         params["periodType"] = to_string(period_type);
         params["detail"]     = to_string(detail);
-        if (include_motion) params["motion"] = "1";
+        params["motion"]     = to_string(include_motion);
 
         HeaderType headers;
         if (!jwt_token.empty()) {

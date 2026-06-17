@@ -617,6 +617,7 @@ void SearchEngine::findTimePeriod(
     uint64_t start_time, uint64_t end_time,
     int period_type, int detail, bool include_motion,
     const string &jwt_token,
+    bool edge,
     const function<void(const SockException &, const Value &)> &cb)
 {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
@@ -680,8 +681,8 @@ void SearchEngine::findTimePeriod(
             });
     }
 
-    // 4. No remote peers – reply immediately.
-    if (remote_ranges.empty()) {
+    // 4. No remote peers or edge mode – reply immediately.
+    if (remote_ranges.empty() || edge) {
         return cb(SockException(Err_success), *merged);
     }
 
@@ -741,6 +742,7 @@ void SearchEngine::findBookmarks(
     const string &user_id,
     int page, int size, const string &sort,
     const string &jwt_token,
+    bool edge,
     const function<void(const SockException &, const Value &)> &cb)
 {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
@@ -823,7 +825,7 @@ void SearchEngine::findBookmarks(
         }
     }
 
-    // ── 4. No remote peers – assemble and reply ──
+    // ── 4. No remote peers or edge mode – assemble and reply ──
     auto assemble_and_reply = [=]() mutable {
         Value data = Json::arrayValue;
         for (const auto &guid : ordered_guids) {
@@ -837,7 +839,7 @@ void SearchEngine::findBookmarks(
         cb(SockException(Err_success), res);
     };
 
-    if (remote_groups.empty()) {
+    if (remote_groups.empty() || edge) {
         return assemble_and_reply();
     }
 
@@ -896,6 +898,7 @@ void SearchEngine::findRecentBookmarks(
     int size,
     const string &sort,
     const string &jwt_token,
+    bool edge,
     const function<void(const SockException &, const Value &)> &cb)
 {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
@@ -973,7 +976,7 @@ void SearchEngine::findRecentBookmarks(
         }
     }
 
-    // ── 4. No remote peers – assemble and reply ──
+    // ── 4. No remote peers or edge mode – assemble and reply ──
     auto assemble_and_reply = [=]() mutable {
         Value data = Json::arrayValue;
         for (const auto &guid : ordered_guids) {
@@ -987,7 +990,7 @@ void SearchEngine::findRecentBookmarks(
         cb(SockException(Err_success), res);
     };
 
-    if (remote_groups.empty()) {
+    if (remote_groups.empty() || edge) {
         return assemble_and_reply();
     }
 
@@ -1044,6 +1047,7 @@ void SearchEngine::findMotionPeriodByRoi(
     const MediaTuple &tuple,
     uint64_t start_time, uint64_t end_time,
     const string &roi_mask,
+    bool edge,
     const function<void(const SockException &, const Value &)> &cb)
 {
     Value result;
@@ -1078,6 +1082,7 @@ void SearchEngine::findMotionPeriodByRoi(
 // ---------------------------------------------------------------------------
 void SearchEngine::getBookmarkDetail(
     const std::vector<std::string> &guids,
+    bool edge,
     const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb)
 {
     BookmarkImp   bm_imp;

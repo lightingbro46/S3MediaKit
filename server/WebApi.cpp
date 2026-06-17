@@ -2404,6 +2404,7 @@ void installWebApi() {
             int detail = allArgs["detail"];
             bool include_motion = allArgs["motion"];
             string jwt_token = allArgs["_jwt_token"];
+            bool edge = allArgs["edge"];
 
             if (!start_time) {
                 start_time = time(nullptr) - 24 * 3600;
@@ -2414,7 +2415,7 @@ void installWebApi() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, jwt_token, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
+            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, jwt_token, edge, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
                 if (ex) {
                     RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {
@@ -2438,18 +2439,21 @@ void installWebApi() {
             string camera_id = allArgs["cameraId"];
             string stream_id = allArgs["streamId"];
             string pos_str = allArgs["pos"];
+            bool edge = allArgs["edge"];
 
             // Forward to the node that recorded this camera at the requested time.
-            std::pair<string, string> owner;
-            if (pos_str == "latest") {
-                owner = SearchEngine::findCurrentOwnerNode(camera_id);
-            } else {
-                owner = SearchEngine::findOwnerNodeAtTime(camera_id, (int64_t)stoll(pos_str));
-            }
-            if (!owner.second.empty()) {
-                string jwt_token = allArgs["_jwt_token"];
-                NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, owner.second, camera_id, stream_id, pos_str, jwt_token, invoker);
-                return;
+            if (!edge) {
+                std::pair<string, string> owner;
+                if (pos_str == "latest") {
+                    owner = SearchEngine::findCurrentOwnerNode(camera_id);
+                } else {
+                    owner = SearchEngine::findOwnerNodeAtTime(camera_id, (int64_t)stoll(pos_str));
+                }
+                if (!owner.second.empty()) {
+                    string jwt_token = allArgs["_jwt_token"];
+                    NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, owner.second, camera_id, stream_id, pos_str, jwt_token, invoker);
+                    return;
+                }
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
@@ -2717,9 +2721,10 @@ void installWebApi() {
         string sort        = allArgs["sort"];
         string user_id     = allArgs["_user_id"];
         string jwt_token   = allArgs["_jwt_token"];
+        bool edge          = allArgs["edge"];
 
         SearchEngine::findBookmarks(camera_id, start_time, end_time, search, user_id,
-            page, size, sort, jwt_token,
+            page, size, sort, jwt_token, edge,
             [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
                 if (ex) {
                     val["code"] = -1;
@@ -2745,8 +2750,9 @@ void installWebApi() {
 
         string ids_str = allArgs["ids"];
         auto   guids   = toolkit::split(ids_str, ",");
+        bool   edge      = allArgs["edge"];
 
-        SearchEngine::getBookmarkDetail(guids, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
+        SearchEngine::getBookmarkDetail(guids, edge, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
             if (ex) {
                 val["code"] = -1;
                 val["msg"]  = ex.what();
@@ -2764,29 +2770,32 @@ void installWebApi() {
         CHECK_ARGS_("name", "camera_id", "start_time", "duration");
 
         string camera_id = allArgs["camera_id"];
+        bool edge        = allArgs["edge"];
         
-        // Forward to the camera owner node if it is not this node.
-        auto owner = SearchEngine::findCurrentOwnerNode(camera_id);
-        if (!owner.second.empty()) {
-            HttpArgs fwd_body;
-            fwd_body["name"]        = (string)allArgs["name"];
-            fwd_body["description"] = (string)allArgs["description"];
-            fwd_body["camera_id"]   = (string)allArgs["camera_id"];
-            fwd_body["start_time"]  = (string)allArgs["start_time"];
-            fwd_body["end_time"]    = (string)allArgs["end_time"];
-            fwd_body["duration"]    = (string)allArgs["duration"];
-            fwd_body["tags"]        = (string)allArgs["tags"];
-            string jwt_token = allArgs["_jwt_token"];
+        if (!edge) {
+            // Forward to the camera owner node if it is not this node.
+            auto owner = SearchEngine::findCurrentOwnerNode(camera_id);
+            if (!owner.second.empty()) {
+                HttpArgs fwd_body;
+                fwd_body["name"]        = (string)allArgs["name"];
+                fwd_body["description"] = (string)allArgs["description"];
+                fwd_body["camera_id"]   = (string)allArgs["camera_id"];
+                fwd_body["start_time"]  = (string)allArgs["start_time"];
+                fwd_body["end_time"]    = (string)allArgs["end_time"];
+                fwd_body["duration"]    = (string)allArgs["duration"];
+                fwd_body["tags"]        = (string)allArgs["tags"];
+                string jwt_token = allArgs["_jwt_token"];
 
-            Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
-                if (!err.empty()) {
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_CREATE_FAILED, err);
-                    return;
-                }
-                invoker(200, headerOut, res.toStyledString());
-            };
-            NOTICE_EMIT(BroadcastSyncBookmarkCreateOrUpdateArgs, Broadcast::kBroadcastSyncBookmarkCreateOrUpdate, owner.second, fwd_body, jwt_token, on_response, true);
-            return;
+                Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
+                    if (!err.empty()) {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_CREATE_FAILED, err);
+                        return;
+                    }
+                    invoker(200, headerOut, res.toStyledString());
+                };
+                NOTICE_EMIT(BroadcastSyncBookmarkCreateOrUpdateArgs, Broadcast::kBroadcastSyncBookmarkCreateOrUpdate, owner.second, fwd_body, jwt_token, on_response, true);
+                return;
+            }
         }
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
@@ -2832,30 +2841,33 @@ void installWebApi() {
         CHECK_ARGS_("id", "camera_id", "start_time", "duration");
 
         string bookmark_id = allArgs["id"];
+        bool edge          = allArgs["edge"];
 
-        // Forward to the bookmark's owner node if it is not this node.
-        auto owner = SearchEngine::findOwnerNodeForBookmark(bookmark_id);
-        if (!owner.second.empty()) {
-            HttpArgs fwd_body;
-            fwd_body["id"]          = bookmark_id;
-            fwd_body["name"]        = (string)allArgs["name"];
-            fwd_body["description"] = (string)allArgs["description"];
-            fwd_body["camera_id"]   = (string)allArgs["camera_id"];
-            fwd_body["start_time"]  = (string)allArgs["start_time"];
-            fwd_body["end_time"]    = (string)allArgs["end_time"];
-            fwd_body["duration"]    = (string)allArgs["duration"];
-            fwd_body["tags"]        = (string)allArgs["tags"];
-            string jwt_token        = allArgs["_jwt_token"];
+        if (!edge) {
+            // Forward to the bookmark's owner node if it is not this node.
+            auto owner = SearchEngine::findOwnerNodeForBookmark(bookmark_id);
+            if (!owner.second.empty()) {
+                HttpArgs fwd_body;
+                fwd_body["id"]          = bookmark_id;
+                fwd_body["name"]        = (string)allArgs["name"];
+                fwd_body["description"] = (string)allArgs["description"];
+                fwd_body["camera_id"]   = (string)allArgs["camera_id"];
+                fwd_body["start_time"]  = (string)allArgs["start_time"];
+                fwd_body["end_time"]    = (string)allArgs["end_time"];
+                fwd_body["duration"]    = (string)allArgs["duration"];
+                fwd_body["tags"]        = (string)allArgs["tags"];
+                string jwt_token        = allArgs["_jwt_token"];
 
-            Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
-                if (!err.empty()) {
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_UPDATE_FAILED, err);
-                    return;
-                }
-                invoker(200, headerOut, res.toStyledString());
-            };
-            NOTICE_EMIT(BroadcastSyncBookmarkCreateOrUpdateArgs, Broadcast::kBroadcastSyncBookmarkCreateOrUpdate, owner.second, fwd_body, jwt_token, on_response, false);
-            return;
+                Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
+                    if (!err.empty()) {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_UPDATE_FAILED, err);
+                        return;
+                    }
+                    invoker(200, headerOut, res.toStyledString());
+                };
+                NOTICE_EMIT(BroadcastSyncBookmarkCreateOrUpdateArgs, Broadcast::kBroadcastSyncBookmarkCreateOrUpdate, owner.second, fwd_body, jwt_token, on_response, false);
+                return;
+            }
         }
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
@@ -2902,20 +2914,23 @@ void installWebApi() {
         CHECK_ARGS_("id");
 
         string id = allArgs["id"];
+        bool edge = allArgs["edge"];
 
-        // Forward to the bookmark's owner node if it is not this node.
-        auto owner = SearchEngine::findOwnerNodeForBookmark(id);
-        if (!owner.second.empty()) {
-            string jwt_token = allArgs["_jwt_token"];
-            Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
-                if (!err.empty()) {
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_DELETE_FAILED, err);
-                    return;
-                }
-                invoker(200, headerOut, res.toStyledString());
-            };
-            NOTICE_EMIT(BroadcastSyncBookmarkDeleteArgs, Broadcast::kBroadcastSyncBookmarkDelete, owner.second, id, jwt_token, on_response);
-            return;
+        if (!edge) {
+            // Forward to the bookmark's owner node if it is not this node.
+            auto owner = SearchEngine::findOwnerNodeForBookmark(id);
+            if (!owner.second.empty()) {
+                string jwt_token = allArgs["_jwt_token"];
+                Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
+                    if (!err.empty()) {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_DELETE_FAILED, err);
+                        return;
+                    }
+                    invoker(200, headerOut, res.toStyledString());
+                };
+                NOTICE_EMIT(BroadcastSyncBookmarkDeleteArgs, Broadcast::kBroadcastSyncBookmarkDelete, owner.second, id, jwt_token, on_response);
+                return;
+            }
         }
 
         // Local: find in per-node DB to get camera_guid for auth check.
@@ -2966,8 +2981,9 @@ void installWebApi() {
         string sort = allArgs["sort"];
         string user_id = allArgs["_user_id"];
         string jwt_token = allArgs["_jwt_token"];
+        bool edge = allArgs["edge"];
         
-        SearchEngine::findRecentBookmarks(camera_id, user_id, size, sort, jwt_token,
+        SearchEngine::findRecentBookmarks(camera_id, user_id, size, sort, jwt_token, edge,
             [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
                 if (ex) {
                     val["code"] = -1;
@@ -2990,13 +3006,16 @@ void installWebApi() {
         CHECK_ARGS_("id");
 
         string bookmark_id = allArgs["id"];
+        bool edge = allArgs["edge"];
 
-        // Forward to the bookmark's owner node if it is not this node.
-        auto owner = SearchEngine::findOwnerNodeForBookmark(bookmark_id);
-        if (!owner.second.empty()) {
-            string jwt_token = allArgs["_jwt_token"];
-            NOTICE_EMIT(BroadcastSyncBookmarkThumbnailArgs, Broadcast::kBroadcastSyncBookmarkThumbnail, owner.second, bookmark_id, jwt_token, invoker);
-            return;
+        if (!edge) {
+            // Forward to the bookmark's owner node if it is not this node.
+            auto owner = SearchEngine::findOwnerNodeForBookmark(bookmark_id);
+            if (!owner.second.empty()) {
+                string jwt_token = allArgs["_jwt_token"];
+                NOTICE_EMIT(BroadcastSyncBookmarkThumbnailArgs, Broadcast::kBroadcastSyncBookmarkThumbnail, owner.second, bookmark_id, jwt_token, invoker);
+                return;
+            }
         }
 
         // Local: load bookmark from per-node DB.
@@ -3937,6 +3956,7 @@ void installWebApi() {
             uint64_t start_time = allArgs["startTime"];
             uint64_t end_time = allArgs["endTime"];
             string roi_mask = allArgs["roiMask"];
+            bool edge = allArgs["edge"];
 
             if (!start_time) {
                 start_time = time(nullptr) - 24 * 3600;
@@ -3947,7 +3967,7 @@ void installWebApi() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            SearchEngine::findMotionPeriodByRoi(tuple, start_time, end_time, roi_mask, [&](const SockException &ex, const Value &data) {
+            SearchEngine::findMotionPeriodByRoi(tuple, start_time, end_time, roi_mask, edge, [&](const SockException &ex, const Value &data) {
                 if (ex) {
                     RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {
