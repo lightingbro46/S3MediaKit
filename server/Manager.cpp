@@ -309,8 +309,8 @@ void installManagerHook () {
 static void releaseAllDevice() {
     // release all camera
     CameraManager::Instance().clear();
-    // sleep for 3 second before uninstall hook, to prevent resource release order errors
-    sleep(3);
+    // sleep for 10 second before uninstall hook, to prevent resource release order errors
+    sleep(10);
 }
 
 void unInstallManagerHook() {
@@ -671,7 +671,7 @@ static Json::Value exampleJson() {
     Json::Value data;
     data["devices"] = Json::arrayValue;
     Json::Value device;
-    device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
+    device["id"] = "ac80b2c0-692a-4368-ab82-9bdd2aea273d";
     device["name"] = "Camera HPG";
     device["username"] = "admin";
     device["password"] = "Haiphong2025";
@@ -689,8 +689,8 @@ static Json::Value exampleJson() {
             period["dh"] = StrPrinter << d << "," << h;
             period["fps"] = 25;
             period["q"] = "L";
-            // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
-            period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
+            period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            // period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
             // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
@@ -730,14 +730,14 @@ static Json::Value exampleJson() {
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
     device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
-    device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+    // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
+    // device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
     device["motionDetectConfig"]["numOfRow"] = 32;
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
     device["motionDetectConfig"]["chooseStream"] = "SECONDARY";
-    device["motionDetectConfig"]["clientEnabled"] = true;
+    device["motionDetectConfig"]["clientEnabled"] = false;
     device["motionDetectConfig"]["mediaSupport"] = true;
     device["motionDetectConfig"]["value"] =
         "00000000000000000000000000000000000000000000"  // row  0
@@ -775,7 +775,7 @@ static Json::Value exampleJson() {
         ;
     // device["motionDetectConfig"]["value"] = "0000000000000333333333333333333333333333333300000000000003333333333333333333333333333333000000000000033333333333333333333333333333330000000000000333333333333333333333333333333300000000000003333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333444444444433333333333333333330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003333333333333333333322222222233300000000000033333333333333333333222222222333000000000000333333333333333333332222222223330000000000003333333333333333333322222222233333333333333333333333333333333333222222222333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333";
 
-    // data["devices"].append(device);
+    data["devices"].append(device);
 
     data["media_server"] = Json::objectValue;
     data["media_server"]["restartConfig"] = Json::objectValue;
@@ -785,6 +785,23 @@ static Json::Value exampleJson() {
     data["media_server"]["restartConfig"]["dayOfWeek"] = "";
     data["media_server"]["restartConfig"]["everyHours"] = "";
     data["media_server"]["restartConfig"]["timezone"] = Json::nullValue;
+    data["media_server"]["failover"] = true;
+    data["media_server"]["maxConfigCameras"] = 100;
+    data["media_server"]["serverGroupId"] = 1;
+    data["media_server"]["projectId"] = "93df2408-a27c-41fc-a24d-b230156d2628";
+    data["media_server"]["unlimitedStreamPerCamera"] = false;
+    data["media_server"]["maxStreamPerCamera"] = 10;
+    data["media_server"]["streamMaxCameraOfLicense"] = 20;
+    data["media_server"]["unlimitedStream"] = false;
+    data["media_server"]["maxStream"] = 100;
+    data["media_server"]["streamMaxOfLicense"] = 200;
+    data["media_server"]["thresholdConfig"] = Json::objectValue;
+    data["media_server"]["thresholdConfig"]["CPU_levelLow"] = 0.7;
+    data["media_server"]["thresholdConfig"]["CPU_levelMedium"] = 0.9;
+    data["media_server"]["thresholdConfig"]["RAM_levelLow"] = 0.7;
+    data["media_server"]["thresholdConfig"]["RAM_levelMedium"] = 0.9;
+    data["media_server"]["thresholdConfig"]["HDD_levelLow"] = 0.8;
+    data["media_server"]["thresholdConfig"]["HDD_levelMedium"] = 0.95;
 
     data["list_media_server"] = Json::arrayValue;
     Json::Value self_server = Json::objectValue;
