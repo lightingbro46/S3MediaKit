@@ -76,48 +76,204 @@ std::pair<std::string, std::string> SearchEngine::findCurrentOwnerNode(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for overlap-resolution + consecutive-merge of recorded periods.
+//
+// Overlap rule: when two periods from different servers overlap, the one with
+// the LATER startTime wins the overlapping portion (it represents more recent
+// recording that took over from the earlier server).  After resolving overlaps,
+// consecutive periods that share the same mediaServerId are coalesced.
+// ---------------------------------------------------------------------------
+struct PeriodEntry {
+    uint64_t    start;
+    uint64_t    end;        // exclusive (start + duration / start + timeLen)
+    std::string serverId;
+    // type-0 only
+    std::string cameraId;
+    std::string streamId;
+};
+
+struct MotionPeriodEntry {
+    uint64_t start;
+    uint64_t end;           // exclusive
+};
+
+// Resolve overlaps (later startTime wins) then merge consecutive same-server periods.
+static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
+    if (inp.empty()) return {};
+    std::sort(inp.begin(), inp.end(), [](const PeriodEntry &a, const PeriodEntry &b) {
+        return a.start < b.start;
+    });
+
+    std::vector<PeriodEntry> result;
+    for (size_t i = 0; i < inp.size(); ++i) {
+        PeriodEntry cur = inp[i];
+        if (cur.start >= cur.end) continue;
+
+        if (!result.empty() && result.back().end > cur.start) {
+            // cur starts inside the last result period → cur wins the overlap.
+            PeriodEntry prev_copy = result.back();
+            uint64_t    prev_old_end = prev_copy.end;
+
+            result.back().end = cur.start;          // trim prev up to cur.start
+            if (result.back().end <= result.back().start)
+                result.pop_back();                  // prev became zero-duration
+
+            result.push_back(cur);
+
+            // If prev extended beyond cur.end, re-inject its tail so it is
+            // processed in the correct sorted position.
+            if (prev_old_end > cur.end) {
+                PeriodEntry tail  = prev_copy;
+                tail.start        = cur.end;
+                tail.end          = prev_old_end;
+                size_t ins        = i + 1;
+                while (ins < inp.size() && inp[ins].start < tail.start) ++ins;
+                inp.insert(inp.begin() + ins, tail);
+            }
+        } else {
+            result.push_back(cur);
+        }
+    }
+
+    // Merge consecutive periods that share the same server.
+    std::vector<PeriodEntry> merged;
+    for (const auto &p : result) {
+        if (!merged.empty() &&
+            merged.back().serverId == p.serverId &&
+            merged.back().end      == p.start) {
+            merged.back().end = p.end;
+        } else {
+            merged.push_back(p);
+        }
+    }
+    return merged;
+}
+
+// Merge overlapping / adjacent motion periods (no server concept).
+static std::vector<MotionPeriodEntry> resolveMotionPeriods(std::vector<MotionPeriodEntry> inp) {
+    if (inp.empty()) return {};
+    std::sort(inp.begin(), inp.end(), [](const MotionPeriodEntry &a, const MotionPeriodEntry &b) {
+        return a.start < b.start;
+    });
+    std::vector<MotionPeriodEntry> result;
+    result.push_back(inp[0]);
+    for (size_t i = 1; i < inp.size(); ++i) {
+        if (inp[i].start <= result.back().end) {
+            result.back().end = std::max(result.back().end, inp[i].end);
+        } else {
+            result.push_back(inp[i]);
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Merge a remote findTimePeriod JSON response into the local result (in-place).
+// Consecutive periods sharing the same mediaServerId are coalesced; overlapping
+// periods from different servers are resolved so the later-starting server wins.
 // ---------------------------------------------------------------------------
 static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type, int detail) {
     if (src.isNull() || !src.isObject()) return;
 
+    // ── helper lambdas ──────────────────────────────────────────────────────
+
+    // Extract flat {startTime, duration, mediaServerId} periods into a vector.
+    auto extractPeriods = [](const Value &arr, std::vector<PeriodEntry> &out) {
+        if (!arr.isArray()) return;
+        for (const auto &p : arr) {
+            PeriodEntry e;
+            e.start    = p["startTime"].asUInt64();
+            e.end      = e.start + p["duration"].asUInt64();
+            e.serverId = p["mediaServerId"].asString();
+            out.push_back(e);
+        }
+    };
+
+    // Rebuild a Json array from a resolved PeriodEntry vector (duration variant).
+    auto buildPeriodArray = [](const std::vector<PeriodEntry> &v) {
+        Value arr = Json::arrayValue;
+        for (const auto &e : v) {
+            Value p;
+            p["startTime"]     = (Json::UInt64)e.start;
+            p["duration"]      = (Json::UInt64)(e.end - e.start);
+            p["mediaServerId"] = e.serverId;
+            arr.append(p);
+        }
+        return arr;
+    };
+
+    // ── period_type == 0 ────────────────────────────────────────────────────
     if (period_type == 0) {
-        if (src.isMember("periods") && src["periods"].isArray()) {
-            for (const auto &p : src["periods"]) {
-                dst["periods"].append(p);
+        std::vector<PeriodEntry> periods;
+        if (dst.isMember("periods") && dst["periods"].isArray()) {
+            for (const auto &p : dst["periods"]) {
+                PeriodEntry e;
+                e.start    = p["startTime"].asUInt64();
+                e.end      = e.start + p["timeLen"].asUInt64();
+                e.serverId = p["mediaServerId"].asString();
+                e.cameraId = p["cameraId"].asString();
+                e.streamId = p["streamId"].asString();
+                periods.push_back(e);
             }
         }
+        if (src.isMember("periods") && src["periods"].isArray()) {
+            for (const auto &p : src["periods"]) {
+                PeriodEntry e;
+                e.start    = p["startTime"].asUInt64();
+                e.end      = e.start + p["timeLen"].asUInt64();
+                e.serverId = p["mediaServerId"].asString();
+                e.cameraId = p["cameraId"].asString();
+                e.streamId = p["streamId"].asString();
+                periods.push_back(e);
+            }
+        }
+        auto resolved = resolvePeriods(periods);
+        dst["periods"] = Json::arrayValue;
+        for (const auto &e : resolved) {
+            Value p;
+            p["cameraId"]      = e.cameraId;
+            p["streamId"]      = e.streamId;
+            p["startTime"]     = (Json::UInt64)e.start;
+            p["timeLen"]       = (Json::UInt64)(e.end - e.start);
+            p["mediaServerId"] = e.serverId;
+            dst["periods"].append(p);
+        }
+
+    // ── period_type == 1 ────────────────────────────────────────────────────
     } else if (period_type == 1) {
         if (detail == 0) {
-            if (src.isMember("periods") && src["periods"].isArray()) {
-                for (const auto &p : src["periods"]) {
-                    dst["periods"].append(p);
-                }
-            }
+            std::vector<PeriodEntry> periods;
+            extractPeriods(dst["periods"], periods);
+            if (src.isMember("periods")) extractPeriods(src["periods"], periods);
+            dst["periods"] = buildPeriodArray(resolvePeriods(periods));
         } else {
             if (src.isMember("streams") && src["streams"].isArray()) {
                 for (const auto &src_stream : src["streams"]) {
                     string sid = src_stream["streamId"].asString();
-                    bool found = false;
-                    for (auto &dst_stream : dst["streams"]) {
-                        if (dst_stream["streamId"].asString() == sid) {
-                            if (src_stream.isMember("periods") && src_stream["periods"].isArray()) {
-                                for (const auto &p : src_stream["periods"]) {
-                                    dst_stream["periods"].append(p);
-                                }
-                            }
-                            found = true;
+                    Value *dst_stream_ptr = nullptr;
+                    for (auto &s : dst["streams"]) {
+                        if (s["streamId"].asString() == sid) {
+                            dst_stream_ptr = &s;
                             break;
                         }
                     }
-                    if (!found) {
+                    if (!dst_stream_ptr) {
                         dst["streams"].append(src_stream);
+                    } else {
+                        std::vector<PeriodEntry> periods;
+                        extractPeriods((*dst_stream_ptr)["periods"], periods);
+                        if (src_stream.isMember("periods"))
+                            extractPeriods(src_stream["periods"], periods);
+                        (*dst_stream_ptr)["periods"] = buildPeriodArray(resolvePeriods(periods));
                     }
                 }
             }
         }
+
+    // ── period_type == 2 ────────────────────────────────────────────────────
     } else if (period_type == 2) {
         if (detail == 0) {
+            // Hour-bitmap representation – OR the bitmaps; no per-period overlap logic.
             if (src.isMember("periods") && src["periods"].isObject()) {
                 for (const auto &date_key : src["periods"].getMemberNames()) {
                     const auto &src_hours = src["periods"][date_key];
@@ -126,9 +282,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                     } else {
                         auto &dst_hours = dst["periods"][date_key];
                         for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
-                            if (src_hours[h].asInt() > 0) {
-                                dst_hours[h] = 1;
-                            }
+                            if (src_hours[h].asInt() > 0) dst_hours[h] = 1;
                         }
                     }
                 }
@@ -154,11 +308,12 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                             } else {
                                 auto &dst_hours = (*dst_stream_ptr)["dates"][date_key];
                                 for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
-                                    if (src_hours[h].isArray()) {
-                                        for (const auto &p : src_hours[h]) {
-                                            dst_hours[h].append(p);
-                                        }
-                                    }
+                                    if (!src_hours[h].isArray()) continue;
+                                    std::vector<PeriodEntry> periods;
+                                    if (dst_hours[h].isArray())
+                                        extractPeriods(dst_hours[h], periods);
+                                    extractPeriods(src_hours[h], periods);
+                                    dst_hours[h] = buildPeriodArray(resolvePeriods(periods));
                                 }
                             }
                         }
@@ -168,14 +323,32 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
         }
     }
 
-    // Merge motionPeriods if present
+    // ── motionPeriods ───────────────────────────────────────────────────────
     if (src.isMember("motionPeriods")) {
         const auto &src_motion = src["motionPeriods"];
         if (src_motion.isArray()) {
-            for (const auto &p : src_motion) {
+            std::vector<MotionPeriodEntry> motions;
+            auto extractMotions = [&](const Value &arr) {
+                if (!arr.isArray()) return;
+                for (const auto &p : arr) {
+                    MotionPeriodEntry e;
+                    e.start = p["startTime"].asUInt64();
+                    e.end   = e.start + p["duration"].asUInt64();
+                    motions.push_back(e);
+                }
+            };
+            if (dst.isMember("motionPeriods")) extractMotions(dst["motionPeriods"]);
+            extractMotions(src_motion);
+            auto resolved = resolveMotionPeriods(motions);
+            dst["motionPeriods"] = Json::arrayValue;
+            for (const auto &e : resolved) {
+                Value p;
+                p["startTime"] = (Json::UInt64)e.start;
+                p["duration"]  = (Json::UInt64)(e.end - e.start);
                 dst["motionPeriods"].append(p);
             }
         } else if (src_motion.isObject()) {
+            // Hour-bitmap representation – OR the bitmaps.
             for (const auto &date_key : src_motion.getMemberNames()) {
                 const auto &src_hours = src_motion[date_key];
                 if (!dst["motionPeriods"].isMember(date_key)) {
@@ -183,9 +356,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 } else {
                     auto &dst_hours = dst["motionPeriods"][date_key];
                     for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
-                        if (src_hours[h].asInt() > 0) {
-                            dst_hours[h] = 1;
-                        }
+                        if (src_hours[h].asInt() > 0) dst_hours[h] = 1;
                     }
                 }
             }
