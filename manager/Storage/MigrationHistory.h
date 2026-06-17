@@ -13,7 +13,7 @@ struct MigrateHistory {
     std::string applied;
 };
 
-DECLARE_ENTITY(MigrateHistory, "migrationHistory",
+DECLARE_ENTITY(MigrateHistory, "migrationhistory",
     { "id" },
     &MigrateHistory::id, "id", 
     &MigrateHistory::app_name, "app_name", 

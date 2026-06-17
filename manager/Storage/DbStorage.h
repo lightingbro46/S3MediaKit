@@ -229,8 +229,8 @@ protected:
         auto query = toolkit::QueryBuilder()
                          .select({"name"})
                          .from("sqlite_master")
-                         .where("type='table' AND name=?", { serialize_sql_value(EntityTraits<T>::tableName()) });
-        auto rows =  _executor->executeRaw(query);
+                         .where("type='table' AND name=?", { EntityTraits<T>::tableName() });
+        auto rows = _executor->executeRaw(query);
         return !rows.empty();
     }
 

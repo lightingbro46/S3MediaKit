@@ -33,7 +33,6 @@ void MigrationHistoryImp::migrate(const string &files_string) {
     auto save_path = SqlitePoolMap::Instance().getSavePath(_tag);
     save_path = File::absolutePath("", save_path);
     bool exist_db = File::fileExist(save_path) && File::fileSize(save_path) > 0 && isCreated();
-    DebugL << "Start migration, total " << files.size() << " sql files to execute, exist_db: " << exist_db << ", save_path: " << save_path;
 
     for (auto it = files.begin(); it != files.end(); ++it) {
         auto file = *it;

@@ -151,12 +151,13 @@ public:
         auto current = _assign_imp->findCurrentAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
-            if (assign.owner_peer_id == peer_id) {
+            if (assign.owner_peer_id == peer_id && assign.assign_type == static_cast<int>(type) && assign.released_at == 0) {
                 InfoL << "Resource " << resource_guid << " is already assigned to the same peer " << peer_id;
                 return; // already assigned to the same peer, no-op
             }
             WarnL << "Resource " << resource_guid << " is already assigned to peer " << assign.owner_peer_id << ", release it before re-assigning";
             // release current assignment
+            // Note: we don't delete the row, we just mark it as released_at = now().
             assign.released_at = static_cast<int64_t>(time(nullptr));
             _assign_imp->update(assign);
         }
