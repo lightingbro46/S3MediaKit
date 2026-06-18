@@ -312,7 +312,6 @@ static void releaseAllDevice() {
 }
 
 static void releaseSyncDatabase() {
-    DebugL << "Sync manager has been stopped";
     SyncManager::Instance().stop();
 }
 

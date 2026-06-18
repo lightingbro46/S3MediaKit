@@ -239,7 +239,7 @@ void SyncManager::stop() {
     _peers.clear();
     _bootstrapping.clear();
     _last_bootstrap_peer.clear();
-    InfoL << "Sync database stopped";
+    InfoL << "Sync manager has been stopped";
 }
 
 void SyncManager::addPeer(const string &peer_id, const string &base_url) {
