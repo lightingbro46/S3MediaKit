@@ -190,6 +190,55 @@ public:
                roiValue == other.roiValue &&
                motionDetectOnStream == other.motionDetectOnStream;
     }
+
+    bool operator!=(const CameraOption& other) const {
+        return !(*this == other);
+    }
+
+    CameraOption& operator=(const CameraOption& other) {
+        if (this != &other) {
+            name = other.name;
+            manufacturer = other.manufacturer;
+            model = other.model;
+            ip = other.ip;
+            port = other.port;
+            username = other.username;
+            password = other.password;
+            disablePrimaryStream = other.disablePrimaryStream;
+            disableSecondaryStream = other.disableSecondaryStream;
+            doNotRecordPrimaryStream = other.doNotRecordPrimaryStream;
+            doNotRecordSecondaryStream = other.doNotRecordSecondaryStream;
+            enableRecord = other.enableRecord;
+            keepArchivedMinForAuto = other.keepArchivedMinForAuto;
+            keepArchivedMinFor = other.keepArchivedMinFor;
+            keepArchivedMaxForAuto = other.keepArchivedMaxForAuto;
+            keepArchivedMaxFor = other.keepArchivedMaxFor;
+            enableActive = other.enableActive;
+            mediaPort = other.mediaPort;
+            autoMediaPort = other.autoMediaPort;
+            rtpTransport = other.rtpTransport;
+            enableFailover = other.enableFailover;
+            preferedMediaServer = other.preferedMediaServer;
+            enablePTZControl = other.enablePTZControl;
+            motionPreRecordSec = other.motionPreRecordSec;
+            motionPostRecordSec = other.motionPostRecordSec;
+            recordSchedules = other.recordSchedules;
+            disableAudio = other.disableAudio;
+            webPort = other.webPort;
+            autoWebPort = other.autoWebPort;
+            keepConfigProfileAndStream = other.keepConfigProfileAndStream;
+            ptzMode = other.ptzMode;
+            ptzSpeed = other.ptzSpeed;
+            reversePanAxis = other.reversePanAxis;
+            reverseTiltAxis = other.reverseTiltAxis;
+            onvifMainProfile = other.onvifMainProfile; 
+            onvifSubProfile = other.onvifSubProfile; 
+            enableMotion = other.enableMotion; 
+            roiValue = other.roiValue; 
+            motionDetectOnStream = other.motionDetectOnStream; 
+        }
+        return *this; 
+    }
 };
 
 class GenericRtspCameraImp;

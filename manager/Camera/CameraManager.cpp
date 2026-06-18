@@ -123,6 +123,28 @@ bool CameraManager::delCamera(const string &key) {
                                 << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
                         if (out.released_at == 0) {
                             DebugL << "Device " << key << " has not been released from cluster. Keep device in list";
+                            CameraStatistic params_from_esc;
+                            if (CameraStatisticImp::syncFromEsc(params.tuple.device_id, params_from_esc)) {
+                                // Successfully synced from ESC
+                                CameraOption option_copy = option;
+                                option_copy.keepArchivedMinForAuto = params_from_esc.option.keepArchivedMinForAuto;
+                                option_copy.keepArchivedMinFor = params_from_esc.option.keepArchivedMinFor;
+                                option_copy.keepArchivedMaxForAuto = params_from_esc.option.keepArchivedMaxForAuto;
+                                option_copy.keepArchivedMaxFor = params_from_esc.option.keepArchivedMaxFor;
+                                // todo: sync more option if needed
+                                if (option_copy != option) {
+                                    DebugL << "Successfully synced camera statistic from ESC for device " << key << ". keepArchivedMinForAuto: " << option_copy.keepArchivedMinForAuto
+                                        << ", keepArchivedMinFor: " << option_copy.keepArchivedMinFor
+                                        << ", keepArchivedMaxForAuto: " << option_copy.keepArchivedMaxForAuto
+                                        << ", keepArchivedMaxFor: " << option_copy.keepArchivedMaxFor;
+                                    auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+                                    poller->async([imp, option]() {
+                                        imp->setCameraOption(option);
+                                    });
+                                }
+                            } else {
+                                WarnL << "Failed to sync camera statistic from ESC for device " << key;
+                            }
                             return false;
                         }
                         GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
