@@ -707,8 +707,12 @@ void SearchEngine::findTimePeriod(
                 [peer_id, merged, merge_mtx, pending, period_type, detail, cb]
                 (const string &err, const int &code, const Value &data) mutable {
                     if (err.empty() && code == 0 && !data.isNull()) {
+                        // data is the raw HTTP response {"code":0,"data":{...}}.
+                        // Extract the inner payload before merging.
+                        const Value &payload = (data.isObject() && data.isMember("data"))
+                                               ? data["data"] : data;
                         lock_guard<mutex> lk(*merge_mtx);
-                        mergeTimePeriodResult(*merged, data, period_type, detail);
+                        mergeTimePeriodResult(*merged, payload, period_type, detail);
                     } else if (!err.empty()) {
                         WarnL << "recordedTimePeriod from peer " << peer_id << " failed: " << err;
                     }
