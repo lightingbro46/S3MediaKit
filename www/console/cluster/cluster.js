@@ -96,10 +96,10 @@ async function _loadNodes() {
 
     _clusterState.nodes = nodes;
     _renderNodeSkeleton(nodes);
-    _pollAllNodes(nodes, auth.secret);
+    _pollAllNodes(nodes, auth.secret, selfId);
 
     if (_clusterState.pollTimer) clearInterval(_clusterState.pollTimer);
-    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret); }, 5000);
+    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 5000);
 }
 
 function _renderNodeSkeleton(nodes) {
@@ -154,8 +154,8 @@ function _renderNodeSkeleton(nodes) {
     }).join('');
 }
 
-async function _pollAllNodes(nodes, secret) {
-    var results = await Promise.allSettled(nodes.map(function(n) { return _pollNode(n, secret); }));
+async function _pollAllNodes(nodes, secret, author) {
+    var results = await Promise.allSettled(nodes.map(function(n) { return _pollNode(n, secret, author); }));
     var online = 0; var offline = 0;
     results.forEach(function(r, i) {
         if (r.status === 'fulfilled') { online++; _applyNodeData(nodes[i], r.value); }
@@ -167,7 +167,7 @@ async function _pollAllNodes(nodes, secret) {
     if (tsEl) tsEl.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
 }
 
-async function _pollNode(node, secret) {
+async function _pollNode(node, secret, author) {
     var base = node.baseUrl || _buildBase(node);
     var t0   = Date.now();
 
@@ -175,11 +175,11 @@ async function _pollNode(node, secret) {
     var result = { online: true, latency: Date.now() - t0, mediaServerId: hc && hc.data ? hc.data.mediaServerId : node.id };
 
     try { var desc = await _fetchJson(base + '/media/mserver/description'); if (desc && desc.data) { result.version = desc.data.version || ''; } } catch(_) {}
-    try { var ep = await _fetchJson(base + '/index/api/getThreadsLoad?secret=' + encodeURIComponent(secret)); result.threads = ep && ep.data ? ep.data : []; } catch(_) { result.threads = []; }
-    try { var wt = await _fetchJson(base + '/index/api/getWorkThreadsLoad?secret=' + encodeURIComponent(secret)); result.workThreads = wt && wt.data ? wt.data : []; } catch(_) { result.workThreads = []; }
-    try { var st = await _fetchJson(base + '/index/api/getStatistic?secret=' + encodeURIComponent(secret)); result.stat = st && st.data ? st.data : {}; } catch(_) { result.stat = {}; }
-    try { var sy = await _fetchJson(base + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(secret)); result.sysStat = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
-    try { var ss = await _fetchJson(base + '/index/api/getSyncStatus?secret=' + encodeURIComponent(secret)); result.syncStatus = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
+    try { var ep = await _fetchJson(base + '/media/api/getThreadsLoad?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.threads = ep && ep.data ? ep.data : []; } catch(_) { result.threads = []; }
+    try { var wt = await _fetchJson(base + '/media/api/getWorkThreadsLoad?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.workThreads = wt && wt.data ? wt.data : []; } catch(_) { result.workThreads = []; }
+    try { var st = await _fetchJson(base + '/media/api/getStatistic?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.stat = st && st.data ? st.data : {}; } catch(_) { result.stat = {}; }
+    try { var sy = await _fetchJson(base + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.sysStat = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
+    try { var ss = await _fetchJson(base + '/media/api/getSyncStatus?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.syncStatus = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
 
     return result;
 }

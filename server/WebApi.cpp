@@ -83,6 +83,7 @@
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionPeerAckLog.h"
 #include "Storage/MiscData.h"
+#include "Server/ClusterManager.h"
 
 using namespace std;
 using namespace Json;
@@ -3177,71 +3178,102 @@ void installWebApi() {
         val["data"] = makeSystemStatisticJson();
     });
 
-    api_regist("/index/api/getSyncStatus", [](API_ARGS_MAP) {
-        CHECK_SECRET();
+    api_regist("/media/api/getSyncStatus", [](API_ARGS_MAP_ASYNC) {
+        auto on_access = [val]() mutable {
+            GET_CONFIG(string, mediaServerId, General::kMediaServerId);
 
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId);
-
-        // 1. transaction_sequence — local cursors (what we have received from each peer)
-        auto seq_impl = std::make_shared<TransactionSequenceImp>();
-        auto seq_list = seq_impl->findAll();
-        Json::Value seq_json = Json::arrayValue;
-        for (const auto &s : seq_list) {
-            Json::Value item;
-            item["peer_guid"] = s.peer_guid;
-            item["db_guid"]   = s.db_guid;
-            item["sequence"]  = s.sequence;
-            seq_json.append(item);
-        }
-        val["data"]["transaction_sequence"] = seq_json;
-
-        // 2. transaction_peer_ack_log — how far each peer has pulled from us
-        auto ack_impl = std::make_shared<PeerAckLogImp>();
-        auto ack_list = ack_impl->findAll();
-        Json::Value ack_json = Json::arrayValue;
-        for (const auto &a : ack_list) {
-            Json::Value item;
-            item["peer_guid"]     = a.peer_guid;
-            item["db_guid"]       = a.db_guid;
-            item["src_peer_guid"] = a.src_peer_guid;
-            item["src_db_guid"]   = a.src_db_guid;
-            item["acked_seq"]     = a.acked_seq;
-            item["updated_at"]    = (Json::Int64)a.updated_at;
-            ack_json.append(item);
-        }
-        val["data"]["transaction_ack_log"] = ack_json;
-
-        // 3. transaction_log row count per (peer_guid, db_guid)
-        // Use cursors already fetched from transaction_sequence
-        Json::Value log_count_json = Json::arrayValue;
-        auto log_impl = std::make_shared<TransactionLogImp>();
-        for (const auto &s : seq_list) {
-            // Count rows with sequence > 0 (i.e., all) for this peer/db pair
-            auto rows_for_peer = log_impl->findSinceSeq(s.peer_guid, s.db_guid, 0, 0);
-            Json::Value lc;
-            lc["peer_guid"] = s.peer_guid;
-            lc["db_guid"]   = s.db_guid;
-            lc["count"]     = (Json::UInt)rows_for_peer.size();
-            log_count_json.append(lc);
-        }
-        val["data"]["transaction_log_counts"] = log_count_json;
-        
-        // 4. local node identity
-        auto imp = std::make_shared<MiscDataImp>();
-        auto ret = imp->findAll();
-        Json::Value misc_json;
-        for (const auto &r : ret) {
-            if (r.key.empty() || r.value.empty()) {
-                continue;
+            // 1. transaction_sequence — local cursors (what we have received from each peer)
+            auto seq_impl = std::make_shared<TransactionSequenceImp>();
+            auto seq_list = seq_impl->findAll();
+            Json::Value seq_json = Json::arrayValue;
+            for (const auto &s : seq_list) {
+                Json::Value item;
+                item["peer_guid"] = s.peer_guid;
+                item["db_guid"]   = s.db_guid;
+                item["sequence"]  = s.sequence;
+                seq_json.append(item);
             }
-            val["data"][r.key] = r.value;
+            val["data"]["transaction_sequence"] = seq_json;
+
+            // 2. transaction_peer_ack_log — how far each peer has pulled from us
+            auto ack_impl = std::make_shared<PeerAckLogImp>();
+            auto ack_list = ack_impl->findAll();
+            Json::Value ack_json = Json::arrayValue;
+            for (const auto &a : ack_list) {
+                Json::Value item;
+                item["peer_guid"]     = a.peer_guid;
+                item["db_guid"]       = a.db_guid;
+                item["src_peer_guid"] = a.src_peer_guid;
+                item["src_db_guid"]   = a.src_db_guid;
+                item["acked_seq"]     = a.acked_seq;
+                item["updated_at"]    = (Json::Int64)a.updated_at;
+                ack_json.append(item);
+            }
+            val["data"]["transaction_ack_log"] = ack_json;
+
+            // 3. transaction_log row count per (peer_guid, db_guid)
+            // Use cursors already fetched from transaction_sequence
+            Json::Value log_count_json = Json::arrayValue;
+            auto log_impl = std::make_shared<TransactionLogImp>();
+            for (const auto &s : seq_list) {
+                // Count rows with sequence > 0 (i.e., all) for this peer/db pair
+                auto rows_for_peer = log_impl->findSinceSeq(s.peer_guid, s.db_guid, 0, 0);
+                Json::Value lc;
+                lc["peer_guid"] = s.peer_guid;
+                lc["db_guid"]   = s.db_guid;
+                lc["count"]     = (Json::UInt)rows_for_peer.size();
+                log_count_json.append(lc);
+            }
+            val["data"]["transaction_log_counts"] = log_count_json;
+            
+            // 4. local node identity
+            auto imp = std::make_shared<MiscDataImp>();
+            auto ret = imp->findAll();
+            Json::Value misc_json;
+            for (const auto &r : ret) {
+                if (r.key.empty() || r.value.empty()) {
+                    continue;
+                }
+                val["data"][r.key] = r.value;
+            }
+            val["data"]["mediaServerId"] = mediaServerId;
+        };
+
+        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
+    });
+
+    api_regist("/media/api/cluster/access", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("secret", "authorId", "mediaServerId");
+
+        string secret = allArgs["secret"];
+        string authorId = allArgs["authorId"];
+        string mediaServerId = allArgs["mediaServerId"];
+
+        // Validate: chỉ cho phép các peer đã đăng ký trong ClusterManager được gọi đến xác thực
+        auto peerIds = ClusterManager::Instance().getMediaServerIds();
+        bool allowed = false;
+        for (auto &pr : peerIds) {
+            if (pr == mediaServerId) { allowed = true; break; }
         }
-        val["data"]["mediaServerId"] = mediaServerId;
+
+        if (!allowed) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_PERMISSION_DENIED, "Media server not allowed");
+            return;
+        }
+
+        GET_CONFIG(string, mediaServerId_, General::kMediaServerId)
+        if (api_secret != secret || mediaServerId_ != authorId) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, "Unauthorized");
+            return;
+        }
+
+        val["data"]["msg"] = "Authorized";
+        invoker(200, headerOut, val.toStyledString());
     });
 
     // List files/folders in a directory under api.downloadRoot
-    // GET /index/api/listFiles?secret=xxx&path=relative/path
-    api_regist("/index/api/listFiles", [](API_ARGS_MAP) {
+    // GET /media/api/listFiles?secret=xxx&path=relative/path
+    api_regist("/media/api/listFiles", [](API_ARGS_MAP) {
         CHECK_SECRET();
 
         GET_CONFIG_FUNC(std::string, download_root_str, API::kDownloadRoot, [](const string &str) -> std::string {
@@ -3306,8 +3338,8 @@ void installWebApi() {
     });
 
     // Download a file under api.downloadRoot (secret-auth, no on_http_access needed)
-    // GET /index/api/serveFile?secret=xxx&path=relative/path&save_name=foo.txt
-    api_regist("/index/api/serveFile", [](API_ARGS_MAP_ASYNC) {
+    // GET /media/api/serveFile?secret=xxx&path=relative/path&save_name=foo.txt
+    api_regist("/media/api/serveFile", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS("path");
 
@@ -3342,6 +3374,31 @@ void installWebApi() {
             res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
         }
         invoker.responseFile(allArgs.parser.getHeader(), res_header, abs_path);
+    });
+
+    api_regist("/media/api/getThreadsLoad", [](API_ARGS_MAP_ASYNC) {
+        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
+            getThreadsLoad(EventPollerPool::Instance(), API_ARGS_VALUE, invoker);
+        };
+        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
+    });
+
+    api_regist("/media/api/getWorkThreadsLoad", [](API_ARGS_MAP_ASYNC) {
+        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
+            getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
+        };
+        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
+    });
+
+    api_regist("/media/api/getStatistic", [](API_ARGS_MAP_ASYNC) {
+        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
+            getStatisticJson([headerOut, val, invoker](const Value &data) mutable {
+                val["data"] = data;
+                invoker(200, headerOut, val.toStyledString());
+            });
+        };
+       
+        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
     });
 
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
@@ -3996,8 +4053,8 @@ void installWebApi() {
     });
 
     // List statistics for all camera devices
-    // GET /index/api/device/statisticsList?secret=xxx
-    api_regist("/index/api/device/statisticsList", [](API_ARGS_MAP) {
+    // GET /media/api/device/statisticsList?secret=xxx
+    api_regist("/media/api/device/statisticsList", [](API_ARGS_MAP) {
         CHECK_SECRET();
 
         val["data"] = Json::arrayValue;

@@ -71,6 +71,7 @@ const string kOnSyncBookmarkUpdate = HOOK_FIELD "on_sync_bookmark_update";
 const string kOnSyncBookmarkDelete = HOOK_FIELD "on_sync_bookmark_delete";
 const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
 const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_check";
+const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -117,6 +118,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncBookmarkDelete] = "/media/esc/bookmark/delete";
     mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
     mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
+    mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -1900,6 +1902,36 @@ void installWebHook() {
         params["id"] = bookmark_id;
 
         fetchDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to cluster authentication events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastClusterAcrossAccess, [](BroadcastClusterAcrossAccessArgs) {
+        GET_CONFIG(string, hook_cluster_across_auth, Hook::kOnClusterAcrossAuth);
+        if (!hook_enable || hook_cluster_across_auth.empty()) {
+            invoker("Cluster across auth skipped, hook_cluster_across_auth is empty");
+            return;
+        }
+
+        auto author_domain = ClusterManager::Instance().getPeerUrl(authorId);
+        if (author_domain.empty()) {
+            invoker("Cluster across auth skipped, author domain is empty");
+            return;
+        }
+
+        HttpArgs params;
+        params["authorId"] = authorId;
+        params["secret"] = secretKey;
+
+       // Execute hook
+        do_http_hook(author_domain + hook_cluster_across_auth, params, [invoker](const Value &obj, const string &err) {
+            if (!err.empty()) {
+                WarnL << "Cluster across auth failed: " << err;
+                invoker(err);
+                return;
+            }
+            DebugL << "Cluster across auth result: " << obj.toStyledString();
+            invoker("");
+        });
     });
 
     // Report server restart

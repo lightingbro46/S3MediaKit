@@ -230,6 +230,10 @@ extern const std::string kBroadcastSyncBookmarkDelete;
 extern const std::string kBroadcastStreamSettingChange;
 #define BroadcastStreamSettingChangeArgs const DeviceTuple &args, const std::string &profile_token, const VideoEncoderConfig &video_encoder_config
 
+// Broadcast for accessing cluster data. Control cluster authentication through this event.
+extern const std::string kBroadcastClusterAcrossAccess;
+#define BroadcastClusterAcrossAccessArgs const std::string &authorId, const std::string &secretKey, const Broadcast::AuthInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
