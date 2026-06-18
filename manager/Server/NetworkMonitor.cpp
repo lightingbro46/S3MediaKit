@@ -215,7 +215,8 @@ void NetworkCollector::collect() {
     uint64_t rx1 = pair1.first;
     uint64_t tx1 = pair1.second;
     _ticker.resetTime();
-    _poller->doDelayTask(1000, [=]() {
+    _poller->doDelayTask(1000, [this, rx1, tx1, alive = _alive]() {
+        if (!alive->load(std::memory_order_acquire)) return 0;
         std::pair<uint64_t, uint64_t> pair2 = get_rx_tx_bytes(_info.name);
         uint64_t rx2 = pair2.first;
         uint64_t tx2 = pair2.second;
@@ -234,7 +235,9 @@ void NetworkMonitor::start() {
     auto netifs = get_network_interfaces();
     for (const auto &netif : netifs) {
         auto collector = std::make_shared<NetworkCollector>(netif.name, _poller);
-        collector->setOnCollect([&](NetSpeed &info) {
+        auto alive = _monitor_alive;
+        collector->setOnCollect([this, alive](NetSpeed &info) {
+            if (!alive->load(std::memory_order_acquire)) return;
             lock_guard<mutex> lck(_mtx);
             _map_result[info.name].rx_mbps = info.rx_mbps;
             _map_result[info.name].tx_mbps = info.tx_mbps;

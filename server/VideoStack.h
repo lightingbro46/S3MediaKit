@@ -150,7 +150,7 @@ private:
 
     mediakit::DevChannel::Ptr _dev;
 
-    bool _isExit;
+    std::atomic<bool> _isExit;
 
     std::thread _thread;
 };

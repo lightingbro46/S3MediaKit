@@ -10,8 +10,10 @@ INSTANCE_IMP(UserAuthorManager);
 UserAuthorManager::UserAuthorManager() {
     _timer = std::make_shared<Timer>(
         60.0f,
-        [this]() {
-            onManager();
+        []() {
+            // Use singleton access in timer callback to avoid capturing a raw
+            // pointer across thread boundaries.
+            UserAuthorManager::Instance().onManager();
             return true;
         },
         nullptr);

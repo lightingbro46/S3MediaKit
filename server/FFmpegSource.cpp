@@ -688,7 +688,7 @@ float trackFFmpegProgress(const std::string &log_path, const float &total_durati
 void FFmpegExtractor::startTimer() {
     uint64_t timeout_ms = _duration * 1000;
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
-    _timer = std::make_shared<Timer>(1.0f, [weakSelf, &timeout_ms]() {
+    _timer = std::make_shared<Timer>(1.0f, [weakSelf, timeout_ms]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             // Self has been destroyed

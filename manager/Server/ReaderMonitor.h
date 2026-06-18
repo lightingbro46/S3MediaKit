@@ -42,6 +42,7 @@ private:
     void emitStreamReaderAlert(const std::string &camera_id, int usage_count);
 
 private:
+    std::shared_ptr<std::atomic<bool>> _alive_flag;
     toolkit::Timer::Ptr _timer;
     ReaderCountInfoMap _map_reader;
     std::atomic<int> _total_reader {0};

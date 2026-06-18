@@ -1,6 +1,7 @@
 #ifndef SERVER_RESOUCEMONITOR_H
 #define SERVER_RESOUCEMONITOR_H
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include "Poller/Timer.h"
@@ -26,15 +27,21 @@ public:
     using Ptr = std::shared_ptr<MetricCollector>;
 
     MetricCollector(toolkit::EventPoller::Ptr poller, float interval_sec = 10.0f) : _poller(poller) {
+        _alive = std::make_shared<std::atomic<bool>>(true);
+        auto alive = _alive;
         _timer = std::make_shared<toolkit::Timer>(
             interval_sec,
-            [this]() {
+            [this, alive]() {
+                if (!alive->load(std::memory_order_acquire)) return false;
                 collect();
                 return true;
             },
             _poller);
     }
-    virtual ~MetricCollector() { _timer.reset(); };
+    virtual ~MetricCollector() {
+        _alive->store(false, std::memory_order_release);
+        _timer.reset();
+    };
 
     /**
      * Set callback when value change
@@ -51,6 +58,7 @@ protected:
     }
 
 protected:
+    std::shared_ptr<std::atomic<bool>> _alive;
     toolkit::Timer::Ptr _timer;
     toolkit::EventPoller::Ptr _poller;
     std::function<void(T &)> _on_collect;
@@ -72,9 +80,12 @@ public:
 
     explicit ResourceMonitor(const ResourceType type, toolkit::EventPoller::Ptr poller = nullptr) : _type(type) {
         _poller = poller ? poller : toolkit::EventPollerPool::Instance().getPoller();
+        _monitor_alive = std::make_shared<std::atomic<bool>>(true);
     }
 
-    virtual ~ResourceMonitor() = default;
+    virtual ~ResourceMonitor() {
+        _monitor_alive->store(false, std::memory_order_release);
+    }
 
     void setThreshold(float warning_threshold = -1.0f, float critical_threshold = -1.0f);
 
@@ -87,6 +98,7 @@ protected:
     void emitSystemAlert(float usage);
 
 protected:
+    std::shared_ptr<std::atomic<bool>> _monitor_alive;
     std::mutex _mtx;
     ResourceType _type;
     toolkit::EventPoller::Ptr _poller;

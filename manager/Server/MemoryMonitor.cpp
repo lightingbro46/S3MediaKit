@@ -124,7 +124,9 @@ void MemoryCollector::collect() {
 
 void MemoryMonitor::start() {
     _collector = std::make_shared<MemoryCollector>(_poller);
-    _collector->setOnCollect([&](MemoryInfo &info) { 
+    auto alive = _monitor_alive;
+    _collector->setOnCollect([this, alive](MemoryInfo &info) { 
+        if (!alive->load(std::memory_order_acquire)) return;
         lock_guard<mutex> lck(_mtx);
         _info = info;
         emitSystemAlert(_info.usagePct);
