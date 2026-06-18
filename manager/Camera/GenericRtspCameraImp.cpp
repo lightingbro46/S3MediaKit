@@ -19,6 +19,7 @@ GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::
 }
 
 GenericRtspCameraImp::~GenericRtspCameraImp() {
+    _exit = true;
     // stop camera if it's still running when destructing.
     // NOTE: stop() must run on the owner poller (stopMonitor/stopController assert isCurrentThread).
     // We must NOT use async([this]) here because 'this' becomes a dangling pointer after the
@@ -52,7 +53,7 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
 }
 
 void GenericRtspCameraImp::onAllStreamReady() {
-    if (_all_stream_ready) {
+    if (_all_stream_ready || _exit.load()) {
         return;
     }
     _all_stream_ready = true;

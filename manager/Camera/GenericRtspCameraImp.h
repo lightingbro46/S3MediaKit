@@ -72,6 +72,7 @@ private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;
     std::atomic<bool> _enabled { false };
+    std::atomic<bool> _exit { false };
     GenericRtspCamera::Ptr _src;
     CameraOption _option;
     CameraController::Ptr _controller;
