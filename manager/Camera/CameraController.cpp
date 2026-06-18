@@ -451,11 +451,20 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
     if (_onvif_ctr && _ready.load()) {
         _isControlled = true;
         auto onvif_ctr = _onvif_ctr;
+        auto poller = _poller;
         string token = profileToken;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, cb]() {
-            onvifGetMediaProfile(onvif_ctr, token, cb);
-            if (auto self = weak_self.lock()) { self->_isControlled = false; }
+        auto on_callback = [poller, weak_self, cb](const toolkit::SockException &ex, VideoEncoderConfig &config) mutable {
+            VideoEncoderConfig config_copy = config; // Make a copy to avoid dangling reference
+            poller->async([weak_self, cb, ex, config_copy]() mutable {
+                if (auto self = weak_self.lock()) {
+                    self->_isControlled = false;
+                }
+                cb(ex, config_copy);
+            });
+        };
+        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, on_callback]() {
+            onvifGetMediaProfile(onvif_ctr, token, on_callback);
         });
         return;
     }
@@ -508,17 +517,18 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
             addProfileConfig(profileToken, new_f_config);
         }
         auto onvif_ctr = _onvif_ctr;
+        auto poller = _poller;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
-        auto on_success = [profileToken, new_f_config, weak_self]() mutable {
-            auto self = weak_self.lock();
-            if (!self) {
-                return;
-            }
-            self->addProfileConfig(profileToken, new_f_config);
+        auto on_success = [profileToken, new_f_config, poller, weak_self]() mutable {
+            poller->async([weak_self, profileToken, new_f_config]() mutable {
+                if (auto self = weak_self.lock()) {
+                    self->_isControlled = false;
+                    self->addProfileConfig(profileToken, new_f_config);
+                }
+            });
         };
         WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, profileToken, config, cb, on_success]() {
             onvifSetMediaProfile(onvif_ctr, profileToken, config, cb, on_success);
-            if (auto self = weak_self.lock()) { self->_isControlled = false; }
         });
         return;
     }    
