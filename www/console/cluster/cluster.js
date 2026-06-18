@@ -99,7 +99,7 @@ async function _loadNodes() {
     _pollAllNodes(nodes, auth.secret, selfId);
 
     if (_clusterState.pollTimer) clearInterval(_clusterState.pollTimer);
-    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 5000);
+    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 30000);
 }
 
 function _renderNodeSkeleton(nodes) {
@@ -168,18 +168,21 @@ async function _pollAllNodes(nodes, secret, author) {
 }
 
 async function _pollNode(node, secret, author) {
-    var base = node.baseUrl || _buildBase(node);
-    var t0   = Date.now();
+    var base  = node.baseUrl || _buildBase(node);
+    var t0    = Date.now();
+    var authQ = node.isSelf
+        ? '?secret=' + encodeURIComponent(secret)
+        : '?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author);
 
     var hc = await _fetchJson(base + '/media/mserver/healthcheck');
     var result = { online: true, latency: Date.now() - t0, mediaServerId: hc && hc.data ? hc.data.mediaServerId : node.id };
 
     try { var desc = await _fetchJson(base + '/media/mserver/description'); if (desc && desc.data) { result.version = desc.data.version || ''; } } catch(_) {}
-    try { var ep = await _fetchJson(base + '/media/api/getThreadsLoad?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.threads = ep && ep.data ? ep.data : []; } catch(_) { result.threads = []; }
-    try { var wt = await _fetchJson(base + '/media/api/getWorkThreadsLoad?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.workThreads = wt && wt.data ? wt.data : []; } catch(_) { result.workThreads = []; }
-    try { var st = await _fetchJson(base + '/media/api/getStatistic?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.stat = st && st.data ? st.data : {}; } catch(_) { result.stat = {}; }
-    try { var sy = await _fetchJson(base + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.sysStat = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
-    try { var ss = await _fetchJson(base + '/media/api/getSyncStatus?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author)); result.syncStatus = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
+    try { var ep = await _fetchJson(base + '/media/api/getThreadsLoad'      + authQ); result.threads     = ep && ep.data ? ep.data : []; }    catch(_) { result.threads     = []; }
+    try { var wt = await _fetchJson(base + '/media/api/getWorkThreadsLoad'  + authQ); result.workThreads = wt && wt.data ? wt.data : []; }    catch(_) { result.workThreads = []; }
+    try { var st = await _fetchJson(base + '/media/api/getStatistic'        + authQ); result.stat        = st && st.data ? st.data : {}; }    catch(_) { result.stat        = {}; }
+    try { var sy = await _fetchJson(base + '/media/api/systemStatistic' + authQ); result.sysStat     = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
+    try { var ss = await _fetchJson(base + '/media/api/getSyncStatus'       + authQ); result.syncStatus  = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
 
     return result;
 }

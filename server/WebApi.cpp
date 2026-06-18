@@ -3401,6 +3401,15 @@ void installWebApi() {
         CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
     });
 
+    api_regist("/media/api/systemStatistic", [](API_ARGS_MAP_ASYNC) {
+        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
+            val["data"] = makeSystemStatisticJson();
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
+    });
+
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ADD_CAMERA_PERMISSION();
@@ -3799,7 +3808,6 @@ void installWebApi() {
                                         val["data"]["config"]["resolution"]["width"] = vConfigSet.width;
                                         val["data"]["config"]["resolution"]["height"] = vConfigSet.height;
                                         invoker(200, headerOut, val.toStyledString());
-                                        // onvif->saveVideoEncoderConfigToFile(deviceId, token, vConfigSet, true);
                                     }
                                 });
                             }

@@ -4,7 +4,7 @@
 //   /index/api/getThreadsLoad      → EventPoller thread load + fd_count + delay
 //   /index/api/getWorkThreadsLoad  → WorkThread load
 //   /index/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
-//   /media/mserver/systemStatistic → CPU/RAM/HDD/Net (works if enableAuthorize=0)
+//   /media/api/systemStatistic     → CPU/RAM/HDD/Net
 // =============================================================================
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ function _buildDashboardLayout() {
         // ── Row 2: System resources (CPU/RAM/HDD) ──────────────────────
         '<div class="dash-row-title" style="margin-top:22px">' +
             'Tài nguyên hệ thống ' +
-            '<span id="sysstat-badge" class="dash-badge-info" title="Endpoint /media/mserver/systemStatistic cần enableAuthorize=0 hoặc JWT auth">loading…</span>' +
+            '<span id="sysstat-badge" class="dash-badge-info" title="Endpoint /media/api/systemStatistic cần api.secret trong config.ini">loading…</span>' +
         '</div>' +
         '<div class="dash-sys-row">' +
             _sysGauge('dash-cpu-gauge',   'CPU',     '—%') +
@@ -287,7 +287,7 @@ async function _poll() {
         else if (_dashState.sysStatAvail === null) {
             _dashState.sysStatAvail = false;
             var badgeEl = document.getElementById('sysstat-badge');
-            if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/mserver/systemStatistic cần manager.enableAuthorize=0 trong config.ini'; }
+            if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/api/systemStatistic cần api.secret trong config.ini'; }
         }
 
         var ts = new Date().toLocaleTimeString();
@@ -301,7 +301,7 @@ async function _fetchSystemStat() {
     // Try without JWT — works when enableAuthorize=0
     var auth = S3Auth.get();
     if (!auth) throw new Error('no auth');
-    var url = auth.serverUrl + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(auth.secret);
+    var url = auth.serverUrl + '/media/api/systemStatistic?secret=' + encodeURIComponent(auth.secret);
     var r = await fetch(url, { credentials: 'omit' });
     var d = await r.json();
     if (d.code !== 0) throw new Error('not available');

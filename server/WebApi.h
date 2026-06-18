@@ -231,7 +231,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     UserSessionCache::Ptr token_cache;                                                                                                                         \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
-            CHECK_SECRET_OVERRIDE();                                                                                                                           \
+            /*CHECK_SECRET_OVERRIDE();*/                                                                                                                       \
             CHECK_ARGS_("Authorization");                                                                                                                      \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
@@ -364,10 +364,19 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
         if (allArgs["authorId"].empty()) {                                                                                                                     \
             CHECK_SECRET();                                                                                                                                    \
             break;                                                                                                                                             \
-        } /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                  \
+        }                                                                                                                                                      \
+        auto permit = UserAuthorManager::Instance().getClusterAuthorCache(allArgs["authorId"], allArgs["secret"]);                                             \
+        if (permit == UserAuthorPermit::REJECT) {                                                                                                              \
+            throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                                \
+        }                                                                                                                                                      \
+        else if (permit == UserAuthorPermit::ACCEPT) {                                                                                                         \
+            break;                                                                                                                                             \
+        }                                                                                                                                                      \
         Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                              \
+            /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                \
+            UserAuthorManager::Instance().addClusterAuthorCache(allArgs["authorId"], allArgs["secret"], err.empty(), 600);                                     \
             if (!err.empty()) {                                                                                                                                \
-                RETURN_API_RESPONSE(ApiErrCode::CODE_PERMISSION_DENIED, err.data());                                                                           \
+                RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                \
                 return;                                                                                                                                        \
             }                                                                                                                                                  \
             /* Authorized, execute the callback function */                                                                                                    \
