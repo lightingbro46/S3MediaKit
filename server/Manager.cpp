@@ -76,7 +76,7 @@ static void loadSavedDeviceInfo() {
 }
 
 static void loadSavedMediaServerInfo() {
-    EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(6000, []() {
         DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
         DebugL << "Sync manager has been started";
@@ -309,12 +309,20 @@ void installManagerHook () {
 static void releaseAllDevice() {
     // release all camera
     CameraManager::Instance().clear();
-    // sleep for 10 second before uninstall hook, to prevent resource release order errors
-    sleep(10);
+}
+
+static void releaseSyncDatabase() {
+    DebugL << "Sync manager has been stopped";
+    SyncManager::Instance().stop();
 }
 
 void unInstallManagerHook() {
+    releaseSyncDatabase();
     releaseAllDevice();
+
+    // sleep for 10 second before uninstall hook, to prevent resource release order errors
+    sleep(10);
+
     // Note: Comment the following code in order to save last segments when program exit
     NoticeCenter::Instance().delListener(&manager_hook_tag);
 }
