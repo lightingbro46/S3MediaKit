@@ -509,7 +509,7 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
         const Json::Value &rows = data["data"];
         if (!rows.isArray() || rows.empty()) return;
 
-        InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id;
+        InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id << " (first tran_seq=" << rows[0]["sequence"].asString() << " last tran_seq=" << rows[rows.size()-1]["sequence"].asString() << ")";
         self->applyBatch(rows);
     };
 
@@ -580,32 +580,38 @@ void SyncManager::applyBatch(const Json::Value &rows) {
         const TableSyncHandler &h = hit->second;
 
         ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts);
-        if (apply_decision == ApplyDecision::Skip) {
-            continue; // stale write — local version is newer
-        }
-
-        if (op == TRAN_DATA_OP_UPSERT) {
-            if (h.onUpsert) h.onUpsert(payload);
-        } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-            if (h.onUpsertBatch) {
-                h.onUpsertBatch(payload);
+        // ApplyDecision::Skip => stale write — local version is newer
+        // ApplyDecision::ApplyWinner => conflict winner — incoming version is newer (but still apply)
+        // ApplyDecision::Apply => no conflict — apply normally
+        if (apply_decision != ApplyDecision::Skip) {
+            if (op == TRAN_DATA_OP_UPSERT) {
+                if (h.onUpsert) h.onUpsert(payload);
+            } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+                if (h.onUpsertBatch) {
+                    h.onUpsertBatch(payload);
+                } else {
+                    WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
+                    continue;
+                }
+            } else if (op == TRAN_DATA_OP_DELETE) {
+                if (h.onDelete) h.onDelete(payload);
             } else {
-                WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
+                WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
                 continue;
             }
-        } else if (op == TRAN_DATA_OP_DELETE) {
-            if (h.onDelete) h.onDelete(payload);
-        } else {
-            WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-            continue;
         }
 
         // Record the transaction in local log, update sequence of the remote peer.
         // If this entry won a conflict (newer than a previously accepted entry for
         // the same row), flag it with timestamp_hi=1 for audit purposes.
+        // If this entry was skipped (stale write), flag it with timestamp_hi=2 for audit purposes.
         auto log = TransactionLog::fromJson(it);
         if (apply_decision == ApplyDecision::ApplyWinner) {
-            log.timestamp_hi = 1;
+            log.timestamp_hi = 1; // conflict winner (newer than previous), still record it for audit
+        } else if (apply_decision == ApplyDecision::Skip) {
+            log.timestamp_hi = 2; // stale write, but still record it for audit
+        } else {
+            log.timestamp_hi = 0; // normal case, no conflict
         }
         log_imp->add(log);
     }
