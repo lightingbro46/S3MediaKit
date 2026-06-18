@@ -64,7 +64,7 @@
         _loading = true;
         _setCameraStatus('loading', null);
 
-        _apiFetch('/index/api/device/statisticsList', null, function (err, data) {
+        _apiFetch('/media/api/device/statisticsList', null, function (err, data) {
             _loading = false;
             if (err || !data) { _setCameraStatus('error', 'Lỗi kết nối tới server'); return; }
             if (data.code !== 0) { _setCameraStatus('error', data.msg || ('Lỗi: ' + data.code)); return; }

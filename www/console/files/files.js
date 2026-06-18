@@ -187,7 +187,7 @@
 
     function _load(path) {
         _showLoading();
-        _api('/index/api/listFiles', { path: path }, function (err, data) {
+        _api('/media/api/listFiles', { path: path }, function (err, data) {
             if (err || !data) { _showError('Lỗi kết nối tới server'); return; }
             if (data.code !== 0) { _showError(data.msg || 'Server trả về lỗi: ' + data.code); return; }
             _render(data);
@@ -196,7 +196,7 @@
 
     function _download(relPath, name) {
         var a = _auth();
-        var url = a.serverUrl + '/index/api/serveFile'
+        var url = a.serverUrl + '/media/api/serveFile'
             + '?secret=' + encodeURIComponent(a.secret)
             + '&path='   + encodeURIComponent(relPath)
             + '&save_name=' + encodeURIComponent(name);

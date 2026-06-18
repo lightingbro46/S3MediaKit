@@ -84,8 +84,9 @@ body.s3-loading { visibility: hidden; }
     width: 7px; height: 7px; border-radius: 50%; background: var(--c-muted);
     flex-shrink: 0; transition: background 0.3s;
 }
-.s3-srv-dot.online  { background: var(--c-success); box-shadow: 0 0 0 2px rgba(63,185,80,0.25); }
+.s3-srv-dot.online  { background: var(--c-success); box-shadow: 0 0 0 2px rgba(63,185,80,0.25); animation: srv-pulse 2.4s ease-in-out infinite; }
 .s3-srv-dot.offline { background: var(--c-danger); }
+@keyframes srv-pulse { 0%,100%{box-shadow:0 0 0 2px rgba(63,185,80,0.25)} 50%{box-shadow:0 0 0 4px rgba(63,185,80,0.06)} }
 .s3-srv-info { flex: 1; min-width: 0; }
 .s3-srv-url { font-size: 0.7rem; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
 .s3-srv-status { font-size: 0.64rem; color: var(--c-muted); }
@@ -714,20 +715,18 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 <script src="files/files.js"></script>
 <script>
 // ════════════════════════════════════════════
-// Section routing
+// Section routing  (query-param based — avoids server 404 on sub-paths)
 // ════════════════════════════════════════════
-const _CBASE = (window.consoleBase ? consoleBase() : '/console/');
+const _CBASE = (window.consoleBase ? consoleBase() : (function(){var p=location.pathname,i=p.indexOf('/console');return i!==-1?p.substring(0,i)+'/console/':'/console/';}()));
 const SEC_PATHS = {
     'sec-dashboard': _CBASE,
-    'sec-player':    _CBASE + 'player',
-    'sec-mjpeg':     _CBASE + 'mjpeg',
-    'sec-config':    _CBASE + 'config',
-    'sec-cluster':   _CBASE + 'cluster',
-    'sec-devices':   _CBASE + 'devices',
-    'sec-files':     _CBASE + 'files',
+    'sec-player':    _CBASE + '?tab=player',
+    'sec-mjpeg':     _CBASE + '?tab=mjpeg',
+    'sec-config':    _CBASE + '?tab=config',
+    'sec-cluster':   _CBASE + '?tab=cluster',
+    'sec-devices':   _CBASE + '?tab=devices',
+    'sec-files':     _CBASE + '?tab=files',
 };
-const PATH_SECS = {};
-Object.keys(SEC_PATHS).forEach(k => { PATH_SECS[SEC_PATHS[k]] = k; });
 
 const SECTION_TITLES = {
     'sec-dashboard': 'Dashboard',
@@ -738,6 +737,17 @@ const SECTION_TITLES = {
     'sec-devices':   'Thiết bị',
     'sec-files':     'Files',
 };
+
+const _TAB_TO_SEC = {
+    player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config',
+    dashboard: 'sec-dashboard', cluster: 'sec-cluster',
+    devices: 'sec-devices', files: 'sec-files'
+};
+
+function _secFromUrl() {
+    var tab = new URLSearchParams(location.search).get('tab');
+    return _TAB_TO_SEC[tab] || 'sec-dashboard';
+}
 
 let _vjsInited = false, _cfgInited = false, _clusterInited = false, _filesInited = false, _devicesInited = false;
 
@@ -783,21 +793,13 @@ function activateSection(secId, push) {
     document.getElementById('s3-sidebar').classList.remove('open');
 }
 
-function _secFromPath(p) {
-    if (!p) return 'sec-dashboard';
-    var c = p.replace(/\/$/, '');
-    return PATH_SECS[c] || PATH_SECS[p] || 'sec-dashboard';
-}
-var _urlParam = new URLSearchParams(location.search).get('tab');
-var _secFromParam = { player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config', dashboard: 'sec-dashboard', cluster: 'sec-cluster', devices: 'sec-devices', files: 'sec-files' }[_urlParam];
-var _initSec = _secFromParam || _secFromPath(location.pathname);
-activateSection(_initSec, false);
+activateSection(_secFromUrl(), false);
 
 document.querySelectorAll('.s3-nav-btn').forEach(function (btn) {
     btn.addEventListener('click', function () { activateSection(this.dataset.section, true); });
 });
 window.addEventListener('popstate', function (e) {
-    var sec = (e.state && e.state.sec) ? e.state.sec : _secFromPath(location.pathname);
+    var sec = (e.state && e.state.sec) ? e.state.sec : _secFromUrl();
     activateSection(sec, false);
 });
 
@@ -823,17 +825,32 @@ document.addEventListener('click', function (e) {
     var mediaDom = document.getElementById('media-domain');
     if (mediaDom && auth.serverUrl) mediaDom.value = auth.serverUrl;
 
+    // ── Healthcheck polling ──────────────────────────────────────────────
+    var _hcTimer = null;
+    function _pollHealthcheck() {
+        var t0 = Date.now();
+        fetch(auth.serverUrl + '/media/mserver/healthcheck', { credentials: 'omit' })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+            .then(function () {
+                var ms = Date.now() - t0;
+                if (dotEl)    dotEl.className = 's3-srv-dot online';
+                if (statusEl) statusEl.textContent = 'Online · ' + ms + 'ms';
+            })
+            .catch(function () {
+                if (dotEl)    dotEl.className = 's3-srv-dot offline';
+                if (statusEl) statusEl.textContent = 'Offline';
+            });
+    }
+    _pollHealthcheck();
+    _hcTimer = setInterval(_pollHealthcheck, 10000);
+
+    // ── Load config for dashboard & other components ─────────────────────
     S3Auth.apiFetch('/index/api/getServerConfig')
         .then(function (data) {
-            if (dotEl) dotEl.className = 's3-srv-dot online';
-            if (statusEl) statusEl.textContent = 'Online';
             if (data.data && data.data[0]) window._s3Config = data.data[0];
             if (document.getElementById('sec-dashboard').classList.contains('active')) initDashboard();
         })
-        .catch(function () {
-            if (dotEl) dotEl.className = 's3-srv-dot offline';
-            if (statusEl) statusEl.textContent = 'Offline';
-        });
+        .catch(function () {});
 })();
 
 function doLogout() { S3Auth.clear(); window.location.replace(_CBASE + 'login.html'); }

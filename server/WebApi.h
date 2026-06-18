@@ -359,37 +359,35 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
 
 #define CHECK_CLUSTER_AUTHOR_ASYNC(cb)                                                                                                                         \
     CHECK_ARGS_("secret");                                                                                                                                     \
-    do {                                                                                                                                                       \
-        string authorId = allArgs["authorId"];                                                                                                                 \
-        if (allArgs["authorId"].empty()) {                                                                                                                     \
-            CHECK_SECRET();                                                                                                                                    \
-            break;                                                                                                                                             \
+    string authorId = allArgs["authorId"];                                                                                                                     \
+    if (allArgs["authorId"].empty()) {                                                                                                                         \
+        CHECK_SECRET();                                                                                                                                        \
+        cb();                                                                                                                                                  \
+        return;                                                                                                                                                \
+    }                                                                                                                                                          \
+    auto permit = UserAuthorManager::Instance().getClusterAuthorCache(allArgs["authorId"], allArgs["secret"]);                                                 \
+    if (permit == UserAuthorPermit::REJECT) {                                                                                                                  \
+        throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                                    \
+    } else if (permit == UserAuthorPermit::ACCEPT) {                                                                                                           \
+        cb();                                                                                                                                                  \
+        return;                                                                                                                                                \
+    }                                                                                                                                                          \
+    Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                                  \
+        /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                    \
+        UserAuthorManager::Instance().addClusterAuthorCache(allArgs["authorId"], allArgs["secret"], err.empty(), 600);                                         \
+        if (!err.empty()) {                                                                                                                                    \
+            RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                    \
+            return;                                                                                                                                            \
         }                                                                                                                                                      \
-        auto permit = UserAuthorManager::Instance().getClusterAuthorCache(allArgs["authorId"], allArgs["secret"]);                                             \
-        if (permit == UserAuthorPermit::REJECT) {                                                                                                              \
-            throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                                \
-        }                                                                                                                                                      \
-        else if (permit == UserAuthorPermit::ACCEPT) {                                                                                                         \
-            break;                                                                                                                                             \
-        }                                                                                                                                                      \
-        Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                              \
-            /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                \
-            UserAuthorManager::Instance().addClusterAuthorCache(allArgs["authorId"], allArgs["secret"], err.empty(), 600);                                     \
-            if (!err.empty()) {                                                                                                                                \
-                RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                \
-                return;                                                                                                                                        \
-            }                                                                                                                                                  \
-            /* Authorized, execute the callback function */                                                                                                    \
-            cb();                                                                                                                                              \
-        };                                                                                                                                                     \
-        /* Broadcast to check cluster across access authorization asynchronously */                                                                            \
-        auto flag                                                                                                                                              \
-            = NOTICE_EMIT(BroadcastClusterAcrossAccessArgs, Broadcast::kBroadcastClusterAcrossAccess, allArgs["authorId"], allArgs["secret"], auth_invoker);   \
-        if (!flag) {                                                                                                                                           \
-            /* No one is listening to the event, directly reject */                                                                                            \
-            auth_invoker("Unauthorized");                                                                                                                      \
-        }                                                                                                                                                      \
-    } while (false);
+        /* Authorized, execute the callback function */                                                                                                        \
+        cb();                                                                                                                                                  \
+    };                                                                                                                                                         \
+    /* Broadcast to check cluster across access authorization asynchronously */                                                                                \
+    auto flag = NOTICE_EMIT(BroadcastClusterAcrossAccessArgs, Broadcast::kBroadcastClusterAcrossAccess, allArgs["authorId"], allArgs["secret"], auth_invoker); \
+    if (!flag) {                                                                                                                                               \
+        /* No one is listening to the event, directly reject */                                                                                                \
+        auth_invoker("Unauthorized");                                                                                                                          \
+    }
 
 void installWebApi();
 void unInstallWebApi();

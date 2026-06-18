@@ -99,7 +99,7 @@ async function _loadNodes() {
     _pollAllNodes(nodes, auth.secret, selfId);
 
     if (_clusterState.pollTimer) clearInterval(_clusterState.pollTimer);
-    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 30000);
+    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 5000);
 }
 
 function _renderNodeSkeleton(nodes) {
@@ -154,17 +154,29 @@ function _renderNodeSkeleton(nodes) {
     }).join('');
 }
 
-async function _pollAllNodes(nodes, secret, author) {
-    var results = await Promise.allSettled(nodes.map(function(n) { return _pollNode(n, secret, author); }));
-    var online = 0; var offline = 0;
-    results.forEach(function(r, i) {
-        if (r.status === 'fulfilled') { online++; _applyNodeData(nodes[i], r.value); }
-        else { offline++; _applyNodeOffline(nodes[i], r.reason); }
+function _pollAllNodes(nodes, secret, author) {
+    var online = 0;
+    var total  = nodes.length;
+
+    function _refreshUi() {
+        _updateSummary(online, total);
+        _updateSyncTable(nodes);
+        var tsEl = document.getElementById('cl-last-update');
+        if (tsEl) tsEl.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
+    }
+
+    nodes.forEach(function (n, i) {
+        _pollNode(n, secret, author)
+            .then(function (data) {
+                online++;
+                _applyNodeData(nodes[i], data);
+                _refreshUi();
+            })
+            .catch(function (err) {
+                _applyNodeOffline(nodes[i], err);
+                _refreshUi();
+            });
     });
-    _updateSummary(online, offline);
-    _updateSyncTable(nodes);
-    var tsEl = document.getElementById('cl-last-update');
-    if (tsEl) tsEl.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
 }
 
 async function _pollNode(node, secret, author) {
@@ -174,15 +186,33 @@ async function _pollNode(node, secret, author) {
         ? '?secret=' + encodeURIComponent(secret)
         : '?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author);
 
+    // Healthcheck is the gate — if it fails, node is offline
     var hc = await _fetchJson(base + '/media/mserver/healthcheck');
     var result = { online: true, latency: Date.now() - t0, mediaServerId: hc && hc.data ? hc.data.mediaServerId : node.id };
 
-    try { var desc = await _fetchJson(base + '/media/mserver/description'); if (desc && desc.data) { result.version = desc.data.version || ''; } } catch(_) {}
-    try { var ep = await _fetchJson(base + '/media/api/getThreadsLoad'      + authQ); result.threads     = ep && ep.data ? ep.data : []; }    catch(_) { result.threads     = []; }
-    try { var wt = await _fetchJson(base + '/media/api/getWorkThreadsLoad'  + authQ); result.workThreads = wt && wt.data ? wt.data : []; }    catch(_) { result.workThreads = []; }
-    try { var st = await _fetchJson(base + '/media/api/getStatistic'        + authQ); result.stat        = st && st.data ? st.data : {}; }    catch(_) { result.stat        = {}; }
-    try { var sy = await _fetchJson(base + '/media/api/systemStatistic' + authQ); result.sysStat     = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
-    try { var ss = await _fetchJson(base + '/media/api/getSyncStatus'       + authQ); result.syncStatus  = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
+    // Fire all remaining calls in parallel
+    var settled = await Promise.allSettled([
+        _fetchJson(base + '/media/mserver/description'),
+        _fetchJson(base + '/media/api/getThreadsLoad'     + authQ),
+        _fetchJson(base + '/media/api/getWorkThreadsLoad' + authQ),
+        _fetchJson(base + '/media/api/getStatistic'       + authQ),
+        _fetchJson(base + '/media/api/systemStatistic'    + authQ),
+        _fetchJson(base + '/media/api/getSyncStatus'      + authQ),
+    ]);
+
+    var desc = settled[0].status === 'fulfilled' ? settled[0].value : null;
+    var ep   = settled[1].status === 'fulfilled' ? settled[1].value : null;
+    var wt   = settled[2].status === 'fulfilled' ? settled[2].value : null;
+    var st   = settled[3].status === 'fulfilled' ? settled[3].value : null;
+    var sy   = settled[4].status === 'fulfilled' ? settled[4].value : null;
+    var ss   = settled[5].status === 'fulfilled' ? settled[5].value : null;
+
+    if (desc && desc.data)  result.version     = desc.data.version || '';
+    result.threads     = ep && ep.data   ? ep.data   : [];
+    result.workThreads = wt && wt.data   ? wt.data   : [];
+    result.stat        = st && st.data   ? st.data   : {};
+    result.sysStat     = sy && sy.code === 0 ? sy.data : null;
+    result.syncStatus  = ss && ss.code === 0 ? ss.data : null;
 
     return result;
 }
@@ -236,10 +266,9 @@ function _renderNodeThreadBars(elId, threads) {
     }).join('');
 }
 
-function _updateSummary(online, offline) {
+function _updateSummary(online, total) {
     var el = document.getElementById('cl-summary');
     if (!el) return;
-    var total = online + offline;
     var health = total ? Math.round(online/total*100) : 0;
     var cls = health === 100 ? 'ok' : health >= 50 ? 'warn' : 'err';
     el.innerHTML = '<span class="cl-sum-badge ' + cls + '">' + online + '/' + total + ' Online</span>' +
@@ -450,9 +479,15 @@ function _parseUrl(url) {
     catch(_) { return {hostname:'localhost',port:80}; }
 }
 async function _fetchJson(url) {
-    var r = await fetch(url, {credentials:'omit'});
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function () { ctrl.abort(); }, 5000);
+    try {
+        var r = await fetch(url, { credentials: 'omit', signal: ctrl.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    } finally {
+        clearTimeout(tid);
+    }
 }
 function _setText2(id, v) { var el=document.getElementById(id); if(el) el.textContent=v; }
 function _esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

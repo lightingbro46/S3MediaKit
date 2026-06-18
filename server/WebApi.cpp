@@ -3179,7 +3179,7 @@ void installWebApi() {
     });
 
     api_regist("/media/api/getSyncStatus", [](API_ARGS_MAP_ASYNC) {
-        auto on_access = [val]() mutable {
+        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
             GET_CONFIG(string, mediaServerId, General::kMediaServerId);
 
             // 1. transaction_sequence — local cursors (what we have received from each peer)
@@ -3237,6 +3237,7 @@ void installWebApi() {
                 val["data"][r.key] = r.value;
             }
             val["data"]["mediaServerId"] = mediaServerId;
+            invoker(200, headerOut, val.toStyledString());
         };
 
         CHECK_CLUSTER_AUTHOR_ASYNC(on_access);

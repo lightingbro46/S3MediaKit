@@ -1,9 +1,9 @@
 // =============================================================================
 // dashboard/dashboard.js — Real-time Monitoring Dashboard
 // APIs used (secret-based):
-//   /index/api/getThreadsLoad      → EventPoller thread load + fd_count + delay
-//   /index/api/getWorkThreadsLoad  → WorkThread load
-//   /index/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
+//   /media/api/getThreadsLoad      → EventPoller thread load + fd_count + delay
+//   /media/api/getWorkThreadsLoad  → WorkThread load
+//   /media/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
 //   /media/api/systemStatistic     → CPU/RAM/HDD/Net
 // =============================================================================
 
@@ -266,46 +266,55 @@ function _startPolling() {
     _dashState.pollerTimer = setInterval(_poll, 3000);
 }
 
-async function _poll() {
-    try {
-        var results = await Promise.allSettled([
-            S3Auth.apiFetch('/index/api/getStatistic'),
-            S3Auth.apiFetch('/index/api/getThreadsLoad'),
-            S3Auth.apiFetch('/index/api/getWorkThreadsLoad'),
-            _fetchSystemStat(),
-        ]);
-
-        var statRes   = results[0].status === 'fulfilled' ? results[0].value : null;
-        var epRes     = results[1].status === 'fulfilled' ? results[1].value : null;
-        var wtRes     = results[2].status === 'fulfilled' ? results[2].value : null;
-        var sysRes    = results[3].status === 'fulfilled' ? results[3].value : null;
-
-        if (statRes)  _applyStatistic(statRes.data || {});
-        if (epRes)    _applyEventPoller(epRes.data || []);
-        if (wtRes)    _applyWorkThreads(wtRes.data || []);
-        if (sysRes)   _applySysStat(sysRes);
-        else if (_dashState.sysStatAvail === null) {
-            _dashState.sysStatAvail = false;
-            var badgeEl = document.getElementById('sysstat-badge');
-            if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/api/systemStatistic cần api.secret trong config.ini'; }
-        }
-
-        var ts = new Date().toLocaleTimeString();
+function _poll() {
+    // Timeout wrapper — rejects after 5s (does not cancel underlying fetch for apiFetch)
+    function _t(p) {
+        return Promise.race([p, new Promise(function (_, rej) {
+            setTimeout(function () { rej(new Error('timeout')); }, 5000);
+        })]);
+    }
+    function _updateTs() {
         var tsEl = document.getElementById('dash-last-update');
-        if (tsEl) tsEl.textContent = 'Cập nhật lúc ' + ts;
+        if (tsEl) tsEl.textContent = 'Cập nhật lúc ' + new Date().toLocaleTimeString();
+    }
 
-    } catch (e) { /* silent */ }
+    _t(S3Auth.apiFetch('/media/api/getStatistic'))
+        .then(function (r) { _applyStatistic((r && r.data) || {}); _updateTs(); })
+        .catch(function () {});
+
+    _t(S3Auth.apiFetch('/media/api/getThreadsLoad'))
+        .then(function (r) { _applyEventPoller((r && r.data) || []); _updateTs(); })
+        .catch(function () {});
+
+    _t(S3Auth.apiFetch('/media/api/getWorkThreadsLoad'))
+        .then(function (r) { _applyWorkThreads((r && r.data) || []); _updateTs(); })
+        .catch(function () {});
+
+    _t(_fetchSystemStat())
+        .then(function (r) { _applySysStat(r); _updateTs(); })
+        .catch(function () {
+            if (_dashState.sysStatAvail === null) {
+                _dashState.sysStatAvail = false;
+                var badgeEl = document.getElementById('sysstat-badge');
+                if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/api/systemStatistic cần api.secret trong config.ini'; }
+            }
+        });
 }
 
 async function _fetchSystemStat() {
-    // Try without JWT — works when enableAuthorize=0
     var auth = S3Auth.get();
     if (!auth) throw new Error('no auth');
-    var url = auth.serverUrl + '/media/api/systemStatistic?secret=' + encodeURIComponent(auth.secret);
-    var r = await fetch(url, { credentials: 'omit' });
-    var d = await r.json();
-    if (d.code !== 0) throw new Error('not available');
-    return d.data;
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function () { ctrl.abort(); }, 5000);
+    try {
+        var url = auth.serverUrl + '/media/api/systemStatistic?secret=' + encodeURIComponent(auth.secret);
+        var r = await fetch(url, { credentials: 'omit', signal: ctrl.signal });
+        var d = await r.json();
+        if (d.code !== 0) throw new Error('not available');
+        return d.data;
+    } finally {
+        clearTimeout(tid);
+    }
 }
 
 function _applyStatistic(d) {
