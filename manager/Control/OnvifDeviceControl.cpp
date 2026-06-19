@@ -276,8 +276,7 @@ bool OnvifControl::getDeviceCapabilities() {
         reportError();
     }
 
-    if (!GetCapabilitiesResponse.Capabilities || !GetCapabilitiesResponse.Capabilities->Media ||
-        !GetCapabilitiesResponse.Capabilities->Imaging) {
+    if (!GetCapabilitiesResponse.Capabilities || !GetCapabilitiesResponse.Capabilities->Media) {
         reportError();
         disconnect();
         return false;
@@ -447,73 +446,68 @@ bool OnvifControl::getMediaProfiles() {
                 disconnect();
                 return false;
             }
-            if (_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
-                reportError();
-                disconnect();
-                return false;
-            }
-
-            TraceL << "Get video encoder configuration for token " << profile->token << ", configurations size = " << GetVideoConfigResponse.Configurations.size();
-            auto tokenConfig = GetVideoConfigResponse.Configurations[0];
-            if (!tokenConfig) {
-                continue;
-            }
-
-            _profile.vcodec = tokenConfig->Encoding;
-            TraceL << "Video Codec: " << _profile.vcodec;
-            _profile.bitrate = tokenConfig->RateControl ? tokenConfig->RateControl->BitrateLimit : 0;
-            TraceL << "Bitrate Limit: " << _profile.bitrate;
-            _profile.fps = tokenConfig->RateControl ? tokenConfig->RateControl->FrameRateLimit : 0;
-            TraceL << "Bitrate Limit: " << _profile.fps;
-            _profile.width = tokenConfig->Resolution ? tokenConfig->Resolution->Width : 0;
-            TraceL << "Width: " << _profile.width;
-            _profile.height = tokenConfig->Resolution ? tokenConfig->Resolution->Height : 0;
-            TraceL << "Height: " << _profile.height;
-            _profile.quality = tokenConfig->Quality;
-            TraceL << "Quality: " << _profile.quality;
-
-            // get video configuration option in profile
-            ns1__GetConfiguration *GetVideoConfigOptions  = soap_new_ns1__GetConfiguration(_m_soap);
-            _ns1__GetVideoEncoderConfigurationOptionsResponse GetVideoConfigOptionResponse;
-            GetVideoConfigOptions->ProfileToken = &profile->token;
-            GetVideoConfigOptions->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
-            if (!setCredentials()) {
-                reportError();
-                return false;
-            }
-
-            if (_proxyMedia2->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
-                reportError();
-                return false;
-            }
-
-            for (const auto &Option : GetVideoConfigOptionResponse.Options) {
-                if (!Option) {
+            if (!_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {                
+                TraceL << "Get video encoder configuration for token " << profile->token << ", configurations size = " << GetVideoConfigResponse.Configurations.size();
+                auto tokenConfig = GetVideoConfigResponse.Configurations[0];
+                if (!tokenConfig) {
                     continue;
                 }
-                VideoEncoderConfigOption cfg_option;
-                for (size_t i = 0; i < Option->ResolutionsAvailable.size(); ++i)
-                {
-                    tt__VideoResolution2* r = Option->ResolutionsAvailable[i];
-                    cfg_option.ResolutionsAvailable.push_back(std::make_pair(r->Width, r->Height));
+                _profile.vcodec = tokenConfig->Encoding;
+                TraceL << "Video Codec: " << _profile.vcodec;
+                _profile.bitrate = tokenConfig->RateControl ? tokenConfig->RateControl->BitrateLimit : 0;
+                TraceL << "Bitrate Limit: " << _profile.bitrate;
+                _profile.fps = tokenConfig->RateControl ? tokenConfig->RateControl->FrameRateLimit : 0;
+                TraceL << "Bitrate Limit: " << _profile.fps;
+                _profile.width = tokenConfig->Resolution ? tokenConfig->Resolution->Width : 0;
+                TraceL << "Width: " << _profile.width;
+                _profile.height = tokenConfig->Resolution ? tokenConfig->Resolution->Height : 0;
+                TraceL << "Height: " << _profile.height;
+                _profile.quality = tokenConfig->Quality;
+                TraceL << "Quality: " << _profile.quality;
+    
+                // get video configuration option in profile
+                ns1__GetConfiguration *GetVideoConfigOptions  = soap_new_ns1__GetConfiguration(_m_soap);
+                _ns1__GetVideoEncoderConfigurationOptionsResponse GetVideoConfigOptionResponse;
+                GetVideoConfigOptions->ProfileToken = &profile->token;
+                GetVideoConfigOptions->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
+                if (!setCredentials()) {
+                    reportError();
+                    return false;
                 }
-                cfg_option.BitRateRange = bitrateRangeToString(Option->BitrateRange->Min, Option->BitrateRange->Max);
-                cfg_option.QualityRange = std::make_pair(Option->QualityRange->Min, Option->QualityRange->Max);
-                if (Option->FrameRatesSupported) {
-                    cfg_option.FrameRatesSupported = *Option->FrameRatesSupported;
+                if (_proxyMedia2->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
+                    reportError();
+                    return false;
                 }
-                cfg_option.FPSEditable = _profile.fps != 0 && !cfg_option.FrameRatesSupported.empty();
-                cfg_option.bitrateEditable = _profile.bitrate != 0 && Option->BitrateRange->Min != Option->BitrateRange->Max;
-                cfg_option.resolutionEditable = cfg_option.ResolutionsAvailable.size() > 1;
-                _profile.vEncoderOptionMap[Option->Encoding] = cfg_option;
+                for (const auto &Option : GetVideoConfigOptionResponse.Options) {
+                    if (!Option) {
+                        continue;
+                    }
+                    VideoEncoderConfigOption cfg_option;
+                    for (size_t i = 0; i < Option->ResolutionsAvailable.size(); ++i)
+                    {
+                        tt__VideoResolution2* r = Option->ResolutionsAvailable[i];
+                        cfg_option.ResolutionsAvailable.push_back(std::make_pair(r->Width, r->Height));
+                    }
+                    cfg_option.BitRateRange = bitrateRangeToString(Option->BitrateRange->Min, Option->BitrateRange->Max);
+                    cfg_option.QualityRange = std::make_pair(Option->QualityRange->Min, Option->QualityRange->Max);
+                    if (Option->FrameRatesSupported) {
+                        cfg_option.FrameRatesSupported = *Option->FrameRatesSupported;
+                    }
+                    cfg_option.FPSEditable = _profile.fps != 0 && !cfg_option.FrameRatesSupported.empty();
+                    cfg_option.bitrateEditable = _profile.bitrate != 0 && Option->BitrateRange->Min != Option->BitrateRange->Max;
+                    cfg_option.resolutionEditable = cfg_option.ResolutionsAvailable.size() > 1;
+                    _profile.vEncoderOptionMap[Option->Encoding] = cfg_option;
+                }
+    
+                _profile.videoEncEditable = _profile.vEncoderOptionMap.size() > 1;
+                bool editable = false;
+                for (const auto &it : _profile.vEncoderOptionMap) {
+                    editable = it.second.bitrateEditable || it.second.FPSEditable || it.second.resolutionEditable;
+                }
+                _profile.videoConfigEditable = editable || _profile.videoEncEditable;
+            } else {
+                reportError();
             }
-
-            _profile.videoEncEditable = _profile.vEncoderOptionMap.size() > 1;
-            bool editable = false;
-            for (const auto &it : _profile.vEncoderOptionMap) {
-                editable = it.second.bitrateEditable || it.second.FPSEditable || it.second.resolutionEditable;
-            }
-            _profile.videoConfigEditable = editable || _profile.videoEncEditable;
         }
 
         // if (profile->AudioSourceConfiguration && profile->AudioEncoderConfiguration) {

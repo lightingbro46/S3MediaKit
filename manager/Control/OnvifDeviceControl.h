@@ -151,10 +151,10 @@ struct OnvifMediaProfile {
     std::string url;
     bool hasVideo = false;
     std::string vcodec;
-    int width;
-    int height;
-    int bitrate;
-    float fps;
+    int width = 0;
+    int height = 0;
+    int bitrate = 0;
+    float fps = 0.0f;
     float quality;
     bool videoEncEditable = false;
     bool videoConfigEditable = false;
