@@ -356,7 +356,7 @@ function _updateTxnTable(nodes) {
                 '<div class="cl-txn-node-hd">' +
                     nodeLabel +
                     ' <span class="cl-txn-meta mono">' + _esc((ss.mediaServerId||'').substring(0,16)) + '</span>' +
-                    ' <span class="cl-txn-meta mono">db: ' + _esc((ss.db_guid||'').substring(0,12)) + '</span>' +
+                    ' <span class="cl-txn-meta mono">db: ' + _esc((ss.DB_INSTANCE_ID||'').substring(0,12)) + '</span>' +
                     ' <span class="cl-sum-badge info" style="font-size:.66rem">log total: ' + totalLogRows + '</span>' +
                 '</div>' +
                 '<div class="cl-txn-grid">' +
