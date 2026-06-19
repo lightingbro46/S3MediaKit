@@ -1657,44 +1657,50 @@ Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &devi
             auto stats_imp = impl->getCameraStatisticImp();
             if (stats_imp) {
                 auto params = stats_imp->getParams();
-                for (const auto &mp : params.device_stats.device_caps.onvifProfile.mediaProfiles) {
-                    Json::Value mp_json = Json::objectValue;
-                    mp_json["token"] = mp.token;
-                    mp_json["url"] = mp.url;
-                    mp_json["videoEncoder"]["vcodec"] = mp.vcodec;
-                    mp_json["videoEncoder"]["width"] = mp.width;
-                    mp_json["videoEncoder"]["height"] = mp.height;
-                    mp_json["videoEncoder"]["bitrate"] = mp.bitrate;
-                    mp_json["videoEncoder"]["fps"] = mp.fps;
-                    for (const auto &vo : mp.vEncoderOptionMap) {
-                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
-                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
-                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
-                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
-                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
-                        for (const auto &r : vo.second.ResolutionsAvailable) {
-                            Json::Value stream;
-                            stream["width"] = r.first;
-                            stream["height"] = r.second;
-                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+                item["deviceStatus"] = params.device_stats.status;
+                item["deviceConnect"] = params.device_stats.connect;
+                Json::Value mediaProfiles = Json::arrayValue;
+                if (params.device_stats.connect) {
+                    for (const auto &mp : params.device_stats.device_caps.onvifProfile.mediaProfiles) {
+                        Json::Value mp_json = Json::objectValue;
+                        mp_json["token"] = mp.token;
+                        mp_json["url"] = mp.url;
+                        mp_json["videoEncoder"]["vcodec"] = mp.vcodec;
+                        mp_json["videoEncoder"]["width"] = mp.width;
+                        mp_json["videoEncoder"]["height"] = mp.height;
+                        mp_json["videoEncoder"]["bitrate"] = mp.bitrate;
+                        mp_json["videoEncoder"]["fps"] = mp.fps;
+                        for (const auto &vo : mp.vEncoderOptionMap) {
+                            mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
+                            mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
+                            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
+                            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
+                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
+                            for (const auto &r : vo.second.ResolutionsAvailable) {
+                                Json::Value stream;
+                                stream["width"] = r.first;
+                                stream["height"] = r.second;
+                                mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+                            }
+                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
                         }
-                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
-                    }
-                    mp_json["videoEncEditable"] = mp.videoEncEditable;
-                    mp_json["videoConfigEditable"] = mp.videoConfigEditable;
-                    
-                    auto it = params.device_stats.stream_settings.find(mp.token);
-                    if (it != params.device_stats.stream_settings.end()) {
-                        const auto &config = it->second;
-                        mp_json["videoEncoder"]["configState"]["retry_time"] = config.state.retry_time;
-                        mp_json["videoEncoder"]["configState"]["status"] = config.state.status;
-                    } else {
-                        mp_json["videoEncoder"]["configState"]["retry_time"] = 5;
-                        mp_json["videoEncoder"]["configState"]["status"] = configStateToString[VideoConfigSetState::EXTERNAL];
-                    }
+                        mp_json["videoEncEditable"] = mp.videoEncEditable;
+                        mp_json["videoConfigEditable"] = mp.videoConfigEditable;
+                        
+                        auto it = params.device_stats.stream_settings.find(mp.token);
+                        if (it != params.device_stats.stream_settings.end()) {
+                            const auto &config = it->second;
+                            mp_json["videoEncoder"]["configState"]["retry_time"] = config.state.retry_time;
+                            mp_json["videoEncoder"]["configState"]["status"] = config.state.status;
+                        } else {
+                            mp_json["videoEncoder"]["configState"]["retry_time"] = 5;
+                            mp_json["videoEncoder"]["configState"]["status"] = configStateToString[VideoConfigSetState::EXTERNAL];
+                        }
 
-                    item.append(mp_json);
+                        mediaProfiles.append(mp_json);
+                    }
                 }
+                item["profiles"] = mediaProfiles;
             }
         }
     }

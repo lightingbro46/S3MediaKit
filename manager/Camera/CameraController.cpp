@@ -454,7 +454,7 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
         auto poller = _poller;
         string token = profileToken;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
-        auto on_callback = [poller, weak_self, cb](const toolkit::SockException &ex, VideoEncoderConfig &config) mutable {
+        auto on_callback = [weak_self, poller, cb](const toolkit::SockException &ex, VideoEncoderConfig &config) mutable {
             VideoEncoderConfig config_copy = config; // Make a copy to avoid dangling reference
             poller->async([weak_self, cb, ex, config_copy]() mutable {
                 if (auto self = weak_self.lock()) {
@@ -599,6 +599,9 @@ void CameraController::syncMediaProfile() {
                     }
                 } else {
                     InfoL << "Profile token: " << token << " config changed by camera";
+                    // If the previous config update failed after 5 retry attempts,
+                    // update the user with the current camera config instead of
+                    // retrying the same failed config again.
                     if (!_keepConfigProfileAndStream) {
                         f_config.state.retry_time = 4;
                         f_config.state.status = configStateToString[VideoConfigSetState::PROCESSING];
@@ -616,8 +619,8 @@ void CameraController::syncMediaProfile() {
                         InfoL << "Keep the config in map consistent with camera for profile token: " << token;
                     }
                 }
-                addProfileConfig(token, f_config);
             }
+            addProfileConfig(token, f_config);
         }
     } else {
         WarnL << "Device controller is not ready when retrying set media profile";
