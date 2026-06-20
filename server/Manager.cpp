@@ -1013,52 +1013,58 @@ static std::string getGenericRtspCameraErrMsg(const Json::Value &device) {
 void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     Json::Value data = Json::arrayValue;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        auto weak_listener = device->getListener();
-        if (auto strong_listener = weak_listener.lock()) {
-            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-            if (impl) {
-                auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
-                auto stats_imp = impl->getCameraStatisticImp();
-                if (stats_imp) {
-                    auto params = stats_imp->getParams();
-                    auto option = params.option;
-                    if (option.enableFailover && !impl->isEnabled()) {
-                        // this camera run in failover mode and actual camera connection run on prefered media server
-                        return;
-                    }
-                    Json::Value item;
-                    item["deviceId"] = params.tuple.device_id;
-                    // Get both stream status
-                    if (camera->hasStreamTuple(PrimaryStream)) {
-                        item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
-                        item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
-                    } else {
-                        item["primaryStreamId"] = Json::nullValue;
-                        item["primaryStream"] = Json::nullValue;
-                    }
+        try {
+            auto weak_listener = device->getListener();
+            if (auto strong_listener = weak_listener.lock()) {
+                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                if (impl) {
+                    auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
+                    auto stats_imp = impl->getCameraStatisticImp();
+                    if (stats_imp) {
+                        auto params = stats_imp->getParams();
+                        auto option = params.option;
+                        if (option.enableFailover && !impl->isEnabled()) {
+                            // this camera run in failover mode and actual camera connection run on prefered media server
+                            return;
+                        }
+                        Json::Value item;
+                        item["deviceId"] = params.tuple.device_id;
+                        // Get both stream status
+                        if (camera->hasStreamTuple(PrimaryStream)) {
+                            item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
+                            item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
+                        } else {
+                            item["primaryStreamId"] = Json::nullValue;
+                            item["primaryStream"] = Json::nullValue;
+                        }
 
-                    if (camera->hasStreamTuple(SecondaryStream)) {
-                        item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
-                        item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
-                    } else {
-                        item["secondaryStreamId"] = Json::nullValue;
-                        item["secondaryStream"] = Json::nullValue;
+                        if (camera->hasStreamTuple(SecondaryStream)) {
+                            item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
+                            item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
+                        } else {
+                            item["secondaryStreamId"] = Json::nullValue;
+                            item["secondaryStream"] = Json::nullValue;
+                        }
+                        // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
+                        // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
+                        auto is_online = isGenericRtspCameraOnline(item);
+                        item["status"] = is_online;
+                        item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                        // Get controller status
+                        if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
+                            item["controller"]["status"] = params.device_stats.connect;
+                            item["controller"]["errMsg"] = params.device_stats.status;
+                        } else {
+                            item["controller"] = Json::nullValue;
+                        }
+                        data.append(item);
                     }
-                    // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
-                    // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
-                    auto is_online = isGenericRtspCameraOnline(item);
-                    item["status"] = is_online;
-                    item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
-                    // Get controller status
-                    if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
-                        item["controller"]["status"] = params.device_stats.connect;
-                        item["controller"]["errMsg"] = params.device_stats.status;
-                    } else {
-                        item["controller"] = Json::nullValue;
-                    }
-                    data.append(item);
                 }
             }
+        } catch (std::exception &ex) {
+            WarnL << "Report server statistic exception: " << ex.what();
+        } catch (...) {
+            WarnL << "Report server statistic unknown exception";
         }
     });
     TraceL << "Server statistic report: " << data.toStyledString();
