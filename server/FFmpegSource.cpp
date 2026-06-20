@@ -498,6 +498,7 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
                 end_pos = end_time;
             }
             file_indexs.dur_end += end_pos - start_pos;
+            file_indexs.file_path.push_back(block.file_path());
         }
     });
 
