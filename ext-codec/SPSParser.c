@@ -459,15 +459,6 @@ static int parseCodenum(void *pvBuf)
     for(u8B=0; !u8B; u8LeadingZeroBits++)
     {
         u8B = getOneBit(pvBuf);
-        /* Guard against malformed streams with excessive leading zeros;
-         * shifting a uint32_t by >= 32 is undefined behaviour in C.
-         * An Exp-Golomb code needing more than 31 leading zeros cannot
-         * represent a valid H.264 syntax element value. */
-        if (u8LeadingZeroBits >= 31)
-        {
-            RPT(RPT_ERR, "parseCodenum: too many leading zero bits, stream corrupted\n");
-            return 0;
-        }
     }
 
     u32CodeNum = ((uint32_t)1 << u8LeadingZeroBits) - 1 + getBits(pvBuf, u8LeadingZeroBits);
