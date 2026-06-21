@@ -47,7 +47,7 @@ static void cleanCrashFiles() {
     File::scanDir(root_path, [&](const string &path, bool isDir) {
         if (isDir) return true;
         auto filename = findSubString(path.data() + root_path.size(), nullptr, nullptr);
-        if (start_with(filename, "crash.")) {
+        if (start_with(filename, "crash.") || start_with(filename, "core.")) {
             crash_file_paths.push_back(path);
         }
         return true;
@@ -59,7 +59,7 @@ static void cleanCrashFiles() {
 }
 
 void StorageManager::cleanupTemporaryFiles() {
-    if (time(nullptr) < _next_cleanup_time) {
+    if ((uint64_t)time(nullptr) < _next_cleanup_time) {
         return;
     }
 

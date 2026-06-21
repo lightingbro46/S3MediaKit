@@ -44,7 +44,9 @@ onceToken token([]() {
     // ffmpeg log save path
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
-    mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s";
+    // mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s"; // backward compatibility, do not delete
+    mINI::Instance()[kSnap] = "%s -i %s -ss %s -y -f mjpeg -frames:v 1 -an %s";
+    // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
     mINI::Instance()[kRestartSec] = 0;
@@ -71,6 +73,32 @@ static bool is_local_ip(const string &ip){
         }
     }
     return false;
+}
+
+static size_t countSubString(const std::string &str, const std::string &sub) {
+    if (sub.empty()) {
+        return 0;
+    }
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = str.find(sub, pos)) != std::string::npos) {
+        ++count;
+        pos += sub.length();
+    }
+    return count;
+}
+
+static std::string format_duration_hms(int64_t total_seconds) {
+    int64_t seconds = total_seconds % 60;
+    int64_t total_minutes = total_seconds / 60;
+    int64_t minutes = total_minutes % 60;
+    int64_t hours = total_minutes / 60;
+
+    _StrPrinter oss;
+    oss << std::setw(2) << std::setfill('0') << hours << ":"
+        << std::setw(2) << std::setfill('0') << minutes << ":"
+        << std::setw(2) << std::setfill('0') << seconds;
+    return oss;
 }
 
 void FFmpegSource::setupRecordFlag(bool enable_hls, bool enable_mp4){
@@ -371,7 +399,7 @@ static void makeSnapAsync(const string &play_url, const string &save_path, float
 
 #endif
 
-void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save_path, float timeout_sec, const onSnap &cb) {
+void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save_path, uint64_t seek_time, float timeout_sec, const onSnap &cb) {
 #if defined(ENABLE_FFMPEG)
     if (async) {
         makeSnapAsync(play_url, save_path, timeout_sec, cb);
@@ -383,7 +411,7 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
     GET_CONFIG(string, ffmpeg_snap, FFmpeg::kSnap);
     GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
     Ticker ticker;
-    WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, save_path, cb, ticker]() {
+    WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, save_path, seek_time, cb, ticker]() {
         auto elapsed_ms = ticker.elapsedTime();
         if (elapsed_ms > timeout_sec * 1000) {
             // Timeout, the background thread load is too high, it takes too long to start this task
@@ -391,7 +419,12 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
             return;
         }
         char cmd[2048] = { 0 };
-        snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), save_path.data());
+        if (countSubString(ffmpeg_snap, "%s") == 3 || seek_time == 0) {
+            // Backward compatibility, the ffmpeg command template does not contain the time parameter, so it is considered that the ffmpeg command template does not contain the time parameter
+            snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), save_path.data());
+        } else {
+            snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), format_duration_hms(seek_time).data(), save_path.data());
+        }
 
         std::shared_ptr<Process> process = std::make_shared<Process>();
         auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
@@ -442,27 +475,58 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         return cb(err, duration_start, duration_end);
     }
 
+    struct FileIndexs {
+        vector<string> file_path;
+        uint64_t dur_start;
+        uint64_t dur_end;
+    };
+    unordered_map<string, FileIndexs> file_indexs_map;
     MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
     auto query = std::make_shared<TimeQuery>(tuple);
-    query->getRecordedTimePeriod(start_time, end_time, [&duration_start, &duration_end, start_time, end_time, file_ptr](const vector<TimeBlock> &ret) {
+    query->getRecordedTimePeriod(start_time, end_time, [start_time, end_time, &file_indexs_map](const vector<TimeBlock> &ret) {
         for (const auto &block : ret) {
+            auto stream_id = block.stream();
+            auto &file_indexs = file_indexs_map[stream_id];
             uint64_t start_pos = block.start_time();
             uint64_t end_pos = block.start_time() + block.time_len();
             if (start_pos < start_time) {
-                duration_start += start_time - start_pos;
-                duration_end += duration_start;
+                file_indexs.dur_start += start_time - start_pos;
+                file_indexs.dur_end += file_indexs.dur_start;
                 start_pos = start_time;
             }
             if (end_pos > end_time) {
                 end_pos = end_time;
             }
-            duration_end += end_pos - start_pos;
-            auto line = "file '" + decodeBase64(block.file_path()) + "'\n";
-            fwrite(line.c_str(), line.size(), 1, file_ptr.get());
+            file_indexs.dur_end += end_pos - start_pos;
+            file_indexs.file_path.push_back(block.file_path());
         }
     });
 
-    return cb((duration_end - duration_start) == 0 ? "No data in time period" : "", duration_start, duration_end);
+    uint64_t total_dur = 0;
+    // Find the stream with the longest duration in the time period, and then extract the video based on this stream
+    unordered_map<string, FileIndexs>::iterator file_indexs_it = file_indexs_map.end();
+    for (auto it = file_indexs_map.begin(); it != file_indexs_map.end(); ++it) {
+        auto &file_indexs = it->second;
+        if (file_indexs.dur_end - file_indexs.dur_start <= 0 || file_indexs.file_path.empty()) {
+            continue;
+        }
+
+        if (total_dur == 0 || file_indexs.dur_end - file_indexs.dur_start > total_dur) {
+            file_indexs_it = it;
+            total_dur = file_indexs.dur_end - file_indexs.dur_start;
+        }
+    }
+
+    if (file_indexs_it != file_indexs_map.end()) {
+        duration_start = file_indexs_it->second.dur_start;
+        duration_end = file_indexs_it->second.dur_end;
+        for (const auto &file_path : file_indexs_it->second.file_path) {
+            auto line = "file '" + decodeBase64(file_path) + "'\n";
+            fwrite(line.c_str(), line.size(), 1, file_ptr.get());
+        }
+    }
+    // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
+    return cb(total_dur == 0 ? "No data in time period" : "", duration_start, duration_end);
 }
 
 static std::string getFileExtension(const std::string &filename) {
@@ -486,19 +550,6 @@ static std::string escape(const std::string &str) {
 
 static std::string escape(const char* str) {
     return escape(std::string(str));
-}
-
-static std::string format_duration_hms(int64_t total_seconds) {
-    int64_t seconds = total_seconds % 60;
-    int64_t total_minutes = total_seconds / 60;
-    int64_t minutes = total_minutes % 60;
-    int64_t hours = total_minutes / 60;
-
-    _StrPrinter oss;
-    oss << std::setw(2) << std::setfill('0') << hours << ":"
-        << std::setw(2) << std::setfill('0') << minutes << ":"
-        << std::setw(2) << std::setfill('0') << seconds;
-    return oss;
 }
 
 void FFmpegExtractor::makeExtract(const string &key, const string &root_path, const onExtract &cb) {
@@ -528,7 +579,18 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     DebugL << "Make video extract of device " << _tuple.app << "/" << _tuple.stream << " duration: " << format_duration_hms(_duration) << "s, save path: " << _save_path;
 
     char cmd[2048] = { 0 };
-    snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
+    if (countSubString(ffmpeg_extract, "%s") == 7) {
+        // Backward compatibility, if the ffmpeg extract command template does not contain the start time and end time parameters, it will be automatically compatible with the old template
+        snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
+            _src_path.data(),
+            escape(_options.filename).data(),
+            escape(_options.description + " -- By -- " + _options.username).data(),
+            escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
+            escape(kServerShortName).data(),
+            _save_path.data());
+        
+    } else {
+        snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(), 
             _src_path.data(),
             format_duration_hms(duration_start).data(),
             format_duration_hms(duration_end).data(),
@@ -537,6 +599,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
             escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
             escape(kServerShortName).data(),
             _save_path.data());
+    }
     _log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
     _process.run(cmd, _log_file);
     _cmd = cmd;
@@ -626,7 +689,7 @@ float trackFFmpegProgress(const std::string &log_path, const float &total_durati
 void FFmpegExtractor::startTimer() {
     uint64_t timeout_ms = _duration * 1000;
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
-    _timer = std::make_shared<Timer>(1.0f, [weakSelf, &timeout_ms]() {
+    _timer = std::make_shared<Timer>(1.0f, [weakSelf, timeout_ms]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             // Self has been destroyed

@@ -27,6 +27,11 @@ struct DeviceScanResult {
     std::string hardwareId;
     std::string macAddress;
     bool isPtz = false;
+    bool isAudioOutput = false;
+    bool isImageFocus = false;
+    bool isImageIris = false;
+    bool isAudioInput = false;
+    bool isRelayOutput = false;
     std::string ip;
     int port = 0;
     bool webPortAuto = true;
@@ -41,6 +46,7 @@ struct DeviceScanResult {
         std::string url;
     };
     std::vector<StreamProfile> profiles;
+    std::string err_msg;
 };
 
 Json::Value toJsonValue(const DeviceScanResult &result);

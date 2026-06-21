@@ -10,8 +10,10 @@ INSTANCE_IMP(UserAuthorManager);
 UserAuthorManager::UserAuthorManager() {
     _timer = std::make_shared<Timer>(
         60.0f,
-        [this]() {
-            onManager();
+        []() {
+            // Use singleton access in timer callback to avoid capturing a raw
+            // pointer across thread boundaries.
+            UserAuthorManager::Instance().onManager();
             return true;
         },
         nullptr);
@@ -25,6 +27,7 @@ void UserAuthorManager::onManager() {
     lock_guard<recursive_mutex> lck(_mtx);
     cleanExpiredAuthorCache();
     cleanExpiredTokenCache();
+    cleanExpiredClusterAuthorCache();
 }
 
 void UserAuthorManager::cleanExpiredAuthorCache() {
@@ -94,6 +97,39 @@ void UserAuthorManager::addAuthorCache(const string &resource_id, const string &
     uint64_t expired_time = time(nullptr) + max_elapsed;
     // add to user-device author cache map
     _map_token_resource[jwt_token][resource_id] = std::make_pair(permit, expired_time);
+}
+
+UserAuthorPermit UserAuthorManager::getClusterAuthorCache(const std::string &author_id, const std::string &secret_key) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    auto key = author_id + ":" + secret_key;
+    auto authorIt = _map_cluster_author.find(key);
+    if (authorIt != _map_cluster_author.end()) {
+        auto &info = authorIt->second;
+        return info.first ? UserAuthorPermit::ACCEPT : UserAuthorPermit::REJECT;
+    }
+    return UserAuthorPermit::UNKNOWN;
+}
+
+void UserAuthorManager::addClusterAuthorCache(const std::string &author_id, const std::string &key, bool permit, uint64_t max_elapsed) {
+    lock_guard<recursive_mutex> lck(_mtx);
+
+    uint64_t expired_time = time(nullptr) + max_elapsed;
+    // add to cluster author cache map
+    _map_cluster_author[author_id + ":" + key] = std::make_pair(permit, expired_time);
+}
+
+void UserAuthorManager::cleanExpiredClusterAuthorCache() {
+    auto time_now = time(nullptr);
+    // remove expired cluster author cache
+    for (auto authorIt = _map_cluster_author.begin(); authorIt != _map_cluster_author.end();) {
+        auto &info = authorIt->second;
+        uint64_t expired_time = info.second;
+        if (expired_time < (uint64_t)time_now) {
+            authorIt = _map_cluster_author.erase(authorIt);
+        } else {
+            ++authorIt;
+        }
+    }
 }
 
 } // namespace managerkit

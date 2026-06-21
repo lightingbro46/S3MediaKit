@@ -99,6 +99,7 @@ const string kBroadcastSyncBookmarkCreateOrUpdate = "kBroadcastSyncBookmarkCreat
 const string kBroadcastSyncBookmarkDelete = "kBroadcastSyncBookmarkDelete";
 const string kBroadcastSyncBookmarkThumbnail = "kBroadcastSyncBookmarkThumbnail";
 const string kBroadcastStreamSettingChange = "kBroadcastStreamSettingChange";
+const string kBroadcastClusterAcrossAccess = "kBroadcastClusterAcrossAccess";
 
 } // namespace Broadcast
 

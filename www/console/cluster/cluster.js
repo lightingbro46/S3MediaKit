@@ -83,19 +83,23 @@ async function _loadNodes() {
     var selfEntry = peerList.find(function(p) { return p.id === selfId; });
     var selfName = (selfEntry && selfEntry.name) ? selfEntry.name : selfId;
 
-    var nodes = [{ id: selfId, name: selfName, ip: selfParsed.hostname, httpPort: selfParsed.port, isSelf: true }];
+    // Self node: use login URL as-is (user entered it explicitly)
+    var selfBaseUrl = auth.serverUrl.replace(/\/$/, '');
+    var nodes = [{ id: selfId, name: selfName, ip: selfParsed.hostname, httpPort: selfParsed.port, isSelf: true, baseUrl: selfBaseUrl }];
+    var apiDomain = _fromApiUrl((window._s3Config || {})['hook.api_url'] || '');
     peerList.forEach(function(p) {
         if (p.id && p.id !== selfId) {
-            nodes.push({ id: p.id, name: p.name || p.id, ip: p.ip || p.domain || '', httpPort: p.http_port || p.httpPort || 80, isSelf: false });
+            var peerBase = _buildPeerBaseFromEntry(p, apiDomain);
+            nodes.push({ id: p.id, name: p.name || p.id, ip: p.ip || p.domain || '', httpPort: p.http_port || p.httpPort || 80, isSelf: false, baseUrl: peerBase, _peer: p });
         }
     });
 
     _clusterState.nodes = nodes;
     _renderNodeSkeleton(nodes);
-    _pollAllNodes(nodes, auth.secret);
+    _pollAllNodes(nodes, auth.secret, selfId);
 
     if (_clusterState.pollTimer) clearInterval(_clusterState.pollTimer);
-    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret); }, 5000);
+    _clusterState.pollTimer = setInterval(function() { _pollAllNodes(_clusterState.nodes, auth.secret, selfId); }, 5000);
 }
 
 function _renderNodeSkeleton(nodes) {
@@ -109,55 +113,106 @@ function _renderNodeSkeleton(nodes) {
         return;
     }
     grid.innerHTML = nodes.map(function(n) {
-        return '<div class="cl-node-card" id="cl-node-' + n.id + '">' +
+        var nid = n.id;
+        return '<div class="cl-node-card" id="cl-node-' + nid + '">' +
             '<div class="cl-node-header">' +
-                '<div class="cl-node-status-dot checking" id="cl-dot-' + n.id + '"></div>' +
+                '<div class="cl-node-status-dot checking" id="cl-dot-' + nid + '"></div>' +
                 '<div class="cl-node-info">' +
                     '<div class="cl-node-name">' + _esc(n.name) + (n.isSelf ? ' <span class="cl-self-badge">SELF</span>' : '') + '</div>' +
-                    '<div class="cl-node-addr" id="cl-addr-' + n.id + '">' + _esc(n.ip) + ':' + n.httpPort + '</div>' +
+                    '<div class="cl-node-addr" id="cl-addr-' + nid + '">' + _esc(n.baseUrl || (n.ip + ':' + n.httpPort)) + '</div>' +
                 '</div>' +
-                '<span class="cl-node-status-lbl checking" id="cl-status-' + n.id + '">Checking…</span>' +
+                '<span class="cl-node-status-lbl checking" id="cl-status-' + nid + '">Checking\u2026</span>' +
             '</div>' +
-            '<div class="cl-node-metrics" id="cl-metrics-' + n.id + '">' +
-                '<div class="cl-metric"><span class="cl-m-lbl">ID</span><span class="cl-m-val mono" id="cl-id-' + n.id + '">' + _esc(n.id.substring(0,12)) + '</span></div>' +
-                '<div class="cl-metric"><span class="cl-m-lbl">Streams</span><span class="cl-m-val" id="cl-streams-' + n.id + '">—</span></div>' +
-                '<div class="cl-metric"><span class="cl-m-lbl">Sessions</span><span class="cl-m-val" id="cl-sess-' + n.id + '">—</span></div>' +
-                '<div class="cl-metric"><span class="cl-m-lbl">EP Avg Load</span><span class="cl-m-val" id="cl-ep-' + n.id + '">—</span></div>' +
+            '<div class="cl-node-metrics" id="cl-metrics-' + nid + '">' +
+                '<div class="cl-metric"><span class="cl-m-lbl">ID</span><span class="cl-m-val mono" id="cl-id-' + nid + '">' + _esc(n.id.substring(0,12)) + '</span></div>' +
+                '<div class="cl-metric"><span class="cl-m-lbl">Streams</span><span class="cl-m-val" id="cl-streams-' + nid + '">\u2014</span></div>' +
+                '<div class="cl-metric"><span class="cl-m-lbl">Sessions</span><span class="cl-m-val" id="cl-sess-' + nid + '">\u2014</span></div>' +
+                '<div class="cl-metric">' +
+                    '<span class="cl-m-lbl">EP Avg</span>' +
+                    '<span class="cl-m-val" id="cl-ep-' + nid + '">\u2014</span>' +
+                    '<button class="cl-collapse-btn" onclick="_toggleNodeThreads(\'cl-thr-ep-' + nid + '\')" id="cl-ep-toggle-' + nid + '">\u25b6</button>' +
+                '</div>' +
+                '<div class="cl-metric">' +
+                    '<span class="cl-m-lbl">WT Avg</span>' +
+                    '<span class="cl-m-val" id="cl-wt-' + nid + '">\u2014</span>' +
+                    '<button class="cl-collapse-btn" onclick="_toggleNodeThreads(\'cl-thr-wt-' + nid + '\')" id="cl-wt-toggle-' + nid + '">\u25b6</button>' +
+                '</div>' +
             '</div>' +
-            '<div class="cl-node-poller" id="cl-poller-' + n.id + '"></div>' +
+            '<div class="cl-thr-detail" id="cl-thr-ep-' + nid + '" style="display:none">' +
+                '<div class="cl-thr-detail-hd">Event Poller Threads</div>' +
+                '<div class="cl-node-poller" id="cl-poller-' + nid + '"></div>' +
+            '</div>' +
+            '<div class="cl-thr-detail" id="cl-thr-wt-' + nid + '" style="display:none">' +
+                '<div class="cl-thr-detail-hd">Work Threads</div>' +
+                '<div class="cl-node-wt-poller" id="cl-wt-poller-' + nid + '"></div>' +
+            '</div>' +
             '<div class="cl-node-footer">' +
-                '<span class="cl-m-lbl" id="cl-version-' + n.id + '">—</span>' +
-                '<span class="cl-m-lbl" id="cl-latency-' + n.id + '">—</span>' +
+                '<span class="cl-m-lbl" id="cl-version-' + nid + '">\u2014</span>' +
+                '<span class="cl-m-lbl" id="cl-latency-' + nid + '">\u2014</span>' +
             '</div>' +
         '</div>';
     }).join('');
 }
 
-async function _pollAllNodes(nodes, secret) {
-    var results = await Promise.allSettled(nodes.map(function(n) { return _pollNode(n, secret); }));
-    var online = 0; var offline = 0;
-    results.forEach(function(r, i) {
-        if (r.status === 'fulfilled') { online++; _applyNodeData(nodes[i], r.value); }
-        else { offline++; _applyNodeOffline(nodes[i], r.reason); }
+function _pollAllNodes(nodes, secret, author) {
+    var online = 0;
+    var total  = nodes.length;
+
+    function _refreshUi() {
+        _updateSummary(online, total);
+        _updateSyncTable(nodes);
+        var tsEl = document.getElementById('cl-last-update');
+        if (tsEl) tsEl.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
+    }
+
+    nodes.forEach(function (n, i) {
+        _pollNode(n, secret, author)
+            .then(function (data) {
+                online++;
+                _applyNodeData(nodes[i], data);
+                _refreshUi();
+            })
+            .catch(function (err) {
+                _applyNodeOffline(nodes[i], err);
+                _refreshUi();
+            });
     });
-    _updateSummary(online, offline);
-    _updateSyncTable(nodes);
-    var tsEl = document.getElementById('cl-last-update');
-    if (tsEl) tsEl.textContent = 'Cập nhật: ' + new Date().toLocaleTimeString();
 }
 
-async function _pollNode(node, secret) {
-    var base = _buildBase(node);
-    var t0   = Date.now();
+async function _pollNode(node, secret, author) {
+    var base  = node.baseUrl || _buildBase(node);
+    var t0    = Date.now();
+    var authQ = node.isSelf
+        ? '?secret=' + encodeURIComponent(secret)
+        : '?secret=' + encodeURIComponent(secret) + '&authorId=' + encodeURIComponent(author);
 
+    // Healthcheck is the gate — if it fails, node is offline
     var hc = await _fetchJson(base + '/media/mserver/healthcheck');
     var result = { online: true, latency: Date.now() - t0, mediaServerId: hc && hc.data ? hc.data.mediaServerId : node.id };
 
-    try { var desc = await _fetchJson(base + '/media/mserver/description'); if (desc && desc.data) { result.version = desc.data.version || ''; } } catch(_) {}
-    try { var ep = await _fetchJson(base + '/index/api/getThreadsLoad?secret=' + encodeURIComponent(secret)); result.threads = ep && ep.data ? ep.data : []; } catch(_) { result.threads = []; }
-    try { var st = await _fetchJson(base + '/index/api/getStatistic?secret=' + encodeURIComponent(secret)); result.stat = st && st.data ? st.data : {}; } catch(_) { result.stat = {}; }
-    try { var sy = await _fetchJson(base + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(secret)); result.sysStat = sy && sy.code === 0 ? sy.data : null; } catch(_) { result.sysStat = null; }
-    try { var ss = await _fetchJson(base + '/media/mserver/getSyncStatus?secret=' + encodeURIComponent(secret)); result.syncStatus = ss && ss.code === 0 ? ss.data : null; } catch(_) { result.syncStatus = null; }
+    // Fire all remaining calls in parallel
+    var settled = await Promise.allSettled([
+        _fetchJson(base + '/media/mserver/description'),
+        _fetchJson(base + '/media/api/getThreadsLoad'     + authQ),
+        _fetchJson(base + '/media/api/getWorkThreadsLoad' + authQ),
+        _fetchJson(base + '/media/api/getStatistic'       + authQ),
+        _fetchJson(base + '/media/api/systemStatistic'    + authQ),
+        _fetchJson(base + '/media/api/getSyncStatus'      + authQ),
+    ]);
+
+    var desc = settled[0].status === 'fulfilled' ? settled[0].value : null;
+    var ep   = settled[1].status === 'fulfilled' ? settled[1].value : null;
+    var wt   = settled[2].status === 'fulfilled' ? settled[2].value : null;
+    var st   = settled[3].status === 'fulfilled' ? settled[3].value : null;
+    var sy   = settled[4].status === 'fulfilled' ? settled[4].value : null;
+    var ss   = settled[5].status === 'fulfilled' ? settled[5].value : null;
+
+    if (desc && desc.data)  result.version     = desc.data.version || '';
+    result.threads     = ep && ep.data   ? ep.data   : [];
+    result.workThreads = wt && wt.data   ? wt.data   : [];
+    result.stat        = st && st.data   ? st.data   : {};
+    result.sysStat     = sy && sy.code === 0 ? sy.data : null;
+    result.syncStatus  = ss && ss.code === 0 ? ss.data : null;
 
     return result;
 }
@@ -168,8 +223,19 @@ function _applyNodeData(node, data) {
     if (data.stat) { _setText2('cl-streams-' + id, data.stat.MediaSource || 0); _setText2('cl-sess-' + id, data.stat.TcpSession || 0); }
     if (data.threads && data.threads.length) {
         var avg = Math.round(data.threads.reduce(function(s,t){return s+(t.load||0);},0) / data.threads.length);
-        _setText2('cl-ep-' + id, avg + '%');
+        var avgCol = avg > 80 ? '#f85149' : avg > 50 ? '#d29922' : '#3fb950';
+        _setText2('cl-ep-' + id, avg + '% (' + data.threads.length + ')');
+        var epEl = document.getElementById('cl-ep-' + id);
+        if (epEl) epEl.style.color = avgCol;
         _renderNodeThreadBars('cl-poller-' + id, data.threads);
+    }
+    if (data.workThreads && data.workThreads.length) {
+        var wtAvg = Math.round(data.workThreads.reduce(function(s,t){return s+(t.load||0);},0) / data.workThreads.length);
+        var wtCol = wtAvg > 80 ? '#f85149' : wtAvg > 50 ? '#d29922' : '#3fb950';
+        _setText2('cl-wt-' + id, wtAvg + '% (' + data.workThreads.length + ')');
+        var wtEl = document.getElementById('cl-wt-' + id);
+        if (wtEl) wtEl.style.color = wtCol;
+        _renderNodeThreadBars('cl-wt-poller-' + id, data.workThreads);
     }
     if (data.version) _setText2('cl-version-' + id, data.version.substring(0,32));
     _setText2('cl-latency-' + id, data.latency + 'ms RTT');
@@ -200,10 +266,9 @@ function _renderNodeThreadBars(elId, threads) {
     }).join('');
 }
 
-function _updateSummary(online, offline) {
+function _updateSummary(online, total) {
     var el = document.getElementById('cl-summary');
     if (!el) return;
-    var total = online + offline;
     var health = total ? Math.round(online/total*100) : 0;
     var cls = health === 100 ? 'ok' : health >= 50 ? 'warn' : 'err';
     el.innerHTML = '<span class="cl-sum-badge ' + cls + '">' + online + '/' + total + ' Online</span>' +
@@ -217,12 +282,13 @@ function _updateSyncTable(nodes) {
         var s = _clusterState.nodeStats[n.id] || {};
         var st = s.online ? '<span class="cl-sum-badge ok" style="font-size:0.68rem;padding:1px 7px">Online</span>' : '<span class="cl-sum-badge err" style="font-size:0.68rem;padding:1px 7px">Offline</span>';
         var ts = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '—';
+        var addrLabel = n.baseUrl || (n.ip + ':' + n.httpPort);
         var streams = s.stat ? (s.stat.MediaSource || 0) : '—';
         var sess    = s.stat ? (s.stat.TcpSession  || 0) : '—';
         var cpu     = s.sysStat && s.sysStat.cpu ? Math.round(s.sysStat.cpu.usage_pct) + '%' : '—';
         var ram     = s.sysStat && s.sysStat.ram ? Math.round(s.sysStat.ram.usage_pct) + '%' : '—';
         return '<tr><td><strong>' + _esc(n.name) + '</strong>' + (n.isSelf?' <span class="cl-self-badge">SELF</span>':'') + '</td>' +
-            '<td class="mono">' + _esc(n.ip) + ':' + n.httpPort + '</td>' +
+            '<td class="mono">' + _esc(addrLabel) + '</td>' +
             '<td class="tc">' + st + '</td>' +
             '<td class="tc mono">' + (s.latency != null ? s.latency + 'ms' : '—') + '</td>' +
             '<td class="tc">' + streams + '</td><td class="tc">' + sess + '</td>' +
@@ -290,7 +356,7 @@ function _updateTxnTable(nodes) {
                 '<div class="cl-txn-node-hd">' +
                     nodeLabel +
                     ' <span class="cl-txn-meta mono">' + _esc((ss.mediaServerId||'').substring(0,16)) + '</span>' +
-                    ' <span class="cl-txn-meta mono">db: ' + _esc((ss.db_guid||'').substring(0,12)) + '</span>' +
+                    ' <span class="cl-txn-meta mono">db: ' + _esc((ss.DB_INSTANCE_ID||'').substring(0,12)) + '</span>' +
                     ' <span class="cl-sum-badge info" style="font-size:.66rem">log total: ' + totalLogRows + '</span>' +
                 '</div>' +
                 '<div class="cl-txn-grid">' +
@@ -321,6 +387,17 @@ function _updateTxnTable(nodes) {
     wrap.innerHTML = html || '<p class="cl-note">Không có dữ liệu</p>';
 }
 
+function _toggleNodeThreads(detailId) {
+    var el = document.getElementById(detailId);
+    if (!el) return;
+    var isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    // Update button arrow
+    var btnId = detailId.replace('cl-thr-ep-', 'cl-ep-toggle-').replace('cl-thr-wt-', 'cl-wt-toggle-');
+    var btn = document.getElementById(btnId);
+    if (btn) btn.textContent = isOpen ? '\u25b6' : '\u25bc';
+}
+
 function _clusterAddNodeDialog() {
     var bd = document.getElementById('cl-dialog-backdrop'); var dg = document.getElementById('cl-dialog');
     if (bd) bd.style.display = 'block'; if (dg) dg.style.display = 'flex';
@@ -349,19 +426,68 @@ async function _saveNodeFromDialog() {
 }
 
 function _buildBase(n) {
+    // Fallback for nodes without pre-computed baseUrl
     var proto = n.clientUseSsl ? 'https' : 'http';
     var port  = n.httpPort || 80;
     var host  = n.domain || n.ip;
     return (proto==='http'&&port===80)||(proto==='https'&&port===443) ? proto+'://'+host : proto+'://'+host+':'+port;
+}
+
+/**
+ * Mirror of C++ buildOrginUrls() / ClusterManager.
+ * For peer nodes: respects useWebDomain / useDomain / ip, clientUseSsl,
+ * isAutoHttpPort (http_port vs nat_http_port), useCustomPath.
+ * For self node: caller passes auth.serverUrl directly.
+ */
+function _buildPeerBaseFromEntry(p, apiDomain) {
+    var proto = p.clientUseSsl ? 'https' : 'http';
+    var host;
+    if (p.useWebDomain && apiDomain) {
+        host = apiDomain;
+    } else if (p.useDomain && p.domain) {
+        host = p.domain;
+    } else {
+        host = p.ip || 'localhost';
+    }
+    var port;
+    if (p.clientUseSsl) {
+        port = p.isAutoHttpsPort ? (p.https_port || p.httpsPort || 443) : (p.nat_https_port || p.natHttpsPort || 443);
+    } else {
+        port = p.isAutoHttpPort ? (p.http_port || p.httpPort || 80) : (p.nat_http_port || p.natHttpPort || 80);
+    }
+    var base = proto + '://' + host;
+    if (!((proto === 'http' && port === 80) || (proto === 'https' && port === 443))) {
+        base += ':' + port;
+    }
+    if (p.useCustomPath && p.customPath) {
+        base += p.customPath;
+    }
+    return base;
+}
+
+/** Mirror of C++ fromApiUrl(): extracts hostname from e.g. http://domain:port/path */
+function _fromApiUrl(apiUrl) {
+    if (!apiUrl) return '';
+    var start = apiUrl.indexOf('://');
+    start = start !== -1 ? start + 3 : 0;
+    var end = apiUrl.indexOf(':', start);
+    if (end === -1) end = apiUrl.indexOf('/', start);
+    return end !== -1 ? apiUrl.substring(start, end) : apiUrl.substring(start);
 }
 function _parseUrl(url) {
     try { var u = new URL(url); return {hostname: u.hostname, port: parseInt(u.port||(u.protocol==='https:'?'443':'80'),10)}; }
     catch(_) { return {hostname:'localhost',port:80}; }
 }
 async function _fetchJson(url) {
-    var r = await fetch(url, {credentials:'omit'});
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function () { ctrl.abort(); }, 5000);
+    try {
+        var r = await fetch(url, { credentials: 'omit', signal: ctrl.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    } finally {
+        clearTimeout(tid);
+    }
 }
 function _setText2(id, v) { var el=document.getElementById(id); if(el) el.textContent=v; }
 function _esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -416,7 +542,12 @@ function _injectClusterCSS() {
     '.cl-m-lbl{font-size:.66rem;color:var(--c-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}',
     '.cl-m-val{font-size:.9rem;font-weight:700;color:var(--c-text)}',
     '.cl-m-val.mono{font-family:monospace;font-size:.72rem}',
-    '.cl-node-poller{padding:8px 14px;display:flex;flex-direction:column;gap:4px}',
+    '.cl-collapse-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:4px;border-radius:3px;font-size:0.58rem;cursor:pointer;border:1px solid var(--c-border);background:var(--c-elev);color:var(--c-muted);vertical-align:middle;flex-shrink:0;padding:0;transition:background .1s,color .1s}',
+    '.cl-collapse-btn:hover{background:var(--c-surf);color:var(--c-accent);border-color:var(--c-accent)}',
+    '.cl-thr-detail{border-top:1px solid var(--c-border);padding:8px 14px 10px}',
+    '.cl-thr-detail-hd{font-size:0.62rem;font-weight:700;color:var(--c-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}',
+    '.cl-node-poller{display:flex;flex-direction:column;gap:4px}',
+    '.cl-node-wt-poller{display:flex;flex-direction:column;gap:4px}',
     '.cl-thr-row{display:flex;align-items:center;gap:6px;font-size:.7rem}',
     '.cl-thr-name{color:var(--c-muted);min-width:70px;font-family:monospace;font-size:.66rem;flex-shrink:0}',
     '.cl-thr-bar-wrap{flex:1;height:6px;background:var(--c-elev);border-radius:3px;overflow:hidden}',

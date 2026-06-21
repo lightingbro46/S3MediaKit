@@ -1,10 +1,10 @@
 // =============================================================================
 // dashboard/dashboard.js — Real-time Monitoring Dashboard
 // APIs used (secret-based):
-//   /index/api/getThreadsLoad      → EventPoller thread load + fd_count + delay
-//   /index/api/getWorkThreadsLoad  → WorkThread load
-//   /index/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
-//   /media/mserver/systemStatistic → CPU/RAM/HDD/Net (works if enableAuthorize=0)
+//   /media/api/getThreadsLoad      → EventPoller thread load + fd_count + delay
+//   /media/api/getWorkThreadsLoad  → WorkThread load
+//   /media/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
+//   /media/api/systemStatistic     → CPU/RAM/HDD/Net
 // =============================================================================
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -102,6 +102,8 @@ var _dashState = {
     lastWorkThreads: [],
     initialized: false,
 };
+var _epAvgSeries = new RingBuffer(60);
+var _wtAvgSeries = new RingBuffer(60);
 
 // ────────────────────────────────────────────────────────────────────────────
 // Dashboard entry point
@@ -140,7 +142,7 @@ function _buildDashboardLayout() {
         // ── Row 2: System resources (CPU/RAM/HDD) ──────────────────────
         '<div class="dash-row-title" style="margin-top:22px">' +
             'Tài nguyên hệ thống ' +
-            '<span id="sysstat-badge" class="dash-badge-info" title="Endpoint /media/mserver/systemStatistic cần enableAuthorize=0 hoặc JWT auth">loading…</span>' +
+            '<span id="sysstat-badge" class="dash-badge-info" title="Endpoint /media/api/systemStatistic cần api.secret trong config.ini">loading…</span>' +
         '</div>' +
         '<div class="dash-sys-row">' +
             _sysGauge('dash-cpu-gauge',   'CPU',     '—%') +
@@ -158,18 +160,34 @@ function _buildDashboardLayout() {
         '</div>' +
 
         // ── Row 4: Event Poller threads ────────────────────────────────
-        '<div class="dash-row-title" style="margin-top:22px">Event Poller Threads</div>' +
+        '<div class="dash-row-title" style="margin-top:22px">' +
+            'Event Poller Threads ' +
+            '<span id="dash-ep-avg-badge" class="dash-badge-info">avg —%</span>' +
+            '<button class="dash-collapse-btn" onclick="_toggleThreadPanel(\'dash-ep-detail\')" id="dash-ep-toggle">▶ Chi tiết</button>' +
+        '</div>' +
         '<div class="dash-thread-panel" id="dash-panel-ep">' +
-            '<div id="dash-ep-bars" class="dash-ep-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
             '<div id="dash-ep-sparkline-wrap" class="dash-spark-mini-wrap">' +
                 '<svg id="dash-ep-spark" class="dash-spark-svg" style="height:44px"></svg>' +
                 '<div class="dash-spark-lbl">Avg load %</div>' +
             '</div>' +
         '</div>' +
+        '<div class="dash-thread-detail" id="dash-ep-detail" style="display:none">' +
+            '<div id="dash-ep-bars" class="dash-ep-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
+        '</div>' +
 
-        // ── Row 5: Work threads ────────────────────────────────────────
-        '<div class="dash-row-title" style="margin-top:22px">Work Threads</div>' +
+        // ── Row 5: Work threads ────────────────────────────────────────────────
+        '<div class="dash-row-title" style="margin-top:22px">' +
+            'Work Threads ' +
+            '<span id="dash-wt-avg-badge" class="dash-badge-info">avg —%</span>' +
+            '<button class="dash-collapse-btn" onclick="_toggleThreadPanel(\'dash-wt-detail\')" id="dash-wt-toggle">▶ Chi tiết</button>' +
+        '</div>' +
         '<div class="dash-thread-panel" id="dash-panel-wt">' +
+            '<div id="dash-wt-sparkline-wrap" class="dash-spark-mini-wrap">' +
+                '<svg id="dash-wt-spark" class="dash-spark-svg" style="height:44px"></svg>' +
+                '<div class="dash-spark-lbl">Avg load %</div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="dash-thread-detail" id="dash-wt-detail" style="display:none">' +
             '<div id="dash-wt-bars" class="dash-wt-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
         '</div>' +
 
@@ -231,53 +249,72 @@ function _updateStaticInfo() {
 // ────────────────────────────────────────────────────────────────────────────
 // Polling
 // ────────────────────────────────────────────────────────────────────────────
-var _epAvgSeries = new RingBuffer(60);
+
+function _toggleThreadPanel(detailId) {
+    var detail = document.getElementById(detailId);
+    if (!detail) return;
+    var isOpen = detail.style.display !== 'none';
+    detail.style.display = isOpen ? 'none' : 'block';
+    // Update toggle button label
+    var btnId = detailId === 'dash-ep-detail' ? 'dash-ep-toggle' : 'dash-wt-toggle';
+    var btn = document.getElementById(btnId);
+    if (btn) btn.textContent = isOpen ? '▶ Chi tiết' : '▼ Thu gọn';
+}var _epAvgSeries = new RingBuffer(60);
 
 function _startPolling() {
     _poll();
     _dashState.pollerTimer = setInterval(_poll, 3000);
 }
 
-async function _poll() {
-    try {
-        var results = await Promise.allSettled([
-            S3Auth.apiFetch('/index/api/getStatistic'),
-            S3Auth.apiFetch('/index/api/getThreadsLoad'),
-            S3Auth.apiFetch('/index/api/getWorkThreadsLoad'),
-            _fetchSystemStat(),
-        ]);
-
-        var statRes   = results[0].status === 'fulfilled' ? results[0].value : null;
-        var epRes     = results[1].status === 'fulfilled' ? results[1].value : null;
-        var wtRes     = results[2].status === 'fulfilled' ? results[2].value : null;
-        var sysRes    = results[3].status === 'fulfilled' ? results[3].value : null;
-
-        if (statRes)  _applyStatistic(statRes.data || {});
-        if (epRes)    _applyEventPoller(epRes.data || []);
-        if (wtRes)    _applyWorkThreads(wtRes.data || []);
-        if (sysRes)   _applySysStat(sysRes);
-        else if (_dashState.sysStatAvail === null) {
-            _dashState.sysStatAvail = false;
-            var badgeEl = document.getElementById('sysstat-badge');
-            if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/mserver/systemStatistic cần manager.enableAuthorize=0 trong config.ini'; }
-        }
-
-        var ts = new Date().toLocaleTimeString();
+function _poll() {
+    // Timeout wrapper — rejects after 5s (does not cancel underlying fetch for apiFetch)
+    function _t(p) {
+        return Promise.race([p, new Promise(function (_, rej) {
+            setTimeout(function () { rej(new Error('timeout')); }, 5000);
+        })]);
+    }
+    function _updateTs() {
         var tsEl = document.getElementById('dash-last-update');
-        if (tsEl) tsEl.textContent = 'Cập nhật lúc ' + ts;
+        if (tsEl) tsEl.textContent = 'Cập nhật lúc ' + new Date().toLocaleTimeString();
+    }
 
-    } catch (e) { /* silent */ }
+    _t(S3Auth.apiFetch('/media/api/getStatistic'))
+        .then(function (r) { _applyStatistic((r && r.data) || {}); _updateTs(); })
+        .catch(function () {});
+
+    _t(S3Auth.apiFetch('/media/api/getThreadsLoad'))
+        .then(function (r) { _applyEventPoller((r && r.data) || []); _updateTs(); })
+        .catch(function () {});
+
+    _t(S3Auth.apiFetch('/media/api/getWorkThreadsLoad'))
+        .then(function (r) { _applyWorkThreads((r && r.data) || []); _updateTs(); })
+        .catch(function () {});
+
+    _t(_fetchSystemStat())
+        .then(function (r) { _applySysStat(r); _updateTs(); })
+        .catch(function () {
+            if (_dashState.sysStatAvail === null) {
+                _dashState.sysStatAvail = false;
+                var badgeEl = document.getElementById('sysstat-badge');
+                if (badgeEl) { badgeEl.textContent = 'Cần enableAuthorize=0'; badgeEl.className = 'dash-badge-warn'; badgeEl.title = 'Endpoint /media/api/systemStatistic cần api.secret trong config.ini'; }
+            }
+        });
 }
 
 async function _fetchSystemStat() {
-    // Try without JWT — works when enableAuthorize=0
     var auth = S3Auth.get();
     if (!auth) throw new Error('no auth');
-    var url = auth.serverUrl + '/media/mserver/systemStatistic?secret=' + encodeURIComponent(auth.secret);
-    var r = await fetch(url, { credentials: 'omit' });
-    var d = await r.json();
-    if (d.code !== 0) throw new Error('not available');
-    return d.data;
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function () { ctrl.abort(); }, 5000);
+    try {
+        var url = auth.serverUrl + '/media/api/systemStatistic?secret=' + encodeURIComponent(auth.secret);
+        var r = await fetch(url, { credentials: 'omit', signal: ctrl.signal });
+        var d = await r.json();
+        if (d.code !== 0) throw new Error('not available');
+        return d.data;
+    } finally {
+        clearTimeout(tid);
+    }
 }
 
 function _applyStatistic(d) {
@@ -312,6 +349,12 @@ function _applyEventPoller(threads) {
     _epAvgSeries.push(avg);
     _updateSparkline('dash-ep-spark', _epAvgSeries.values(), '#388bfd', 100);
 
+    var badge = document.getElementById('dash-ep-avg-badge');
+    if (badge) {
+        badge.textContent = 'avg ' + avg + '%  (' + threads.length + ' threads)';
+        badge.className = avg > 80 ? 'dash-badge-warn' : 'dash-badge-info';
+    }
+
     // Combine fd_count into quick card
     var totalFd = threads.reduce(function(s, t) { return s + (t.fd_count || 0); }, 0);
     _setText('dash-card-fd', totalFd);
@@ -320,6 +363,18 @@ function _applyEventPoller(threads) {
 function _applyWorkThreads(threads) {
     _dashState.lastWorkThreads = threads;
     renderThreadBars('dash-wt-bars', threads);
+
+    var avg = threads.length
+        ? Math.round(threads.reduce(function(s, t) { return s + (t.load || 0); }, 0) / threads.length)
+        : 0;
+    _wtAvgSeries.push(avg);
+    _updateSparkline('dash-wt-spark', _wtAvgSeries.values(), '#3fb950', 100);
+
+    var badge = document.getElementById('dash-wt-avg-badge');
+    if (badge) {
+        badge.textContent = 'avg ' + avg + '%  (' + threads.length + ' threads)';
+        badge.className = avg > 80 ? 'dash-badge-warn' : 'dash-badge-info';
+    }
 }
 
 function _applySysStat(d) {
@@ -516,9 +571,21 @@ function _injectDashCSS() {
     /* ─── Thread panels ──────────────────────────────────────────── */
     .dash-thread-panel {
         background: var(--c-surf); border: 1px solid var(--c-border);
-        border-radius: 8px; padding: 14px 16px;
+        border-radius: 8px; padding: 10px 16px;
         display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap;
     }
+    .dash-thread-detail {
+        background: var(--c-surf); border: 1px solid var(--c-border);
+        border-top: none; border-radius: 0 0 8px 8px;
+        padding: 10px 16px 14px; margin-top: -4px;
+    }
+    .dash-collapse-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 2px 9px; border-radius: 4px; font-size: 0.7rem; font-weight: 600;
+        cursor: pointer; border: 1px solid var(--c-border); background: var(--c-elev);
+        color: var(--c-muted); transition: background 0.1s, color 0.1s;
+    }
+    .dash-collapse-btn:hover { background: var(--c-surf); color: var(--c-text); border-color: var(--c-accent); }
     .dash-ep-bars-wrap, .dash-wt-bars-wrap { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 5px; }
     .dash-spark-mini-wrap { flex: 0 0 220px; }
     .dash-thr-loading { font-size: 0.78rem; color: var(--c-muted); }

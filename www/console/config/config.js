@@ -167,6 +167,10 @@ function _renderConfig(container, config) {
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                     Tải lại
                 </button>
+                <button class="cfg-btn-restart" onclick="cfgShowRestartDialog()" type="button">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M13 3a9 9 0 1 0 7.5 13.92l-1.73-1a7 7 0 1 1-5.77-9.89V9l4-4-4-4v2.03z"/></svg>
+                    Restart
+                </button>
                 <button class="cfg-btn-save-all" onclick="cfgSaveAll()" type="button">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>
                     Lưu tất cả
@@ -326,4 +330,99 @@ function cfgToast(msg, type) {
     el.className   = 'cfg-toast cfg-toast-' + type + ' show';
     clearTimeout(_toastTimer);
     _toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+// ── Restart dialog ────────────────────────────────────────────────────────────
+
+function cfgShowRestartDialog() {
+    if (document.getElementById('cfg-restart-overlay')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'cfg-restart-overlay';
+    overlay.className = 'cfg-restart-overlay';
+    overlay.innerHTML = `
+        <div class="cfg-restart-dialog" role="dialog" aria-modal="true" aria-labelledby="cfg-restart-title">
+            <div class="cfg-restart-hd">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M13 3a9 9 0 1 0 7.5 13.92l-1.73-1a7 7 0 1 1-5.77-9.89V9l4-4-4-4v2.03z"/></svg>
+                <span id="cfg-restart-title">Xác nhận khởi động lại</span>
+            </div>
+            <p class="cfg-restart-desc">Nhập <strong>secret key</strong> để xác nhận restart server.<br>Server sẽ tự động khởi động lại sau 1 giây.</p>
+            <div class="cfg-restart-field">
+                <label class="cfg-restart-lbl" for="cfg-restart-secret">Secret key</label>
+                <input id="cfg-restart-secret" type="password" class="cfg-restart-input" placeholder="Nhập secret key…" autocomplete="current-password">
+                <div id="cfg-restart-err" class="cfg-restart-err" hidden></div>
+            </div>
+            <div class="cfg-restart-footer">
+                <button class="cfg-restart-cancel" onclick="cfgCloseRestartDialog()" type="button">Huỷ</button>
+                <button class="cfg-restart-confirm" onclick="cfgDoRestart()" type="button">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M13 3a9 9 0 1 0 7.5 13.92l-1.73-1a7 7 0 1 1-5.77-9.89V9l4-4-4-4v2.03z"/></svg>
+                    Restart
+                </button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    // close on backdrop click
+    overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) cfgCloseRestartDialog();
+    });
+
+    // submit on Enter
+    overlay.querySelector('#cfg-restart-secret').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') cfgDoRestart();
+        if (e.key === 'Escape') cfgCloseRestartDialog();
+    });
+
+    setTimeout(function () { overlay.querySelector('#cfg-restart-secret').focus(); }, 60);
+}
+
+function cfgCloseRestartDialog() {
+    const el = document.getElementById('cfg-restart-overlay');
+    if (el) el.remove();
+}
+
+async function cfgDoRestart() {
+    const input = document.getElementById('cfg-restart-secret');
+    const errEl = document.getElementById('cfg-restart-err');
+    if (!input) return;
+
+    const secret = input.value.trim();
+    if (!secret) {
+        errEl.textContent = 'Vui lòng nhập secret key.';
+        errEl.hidden = false;
+        input.focus();
+        return;
+    }
+
+    // verify against stored secret
+    const auth = window.S3Auth ? S3Auth.get() : null;
+    if (auth && auth.secret && secret !== auth.secret) {
+        errEl.textContent = 'Secret key không đúng. Vui lòng thử lại.';
+        errEl.hidden = false;
+        input.value = '';
+        input.focus();
+        return;
+    }
+
+    const confirmBtn = document.querySelector('.cfg-restart-confirm');
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Đang gửi…'; }
+
+    try {
+        const a = auth || { serverUrl: '', secret: '' };
+        const url = a.serverUrl + '/index/api/restartServer?secret=' + encodeURIComponent(secret);
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.code === 0) {
+            cfgCloseRestartDialog();
+            cfgToast('Server đang khởi động lại…', 'info');
+        } else {
+            errEl.textContent = data.msg || ('Lỗi: code=' + data.code);
+            errEl.hidden = false;
+            if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M13 3a9 9 0 1 0 7.5 13.92l-1.73-1a7 7 0 1 1-5.77-9.89V9l4-4-4-4v2.03z"/></svg> Restart'; }
+        }
+    } catch (err) {
+        errEl.textContent = 'Lỗi kết nối: ' + err.message;
+        errEl.hidden = false;
+        if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M13 3a9 9 0 1 0 7.5 13.92l-1.73-1a7 7 0 1 1-5.77-9.89V9l4-4-4-4v2.03z"/></svg> Restart'; }
+    }
 }

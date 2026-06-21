@@ -29,6 +29,10 @@ public:
 
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
+    
+    void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);
+
     bool setupRecordEvent(RecordEventType type, bool start);
 
     void setupStreamRegist(int type, bool regist);
@@ -72,6 +76,7 @@ private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;
     std::atomic<bool> _enabled { false };
+    std::atomic<bool> _exit { false };
     GenericRtspCamera::Ptr _src;
     CameraOption _option;
     CameraController::Ptr _controller;

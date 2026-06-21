@@ -76,7 +76,7 @@ static void loadSavedDeviceInfo() {
 }
 
 static void loadSavedMediaServerInfo() {
-    EventPollerPool::Instance().getPoller()->doDelayTask(10000, []() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(6000, []() {
         DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
         DebugL << "Sync manager has been started";
@@ -309,12 +309,19 @@ void installManagerHook () {
 static void releaseAllDevice() {
     // release all camera
     CameraManager::Instance().clear();
-    // sleep for 3 second before uninstall hook, to prevent resource release order errors
-    sleep(3);
+}
+
+static void releaseSyncDatabase() {
+    SyncManager::Instance().stop();
 }
 
 void unInstallManagerHook() {
+    releaseSyncDatabase();
     releaseAllDevice();
+
+    // sleep for 10 second before uninstall hook, to prevent resource release order errors
+    sleep(10);
+
     // Note: Comment the following code in order to save last segments when program exit
     NoticeCenter::Instance().delListener(&manager_hook_tag);
 }
@@ -689,8 +696,8 @@ static Json::Value exampleJson() {
             period["dh"] = StrPrinter << d << "," << h;
             period["fps"] = 25;
             period["q"] = "L";
-            // period["ty"] = static_cast<int>(RecordMode::RecordAlways);
-            period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
+            period["ty"] = static_cast<int>(RecordMode::RecordAlways);
+            // period["ty"] = static_cast<int>(RecordMode::RecordLowResAndMotion);
             // period["ty"] = static_cast<int>(RecordMode::RecordOnlyMotion);
             schedule.append(period);
         }
@@ -737,7 +744,7 @@ static Json::Value exampleJson() {
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
     device["motionDetectConfig"]["chooseStream"] = "SECONDARY";
-    device["motionDetectConfig"]["clientEnabled"] = true;
+    device["motionDetectConfig"]["clientEnabled"] = false;
     device["motionDetectConfig"]["mediaSupport"] = true;
     device["motionDetectConfig"]["value"] =
         "00000000000000000000000000000000000000000000"  // row  0
@@ -775,7 +782,7 @@ static Json::Value exampleJson() {
         ;
     // device["motionDetectConfig"]["value"] = "0000000000000333333333333333333333333333333300000000000003333333333333333333333333333333000000000000033333333333333333333333333333330000000000000333333333333333333333333333333300000000000003333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333335555555553333333333333333333333333333333333355555555533333333333333333333333333333333333555555555333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333444444444433333333333333333330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003334444444444333333322222222233300000000000033344444444443333333222222222333000000000000333444444444433333332222222223330000000000003333333333333333333322222222233300000000000033333333333333333333222222222333000000000000333333333333333333332222222223330000000000003333333333333333333322222222233333333333333333333333333333333333222222222333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333";
 
-    // data["devices"].append(device);
+    data["devices"].append(device);
 
     data["media_server"] = Json::objectValue;
     data["media_server"]["restartConfig"] = Json::objectValue;
@@ -785,6 +792,23 @@ static Json::Value exampleJson() {
     data["media_server"]["restartConfig"]["dayOfWeek"] = "";
     data["media_server"]["restartConfig"]["everyHours"] = "";
     data["media_server"]["restartConfig"]["timezone"] = Json::nullValue;
+    data["media_server"]["failover"] = true;
+    data["media_server"]["maxConfigCameras"] = 100;
+    data["media_server"]["serverGroupId"] = 1;
+    data["media_server"]["projectId"] = "93df2408-a27c-41fc-a24d-b230156d2628";
+    data["media_server"]["unlimitedStreamPerCamera"] = false;
+    data["media_server"]["maxStreamPerCamera"] = 10;
+    data["media_server"]["streamMaxCameraOfLicense"] = 20;
+    data["media_server"]["unlimitedStream"] = false;
+    data["media_server"]["maxStream"] = 100;
+    data["media_server"]["streamMaxOfLicense"] = 200;
+    data["media_server"]["thresholdConfig"] = Json::objectValue;
+    data["media_server"]["thresholdConfig"]["CPU_levelLow"] = 0.7;
+    data["media_server"]["thresholdConfig"]["CPU_levelMedium"] = 0.9;
+    data["media_server"]["thresholdConfig"]["RAM_levelLow"] = 0.7;
+    data["media_server"]["thresholdConfig"]["RAM_levelMedium"] = 0.9;
+    data["media_server"]["thresholdConfig"]["HDD_levelLow"] = 0.8;
+    data["media_server"]["thresholdConfig"]["HDD_levelMedium"] = 0.95;
 
     data["list_media_server"] = Json::arrayValue;
     Json::Value self_server = Json::objectValue;
@@ -846,8 +870,12 @@ static Json::Value exampleJson() {
     return data;
 }
 
+#ifdef ENABLE_DEBUG
 void loadServerConfigJson(const Json::Value &data1) {
     auto data = exampleJson();
+#else
+void loadServerConfigJson(const Json::Value &data) {
+#endif
     TraceL << "Server configuration loaded: " << data.toStyledString();
     Ticker _ticker;
 
@@ -989,52 +1017,58 @@ static std::string getGenericRtspCameraErrMsg(const Json::Value &device) {
 void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
     Json::Value data = Json::arrayValue;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-        auto weak_listener = device->getListener();
-        if (auto strong_listener = weak_listener.lock()) {
-            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-            if (impl) {
-                auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
-                auto stats_imp = impl->getCameraStatisticImp();
-                if (stats_imp) {
-                    auto params = stats_imp->getParams();
-                    auto option = params.option;
-                    if (option.enableFailover && !impl->isEnabled()) {
-                        // this camera run in failover mode and actual camera connection run on prefered media server
-                        return;
-                    }
-                    Json::Value item;
-                    item["deviceId"] = params.tuple.device_id;
-                    // Get both stream status
-                    if (camera->hasStreamTuple(PrimaryStream)) {
-                        item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
-                        item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
-                    } else {
-                        item["primaryStreamId"] = Json::nullValue;
-                        item["primaryStream"] = Json::nullValue;
-                    }
+        try {
+            auto weak_listener = device->getListener();
+            if (auto strong_listener = weak_listener.lock()) {
+                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                if (impl) {
+                    auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
+                    auto stats_imp = impl->getCameraStatisticImp();
+                    if (stats_imp) {
+                        auto params = stats_imp->getParams();
+                        auto option = params.option;
+                        if (option.enableFailover && !impl->isEnabled()) {
+                            // this camera run in failover mode and actual camera connection run on prefered media server
+                            return;
+                        }
+                        Json::Value item;
+                        item["deviceId"] = params.tuple.device_id;
+                        // Get both stream status
+                        if (camera->hasStreamTuple(PrimaryStream)) {
+                            item["primaryStreamId"] =  params.stream_map[PrimaryStream].stream_id;
+                            item["primaryStream"] = makeStreamStatisticJson(params, PrimaryStream);
+                        } else {
+                            item["primaryStreamId"] = Json::nullValue;
+                            item["primaryStream"] = Json::nullValue;
+                        }
 
-                    if (camera->hasStreamTuple(SecondaryStream)) {
-                        item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
-                        item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
-                    } else {
-                        item["secondaryStreamId"] = Json::nullValue;
-                        item["secondaryStream"] = Json::nullValue;
+                        if (camera->hasStreamTuple(SecondaryStream)) {
+                            item["secondaryStreamId"] =  params.stream_map[SecondaryStream].stream_id;
+                            item["secondaryStream"] = makeStreamStatisticJson(params, SecondaryStream);
+                        } else {
+                            item["secondaryStreamId"] = Json::nullValue;
+                            item["secondaryStream"] = Json::nullValue;
+                        }
+                        // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
+                        // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
+                        auto is_online = isGenericRtspCameraOnline(item);
+                        item["status"] = is_online;
+                        item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
+                        // Get controller status
+                        if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
+                            item["controller"]["status"] = params.device_stats.connect;
+                            item["controller"]["errMsg"] = params.device_stats.status;
+                        } else {
+                            item["controller"] = Json::nullValue;
+                        }
+                        data.append(item);
                     }
-                    // note: for generic rtsp camera, we will determine camera online status based on stream status, if at least one stream is online then the camera is considered online, and error message will be determined based on stream status as well,
-                    // if at least one stream is online then the error message of primary stream will be shown if available, otherwise show error message of secondary stream; for onvif camera, we will determine camera online status based on device connection status, and error message will be determined based on device connection status as well
-                    auto is_online = isGenericRtspCameraOnline(item);
-                    item["status"] = is_online;
-                    item["errMsg"] = is_online ? "Connected" : getGenericRtspCameraErrMsg(item);
-                    // Get controller status
-                    if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
-                        item["controller"]["status"] = params.device_stats.connect;
-                        item["controller"]["errMsg"] = params.device_stats.status;
-                    } else {
-                        item["controller"] = Json::nullValue;
-                    }
-                    data.append(item);
                 }
             }
+        } catch (std::exception &ex) {
+            WarnL << "Report server statistic exception: " << ex.what();
+        } catch (...) {
+            WarnL << "Report server statistic unknown exception";
         }
     });
     TraceL << "Server statistic report: " << data.toStyledString();
@@ -1633,44 +1667,50 @@ Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &devi
             auto stats_imp = impl->getCameraStatisticImp();
             if (stats_imp) {
                 auto params = stats_imp->getParams();
-                for (const auto &mp : params.device_stats.device_caps.onvifProfile.mediaProfiles) {
-                    Json::Value mp_json = Json::objectValue;
-                    mp_json["token"] = mp.token;
-                    mp_json["url"] = mp.url;
-                    mp_json["videoEncoder"]["vcodec"] = mp.vcodec;
-                    mp_json["videoEncoder"]["width"] = mp.width;
-                    mp_json["videoEncoder"]["height"] = mp.height;
-                    mp_json["videoEncoder"]["bitrate"] = mp.bitrate;
-                    mp_json["videoEncoder"]["fps"] = mp.fps;
-                    for (const auto &vo : mp.vEncoderOptionMap) {
-                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
-                        mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
-                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
-                        mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
-                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
-                        for (const auto &r : vo.second.ResolutionsAvailable) {
-                            Json::Value stream;
-                            stream["width"] = r.first;
-                            stream["height"] = r.second;
-                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+                item["deviceStatus"] = params.device_stats.status;
+                item["deviceConnect"] = params.device_stats.connect;
+                Json::Value mediaProfiles = Json::arrayValue;
+                if (params.device_stats.connect) {
+                    for (const auto &mp : params.device_stats.device_caps.onvifProfile.mediaProfiles) {
+                        Json::Value mp_json = Json::objectValue;
+                        mp_json["token"] = mp.token;
+                        mp_json["url"] = mp.url;
+                        mp_json["videoEncoder"]["vcodec"] = mp.vcodec;
+                        mp_json["videoEncoder"]["width"] = mp.width;
+                        mp_json["videoEncoder"]["height"] = mp.height;
+                        mp_json["videoEncoder"]["bitrate"] = mp.bitrate;
+                        mp_json["videoEncoder"]["fps"] = mp.fps;
+                        for (const auto &vo : mp.vEncoderOptionMap) {
+                            mp_json["videoEncoder"]["available"][vo.first]["fps"]["supported"] = vo.second.FrameRatesSupported;
+                            mp_json["videoEncoder"]["available"][vo.first]["fps"]["editable"] = vo.second.FPSEditable;
+                            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["supported"] = vo.second.BitRateRange;
+                            mp_json["videoEncoder"]["available"][vo.first]["bitrate"]["editable"] = vo.second.bitrateEditable;
+                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] = Json::arrayValue;
+                            for (const auto &r : vo.second.ResolutionsAvailable) {
+                                Json::Value stream;
+                                stream["width"] = r.first;
+                                stream["height"] = r.second;
+                                mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["supported"] .append(stream);
+                            }
+                            mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
                         }
-                        mp_json["videoEncoder"]["available"][vo.first]["ResolutionsAvailable"]["editable"] = vo.second.resolutionEditable;
-                    }
-                    mp_json["videoEncEditable"] = mp.videoEncEditable;
-                    mp_json["videoConfigEditable"] = mp.videoConfigEditable;
-                    
-                    auto it = params.device_stats.stream_settings.find(mp.token);
-                    if (it != params.device_stats.stream_settings.end()) {
-                        const auto &config = it->second;
-                        mp_json["videoEncoder"]["configState"]["retry_time"] = config.state.retry_time;
-                        mp_json["videoEncoder"]["configState"]["status"] = config.state.status;
-                    } else {
-                        mp_json["videoEncoder"]["configState"]["retry_time"] = 5;
-                        mp_json["videoEncoder"]["configState"]["status"] = configStateToString[VideoConfigSetState::EXTERNAL];
-                    }
+                        mp_json["videoEncEditable"] = mp.videoEncEditable;
+                        mp_json["videoConfigEditable"] = mp.videoConfigEditable;
+                        
+                        auto it = params.device_stats.stream_settings.find(mp.token);
+                        if (it != params.device_stats.stream_settings.end()) {
+                            const auto &config = it->second;
+                            mp_json["videoEncoder"]["configState"]["retry_time"] = config.state.retry_time;
+                            mp_json["videoEncoder"]["configState"]["status"] = config.state.status;
+                        } else {
+                            mp_json["videoEncoder"]["configState"]["retry_time"] = 5;
+                            mp_json["videoEncoder"]["configState"]["status"] = configStateToString[VideoConfigSetState::EXTERNAL];
+                        }
 
-                    item.append(mp_json);
+                        mediaProfiles.append(mp_json);
+                    }
                 }
+                item["profiles"] = mediaProfiles;
             }
         }
     }

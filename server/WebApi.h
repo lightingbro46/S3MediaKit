@@ -231,7 +231,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     UserSessionCache::Ptr token_cache;                                                                                                                         \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
-            CHECK_SECRET_OVERRIDE();                                                                                                                           \
+            /*CHECK_SECRET_OVERRIDE();*/                                                                                                                       \
             CHECK_ARGS_("Authorization");                                                                                                                      \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
@@ -355,6 +355,38 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
                 throw AuthException("No add camera permission", ApiErrCode::CODE_NO_ADD_CAMERA_PERMISSION);                                                    \
             }                                                                                                                                                  \
         } while (false);                                                                                                                                       \
+    }
+
+#define CHECK_CLUSTER_AUTHOR_ASYNC(cb)                                                                                                                         \
+    CHECK_ARGS_("secret");                                                                                                                                     \
+    string authorId = allArgs["authorId"];                                                                                                                     \
+    if (allArgs["authorId"].empty()) {                                                                                                                         \
+        CHECK_SECRET();                                                                                                                                        \
+        cb();                                                                                                                                                  \
+        return;                                                                                                                                                \
+    }                                                                                                                                                          \
+    auto permit = UserAuthorManager::Instance().getClusterAuthorCache(allArgs["authorId"], allArgs["secret"]);                                                 \
+    if (permit == UserAuthorPermit::REJECT) {                                                                                                                  \
+        throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                                    \
+    } else if (permit == UserAuthorPermit::ACCEPT) {                                                                                                           \
+        cb();                                                                                                                                                  \
+        return;                                                                                                                                                \
+    }                                                                                                                                                          \
+    Broadcast::AuthInvoker auth_invoker = [allArgs, val, invoker, headerOut, cb](const string &err) mutable {                                                  \
+        /* Note: do not throw error in this scope because it catch in do_http_hook scope */                                                                    \
+        UserAuthorManager::Instance().addClusterAuthorCache(allArgs["authorId"], allArgs["secret"], err.empty(), 600);                                         \
+        if (!err.empty()) {                                                                                                                                    \
+            RETURN_API_RESPONSE(ApiErrCode::CODE_UNAUTHORIZED, err.data());                                                                                    \
+            return;                                                                                                                                            \
+        }                                                                                                                                                      \
+        /* Authorized, execute the callback function */                                                                                                        \
+        cb();                                                                                                                                                  \
+    };                                                                                                                                                         \
+    /* Broadcast to check cluster across access authorization asynchronously */                                                                                \
+    auto flag = NOTICE_EMIT(BroadcastClusterAcrossAccessArgs, Broadcast::kBroadcastClusterAcrossAccess, allArgs["authorId"], allArgs["secret"], auth_invoker); \
+    if (!flag) {                                                                                                                                               \
+        /* No one is listening to the event, directly reject */                                                                                                \
+        auth_invoker("Unauthorized");                                                                                                                          \
     }
 
 void installWebApi();

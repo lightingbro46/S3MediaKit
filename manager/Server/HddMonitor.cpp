@@ -226,7 +226,9 @@ void HddMonitor::start() {
     auto disks = get_disk_partitions();
     for (const auto &d : disks) {
         auto collector = std::make_shared<HddCollector>(d.mount_point, _poller);
-        collector->setOnCollect([&](DiskUsage &info) {
+        auto alive = _monitor_alive;
+        collector->setOnCollect([this, alive](DiskUsage &info) {
+            if (!alive->load(std::memory_order_acquire)) return;
             lock_guard<mutex> lck(_mtx);
             _map_result[info.name].total_bytes = info.total_bytes;
             _map_result[info.name].free_bytes = info.free_bytes;

@@ -219,7 +219,8 @@ static CpuTimes get_cpu_times() {
 void CpuCollector::collect() {
     _info.cores = get_cpu_core_count();
     CpuTimes t1 = get_cpu_times();
-    _poller->doDelayTask(1000, [=]() {
+    _poller->doDelayTask(1000, [this, t1, alive = _alive]() {
+        if (!alive->load(std::memory_order_acquire)) return 0;
         CpuTimes t2 = get_cpu_times();
         if (t1.isCgroup) {
             uint64_t totalDiff = t2.totalTime - t1.totalTime;
@@ -263,7 +264,9 @@ void CpuCollector::collect() {
 
 void CpuMonitor::start() {    
     _collector = std::make_shared<CpuCollector>(_poller);
-    _collector->setOnCollect([&](CpuInfo &info) { 
+    auto alive = _monitor_alive;
+    _collector->setOnCollect([this, alive](CpuInfo &info) { 
+        if (!alive->load(std::memory_order_acquire)) return;
         lock_guard<mutex> lck(_mtx);
         _info = info;
         emitSystemAlert(_info.usagePct);

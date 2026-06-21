@@ -118,18 +118,39 @@ bool CameraManager::delCamera(const string &key) {
                     VmsResourceAssignment out;
                     auto ret = ResourceManager::Instance().getCurrentResourceAssignment(params.tuple.device_id, out);
                     if (ret) {
-                        // DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
-                        //         << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
-                        //         << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
-                        auto self_node_id = ResourceManager::Instance().getSelfNodeId();
-                        GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
-                        bool last_assign = out.owner_peer_id == self_node_id && (time(nullptr) - out.released_at) > failoverActiveDelaySec;
-                        if (!last_assign) {
-                            if (out.owner_peer_id != self_node_id) {
-                                DebugL << "Device " << key << " is currently assigned to another media server " << out.owner_peer_id << ". Keep device in list and wait for active status change";
+                        DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
+                                << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
+                                << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
+                        if (out.released_at == 0) {
+                            DebugL << "Device " << key << " has not been released from cluster. Keep device in list";
+                            CameraStatistic params_from_esc;
+                            if (CameraStatisticImp::syncFromEsc(params.tuple.device_id, params_from_esc)) {
+                                // Successfully synced from ESC
+                                CameraOption option_copy = option;
+                                option_copy.keepArchivedMinForAuto = params_from_esc.option.keepArchivedMinForAuto;
+                                option_copy.keepArchivedMinFor = params_from_esc.option.keepArchivedMinFor;
+                                option_copy.keepArchivedMaxForAuto = params_from_esc.option.keepArchivedMaxForAuto;
+                                option_copy.keepArchivedMaxFor = params_from_esc.option.keepArchivedMaxFor;
+                                // todo: sync more option if needed
+                                if (option_copy != option) {
+                                    DebugL << "Successfully synced camera statistic from ESC for device " << key << ". keepArchivedMinForAuto: " << option_copy.keepArchivedMinForAuto
+                                        << ", keepArchivedMinFor: " << option_copy.keepArchivedMinFor
+                                        << ", keepArchivedMaxForAuto: " << option_copy.keepArchivedMaxForAuto
+                                        << ", keepArchivedMaxFor: " << option_copy.keepArchivedMaxFor;
+                                    auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+                                    poller->async([imp, option]() {
+                                        imp->setCameraOption(option);
+                                    });
+                                }
                             } else {
-                                DebugL << "Device " << key << " was released from self media server before and within failover active delay time. Keep device in list and wait for active status change";
+                                WarnL << "Failed to sync camera statistic from ESC for device " << key;
                             }
+                            return false;
+                        }
+                        GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
+                        bool failover_active_delay = (time(nullptr) - out.released_at) < failoverActiveDelaySec;
+                        if (failover_active_delay) {
+                            DebugL << "Device " << key << " was released from cluster before and within failover active delay time. Keep device in list and wait for active status change";
                             return false;
                         }
                         // Device disable active and disable failover mode, remove it out of list
@@ -153,8 +174,8 @@ bool CameraManager::delCamera(const string &key) {
             // Remove it out of list
             stats_imp->remove();
             _gcImp.erase(key);
+            return true;
         }
-        return true;
     }
     return false;
 }

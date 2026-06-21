@@ -71,6 +71,7 @@ const string kOnSyncBookmarkUpdate = HOOK_FIELD "on_sync_bookmark_update";
 const string kOnSyncBookmarkDelete = HOOK_FIELD "on_sync_bookmark_delete";
 const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
 const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_check";
+const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -117,6 +118,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncBookmarkDelete] = "/media/esc/bookmark/delete";
     mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
     mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
+    mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -741,10 +743,13 @@ static void healthCheckServiceFromOrigin(const vector<string> &urls, size_t inde
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, ArgsType &body, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    body["edge"] = "1";
+
     do_http_hook(url, body, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -770,10 +775,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, ArgsType &body, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &, const int&, const Json::Value &)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
-    
+
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    body["edge"] = "1";
+
     do_http_hook(url, body, header, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -799,10 +807,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const ArgsType &body
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, HttpArgs &params, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_hook(url, params, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -828,10 +839,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
     });
 }
 
-static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
+static void fetchDataFromOrigin(const vector<string> &urls, HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const function<void(const string &err, const int&, const Json::Value &data)> &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "fetch data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_hook(url, params, header, [=](const Value &obj, const string &err) mutable {
         if (err.empty()) {
             // Fetch data from origin success
@@ -857,10 +871,13 @@ static void fetchDataFromOrigin(const vector<string> &urls, const HttpArgs &para
     });
 }
 
-void proxyDataFromOrigin(const vector<string> &urls, const HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const mediakit::HttpSession::HttpResponseInvoker &callback) {
+void proxyDataFromOrigin(const vector<string> &urls, HttpArgs &params, const HeaderType &header, size_t index, size_t failed_cnt, const mediakit::HttpSession::HttpResponseInvoker &callback) {
     auto url = urls[index % urls.size()];
     DebugL << "proxy data from origin server, failed_cnt: " << failed_cnt << ", url: " << url;
     
+    // Inform the origin station that this is a request from the edge station, if the stream is not found, please return the failure immediately
+    params["edge"] = "1";
+
     do_http_proxy(url, params, header, [=](int status_code, const StrCaseMap &headers, const string &content) mutable {
         if (status_code == 200) {
             // Proxy data from origin success
@@ -1742,7 +1759,7 @@ void installWebHook() {
         params["endTime"]    = to_string(end_time);
         params["periodType"] = to_string(period_type);
         params["detail"]     = to_string(detail);
-        if (include_motion) params["motion"] = "1";
+        params["motion"]     = to_string(include_motion);
 
         HeaderType headers;
         if (!jwt_token.empty()) {
@@ -1885,6 +1902,36 @@ void installWebHook() {
         params["id"] = bookmark_id;
 
         fetchDataFromOrigin(urls, params, headers, 0, 0, invoker);
+    });
+
+    // Listen to cluster authentication events
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastClusterAcrossAccess, [](BroadcastClusterAcrossAccessArgs) {
+        GET_CONFIG(string, hook_cluster_across_auth, Hook::kOnClusterAcrossAuth);
+        if (!hook_enable || hook_cluster_across_auth.empty()) {
+            invoker("Cluster across auth skipped, hook_cluster_across_auth is empty");
+            return;
+        }
+
+        auto author_domain = ClusterManager::Instance().getPeerUrl(authorId);
+        if (author_domain.empty()) {
+            invoker("Cluster across auth skipped, author domain is empty");
+            return;
+        }
+
+        HttpArgs params;
+        params["authorId"] = authorId;
+        params["secret"] = secretKey;
+
+       // Execute hook
+        do_http_hook(author_domain + hook_cluster_across_auth, params, [invoker](const Value &obj, const string &err) {
+            if (!err.empty()) {
+                WarnL << "Cluster across auth failed: " << err;
+                invoker(err);
+                return;
+            }
+            DebugL << "Cluster across auth result: " << obj.toStyledString();
+            invoker("");
+        });
     });
 
     // Report server restart

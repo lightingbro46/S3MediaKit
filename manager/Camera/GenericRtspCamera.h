@@ -190,6 +190,10 @@ public:
                roiValue == other.roiValue &&
                motionDetectOnStream == other.motionDetectOnStream;
     }
+
+    bool operator!=(const CameraOption& other) const {
+        return !(*this == other);
+    }
 };
 
 class GenericRtspCameraImp;

@@ -47,6 +47,16 @@ public:
      */
     void addAuthorCache(const std::string &resource_id, const std::string &jwt_token, bool permit = false, uint64_t max_elapsed = 600);
 
+    /**
+     * Add cluster author cache
+     */
+    void addClusterAuthorCache(const std::string &author_id, const std::string &key, bool permit = false, uint64_t max_elapsed = 300);
+
+    /**
+     * Get cluster author cache
+     */
+    UserAuthorPermit getClusterAuthorCache(const std::string &author_id, const std::string &key);
+
 private:
     /*
      * Constructor
@@ -73,9 +83,15 @@ private:
      */
     void cleanExpiredTokenCache();
 
+    /**
+     * Traver all cluster author cache expired
+     */
+    void cleanExpiredClusterAuthorCache();
+
 private:
     std::unordered_map<std::string /*token*/, UserSessionCache::Ptr> _map_token_cache;
     std::unordered_map<std::string /*token*/, std::unordered_map<std::string /*resourceId*/, std::pair<bool /*permit*/, uint64_t /*expired_time*/>>> _map_token_resource;
+    std::unordered_map<std::string /*authorId + ":" + secretKey*/, std::pair<bool /*permit*/, uint64_t /*expired_time*/>> _map_cluster_author;
     std::recursive_mutex _mtx;
     toolkit::Timer::Ptr _timer;
 };

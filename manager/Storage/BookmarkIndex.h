@@ -95,18 +95,23 @@ protected:
             where << " AND creator_guid = ?";
             params.push_back(creator_guid);
         }
+        std::ostringstream join;
         if (!search_term.empty()) {
-            where << " JOIN bookmark_index_fts ON bookmark_index_fts.bookmark_guid = bookmark_index.bookmark_guid WHERE bookmark_index_fts MATCH ? ";
+            join << "bookmark_index_fts ON bookmark_index_fts.rowid = bookmark_index.rowid";
+            where << " AND bookmark_index_fts MATCH ? ";
             params.push_back(search_term);
         }
 
         auto query = toolkit::QueryBuilder()
                          .select(EntityTraits<BookmarkIndex>::getColumns())
-                         .from(EntityTraits<BookmarkIndex>::tableName())
-                         .where(where.str(), params)
-                         .orderBy("start_time " + sort)
-                         .offset(offset)
-                         .limit(limit);
+                         .from(EntityTraits<BookmarkIndex>::tableName());
+        if (!join.str().empty()) {
+            query.join(join.str());
+        }
+        query.where(where.str(), params)
+             .orderBy("start_time " + sort)
+             .offset(offset)
+             .limit(limit);
         auto rows = _executor->executeRaw(query);
         std::vector<BookmarkIndex> ret;
         for (const auto &r : rows)
@@ -132,15 +137,20 @@ protected:
             where << " AND creator_guid = ?";
             params.push_back(creator_guid);
         }
+        std::ostringstream join;
         if (!search_term.empty()) {
-            where << " JOIN bookmark_index_fts ON bookmark_index_fts.bookmark_guid = bookmark_index.bookmark_guid WHERE bookmark_index_fts MATCH ? ";
+            join << "bookmark_index_fts ON bookmark_index_fts.rowid = bookmark_index.rowid";
+            where << " AND bookmark_index_fts MATCH ? ";
             params.push_back(search_term);
         }
 
         auto query = toolkit::QueryBuilder()
                          .select({"COUNT(*) AS total"})
-                         .from(EntityTraits<BookmarkIndex>::tableName())
-                         .where(where.str(), params);
+                         .from(EntityTraits<BookmarkIndex>::tableName());
+        if (!join.str().empty()) {
+            query.join(join.str());
+        }
+        query.where(where.str(), params);
         auto rows = _executor->executeRaw(query);
         return rows.empty() ? 0 : std::stoi(rows[0][0].c_str());
     }

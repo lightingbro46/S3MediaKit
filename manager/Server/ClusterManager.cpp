@@ -48,8 +48,10 @@ INSTANCE_IMP(ClusterManager)
 ClusterManager::ClusterManager() {
     _timer = std::make_shared<Timer>(
         60.0f,
-        [this]() { 
-            onManager();
+        []() {
+            // Use singleton access in timer callback to avoid capturing a raw
+            // pointer across thread boundaries.
+            ClusterManager::Instance().onManager();
             return true;
         },
         nullptr);
@@ -164,8 +166,13 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
 
     if (new_peer) {
         auto origin_urls = buildOrginUrls(info);
-        WorkThreadPool::Instance().getPoller()->async([this, id, origin_urls]() {
-            healthCheck(id, origin_urls);
+        auto weak_self = weak_from_this();
+        WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            self->healthCheck(id, origin_urls);
         });
     }
 }
@@ -225,7 +232,12 @@ void ClusterManager::loadSavedMediaServerInfo() {
         return;
     }
 
-    WorkThreadPool::Instance().getPoller()->async([this, list]() {
+    auto weak_self = weak_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self, list]() {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
         for (const auto &item : list) {
             if (!item.isObject()) {
                 WarnL << "ClusterManager: invalid peer item in persisted peer list, skip";
@@ -234,7 +246,7 @@ void ClusterManager::loadSavedMediaServerInfo() {
             auto info = MediaServerInfo::fromJson(item);
             std::string id = info.id;
             DebugL << "ClusterManager: loading persisted peer " << id << " with url " << buildOrginUrls(info);
-            addMediaServer(id, info, true);
+            self->addMediaServer(id, info, true);
         }
     });
 }
@@ -258,8 +270,13 @@ void ClusterManager::onManager() {
     for (const auto &item : peer_url_copy) {
         string id = item.first;
         string origin_urls = item.second;
-        WorkThreadPool::Instance().getPoller()->async([this, id, origin_urls]() {
-            healthCheck(id, origin_urls);
+        auto weak_self = weak_from_this();
+        WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            self->healthCheck(id, origin_urls);
         });
     }
 }

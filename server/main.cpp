@@ -537,9 +537,9 @@ int start_main(int argc,char *argv[]) {
     onProcessExited();
     unInstallManagerHook();
 
-    // sleep for 1 second before exiting, to prevent resource release order errors
+    // sleep for 3 second before exiting, to prevent resource release order errors
     InfoL << "The program is exiting, please wait...";
-    sleep(1);
+    sleep(3);
     InfoL << "The program exit is completed!";
     return 0;
 }

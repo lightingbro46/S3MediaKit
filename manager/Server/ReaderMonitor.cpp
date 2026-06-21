@@ -7,6 +7,7 @@ using namespace toolkit;
 namespace managerkit {
 
 ReaderMonitor::~ReaderMonitor() {
+    if (_alive_flag) _alive_flag->store(false, std::memory_order_release);
     _timer.reset();
 }
 
@@ -82,9 +83,12 @@ void ReaderMonitor::setStreamReaderCount(const string &camera_id, int reader_cou
 }
 
 void ReaderMonitor::start() {
-    _timer = std::make_shared<Timer>(300.0f, [&]() {
+    _alive_flag = std::make_shared<std::atomic<bool>>(true);
+    auto alive = _alive_flag;
+    _timer = std::make_shared<Timer>(300.0f, [this, alive]() {
+        if (!alive->load(std::memory_order_acquire)) return false;
         // Periodically check and emit alerts
-        emitSystemAlert(static_cast<float>(_total_reader.load())); 
+        emitSystemAlert(static_cast<float>(_total_reader.load()));
 
         // Check each camera reader count and emit alerts
         auto ret = totalEachReaderCount();

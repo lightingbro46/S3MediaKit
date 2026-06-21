@@ -10,9 +10,6 @@ namespace managerkit {
 StreamSink::StreamSink(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
 
 StreamSink::~StreamSink() {
-    if (_poller && !_poller->isCurrentThread()) {
-        WarnL << "StreamSink destroyed outside poller thread, cleanup may race with pending tasks";
-    }
     _timer_sink.reset();
     _monitor_map.clear();
 }

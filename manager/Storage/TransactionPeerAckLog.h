@@ -208,6 +208,8 @@ public:
         if (entity.acked_seq > existing.acked_seq && entity.updated_at > existing.updated_at) {
             // Update existing entry with higher acked_seq
             updateById(entity);
+        } else if (entity.acked_seq == existing.acked_seq) {
+            // nothing to update
         } else {
             WarnL << "Not updating ack log for peer=" << entity.peer_guid
                   << " src_peer=" << entity.src_peer_guid
