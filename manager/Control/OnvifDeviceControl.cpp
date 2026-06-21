@@ -186,31 +186,37 @@ static time_t build_camera_utc(const std::string& camera_tz, const time_t& time_
 
 bool OnvifControl::connect() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
-    if (_m_soap != nullptr) {
-        disconnect();
+    if (_m_soap == nullptr) {
+        _m_soap = soap_new();
+        _m_soap->connect_timeout = _m_soap->recv_timeout = _m_soap->send_timeout = 10; // timeout connection for 10 seconds
+        soap_register_plugin(_m_soap, soap_wsse);
+
+        _proxyDevice = new DeviceBindingProxy(_m_soap);
     }
-
-    _m_soap = soap_new();
-    _m_soap->connect_timeout = _m_soap->recv_timeout = _m_soap->send_timeout = 10; // timeout connection for 10 seconds
-    soap_register_plugin(_m_soap, soap_wsse);
-
-    _proxyDevice = new DeviceBindingProxy(_m_soap);
 
     if (!getDeviceInformation()) {
+        disconnect();
         return false;
     }
 
-    if (!getNetworkInterfaces()) {
-        return false;
-    }
+    getNetworkInterfaces(); // non-critical
 
     if (!getDeviceCapabilities()) {
+        disconnect();
         return false;
     }
 
     if (!getMediaProfiles()) {
+        disconnect();
         return false;
     }
+
+    getAudioCapabilities(); // non-critical
+
+    getImagingCapabilities(); // non-critical
+
+    getRelayOutputCapabilities(); // non-critical
+
     return true;
 }
 
@@ -240,13 +246,11 @@ bool OnvifControl::getDeviceInformation() {
     _tds__GetDeviceInformation *GetDeviceInformation = soap_new__tds__GetDeviceInformation(_m_soap);
     _tds__GetDeviceInformationResponse GetDeviceInformationResponse;
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
 
     if (_proxyDevice->GetDeviceInformation(GetDeviceInformation, GetDeviceInformationResponse)) {
         reportError();
-        disconnect();
         return false;
     }
 
@@ -268,7 +272,6 @@ bool OnvifControl::getDeviceCapabilities() {
     _tds__GetCapabilities *GetCapabilities = soap_new__tds__GetCapabilities(_m_soap);
     _tds__GetCapabilitiesResponse GetCapabilitiesResponse;
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
 
@@ -278,7 +281,6 @@ bool OnvifControl::getDeviceCapabilities() {
 
     if (!GetCapabilitiesResponse.Capabilities || !GetCapabilitiesResponse.Capabilities->Media) {
         reportError();
-        disconnect();
         return false;
     }
 
@@ -310,6 +312,13 @@ bool OnvifControl::getDeviceCapabilities() {
         _proxyImaging->soap_endpoint = _strImagingUrl.c_str();
     }
 
+    if (GetCapabilitiesResponse.Capabilities->Device != nullptr &&
+        GetCapabilitiesResponse.Capabilities->Device->IO != nullptr &&
+        GetCapabilitiesResponse.Capabilities->Device->IO->RelayOutputs != nullptr &&
+        *GetCapabilitiesResponse.Capabilities->Device->IO->RelayOutputs > 0) {
+        TraceL << "RelayOutputs: " << *GetCapabilitiesResponse.Capabilities->Device->IO->RelayOutputs;
+    }
+
     if (GetCapabilitiesResponse.Capabilities->PTZ != nullptr) {
         _strPTZUrl = GetCapabilitiesResponse.Capabilities->PTZ->XAddr;
         int indexFooter = _strPTZUrl.find("/onvif");
@@ -326,13 +335,11 @@ bool OnvifControl::getDeviceCapabilities() {
         _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
         _trt__GetProfilesResponse GetProfilesResponse;
         if (!setCredentials()) {
-            disconnect();
             return false;
         }
 
         if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
             reportError();
-            disconnect();
             return false;
         }
         if (GetProfilesResponse.Profiles[0]->PTZConfiguration) {
@@ -343,13 +350,11 @@ bool OnvifControl::getDeviceCapabilities() {
             _tptz__GetConfigurationOptionsResponse GetConfigurationOptionsResponse;
             GetConfigurationOptions->ConfigurationToken = GetProfilesResponse.Profiles[0]->PTZConfiguration->token;
             if (!setCredentials()) {
-                disconnect();
                 return false;
             }
 
             if (_proxyPTZ->GetConfigurationOptions(GetConfigurationOptions, GetConfigurationOptionsResponse)) {
                 reportError();
-                disconnect();
                 return false;
             }
 
@@ -403,6 +408,39 @@ bool OnvifControl::getDeviceCapabilities() {
     return true;
 }
 
+bool OnvifControl::getAudioCapabilities() {
+    if (_proxyMedia == nullptr) {
+        return false;
+    }
+    if (!setCredentials()) {
+        return false;
+    }
+
+    // Probe audio inputs (sources)
+    _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
+    _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
+    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse) == SOAP_OK) {
+        _audioInputProfile.enable = !GetAudioSourcesResponse.AudioSources.empty();
+        // todo: store audio input profile information if needed
+        TraceL << "AudioSources count: " << GetAudioSourcesResponse.AudioSources.size();
+    }
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    // Probe audio outputs
+    _trt__GetAudioOutputs *GetAudioOutputs = soap_new__trt__GetAudioOutputs(_m_soap);
+    _trt__GetAudioOutputsResponse GetAudioOutputsResponse;
+    if (_proxyMedia->GetAudioOutputs(GetAudioOutputs, GetAudioOutputsResponse) == SOAP_OK) {
+        // todo: store audio output profile information if needed
+        _audioOutputProfile.enable = !GetAudioOutputsResponse.AudioOutputs.empty();
+        TraceL << "AudioOutputs count: " << GetAudioOutputsResponse.AudioOutputs.size();
+    }
+
+    return true;
+}
+
 bool OnvifControl::getMediaProfiles() {
     if (_proxyMedia == nullptr || _proxyMedia2 == nullptr) {
         WarnL << "Unknown proxyMedia";
@@ -412,18 +450,17 @@ bool OnvifControl::getMediaProfiles() {
     _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
     _trt__GetProfilesResponse GetProfilesResponse;
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
 
     if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
         reportError();
-        disconnect();
         return false;
     }
 
     // note: reset media profile list every time when get media profiles since profile token may change after device reboot
     _mediaProfile.clear();
+    _imageProfile.videoSourceToken.clear();
 
     for (const auto &profile : GetProfilesResponse.Profiles) {
         if (!profile || profile->token.empty()) {
@@ -438,12 +475,17 @@ bool OnvifControl::getMediaProfiles() {
             // profile has video source
             _profile.hasVideo = true;
 
+            // Capture the first video source token for Imaging service operations
+            if (_imageProfile.videoSourceToken.empty()) {
+                _imageProfile.videoSourceToken = profile->VideoSourceConfiguration->SourceToken;
+                TraceL << "Video source token: " << _imageProfile.videoSourceToken;
+            }
+
             ns1__GetConfiguration *GetVideoConfig  = soap_new_ns1__GetConfiguration(_m_soap);
             GetVideoConfig->ProfileToken = &profile->token;
             GetVideoConfig->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
             _ns1__GetVideoEncoderConfigurationsResponse GetVideoConfigResponse;
             if (!setCredentials()) {
-                disconnect();
                 return false;
             }
             if (!_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {                
@@ -581,13 +623,11 @@ bool OnvifControl::getMediaProfiles() {
             GetStreamUri->StreamSetup->Transport = soap_new_tt__Transport(_m_soap, -1);
             GetStreamUri->StreamSetup->Transport->Protocol = tt__TransportProtocol__RTSP;
             if (!setCredentials()) {
-                disconnect();
                 return false;
             }
 
             if (_proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
                 reportError();
-                disconnect();
                 return false;
             }
             TraceL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
@@ -613,13 +653,11 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
     _trt__GetProfiles *GetProfiles = soap_new__trt__GetProfiles(_m_soap);
     _trt__GetProfilesResponse GetProfilesResponse;
     if (!setCredentials()) {
-        disconnect();
         return nullptr;
     }
 
     if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
         reportError();
-        disconnect();
         return nullptr;
     }
 
@@ -632,12 +670,10 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
             GetVideoConfig->ConfigurationToken =  &profile->VideoEncoderConfiguration->token;
             _ns1__GetVideoEncoderConfigurationsResponse GetVideoConfigResponse;
             if (!setCredentials()) {
-                disconnect();
                 return nullptr;
             }
             if (_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
                 reportError();
-                disconnect();
                 return nullptr;
             }
             return GetVideoConfigResponse.Configurations[0];
@@ -677,7 +713,6 @@ bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const 
     setReq->Configuration = configToSet;
 
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
 
@@ -692,13 +727,11 @@ bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const 
     GetStreamUri->ProfileToken = token;
     GetStreamUri->Protocol = "RTSP";
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
 
     if (_proxyMedia2->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
         reportError();
-        disconnect();
         return false;
     }
 
@@ -733,12 +766,10 @@ bool OnvifControl::getNetworkInterfaces() {
     _tds__GetNetworkInterfaces *GetNetworkInterfaces = soap_new__tds__GetNetworkInterfaces(_m_soap);
     _tds__GetNetworkInterfacesResponse GetNetworkInterfacesResponse;
     if (!setCredentials()) {
-        disconnect();
         return false;
     }
     if (_proxyDevice->GetNetworkInterfaces(GetNetworkInterfaces, GetNetworkInterfacesResponse)) {
         reportError();
-        disconnect();
         return false;
     }
 
@@ -982,6 +1013,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ AbsoluteMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__AbsoluteMove *AbsoluteMove = soap_new__tptz__AbsoluteMove(_m_soap);
@@ -1015,6 +1047,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ AbsoluteMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "), "
             << "panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
 
@@ -1059,6 +1092,7 @@ tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom)
         WarnL << "Unknown proxyPTZ";
         return tt__MoveStatus__UNKNOWN;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
 
     _tptz__GetStatus *GetStatus = soap_new__tptz__GetStatus(_m_soap);
     _tptz__GetStatusResponse GetStatusResponse;
@@ -1100,6 +1134,7 @@ bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int tim
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ ContinuousMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__ContinuousMove *ContinuosMove = soap_new__tptz__ContinuousMove(_m_soap);
@@ -1172,6 +1207,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ RelativeMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "). Use default speed of device";
 
     _tptz__RelativeMove *RelativeMove = soap_new__tptz__RelativeMove(_m_soap);
@@ -1205,6 +1241,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom, float pan
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ RelativeMove: Pan(" << pan << "), Tilt(" << tilt << "), Zoom(" << zoom << "), "
             << "panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
 
@@ -1274,6 +1311,7 @@ bool OnvifControl::PTZ_GotoPreset(const string &presetToken, float panSpeed, flo
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     DebugL << "Execute PTZ GotoPreset: presetToken(" << presetToken << "), panSpeed(" << panSpeed << "), tiltSpeed(" << tiltSpeed << "), zoomSpeed(" << zoomSpeed << ")";
 
     _tptz__GotoPreset *GotoPreset = soap_new__tptz__GotoPreset(_m_soap);
@@ -1309,6 +1347,7 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
 
     pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
     tt__MoveStatus moveStatus = PTZ_GetStatus(pan, tilt, zoom);
@@ -1349,6 +1388,7 @@ bool  OnvifControl::PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float 
         WarnL << "Unknown proxyPTZ";
         return false;
     }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
 
     if (_ptzProfile.isPresetEnable && _ptzProfile.isHomePresetEnable) {
         DebugL << "Goto Home preset: " << _ptzProfile.homePresetToken;
@@ -1453,6 +1493,250 @@ bool OnvifControl::getPTZPresets() {
     _ptzProfile.isHomePresetEnable = isHomePresetEnable;
     _ptzProfile.homePresetToken = homePresetToken;
     DebugL << (isHomePresetEnable ? "Home preset is supported" : "Home preset can be not found");
+    return true;
+}
+
+bool OnvifControl::getImagingCapabilities() {
+    if (_proxyImaging == nullptr || _imageProfile.videoSourceToken.empty()) {
+        return false;
+    }
+    if (!setCredentials()) {
+        return false;
+    }
+    
+    _timg__GetImagingSettings *GetImagingSettings = soap_new__timg__GetImagingSettings(_m_soap);
+    GetImagingSettings->VideoSourceToken = _imageProfile.videoSourceToken;
+
+    _timg__GetImagingSettingsResponse GetImagingSettingsResponse;
+    if (_proxyImaging->GetImagingSettings(GetImagingSettings, GetImagingSettingsResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
+
+    // device support focus if ImagingSettings contains Focus element, but it may not support move focus control. need check move options to confirm whether continuous/absolute/relative focus move is supported.
+    if (GetImagingSettingsResponse.ImagingSettings && GetImagingSettingsResponse.ImagingSettings->Focus) {
+        _imageProfile.isFocusAutoSupported = GetImagingSettingsResponse.ImagingSettings->Focus->AutoFocusMode == tt__AutoFocusMode__AUTO;
+
+        _timg__GetMoveOptions *GetMoveOptions = soap_new__timg__GetMoveOptions(_m_soap);
+        GetMoveOptions->VideoSourceToken = _imageProfile.videoSourceToken;
+
+        _timg__GetMoveOptionsResponse GetMoveOptionsResponse;
+        if (_proxyImaging->GetMoveOptions(GetMoveOptions, GetMoveOptionsResponse) != SOAP_OK) {
+            reportError();
+            return false;
+        }
+        if (GetMoveOptionsResponse.MoveOptions && GetMoveOptionsResponse.MoveOptions->Continuous) {
+            _imageProfile.isFocusConsEnable = true;
+            TraceL << "Imaging: focus continuous move supported";
+        }
+        if (GetMoveOptionsResponse.MoveOptions && GetMoveOptionsResponse.MoveOptions->Absolute) {
+            _imageProfile.isFocusAbsEnable = true;
+            TraceL << "Imaging: focus absolute move supported";
+        }
+        if (GetMoveOptionsResponse.MoveOptions && GetMoveOptionsResponse.MoveOptions->Relative) {
+            _imageProfile.isFocusRelEnable = true;
+            TraceL << "Imaging: focus relative move supported";
+        }
+
+        _imageProfile.isFocusEnable = true;
+        TraceL << "Imaging focus enabled: " << _imageProfile.isFocusEnable;
+    }   
+
+    // device support iris control if ImagingSettings contains Iris element, but it may not support move iris control. need check move options to confirm whether continuous/absolute/relative iris move is supported.
+    if (GetImagingSettingsResponse.ImagingSettings && GetImagingSettingsResponse.ImagingSettings->Exposure) {
+        _imageProfile.isIrisAutoSupported = GetImagingSettingsResponse.ImagingSettings->Exposure->Mode == tt__ExposureMode__AUTO;
+        _imageProfile.irisMin = GetImagingSettingsResponse.ImagingSettings->Exposure->MinIris ? *GetImagingSettingsResponse.ImagingSettings->Exposure->MinIris : 0.0f;
+        _imageProfile.irisMax = GetImagingSettingsResponse.ImagingSettings->Exposure->MaxIris ? *GetImagingSettingsResponse.ImagingSettings->Exposure->MaxIris : 0.0f;
+        
+        _imageProfile.isIrisEnable = _imageProfile.irisMax > _imageProfile.irisMin;
+        TraceL << "Imaging iris enabled: " << _imageProfile.isIrisEnable;
+    }
+
+    return true;
+}
+
+bool OnvifControl::getRelayOutputCapabilities() {
+    if (_proxyDevice == nullptr) {
+        _soapErrMsg = "Device proxy not ready";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    if (!setCredentials()) {
+        return false;
+    }
+
+    _tds__GetRelayOutputs *GetRelayOutputs = soap_new__tds__GetRelayOutputs(_m_soap);
+    _tds__GetRelayOutputsResponse GetRelayOutputsResponse;
+    if (_proxyDevice->GetRelayOutputs(GetRelayOutputs, GetRelayOutputsResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
+    // todo: implement getRelayOutputCapabilities() to query relay output capabilities from the device
+     _relayOutputProfiles.clear();
+    for (const auto *relay : GetRelayOutputsResponse.RelayOutputs) {
+        if (relay && !relay->token.empty()) {
+            OnvifRelayOutputProfile relayProfile;
+            relayProfile.token = relay->token;
+            _relayOutputProfiles.push_back(relayProfile);
+        }
+    }
+    TraceL << "Relay output count: " << _relayOutputProfiles.size();
+
+    return true;
+}
+
+bool OnvifControl::Imaging_FocusMove(float speed) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (_proxyImaging == nullptr) {
+        _soapErrMsg = "Imaging proxy not ready";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    if (_imageProfile.videoSourceToken.empty()) {
+        _soapErrMsg = "Video source token is empty";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    _timg__Move *Move = soap_new__timg__Move(_m_soap);
+    _timg__MoveResponse MoveResponse;
+    Move->VideoSourceToken = _imageProfile.videoSourceToken;
+    Move->Focus = soap_new_tt__FocusMove(_m_soap);
+    if (_imageProfile.isFocusConsEnable) {
+        Move->Focus->Continuous = soap_new_tt__ContinuousFocus(_m_soap);
+        Move->Focus->Continuous->Speed = speed;
+    } else if (_imageProfile.isFocusAbsEnable) {
+        Move->Focus->Absolute = soap_new_tt__AbsoluteFocus(_m_soap);
+        Move->Focus->Absolute->Position = 0.0f;
+        Move->Focus->Absolute->Speed = soap_new_float(_m_soap, -1);
+        Move->Focus->Absolute->Speed = &speed;
+    } else if (_imageProfile.isFocusRelEnable) {
+        Move->Focus->Relative = soap_new_tt__RelativeFocus(_m_soap);
+        Move->Focus->Relative->Distance = 0.0f;
+        Move->Focus->Relative->Speed = soap_new_float(_m_soap, -1);
+        Move->Focus->Relative->Speed = &speed;
+    } else {
+        _soapErrMsg = "Focus move is not supported";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+
+    if (_proxyImaging->Move(Move, MoveResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
+    return true;
+}
+
+bool OnvifControl::Imaging_FocusStop() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (_proxyImaging == nullptr) {
+        _soapErrMsg = "Imaging proxy not ready";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    if (_imageProfile.videoSourceToken.empty()) {
+        _soapErrMsg = "Video source token is empty";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
+    if (!setCredentials()) {
+        return false;
+    }
+
+    _timg__Stop *Stop = soap_new__timg__Stop(_m_soap);
+    _timg__StopResponse StopResponse;
+    Stop->VideoSourceToken = _imageProfile.videoSourceToken;
+    if (_proxyImaging->Stop(Stop, StopResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
+    return true;
+}
+
+bool OnvifControl::Imaging_IrisMove(float /*speed*/) {
+    // Iris continuous move is not supported by the current gSOAP ONVIF binding.
+    // _timg__Move only exposes a Focus field; there is no Iris field in this binding.
+    _soapErrMsg = "Iris continuous move is not supported by this ONVIF binding";
+    WarnL << _soapErrMsg;
+    return false;
+}
+
+bool OnvifControl::Imaging_IrisStop() {
+    _soapErrMsg = "Iris control is not supported by this ONVIF binding";
+    return false;
+}
+
+bool OnvifControl::PTZ_AuxiliaryCommand(const std::string &auxiliaryData) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (_proxyPTZ == nullptr) {
+        _soapErrMsg = "PTZ proxy not ready";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    if (_ptzProfile.strMediaProfileToken.empty()) {
+        _soapErrMsg = "PTZ profile token is empty";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
+    if (!setCredentials()) {
+        return false;
+    }
+
+    _tptz__SendAuxiliaryCommand *SendAuxiliaryCommand = soap_new__tptz__SendAuxiliaryCommand(_m_soap);
+    SendAuxiliaryCommand->ProfileToken  = _ptzProfile.strMediaProfileToken;
+    SendAuxiliaryCommand->AuxiliaryData = auxiliaryData;
+
+    _tptz__SendAuxiliaryCommandResponse SendAuxiliaryCommandResponse;
+    if (_proxyPTZ->SendAuxiliaryCommand(SendAuxiliaryCommand, SendAuxiliaryCommandResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
+    return true;
+}
+
+bool OnvifControl::Relay_SetOutputState(const std::string &relayToken, bool active) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (_proxyDevice == nullptr) {
+        _soapErrMsg = "Device proxy not ready";
+        WarnL << _soapErrMsg;
+        return false;
+    }
+
+    bool found = false;
+    for (const auto &p : _relayOutputProfiles) {  
+        if (p.token == relayToken) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        _soapErrMsg = "Relay token not found: " + relayToken;
+        WarnL << _soapErrMsg;
+        return false;
+    }
+    onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
+    if (!setCredentials()) {
+        return false;
+    }
+
+    _tds__SetRelayOutputState *SetRelayOutputState = soap_new__tds__SetRelayOutputState(_m_soap);
+    SetRelayOutputState->RelayOutputToken = relayToken;
+    SetRelayOutputState->LogicalState = active ? tt__RelayLogicalState__active : tt__RelayLogicalState__inactive;
+
+    _tds__SetRelayOutputStateResponse SetRelayOutputStateResponse;
+    if (_proxyDevice->SetRelayOutputState(SetRelayOutputState, SetRelayOutputStateResponse) != SOAP_OK) {
+        reportError();
+        return false;
+    }
     return true;
 }
 

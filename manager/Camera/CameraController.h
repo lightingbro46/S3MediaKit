@@ -10,11 +10,19 @@ struct OnvifProfile {
     std::vector<OnvifMediaProfile> mediaProfiles;
     OnvifPTZProfile ptzProfile;
     OnvifDeviceInfo deviceInfo;
+    OnvifImageProfile imageProfile;
+    std::vector<OnvifRelayOutputProfile> relayOutputProfiles;
+    OnvifAudioOutputProfile audioOutputProfile;
+    OnvifAudioInputProfile audioInputProfile;
 
     bool operator==(const OnvifProfile &o) const {
-        return mediaProfiles == o.mediaProfiles
-            && ptzProfile == o.ptzProfile
-            && deviceInfo == o.deviceInfo;
+        return mediaProfiles   == o.mediaProfiles
+            && ptzProfile      == o.ptzProfile
+            && deviceInfo      == o.deviceInfo
+            && imageProfile    == o.imageProfile
+            && relayOutputProfiles == o.relayOutputProfiles
+            && audioOutputProfile   == o.audioOutputProfile
+            && audioInputProfile    == o.audioInputProfile;
     }
     bool operator!=(const OnvifProfile &o) const { return !(*this == o); }
 };
@@ -83,7 +91,11 @@ public:
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
-    bool addUserPTZPreset(const std::string &presetToken, const std::string &presetName, float &pan, float &tilt, float &zoom,const std::function<void(const toolkit::SockException &ex)> &cb);
+    void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    bool addUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex, float pan, float tilt, float zoom)> &cb);
 
     bool addUserPTZPreset(const std::string &presetToken, const std::string &presetName, float &pan, float &tilt, float &zoom);
 
@@ -128,7 +140,6 @@ private:
     // but system still use old profile and stream config until user change camera option to trigger controller recreate or manually update media profile config through api
     bool _keepConfigProfileAndStream = false;
     VideoEncoderConfig::VideoEncoderConfigMap _profileConfigMap; // current profile config map, used for checking whether media profile config is changed when camera report controller ready
-    std::atomic<bool> _isControlled{ false }; // whether this controller is controlled by other
 };
 
 } // namespace managerkit

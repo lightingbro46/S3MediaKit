@@ -678,7 +678,7 @@ static Json::Value exampleJson() {
     Json::Value data;
     data["devices"] = Json::arrayValue;
     Json::Value device;
-    device["id"] = "ac80b2c0-692a-4368-ab82-9bdd2aea273d";
+    device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
     device["name"] = "Camera HPG";
     device["username"] = "admin";
     device["password"] = "Haiphong2025";
@@ -737,9 +737,9 @@ static Json::Value exampleJson() {
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
     device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
-    // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+    device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    // device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
+    device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
     device["motionDetectConfig"]["numOfRow"] = 32;
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";
@@ -870,8 +870,12 @@ static Json::Value exampleJson() {
     return data;
 }
 
+#ifdef ENABLE_DEBUG
 void loadServerConfigJson(const Json::Value &data1) {
     auto data = exampleJson();
+#else
+void loadServerConfigJson(const Json::Value &data) {
+#endif
     TraceL << "Server configuration loaded: " << data.toStyledString();
     Ticker _ticker;
 
