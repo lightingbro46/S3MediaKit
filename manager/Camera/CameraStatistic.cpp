@@ -170,6 +170,45 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
     deviceInfo["hardwareId"] = profile.deviceInfo.hardwareId;
     deviceInfo["macAddress"] = profile.deviceInfo.macAddress;
     ret["deviceInfo"] = deviceInfo;
+    // Structured profiles
+    Json::Value imageProfile = Json::objectValue;
+    imageProfile["isFocusEnable"]       = profile.imageProfile.isFocusEnable;
+    imageProfile["isFocusAbsEnable"]    = profile.imageProfile.isFocusAbsEnable;
+    imageProfile["isFocusConsEnable"]   = profile.imageProfile.isFocusConsEnable;
+    imageProfile["isFocusRelEnable"]    = profile.imageProfile.isFocusRelEnable;
+    imageProfile["isFocusAutoSupported"]= profile.imageProfile.isFocusAutoSupported;
+    imageProfile["isIrisEnable"]        = profile.imageProfile.isIrisEnable;
+    imageProfile["isIrisAutoSupported"] = profile.imageProfile.isIrisAutoSupported;
+    imageProfile["irisMin"]             = profile.imageProfile.irisMin;
+    imageProfile["irisMax"]             = profile.imageProfile.irisMax;
+    ret["imageProfile"] = imageProfile;
+    Json::Value audioOutput = Json::objectValue;
+    audioOutput["enable"]     = profile.audioOutputProfile.enable;
+    audioOutput["token"]      = profile.audioOutputProfile.token;
+    audioOutput["name"]       = profile.audioOutputProfile.name;
+    audioOutput["acodec"]     = profile.audioOutputProfile.acodec;
+    audioOutput["channelNo"]  = profile.audioOutputProfile.channelNo;
+    audioOutput["sampleRate"] = profile.audioOutputProfile.sampleRate;
+    audioOutput["sampleBit"]  = profile.audioOutputProfile.sampleBit;
+    ret["audioOutputProfile"] = audioOutput;
+    Json::Value audioInput = Json::objectValue;
+    audioInput["enable"]     = profile.audioInputProfile.enable;
+    audioInput["token"]      = profile.audioInputProfile.token;
+    audioInput["name"]       = profile.audioInputProfile.name;
+    audioInput["acodec"]     = profile.audioInputProfile.acodec;
+    audioInput["channelNo"]  = profile.audioInputProfile.channelNo;
+    audioInput["sampleRate"] = profile.audioInputProfile.sampleRate;
+    audioInput["sampleBit"]  = profile.audioInputProfile.sampleBit;
+    ret["audioInputProfile"] = audioInput;
+    Json::Value relayProfiles = Json::arrayValue;
+    for (const auto &relay : profile.relayOutputProfiles) {
+        Json::Value r = Json::objectValue;
+        r["token"]    = relay.token;
+        r["name"]     = relay.name;
+        r["isActive"] = relay.isActive;
+        relayProfiles.append(r);
+    }
+    ret["relayOutputProfiles"] = relayProfiles;
     return ret;
 }
 
@@ -271,6 +310,48 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
     profile.deviceInfo.serialNumber = data["deviceInfo"]["serialNumber"].asString();
     profile.deviceInfo.hardwareId = data["deviceInfo"]["hardwareId"].asString();
     profile.deviceInfo.macAddress = data["deviceInfo"]["macAddress"].asString();
+    // image profile
+    if (!data["imageProfile"].isNull() && data["imageProfile"].isObject()) {
+        profile.imageProfile.isFocusEnable       = data["imageProfile"]["isFocusEnable"].asBool();
+        profile.imageProfile.isFocusAbsEnable    = data["imageProfile"]["isFocusAbsEnable"].asBool();
+        profile.imageProfile.isFocusConsEnable   = data["imageProfile"]["isFocusConsEnable"].asBool();
+        profile.imageProfile.isFocusRelEnable    = data["imageProfile"]["isFocusRelEnable"].asBool();
+        profile.imageProfile.isFocusAutoSupported= data["imageProfile"]["isFocusAutoSupported"].asBool();
+        profile.imageProfile.isIrisEnable        = data["imageProfile"]["isIrisEnable"].asBool();
+        profile.imageProfile.isIrisAutoSupported = data["imageProfile"]["isIrisAutoSupported"].asBool();
+        profile.imageProfile.irisMin             = data["imageProfile"]["irisMin"].asFloat();
+        profile.imageProfile.irisMax             = data["imageProfile"]["irisMax"].asFloat();
+    }
+    // audio output profile
+    if (!data["audioOutputProfile"].isNull() && data["audioOutputProfile"].isObject()) {
+        profile.audioOutputProfile.enable     = data["audioOutputProfile"]["enable"].asBool();
+        profile.audioOutputProfile.token      = data["audioOutputProfile"]["token"].asString();
+        profile.audioOutputProfile.name       = data["audioOutputProfile"]["name"].asString();
+        profile.audioOutputProfile.acodec     = data["audioOutputProfile"]["acodec"].asString();
+        profile.audioOutputProfile.channelNo  = data["audioOutputProfile"]["channelNo"].asInt();
+        profile.audioOutputProfile.sampleRate = data["audioOutputProfile"]["sampleRate"].asString();
+        profile.audioOutputProfile.sampleBit  = data["audioOutputProfile"]["sampleBit"].asString();
+    }
+    // audio input profile
+    if (!data["audioInputProfile"].isNull() && data["audioInputProfile"].isObject()) {
+        profile.audioInputProfile.enable     = data["audioInputProfile"]["enable"].asBool();
+        profile.audioInputProfile.token      = data["audioInputProfile"]["token"].asString();
+        profile.audioInputProfile.name       = data["audioInputProfile"]["name"].asString();
+        profile.audioInputProfile.acodec     = data["audioInputProfile"]["acodec"].asString();
+        profile.audioInputProfile.channelNo  = data["audioInputProfile"]["channelNo"].asInt();
+        profile.audioInputProfile.sampleRate = data["audioInputProfile"]["sampleRate"].asString();
+        profile.audioInputProfile.sampleBit  = data["audioInputProfile"]["sampleBit"].asString();
+    }
+    // relay output profiles
+    if (!data["relayOutputProfiles"].isNull() && data["relayOutputProfiles"].isArray()) {
+        for (const auto &r : data["relayOutputProfiles"]) {
+            OnvifRelayOutputProfile relay;
+            relay.token    = r["token"].asString();
+            relay.name     = r["name"].asString();
+            relay.isActive = r["isActive"].asBool();
+            profile.relayOutputProfiles.push_back(relay);
+        }
+    }
     return profile;
 }
 

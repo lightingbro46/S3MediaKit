@@ -27,6 +27,11 @@ struct DeviceScanResult {
     std::string hardwareId;
     std::string macAddress;
     bool isPtz = false;
+    bool isAudioOutput = false;
+    bool isImageFocus = false;
+    bool isImageIris = false;
+    bool isAudioInput = false;
+    bool isRelayOutput = false;
     std::string ip;
     int port = 0;
     bool webPortAuto = true;

@@ -151,10 +151,10 @@ struct OnvifMediaProfile {
     std::string url;
     bool hasVideo = false;
     std::string vcodec;
-    int width;
-    int height;
-    int bitrate;
-    float fps;
+    int width = 0;
+    int height = 0;
+    int bitrate = 0;
+    float fps = 0.0f;
     float quality;
     bool videoEncEditable = false;
     bool videoConfigEditable = false;
@@ -194,6 +194,81 @@ struct OnvifMediaProfile {
     }
 };
 
+struct OnvifAudioOutputProfile {
+    bool enable = false;
+    std::string token;
+    std::string name;
+    std::string acodec;
+    int channelNo;
+    std::string sampleRate;
+    std::string sampleBit;
+
+    bool operator==(const OnvifAudioOutputProfile &o) const {
+        return enable == o.enable && token == o.token && name == o.name && acodec == o.acodec && channelNo == o.channelNo
+            && sampleRate == o.sampleRate && sampleBit == o.sampleBit;
+    }
+    bool operator!=(const OnvifAudioOutputProfile &o) const { return !(*this == o); }
+};
+
+struct OnvifAudioInputProfile {
+    bool enable = false;
+    std::string token;
+    std::string name;
+    std::string acodec;
+    int channelNo;
+    std::string sampleRate;
+    std::string sampleBit;
+
+    bool operator==(const OnvifAudioInputProfile &o) const {
+        return enable == o.enable && token == o.token && name == o.name && acodec == o.acodec && channelNo == o.channelNo
+            && sampleRate == o.sampleRate && sampleBit == o.sampleBit;
+    }
+    bool operator!=(const OnvifAudioInputProfile &o) const { return !(*this == o); }
+};
+
+struct OnvifImageProfile {
+    // First video source token (from media profiles) used by the Imaging API
+    std::string videoSourceToken;
+
+    // Focus move capabilities (via ONVIF Imaging service, if supported by binding)
+    bool isFocusAbsEnable = false;
+    bool isFocusConsEnable = false;
+    bool isFocusRelEnable = false;
+    bool isFocusAutoSupported = false;
+    bool isFocusEnable = false;
+
+    // Iris continuous move capability (via ONVIF Imaging service, if supported by binding)
+    bool isIrisAutoSupported = false;
+    bool isIrisEnable = false;
+    float irisMin = 0.0f;
+    float irisMax = 1.0f;
+
+    bool operator==(const OnvifImageProfile &o) const {
+        return videoSourceToken == o.videoSourceToken &&
+            isFocusAbsEnable == o.isFocusAbsEnable &&
+            isFocusConsEnable == o.isFocusConsEnable &&
+            isFocusRelEnable == o.isFocusRelEnable &&
+            isFocusEnable == o.isFocusEnable &&
+            isFocusAutoSupported == o.isFocusAutoSupported &&
+            isIrisEnable == o.isIrisEnable &&
+            isIrisAutoSupported == o.isIrisAutoSupported;
+    }
+
+    bool operator!=(const OnvifImageProfile &o) const { return !(*this == o); }
+};
+
+struct OnvifRelayOutputProfile {
+    std::string token;
+    std::string name;
+    bool isActive = false;
+
+    bool operator==(const OnvifRelayOutputProfile &o) const {
+        return token == o.token && name == o.name && isActive == o.isActive;
+    }
+
+    bool operator!=(const OnvifRelayOutputProfile &o) const { return !(*this == o); }
+};
+
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
 
 class OnvifControl : public DeviceControl {
@@ -228,9 +303,64 @@ public:
     bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
 
     /**
+     * If device has Audio Output capability
+     */
+    bool enableAudioOutput() { return _audioOutputProfile.enable; }
+
+    /**
+     * If device has Audio Input (source) capability
+     */
+    bool enableAudioInput() { return _audioInputProfile.enable; }
+
+    /**
+     * If device has Focus capability
+     */
+    bool enableFocus() { return _imageProfile.isFocusEnable; }
+
+    /**
+     * If device has Iris control capability
+     */
+    bool enableIris() { return _imageProfile.isIrisEnable; }
+
+    /**
+     * If device has Relay Output capability
+     */
+    bool enableRelayOutput() { return !_relayOutputProfiles.empty(); }
+
+    /**
      * Get onvif ptz profile
      */
     OnvifPTZProfile getPTZProfile() { return _ptzProfile; }
+
+    /**
+     * Check whether the SOAP session is still active (not disconnected)
+     */
+    bool isConnected() const { return _m_soap != nullptr; }
+
+    /**
+     * Check whether a PTZ or relay control operation is in progress
+     */
+    bool isControlled() const { return _isControlled.load() > 0; }
+
+    /**
+     * Get imaging (focus/iris) profile — capabilities discovered after connect()
+     */
+    OnvifImageProfile getImageProfile() const { return _imageProfile; }
+
+    /**
+     * Get relay output profiles — populated after connect()
+     */
+    std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const { return _relayOutputProfiles; }
+
+    /**
+     * Get audio output profile — populated after connect()
+     */
+    OnvifAudioOutputProfile getAudioOutputProfile() const { return _audioOutputProfile; }
+
+    /**
+     * Get audio input profile — populated after connect()
+     */
+    OnvifAudioInputProfile getAudioInputProfile() const { return _audioInputProfile; }
 
     /**
      * Execute PTZ Absolute Move 
@@ -310,6 +440,40 @@ public:
     */
     void setCameraTimeManual();
 
+    /**
+     * Move focus continuously. speed > 0 = focus in (near), speed < 0 = focus out (far).
+     * Range [-1.0, 1.0]. Requires enableImaging() && _imageProfile.isFocusEnable.
+     */
+    bool Imaging_FocusMove(float speed);
+
+    /**
+     * Stop ongoing continuous focus move.
+     */
+    bool Imaging_FocusStop();
+
+    /**
+     * Move iris continuously. speed > 0 = iris open, speed < 0 = iris close.
+     * Range [-1.0, 1.0]. Requires enableImaging() && _imageProfile.isIrisEnable.
+     */
+    bool Imaging_IrisMove(float /*speed*/);
+
+    /**
+     * Stop ongoing continuous iris move.
+     */
+    bool Imaging_IrisStop();
+
+    /**
+     * Send an ONVIF PTZ Auxiliary command (e.g. "tt:Iris|open", "tt:Iris|close").
+     * The profileToken of the first profile in the PTZ profile is used.
+     */
+    bool PTZ_AuxiliaryCommand(const std::string &auxiliaryData);
+
+    /**
+     * Set the state of a relay output (on/off).
+     * The relayToken must match one of the tokens returned by getRelayOutputTokens().
+     */
+    bool Relay_SetOutputState(const std::string &relayToken, bool active);
+
 private:
     void reportError();
 
@@ -337,6 +501,21 @@ private:
      * get media profiles by soap protocol
      */
     bool getMediaProfiles();
+
+    /**
+     * query audio input/output capabilities via Media API
+     */
+    bool getAudioCapabilities();
+
+    /**
+     * Probe imaging move options; sets _ptzProfile.isFocusEnable and _videoSourceToken.
+     */
+    bool getImagingCapabilities();
+
+    /**
+    * get relay output by soap protocol
+    */
+    bool getRelayOutputCapabilities();
 
     /**
      * get preset
@@ -373,6 +552,18 @@ private:
     // PTZ configuration
     OnvifPTZProfile _ptzProfile;
 
+    // Audio output configuration
+    OnvifAudioOutputProfile _audioOutputProfile;
+
+    // Audio input configuration
+    OnvifAudioInputProfile _audioInputProfile;
+
+    // Imaging configuration
+    OnvifImageProfile _imageProfile;
+
+    // Relay output configuration
+    std::vector<OnvifRelayOutputProfile> _relayOutputProfiles;
+
     std::string _soapErrMsg;
 
     struct CamTimeInfo {
@@ -406,6 +597,7 @@ private:
     // required because public methods call other public methods
     // (connect→disconnect, PTZ_SetPreset→PTZ_GetStatus, etc.).
     mutable std::recursive_mutex _soap_mtx;
+    std::atomic<int> _isControlled {0}; // true if a PTZ or relay control operation is in progress
 };
 
 } // namespace managerkit

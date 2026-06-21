@@ -60,6 +60,12 @@ namespace managerkit {
     XX(CODE_ONVIF_SET_CONFIG_NOT_CHANGE,    "New config is the same as old config", 409,     300026) \
     XX(CODE_ONVIF_SET_CONFIG_FAILED,        "Failed to set new config",         500,         300027) \
     XX(CODE_ONVIF_GET_CONFIG_FAILED,        "Failed to get config",             500,         300028) \
+    XX(CODE_DEVICE_NO_SUPPORT_IMAGING_FOCUS, "Device does not support focus control", 500,   300029) \
+    XX(CODE_IMAGING_FOCUS_CONTROL_FAILED,   "Imaging focus control failed",     500,         300030) \
+    XX(CODE_DEVICE_NO_SUPPORT_IMAGING_IRIS, "Device does not support iris control", 500,     300031) \
+    XX(CODE_IMAGING_IRIS_CONTROL_FAILED,    "Imaging iris control failed",      500,         300032) \
+    XX(CODE_DEVICE_NO_SUPPORT_RELAY_OUTPUT, "Device does not support relay output control", 500, 300033) \
+    XX(CODE_RELAY_OUTPUT_FAILED,            "Relay output control failed",      500,         300034) \
     /* 400xxx - Input errors */                                                                      \
     XX(CODE_INVALID_ARGS,                   "Invalid arguments",                400,         400001) \
     XX(CODE_INVALID_IP,                     "Invalid IP address",               400,         400002) \

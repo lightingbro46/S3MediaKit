@@ -301,16 +301,19 @@ void GenericRtspCameraImp::addUserPTZPreset(const std::string &presetToken, cons
         cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
-    float pan = 0.0, tilt = 0.0, zoom = 0.0;
-    if (!_controller->addUserPTZPreset(presetToken, presetName, pan, tilt, zoom, cb)) {
-        return;
-    }
-    auto strong_statistic = _statistic.lock();
-    if (!strong_statistic) {
-        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore controller ready event";
-        return;
-    }
-    strong_statistic->addUserPresets(presetToken, presetName, pan, tilt, zoom, true);
+    auto statistic_weak = _statistic;
+    auto url = _src->getUrl();
+    _controller->addUserPTZPreset(presetToken, presetName,
+        [cb, statistic_weak, presetToken, presetName, url](const SockException &ex, float pan, float tilt, float zoom) {
+            if (ex) { cb(ex); return; }
+            auto strong_statistic = statistic_weak.lock();
+            if (!strong_statistic) {
+                WarnL << "Camera " << url << " statistic has been released. Ignore preset added event";
+            } else {
+                strong_statistic->addUserPresets(presetToken, presetName, pan, tilt, zoom, true);
+            }
+            cb(ex);
+        });
 }
 
 void GenericRtspCameraImp::removeUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb) {
@@ -360,6 +363,26 @@ void GenericRtspCameraImp::getMediaProfile(const std::string &profileToken, cons
         return;
     }
     _controller->getMediaProfileAsync(profileToken, cb);
+}
+
+void GenericRtspCameraImp::ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ImageMoveControl in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore image move control request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->ImageMoveControl(strDirect, speed, cb);
+}
+
+void GenericRtspCameraImp::RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call RelayOutputControl in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore relay output control request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->RelayOutputControl(strDirect, relayToken, cb);
 }
 
 } // namespace managerkit

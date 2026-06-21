@@ -97,7 +97,6 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
                 ret.serialNumber = "";
                 ret.hardwareId = "";
                 ret.macAddress = "";
-                ret.isPtz = false;
                 ret.ip = "";
                 ret.port = 0;
                 ret.webPortAuto = true;
@@ -142,7 +141,12 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
         ret.port = port;
         ret.webPortAuto = defaultPort;
         ret.isPtz = onvif->enablePTZ();
-        //todo: check is new device or not
+        ret.isAudioOutput = onvif->enableAudioOutput();
+        ret.isAudioInput = onvif->enableAudioInput();
+        ret.isImageFocus = onvif->enableFocus();
+        ret.isImageIris = onvif->enableIris();
+        ret.isRelayOutput = onvif->enableRelayOutput();
+        // todo: check is new device or not
         ret.isNewDevice = true;
         auto profiles = onvif->selectStreamUrls();
         for (const auto &it : profiles) {
