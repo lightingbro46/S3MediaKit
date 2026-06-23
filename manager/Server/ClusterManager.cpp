@@ -207,13 +207,19 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
         if (!urls.empty() && static_cast<size_t>(idx) < urls.size()) {
             auto url = urls[idx];
             DebugL << "Health check succeeded for " << url;
+            int server_group_id = 0;
             {
                 std::lock_guard<std::mutex> lck(self->_mtx);
                 if (self->_map_server_info.find(id) != self->_map_server_info.end()) {
                     self->_map_peer_url[id] = urls[idx];
+                    server_group_id = self->_map_server_info[id].serverGroupId;
                 }
             }
-            SyncManager::Instance().addPeer(id, url);
+            GET_CONFIG(int, self_server_group_id, "manager.serverLocationId");
+            if (server_group_id == self_server_group_id) {
+                // If the server group ID matches, add the peer to SyncManager for syncing data
+                SyncManager::Instance().addPeer(id, url);
+            }
         } else {
             WarnL << "Health check index out of range for " << origin_urls << ": " << idx;
         }
