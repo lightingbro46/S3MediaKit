@@ -200,6 +200,20 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
         if (!self) return;
         if (!err.empty()) {
             WarnL << "Health check failed for " << origin_urls << ": " << err;
+            // If this peer was previously healthy, mark it as disconnected
+            bool was_healthy = false;
+            {
+                std::lock_guard<std::mutex> lck(self->_mtx);
+                auto it = self->_map_peer_url.find(id);
+                if (it != self->_map_peer_url.end()) {
+                    was_healthy = true;
+                    self->_map_peer_url.erase(it);
+                    WarnL << "Peer " << id << " is unreachable, removing from active peer list";
+                }
+            }
+            if (was_healthy) {
+                SyncManager::Instance().removePeer(id);
+            }
             return;
         }
 
@@ -266,10 +280,7 @@ void ClusterManager::onManager() {
                 // Skip self node
                 continue;
             }
-            if (_map_peer_url.find(pr.first) != _map_peer_url.end()) {
-                // Skip healthy peer
-                continue;
-            }
+            // Check all peers (both healthy and unhealthy) to detect connection changes
             peer_url_copy.emplace(pr.first, buildOrginUrls(pr.second));
         }
     }
