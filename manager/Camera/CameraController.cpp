@@ -14,7 +14,7 @@ CameraController::CameraController(const DeviceTuple &tuple, const toolkit::Even
 void CameraController::createTimer() {
     weak_ptr<CameraController> weak_self = shared_from_this();
     _timer_ctr = std::make_shared<Timer>(
-        30.0f,
+        10.0f,
         [weak_self]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {

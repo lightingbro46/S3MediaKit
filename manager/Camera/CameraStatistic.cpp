@@ -933,16 +933,16 @@ void CameraStatisticImp::addUserPresets(const std::string &preset_token, const s
         preset.absPan = abs_pan;
         preset.absTilt = abs_tilt;
         preset.absZoom = abs_zoom;
-        ptzProfile.presetMap.emplace(preset.Token, std::move(preset));
+        device_stats.user_presets.emplace(preset.Token, std::move(preset));
         DebugL << "Camera " << tuple.shortUrl() << " add user preset: " << preset_token << ", name: " << preset_name
                << ", absPan: " << abs_pan << ", absTilt: " << abs_tilt << ", absZoom: " << abs_zoom
-               << ". Total preset count: " << ptzProfile.presetMap.size();
+               << ". Total preset count: " << device_stats.user_presets.size();
     } else {
-        auto it_preset = ptzProfile.presetMap.find(preset_token);
-        if (it_preset != ptzProfile.presetMap.end()) {
-            ptzProfile.presetMap.erase(it_preset);
+        auto it_preset = device_stats.user_presets.find(preset_token);
+        if (it_preset != device_stats.user_presets.end()) {
+            device_stats.user_presets.erase(it_preset);
             DebugL << "Camera " << tuple.shortUrl() << " remove user preset: " << preset_token
-                   << ". Total preset count: " << ptzProfile.presetMap.size();
+                   << ". Total preset count: " << device_stats.user_presets.size();
         } else {
             WarnL << "Camera " << tuple.shortUrl() << " do not have user preset with token: " << preset_token << ". Ignore remove user preset.";
         }
