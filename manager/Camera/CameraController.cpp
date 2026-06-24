@@ -369,7 +369,7 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
 
     int ptz_speed = speed < 0 ? speed : static_cast<int>(_ptzSpeed);
 
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         // Read state on _poller before dispatching to avoid data races.
         auto onvif_ctr = _onvif_ctr;
         int ptz_mode   = _ptzMode;
@@ -406,7 +406,7 @@ void CameraController::ImageMoveControl(const std::string &strDirect, int speed,
         direct = IMAGE_CONTROL_DIRECT::FocusAuto;
     }
     
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto onvif_ctr = _onvif_ctr;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
         // Blocking SOAP — dispatch to a fresh WorkThread so _poller stays responsive.
@@ -432,7 +432,7 @@ void CameraController::RelayOutputControl(const std::string &strDirect, const st
         direct = RELAY_OUTPUT_CONTROL::RelayOff;
     }
 
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto onvif_ctr = _onvif_ctr;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
         WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, relay_token, direct, cb]() { 
@@ -463,7 +463,7 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
     if (presetToken.empty() || presetName.empty()) {
         return false;
     }
-    if (!(_onvif_ctr && _ready.load())) {
+    if (!(_onvif_ctr && _onvif_ctr->isConnected())) {
         cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), 0, 0, 0);
         return false;
     }
@@ -534,7 +534,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             return;
         }
         auto &preset = it->second;
-        if (_onvif_ctr && _ready.load()) {
+        if (_onvif_ctr && _onvif_ctr->isConnected()) {
             auto onvif_ctr = _onvif_ctr;
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
             // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
@@ -551,7 +551,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             return;
         }
     } else {
-        if (_onvif_ctr && _ready.load()) {
+        if (_onvif_ctr && _onvif_ctr->isConnected()) {
             auto onvif_ctr = _onvif_ctr;
             string token = presetToken;
             // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
@@ -581,7 +581,7 @@ static void onvifGetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 
 void CameraController::getMediaProfileAsync(const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     // Caller (GenericRtspCameraImp::getMediaProfile) asserts isCurrentThread - no dispatch needed.
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto onvif_ctr = _onvif_ctr;
         auto poller = _poller;
         string token = profileToken;
@@ -615,7 +615,7 @@ static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 
 void CameraController::setMediaProfileAsync(const string &profileToken, VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
     // Caller (GenericRtspCameraImp::setMediaProfile) asserts isCurrentThread - no dispatch needed.
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         VideoEncoderConfig new_f_config;
         auto it = _profileConfigMap.find(profileToken);
         if (it != _profileConfigMap.end()) {
@@ -687,7 +687,7 @@ void CameraController::syncMediaProfile() {
     // This function is called by timer to retry setting media profile for profiles in NEW state. 
     // It does not need to check current state before setting because the state will be updated after setMediaProfileAsync called, 
     // and the retry logic is based on retry_time which will be reset to 5 after each try.
-    if (_onvif_ctr && _ready.load()) {
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto current_profiles = _onvif_ctr->getMediaProfilesInfo();
         for (const auto &profile : current_profiles) {
             auto token = profile.token;
