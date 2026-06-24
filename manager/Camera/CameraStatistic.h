@@ -125,6 +125,8 @@ public:
 
     void remove();
 
+    void setSyncMode(bool enable);
+
     static bool syncFromEsc(std::string &guid, CameraStatistic &resource);
 
 private:
@@ -134,9 +136,9 @@ private:
 
     void save();
 
-    void syncToEsc();
+    bool syncToEsc();
 
-    void removeFromEsc();
+    bool removeFromEsc();
 
     void assignResource(bool regist = true);
 
@@ -147,7 +149,7 @@ private:
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
     std::function<void(const std::string&)> _on_remove;
     int _sync_interval_sec = 30;
-    bool _sync_start = false;
+    bool _sync_mode = false;
     uint64_t _last_sync_time = 0;
 };
 

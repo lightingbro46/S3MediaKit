@@ -756,11 +756,9 @@ void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
     option = input_option;
 
     if (option.enableActive) {
-        _sync_start = true;
         // Active camera need to assign resource
         assignResource(true);
     } else if (option.enableFailover) {
-        _sync_start = false;
         // Camera is inactive but enable failover, also need to release resource
         assignResource(false);
     }
@@ -1275,16 +1273,15 @@ struct ResourceAdapter<CameraStatistic> {
     }
 };
 
-void CameraStatisticImp::syncToEsc() {
-    if (!_sync_start) {
+bool CameraStatisticImp::syncToEsc() {
+    if (!_sync_mode) {
         // Only sync to ESC when recording is enabled or failover is enabled, to reduce unnecessary sync and resource assignment when camera is inactive.
-        _last_sync_time = time(nullptr);
-        return;
+        return false;
     }
     auto sync_time = time(nullptr);
     if (sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
         TraceL << "Sync to ESC skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
-        return;
+        return false;
     }
 
     try {
@@ -1292,17 +1289,25 @@ void CameraStatisticImp::syncToEsc() {
         ResourceManager::Instance().addResource<CameraStatistic>(params, true);
         _last_sync_time = time(nullptr);
         TraceL << "Sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+        return true;
     } catch (const std::exception &e) {
         ErrorL << "Failed to sync camera resource to ESC for camera " << tuple.shortUrl() << ": " << e.what();
+        return false;
     }
 }
 
-void CameraStatisticImp::removeFromEsc() {
+bool CameraStatisticImp::removeFromEsc() {
+    if (!_sync_mode) {
+        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
+        return false;
+    }
     try {
         ResourceManager::Instance().removeResource(tuple.device_id);
         TraceL << "Removed camera resource from ESC for camera " << tuple.shortUrl();
+        return true;
     } catch (const std::exception &e) {
         ErrorL << "Failed to remove camera resource from ESC for camera " << tuple.shortUrl() << ": " << e.what();
+        return false;
     }
 }
 
@@ -1323,6 +1328,10 @@ bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
 }
 
 void CameraStatisticImp::assignResource(bool regist) {
+    if (!_sync_mode) {
+        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
+        return;
+    }
     DebugL << (regist ? "Assigning" : "Releasing") << " resource for camera " << tuple.shortUrl();
     try {
         auto node_id = ResourceManager::Instance().getSelfNodeId();
@@ -1339,6 +1348,10 @@ void CameraStatisticImp::assignResource(bool regist) {
 }
 
 void CameraStatisticImp::syncResourceStatus() {
+    if (!_sync_mode) {
+        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
+        return;
+    }
     try {
         ResourceStatus state = ResourceStatus::OFFLINE;
         for (const auto &sinfo_pair : sinfo_map) {
@@ -1358,6 +1371,12 @@ void CameraStatisticImp::syncResourceStatus() {
     } catch (const std::exception &e) {
         ErrorL << "Failed to sync resource status for camera " << tuple.shortUrl() << ": " << e.what();
     }
+}
+
+void CameraStatisticImp::setSyncMode(bool enable) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    _sync_mode = enable;
+    DebugL << "Set sync mode for camera " << tuple.shortUrl() << " to " << (_sync_mode ? "enabled" : "disabled");
 }
 
 } // namespace managerkit

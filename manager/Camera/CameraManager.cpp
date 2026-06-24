@@ -45,6 +45,7 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
             if (equalCameraConfig(gc, tuple, stream_map)) {
                 auto poller = gc->getOwnerPoller(DeviceSource::NullDeviceSource());
                 poller->async([gc, option]() {
+                    gc->setSyncMode(true); // enable sync mode to allow camera statistic sync to ESC
                     gc->setCameraOption(option);
                 });
                 return true;
@@ -59,6 +60,7 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
     auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats_imp);
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
     poller->async([imp, option]() {
+        imp->setSyncMode(true); // enable sync mode to allow camera statistic sync to ESC
         imp->setCameraOption(option);
     });
     _gcImp.emplace(tuple.shortUrl(), imp);
@@ -80,7 +82,8 @@ bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
     // create new one
     auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats);
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
-    poller->async([imp, option]() { 
+    poller->async([imp, option]() {
+        imp->setSyncMode(false); // add camera from statistics, disable sync mode to avoid sync to ESC
         imp->setCameraOption(option); 
     });
     _gcImp.emplace(tuple.shortUrl(), imp);
@@ -108,6 +111,8 @@ bool CameraManager::delCamera(const string &key) {
             auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
             poller->async([imp, option]() {
                 imp->setCameraOption(option);
+                // disable sync mode to avoid sync to ESC, set after setCameraOption to release resource assignment
+                imp->setSyncMode(false); 
             });
         } else {
             // Device disable active, check whether to keep device in list

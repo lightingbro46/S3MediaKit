@@ -23,6 +23,8 @@ public:
 
     void setCameraOption(const CameraOption &option);
 
+    void setSyncMode(bool enable);
+
     const CameraOption& getCameraOption() const { return _option; } 
 
     CameraStatisticImp::Ptr getCameraStatisticImp();

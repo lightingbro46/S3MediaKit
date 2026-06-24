@@ -385,4 +385,14 @@ void GenericRtspCameraImp::RelayOutputControl(const std::string &strDirect, cons
     _controller->RelayOutputControl(strDirect, relayToken, cb);
 }
 
+void GenericRtspCameraImp::setSyncMode(bool enable) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setSyncMode in it's owner poller");
+    auto statistic = _statistic.lock();
+    if (!statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore set sync mode request";
+        return;
+    }
+    statistic->setSyncMode(enable);
+}
+
 } // namespace managerkit
