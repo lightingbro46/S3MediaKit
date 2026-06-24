@@ -162,6 +162,13 @@ protected:
         return _executor->execDML(query) > 0;
     }
 
+    bool removeByGuidWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                         .deleteFrom(EntityTraits<BookmarkIndex>::tableName())
+                         .where("bookmark_guid = ?", {guid});
+        return execDMLWithTxn(txn, query);
+    }
+
     std::vector<BookmarkIndex> findByTimeCreated(const std::vector<std::string> &camera_guids, const std::string &user_id, int limit, std::string &sort) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -229,6 +236,20 @@ public:
         }
     }
 
+    // Transaction-aware variants.
+    void addWithTxn(BookmarkIndex &entry, toolkit::SqliteTransaction::Ptr txn) {
+        auto existing = findById(entry);
+        if (!existing.empty()) {
+            updateByIdWithTxn(entry, txn);
+        } else {
+            saveWithTxn(entry, txn, true);
+        }
+    }
+
+    void removeWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        removeByGuidWithTxn(guid, txn);
+    }
+
     // Look up a single bookmark_index entry by its primary key.
     std::vector<BookmarkIndex> findByBookmarkGuid(const std::string &guid) {
         BookmarkIndex key;
@@ -287,6 +308,17 @@ public:
                 auto idx = BookmarkIndex::fromJson(v);
                 imp->add(idx, false);
             }
+        };
+        h.onUpsertWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            auto idx = BookmarkIndex::fromJson(p);
+            imp->addWithTxn(idx, txn);
+        };
+        h.onUpsertBatchWithTxn = nullptr;
+        h.onDeleteWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<BookmarkIndexImp>();
+            std::string guid = p["bookmark_guid"].asString();
+            if (!guid.empty()) imp->removeWithTxn(guid, txn);
         };
         return h;
     }

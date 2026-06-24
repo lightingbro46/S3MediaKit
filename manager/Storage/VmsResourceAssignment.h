@@ -80,6 +80,13 @@ protected:
                             .where(whereClause.str(), whereParams);
         return _executor->execDML(query) > 0;
     }
+
+    bool removeByResourceIdWithTxn(const std::string &resource_guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsResourceAssignment>::tableName())
+                            .where("resource_guid = ?", {resource_guid});
+        return execDMLWithTxn(txn, query);
+    }
 };
 
 class VmsResourceAssignmentImp : public VmsResourceAssignmentRepository {
@@ -124,6 +131,28 @@ public:
         }
     }
 
+    // Transaction-aware variants — writes run inside an existing transaction.
+    void addWithTxn(VmsResourceAssignment &assign, toolkit::SqliteTransaction::Ptr txn) {
+        if (assign.assignment_guid.empty()) {
+            assign.assignment_guid = toolkit::makeUuidStr();
+            saveWithTxn(assign, txn, true);
+        } else {
+            auto existing = findById(assign);
+            if (!existing.empty()) {
+                updateByIdWithTxn(assign, txn);
+            } else {
+                saveWithTxn(assign, txn, true);
+            }
+        }
+    }
+
+    void updateWithTxn(const VmsResourceAssignment &assign, toolkit::SqliteTransaction::Ptr txn) {
+        updateByIdWithTxn(assign, txn);
+    }
+
+    void removeWithTxn(const std::string &resource_guid, toolkit::SqliteTransaction::Ptr txn) {
+        removeByResourceIdWithTxn(resource_guid, txn);
+    }
 
     /**
      * Find all assignments whose active window overlaps with [start_time, end_time].
@@ -155,7 +184,7 @@ public:
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "resource_guid = ?";
+        whereClause << "resource_guid = ? AND released_at = 0";
         whereParams.push_back(resource_guid);
 
         auto query = toolkit::QueryBuilder()
@@ -198,6 +227,17 @@ public:
                 auto assign = VmsResourceAssignment::fromJson(v);
                 imp->add(assign, false);
             }
+        };
+        h.onUpsertWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsResourceAssignmentImp>();
+            auto assign = VmsResourceAssignment::fromJson(p);
+            imp->addWithTxn(assign, txn);
+        };
+        h.onUpsertBatchWithTxn = nullptr;
+        h.onDeleteWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsResourceAssignmentImp>();
+            std::string resource_guid = p["resource_guid"].asString();
+            if (!resource_guid.empty()) imp->removeWithTxn(resource_guid, txn);
         };
         return h;
     }

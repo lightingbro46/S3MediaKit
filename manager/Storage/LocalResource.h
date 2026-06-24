@@ -78,6 +78,13 @@ protected:
                             .where(whereClause.str(), whereParams);
         return _executor->execDML(query) > 0;
     }
+
+    bool removeByResourceIdWithTxn(const std::string &resource_id, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<LocalResource>::tableName())
+                            .where("resource_id = ?", {resource_id});
+        return execDMLWithTxn(txn, query);
+    }
 };
 
 class LocalResourceImp : public LocalResourceRepository {
@@ -108,6 +115,29 @@ public:
 
     void remove(const std::string &resource_id) {
         removeByResourceId(resource_id);
+    }
+
+    // Transaction-aware variants (LocalResource uses a separate DB from sync tables).
+    bool addWithTxn(LocalResource &resource, toolkit::SqliteTransaction::Ptr txn) {
+        auto ret = findByPropertyName(resource.resource_id, resource.property_name);
+        if (!ret.empty()) {
+            if (ret[0].property_value == resource.property_value) return false;
+            resource.id = ret[0].id;
+            updateByIdWithTxn(resource, txn);
+            return true;
+        }
+        saveWithTxn(resource, txn);
+        return true;
+    }
+
+    void addBatchWithTxn(std::vector<LocalResource> &props, toolkit::SqliteTransaction::Ptr txn) {
+        for (auto &prop : props) {
+            addWithTxn(prop, txn);
+        }
+    }
+
+    void removeWithTxn(const std::string &resource_id, toolkit::SqliteTransaction::Ptr txn) {
+        removeByResourceIdWithTxn(resource_id, txn);
     }
 
     std::vector<LocalResource> findAllProperty(const std::string &resoure_id) {

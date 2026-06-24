@@ -70,6 +70,13 @@ protected:
                             .where(whereClause.str(), whereParams);
         return _executor->execDML(query) > 0;
     }
+
+    bool removeByGuidWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsResourceStatus>::tableName())
+                            .where("guid = ?", {guid});
+        return execDMLWithTxn(txn, query);
+    }
 };
 
 class VmsResourceStatusImp : public VmsResourceStatusRepository {
@@ -90,6 +97,22 @@ public:
 
     void remove(const std::string &guid) {
         removeByGuid(guid);
+    }
+
+    // Transaction-aware variants.
+    void addWithTxn(VmsResourceStatus &resource, toolkit::SqliteTransaction::Ptr txn) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
+        auto ret = findByGuid(resource.guid);
+        if (!ret.empty()) {
+            updateByIdWithTxn(resource, txn);
+        } else {
+            saveWithTxn(resource, txn, true);
+        }
+    }
+
+    void removeWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        removeByGuidWithTxn(guid, txn);
     }
 
     int findStatus(const std::string &guid) {

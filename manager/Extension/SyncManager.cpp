@@ -510,7 +510,11 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
         if (!rows.isArray() || rows.empty()) return;
 
         InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id << " (first tran_seq=" << rows[0]["sequence"].asString() << " last tran_seq=" << rows[rows.size()-1]["sequence"].asString() << ")";
-        self->applyBatch(rows);
+        try {
+            self->applyBatch(rows);
+        } catch (const std::exception &e) {
+            WarnL << "Failed to apply batch from " << relay_peer_id << ": " << e.what();
+        }
     };
 
     GET_CONFIG(int, batch_limit, Database::kBatchLimit);
@@ -543,77 +547,90 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
 
 void SyncManager::applyBatch(const Json::Value &rows) {
     auto log_imp = make_shared<TransactionLogImp>();
-
-    for (const auto &it : rows) {
-        // Dedup first — exact duplicate check before any work (e.g. restart replay,
-        // or same entry received via multiple relay paths).
-        string tran_guid_early = it["tran_guid"].asString();
-        if (!tran_guid_early.empty() && log_imp->existsByTranGuid(tran_guid_early)) {
-            TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
-            continue;
-        }
-
-        int tran_type = it["tran_type"].asInt();
-        if (tran_type != static_cast<int>(TranType::DataMutation)) {
-            WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
-            continue;
-        }
-
-        // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
-        string raw = it["tran_data"].asString();
-        Json::Value tran_data;
-        if (!StrJsonUtils::readJsonString(raw, tran_data)) {
-            WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
-            continue;
-        }
-
-        string table               = tran_data["table"].asString();
-        string op                  = tran_data["op"].asString();
-        const Json::Value &payload = tran_data["payload"];
-        int64_t log_ts             = it["timestamp"].asInt64();
-
-        auto hit = _table_handlers.find(table);
-        if (hit == _table_handlers.end()) {
-            WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
-            continue;
-        }
-        const TableSyncHandler &h = hit->second;
-
-        ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts);
-        // ApplyDecision::Skip => stale write — local version is newer
-        // ApplyDecision::ApplyWinner => conflict winner — incoming version is newer (but still apply)
-        // ApplyDecision::Apply => no conflict — apply normally
-        if (apply_decision != ApplyDecision::Skip) {
-            if (op == TRAN_DATA_OP_UPSERT) {
-                if (h.onUpsert) h.onUpsert(payload);
-            } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-                if (h.onUpsertBatch) {
-                    h.onUpsertBatch(payload);
-                } else {
-                    WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
-                    continue;
-                }
-            } else if (op == TRAN_DATA_OP_DELETE) {
-                if (h.onDelete) h.onDelete(payload);
-            } else {
-                WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
+    // Wrap the entire batch in one SQLite transaction so that all data writes
+    // and their transaction_log entries are committed atomically.
+    // On any exception the transaction destructs without commit → auto-rollback.
+    auto txn = log_imp->getExecutor()->execTxn();
+    try {
+        for (const auto &it : rows) {
+            // Dedup first — exact duplicate check before any work (e.g. restart replay,
+            // or same entry received via multiple relay paths).
+            string tran_guid_early = it["tran_guid"].asString();
+            if (!tran_guid_early.empty() && log_imp->existsByTranGuid(tran_guid_early)) {
+                TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
                 continue;
             }
-        }
 
-        // Record the transaction in local log, update sequence of the remote peer.
-        // If this entry won a conflict (newer than a previously accepted entry for
-        // the same row), flag it with timestamp_hi=1 for audit purposes.
-        // If this entry was skipped (stale write), flag it with timestamp_hi=2 for audit purposes.
-        auto log = TransactionLog::fromJson(it);
-        if (apply_decision == ApplyDecision::ApplyWinner) {
-            log.timestamp_hi = 1; // conflict winner (newer than previous), still record it for audit
-        } else if (apply_decision == ApplyDecision::Skip) {
-            log.timestamp_hi = 2; // stale write, but still record it for audit
-        } else {
-            log.timestamp_hi = 0; // normal case, no conflict
+            int tran_type = it["tran_type"].asInt();
+            if (tran_type != static_cast<int>(TranType::DataMutation)) {
+                WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
+                continue;
+            }
+
+            // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
+            string raw = it["tran_data"].asString();
+            Json::Value tran_data;
+            if (!StrJsonUtils::readJsonString(raw, tran_data)) {
+                WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
+                continue;
+            }
+
+            string table               = tran_data["table"].asString();
+            string op                  = tran_data["op"].asString();
+            const Json::Value &payload = tran_data["payload"];
+            int64_t log_ts             = it["timestamp"].asInt64();
+
+            auto hit = _table_handlers.find(table);
+            if (hit == _table_handlers.end()) {
+                WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
+                continue;
+            }
+            const TableSyncHandler &h = hit->second;
+
+            ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts);
+            // ApplyDecision::Skip => stale write — local version is newer
+            // ApplyDecision::ApplyWinner => conflict winner — incoming version is newer (but still apply)
+            // ApplyDecision::Apply => no conflict — apply normally
+            if (apply_decision != ApplyDecision::Skip) {
+                if (op == TRAN_DATA_OP_UPSERT) {
+                    if (h.onUpsertWithTxn) h.onUpsertWithTxn(payload, txn);
+                    else if (h.onUpsert) h.onUpsert(payload);
+                } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+                    if (h.onUpsertBatchWithTxn) {
+                        h.onUpsertBatchWithTxn(payload, txn);
+                    } else if (h.onUpsertBatch) {
+                        h.onUpsertBatch(payload);
+                    } else {
+                        WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
+                        continue;
+                    }
+                } else if (op == TRAN_DATA_OP_DELETE) {
+                    if (h.onDeleteWithTxn) h.onDeleteWithTxn(payload, txn);
+                    else if (h.onDelete) h.onDelete(payload);
+                } else {
+                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
+                    continue;
+                }
+            }
+
+            // Record the transaction in local log, update sequence of the remote peer.
+            // If this entry won a conflict (newer than a previously accepted entry for
+            // the same row), flag it with timestamp_hi=1 for audit purposes.
+            // If this entry was skipped (stale write), flag it with timestamp_hi=2 for audit purposes.
+            auto log = TransactionLog::fromJson(it);
+            if (apply_decision == ApplyDecision::ApplyWinner) {
+                log.timestamp_hi = 1; // conflict winner (newer than previous), still record it for audit
+            } else if (apply_decision == ApplyDecision::Skip) {
+                log.timestamp_hi = 2; // stale write, but still record it for audit
+            } else {
+                log.timestamp_hi = 0; // normal case, no conflict
+            }
+            log_imp->addWithTxn(log, txn);
         }
-        log_imp->add(log);
+        txn->commit();
+    } catch (...) {
+        // txn destructs without commit → auto-rollback
+        throw;
     }
 }
 

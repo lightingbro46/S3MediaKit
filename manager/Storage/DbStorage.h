@@ -234,6 +234,103 @@ protected:
         return !rows.empty();
     }
 
+    // Expose executor so callers can create/share transactions with execTxn()
+    // and pass them to WithTxn methods across multiple Imp instances on the same DB.
+    SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
+
+protected:
+    // Low-level helpers that let subclass repository methods run inside an ongoing
+    // transaction instead of the pool's autocommit connection.
+    bool execDMLWithTxn(toolkit::SqliteTransaction::Ptr txn, const toolkit::QueryBuilder &query) {
+        return _executor->execDMLWithTxn(txn, query);
+    }
+
+    toolkit::SqlitePool::SqlRetType executeRawWithTxn(toolkit::SqliteTransaction::Ptr txn, const toolkit::QueryBuilder &query) {
+        return _executor->executeRawWithTxn(txn, query);
+    }
+
+    // Transaction-aware variants of the base CRUD operations.
+    // Use these in subclass WithTxn methods to keep all writes in the same txn.
+    virtual bool saveWithTxn(const T& obj, toolkit::SqliteTransaction::Ptr txn, bool include_id = false) {
+        auto cols = EntityTraits<T>::getColumns();
+        auto vals = EntityTraits<T>::getValues(obj);
+        std::vector<std::pair<std::string, std::string>> assignments;
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        for (size_t i = 0; i < cols.size(); ++i) {
+            if (!include_id && std::find(primaryKeys.begin(), primaryKeys.end(), cols[i]) != primaryKeys.end()) continue;
+            assignments.push_back(std::make_pair(cols[i], vals[i]));
+        }
+        auto query = toolkit::QueryBuilder()
+                        .insertInto(EntityTraits<T>::tableName())
+                        .values(assignments);
+        return _executor->execDMLWithTxn(txn, query);
+    }
+
+    virtual bool updateByIdWithTxn(const T& obj, toolkit::SqliteTransaction::Ptr txn) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to update entity without primary key. Entity type: " << typeid(T).name();
+            return false;
+        }
+        auto cols = EntityTraits<T>::getColumns();
+        auto vals = EntityTraits<T>::getValues(obj);
+        std::vector<std::pair<std::string, std::string>> assignments;
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        for (size_t i = 0; i < cols.size(); ++i) {
+            if (std::find(primaryKeys.begin(), primaryKeys.end(), cols[i]) != primaryKeys.end()) continue;
+            assignments.push_back(std::make_pair(cols[i], vals[i]));
+        }
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
+        }
+        auto query = toolkit::QueryBuilder()
+                            .update(EntityTraits<T>::tableName())
+                            .set(assignments)
+                            .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        return _executor->execDMLWithTxn(txn, query);
+    }
+
+    virtual bool removeByIdWithTxn(const T& obj, toolkit::SqliteTransaction::Ptr txn) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to delete entity without primary key. Entity type: " << typeid(T).name();
+            return false;
+        }
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
+        }
+        auto query = toolkit::QueryBuilder()
+                             .deleteFrom(EntityTraits<T>::tableName())
+                             .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        return _executor->execDMLWithTxn(txn, query);
+    }
+
+    virtual std::vector<T> findByIdWithTxn(const T& obj, toolkit::SqliteTransaction::Ptr txn) {
+        if (!EntityTraits<T>::hasPrimaryKey()) {
+            WarnL << "Trying to query entity without primary key. Entity type: " << typeid(T).name();
+            return {};
+        }
+        std::vector<std::string> primaryKeys = EntityTraits<T>::getPrimaryKey();
+        std::ostringstream whereClause;
+        for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            whereClause << primaryKeys[i] << "= ?";
+            if (i + 1 < primaryKeys.size()) whereClause << " AND ";
+        }
+        auto query = toolkit::QueryBuilder()
+                             .select(EntityTraits<T>::getColumns())
+                             .from(EntityTraits<T>::tableName())
+                             .where(whereClause.str(), EntityTraits<T>::getPrimaryKeyValue(obj));
+        auto rows = _executor->executeRawWithTxn(txn, query);
+        std::vector<T> ret;
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<T>::fromRow(row));
+        }
+        return ret;
+    }
+
 protected:
     std::string _tag;
     SqliteQueryExecutor::Ptr _executor;

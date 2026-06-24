@@ -99,6 +99,13 @@ protected:
                             .where(whereClause.str(), whereParams);
         return _executor->execDML(query) > 0;
     }
+
+    bool removeByResourceIdWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsKvPair>::tableName())
+                            .where("resource_guid = ?", {guid});
+        return execDMLWithTxn(txn, query);
+    }
 };
 
 class VmsKvPairImp : public VmsKvPairRepository {
@@ -157,6 +164,21 @@ public:
         }
     }
 
+    // Transaction-aware variants — writes run inside an existing transaction.
+    void addWithTxn(VmsKvPair &kv, toolkit::SqliteTransaction::Ptr txn) {
+        addInternalWithTxn(kv, txn);
+    }
+
+    void addBatchWithTxn(const std::vector<VmsKvPair> &kvs, toolkit::SqliteTransaction::Ptr txn) {
+        for (auto kv : kvs) {
+            addInternalWithTxn(kv, txn);
+        }
+    }
+
+    void removeWithTxn(const std::string &resource_guid, toolkit::SqliteTransaction::Ptr txn) {
+        removeByResourceIdWithTxn(resource_guid, txn);
+    }
+
     std::vector<VmsKvPair> findAllKeyValue(const std::string &resoure_id) {
         return findByResourceId(resoure_id);
     }
@@ -192,6 +214,24 @@ public:
                 imp->add(kv, false);
             }
         };
+        h.onUpsertWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            auto kv = VmsKvPair::fromJson(p);
+            imp->addWithTxn(kv, txn);
+        };
+        h.onUpsertBatchWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            std::vector<VmsKvPair> kvs;
+            for (const auto &item : p["items"]) {
+                kvs.push_back(VmsKvPair::fromJson(item));
+            }
+            imp->addBatchWithTxn(kvs, txn);
+        };
+        h.onDeleteWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsKvPairImp>();
+            std::string resource_guid = p["resource_guid"].asString();
+            if (!resource_guid.empty()) imp->removeWithTxn(resource_guid, txn);
+        };
         return h;
     }
 
@@ -210,6 +250,20 @@ private:
         } 
         save(kv);
         return true;
+    }
+
+    // Transaction-aware internal upsert.
+    void addInternalWithTxn(VmsKvPair &kv, toolkit::SqliteTransaction::Ptr txn) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
+        auto ret = findByResourceIdAndKey(kv.resource_guid, kv.name);
+        if (!ret.empty()) {
+            kv.id = ret[0].id;
+            if (ret[0].value == kv.value) return;  // dirty check
+            updateByIdWithTxn(kv, txn);
+        } else {
+            saveWithTxn(kv, txn);
+        }
     }
 
 private:

@@ -88,6 +88,13 @@ public:
         return _executor->execDML(query) > 0;
     }
 
+    bool removeByGuidWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsResource>::tableName())
+                            .where("guid = ?", {guid});
+        return execDMLWithTxn(txn, query);
+    }
+
     std::vector<VmsResource> findByParentGuidAndXType(const std::string &guid, const std::string &xtype_guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -145,6 +152,26 @@ public:
         }
     }
 
+    // Transaction-aware upsert — writes run inside an existing transaction.
+    // append_log must be false (log writes are handled by the transaction owner).
+    void addWithTxn(VmsResource &resource, toolkit::SqliteTransaction::Ptr txn) {
+        static std::mutex s_add_mtx;
+        std::lock_guard<std::mutex> lk(s_add_mtx);
+        auto ret = findByGuid(resource.guid);
+        if (!ret.empty()) {
+            resource.id = ret[0].id;
+            if (!equal(resource, ret[0])) {
+                updateByIdWithTxn(resource, txn);
+            }
+        } else {
+            saveWithTxn(resource, txn);
+        }
+    }
+
+    void removeWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        removeByGuidWithTxn(guid, txn);
+    }
+
     static TableSyncHandler makeSyncHandler() {
         TableSyncHandler h;
         h.rowKey = [](const Json::Value &p) -> std::string {
@@ -167,6 +194,17 @@ public:
                 auto r = VmsResource::fromJson(v);
                 imp->add(r, false);
             }
+        };
+        h.onUpsertWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsResourceImp>();
+            auto r = VmsResource::fromJson(p);
+            imp->addWithTxn(r, txn);
+        };
+        h.onUpsertBatchWithTxn = nullptr;
+        h.onDeleteWithTxn = [](const Json::Value &p, toolkit::SqliteTransaction::Ptr txn) {
+            auto imp = std::make_shared<VmsResourceImp>();
+            std::string guid = p["guid"].asString();
+            if (!guid.empty()) imp->removeWithTxn(guid, txn);
         };
         return h;
     }

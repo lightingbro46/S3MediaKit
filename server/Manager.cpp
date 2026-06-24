@@ -51,7 +51,7 @@ static onceToken token([]() {
     mINI::Instance()[kMaxAvailableDevices] = 256;
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
-    mINI::Instance()[kFailoverActiveDelaySec] = 300;
+    mINI::Instance()[kFailoverActiveDelaySec] = 1800;
     mINI::Instance()[kEnableAuthorize] = true;
     mINI::Instance()[kJwtPublicKey] = "";
     mINI::Instance()[kSessionExpiryDays] = 180;
@@ -681,11 +681,13 @@ static Json::Value exampleJson() {
     device["id"] = "5abab589-88ec-450a-9096-e68fcbfa84fb";
     device["name"] = "Camera HPG";
     device["username"] = "admin";
-    device["password"] = "Haiphong2025";
+    // device["password"] = "Haiphong2025";
+    device["password"] = "Admin123";
     device["manufacturer"] = "Hikvision";
     device["model"] = "DS-2CD2347G1-L";
     device["enabled"] = true;
-    device["ip"] = "27.72.173.71";
+    // device["ip"] = "27.72.173.71";
+    device["ip"] = "14.224.218.88";
     device["httpPort"] = 80;
     device["recordingConfig"] = Json::objectValue;
     device["recordingConfig"]["enableRecording"] = true;
@@ -725,7 +727,8 @@ static Json::Value exampleJson() {
     device["cameraAdvanceConfig"]["mediaStreaming"]["useDefaultMediaPort"] = true;
     device["cameraAdvanceConfig"]["mediaStreaming"]["rtpTransport"] = "AUTO";
     device["cameraAdvanceConfig"]["webPage"] = Json::objectValue;
-    device["cameraAdvanceConfig"]["webPage"]["webPort"] = 8080;
+    // device["cameraAdvanceConfig"]["webPage"]["webPort"] = 8080;
+    device["cameraAdvanceConfig"]["webPage"]["webPort"] = 8103;
     device["cameraAdvanceConfig"]["webPage"]["useDefaultWebPort"] = false;
     device["cameraAdvanceConfig"]["ptzSetting"]["enablePTZControl"] = true;
     device["cameraAdvanceConfig"]["ptzSetting"]["reversePanAxis"] = false;
@@ -736,10 +739,11 @@ static Json::Value exampleJson() {
     device["primaryStreamId"] = "0aa9322f-c0a3-4518-8273-8a7df3d35ede";
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile1/media.smp"; // JPEG
     // device["primaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile2/media.smp";
-    device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
-    device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
+    // device["primaryStreamUrl"] = "rtsp://viettel:Viettel@123@14.224.218.88:558/LiveChannel/3/media.smp/profile=2";
+    device["primaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:577/profile2/media.smp";
+    // device["secondaryStreamId"] = "56c14e52-e578-40c3-8b50-d7c315a36456";
     // device["secondaryStreamUrl"] = "rtsp://admin:Haiphong2025@27.72.173.71:5555/profile5/media.smp";
-    device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
+    // device["secondaryStreamUrl"] = "rtsp://admin:Admin123@14.224.218.88:557/profile3/media.smp";
     device["motionDetectConfig"]["numOfRow"] = 32;
     device["motionDetectConfig"]["numOfColumn"] = 44;
     // device["motionDetectConfig"]["chooseStream"] = "PRIMARY";

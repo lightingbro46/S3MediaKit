@@ -1,8 +1,10 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <json/json.h>
+#include "Util/SqlitePool.h"
 
 namespace managerkit {
 
@@ -32,6 +34,12 @@ struct TableSyncHandler {
     // Apply a full snapshot array for this table (used during bootstrap).
     // Receives the entire JSON array for the table — iterate and upsert each row.
     std::function<void(const Json::Value &json_array)> onSnapshot;
+
+    // Transaction-aware variants. Called by applyBatch when a batch transaction
+    // is active. If nullptr, applyBatch falls back to the non-txn variant.
+    std::function<void(const Json::Value &payload, toolkit::SqliteTransaction::Ptr txn)> onUpsertWithTxn;
+    std::function<void(const Json::Value &payload, toolkit::SqliteTransaction::Ptr txn)> onUpsertBatchWithTxn;
+    std::function<void(const Json::Value &payload, toolkit::SqliteTransaction::Ptr txn)> onDeleteWithTxn;
 };
 
 } // namespace managerkit

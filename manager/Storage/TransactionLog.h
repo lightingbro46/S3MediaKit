@@ -194,6 +194,22 @@ public:
         }
     }
 
+    // Transaction-aware variant: insert the log entry within an existing transaction.
+    // The sequence update is intentionally kept outside the transaction (it's metadata).
+    void addWithTxn(TransactionLog &entity, toolkit::SqliteTransaction::Ptr txn) {
+        if (saveWithTxn(entity, txn)) {
+            TransactionSequence seq;
+            seq.peer_guid = entity.peer_guid;
+            seq.db_guid = entity.db_guid;
+            seq.sequence = entity.sequence;
+            _seq_impl->add(seq);
+        }
+    }
+
+    // Expose executor so SyncManager (and other callers) can create a transaction
+    // that spans this log table and other tables on the same database.
+    SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
+
     // todo: remove log
 
     std::vector<TransactionLog> findSinceSeq(const std::string &peer_guid, const std::string &db_guid, int since_seq = 0, int limit = 100) {
