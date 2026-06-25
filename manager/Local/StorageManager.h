@@ -7,6 +7,7 @@
 #include "Poller/EventPoller.h"
 #include "Poller/Timer.h"
 #include "Util/TimeTicker.h"
+#include "json/json.h"
 
 namespace managerkit {
  
@@ -19,11 +20,11 @@ public:
 
     void start();
 
-    std::string getMainStorageMountPoint();
-
     void getMainStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
     void getBackUpStorageUsage(size_t &used_bytes, size_t &total_bytes);
+
+    Json::Value makeSystemStorageJson();
 
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);
@@ -33,6 +34,8 @@ private:
     void enforceStoragePolicy();
 
     void removeExpiredUserSession();
+
+    std::string getMainStorageMountPoint();
 
 private:
     toolkit::EventPoller::Ptr _poller;

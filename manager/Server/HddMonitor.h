@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <unordered_map>
+#include "json/json.h"
 #include "ResourceMonitor.h"
 #include "Util/TimeTicker.h"
 
@@ -25,6 +26,16 @@ struct DiskPartition {
     uint64_t free_bytes = 0;
     uint64_t used_bytes = 0;
     float usage_pct = 0.0f;
+
+    Json::Value toJson() const {
+        Json::Value dv;
+        dv["name"]      = device;
+        dv["mount"]     = mount_point;
+        dv["used"]      = (Json::UInt64)used_bytes;
+        dv["total"]     = (Json::UInt64)total_bytes;
+        dv["used_pct"]  = sanitize_for_json(usage_pct);
+        return dv;
+    }
 };
 
 class HddCollector : public MetricCollector<DiskUsage> {

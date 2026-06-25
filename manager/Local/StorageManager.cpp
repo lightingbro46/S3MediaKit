@@ -128,42 +128,6 @@ static size_t recreateTimeFile(const KeepTimeMap &map) {
     return removed_timefile_bytes;
 }
 
-static bool findMountPoint(const std::string& path, float &usage_pct, size_t &used_bytes, size_t &total_bytes) {
-    usage_pct = 0.0f;
-    used_bytes = 0;
-    total_bytes = 0;
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    string best_match;
-    for (const auto& disk : hdd_usage) {
-        string mp = disk.mount_point;
-        if (start_with(path, mp)) { // path starts with mp
-            if (best_match.empty() || mp.size() > best_match.size()) {
-                best_match = mp;
-                usage_pct = disk.usage_pct;
-                used_bytes = disk.used_bytes;
-                total_bytes = disk.total_bytes;
-            }
-        }
-    }
-    TraceL << "Found mountpoint: " << best_match;
-    return !best_match.empty();
-}
-
-static string findMountPoint(const string& path) {
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    string best_match;
-    for (const auto& disk : hdd_usage) {
-        string mp = disk.mount_point;
-        if (start_with(path, mp)) { // path starts with mp
-            if (best_match.empty() || mp.size() > best_match.size()) {
-                best_match = mp;
-            }
-        }
-    }
-    TraceL << "Found mountpoint: " << best_match;
-    return best_match;
-}
-
 static size_t estimateSpaceToReclaim() {
     size_t space_reclaim = 0;
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
@@ -173,7 +137,7 @@ static size_t estimateSpaceToReclaim() {
     size_t used_bytes = 0;
     size_t total_bytes = 0;
 
-    if (findMountPoint(record_path, usage_pct, used_bytes, total_bytes)) {
+    if (GlobalMonitor::Instance().findMountPointUsage(record_path, usage_pct, used_bytes, total_bytes)) {
         // todo: estimate with read/write speed
         GET_CONFIG(int, limit_percent_usage, Storage::kLimitPercentUsage);
         auto _limit_percent_usage = std::min(99, std::max(0, limit_percent_usage));
@@ -455,7 +419,7 @@ string StorageManager::getMainStorageMountPoint() {
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, app_name, Record::kAppName);
     string record_path = File::absolutePath(app_name, mp4_save_path);
-    return findMountPoint(record_path);
+    return GlobalMonitor::Instance().findMountPoint(record_path);
 }
 
 void StorageManager::getMainStorageUsage(size_t &used_bytes, size_t &total_bytes) {
@@ -463,7 +427,7 @@ void StorageManager::getMainStorageUsage(size_t &used_bytes, size_t &total_bytes
     GET_CONFIG(string, app_name, Record::kAppName);
     string record_path = File::absolutePath(app_name, mp4_save_path);
     float usage_pct = 0.0f;
-    if (!findMountPoint(record_path, usage_pct, used_bytes, total_bytes)) {
+    if (!GlobalMonitor::Instance().findMountPointUsage(record_path, usage_pct, used_bytes, total_bytes)) {
         WarnL << "Not found main storage: " << record_path;
     }
 }
@@ -484,6 +448,19 @@ void StorageManager::removeExpiredUserSession() {
     } else {
         WarnL << "Remove expire user session failed";
     };
+}
+
+Json::Value StorageManager::makeSystemStorageJson() {
+    Json::Value val = Json::arrayValue;
+    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
+    auto main_mount_point = getMainStorageMountPoint();
+    for (const auto &d : hdd_usage) {
+        Json::Value disk = d.toJson();
+        disk["isMainStorage"] = main_mount_point == d.mount_point;
+        disk["enableConfigure"] = false;
+        val.append(disk);
+    }
+    return val;
 }
 
 } // namespace managerkit

@@ -3080,7 +3080,7 @@ void installWebApi() {
         info["httpPort"] =  static_cast<int>(mINI::Instance()["http.port"]);
         info["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
         info["clientUseSsl"] = false;
-        info["maxDevice"] =  estimateMaxAvailableDevice();
+        info["maxDevice"] =  GlobalMonitor::Instance().estimateMaxAvailableDevice();
         val["data"] = info;
     });
 
@@ -3175,7 +3175,17 @@ void installWebApi() {
         //     RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
         //     return;
         // }
-        val["data"] = makeSystemStatisticJson();
+        val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
+    });
+
+    api_regist("/media/mserver/systemStatisticHistory", [](API_ARGS_MAP) {
+        CHECK_AUTH_TOKEN();
+        CHECK_READ_MSERVER_PERMISSION();
+        CHECK_ARGS_("from", "to", "limit");
+        int64_t from_ts = allArgs["from"];
+        int64_t to_ts   = allArgs["to"];
+        int     limit   = allArgs["limit"];
+        val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit);
     });
 
     api_regist("/media/api/getSyncStatus", [](API_ARGS_MAP_ASYNC) {
@@ -3404,7 +3414,7 @@ void installWebApi() {
 
     api_regist("/media/api/systemStatistic", [](API_ARGS_MAP_ASYNC) {
         auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
-            val["data"] = makeSystemStatisticJson();
+            val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
             invoker(200, headerOut, val.toStyledString());
         };
 
@@ -3969,7 +3979,7 @@ void installWebApi() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
-        val["data"] = makeSystemStorageJson();
+        val["data"] = StorageManager::Instance().makeSystemStorageJson();
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -3984,7 +3994,7 @@ void installWebApi() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
             return;
         }
-        val["data"] = makeStorageStatisticJson();
+        val["data"] = makeDeviceStoragesJson();
         invoker(200, headerOut, val.toStyledString());
     });
 

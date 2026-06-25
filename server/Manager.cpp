@@ -13,7 +13,6 @@
 #include "Storage/MiscData.h"
 #include "Local/StorageManager.h"
 #include "Server/GlobalMonitor.h"
-#include "Extension/Benchmark.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
@@ -204,17 +203,6 @@ void installManagerHook () {
             }
         }
         invoker(result);
-    });
-
-    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
-        auto device_id = args.app;
-        bool record_stream = false;
-        GET_CONFIG(string, app_name, Record::kAppName);
-        if (args.app == app_name) {
-            device_id = split(args.stream, "/")[0];
-            record_stream = true;
-        }
-        GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
     });
 
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMotion, [](BroadcastRecordMotionArgs) {
@@ -1298,7 +1286,7 @@ static Json::Value makeDeviceStorageJson(const DeviceSource::Ptr& device, Server
     return ret;
 }
 
-Json::Value makeStorageStatisticJson() {
+Json::Value makeDeviceStoragesJson() {
     Json::Value data ;
     data["mainDevices"] = Json::arrayValue;
     data["failoverDevices"] = Json::arrayValue;
@@ -1342,165 +1330,6 @@ void loadServerStartedConfigJson(const Json::Value &data) {
         NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
         ini.dumpFile(g_ini_file);
     }
-}
-
-struct ReaderDeviceStats {
-    std::string name;
-    std::string ipAddress;
-    int total_count = 0;
-    int live_count = 0;
-    int playback_count = 0;
-};
-
-static Json::Value makeReaderDeviceStatsJson(const ReaderDeviceStats &stats) {
-    Json::Value val;
-    val["name"] = stats.name;
-    val["ipAddress"] = stats.ipAddress;
-    val["liveStreamCount"] = stats.live_count;
-    val["playbackStreamCount"] = stats.playback_count;
-    val["totalStreamCount"] = stats.total_count;
-    return val;
-}
-
-Json::Value makeSystemStatisticJson() {
-    Json::Value val;
-    auto osinfo = GlobalMonitor::Instance().getOsInfo();
-    val["osInfo"]["platform"] = osinfo.platform;
-    val["osInfo"]["variant"] = osinfo.variant;
-    val["osInfo"]["variant_verison"] = osinfo.variant_version;
-
-    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
-    val["cpu"]["cores"] = cpu_usage.cores;
-    val["cpu"]["usage_pct"] = sanitize_for_json(cpu_usage.usagePct);
-    val["cpu"]["proc_usage_pct"] = sanitize_for_json(cpu_usage.procUsagePct);
-
-    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
-    val["ram"]["used"] = (Json::UInt64)mem_usage.usageMemory;
-    val["ram"]["total"] = (Json::UInt64)mem_usage.totalMemory;
-    val["ram"]["usage_pct"] = sanitize_for_json(mem_usage.usagePct);
-    val["ram"]["proc_usage_pct"] = sanitize_for_json(mem_usage.procUsagePct);
-
-    val["nets"] = Json::arrayValue;
-    auto net_usage = GlobalMonitor::Instance().getNetUsage();
-    for (const auto &n : net_usage) {
-        Json::Value net_val;
-        net_val["name"] = n.name;
-        net_val["ipv4"] = n.ipv4;
-        net_val["ipv6"] = n.ipv6;
-        net_val["mac"] = n.mac_address;
-        net_val["rx_mbps"] = sanitize_for_json(n.rx_mbps);
-        net_val["tx_mbps"] = sanitize_for_json(n.tx_mbps);
-        net_val["speed_mbps"] = n.speed_mbps;
-        val["nets"].append(net_val);
-    }
-   
-    val["disks"] = Json::arrayValue;
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    for (const auto &d : hdd_usage) {
-        Json::Value disk;
-        disk["name"] = d.device;
-        disk["mount"] = d.mount_point;
-        disk["used"] = (Json::UInt64)d.used_bytes;
-        disk["total"] = (Json::UInt64)d.total_bytes;
-        disk["used_pct"] = sanitize_for_json(d.usage_pct);
-        val["disks"].append(disk);
-    }
-
-    auto reader_usage = GlobalMonitor::Instance().getReaderUsage();
-    int totalReaderCount = 0;
-    int liveReaderCount = 0;
-    int playbackReaderCount = 0;
-    int activeViewingDeviceCount = 0;    
-    std::vector<ReaderDeviceStats> readerDeviceStatsList;
-
-    for (const auto &item : reader_usage) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(item.first, false);
-        if (recorder) {
-            auto params = recorder->getParams();
-            ReaderDeviceStats stats;
-            stats.name = params.option.name;
-            stats.ipAddress = params.option.ip;
-            stats.live_count = item.second.first;
-            stats.playback_count = item.second.second;
-            stats.total_count = item.second.first + item.second.second;
-
-            liveReaderCount += stats.live_count;
-            playbackReaderCount += stats.playback_count;
-            totalReaderCount += stats.total_count;
-            activeViewingDeviceCount += (stats.total_count > 0) ? 1 : 0;
-
-            readerDeviceStatsList.push_back(std::move(stats));
-        }
-    }
-
-    val["reader"]["totalStreamCount"] = (Json::UInt)totalReaderCount;
-    val["reader"]["liveStreamCount"] = (Json::UInt)liveReaderCount;
-    val["reader"]["playbackStreamCount"] = (Json::UInt)playbackReaderCount;
-    val["reader"]["activeViewingDeviceCount"] = (Json::UInt)activeViewingDeviceCount;
-    val["reader"]["devices"] = Json::arrayValue;
-    for (const auto &stats : readerDeviceStatsList) {
-        val["reader"]["devices"].append(makeReaderDeviceStatsJson(stats));
-    }
-
-    auto cpu_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::CPU);
-    val["threshold"]["cpu_levelLow"] = cpu_threshold.first;
-    val["threshold"]["cpu_levelMedium"] = cpu_threshold.second;
-    auto mem_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::MEMORY);
-    val["threshold"]["ram_levelLow"] = mem_threshold.first;
-    val["threshold"]["ram_levelMedium"] = mem_threshold.second;
-    auto hdd_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::HDD);
-    val["threshold"]["disk_levelLow"] = hdd_threshold.first;
-    val["threshold"]["disk_levelMedium"] = hdd_threshold.second;
-    auto reader_threshold = GlobalMonitor::Instance().getThreshold(ResourceType::READER);
-    val["threshold"]["reader_levelLow"] = reader_threshold.first;
-    val["threshold"]["reader_levelMedium"] = reader_threshold.second;
-    
-    return val;
-}
-
-Json::Value makeSystemStorageJson() {
-    Json::Value val = Json::arrayValue;
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    auto main_mount_point = StorageManager::Instance().getMainStorageMountPoint();
-    for (const auto &d : hdd_usage) {
-        Json::Value disk;
-        disk["name"] = d.device;
-        disk["mount"] = d.mount_point;
-        disk["used"] = (Json::UInt64)d.used_bytes;
-        disk["total"] = (Json::UInt64)d.total_bytes;
-        disk["isMainStorage"] = main_mount_point == d.mount_point;
-        disk["enableConfigure"] = false;
-        val.append(disk);
-    }
-    return val;
-}
-
-int estimateMaxAvailableDevice() {
-    auto &ini = mINI::Instance();
-    int maxAvailableDevice = ini[Manager::kMaxAvailableDevices];
-    if (maxAvailableDevice != 0) {
-        return maxAvailableDevice;
-    }
-    auto cpu_usage = GlobalMonitor::Instance().getCpuUsage();
-    int cpu_core = cpu_usage.cores;
-    auto mem_usage = GlobalMonitor::Instance().getMemUsage();
-    uint64_t mem_cap = mem_usage.totalMemory / 1024 / 1024; // byte -> Megabyte
-    auto net_usage = GlobalMonitor::Instance().getNetUsage();
-    uint64_t net_cap = 0;
-    for (const auto &net : net_usage) {
-        if (net_cap == 0 || net_cap < net.speed_mbps) {
-            net_cap = net.speed_mbps;
-        }
-    }
-    uint64_t disk_cap = 200;
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    // estimate max available camera that can be run on server hardware
-    maxAvailableDevice = Benchmark::estimateAvailableDevice(net_cap, disk_cap, cpu_core, mem_cap);
-    // save param to file
-    ini[Manager::kMaxAvailableDevices] = maxAvailableDevice;
-    ini.dumpFile(g_ini_file);
-
-    return maxAvailableDevice;
 }
 
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {

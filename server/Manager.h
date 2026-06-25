@@ -55,13 +55,7 @@ void loadServerStartedConfigJson(const Json::Value &data);
 
 Json::Value makeDeviceCapabilitiesJson(const managerkit::DeviceSource::Ptr &device, const managerkit::DeviceCapabilities* caps);
 
-Json::Value makeSystemStatisticJson();
-
-Json::Value makeSystemStorageJson();
-
-Json::Value makeStorageStatisticJson();
-
-int estimateMaxAvailableDevice();
+Json::Value makeDeviceStoragesJson();
 
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 

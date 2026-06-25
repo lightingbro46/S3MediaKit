@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <unordered_map>
+#include "json/json.h"
 #include "ResourceMonitor.h"
 #include "Util/TimeTicker.h"
 
@@ -24,6 +25,18 @@ struct NetInterfaceInfo {
     float speed_mbps = 0.0f;
     float rx_mbps = 0.0f;
     float tx_mbps = 0.0f;
+
+    Json::Value toJson() const {
+        Json::Value nv;
+        nv["name"]      = name;
+        nv["ipv4"]      = ipv4;
+        nv["ipv6"]      = ipv6;
+        nv["mac"]       = mac_address;
+        nv["rx_mbps"]   = sanitize_for_json(rx_mbps);
+        nv["tx_mbps"]   = sanitize_for_json(tx_mbps);
+        nv["speed_mbps"]= speed_mbps;
+        return nv;
+    }
 };
 
 class NetworkCollector : public MetricCollector<NetSpeed> {
