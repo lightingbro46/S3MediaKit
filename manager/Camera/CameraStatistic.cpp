@@ -882,7 +882,7 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
     }
 }
 
-void CameraStatisticImp::remove() {
+void CameraStatisticImp::remove(bool failover_active) {
     bool removed = false;
     {
         std::lock_guard<std::mutex> lck(_mtx);
@@ -893,7 +893,9 @@ void CameraStatisticImp::remove() {
         }
     }
 
-    removeFromEsc();
+    if (!failover_active) {
+        removeFromEsc();
+    }
 
     if (_on_remove && removed) {
         _on_remove(tuple.device_id);
@@ -1297,10 +1299,6 @@ bool CameraStatisticImp::syncToEsc() {
 }
 
 bool CameraStatisticImp::removeFromEsc() {
-    if (!_sync_mode) {
-        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
-        return false;
-    }
     try {
         ResourceManager::Instance().removeResource(tuple.device_id);
         TraceL << "Removed camera resource from ESC for camera " << tuple.shortUrl();

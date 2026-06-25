@@ -123,7 +123,7 @@ public:
 public:
     CameraStatistic getParams();
 
-    void remove();
+    void remove(bool failover_active = false);
 
     void setSyncMode(bool enable);
 

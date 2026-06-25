@@ -115,6 +115,7 @@ bool CameraManager::delCamera(const string &key) {
                 imp->setSyncMode(false); 
             });
         } else {
+            bool failover_active = true;
             // Device disable active, check whether to keep device in list
             auto stats_imp = imp->getCameraStatisticImp();
             if (stats_imp) {
@@ -127,6 +128,7 @@ bool CameraManager::delCamera(const string &key) {
                                 << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
                                 << " and release time " << (out.released_at > 0 ? getTimeStr("%Y-%m-%d %H:%M:%S", out.released_at) : "N/A");
                         if (out.released_at == 0) {
+                            failover_active = true;
                             DebugL << "Device " << key << " has not been released from cluster. Keep device in list";
                             CameraStatistic params_from_esc;
                             if (CameraStatisticImp::syncFromEsc(params.tuple.device_id, params_from_esc)) {
@@ -144,12 +146,14 @@ bool CameraManager::delCamera(const string &key) {
                                         << ", keepArchivedMaxFor: " << option_copy.keepArchivedMaxFor;
                                     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
                                     poller->async([imp, option]() {
+                                        imp->setSyncMode(false); // disable sync mode to avoid sync to ESC
                                         imp->setCameraOption(option);
                                     });
                                 }
                             } else {
                                 WarnL << "Failed to sync camera statistic from ESC for device " << key;
                             }
+                            // todo: check amount of archived data to decide whether to keep device in list, if archived data is too small, remove it out of list
                             return false;
                         }
                         GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
@@ -159,6 +163,7 @@ bool CameraManager::delCamera(const string &key) {
                             return false;
                         }
                         // Device disable active and disable failover mode, remove it out of list
+                        failover_active = false;
                         WarnL << "Device " << key << " is not active and has not assign to another media server. Remove device out of list";
                     } else {
                         // fallback to check storage data if there is no resource assignment data, since resource assignment data may be missing in cases of camera relocation or failover back to main server
@@ -172,12 +177,13 @@ bool CameraManager::delCamera(const string &key) {
                             return false;
                         }
                         // Device disable active and disable failover mode, remove it out of list
+                        failover_active = false;
                         WarnL << "Device " << key << " is not active and has no archived data. Remove device out of list";
                     }
                 }
             }
             // Remove it out of list
-            stats_imp->remove();
+            stats_imp->remove(failover_active);
             _gcImp.erase(key);
             return true;
         }
