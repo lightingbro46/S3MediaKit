@@ -647,6 +647,7 @@ static void fromJson(MediaServerInfo &info, const Json::Value &data) {
     info.useCustomPath = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["useCustomPath"].asBool() : false;
     info.customPath = !data["dynamicDomain"].empty() ? data["dynamicDomain"]["customPath"].asString() : "";
     info.hasFailover = data["hasFailover"].asBool();
+    info.serverGroupId = data["serverGroupId"].asInt();
 }
 
 static void loadServerClusterFromJson(const Json::Value &data) {

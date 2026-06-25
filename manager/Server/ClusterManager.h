@@ -64,7 +64,8 @@ struct MediaServerInfo {
                useDomain == other.useDomain &&
                useCustomPath == other.useCustomPath &&
                customPath == other.customPath &&
-               hasFailover == other.hasFailover;
+               hasFailover == other.hasFailover && 
+               serverGroupId == other.serverGroupId;
     }
 
     Json::Value toJson() const {
