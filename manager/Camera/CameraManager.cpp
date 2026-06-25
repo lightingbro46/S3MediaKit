@@ -122,7 +122,7 @@ bool CameraManager::delCamera(const string &key) {
                 if (option.enableFailover) {
                     auto params = stats_imp->getParams();
                     VmsResourceAssignment out;
-                    auto ret = ResourceManager::Instance().getCurrentResourceAssignment(params.tuple.device_id, out);
+                    auto ret = ResourceManager::Instance().getLastResourceAssignment(params.tuple.device_id, out);
                     if (ret) {
                         DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
                                 << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 

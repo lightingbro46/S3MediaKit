@@ -71,7 +71,7 @@ std::pair<std::string, std::string> SearchEngine::findCurrentOwnerNode(
     const std::string &camera_id)
 {
     VmsResourceAssignmentImp assign_imp;
-    auto assignments = assign_imp.findCurrentAssignment(camera_id);
+    auto assignments = assign_imp.findLastAssignment(camera_id);
     return resolveOwner(camera_id, assignments);
 }
 

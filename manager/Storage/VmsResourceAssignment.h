@@ -180,6 +180,27 @@ public:
         return ret;
     }
 
+    std::vector<VmsResourceAssignment> findLastAssignment(const std::string &resource_guid) {
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+
+        whereClause << "resource_guid = ?";
+        whereParams.push_back(resource_guid);
+
+        auto query = toolkit::QueryBuilder()
+                            .select(EntityTraits<VmsResourceAssignment>::getColumns())
+                            .from(EntityTraits<VmsResourceAssignment>::tableName())
+                            .where(whereClause.str(), whereParams)
+                            .orderBy("assigned_at DESC")
+                            .limit(1);
+        std::vector<VmsResourceAssignment> ret;
+        auto rows = _executor->executeRaw(query);
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<VmsResourceAssignment>::fromRow(row));
+        }
+        return ret;
+    }
+
     std::vector<VmsResourceAssignment> findCurrentAssignment(const std::string &resource_guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;

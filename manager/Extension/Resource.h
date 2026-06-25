@@ -148,7 +148,7 @@ public:
     // the same resource_guid from both seeing empty → both inserting a new row.
     void assignResource(const std::string &resource_guid, const std::string &peer_id, const std::string &db_guid, ResourceAssignType type) {
         std::lock_guard<std::mutex> lk(_mtx);
-        auto current = _assign_imp->findCurrentAssignment(resource_guid);
+        auto current = _assign_imp->findLastAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
             if (assign.owner_peer_id == peer_id && assign.assign_type == static_cast<int>(type) && assign.released_at == 0) {
@@ -175,7 +175,7 @@ public:
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
         std::lock_guard<std::mutex> lk(_mtx);
-        auto current = _assign_imp->findCurrentAssignment(resource_guid);
+        auto current = _assign_imp->findLastAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
             if (assign.owner_peer_id != peer_id) {
@@ -190,9 +190,9 @@ public:
         WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
     }
 
-    bool getCurrentResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
+    bool getLastResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
         std::lock_guard<std::mutex> lk(_mtx);
-        auto current = _assign_imp->findCurrentAssignment(resource_guid);
+        auto current = _assign_imp->findLastAssignment(resource_guid);
         if (!current.empty()) {
             out = current[0];
             return true;
