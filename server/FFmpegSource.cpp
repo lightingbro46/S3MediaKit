@@ -419,7 +419,7 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
             return;
         }
         char cmd[2048] = { 0 };
-        if (countSubString(ffmpeg_snap, "%s") == 3 || seek_time == 0) {
+        if (countSubString(ffmpeg_snap, "%s") == 3) {
             // Backward compatibility, the ffmpeg command template does not contain the time parameter, so it is considered that the ffmpeg command template does not contain the time parameter
             snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), save_path.data());
         } else {
