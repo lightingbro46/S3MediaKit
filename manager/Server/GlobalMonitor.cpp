@@ -5,6 +5,7 @@
 #include "Local/StatisticRecorder.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
+#include "Storage/SystemMetrics.h"
 
 using namespace std;
 using namespace toolkit;
@@ -510,7 +511,7 @@ bool GlobalMonitor::findMountPointUsage(const std::string& path, float &usage_pc
 static void* s_tag;
 
 static onceToken g_token(
-[=]() {
+[]() {
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
         auto device_id = args.app;
         bool record_stream = false;
@@ -522,7 +523,7 @@ static onceToken g_token(
         GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
     });
 }, 
-[=]() {
+[]() {
     NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastPlayerCountChanged);
 });
 

@@ -8,11 +8,10 @@
 #include "ReaderMonitor.h"
 #include "RestartScheduler.h"
 #include "osInfo.h"
-#include "Storage/SystemMetrics.h"
-
-namespace managerkit {
 
 extern std::string g_ini_file;
+
+namespace managerkit {
 
 // Forward declaration to avoid pulling Storage/SystemMetrics.h into src/ units
 // that include GlobalMonitor.h transitively.
@@ -104,7 +103,7 @@ public:
      * @param path  Path to check (e.g. "/mnt/storage1/videos").
      * @return Mount point (e.g. "/mnt/storage1") or empty string if not found.
      */
-    string findMountPoint(const std::string& path);
+    std::string findMountPoint(const std::string& path);
 
     /**
      * Find the mount point for a given path and return its usage statistics.

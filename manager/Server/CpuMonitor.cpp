@@ -219,7 +219,8 @@ static CpuTimes get_cpu_times() {
 void CpuCollector::collect() {
     _info.cores = get_cpu_core_count();
     CpuTimes t1 = get_cpu_times();
-    _poller->doDelayTask(1000, [this, t1, alive = _alive]() {
+    auto alive = _alive;
+    _poller->doDelayTask(1000, [this, t1, alive]() {
         if (!alive->load(std::memory_order_acquire)) return 0;
         CpuTimes t2 = get_cpu_times();
         if (t1.isCgroup) {

@@ -215,7 +215,8 @@ void NetworkCollector::collect() {
     uint64_t rx1 = pair1.first;
     uint64_t tx1 = pair1.second;
     _ticker.resetTime();
-    _poller->doDelayTask(1000, [this, rx1, tx1, alive = _alive]() {
+    auto alive = _alive;
+    _poller->doDelayTask(1000, [this, rx1, tx1, alive]() {
         if (!alive->load(std::memory_order_acquire)) return 0;
         std::pair<uint64_t, uint64_t> pair2 = get_rx_tx_bytes(_info.name);
         uint64_t rx2 = pair2.first;
