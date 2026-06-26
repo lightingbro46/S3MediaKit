@@ -37,6 +37,8 @@
 /.vs/
 /.vscode/
 /.idea/
+/.codex/
+/.agents/
 /c_wrapper/.idea/
 /release/
 /out/
@@ -48,6 +50,7 @@
 /3rdpart/media-server/.idea/
 /ios/
 /cmake-build-*
-/3rdpart/ZLToolKit/cmake-build-mq/
+/3rdpart/S3ToolKit/cmake-build-mq/
+/3rdpart/aws-sdk-cpp/
 vtscloud.vn
 api-config.json

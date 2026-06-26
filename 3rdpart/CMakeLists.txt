@@ -140,3 +140,55 @@ target_include_directories(jwtcpp
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/jwt-cpp/include>"
 )
 update_cached_list(MK_LINK_LIBRARIES jwtcpp)
+
+###################################################################
+
+# AWS SDK
+# The SDK is built separately (git clone + cmake + make install into aws-sdk/bin)
+# as shown in the dockerfile.  Here we just import the pre-built .so files and
+# arrange for them to be copied next to the MediaServer binary at build time.
+if (ENABLE_AWS_SDK)
+  # Root of the local aws-sdk source tree (relative to this CMakeLists.txt)
+  set(AWS_SDK_ROOT    "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk")
+  # Install prefix used in the dockerfile (cmake -DCMAKE_INSTALL_PREFIX="../bin")
+  set(AWS_SDK_INSTALL "${AWS_SDK_ROOT}/bin")
+  set(AWS_SDK_INC     "${AWS_SDK_INSTALL}/include")
+  set(AWS_SDK_LIB     "${AWS_SDK_INSTALL}/lib")
+
+  # Validate that make install has been run
+  if (NOT EXISTS "${AWS_SDK_INC}")
+    message(FATAL_ERROR
+      "AWS SDK headers not found at ${AWS_SDK_INC}.\n"
+      "Please build the SDK first. See docs/README.md for instructions.")
+  endif ()
+
+  # Create IMPORTED targets for the pre-built shared libraries
+  add_library(aws-cpp-sdk-core SHARED IMPORTED GLOBAL)
+  set_target_properties(aws-cpp-sdk-core PROPERTIES
+    IMPORTED_LOCATION             "${AWS_SDK_LIB}/libaws-cpp-sdk-core.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${AWS_SDK_INC}")
+
+  add_library(aws-cpp-sdk-s3 SHARED IMPORTED GLOBAL)
+  set_target_properties(aws-cpp-sdk-s3 PROPERTIES
+    IMPORTED_LOCATION             "${AWS_SDK_LIB}/libaws-cpp-sdk-s3.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${AWS_SDK_INC}")
+  target_link_libraries(aws-cpp-sdk-s3 INTERFACE aws-cpp-sdk-core)
+
+  # Copy the .so files next to the MediaServer binary at build time so the
+  # binary can find them via RPATH=$ORIGIN (set in server/CMakeLists.txt).
+  # Use a glob so any versioned symlinks (e.g. .so.1) are included as well.
+  file(GLOB _AWS_SO_FILES "${AWS_SDK_LIB}/libaws-cpp-sdk-core*.so*"
+                          "${AWS_SDK_LIB}/libaws-cpp-sdk-s3*.so*")
+  foreach(_so ${_AWS_SO_FILES})
+    get_filename_component(_so_name "${_so}" NAME)
+    string(REPLACE "." "_" _so_target "copy_aws_so_${_so_name}")
+    add_custom_target(${_so_target} ALL
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_so}" "${EXECUTABLE_OUTPUT_PATH}/"
+      COMMENT "Copying ${_so_name} -> ${EXECUTABLE_OUTPUT_PATH}/")
+  endforeach()
+
+  message(STATUS "ENABLE_AWS_SDK defined: using pre-built SDK from ${AWS_SDK_INSTALL}")
+  update_cached_list(MK_LINK_LIBRARIES aws-cpp-sdk-s3 aws-cpp-sdk-core)
+  update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_AWS_SDK)
+endif()
