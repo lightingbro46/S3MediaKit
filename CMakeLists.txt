@@ -604,3 +604,33 @@ if (ENABLE_VIDEOSTACK AND ENABLE_FFMPEG AND ENABLE_X264)
 endif ()
 
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration/" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
+
+# Copy aws sdk library, which is required when ENABLE_AWS_SDK is enabled
+if(ENABLE_AWS_SDK)
+  if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    file(GLOB AWS_SDK_LIBS
+      "${CMAKE_CURRENT_SOURCE_DIR}/3rdpart/aws-sdk/bin/lib/lib*.so*"
+    )
+
+    if(AWS_SDK_LIBS)
+      file(COPY ${AWS_SDK_LIBS}
+        DESTINATION ${EXECUTABLE_OUTPUT_PATH}
+      )
+    else()
+      message(WARNING "AWS SDK Linux libraries not found in 3rdpart/aws-sdk/bin/lib")
+    endif()
+
+  elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
+    file(GLOB AWS_SDK_DLLS
+      "${CMAKE_CURRENT_SOURCE_DIR}/3rdpart/aws-sdk/bin/lib/lib*.dll*"
+    )
+
+    if(AWS_SDK_DLLS)
+      file(COPY ${AWS_SDK_DLLS}
+        DESTINATION ${EXECUTABLE_OUTPUT_PATH}
+      )
+    else()
+      message(WARNING "AWS SDK Windows DLLs not found in 3rdpart/aws-sdk/bin/lib")
+    endif()
+  endif()
+endif()
