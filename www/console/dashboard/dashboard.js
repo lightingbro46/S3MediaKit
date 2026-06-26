@@ -5,6 +5,7 @@
 //   /media/api/getWorkThreadsLoad  → WorkThread load
 //   /media/api/getStatistic        → Object counters (MediaSource, TcpSession, …)
 //   /media/api/systemStatistic     → CPU/RAM/HDD/Net
+//   /media/api/systemStatisticHistory → CPU/RAM/Net/HDD/Reader history
 // =============================================================================
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -100,6 +101,11 @@ var _dashState = {
     sysStatAvail: null,  // null=unknown, true, false
     lastEventThreads: [],
     lastWorkThreads: [],
+    historyPeriod: 'day',
+    historyCharts: {},
+    historyLoading: false,
+    historyRequestSeq: 0,
+    historyResizeTimer: null,
     initialized: false,
 };
 var _epAvgSeries = new RingBuffer(60);
@@ -159,7 +165,23 @@ function _buildDashboardLayout() {
             _sparkCard('dash-spark-net',   'Net RX Mbps',    '#e3b341') +
         '</div>' +
 
-        // ── Row 4: Event Poller threads ────────────────────────────────
+        // ── Row 4: Historical resource charts ─────────────────────────
+        '<div class="dash-row-title" style="margin-top:22px">' +
+            'Lịch sử tài nguyên ' +
+            '<span id="dash-history-badge" class="dash-badge-info">loading…</span>' +
+            '<div class="dash-period-tabs" role="tablist">' +
+                _historyTab('day', 'Ngày') +
+                _historyTab('week', 'Tuần') +
+                _historyTab('month', 'Tháng') +
+            '</div>' +
+        '</div>' +
+        '<div class="dash-history-grid">' +
+            _historyChart('dash-history-resource', 'CPU / RAM / HDD') +
+            _historyChart('dash-history-network', 'Network') +
+            _historyChart('dash-history-reader', 'Reader') +
+        '</div>' +
+
+        // ── Row 5: Event Poller threads ────────────────────────────────
         '<div class="dash-row-title" style="margin-top:22px">' +
             'Event Poller Threads ' +
             '<span id="dash-ep-avg-badge" class="dash-badge-info">avg —%</span>' +
@@ -175,7 +197,7 @@ function _buildDashboardLayout() {
             '<div id="dash-ep-bars" class="dash-ep-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
         '</div>' +
 
-        // ── Row 5: Work threads ────────────────────────────────────────────────
+        // ── Row 6: Work threads ────────────────────────────────────────────────
         '<div class="dash-row-title" style="margin-top:22px">' +
             'Work Threads ' +
             '<span id="dash-wt-avg-badge" class="dash-badge-info">avg —%</span>' +
@@ -191,7 +213,7 @@ function _buildDashboardLayout() {
             '<div id="dash-wt-bars" class="dash-wt-bars-wrap"><div class="dash-thr-loading">Đang tải…</div></div>' +
         '</div>' +
 
-        // ── Row 6: Device viewer table ─────────────────────────────────
+        // ── Row 7: Device viewer table ─────────────────────────────────
         '<div class="dash-row-title" style="margin-top:22px">Viewer theo thiết bị</div>' +
         '<div id="dash-viewer-table-wrap">' +
             '<p class="dash-note" id="dash-viewer-note">Chưa có dữ liệu</p>' +
@@ -205,6 +227,7 @@ function _buildDashboardLayout() {
 
     _updateStaticInfo();
     _injectDashCSS();
+    _loadHistoryCharts();
 }
 
 function _qcard(id, label, val, col) {
@@ -234,6 +257,16 @@ function _sparkCard(id, label, color) {
             '<span class="dash-spark-lbl">' + label + '</span>' +
             '<span class="dash-spark-val" id="' + id + '_val">—</span>' +
         '</div>' +
+    '</div>';
+}
+function _historyTab(period, label) {
+    var active = period === _dashState.historyPeriod ? ' active' : '';
+    return '<button class="dash-period-tab' + active + '" data-period="' + period + '" onclick="_setHistoryPeriod(\'' + period + '\')">' + label + '</button>';
+}
+function _historyChart(id, label) {
+    return '<div class="dash-history-card">' +
+        '<div class="dash-history-head">' + label + '</div>' +
+        '<div class="dash-history-chart" id="' + id + '"></div>' +
     '</div>';
 }
 
@@ -470,8 +503,204 @@ function _renderViewerTable(reader) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Historical charts
+// ────────────────────────────────────────────────────────────────────────────
+function _setHistoryPeriod(period) {
+    if (_dashState.historyPeriod === period) return;
+    _dashState.historyPeriod = period;
+    document.querySelectorAll('.dash-period-tab').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.period === period);
+    });
+    _loadHistoryCharts();
+}
+
+function _historyRange(period) {
+    var now = Math.floor(Date.now() / 1000);
+    if (period === 'week') {
+        return { from: now - 7 * 86400, to: now, bucket_sec: 3600, label: '7 ngày' };
+    }
+    if (period === 'month') {
+        return { from: now - 30 * 86400, to: now, bucket_sec: 21600, label: '30 ngày' };
+    }
+    return { from: now - 86400, to: now, bucket_sec: 600, label: '24 giờ' };
+}
+
+function _loadHistoryCharts() {
+    var badge = document.getElementById('dash-history-badge');
+    if (badge) {
+        badge.textContent = 'loading…';
+        badge.className = 'dash-badge-info';
+    }
+    if (!window.echarts) {
+        if (badge) {
+            badge.textContent = 'missing echarts';
+            badge.className = 'dash-badge-warn';
+        }
+        return;
+    }
+
+    var range = _historyRange(_dashState.historyPeriod);
+    var requestSeq = ++_dashState.historyRequestSeq;
+    _dashState.historyLoading = true;
+    S3Auth.apiFetch('/media/api/systemStatisticHistory', {
+        from: range.from,
+        to: range.to,
+        limit: 0,
+        bucket_sec: range.bucket_sec
+    }).then(function (r) {
+        if (requestSeq !== _dashState.historyRequestSeq) return;
+        _applyHistoryCharts((r && r.data) || [], range);
+        if (badge) {
+            badge.textContent = range.label + ' · ' + ((r && r.data && r.data.length) || 0) + ' điểm';
+            badge.className = 'dash-badge-ok';
+        }
+    }).catch(function (e) {
+        if (requestSeq !== _dashState.historyRequestSeq) return;
+        if (badge) {
+            badge.textContent = 'không có dữ liệu';
+            badge.className = 'dash-badge-warn';
+            badge.title = e && e.message ? e.message : '';
+        }
+        _applyHistoryCharts([], range);
+    }).finally(function () {
+        if (requestSeq === _dashState.historyRequestSeq) {
+            _dashState.historyLoading = false;
+        }
+    });
+}
+
+function _applyHistoryCharts(rows, range) {
+    var labels = [];
+    var cpu = [], ram = [], hdd = [];
+    var rx = [], tx = [];
+    var readerTotal = [], readerLive = [], readerPlayback = [];
+
+    rows.forEach(function (row) {
+        var ts = (parseInt(row.timestamp, 10) || 0) * 1000;
+        labels.push(_fmtHistoryTime(ts, _dashState.historyPeriod));
+        cpu.push(_num(row.cpu_usage_pct));
+        ram.push(_num(row.ram_usage_pct));
+        hdd.push(_historyHdd(row));
+        rx.push(_num(row.net_rx_mbps));
+        tx.push(_num(row.net_tx_mbps));
+        readerTotal.push(_num(row.reader_total));
+        readerLive.push(_num(row.reader_live));
+        readerPlayback.push(_num(row.reader_playback));
+    });
+
+    _setLineChart('dash-history-resource', labels, [
+        { name: 'CPU %', data: cpu, color: '#3fb950' },
+        { name: 'RAM %', data: ram, color: '#79c0ff' },
+        { name: 'HDD %', data: hdd, color: '#d29922' }
+    ], { unit: '%', max: 100 });
+
+    _setLineChart('dash-history-network', labels, [
+        { name: 'RX Mbps', data: rx, color: '#e3b341' },
+        { name: 'TX Mbps', data: tx, color: '#f778ba' }
+    ], { unit: ' Mbps' });
+
+    _setLineChart('dash-history-reader', labels, [
+        { name: 'Total', data: readerTotal, color: '#388bfd' },
+        { name: 'Live', data: readerLive, color: '#3fb950' },
+        { name: 'Playback', data: readerPlayback, color: '#d29922' }
+    ], { unit: '' });
+}
+
+function _setLineChart(id, labels, series, opts) {
+    var el = document.getElementById(id);
+    if (!el || !window.echarts) return;
+    var chart = _dashState.historyCharts[id];
+    if (!chart) {
+        chart = echarts.init(el, null, { renderer: 'canvas' });
+        _dashState.historyCharts[id] = chart;
+    }
+    chart.setOption({
+        backgroundColor: 'transparent',
+        color: series.map(function (s) { return s.color; }),
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#161b22',
+            borderColor: '#30363d',
+            textStyle: { color: '#e6edf3', fontSize: 12 },
+            valueFormatter: function (v) {
+                var n = Number(v || 0);
+                return n.toFixed(opts && opts.unit === '' ? 0 : 2) + ((opts && opts.unit) || '');
+            }
+        },
+        legend: {
+            top: 0,
+            right: 0,
+            icon: 'roundRect',
+            itemWidth: 10,
+            itemHeight: 6,
+            textStyle: { color: '#7d8590', fontSize: 11 }
+        },
+        grid: { left: 38, right: 18, top: 34, bottom: 26 },
+        xAxis: {
+            type: 'category',
+            boundaryGap: false,
+            data: labels,
+            axisLine: { lineStyle: { color: '#30363d' } },
+            axisTick: { show: false },
+            axisLabel: { color: '#7d8590', fontSize: 10, hideOverlap: true }
+        },
+        yAxis: {
+            type: 'value',
+            min: 0,
+            max: opts && opts.max ? opts.max : null,
+            splitLine: { lineStyle: { color: 'rgba(48,54,61,0.65)' } },
+            axisLabel: { color: '#7d8590', fontSize: 10 }
+        },
+        series: series.map(function (s) {
+            return {
+                name: s.name,
+                type: 'line',
+                smooth: true,
+                showSymbol: false,
+                lineStyle: { width: 2 },
+                areaStyle: { opacity: 0.08 },
+                data: s.data
+            };
+        })
+    }, true);
+    chart.resize();
+}
+
+function _historyHdd(row) {
+    if (row.hdd_usage_pct != null) return _num(row.hdd_usage_pct);
+    if (row.disks && row.disks.length) {
+        return row.disks.reduce(function (max, d) {
+            return Math.max(max, _num(d.used_pct));
+        }, 0);
+    }
+    return 0;
+}
+
+function _fmtHistoryTime(ts, period) {
+    var d = new Date(ts);
+    if (period === 'month') {
+        return (d.getMonth() + 1) + '/' + d.getDate();
+    }
+    if (period === 'week') {
+        return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':00';
+    }
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+function _resizeHistoryCharts() {
+    Object.keys(_dashState.historyCharts).forEach(function (id) {
+        var chart = _dashState.historyCharts[id];
+        if (chart) chart.resize();
+    });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // helpers
 // ────────────────────────────────────────────────────────────────────────────
+function _num(v) {
+    var n = parseFloat(v);
+    return isFinite(n) ? n : 0;
+}
 function _setText(id, v) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -494,7 +723,13 @@ function _fmtBytes(b) {
 }
 function _dashRefresh() {
     _poll();
+    _loadHistoryCharts();
 }
+
+window.addEventListener('resize', function () {
+    clearTimeout(_dashState.historyResizeTimer);
+    _dashState.historyResizeTimer = setTimeout(_resizeHistoryCharts, 120);
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // Inline CSS injection (dashboard-specific styles)
@@ -568,6 +803,33 @@ function _injectDashCSS() {
     .dash-spark-val { font-size: 0.84rem; font-weight: 700; font-family: monospace; color: var(--c-text); }
     .dash-spark-mini-wrap { display: flex; flex-direction: column; gap: 4px; }
 
+    /* ─── Historical charts ─────────────────────────────────────── */
+    .dash-period-tabs {
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px; border: 1px solid var(--c-border); border-radius: 6px;
+        background: var(--c-surf); margin-left: auto;
+    }
+    .dash-period-tab {
+        min-width: 54px; height: 24px; padding: 0 10px; border: none; border-radius: 4px;
+        background: transparent; color: var(--c-muted); font-size: 0.72rem; font-weight: 700;
+        cursor: pointer; transition: background 0.12s, color 0.12s;
+    }
+    .dash-period-tab:hover { color: var(--c-text); background: var(--c-elev); }
+    .dash-period-tab.active { color: #fff; background: var(--c-accent); }
+    .dash-history-grid {
+        display: grid; grid-template-columns: repeat(3, minmax(240px, 1fr));
+        gap: 10px;
+    }
+    .dash-history-card {
+        min-width: 0; background: var(--c-surf); border: 1px solid var(--c-border);
+        border-radius: 8px; padding: 10px 10px 8px;
+    }
+    .dash-history-head {
+        height: 18px; color: var(--c-muted); font-size: 0.7rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
+    }
+    .dash-history-chart { width: 100%; height: 240px; }
+
     /* ─── Thread panels ──────────────────────────────────────────── */
     .dash-thread-panel {
         background: var(--c-surf); border: 1px solid var(--c-border);
@@ -627,6 +889,15 @@ function _injectDashCSS() {
         color: var(--c-text); transition: background 0.12s, border-color 0.12s;
     }
     .dash-btn:hover { background: var(--c-surf); border-color: var(--c-accent); }
+    @media (max-width: 1100px) {
+        .dash-history-grid { grid-template-columns: 1fr; }
+        .dash-history-chart { height: 220px; }
+    }
+    @media (max-width: 640px) {
+        .dash-row-title { flex-wrap: wrap; }
+        .dash-period-tabs { margin-left: 0; width: 100%; }
+        .dash-period-tab { flex: 1; }
+    }
     `;
     document.head.appendChild(s);
 }

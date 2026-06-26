@@ -96,7 +96,7 @@ public:
      * @param limit    Max rows to return; 0 = all.
      * @return JSON array where each element is a SystemMetric row.
      */
-    Json::Value getSystemStatisticHistory(int64_t from_ts, int64_t to_ts = 0, int limit = 0);
+    Json::Value getSystemStatisticHistory(int64_t from_ts, int64_t to_ts = 0, int limit = 0, int bucket_sec = 0);
 
     /**
      * Find the mount point for a given path.

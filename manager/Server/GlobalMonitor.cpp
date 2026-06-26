@@ -6,6 +6,8 @@
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
 #include "Storage/SystemMetrics.h"
+#include <algorithm>
+#include <map>
 
 using namespace std;
 using namespace toolkit;
@@ -456,15 +458,116 @@ int GlobalMonitor::estimateMaxAvailableDevice() {
     return maxAvailableDevice;
 }
 
-Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to_ts, int limit) {
+static float jsonValueToFloat(const Json::Value &v) {
+    if (v.isNumeric()) {
+        return v.asFloat();
+    }
+    if (v.isString()) {
+        try {
+            return std::stof(v.asString());
+        } catch (...) {
+            return 0.0f;
+        }
+    }
+    return 0.0f;
+}
+
+static void appendDerivedMetricFields(Json::Value &v) {
+    float net_rx_mbps = 0.0f;
+    float net_tx_mbps = 0.0f;
+    if (v["nets"].isArray()) {
+        for (const auto &n : v["nets"]) {
+            net_rx_mbps += jsonValueToFloat(n["rx_mbps"]);
+            net_tx_mbps += jsonValueToFloat(n["tx_mbps"]);
+        }
+    }
+
+    float hdd_usage_pct = 0.0f;
+    if (v["disks"].isArray()) {
+        for (const auto &d : v["disks"]) {
+            hdd_usage_pct = std::max(hdd_usage_pct, jsonValueToFloat(d["used_pct"]));
+        }
+    }
+
+    v["net_rx_mbps"] = net_rx_mbps;
+    v["net_tx_mbps"] = net_tx_mbps;
+    v["hdd_usage_pct"] = hdd_usage_pct;
+}
+
+struct SystemMetricBucket {
+    int64_t timestamp = 0;
+    int count = 0;
+    double cpu_usage_pct = 0;
+    double cpu_proc_usage_pct = 0;
+    double ram_used = 0;
+    double ram_total = 0;
+    double ram_usage_pct = 0;
+    double reader_total = 0;
+    double reader_live = 0;
+    double reader_playback = 0;
+    double net_rx_mbps = 0;
+    double net_tx_mbps = 0;
+    double hdd_usage_pct = 0;
+};
+
+Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to_ts, int limit, int bucket_sec) {
     Json::Value arr = Json::arrayValue;
     if (!_metrics_store) {
         return arr;
     }
     try {
         auto rows = _metrics_store->findByTimeRange(from_ts, to_ts, limit);
+        if (bucket_sec <= 0) {
+            for (const auto &row : rows) {
+                auto v = row.toJson();
+                appendDerivedMetricFields(v);
+                arr.append(v);
+            }
+            return arr;
+        }
+
+        std::map<int64_t, SystemMetricBucket> buckets;
         for (const auto &row : rows) {
-            arr.append(row.toJson());
+            auto v = row.toJson();
+            appendDerivedMetricFields(v);
+
+            int64_t bucket_ts = (row.timestamp / bucket_sec) * bucket_sec;
+            auto &b = buckets[bucket_ts];
+            b.timestamp = bucket_ts;
+            b.count++;
+            b.cpu_usage_pct += row.cpu_usage_pct;
+            b.cpu_proc_usage_pct += row.cpu_proc_usage_pct;
+            b.ram_used += row.ram_used;
+            b.ram_total += row.ram_total;
+            b.ram_usage_pct += row.ram_usage_pct;
+            b.reader_total += row.reader_total;
+            b.reader_live += row.reader_live;
+            b.reader_playback += row.reader_playback;
+            b.net_rx_mbps += jsonValueToFloat(v["net_rx_mbps"]);
+            b.net_tx_mbps += jsonValueToFloat(v["net_tx_mbps"]);
+            b.hdd_usage_pct += jsonValueToFloat(v["hdd_usage_pct"]);
+        }
+
+        for (const auto &kv : buckets) {
+            const auto &b = kv.second;
+            if (b.count <= 0) {
+                continue;
+            }
+            Json::Value v;
+            v["timestamp"] = (Json::Int64)b.timestamp;
+            v["samples"] = b.count;
+            v["cpu_usage_pct"] = b.cpu_usage_pct / b.count;
+            v["cpu_proc_usage_pct"] = b.cpu_proc_usage_pct / b.count;
+            v["ram_used"] = (Json::UInt64)(b.ram_used / b.count);
+            v["ram_total"] = (Json::UInt64)(b.ram_total / b.count);
+            v["ram_usage_pct"] = b.ram_usage_pct / b.count;
+            v["reader_total"] = (int)(b.reader_total / b.count + 0.5);
+            v["reader_live"] = (int)(b.reader_live / b.count + 0.5);
+            v["reader_playback"] = (int)(b.reader_playback / b.count + 0.5);
+            v["net_rx_mbps"] = b.net_rx_mbps / b.count;
+            v["net_tx_mbps"] = b.net_tx_mbps / b.count;
+            v["hdd_usage_pct"] = b.hdd_usage_pct / b.count;
+            arr.append(v);
         }
     } catch (const std::exception &ex) {
         WarnL << "Failed to query system metrics history: " << ex.what();
