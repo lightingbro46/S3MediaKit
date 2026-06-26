@@ -967,10 +967,10 @@ void CameraStatisticImp::addTierKeepThreshold(int tier_type, bool start, uint64_
     auto &tier_stats = tier_storage_map[tier_type];
     if (start) {
         tier_stats.archiveStartTime = threshold;
-        DebugL << "Camera " << tuple.shortUrl() << " set tier " << getTierTypeString(tier_type) << " keep start threshold: " << threshold << " seconds";
+        DebugL << "Camera " << tuple.shortUrl() << " set tier " << tierTypeToString(static_cast<TierType>(tier_type)) << " keep start threshold: " << threshold << " seconds";
     } else {
         tier_stats.archiveEndTime = threshold;
-        DebugL << "Camera " << tuple.shortUrl() << " set tier " << getTierTypeString(tier_type) << " keep end threshold: " << threshold << " seconds";
+        DebugL << "Camera " << tuple.shortUrl() << " set tier " << tierTypeToString(static_cast<TierType>(tier_type)) << " keep end threshold: " << threshold << " seconds";
     }
     save();
 }

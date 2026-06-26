@@ -84,6 +84,7 @@
 #include "Storage/TransactionPeerAckLog.h"
 #include "Storage/MiscData.h"
 #include "Server/ClusterManager.h"
+#include "Local/StorageManager.h"
 
 using namespace std;
 using namespace Json;
