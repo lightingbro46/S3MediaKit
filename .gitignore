@@ -50,3 +50,4 @@
 /cmake-build-*
 /3rdpart/ZLToolKit/cmake-build-mq/
 vtscloud.vn
+api-config.json
