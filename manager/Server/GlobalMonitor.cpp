@@ -512,11 +512,78 @@ struct SystemMetricBucket {
 
 Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to_ts, int limit, int bucket_sec) {
     Json::Value arr = Json::arrayValue;
+    auto make_live_fallback = [&]() -> Json::Value {
+        Json::Value v;
+        int64_t now = (int64_t)time(nullptr);
+        if (from_ts > now || (to_ts > 0 && now > to_ts)) {
+            return v;
+        }
+        if (!_cpu_monitor || !_mem_monitor || !_net_monitor || !_hdd_monitor) {
+            return v;
+        }
+
+        auto cpu_usage = _cpu_monitor->getCurrentUsage();
+        auto mem_usage = _mem_monitor->getCurrentUsage();
+        auto net_usage = _net_monitor->getCurrentUsage();
+        auto hdd_usage = _hdd_monitor->getCurrentUsage();
+
+        int live_count = 0;
+        int playback_count = 0;
+        if (_reader_monitor) {
+            auto reader_map = _reader_monitor->getCurrentUsage();
+            for (const auto &kv : reader_map) {
+                live_count += kv.second.first;
+                playback_count += kv.second.second;
+            }
+        }
+
+        v["timestamp"] = (Json::Int64)now;
+        v["samples"] = 1;
+        v["history_source"] = "live_fallback";
+        v["cpu_usage_pct"] = cpu_usage.usagePct;
+        v["cpu_proc_usage_pct"] = cpu_usage.procUsagePct;
+        v["cpu_cores"] = cpu_usage.cores;
+        v["ram_used"] = (Json::UInt64)mem_usage.usageMemory;
+        v["ram_total"] = (Json::UInt64)mem_usage.totalMemory;
+        v["ram_usage_pct"] = mem_usage.usagePct;
+        v["reader_total"] = live_count + playback_count;
+        v["reader_live"] = live_count;
+        v["reader_playback"] = playback_count;
+
+        v["nets"] = Json::arrayValue;
+        for (const auto &n : net_usage) {
+            v["nets"].append(n.toJson());
+        }
+        v["disks"] = Json::arrayValue;
+        for (const auto &d : hdd_usage) {
+            v["disks"].append(d.toJson());
+        }
+        appendDerivedMetricFields(v);
+        if (bucket_sec > 0) {
+            v["timestamp"] = (Json::Int64)((now / bucket_sec) * bucket_sec);
+        }
+        return v;
+    };
+
+    auto append_live_fallback = [&]() {
+        if (limit == 0 || limit > 0) {
+            auto live = make_live_fallback();
+            if (!live.isNull()) {
+                arr.append(live);
+            }
+        }
+    };
+
     if (!_metrics_store) {
+        append_live_fallback();
         return arr;
     }
     try {
         auto rows = _metrics_store->findByTimeRange(from_ts, to_ts, limit);
+        if (rows.empty()) {
+            append_live_fallback();
+            return arr;
+        }
         if (bucket_sec <= 0) {
             for (const auto &row : rows) {
                 auto v = row.toJson();
