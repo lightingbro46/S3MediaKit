@@ -8,6 +8,7 @@
 #include "Storage/BookmarkIndex.h"
 #include "Storage/Bookmark.h"
 #include "Storage/UserEntity.h"
+#include "Storage/TieringJob.h"
 #include "Server/ClusterManager.h"
 
 #include <algorithm>
@@ -87,6 +88,7 @@ struct PeriodEntry {
     uint64_t    start;
     uint64_t    end;        // exclusive (start + duration / start + timeLen)
     std::string serverId;
+    std::string tier = "HOT";
     // type-0 only
     std::string cameraId;
     std::string streamId;
@@ -97,7 +99,79 @@ struct MotionPeriodEntry {
     uint64_t end;           // exclusive
 };
 
-// Resolve overlaps (later startTime wins) then merge consecutive same-server periods.
+static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
+                                               const std::string &stream_id,
+                                               uint64_t start_time,
+                                               uint64_t end_time) {
+    std::vector<TimeRange> result;
+    if (start_time >= end_time)
+        return result;
+
+    SegmentTierRangeImp range_imp;
+    auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
+    std::vector<SegmentTierRange> matched;
+    for (const auto &r : ranges) {
+        if (!stream_id.empty() && r.stream_id != stream_id)
+            continue;
+        if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+            r.status == segmentStatusToString(SegmentStatus::EXPIRED))
+            continue;
+        if (r.end_time <= static_cast<int64_t>(start_time) ||
+            r.start_time >= static_cast<int64_t>(end_time))
+            continue;
+        matched.push_back(r);
+    }
+
+    std::sort(matched.begin(), matched.end(), [](const SegmentTierRange &a, const SegmentTierRange &b) {
+        if (a.start_time != b.start_time) return a.start_time < b.start_time;
+        return a.updated_at < b.updated_at;
+    });
+
+    uint64_t cursor = start_time;
+    auto append_piece = [&result](uint64_t piece_start, uint64_t piece_end, const std::string &tier) {
+        if (piece_start >= piece_end)
+            return;
+        if (!result.empty() &&
+            result.back().tier == tier &&
+            result.back().startTime + result.back().duration == piece_start) {
+            result.back().duration = static_cast<uint32_t>(piece_end - result.back().startTime);
+            return;
+        }
+        TimeRange tr;
+        tr.startTime = piece_start;
+        tr.duration = static_cast<uint32_t>(piece_end - piece_start);
+        tr.tier = tier.empty() ? "HOT" : tier;
+        result.push_back(tr);
+    };
+
+    for (const auto &r : matched) {
+        uint64_t rs = static_cast<uint64_t>(std::max<int64_t>(r.start_time, static_cast<int64_t>(start_time)));
+        uint64_t re = static_cast<uint64_t>(std::min<int64_t>(r.end_time, static_cast<int64_t>(end_time)));
+        if (re <= cursor)
+            continue;
+        if (rs > cursor)
+            append_piece(cursor, rs, "HOT");
+        append_piece(std::max(cursor, rs), re, r.tier);
+        cursor = re;
+    }
+    if (cursor < end_time)
+        append_piece(cursor, end_time, "HOT");
+
+    if (result.empty())
+        append_piece(start_time, end_time, "HOT");
+    return result;
+}
+
+static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
+                                               const std::string &stream_id,
+                                               const TimeRange &range) {
+    return splitRangeByTier(camera_id,
+                            stream_id,
+                            range.startTime,
+                            range.startTime + range.duration);
+}
+
+// Resolve overlaps (later startTime wins) then merge consecutive same-server/tier periods.
 static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
     if (inp.empty()) return {};
     std::sort(inp.begin(), inp.end(), [](const PeriodEntry &a, const PeriodEntry &b) {
@@ -135,11 +209,14 @@ static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
         }
     }
 
-    // Merge consecutive periods that share the same server.
+    // Merge consecutive periods that share the same server and tier.
     std::vector<PeriodEntry> merged;
     for (const auto &p : result) {
         if (!merged.empty() &&
             merged.back().serverId == p.serverId &&
+            merged.back().tier     == p.tier &&
+            merged.back().cameraId == p.cameraId &&
+            merged.back().streamId == p.streamId &&
             merged.back().end      == p.start) {
             merged.back().end = p.end;
         } else {
@@ -185,6 +262,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             e.start    = p["startTime"].asUInt64();
             e.end      = e.start + p["duration"].asUInt64();
             e.serverId = p["mediaServerId"].asString();
+            e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
             out.push_back(e);
         }
     };
@@ -197,6 +275,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["startTime"]     = (Json::UInt64)e.start;
             p["duration"]      = (Json::UInt64)(e.end - e.start);
             p["mediaServerId"] = e.serverId;
+            p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             arr.append(p);
         }
         return arr;
@@ -211,6 +290,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.start    = p["startTime"].asUInt64();
                 e.end      = e.start + p["timeLen"].asUInt64();
                 e.serverId = p["mediaServerId"].asString();
+                e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -222,6 +302,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.start    = p["startTime"].asUInt64();
                 e.end      = e.start + p["timeLen"].asUInt64();
                 e.serverId = p["mediaServerId"].asString();
+                e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -236,6 +317,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["startTime"]     = (Json::UInt64)e.start;
             p["timeLen"]       = (Json::UInt64)(e.end - e.start);
             p["mediaServerId"] = e.serverId;
+            p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             dst["periods"].append(p);
         }
 
@@ -393,11 +475,14 @@ static void findTimePeriodLocal(
             if (query) {
                 query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
                     for (auto const &p : ret) {
-                        Value period;
-                        period["startTime"] = p.startTime;
-                        period["duration"] = p.duration;
-                        period["mediaServerId"] = mediaServerId;
-                        result["periods"].append(period);
+                        for (const auto &tp : splitRangeByTier(tuple.app, "", p)) {
+                            Value period;
+                            period["startTime"] = (Json::UInt64)tp.startTime;
+                            period["duration"] = tp.duration;
+                            period["tier"] = tp.tier;
+                            period["mediaServerId"] = mediaServerId;
+                            result["periods"].append(period);
+                        }
                     }
                 });
             }
@@ -430,11 +515,14 @@ static void findTimePeriodLocal(
                             stream["streamId"] = it.first;
                             stream["periods"] = arrayValue;
                             for (auto const &p : it.second) {
-                                Value period;
-                                period["startTime"] = p.startTime;
-                                period["duration"] = p.duration;
-                                period["mediaServerId"] = mediaServerId;
-                                stream["periods"].append(period);
+                                for (const auto &tp : splitRangeByTier(tuple.app, it.first, p)) {
+                                    Value period;
+                                    period["startTime"] = (Json::UInt64)tp.startTime;
+                                    period["duration"] = tp.duration;
+                                    period["tier"] = tp.tier;
+                                    period["mediaServerId"] = mediaServerId;
+                                    stream["periods"].append(period);
+                                }
                             }
                             result["streams"].append(stream);
                         }
@@ -517,11 +605,14 @@ static void findTimePeriodLocal(
                                     auto it_hour = hour_map.find(i);
                                     if (it_hour != hour_map.end()) {
                                         for (auto const &p : it_hour->second) {
-                                            Value period;
-                                            period["startTime"] = p.startTime;
-                                            period["duration"] = p.duration;
-                                            period["mediaServerId"] = mediaServerId;
-                                            hour.append(period);
+                                            for (const auto &tp : splitRangeByTier(tuple.app, it_stream.first, p)) {
+                                                Value period;
+                                                period["startTime"] = (Json::UInt64)tp.startTime;
+                                                period["duration"] = tp.duration;
+                                                period["tier"] = tp.tier;
+                                                period["mediaServerId"] = mediaServerId;
+                                                hour.append(period);
+                                            }
                                         }
                                     }
                                     date.append(hour);
@@ -570,13 +661,18 @@ static void findTimePeriodLocal(
         if (query) {
             query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeBlock> &ret) {
                 for (auto const &p : ret) {
-                    Value period;
-                    period["cameraId"] = p.app();
-                    period["streamId"] = p.stream();
-                    period["startTime"] = p.start_time();
-                    period["timeLen"] = p.time_len();
-                    period["mediaServerId"] = mediaServerId;
-                    result["periods"].append(period);
+                    auto block_start = std::max<uint64_t>(p.start_time(), start_time);
+                    auto block_end = std::min<uint64_t>(p.start_time() + p.time_len(), end_time);
+                    for (const auto &tp : splitRangeByTier(p.app(), p.stream(), block_start, block_end)) {
+                        Value period;
+                        period["cameraId"] = p.app();
+                        period["streamId"] = p.stream();
+                        period["startTime"] = (Json::UInt64)tp.startTime;
+                        period["timeLen"] = tp.duration;
+                        period["tier"] = tp.tier;
+                        period["mediaServerId"] = mediaServerId;
+                        result["periods"].append(period);
+                    }
                 }
             });
         }

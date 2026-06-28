@@ -4,14 +4,20 @@
 #include <vector>
 #include <unordered_map>
 #include <set>
+#include <string>
 #include "TimeDemuxer.h"
 #include "Record/Recorder.h"
 
 namespace managerkit {
 
 struct TimeRange {
-    uint64_t startTime;
-    uint32_t duration;
+    TimeRange() = default;
+    TimeRange(uint64_t start, uint32_t dur, const std::string &storage_tier = "HOT")
+        : startTime(start), duration(dur), tier(storage_tier.empty() ? "HOT" : storage_tier) {}
+
+    uint64_t startTime = 0;
+    uint32_t duration = 0;
+    std::string tier = "HOT";
 };
 
 class TimeQuery final {
