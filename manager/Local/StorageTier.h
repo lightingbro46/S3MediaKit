@@ -256,6 +256,8 @@ struct PolicyTierConfig {
 struct PolicyDeleteConfig {
     int         delete_after_days                  = 0;
     std::string delete_mode                        = "DELETE_AUTOMATICALLY";
+    bool        skip_protected_video               = true;
+    bool        skip_evidence_video                = true;
     bool        require_approval_before_delete     = false;
     std::string external_pool_id;
 
@@ -263,8 +265,9 @@ struct PolicyDeleteConfig {
         Json::Value v;
         v["delete_after_days"]              = delete_after_days;
         v["delete_mode"]                    = delete_mode;
+        v["skip_protected_video"]           = skip_protected_video;
+        v["skip_evidence_video"]            = skip_evidence_video;
         v["require_approval_before_delete"] = require_approval_before_delete;
-        v["external_pool_id"]               = external_pool_id;
         return v;
     }
 
@@ -272,6 +275,8 @@ struct PolicyDeleteConfig {
         PolicyDeleteConfig c;
         c.delete_after_days              = v.get("delete_after_days", 0).asInt();
         c.delete_mode                    = v.get("delete_mode", "DELETE_AUTOMATICALLY").asString();
+        c.skip_protected_video           = v.get("skip_protected_video", true).asBool();
+        c.skip_evidence_video            = v.get("skip_evidence_video", true).asBool();
         c.require_approval_before_delete = v.get("require_approval_before_delete", false).asBool();
         c.external_pool_id               = v.get("external_pool_id", "").asString();
         return c;
@@ -280,6 +285,8 @@ struct PolicyDeleteConfig {
 
 struct PolicyAdvancedRules {
     bool enable_early_move_when_pool_high       = true;
+    bool prefer_move_no_event_video_first       = true;
+    bool prefer_keep_event_video_longer         = true;
     bool skip_move_if_pool_offline              = true;
     bool alert_when_pool_critical               = true;
     int  min_segment_age_minutes_before_move    = 30;
@@ -287,8 +294,8 @@ struct PolicyAdvancedRules {
     Json::Value toJson() const {
         Json::Value v;
         v["enable_early_move_when_pool_high"]     = enable_early_move_when_pool_high;
-        v["skip_move_if_pool_offline"]            = skip_move_if_pool_offline;
-        v["alert_when_pool_critical"]             = alert_when_pool_critical;
+        v["prefer_move_no_event_video_first"]     = prefer_move_no_event_video_first;
+        v["prefer_keep_event_video_longer"]       = prefer_keep_event_video_longer;
         v["min_segment_age_minutes_before_move"]  = min_segment_age_minutes_before_move;
         return v;
     }
@@ -296,6 +303,8 @@ struct PolicyAdvancedRules {
     static PolicyAdvancedRules fromJson(const Json::Value &v) {
         PolicyAdvancedRules r;
         r.enable_early_move_when_pool_high    = v.get("enable_early_move_when_pool_high", true).asBool();
+        r.prefer_move_no_event_video_first    = v.get("prefer_move_no_event_video_first", true).asBool();
+        r.prefer_keep_event_video_longer      = v.get("prefer_keep_event_video_longer", true).asBool();
         r.skip_move_if_pool_offline           = v.get("skip_move_if_pool_offline", true).asBool();
         r.alert_when_pool_critical            = v.get("alert_when_pool_critical", true).asBool();
         r.min_segment_age_minutes_before_move = v.get("min_segment_age_minutes_before_move", 30).asInt();

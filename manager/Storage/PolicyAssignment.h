@@ -57,6 +57,18 @@ public:
             if (!row.empty()) ids.push_back(row[0]);
         return ids;
     }
+
+    std::vector<CameraPolicyAssignment> findAll() {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<CameraPolicyAssignment>::getColumns())
+                .from(EntityTraits<CameraPolicyAssignment>::tableName())
+                .orderBy("assigned_at DESC"));
+        std::vector<CameraPolicyAssignment> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<CameraPolicyAssignment>::fromRow(row));
+        return ret;
+    }
 };
 
 // ===================================================================
