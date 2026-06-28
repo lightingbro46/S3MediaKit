@@ -522,7 +522,9 @@ function _historyRange(period) {
     if (period === 'month') {
         return { from: now - 30 * 86400, to: now, bucket_sec: 21600, label: '30 ngày' };
     }
-    return { from: now - 86400, to: now, bucket_sec: 600, label: '24 giờ' };
+    var startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return { from: Math.floor(startOfDay.getTime() / 1000), to: now, bucket_sec: 600, label: 'Hôm nay' };
 }
 
 function _loadHistoryCharts() {
@@ -549,10 +551,13 @@ function _loadHistoryCharts() {
         bucket_sec: range.bucket_sec
     }).then(function (r) {
         if (requestSeq !== _dashState.historyRequestSeq) return;
-        _applyHistoryCharts((r && r.data) || [], range);
+        var rows = (r && r.data) || [];
+        var filled = _fillHistoryBuckets(rows, range);
+        _applyHistoryCharts(filled.rows, range);
         if (badge) {
-            badge.textContent = range.label + ' · ' + ((r && r.data && r.data.length) || 0) + ' điểm';
+            badge.textContent = range.label + ' · ' + filled.dataPoints + '/' + filled.totalPoints + ' điểm';
             badge.className = 'dash-badge-ok';
+            badge.title = 'Các mốc thiếu dữ liệu được hiển thị với giá trị 0';
         }
     }).catch(function (e) {
         if (requestSeq !== _dashState.historyRequestSeq) return;
@@ -561,12 +566,61 @@ function _loadHistoryCharts() {
             badge.className = 'dash-badge-warn';
             badge.title = e && e.message ? e.message : '';
         }
-        _applyHistoryCharts([], range);
+        _applyHistoryCharts(_fillHistoryBuckets([], range).rows, range);
     }).finally(function () {
         if (requestSeq === _dashState.historyRequestSeq) {
             _dashState.historyLoading = false;
         }
     });
+}
+
+function _fillHistoryBuckets(rows, range) {
+    var bucket = Math.max(1, parseInt(range.bucket_sec, 10) || 1);
+    var fromBucket = Math.floor((parseInt(range.from, 10) || 0) / bucket) * bucket;
+    var toBucket = Math.floor((parseInt(range.to, 10) || Math.floor(Date.now() / 1000)) / bucket) * bucket;
+    var byTs = {};
+
+    (rows || []).forEach(function (row) {
+        var ts = parseInt(row.timestamp, 10) || 0;
+        if (!ts) return;
+        var bucketTs = Math.floor(ts / bucket) * bucket;
+        byTs[bucketTs] = row;
+    });
+
+    var filled = [];
+    var dataPoints = 0;
+    for (var ts = fromBucket; ts <= toBucket; ts += bucket) {
+        var row = byTs[ts];
+        if (row) {
+            dataPoints++;
+            row.__missing = false;
+            row.timestamp = ts;
+            filled.push(row);
+        } else {
+            filled.push({
+                timestamp: ts,
+                samples: 0,
+                __missing: true,
+                cpu_usage_pct: 0,
+                cpu_proc_usage_pct: 0,
+                ram_used: 0,
+                ram_total: 0,
+                ram_usage_pct: 0,
+                hdd_usage_pct: 0,
+                net_rx_mbps: 0,
+                net_tx_mbps: 0,
+                reader_total: 0,
+                reader_live: 0,
+                reader_playback: 0
+            });
+        }
+    }
+
+    return {
+        rows: filled,
+        dataPoints: dataPoints,
+        totalPoints: filled.length
+    };
 }
 
 function _applyHistoryCharts(rows, range) {

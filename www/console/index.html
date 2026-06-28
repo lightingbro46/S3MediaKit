@@ -495,6 +495,10 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
                 Files
             </button>
+            <button class="s3-nav-btn" data-section="sec-storage-tier">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.58 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm0 2c3.87 0 6 1.5 6 2s-2.13 2-6 2-6-1.5-6-2 2.13-2 6-2zm0 14c-3.87 0-6-1.5-6-2v-2.03C7.46 15.9 9.58 16.5 12 16.5s4.54-.6 6-1.53V17c0 .5-2.13 2-6 2zm0-4.5c-3.87 0-6-1.5-6-2V10.47C7.46 11.4 9.58 12 12 12s4.54-.6 6-1.53v2.03c0 .5-2.13 2-6 2z"/></svg>
+                Storage Tier
+            </button>
         </nav>
 
         <div class="s3-sidebar-bottom">
@@ -530,6 +534,13 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
         <!-- Dashboard -->
         <div id="sec-dashboard" class="s3-section active">
             <div id="dashboard-content">
+                <div class="dash-loading"><span class="dash-spinner"></span> Đang tải…</div>
+            </div>
+        </div>
+
+        <!-- Storage Tier Dashboard -->
+        <div id="sec-storage-tier" class="s3-section">
+            <div id="storage-tier-content">
                 <div class="dash-loading"><span class="dash-spinner"></span> Đang tải…</div>
             </div>
         </div>
@@ -714,6 +725,7 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 <script src="cluster/cluster.js"></script>
 <script src="devices/devices.js"></script>
 <script src="files/files.js"></script>
+<script src="storage/storage-dashboard.js"></script>
 <script>
 // ════════════════════════════════════════════
 // Section routing  (query-param based — avoids server 404 on sub-paths)
@@ -727,6 +739,7 @@ const SEC_PATHS = {
     'sec-cluster':   _CBASE + '?tab=cluster',
     'sec-devices':   _CBASE + '?tab=devices',
     'sec-files':     _CBASE + '?tab=files',
+    'sec-storage-tier': _CBASE + '?tab=storage',
 };
 
 const SECTION_TITLES = {
@@ -737,12 +750,13 @@ const SECTION_TITLES = {
     'sec-cluster':   'Cluster',
     'sec-devices':   'Thiết bị',
     'sec-files':     'Files',
+    'sec-storage-tier': 'Storage Tier',
 };
 
 const _TAB_TO_SEC = {
     player: 'sec-player', mjpeg: 'sec-mjpeg', config: 'sec-config',
     dashboard: 'sec-dashboard', cluster: 'sec-cluster',
-    devices: 'sec-devices', files: 'sec-files'
+    devices: 'sec-devices', files: 'sec-files', storage: 'sec-storage-tier'
 };
 
 function _secFromUrl() {
@@ -750,7 +764,7 @@ function _secFromUrl() {
     return _TAB_TO_SEC[tab] || 'sec-dashboard';
 }
 
-let _vjsInited = false, _cfgInited = false, _clusterInited = false, _filesInited = false, _devicesInited = false;
+let _vjsInited = false, _cfgInited = false, _clusterInited = false, _filesInited = false, _devicesInited = false, _storageTierInited = false;
 
 function activateSection(secId, push) {
     document.querySelectorAll('.s3-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.section === secId));
@@ -790,6 +804,10 @@ function activateSection(secId, push) {
     if (secId === 'sec-files' && !_filesInited) {
         _filesInited = true;
         initFiles();
+    }
+    if (secId === 'sec-storage-tier' && !_storageTierInited) {
+        _storageTierInited = true;
+        initStorageTierDashboard();
     }
     document.getElementById('s3-sidebar').classList.remove('open');
 }
