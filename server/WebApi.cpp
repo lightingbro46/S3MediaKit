@@ -3096,6 +3096,7 @@ void installWebApi() {
         bool preferSSL = allArgs["preferSSL"];
         string mediaServerDomain = allArgs["mediaServerDomain"];
         string mediaServerCert = allArgs["mediaServerCert"];
+        string apiSecret = allArgs["apiSecret"];
 
         GET_CONFIG(string, mediaServerId, General::kMediaServerId)
         if (mediaServerId != mediaServerId_) {
@@ -3111,7 +3112,7 @@ void installWebApi() {
             origin_urls_str += origin_urls[i];
         }
 
-        Broadcast::HealthInvoker on_health_check = [allArgs, origin_urls, mediaServerDomain, mediaServerCert, val, headerOut, invoker](const string& err, const int& idx) mutable {
+        Broadcast::HealthInvoker on_health_check = [allArgs, origin_urls, mediaServerDomain, mediaServerCert, apiSecret, val, headerOut, invoker](const string& err, const int& idx) mutable {
             if (!err.empty()) {
                 RETURN_API_RESPONSE(ApiErrCode::CODE_HEALTH_CHECK_API_FAILED, err.data());
                 return;
@@ -3127,6 +3128,11 @@ void installWebApi() {
                 ini[Hook::kApiUrl] = apiUrlTmp;
                 ++changed;
                 need_to_restart = true;
+            }
+
+            if (ini[Manager::kApiSecret] != apiSecret) {
+                ini[Manager::kApiSecret] = apiSecret;
+                ++changed;
             }
 
             if (!mediaServerDomain.empty() && !mediaServerCert.empty()) {

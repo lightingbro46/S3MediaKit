@@ -33,6 +33,8 @@ extern const std::string kSessionExpiryDays;
 extern const std::string kMaxStreamTimeoutSec;
 // Bypass authentication realm, directly allow access
 extern const std::string kBypassAuthRealm;
+// API secret used to decrypt management system payloads
+extern const std::string kApiSecret;
 } // namespace Manager
 
 } // namespace managerkit

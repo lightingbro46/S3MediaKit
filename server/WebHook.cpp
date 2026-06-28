@@ -20,6 +20,7 @@
 #include "Server/ReaderMonitor.h"
 #include "User/UserAuditLog.h"
 #include "Util/base64.h"
+#include "Util/SSLUtil.h"
 #include "Common/StrUtil.h"
 
 using namespace std;
@@ -546,6 +547,63 @@ static Timer::Ptr g_report_timer;
 static atomic<bool> s_config_loaded { true };
 static atomic<bool> s_report_statistic { true };
 static atomic<uint64_t> s_last_report_time { 0 };
+
+/**
+ * Decrypt the server configuration JSON data returned by the hook API. 
+ * If the api_secret is empty, it means no encryption is used, 
+ * and the original JSON data is returned. If the api_secret is not empty, 
+ * it means the response data is encrypted, and decryption is performed 
+ * using AES-GCM with the provided api_secret.
+ * Format of the encrypted data: base64(iv + ciphertext + tag), where iv is 12 bytes, 
+ * ciphertext is the encrypted JSON data, and tag is 16 bytes.
+ */
+static bool decryptServerConfigJson(const Value &obj, Value &config) {
+    if (!obj.isMember("data") || !obj["data"].isString()) {
+        WarnL << "Load server config failed: encrypted response data is missing or not string";
+        return false;
+    }
+
+    GET_CONFIG(string, api_secret, Manager::kApiSecret);
+    if (api_secret.empty() || !obj["data"]["media_server"].isNull()) {
+        config = obj;
+        return true;
+    }
+
+    string combined = decodeBase64(obj["data"].asString());
+    if (combined.empty()) {
+        WarnL << "Load server config failed: decode base64 response data is empty";
+        return false;
+    }
+
+    if (combined.size() < 12 + 16) {
+        WarnL << "Load server config failed: combined response data is too short";
+        return false;
+    }
+
+    auto iv = combined.substr(0, 12);
+    auto encrypted = combined.substr(12);  // ciphertext + 16-byte GCM tag
+
+    string decrypted;
+    try {
+        decrypted = SSLUtil::cryptWithAes(api_secret, iv, encrypted, false);
+    } catch (std::exception &ex) {
+        WarnL << "Load server config failed: decrypt response data exception: " << ex.what();
+        return false;
+    }
+
+    if (decrypted.empty()) {
+        WarnL << "Load server config failed: decrypt response data is empty";
+        return false;
+    }
+
+    if (!StrJsonUtils::readJsonString(decrypted, config)) {
+        WarnL << "Load server config failed: decrypted response data is not valid json";
+        return false;
+    }
+
+    return true;
+}
+
 static void reportServerStatistic() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -585,9 +643,13 @@ static void reportServerStatistic() {
                 do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
                     if (err.empty()) {
                         TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
-                        InfoL << "Load server config success: " << obj["devices"].size() << " devices, " << obj["list_media_server"].size() << " servers";
+                        Value config;
+                        if (!decryptServerConfigJson(obj, config)) {
+                            return;
+                        }
+                        InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
                         // loadServerConfigJson is thread-safe (uses its own mutex), no need to dispatch to a specific poller
-                        loadServerConfigJson(obj);
+                        loadServerConfigJson(config);
                     } else {
                         // Load server config failed
                         TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
