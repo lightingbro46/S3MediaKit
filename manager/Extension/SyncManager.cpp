@@ -10,7 +10,6 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
-#include "Extension/TableSyncHandler.h"
 #include <random>
 
 using namespace std;
@@ -481,6 +480,58 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
 
 // ─── incremental pull ──────────────────────────────────────────────────────
 
+Json::Value SyncManager::getCurrentCursors(const Json::Value &cursors_json, int limit) {
+    std::vector<TransactionSequence> cursors;
+    std::unordered_set<std::string> peer_pairs;
+    if (!cursors_json.empty() && cursors_json.isArray()) {
+        for (const auto &c : cursors_json) {
+            cursors.push_back(TransactionSequence::fromJson(c));
+            peer_pairs.insert(c["peer_guid"].asString() + "_" + c["db_guid"].asString());
+        }
+    }
+
+    // If there is no cursor for the peer/db pair, add a default cursor with sequence 0, 
+    // otherwise the peer will never get any log because the server doesn't know the peer's cursor and thinks the peer has already got all logs
+    auto seq_impl = make_shared<TransactionSequenceImp>();
+    auto log_impl = make_shared<TransactionLogImp>();
+    auto txn = log_impl->getExecutor()->execTxn();
+    Json::Value log_rows = Json::arrayValue;
+
+    try {
+        auto seq_ret = seq_impl->findAllWithTxn(txn);
+        for (const auto &s : seq_ret) {
+            std::string key = s.peer_guid + "_" + s.db_guid;
+            if (peer_pairs.find(key) == peer_pairs.end()) {
+                TransactionSequence seq;
+                seq.peer_guid = s.peer_guid;
+                seq.db_guid = s.db_guid;
+                seq.sequence = 0;
+                cursors.push_back(seq);
+            }
+        }  
+
+        auto ret = log_impl->findAllSinceWithTxn(cursors, limit, txn);
+
+        for (const TransactionLog &b : ret) {
+            Json::Value item;
+            item["sequence"] = b.sequence;
+            item["peer_guid"] = b.peer_guid;
+            item["db_guid"] = b.db_guid;
+            item["timestamp"] = b.timestamp;
+            item["tran_guid"] = b.tran_guid;
+            item["tran_data"] = b.tran_data;
+            item["tran_type"] = b.tran_type;
+            item["timestamp_hi"] = b.timestamp_hi;
+            log_rows.append(item);
+        }
+        txn->commit();
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to get current cursors: " << ex.what();
+    }
+
+    return log_rows;
+}
+
 // ─── Gossip relay pull ────────────────────────────────────────────────────
 //
 // Sends the full local cursor map (peer_guid|db_guid → since_seq) to the relay
@@ -683,9 +734,18 @@ SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const s
 
 // ─── GC watermark ────────────────────────────────────────────────────────────
 
-void SyncManager::recordRelayAck(vector<PeerAckLog> &ack_logs) {
+void SyncManager::recordRelayAck(const Json::Value &ack_cursors_json) {
+    std::vector<PeerAckLog> ack_cursors;
+    if (!ack_cursors_json.empty() && ack_cursors_json.isArray()) {
+        for (const auto &c : ack_cursors_json) {
+            ack_cursors.push_back(PeerAckLog::fromJson(c));
+        }
+    }
+
+    if (ack_cursors.empty()) return;
+    
     auto ack_imp = make_shared<PeerAckLogImp>();
-    for (auto &log : ack_logs) {
+    for (auto &log : ack_cursors) {
         ack_imp->add(log);
     }
 }
@@ -729,6 +789,19 @@ void SyncManager::maybePruneLog() {
 void SyncManager::setSingleNodeMode(bool single_node) {
     _single_node = single_node;
     InfoL << "SyncManager single node mode set to " << single_node;
+}
+
+Json::Value SyncManager::getMiscData() {
+    auto imp = std::make_shared<MiscDataImp>();
+    auto ret = imp->findAll();
+    Json::Value misc_json;
+    for (const auto &r : ret) {
+        if (r.key.empty() || r.value.empty()) {
+            continue;
+        }
+        misc_json[r.key] = r.value;
+    }
+    return misc_json;
 }
 
 } // namespace managerkit

@@ -42,6 +42,8 @@ typedef enum {
 } ApiErr;
 
 extern const std::string kSecret;
+extern const std::string kSnapRoot;
+extern const std::string kExtractRoot;
 }//namespace API
 
 class ApiRetException: public std::runtime_error {
@@ -246,6 +248,8 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
         } while (false);                                                                                                                                       \
     }
 
+bool checkUserAuthor(const std::string &resource_id, const std::string &jwt_token);
+
 #define CHECK_USER_AUTHOR(key)                                                                                                                                 \
     CHECK_AUTH_TOKEN();                                                                                                                                        \
     do {                                                                                                                                                       \
@@ -293,67 +297,19 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     auto status_code = getStatusCode(static_cast<ApiErrCode>(code));                                                                                           \
     invoker(status_code, headerOut, val.toStyledString());
 
+bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::string &key);
+
+template<typename ...KeyTypes>
+bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::string &key, const KeyTypes &...keys) {
+    return checkPermissionCode(session, key) && checkPermissionCode(session, keys...);
+}
+
 #define CHECK_USER_PERMISSION(...)                                                                                                                             \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
             string jwt_token = allArgs["_jwt_token"];                                                                                                          \
             auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
             checkPermissionCode(token_cache, ##__VA_ARGS__);                                                                                                   \
-        } while (false);                                                                                                                                       \
-    }
-
-#define CHECK_PLAYBACK_PERMISSION()                                                                                                                            \
-    if (enable_authorize) {                                                                                                                                    \
-        do {                                                                                                                                                   \
-            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasPermissionCode(PLAYBACK_PERMISSION_CODE)) {                                                                                   \
-                throw AuthException("No playback permission", ApiErrCode::CODE_NO_PLAYBACK_PERMISSION);                                                        \
-            }                                                                                                                                                  \
-        } while (false);                                                                                                                                       \
-    }
-
-#define CHECK_PTZ_CONTROL_PERMISSION()                                                                                                                         \
-    if (enable_authorize) {                                                                                                                                    \
-        do {                                                                                                                                                   \
-            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasPermissionCode(PTZ_CONTROL_PERMISSION_CODE)) {                                                                                \
-                throw AuthException("No ptz control permission", ApiErrCode::CODE_NO_PTZ_CONTROL_PERMISSION);                                                  \
-            }                                                                                                                                                  \
-        } while (false);                                                                                                                                       \
-    }
-
-#define CHECK_READ_MSERVER_PERMISSION()                                                                                                                        \
-    if (enable_authorize) {                                                                                                                                    \
-        do {                                                                                                                                                   \
-            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasPermissionCode(READ_MSERVER_PERMISSION_CODE)) {                                                                               \
-                throw AuthException("No read media server permission", ApiErrCode::CODE_NO_READ_MSERVER_PERMISSION);                                           \
-            }                                                                                                                                                  \
-        } while (false);                                                                                                                                       \
-    }
-
-#define CHECK_MODIFY_MSERVER_PERMISSION()                                                                                                                      \
-    if (enable_authorize) {                                                                                                                                    \
-        do {                                                                                                                                                   \
-            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasPermissionCode(MODIFY_MSERVER_PERMISSION_CODE)) {                                                                             \
-                throw AuthException("No modify media server permission", ApiErrCode::CODE_NO_MODIFY_MSERVER_PERMISSION);                                       \
-            }                                                                                                                                                  \
-        } while (false);                                                                                                                                       \
-    }
-
-#define CHECK_ADD_CAMERA_PERMISSION()                                                                                                                          \
-    if (enable_authorize) {                                                                                                                                    \
-        do {                                                                                                                                                   \
-            string jwt_token = allArgs["_jwt_token"];                                                                                                          \
-            auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);                                                                         \
-            if (!token_cache->hasPermissionCode(ADD_CAMERA_PERMISSION_CODE)) {                                                                                 \
-                throw AuthException("No add camera permission", ApiErrCode::CODE_NO_ADD_CAMERA_PERMISSION);                                                    \
-            }                                                                                                                                                  \
         } while (false);                                                                                                                                       \
     }
 
@@ -524,5 +480,37 @@ private:
     std::string _session_id;
 };
 #endif // defined(ENABLE_WEBRTC)
+
+namespace managerkit {
+// Register the Web API configuration endpoints
+void registerConfigurationApis();
+
+// Register the Web API monitor endpoints
+void registerMonitorApis();
+
+// Register the Web API extraction endpoints
+void registerExtractionApis();
+void unregisterExtractionApis();
+
+// Register the Web API motion endpoints
+void registerMotionDetectionApis();
+
+// Register the Web API playback endpoints
+void registerPlaybackApis();
+
+// Register the Web API bookmark endpoints
+void registerBookmarkApis();
+
+// Register the Web API sync database endpoints
+void registerSyncDbApis();
+
+// Register the Web API control endpoints
+void registerControlApis();
+void unregisterControlApis();
+
+// Register the Web API storage endpoints 
+void registerStorageApis();
+
+} // namespace managerkit
 
 #endif //S3MEDIAKIT_WEBAPI_H

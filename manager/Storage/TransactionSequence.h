@@ -108,6 +108,18 @@ public:
         return ret;
     }
 
+    std::vector<TransactionSequence> findAllWithTxn(toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .select(EntityTraits<TransactionSequence>::getColumns())
+                        .from(EntityTraits<TransactionSequence>::tableName())
+                        .build();
+        auto rows = _executor->executeRawWithTxn(txn, query);
+        std::vector<TransactionSequence> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<TransactionSequence>::fromRow(row));
+        }
+        return ret;
+    }
 };
 
 class TransactionSequenceImp : public TransactionSequenceRepository {

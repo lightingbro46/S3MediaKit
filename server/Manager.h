@@ -69,4 +69,6 @@ Json::Value makeDevicePTZPresetJson(const managerkit::DeviceSource::Ptr &device)
 
 Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &device);
 
-#endif // S3MANAGERKIT_MANAGER_H
+managerkit::DeviceSource::Ptr findDeviceSource(const std::string &deviceId);
+
+#endif // S3MANAGERKIT_MANAGE

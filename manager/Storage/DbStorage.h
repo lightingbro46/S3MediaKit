@@ -140,6 +140,10 @@ public:
 
     std::string getTag() { return _tag; }
 
+    // Expose executor so callers can create/share transactions with execTxn()
+    // and pass them to WithTxn methods across multiple Imp instances on the same DB.
+    SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
+
 protected:
     virtual bool save(const T& obj, bool include_id = false) { 
         auto cols = EntityTraits<T>::getColumns();
@@ -233,10 +237,6 @@ protected:
         auto rows = _executor->executeRaw(query);
         return !rows.empty();
     }
-
-    // Expose executor so callers can create/share transactions with execTxn()
-    // and pass them to WithTxn methods across multiple Imp instances on the same DB.
-    SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
 
 protected:
     // Low-level helpers that let subclass repository methods run inside an ongoing

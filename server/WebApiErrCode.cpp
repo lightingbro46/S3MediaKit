@@ -37,6 +37,12 @@ ApiErrCode getApiErrCodeWithPermission(const std::string &code) {
         return ApiErrCode::CODE_NO_LIVE_VIEW_PERMISSION;
     } else if (code == PLAYBACK_PERMISSION_CODE) {
         return ApiErrCode::CODE_NO_PLAYBACK_PERMISSION;
+    } else if (code == EXTRACT_PERMISSION_CODE) {
+        return ApiErrCode::CODE_NO_EXTRACT_PERMISSION;
+    } else if (code == READ_BOOKMARK_PERMISSION_CODE) {
+        return ApiErrCode::CODE_NO_BOOKMARK_PERMISSION;
+    } else if (code == WRITE_BOOKMARK_PERMISSION_CODE) {
+        return ApiErrCode::CODE_NO_BOOKMARK_PERMISSION;
     } else if (code == PTZ_CONTROL_PERMISSION_CODE) {
         return ApiErrCode::CODE_NO_PTZ_CONTROL_PERMISSION;
     } else if (code == READ_MSERVER_PERMISSION_CODE) {
@@ -50,4 +56,4 @@ ApiErrCode getApiErrCodeWithPermission(const std::string &code) {
     }
 }
 
-} // namespace WebInterceptor
+} // namespace managerkit

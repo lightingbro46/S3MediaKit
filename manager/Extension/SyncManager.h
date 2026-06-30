@@ -8,8 +8,6 @@
 #include <functional>
 #include <json/json.h>
 #include "Poller/Timer.h"
-#include "Storage/DbStorage.h"
-#include "Storage/TransactionPeerAckLog.h"
 #include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
@@ -73,9 +71,13 @@ public:
     // Expose for HTTP handler: build snapshot of local DB
     SnapshotData buildLocalSnapshot();
 
-    void recordRelayAck(std::vector<PeerAckLog> &ack_cursors);
+    Json::Value getCurrentCursors(const Json::Value &cursors_json, int limit);
+
+    void recordRelayAck(const Json::Value &ack_cursors_json);
 
     void setSingleNodeMode(bool single_node);
+
+    Json::Value getMiscData();
 
 private:
     SyncManager() = default;

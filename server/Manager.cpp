@@ -1360,3 +1360,10 @@ Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &devi
     }
     return item;
 }
+
+managerkit::DeviceSource::Ptr findDeviceSource(const std::string &deviceId) {
+    DeviceTuple tuple;
+    tuple.vhost = DEFAULT_VHOST;
+    tuple.device_id = deviceId;
+    return DeviceSource::find(tuple.vhost, tuple.device_id);
+};

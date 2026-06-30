@@ -157,6 +157,37 @@ public:
         return ret;
     }
 
+    std::vector<TransactionLog> findAllSinceWithTxn(const std::vector<TransactionSequence> &cursors, int limit, toolkit::SqliteTransaction::Ptr txn) {
+        if (cursors.empty()) return {};
+
+        std::ostringstream whereClause;
+        std::vector<std::string> whereParams;
+        bool first = true;
+
+        for (const auto &c : cursors) {
+            if (!first) whereClause << " OR ";
+            whereClause << "(peer_guid = ? AND db_guid = ? AND sequence > ?)";
+            whereParams.push_back(c.peer_guid);
+            whereParams.push_back(c.db_guid);
+            whereParams.push_back(std::to_string(c.sequence));
+            first = false;
+        }
+
+        auto query = toolkit::QueryBuilder()
+                        .select(EntityTraits<TransactionLog>::getColumns())
+                        .from(EntityTraits<TransactionLog>::tableName())
+                        .where(whereClause.str(), whereParams)
+                        .orderBy("peer_guid ASC, sequence ASC");
+        if (limit > 0) query.limit(limit);
+
+        auto rows = _executor->executeRawWithTxn(txn, query);
+        std::vector<TransactionLog> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<TransactionLog>::fromRow(row));
+        }
+        return ret;
+    }
+
     // Dedup check: returns true if an entry with this tran_guid already exists.
     bool existsByTranGuid(const std::string &tran_guid) {
         std::ostringstream whereClause;
@@ -205,10 +236,6 @@ public:
             _seq_impl->add(seq);
         }
     }
-
-    // Expose executor so SyncManager (and other callers) can create a transaction
-    // that spans this log table and other tables on the same database.
-    SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
 
     // todo: remove log
 
