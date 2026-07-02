@@ -316,6 +316,102 @@ Dùng được cho cả pool đã lưu và pool chưa lưu (khi tạo mới).
 
 ---
 
+## 1.6 Lấy option hỗ trợ khi tạo storage pool
+
+**GET / POST** `/media/mserver/storage/pool/options`
+
+API trả về ma trận loại storage pool được hỗ trợ theo từng tầng lưu trữ. FE dùng để enable/disable lựa chọn `type` trong form tạo/sửa pool sau khi user chọn `tier`.
+
+### Request params
+
+Không yêu cầu tham số.
+
+### Response thành công
+
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "poolsTypeSupport": {
+      "HOT": {
+        "LOCAL_DISK": true,
+        "NAS": true,
+        "MINIO": false,
+        "S3": false,
+        "ARCHIVE": false
+      },
+      "WARM": {
+        "LOCAL_DISK": true,
+        "NAS": true,
+        "MINIO": false,
+        "S3": false,
+        "ARCHIVE": false
+      },
+      "COLD": {
+        "LOCAL_DISK": false,
+        "NAS": true,
+        "MINIO": true,
+        "S3": false,
+        "ARCHIVE": false
+      }
+    }
+  }
+}
+```
+
+### Field mô tả
+
+| Field | Kiểu | Mô tả |
+|-------|------|-------|
+| `poolsTypeSupport` | `object` | Map theo tier: `HOT`, `WARM`, `COLD` |
+| `poolsTypeSupport.<tier>.<type>` | `boolean` | `true` nếu loại pool được phép cấu hình cho tier tương ứng |
+
+---
+
+## 1.7 Lấy danh sách mount point còn khả dụng
+
+**GET / POST** `/media/mserver/storage/mountpoint/available`
+
+API trả về danh sách mount point local còn khả dụng để tạo `LOCAL_DISK` pool. Các mount point đã được dùng bởi pool `LOCAL_DISK` hiện có sẽ bị loại khỏi danh sách.
+
+### Request params
+
+Không yêu cầu tham số.
+
+### Response thành công
+
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "mount_point": [
+      {
+        "name": "/dev/sdb1",
+        "mount": "/data/record",
+        "used": 9015995347763,
+        "total": 10995116277760,
+        "used_pct": 82.0
+      }
+    ]
+  }
+}
+```
+
+### Field mô tả
+
+| Field | Kiểu | Mô tả |
+|-------|------|-------|
+| `mount_point` | `array` | Danh sách phân vùng/mount point còn có thể chọn cho pool `LOCAL_DISK` |
+| `mount_point[].name` | `string` | Tên thiết bị, ví dụ `/dev/sdb1` |
+| `mount_point[].mount` | `string` | Đường dẫn mount point, dùng làm `mount_path` khi tạo pool |
+| `mount_point[].used` | `number` | Dung lượng đã dùng, đơn vị byte |
+| `mount_point[].total` | `number` | Tổng dung lượng, đơn vị byte |
+| `mount_point[].used_pct` | `number` | Phần trăm dung lượng đã dùng |
+
+> FE dùng cho dropdown/chọn nhanh `mount_path` khi tạo pool `LOCAL_DISK`.
+
 ---
 
 # 2. Storage Policy APIs
@@ -714,6 +810,7 @@ Sau khi xóa, camera sẽ dùng policy từ group → project → system default
   "msg": "",
   "data": {
     "camera_id": "cam-003",
+    "camera_name": "GT.003_HoaCuong_N4-CMT8-LeThanhNghi",
     "policy_id": "policy-default-traffic",
     "policy_name": "Default Traffic",
     "source": "GROUP",
@@ -726,6 +823,68 @@ Sau khi xóa, camera sẽ dùng policy từ group → project → system default
 `source` có thể là: `CAMERA` / `GROUP` / `PROJECT` / `SYSTEM_DEFAULT`
 
 > FE dùng để hiển thị nguồn policy và quyết định có hiển thị nút **[Khôi phục theo group/project]** hay không.
+
+---
+
+## 3.7 Lấy policy hiệu lực của tất cả camera
+
+**GET / POST** `/media/mserver/storage/camera/effectivePolicy/list`
+
+API này là bản mở rộng của **3.6**, trả về danh sách tất cả camera mà hệ thống biết kèm policy hiệu lực đang áp dụng.
+
+Backend nên tổng hợp camera từ các nguồn:
+
+- Camera đang được quản lý bởi `CameraManager`.
+- Camera đã được gán policy override.
+- Camera đã có dữ liệu trong `segment_tier_ranges`.
+
+### Request params
+
+Không bắt buộc tham số.
+
+### Response thành công
+
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "total": 2,
+    "items": [
+      {
+        "camera_id": "cam-001",
+        "camera_name": "GT.001_NguyenVanLinh",
+        "policy_id": "policy-default-traffic",
+        "policy_name": "Default Traffic",
+        "source": "SYSTEM_DEFAULT",
+        "source_id": "",
+        "allow_camera_override": true
+      },
+      {
+        "camera_id": "cam-003",
+        "camera_name": "GT.003_HoaCuong_N4-CMT8-LeThanhNghi",
+        "policy_id": "policy-high-priority",
+        "policy_name": "High Priority",
+        "source": "CAMERA",
+        "source_id": "cam-003",
+        "allow_camera_override": true
+      }
+    ]
+  }
+}
+```
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `camera_id` | `string` | ID camera |
+| `camera_name` | `string` | Tên camera để FE hiển thị |
+| `policy_id` | `string` | Policy hiệu lực, rỗng nếu chưa có policy |
+| `policy_name` | `string` | Tên policy hiệu lực |
+| `source` | `PolicySource` | Nguồn policy hiệu lực |
+| `source_id` | `string` | ID nguồn áp dụng policy. Với `CAMERA` là `camera_id`; với default có thể rỗng |
+| `allow_camera_override` | `boolean` | Có cho phép camera override policy hay không |
+
+> FE dùng API này cho màn hình tổng quan gán policy: bảng camera, tên camera, policy đang áp dụng và nguồn áp dụng.
 
 ---
 
@@ -1551,6 +1710,8 @@ Hoặc nếu hệ thống đã có SSE channel, reuse endpoint đó và filter t
 # 12. TypeScript Models
 
 ```typescript
+export type PolicySource = 'CAMERA' | 'GROUP' | 'PROJECT' | 'SYSTEM_DEFAULT';
+
 export interface StoragePool {
   id: string;
   name: string;
@@ -1607,6 +1768,16 @@ export interface StorageAdvancedRules {
   prefer_move_no_event_video_first: boolean;
   prefer_keep_event_video_longer: boolean;
   min_segment_age_minutes_before_move: number;
+}
+
+export interface EffectiveCameraPolicy {
+  camera_id: string;
+  camera_name: string;
+  policy_id: string;
+  policy_name: string;
+  source: PolicySource;
+  source_id: string;
+  allow_camera_override: boolean;
 }
 
 export interface CameraStorageTimelineRange {
