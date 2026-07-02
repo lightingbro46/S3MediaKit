@@ -7,6 +7,7 @@
 #include "json/json.h"
 #include "ResourceMonitor.h"
 #include "Util/TimeTicker.h"
+#include "Util/util.h"
 
 namespace managerkit {
 
@@ -35,6 +36,14 @@ struct DiskPartition {
         dv["total"]     = (Json::UInt64)total_bytes;
         dv["used_pct"]  = sanitize_for_json(usage_pct);
         return dv;
+    }
+
+    bool isNetworkFileSystem() const {
+        static const std::set<std::string> network_fs = {
+            "nfs", "nfs4", "cifs", "smb", "smb2", "smb3",
+            "fuse.sshfs", "davfs", "glusterfs", "ceph", "lustre"
+        };
+        return network_fs.count(toolkit::strToLower(static_cast<std::string>(filesystem_type))) > 0;
     }
 };
 

@@ -123,12 +123,10 @@ bool TierObjectStorage::ensureBucketExists(const PoolEntry &entry) {
     create.SetBucket(entry.bucket.c_str());
     auto out = entry.client->CreateBucket(create);
     if (out.IsSuccess()) {
-        InfoL << "TierObjectStorage: created bucket '" << entry.bucket
-              << "' on pool " << entry.pool_id;
+        InfoL << "TierObjectStorage: created bucket '" << entry.bucket << "' on pool " << entry.pool_id;
         return true;
     }
-    WarnL << "TierObjectStorage: cannot create bucket '" << entry.bucket
-          << "': " << out.GetError().GetMessage();
+    WarnL << "TierObjectStorage: cannot create bucket '" << entry.bucket << "': " << out.GetError().GetMessage();
     return false;
 }
 
@@ -231,11 +229,9 @@ bool TierObjectStorage::registerPool(const std::string &pool_id,
     }
 
     if (ok)
-        InfoL << "TierObjectStorage: registered pool " << pool_id
-              << " -> " << endpoint << "/" << bucket;
+        InfoL << "TierObjectStorage: registered pool " << pool_id << " -> " << endpoint << "/" << bucket;
     else
-        WarnL << "TierObjectStorage: registered pool " << pool_id
-              << " but bucket not ready";
+        WarnL << "TierObjectStorage: registered pool " << pool_id << " but bucket not ready";
     return ok;
 }
 
