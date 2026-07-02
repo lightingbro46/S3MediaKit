@@ -71,7 +71,7 @@ public:
     std::vector<StoragePool> getPool(const std::string &pool_id);
 
     // Test connectivity to a pool (filesystem stat for LOCAL_DISK/NAS; HEAD request for object storage)
-    bool testPoolConnection(const StoragePool &pool, std::string &out_message);
+    bool testPoolConnection(const StoragePool &pool, std::string &out_message, int &out_latency_ms);
 
     // Get available mount point for tier
     std::vector<DiskPartition> getAvailableMountPoints(const std::string &include_types = "");

@@ -3,6 +3,7 @@
 #include "Util/logger.h"
 #include "Util/File.h"
 #include "Util/util.h"
+#include "Util/TimeTicker.h"
 
 #include <cstring>
 #include <fstream>
@@ -250,7 +251,7 @@ bool TierObjectStorage::isRegistered(const std::string &pool_id) const {
 // Connection tests
 // ============================================================================
 bool TierObjectStorage::testConnection(const std::string &pool_id,
-                                        std::string &out_message) {
+                                        std::string &out_message, int &out_latency_ms) {
     std::lock_guard<std::mutex> lk(_mtx);
     auto it = _pool_map.find(pool_id);
     if (it == _pool_map.end()) {
@@ -259,9 +260,11 @@ bool TierObjectStorage::testConnection(const std::string &pool_id,
     }
 
     const auto &entry = it->second;
+    Ticker ticker;
     Aws::S3::Model::HeadBucketRequest req;
     req.SetBucket(entry.bucket.c_str());
     auto out = entry.client->HeadBucket(req);
+    out_latency_ms = ticker.elapsedTime();
     if (out.IsSuccess()) {
         out_message = "Connection successful";
         return true;
@@ -274,11 +277,14 @@ bool TierObjectStorage::testConnectionParams(const std::string &endpoint,
                                               const std::string &bucket,
                                               const std::string &access_key,
                                               const std::string &secret_key,
-                                              std::string &out_message) {
+                                              std::string &out_message,
+                                              int &out_latency_ms) {
     auto client = buildClient(endpoint, access_key, secret_key);
+    Ticker ticker;
     Aws::S3::Model::HeadBucketRequest req;
     req.SetBucket(bucket.c_str());
     auto out = client->HeadBucket(req);
+    out_latency_ms = ticker.elapsedTime();
     if (out.IsSuccess()) {
         out_message = "Connection successful";
         return true;
@@ -582,14 +588,14 @@ bool TierObjectStorage::registerPool(const std::string &pool_id,
 void TierObjectStorage::unregisterPool(const std::string &) {}
 bool TierObjectStorage::isRegistered(const std::string &) const { return false; }
 
-bool TierObjectStorage::testConnection(const std::string &, std::string &out_msg) {
+bool TierObjectStorage::testConnection(const std::string &, std::string &out_msg, int &out_latency_ms) {
     out_msg = "AWS SDK not enabled";
     return false;
 }
 
 bool TierObjectStorage::testConnectionParams(const std::string &, const std::string &,
                                               const std::string &, const std::string &,
-                                              std::string &out_msg) {
+                                              std::string &out_msg, int &out_latency_ms) {
     out_msg = "AWS SDK not enabled";
     return false;
 }

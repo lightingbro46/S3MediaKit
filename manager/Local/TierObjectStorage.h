@@ -94,7 +94,7 @@ public:
      * Tries HeadBucket; falls back to ListBuckets when bucket does not exist
      * and creates it automatically.
      */
-    bool testConnection(const std::string &pool_id, std::string &out_message);
+    bool testConnection(const std::string &pool_id, std::string &out_message, int &out_latency_ms);
 
     /**
      * Ad-hoc test (before a pool is saved).
@@ -104,7 +104,8 @@ public:
                                const std::string &bucket,
                                const std::string &access_key,
                                const std::string &secret_key,
-                               std::string &out_message);
+                               std::string &out_message,
+                               int &out_latency_ms);
 
     // ------------------------------------------------------------------
     // Segment I/O

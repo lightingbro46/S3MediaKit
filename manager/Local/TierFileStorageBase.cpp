@@ -2,6 +2,7 @@
 
 #include "Util/File.h"
 #include "Util/logger.h"
+#include "Util/TimeTicker.h"
 
 #include <cerrno>
 #include <cstring>
@@ -17,7 +18,8 @@ using namespace toolkit;
 namespace managerkit {
 
 bool TierFileStorageBase::validatePoolPath(const std::string &base_path,
-                                           std::string &out_message) const {
+                                           std::string &out_message, int &out_latency_ms) const {
+    Ticker ticker;
     struct stat st{};
     if (base_path.empty()) {
         out_message = "Path is empty";
@@ -41,6 +43,7 @@ bool TierFileStorageBase::validatePoolPath(const std::string &base_path,
     ::close(fd);
     ::unlink(test_file.c_str());
     out_message = "Connection successful";
+    out_latency_ms = ticker.elapsedTime();
     return true;
 }
 
@@ -75,7 +78,8 @@ bool TierFileStorageBase::registerPool(const std::string &pool_id,
 
     std::string normalized = normalizeBasePath(base_path);
     std::string message;
-    if (!validatePoolPath(normalized, message)) {
+    int latency_ms = 0;
+    if (!validatePoolPath(normalized, message, latency_ms)) {
         WarnL << storageName() << "::registerPool: " << message << " pool=" << pool_id;
         return false;
     }
@@ -114,18 +118,18 @@ bool TierFileStorageBase::getPoolEntry(const std::string &pool_id,
 }
 
 bool TierFileStorageBase::testConnection(const std::string &pool_id,
-                                         std::string &out_message) const {
+                                         std::string &out_message, int &out_latency_ms) const {
     PoolEntry entry;
     if (!getPoolEntry(pool_id, entry)) {
         out_message = "Pool not registered: " + pool_id;
         return false;
     }
-    return validatePoolPath(entry.base_path, out_message);
+    return validatePoolPath(entry.base_path, out_message, out_latency_ms);
 }
 
 bool TierFileStorageBase::testConnectionParams(const std::string &base_path,
-                                               std::string &out_message) const {
-    return validatePoolPath(normalizeBasePath(base_path), out_message);
+                                               std::string &out_message, int &out_latency_ms) const {
+    return validatePoolPath(normalizeBasePath(base_path), out_message, out_latency_ms);
 }
 
 std::string TierFileStorageBase::resolvePath(const std::string &pool_id,

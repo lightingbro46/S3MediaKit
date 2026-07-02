@@ -24,10 +24,10 @@ public:
 
     bool isRegistered(const std::string &pool_id) const;
 
-    bool testConnection(const std::string &pool_id, std::string &out_message) const;
+    bool testConnection(const std::string &pool_id, std::string &out_message, int &out_latency_ms) const;
 
     bool testConnectionParams(const std::string &base_path,
-                              std::string &out_message) const;
+                              std::string &out_message, int &out_latency_ms) const;
 
     bool uploadSegment(const std::string &pool_id,
                        const std::string &local_path,
@@ -65,7 +65,7 @@ protected:
     virtual const char *storageName() const = 0;
 
     virtual bool validatePoolPath(const std::string &base_path,
-                                  std::string &out_message) const;
+                                  std::string &out_message, int &out_latency_ms) const;
 
     bool getPoolEntry(const std::string &pool_id, PoolEntry &entry) const;
 

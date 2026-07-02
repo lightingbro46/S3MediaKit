@@ -707,11 +707,12 @@ void registerStorageApis() {
         }
 
         string message;
-        bool ok = TierStorageManager::Instance().testPoolConnection(pool, message);
+        int latency_ms = 0;
+        bool ok = TierStorageManager::Instance().testPoolConnection(pool, message, latency_ms);
 
         Json::Value data;
         data["status"]     = ok ? "OK" : "ERROR";
-        data["latency_ms"] = 0;
+        data["latency_ms"] = latency_ms;
         data["can_read"]   = ok;
         data["can_write"]  = ok;
         data["message"]    = message;
