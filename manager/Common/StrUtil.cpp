@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <algorithm>
 #include "Util/logger.h"
+#include "Util/util.h"
 
 using namespace std;
 using namespace toolkit;
@@ -288,5 +289,23 @@ uint64_t StampUtils::getStartOfMinute(uint64_t seconds) {
     return static_cast<uint64_t>(std::mktime(tm));
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+std::string StrUUID::make_guid(int size, const std::string &prefix, const std::string &suffix) {
+    std::string ret;
+    if (!prefix.empty()) {
+        ret += prefix + "-";
+    }
+    auto uuid = generate_guid();
+    if (size == uuid.size()) {
+        ret += uuid;
+    } else {
+        ret += uuid.substr(0, size);
+    }
+    if (!suffix.empty()) {
+        ret += "-" + suffix;
+    }
+    return ret;
+}
 
 } // namespace managerkit

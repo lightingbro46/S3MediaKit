@@ -88,6 +88,27 @@ namespace managerkit {
     XX(CODE_RELAY_OUTPUT_FAILED,            "Relay output control failed",      500,         912009) \
     /* 913xxx - Sync database errors */                                                              \
     XX(CODE_SNAPSHOT_EMPTY,                 "Snapshot is empty",                404,         913001) \
+    /* 914xxx - Storage tier errors */                                                              \
+    XX(CODE_STORAGE_POOL_NOT_FOUND,         "Storage pool not found",          404,         914001) \
+    XX(CODE_STORAGE_POLICY_NOT_FOUND,       "Storage policy not found",        404,         914002) \
+    XX(CODE_STORAGE_POOL_IN_USE,            "Storage pool in use",             404,         914003) \
+    XX(CODE_STORAGE_POOL_OFFLINE,           "Storage pool offline",            404,         914004) \
+    XX(CODE_STORAGE_POOL_CONN_FAILED,       "Storage pool connection failed",  404,         914005) \
+    XX(CODE_STORAGE_POLICY_IN_USE,          "Storage policy in use",           404,         914006) \
+    XX(CODE_STORAGE_POLICY_INVALID,         "Storage policy invalid",          404,         914007) \
+    XX(CODE_STORAGE_TIER_ORDER_INVALID,     "Storage tier order invalid",      404,         914008) \
+    XX(CODE_STORAGE_RESTORE_REQUIRED,       "Storage restore required",        404,         914009) \
+    XX(CODE_STORAGE_SEGMENT_PROTECTED,      "Storage segment protected",       404,         914010) \
+    XX(CODE_STORAGE_MISSING_PARAMS,         "Storage missing params",          404,         914011) \
+    XX(CODE_STORAGE_INVALID_PARAMS,         "Storage invalid params",          404,         914012) \
+    XX(CODE_STORAGE_SEGMENTS_NOT_FOUND,     "Storage segments not found",      404,         914013) \
+    XX(CODE_STORAGE_SEGMENTS_EXPIRED,       "Storage segments expired",        404,         914014) \
+    XX(CODE_STORAGE_RESTORE_JOB_NOT_FOUND,  "Storage restore job not found",   404,         914015) \
+    XX(CODE_STORAGE_TIERING_JOB_NOT_FOUND,  "Storage tiering job not found",   404,         914016) \
+    XX(CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Storage tiering job update failed", 500,    914017) \
+    XX(CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Storage tiering job cancel failed", 500,    914018) \
+    XX(CODE_STORAGE_ALERT_NOT_FOUND,        "Storage alert not found",         404,         914019) \
+    XX(CODE_STORAGE_SEGMENT_PROTECTED_NOT_FOUND, "Storage segment protected not found", 404, 914020) \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,

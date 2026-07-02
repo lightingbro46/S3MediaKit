@@ -157,6 +157,23 @@ public:
         return rows.empty() || rows[0].empty() ? 0 : std::stoi(rows[0][0]);
     }
 
+    std::vector<RestoreJob> queryExpiredDone(int64_t cutoff_updated_at,
+                                             int size = 100) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<RestoreJob>::getColumns())
+                .from(EntityTraits<RestoreJob>::tableName())
+                .where("status = ? AND updated_at > 0 AND updated_at <= ?",
+                       {"DONE", std::to_string(cutoff_updated_at)})
+                .orderBy("updated_at ASC")
+                .limit(size));
+
+        std::vector<RestoreJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJob>::fromRow(row));
+        return ret;
+    }
+
     bool updateStatus(const std::string &job_id,
                       const std::string &status,
                       int64_t processed_bytes = -1,

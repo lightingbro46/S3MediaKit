@@ -67,6 +67,30 @@ inline bool poolTypeIsObjectStorage(const std::string &type) {
     return (type == "MINIO" || type == "S3" || type == "ARCHIVE");
 }
 
+inline Json::Value poolTypeSupport(TierType t) {
+    Json::Value v;
+    if (t == HotTier) {
+        v["LOCAL_DISK"] = true;
+        v["NAS"]        = true;
+        v["MINIO"]      = false;
+        v["S3"]         = false;
+        v["ARCHIVE"]    = false;
+    } else if (t == WarmTier) {
+        v["LOCAL_DISK"] = true;
+        v["NAS"]        = true;
+        v["MINIO"]      = false;
+        v["S3"]         = false;
+        v["ARCHIVE"]    = false;
+    } else if (t == ColdTier) {
+        v["LOCAL_DISK"] = false;
+        v["NAS"]        = true;
+        v["MINIO"]      = true;
+        v["S3"]         = false;
+        v["ARCHIVE"]    = false;
+    }
+    return v;
+}
+
 // ===================================================================
 // Pool / tier health
 // ===================================================================
@@ -311,6 +335,42 @@ struct PolicyAdvancedRules {
         return r;
     }
 };
+
+inline PolicyTierConfig getSystemDefaultPolicyTierConfig() {
+    PolicyTierConfig c;
+    c.tier = tierTypeToString(HotTier);
+    c.enabled = true;
+    c.pool_id = "";
+    c.retain_until_days = 30;
+    c.data_mode = tierDataModeToString(TierDataMode::FULL_VIDEO);
+    c.overflow_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
+    c.high_watermark_percent = 80;
+    c.critical_watermark_percent = 90;
+    c.priority = "NORMAL";
+    return c;
+}
+
+inline PolicyDeleteConfig getSystemDefaultPolicyDeleteConfig() {
+    PolicyDeleteConfig c;
+    c.delete_after_days = 0;
+    c.delete_mode = "DELETE_AUTOMATICALLY";
+    c.skip_protected_video = true;
+    c.skip_evidence_video = true;
+    c.require_approval_before_delete = false;
+    c.external_pool_id = "";
+    return c;
+}
+
+inline PolicyAdvancedRules getSystemDefaultPolicyAdvancedRules() {
+    PolicyAdvancedRules r;
+    r.enable_early_move_when_pool_high = true;
+    r.prefer_move_no_event_video_first = true;
+    r.prefer_keep_event_video_longer = true;
+    r.skip_move_if_pool_offline = true;
+    r.alert_when_pool_critical = true;
+    r.min_segment_age_minutes_before_move = 30;
+    return r;
+}
 
 // ===================================================================
 // Runtime result types used across the manager APIs

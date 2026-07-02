@@ -260,11 +260,16 @@ public:
     }
 
     std::vector<TieringJob> findByStatus(const std::string &status) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ?";
+        params.push_back(status);
+
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select(EntityTraits<TieringJob>::getColumns())
                 .from(EntityTraits<TieringJob>::tableName())
-                .where("status = ?", {status})
+                .where(where.str(), params)
                 .orderBy("created_at ASC"));
         std::vector<TieringJob> ret;
         for (const auto &row : rows)
@@ -326,24 +331,34 @@ public:
     bool exists(const std::string &camera_id,
                 const std::string &stream_id,
                 const std::string &segment_path) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(segment_path);
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select({"1"})
                 .from(EntityTraits<SegmentTierRecord>::tableName())
-                .where("camera_id = ? AND stream_id = ? AND segment_path = ?",
-                       {camera_id, stream_id, segment_path})
+                .where(where.str(), params)
                 .limit(1));
         return !rows.empty();
     }
 
     std::vector<SegmentTierRecord> findByTierAndAge(const std::string &tier,
                                                      int64_t older_than_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND end_time <= ? AND status = ?";
+        params.push_back(tier);
+        params.push_back(std::to_string(older_than_time));
+        params.push_back("AVAILABLE");
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select(EntityTraits<SegmentTierRecord>::getColumns())
                 .from(EntityTraits<SegmentTierRecord>::tableName())
-                .where("tier = ? AND end_time <= ? AND status = ?",
-                       {tier, std::to_string(older_than_time), "AVAILABLE"})
+                .where(where.str(), params)
                 .orderBy("end_time ASC"));
         std::vector<SegmentTierRecord> ret;
         for (const auto &row : rows)
@@ -402,10 +417,15 @@ public:
 
     bool upsert(const SegmentTierRecord &rec) {
         // Delete any existing record then insert
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
+        params.push_back(rec.camera_id);
+        params.push_back(rec.stream_id);
+        params.push_back(rec.segment_path);
         auto q = toolkit::QueryBuilder()
             .deleteFrom(EntityTraits<SegmentTierRecord>::tableName())
-            .where("camera_id = ? AND stream_id = ? AND segment_path = ?",
-                   {rec.camera_id, rec.stream_id, rec.segment_path});
+            .where(where.str(), params);
         _executor->execDML(q);
         return save(rec, true);
     }
@@ -414,33 +434,76 @@ public:
                     const std::string &segment_path,
                     const std::string &new_tier, const std::string &pool_id,
                     const std::string &status) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(segment_path);
+
         int64_t now = static_cast<int64_t>(time(nullptr));
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"tier", new_tier});
+        set.push_back({"pool_id", pool_id});
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(now)});
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRecord>::tableName())
-            .set({{"tier", new_tier}, {"pool_id", pool_id},
-                  {"status", status}, {"updated_at", std::to_string(now)}})
-            .where("camera_id = ? AND stream_id = ? AND segment_path = ?",
-                   {camera_id, stream_id, segment_path});
+            .set(set)
+            .where(where.str(), params);
         return _executor->execDML(q);
     }
 
     bool updateStatus(const std::string &camera_id, const std::string &stream_id,
                       const std::string &segment_path,
                       const std::string &status) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(segment_path);
+
         int64_t now = static_cast<int64_t>(time(nullptr));
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(now)});
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRecord>::tableName())
-            .set({{"status", status}, {"updated_at", std::to_string(now)}})
-            .where("camera_id = ? AND stream_id = ? AND segment_path = ?",
-                   {camera_id, stream_id, segment_path});
+            .set(set)
+            .where(where.str(), params);
         return _executor->execDML(q);
     }
 
     void pruneOlderThan(int64_t ts) {
-        _executor->execDML(
-            toolkit::QueryBuilder()
-                .deleteFrom(EntityTraits<SegmentTierRecord>::tableName())
-                .where("updated_at < ?", {std::to_string(ts)}));
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "updated_at < ?";
+        params.push_back(std::to_string(ts));
+        
+        auto q = toolkit::QueryBuilder()
+            .deleteFrom(EntityTraits<SegmentTierRecord>::tableName())
+            .where(where.str(), params);
+
+        _executor->execDML(q);
+    }
+
+    // Return distinct camera_ids that have AVAILABLE segments
+    std::vector<std::string> findDistinctAvailableCameras() {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ?";
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        auto q = toolkit::QueryBuilder()
+                .select({"DISTINCT camera_id"})
+                .from(EntityTraits<SegmentTierRecord>::tableName())
+                .where(where.str(), params);
+        auto rows = _executor->executeRaw(q);
+        std::vector<std::string> ids;
+        for (const auto &row : rows)
+            if (!row.empty()) ids.push_back(row[0]);
+        return ids;
     }
 };
 
@@ -477,12 +540,44 @@ public:
 
     std::vector<SegmentTierRange> findByTierAndAge(const std::string &tier,
                                                    int64_t older_than_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND end_time <= ? AND status = ?";
+        params.push_back(tier);
+        params.push_back(std::to_string(older_than_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select(EntityTraits<SegmentTierRange>::getColumns())
                 .from(EntityTraits<SegmentTierRange>::tableName())
-                .where("tier = ? AND end_time <= ? AND status = ?",
-                       {tier, std::to_string(older_than_time), segmentStatusToString(SegmentStatus::AVAILABLE)})
+                .where(where.str(), params)
+                .orderBy("end_time ASC"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<SegmentTierRange> findByTierPoolAndAge(const std::string &tier,
+                                                       const std::string &pool_id,
+                                                       int64_t older_than_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND end_time <= ? AND status = ?";
+        params.push_back(tier);
+        params.push_back(std::to_string(older_than_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        if (!pool_id.empty()) {
+            where << " AND pool_id = ?";
+            params.push_back(pool_id);
+        }
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
                 .orderBy("end_time ASC"));
         std::vector<SegmentTierRange> ret;
         for (const auto &row : rows)
@@ -496,13 +591,21 @@ public:
                           const std::string &status,
                           int64_t start_time,
                           int64_t end_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND tier = ? AND status = ? AND start_time <= ? AND end_time >= ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(tier);
+        params.push_back(status);
+        params.push_back(std::to_string(start_time));
+        params.push_back(std::to_string(end_time));
+
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select({"1"})
                 .from(EntityTraits<SegmentTierRange>::tableName())
-                .where("camera_id = ? AND stream_id = ? AND tier = ? AND status = ? AND start_time <= ? AND end_time >= ?",
-                       {camera_id, stream_id, tier, status,
-                        std::to_string(start_time), std::to_string(end_time)})
+                .where(where.str(), params)
                 .limit(1));
         return !rows.empty();
     }
@@ -584,6 +687,45 @@ public:
         return _executor->execDML(q);
     }
 
+    bool updateStatusByRangeId(const std::string &range_id,
+                               const std::string &status) {
+        int64_t now = static_cast<int64_t>(time(nullptr));
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "range_id = ?";
+        params.push_back(range_id);
+
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(now)});
+        auto q = toolkit::QueryBuilder()
+            .update(EntityTraits<SegmentTierRange>::tableName())
+            .set(set)
+            .where(where.str(), params);
+        return _executor->execDML(q);
+    }
+
+    bool updatePoolForTierIfMissing(const std::string &tier,
+                                    const std::string &pool_id) {
+        if (pool_id.empty())
+            return false;
+        int64_t now = static_cast<int64_t>(time(nullptr));
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND status = ? AND (pool_id IS NULL OR pool_id = '')";
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"pool_id", pool_id});
+        set.push_back({"updated_at", std::to_string(now)});
+        auto q = toolkit::QueryBuilder()
+            .update(EntityTraits<SegmentTierRange>::tableName())
+            .set(set)
+            .where(where.str(), params);
+        return _executor->execDML(q);
+    }
+
     bool updateTierByExactWindow(const std::string &camera_id,
                                  const std::string &stream_id,
                                  int64_t start_time,
@@ -592,11 +734,24 @@ public:
                                  const std::string &pool_id,
                                  const std::string &status) {
         int64_t now = static_cast<int64_t>(time(nullptr));
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(std::to_string(start_time));
+        params.push_back(std::to_string(end_time));
+
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"tier", new_tier});
+        set.push_back({"pool_id", pool_id});
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(now)});
+
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
-            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(now)}})
-            .where("camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?",
-                   {camera_id, stream_id, std::to_string(start_time), std::to_string(end_time)});
+            .set(set)
+            .where(where.str(), params);
         return _executor->execDML(q);
     }
 
@@ -606,6 +761,18 @@ public:
                                    int64_t end_time,
                                    const std::string &status) {
         int64_t now = static_cast<int64_t>(time(nullptr));
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?";
+        params.push_back(camera_id);
+        params.push_back(stream_id);
+        params.push_back(std::to_string(start_time));
+        params.push_back(std::to_string(end_time));
+
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(now)});
+
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
             .set({{"status", status}, {"updated_at", std::to_string(now)}})
@@ -642,10 +809,15 @@ public:
             return piece;
         };
 
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "range_id = ?";
+        params.push_back(range.range_id);
+
         _executor->execDML(
             toolkit::QueryBuilder()
                 .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
-                .where("range_id = ?", {range.range_id}));
+                .where(where.str(), params));
 
         bool ok = true;
         if (range.start_time < window_start)
@@ -657,13 +829,33 @@ public:
     }
 
     void pruneDeletedOlderThan(int64_t ts) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "updated_at < ? AND status IN (?, ?)";
+        params.push_back(std::to_string(ts));
+        params.push_back(segmentStatusToString(SegmentStatus::DELETED));
+        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
         _executor->execDML(
             toolkit::QueryBuilder()
                 .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
-                .where("updated_at < ? AND status IN (?, ?)",
-                       {std::to_string(ts),
-                        segmentStatusToString(SegmentStatus::DELETED),
-                        segmentStatusToString(SegmentStatus::EXPIRED)}));
+                .where(where.str(), params));
+    }
+
+    std::vector<std::string> findDistinctAvailableCameras() {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ?";
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"DISTINCT camera_id"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params));
+        std::vector<std::string> ids;
+        for (const auto &row : rows)
+            if (!row.empty()) ids.push_back(row[0]);
+        return ids;
     }
 };
 
@@ -731,35 +923,12 @@ class SegmentTierImp : public SegmentTierRepository {
 public:
     using Ptr = std::shared_ptr<SegmentTierImp>;
 
-    // Return distinct camera_ids that have AVAILABLE segments
-    std::vector<std::string> findDistinctAvailableCameras() {
-        auto rows = _executor->executeRaw(
-            toolkit::QueryBuilder()
-                .select({"DISTINCT camera_id"})
-                .from(EntityTraits<SegmentTierRecord>::tableName())
-                .where("status = ?", {segmentStatusToString(SegmentStatus::AVAILABLE)}));
-        std::vector<std::string> ids;
-        for (const auto &row : rows)
-            if (!row.empty()) ids.push_back(row[0]);
-        return ids;
-    }
 };
 
 class SegmentTierRangeImp : public SegmentTierRangeRepository {
 public:
     using Ptr = std::shared_ptr<SegmentTierRangeImp>;
 
-    std::vector<std::string> findDistinctAvailableCameras() {
-        auto rows = _executor->executeRaw(
-            toolkit::QueryBuilder()
-                .select({"DISTINCT camera_id"})
-                .from(EntityTraits<SegmentTierRange>::tableName())
-                .where("status = ?", {segmentStatusToString(SegmentStatus::AVAILABLE)}));
-        std::vector<std::string> ids;
-        for (const auto &row : rows)
-            if (!row.empty()) ids.push_back(row[0]);
-        return ids;
-    }
 };
 
 class PoolMetricsImp : public PoolMetricsRepository {

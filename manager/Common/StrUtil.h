@@ -66,6 +66,11 @@ public:
     static uint64_t getStartOfMinute(uint64_t seconds);
 };
 
+class StrUUID {
+public:
+    static std::string make_guid(int size = 32, const std::string &prefix = "", const std::string &suffix = "");
+};
+
 } // namespace managerkit
 
 #endif // COMMON_STRUTIL_H

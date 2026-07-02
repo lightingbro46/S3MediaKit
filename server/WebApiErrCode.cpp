@@ -41,7 +41,7 @@ ApiErrCode getApiErrCodeWithPermission(const std::string &code) {
         return ApiErrCode::CODE_NO_EXTRACT_PERMISSION;
     } else if (code == READ_BOOKMARK_PERMISSION_CODE) {
         return ApiErrCode::CODE_NO_BOOKMARK_PERMISSION;
-    } else if (code == WRITE_BOOKMARK_PERMISSION_CODE) {
+    } else if (code == MODIFY_BOOKMARK_PERMISSION_CODE) {
         return ApiErrCode::CODE_NO_BOOKMARK_PERMISSION;
     } else if (code == PTZ_CONTROL_PERMISSION_CODE) {
         return ApiErrCode::CODE_NO_PTZ_CONTROL_PERMISSION;
