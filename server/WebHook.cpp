@@ -558,18 +558,18 @@ static atomic<uint64_t> s_last_report_time { 0 };
  * ciphertext is the encrypted JSON data, and tag is 16 bytes.
  */
 static bool decryptServerConfigJson(const Value &obj, Value &config) {
-    if (!obj.isMember("data") || !obj["data"].isString()) {
+    if (obj.empty()) {
         WarnL << "Load server config failed: encrypted response data is missing or not string";
         return false;
     }
 
     GET_CONFIG(string, api_secret, Manager::kApiSecret);
-    if (api_secret.empty() || !obj["data"]["media_server"].isNull()) {
+    if (api_secret.empty() || !obj["media_server"].isNull()) {
         config = obj;
         return true;
     }
 
-    string combined = decodeBase64(obj["data"].asString());
+    string combined = decodeBase64(obj.asString());
     if (combined.empty()) {
         WarnL << "Load server config failed: decode base64 response data is empty";
         return false;
@@ -1725,8 +1725,8 @@ void installWebHook() {
         ArgsType body;
         body["peer"] = peer_id;
         body["db"] = db_guid;
-        body["cursors"] = StrJsonUtils::writeJsonString(since_cursors);
-        body["ack_cursors"] = StrJsonUtils::writeJsonString(ack_cursors);
+        body["cursors"] = since_cursors;
+        body["ack_cursors"] = ack_cursors;
         body["limit"] = batch_limit;
 
         // Execute hook

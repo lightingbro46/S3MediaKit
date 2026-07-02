@@ -12,42 +12,27 @@ namespace managerkit {
 
 void registerSyncDbApis() {
     // Register the Web API sync database endpoints here
-    api_regist("/media/esc/sync/changes", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/esc/sync/changes", [](API_ARGS_JSON_ASYNC) {
         CHECK_ARGS_("cursors", "ack_cursors", "limit", "peer", "db");
 
         string peer_id      = allArgs["peer"];
         string db_guid      = allArgs["db"];
         int limit           = allArgs["limit"];
-        string cursors_str  = allArgs["cursors"];
-        string ack_cursors_str = allArgs["ack_cursors"];
+        Json::Value cursors = allArgs["cursors"];
+        Json::Value ack_cursors = allArgs["ack_cursors"];
 
-        {
-            // Save ack_cursors to local db for prune old logs later
-            try {
-                Json::Value ret;
-                StrJsonUtils::readJsonString(ack_cursors_str, ret);
-                if (!ret.empty() && ret.isArray()) {
-                    SyncManager::Instance().recordRelayAck(ret);
-                }
-            } catch (const std::exception &ex) {
-                WarnL << "Failed to save ack_cursors: " << ex.what();
-            }
+        // Save ack_cursors to local db for prune old logs later
+        if (!ack_cursors.empty() && ack_cursors.isArray()) {
+            SyncManager::Instance().recordRelayAck(ack_cursors);
         }
 
         // Parse cursors from request
-        try {
-            Json::Value ret;
-            StrJsonUtils::readJsonString(cursors_str, ret);
-            Json::Value log_rows;
-            if (!ret.empty() && ret.isArray()) {
-                log_rows = SyncManager::Instance().getCurrentCursors(ret, limit);
-            }
-            val["data"] = log_rows;
-            invoker(200, headerOut, val.toStyledString());
-        } catch (const std::exception &ex) {
-            WarnL << "Failed to parse cursors: " << ex.what();
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_SYNC_CURSOR, "Invalid sync db cursors");
+        Json::Value log_rows = Json::arrayValue;
+        if (!cursors.empty() && cursors.isArray()) {
+            log_rows = SyncManager::Instance().getCurrentCursors(cursors, limit);
         }
+        val["data"] = log_rows;
+        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/sync/snapshot", [](API_ARGS_MAP_ASYNC) {

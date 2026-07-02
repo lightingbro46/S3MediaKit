@@ -84,7 +84,7 @@ bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
     poller->async([imp, option]() {
         imp->setSyncMode(false); // add camera from statistics, disable sync mode to avoid sync to ESC
-        imp->setCameraOption(option); 
+        imp->setCameraOption(option);
     });
     _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
@@ -115,7 +115,7 @@ bool CameraManager::delCamera(const string &key) {
                 imp->setSyncMode(false); 
             });
         } else {
-            bool failover_active = true;
+            bool failover_active = false;
             // Device disable active, check whether to keep device in list
             auto stats_imp = imp->getCameraStatisticImp();
             if (stats_imp) {

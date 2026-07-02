@@ -90,6 +90,7 @@ const string kBroadcastHealthCheckMediaService = "kBroadcastHealthCheckMediaServ
 const string kBroadcastRecordMotion = "kBroadcastRecordMotion";
 const string kBroadcastMotionKeepThreshold = "kBroadcastMotionKeepThreshold";
 const string kBroadcastTierKeepThreshold = "kBroadcastTierKeepThreshold";
+const string kBroadcastRebuildTimeFile = "kBroadcastRebuildTimeFile";
 const string kBroadcastSyncChanges = "kBroadcastSyncChanges";
 const string kBroadcastSyncSnapshot = "kBroadcastSyncSnapshot";
 const string kBroadcastSyncBookmarkIndex = "kBroadcastSyncBookmarkIndex";
@@ -512,10 +513,36 @@ namespace Storage {
 const string kLimitPercentUsage = STORAGE_FIELD "limitPercentUsage";
 // When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
 const string kRemovePercentExtra = STORAGE_FIELD "removePercentExtra";
+const string kLegacyRecordCleanupEnabled = STORAGE_FIELD "legacy_record_cleanup_enabled";
+const string kLegacyTempCleanupEnabled = STORAGE_FIELD "legacy_temp_cleanup_enabled";
+const string kLegacyUserSessionCleanupEnabled = STORAGE_FIELD "legacy_user_session_cleanup_enabled";
+const string kLegacyTimefileRebuildEnabled = STORAGE_FIELD "legacy_timefile_rebuild_enabled";
+const string kAutoRestoreOnRecordAccess = STORAGE_FIELD "auto_restore_on_record_access";
+const string kAutoRestoreMaxConcurrent = STORAGE_FIELD "auto_restore_max_concurrent";
+const string kRestoreSavePath = STORAGE_FIELD "restore_save_path";
+const string kRestoreTTLSeconds = STORAGE_FIELD "restore_ttl_seconds";
+const string kDefaultHotHighWatermarkPercent = STORAGE_FIELD "default_hot_high_watermark_percent";
+const string kDefaultHotCriticalWatermarkPercent = STORAGE_FIELD "default_hot_critical_watermark_percent";
+const string kSegmentRecordTTLSeconds = STORAGE_FIELD "segment_record_ttl_seconds";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
     mINI::Instance()[kRemovePercentExtra] = 5;
+    mINI::Instance()[kLegacyRecordCleanupEnabled] = 0;
+    mINI::Instance()[kLegacyTempCleanupEnabled] = 1;
+    mINI::Instance()[kLegacyUserSessionCleanupEnabled] = 1;
+    mINI::Instance()[kLegacyTimefileRebuildEnabled] = 1;
+    mINI::Instance()[kAutoRestoreOnRecordAccess] = 0;
+    mINI::Instance()[kAutoRestoreMaxConcurrent] = 5;
+#if defined(__linux__)
+    mINI::Instance()[kRestoreSavePath] = "/dev/shm/restore";
+#else
+    mINI::Instance()[kRestoreSavePath] = "./www/restore";
+#endif
+    mINI::Instance()[kRestoreTTLSeconds] = 3600; // 1 hour
+    mINI::Instance()[kDefaultHotHighWatermarkPercent] = 85;
+    mINI::Instance()[kDefaultHotCriticalWatermarkPercent] = 95;
+    mINI::Instance()[kSegmentRecordTTLSeconds] = 7 * 86400; // 7 days
 });
 
 } // namespace Storage

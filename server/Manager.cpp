@@ -12,6 +12,7 @@
 #include "Storage/MigrationHistory.h"
 #include "Storage/MiscData.h"
 #include "Local/StorageManager.h"
+#include "Local/TierStorageManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
@@ -66,6 +67,7 @@ static onceToken token([]() {
 static void enforceStoragePolicy() {
     DebugL << "Storage manager has been started monitoring";
     StorageManager::Instance().start();
+    TierStorageManager::Instance().start();
 }
 
 static void loadSavedDeviceInfo() {

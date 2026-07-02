@@ -71,4 +71,4 @@ Json::Value makeDeviceMediaProfileJson(const managerkit::DeviceSource::Ptr &devi
 
 managerkit::DeviceSource::Ptr findDeviceSource(const std::string &deviceId);
 
-#endif // S3MANAGERKIT_MANAGE
+#endif // S3MANAGERKIT_MANAGER_H

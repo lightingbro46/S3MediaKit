@@ -202,6 +202,9 @@ extern const std::string kBroadcastMotionKeepThreshold;
 extern const std::string kBroadcastTierKeepThreshold;
 #define BroadcastTierKeepThresholdArgs const DeviceTuple &args, int &tier_type, bool start, uint64_t &threshold
 
+extern const std::string kBroadcastRebuildTimeFile;
+#define BroadcastRebuildTimeFileArgs const std::string &device_id, const uint64_t &threshold
+
 using OnResInvoker = std::function<void(const std::string&, const int&, const Json::Value&)>;
 extern const std::string kBroadcastSyncChanges;
 #define BroadcastSyncChangesArgs const std::string &origin_urls, const std::string &peer_id, const std::string &db_guid, const Json::Value &since_cursors, const Json::Value &ack_cursors, const int &batch_limit, const Broadcast::OnResInvoker &invoker
@@ -636,8 +639,34 @@ extern const std::string kOverlapInterval;
 namespace Storage {
 // Limit percentage of disk usage, when the disk usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. The value range is 0~100, and the default value is 90.
 extern const std::string kLimitPercentUsage;
-// When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
+// When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. 
+// This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
 extern const std::string kRemovePercentExtra;
+// Legacy StorageManager record lifecycle. Set to 1 to fallback to old segment deletion/rebuild flow.
+extern const std::string kLegacyRecordCleanupEnabled;
+// Legacy StorageManager temporary file cleanup.
+extern const std::string kLegacyTempCleanupEnabled;
+// Legacy StorageManager user session cleanup.
+extern const std::string kLegacyUserSessionCleanupEnabled;
+// StorageManager listener for rebuild requests emitted by TierStorageManager.
+extern const std::string kLegacyTimefileRebuildEnabled;
+// Whether to enable restore on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 0 (disabled).
+extern const std::string kAutoRestoreOnRecordAccess;
+// Maximum number of concurrent restore operations on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 5.
+extern const std::string kAutoRestoreMaxConcurrent;
+// Temporary directory for restore on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is "/dev/shm/restore".
+extern const std::string kRestoreSavePath;
+// TTL (Time To Live) for restore on cold tier, when the restored file is older than this value, it will be deleted according to the file deletion strategy. The value range is 0~86400 (1 day), and the default value is 3600 (1 hour).
+extern const std::string kRestoreTTLSeconds;
+// Default hot tier high watermark percentage, when the hot tier usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the hot tier usage is below this percentage. 
+// The value range is 0~100, and the default value is 80.
+extern const std::string kDefaultHotHighWatermarkPercent;
+// Default hot tier critical watermark percentage, when the hot tier usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the hot tier usage is below this percentage. 
+// The value range is 0~100, and the default value is 90.
+extern const std::string kDefaultHotCriticalWatermarkPercent;
+// TTL (Time To Live) for segment records in seconds, when the segment record is older than this value, it will be deleted according to the file deletion strategy. 
+// The value range is 0~31536000 (1 year), and the default value is 604800 (7 days).
+extern const std::string kSegmentRecordTTLSeconds;
 
 } // namespace Storage
 
