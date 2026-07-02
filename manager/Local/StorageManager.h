@@ -20,11 +20,15 @@ public:
 
     void start();
 
+    void stop();
+
     void getMainStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
     void getBackUpStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
     Json::Value makeSystemStorageJson();
+
+    void rebuildTimeFile(const std::string &camera_id, uint64_t threshold);
 
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);

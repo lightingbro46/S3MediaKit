@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iomanip>
 #include "Util/util.h"
+#include "Util/NoticeCenter.h"
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "Thread/WorkThreadPool.h"
@@ -25,13 +26,15 @@ namespace managerkit {
 INSTANCE_IMP(StorageManager)
 
 StorageManager::~StorageManager() {
-    _timer.reset();
+    stop();
 }
 
 StorageManager::StorageManager(const EventPoller::Ptr &poller) {
     _poller = poller ? std::move(poller) : EventPollerPool::Instance().getPoller();
 
-    cleanupTemporaryFiles();
+    GET_CONFIG(bool, legacy_temp_cleanup_enabled, Storage::kLegacyTempCleanupEnabled);
+    if (legacy_temp_cleanup_enabled)
+        cleanupTemporaryFiles();
 }
 
 static void cleanupFolder(const string folder) {
@@ -126,6 +129,46 @@ static size_t recreateTimeFile(const KeepTimeMap &map) {
     }
     DebugL << "Recreated all time files. Removed total bytes: " << format_bytes_human_readable(removed_timefile_bytes);
     return removed_timefile_bytes;
+}
+
+static size_t recreateCameraTimeFile(const string &device_id, uint64_t threshold) {
+    if (device_id.empty())
+        return 0;
+
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, appName, Record::kAppName)
+    auto record_path = File::absolutePath(appName, mp4_save_path);
+    auto device_path = record_path + "/" + device_id;
+    if (!File::is_dir(device_path)) {
+        WarnL << "Skip rebuild time file, camera path not found: " << device_path;
+        return 0;
+    }
+
+    TimeRebuilder::KeepTimeMap keep_time_map;
+    File::scanDir(device_path, [&](const string &stream_path, bool isDir) {
+        if (!isDir)
+            return true;
+        auto slash = stream_path.find_last_of('/');
+        if (slash == string::npos)
+            return true;
+        string stream_id = stream_path.substr(slash + 1);
+        if (stream_id.empty())
+            return true;
+        keep_time_map[(StrPrinter << device_id << "/" << stream_id)] = threshold;
+        return true;
+    }, false, false);
+
+    if (keep_time_map.empty()) {
+        WarnL << "Skip rebuild time file, no stream folder under: " << device_path;
+        return 0;
+    }
+
+    auto rebuilder = std::make_shared<MultiTimeRebuilder>(device_path);
+    auto removed_bytes = rebuilder->rebuildTimeLine(keep_time_map);
+    InfoL << "Rebuilt time file for device " << device_id
+          << " threshold=" << getTimeStr("%Y-%m-%d %H:%M:%S", threshold)
+          << " removed=" << format_bytes_human_readable(removed_bytes);
+    return removed_bytes;
 }
 
 static size_t estimateSpaceToReclaim() {
@@ -407,12 +450,30 @@ void StorageManager::start() {
             if (!strong_self) {
                 return false;
             }
-            strong_self->enforceStoragePolicy();
-            strong_self->removeExpiredUserSession();
-            strong_self->cleanupTemporaryFiles();
+            GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
+            GET_CONFIG(bool, legacy_user_session_cleanup_enabled, Storage::kLegacyUserSessionCleanupEnabled);
+            GET_CONFIG(bool, legacy_temp_cleanup_enabled, Storage::kLegacyTempCleanupEnabled);
+
+            if (legacy_record_cleanup_enabled)
+                strong_self->enforceStoragePolicy();
+            if (legacy_user_session_cleanup_enabled)
+                strong_self->removeExpiredUserSession();
+            if (legacy_temp_cleanup_enabled)
+                strong_self->cleanupTemporaryFiles();
             return true;
         },
         _poller);
+}
+
+void StorageManager::stop() {
+    _timer.reset();
+}
+
+void StorageManager::rebuildTimeFile(const std::string &camera_id, uint64_t threshold) {
+    GET_CONFIG(bool, legacy_timefile_rebuild_enabled, Storage::kLegacyTimefileRebuildEnabled);
+    if (!legacy_timefile_rebuild_enabled)
+        return;
+    recreateCameraTimeFile(camera_id, threshold);
 }
 
 string StorageManager::getMainStorageMountPoint() {
@@ -462,5 +523,19 @@ Json::Value StorageManager::makeSystemStorageJson() {
     }
     return val;
 }
+
+static void* s_tag;
+
+static onceToken g_token(
+[]() {
+    NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastRebuildTimeFile, [](BroadcastRebuildTimeFileArgs) {
+        WorkThreadPool::Instance().getPoller()->async([device_id, threshold]() {
+            StorageManager::Instance().rebuildTimeFile(device_id, threshold);
+        });
+    });
+}, 
+[]() {
+    NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastRebuildTimeFile);
+});
 
 } // namespace managerkit
