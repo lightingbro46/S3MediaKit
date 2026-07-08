@@ -416,8 +416,12 @@ struct TimelineRange {
     int64_t     start   = 0;
     int64_t     end     = 0;
     std::string tier;           // HOT | WARM | COLD
+    std::string pool_id;
     std::string status;         // AVAILABLE | RESTORING | EXPIRED | DELETED | MISSING
+    int64_t     segment_count = 0;
+    int64_t     size_bytes = 0;
     bool        has_event = false;
+    bool        has_motion = false;
 };
 
 } // namespace managerkit

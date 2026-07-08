@@ -3,6 +3,7 @@
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Util/TimeTicker.h"
+#include "Common/config.h"
 
 #include <cerrno>
 #include <cstring>
@@ -14,6 +15,7 @@
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
 namespace managerkit {
 
@@ -25,15 +27,34 @@ bool TierFileStorageBase::validatePoolPath(const std::string &base_path,
         out_message = "Path is empty";
         return false;
     }
-    if (::stat(base_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-        out_message = "Path does not exist or is not a directory: " + base_path;
+
+    if (::stat(base_path.c_str(), &st) != 0) {
+        if (errno != ENOENT) {
+            out_message = std::string("Cannot stat path: ") + base_path + ": " + strerror(errno);
+            return false;
+        }
+        std::string mkdir_path = base_path;
+        if (mkdir_path.back() != '/')
+            mkdir_path += '/';
+        if (!File::create_path(mkdir_path, 0755)) {
+            out_message = "Cannot create path: " + base_path;
+            return false;
+        }
+        if (::stat(base_path.c_str(), &st) != 0) {
+            out_message = std::string("Cannot create path: ") + base_path + ": " + strerror(errno);
+            return false;
+        }
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        out_message = "Path is not a directory: " + base_path;
         return false;
     }
 
+    GET_CONFIG(string, media_server_id, General::kMediaServerId);
     std::string test_file = base_path;
     if (test_file.back() != '/')
         test_file += '/';
-    test_file += ".tier_storage_test";
+    test_file += media_server_id + ".tmp";
 
     int fd = ::open(test_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {

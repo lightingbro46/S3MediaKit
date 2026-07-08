@@ -29,7 +29,7 @@ protected:
     }
 
     bool validatePoolPath(const std::string &base_path,
-                          std::string &out_message) const override;
+                          std::string &out_message, int &out_latency_ms) const override;
 };
 
 } // namespace managerkit

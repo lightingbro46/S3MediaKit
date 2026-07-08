@@ -174,6 +174,31 @@ public:
         return ret;
     }
 
+    std::vector<RestoreJob> queryOverlapping(const std::string &camera_id,
+                                             int64_t start_time,
+                                             int64_t end_time,
+                                             int size = 20) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND start_time < ? AND end_time > ?";
+        params.push_back(camera_id);
+        params.push_back(std::to_string(end_time));
+        params.push_back(std::to_string(start_time));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<RestoreJob>::getColumns())
+                .from(EntityTraits<RestoreJob>::tableName())
+                .where(where.str(), params)
+                .orderBy("updated_at DESC")
+                .limit(size));
+
+        std::vector<RestoreJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJob>::fromRow(row));
+        return ret;
+    }
+
     bool updateStatus(const std::string &job_id,
                       const std::string &status,
                       int64_t processed_bytes = -1,

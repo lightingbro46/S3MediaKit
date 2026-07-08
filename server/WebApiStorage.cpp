@@ -34,7 +34,39 @@ using namespace managerkit;
 // ===================================================================
 // Policy tier config validation helper
 // ===================================================================
+static bool validatePolicyTierMoveChain(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
+    const PolicyTierConfig *hot = nullptr;
+    const PolicyTierConfig *warm = nullptr;
+    const PolicyTierConfig *cold = nullptr;
+    for (const auto &tier : tiers) {
+        if (tier.tier == "HOT") hot = &tier;
+        else if (tier.tier == "WARM") warm = &tier;
+        else if (tier.tier == "COLD") cold = &tier;
+    }
+
+    if (warm && warm->enabled) {
+        if (!hot || !hot->enabled || hot->overflow_action != "MOVE_TO_NEXT_TIER") {
+            err = "WARM tier can only be enabled when HOT overflow_action is MOVE_TO_NEXT_TIER";
+            return false;
+        }
+    }
+    if (cold && cold->enabled) {
+        if (!warm || !warm->enabled) {
+            err = "COLD tier can only be enabled when WARM tier is enabled";
+            return false;
+        }
+        if (warm->overflow_action != "MOVE_TO_NEXT_TIER") {
+            err = "COLD tier can only be enabled when WARM overflow_action is MOVE_TO_NEXT_TIER";
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool validatePolicyTiers(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
+    if (!validatePolicyTierMoveChain(tiers, err))
+        return false;
+
     // HOT.retain_until_days < WARM.retain_until_days < COLD.retain_until_days
     int hot_days  = -1, warm_days = -1;
     for (const auto &t : tiers) {
@@ -65,6 +97,12 @@ static std::unordered_map<std::string, StoragePool> loadPoolMap() {
     for (const auto &pool : imp.queryAll())
         ret[pool.id] = pool;
     return ret;
+}
+
+static bool isRestoreRequiredPool(const std::string &pool_id,
+                                  const std::unordered_map<std::string, StoragePool> &pool_map) {
+    auto it = pool_map.find(pool_id);
+    return it != pool_map.end() && poolTypeIsObjectStorage(it->second.type);
 }
 
 static Json::Value poolToDocJson(const StoragePool &p) {
@@ -246,28 +284,18 @@ static int64_t latestTieringJobTime(const std::string &camera_id) {
     return jobs.front().updated_at > 0 ? jobs.front().updated_at : jobs.front().created_at;
 }
 
-static std::string cameraNameOf(const std::string &camera_id) {
-    // todo: get device name from device source
-    auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
-    if (!recorder) return "";
-    return recorder->getParams().option.name;
-}
-
-static Json::Value effectivePolicyToJson(const EffectivePolicyResult &result) {
+static Json::Value effectivePolicyToJson(const EffectivePolicyResult &result, std::string camera_name) {
     Json::Value data;
+    bool is_camera_override = result.source == policySourceToString(PolicySource::CAMERA);
     data["camera_id"]             = result.camera_id;
-    data["camera_name"]           = cameraNameOf(result.camera_id);
-    data["policy_id"]             = result.policy_id;
+    data["camera_name"]           = camera_name;
+    data["policy_id"]             = is_camera_override ? result.policy_id : "";
+    data["effective_policy_id"]   = result.policy_id;
     data["policy_name"]           = result.policy_name;
     data["source"]                = result.source;
-    data["source_id"]             = result.source == policySourceToString(PolicySource::CAMERA)
-                                        ? result.camera_id : "";
+    data["source_id"]             = is_camera_override ? result.camera_id : "";
     data["allow_camera_override"] = result.allow_camera_override;
     return data;
-}
-
-static std::string makeStorageId(const std::string &prefix) {
-    return StrUUID::make_guid(8, prefix);
 }
 
 static int progressPercent(int64_t processed, int64_t total, const std::string &status) {
@@ -283,9 +311,10 @@ static Json::Value restoreJobToDocJson(const RestoreJob &j, bool list_view = fal
     v["status"]           = j.status;
     v["progress_percent"] = progressPercent(j.processed_bytes, j.total_bytes, j.status);
     v["camera_id"]        = j.camera_id;
-    if (list_view)
-        v["camera_name"] = cameraNameOf(j.camera_id);
-    else
+    if (list_view) {
+        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        v["camera_name"] = device ? device->getDeviceTuple().name : "";
+    } else
         v["type"] = "RESTORE";
     v["source_tier"]      = j.source_tier;
     v["target_tier"]      = j.target_tier;
@@ -308,8 +337,12 @@ static Json::Value tieringJobToDocJson(const TieringJob &j, bool detail = false)
     v["status"]                  = j.status;
     v["progress_percent"]        = progressPercent(j.bytes_moved, j.bytes_total, j.status);
     v["camera_id"]               = j.camera_id;
-    if (!detail)
-        v["camera_name"] = cameraNameOf(j.camera_id);
+    v["stream_id"]               = j.stream_id;
+    v["range_id"]                = j.range_id;
+    if (!detail) {
+        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        v["camera_name"] = device ? device->getDeviceTuple().name : "";
+    }
     v["source_tier"]             = j.source_tier;
     v["target_tier"]             = j.target_tier;
     v["source_pool_id"]          = j.source_pool_id;
@@ -423,35 +456,23 @@ static Json::Value alertToDocJson(const StorageAlert &a, const std::unordered_ma
     return v;
 }
 
-static std::string makeSegmentId(const SegmentTierRecord &r) {
-    return r.camera_id + "|" + r.stream_id + "|" + r.segment_path;
-}
-
-static bool parseSegmentId(const std::string &segment_id,
-                           std::string &camera_id,
-                           std::string &stream_id,
-                           std::string &segment_path) {
-    auto first = segment_id.find('|');
-    auto second = first == std::string::npos ? std::string::npos : segment_id.find('|', first + 1);
-    if (first == std::string::npos || second == std::string::npos)
-        return false;
-    camera_id = segment_id.substr(0, first);
-    stream_id = segment_id.substr(first + 1, second - first - 1);
-    segment_path = segment_id.substr(second + 1);
-    return !camera_id.empty() && !stream_id.empty() && !segment_path.empty();
-}
-
-static Json::Value expiredSegmentToDocJson(const SegmentTierRecord &r) {
+static Json::Value expiredSegmentToDocJson(const SegmentTierRange &r) {
     ProtectedVideoImp protected_imp;
     Json::Value v;
-    v["segment_id"] = makeSegmentId(r);
+    v["segment_id"] = r.range_id;
+    v["range_id"] = r.range_id;
     v["camera_id"] = r.camera_id;
-    v["camera_name"] = cameraNameOf(r.camera_id);
+    v["stream_id"] = r.stream_id;
+    {
+        auto device = findDeviceSource(r.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        v["camera_name"] = device ? device->getDeviceTuple().name : "";
+    }
     v["start_time"] = static_cast<Json::Int64>(r.start_time);
     v["end_time"] = static_cast<Json::Int64>(r.end_time);
     v["tier"] = r.tier;
-    v["pool_id"] = r.pool_id.value_or("");
-    v["size_bytes"] = static_cast<Json::Int64>(r.file_size);
+    v["pool_id"] = r.pool_id;
+    v["segment_count"] = static_cast<Json::Int64>(r.segment_count);
+    v["size_bytes"] = static_cast<Json::Int64>(r.size_bytes);
     v["expired_at"] = static_cast<Json::Int64>(r.updated_at > 0 ? r.updated_at : r.end_time);
     v["protected"] = protected_imp.overlaps(r.camera_id, r.start_time, r.end_time);
     v["evidence"] = false;
@@ -462,7 +483,10 @@ static Json::Value protectedVideoToDocJson(const ProtectedVideo &p) {
     Json::Value v;
     v["protected_id"] = p.protected_id;
     v["camera_id"] = p.camera_id;
-    v["camera_name"] = cameraNameOf(p.camera_id);
+    {
+        auto device = findDeviceSource(p.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        v["camera_name"] = device ? device->getDeviceTuple().name : "";
+    }
     v["start_time"] = static_cast<Json::Int64>(p.start_time);
     v["end_time"] = static_cast<Json::Int64>(p.end_time);
     v["type"] = p.type;
@@ -604,20 +628,19 @@ void registerStorageApis() {
 
         std::string pool_err;
         if (!validatePoolByType(pool, pool_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_MISSING_PARAMS, pool_err);
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, pool_err);
             return;
         }
 
         // Validate watermarks
         if (pool.high_watermark_percent >= pool.critical_watermark_percent) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "high_watermark_percent must be less than critical_watermark_percent");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
             return;
         }
-            
 
         auto id = TierStorageManager::Instance().createPool(pool);
         if (id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to create storage pool");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
             return;
         }
 
@@ -654,12 +677,12 @@ void registerStorageApis() {
             base.critical_watermark_percent = body["critical_watermark_percent"].asInt();
 
         if (base.high_watermark_percent >= base.critical_watermark_percent) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "high_watermark_percent must be less than critical_watermark_percent");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
             return;
         }
 
         if (!TierStorageManager::Instance().updatePool(base)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to update storage pool");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
             return;
         }
         val["data"]["id"] = pool_id;
@@ -674,13 +697,19 @@ void registerStorageApis() {
 
         string pool_id = allArgs["id"];
         int ref_count = 0;
-        if (!TierStorageManager::Instance().deletePool(pool_id, ref_count)) {
+        bool is_default_pool = false;
+        if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
+            val["data"]["ref_count"] = ref_count;
+            val["data"]["is_default_pool"] = is_default_pool;
+            if (is_default_pool) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage pool");
+                return;
+            }
             if (ref_count > 0) {
-                val["data"]["ref_count"] = ref_count;
                 RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_IN_USE, "Storage pool is used by " + std::to_string(ref_count) + " policies");
                 return;
             }
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to delete storage pool");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
             return;
         }
         invoker(200, headerOut, val.toStyledString());
@@ -729,7 +758,7 @@ void registerStorageApis() {
     // ================================================================
 
     // GET/POST /media/mserver/storage/policy/list
-    api_regist("/media/mserver/storage/policy/list", [](API_ARGS_MAP) {
+    api_regist("/media/mserver/storage/policy/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
@@ -739,7 +768,7 @@ void registerStorageApis() {
         int size = !allArgs["size"].empty() ? allArgs["size"].as<int>() : 20;
 
         auto policies = TierStorageManager::Instance().listPolicies(keyword, enabled_filter, page, size);
-        int total     = TierStorageManager::Instance().countPolicies(keyword, enabled_filter);
+        auto total_count = TierStorageManager::Instance().countPolicies(keyword, enabled_filter);
 
         Json::Value items = Json::arrayValue;
         PolicyAssignmentImp assignment_imp;
@@ -752,8 +781,9 @@ void registerStorageApis() {
         data["items"] = items;
         data["page"]  = page;
         data["size"]  = size;
-        data["total"] = total;
+        data["total"] = total_count;
         val["data"]   = data;
+        invoker(200, headerOut, val.toStyledString());
     });
 
     // GET/POST /media/mserver/storage/policy/detail
@@ -784,13 +814,13 @@ void registerStorageApis() {
 
         std::string tier_err;
         if (!validatePolicyByDocRules(policy, tier_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIER_ORDER_INVALID, tier_err);
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
             return;
         }
 
         auto id = TierStorageManager::Instance().createPolicy(policy);
         if (id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to create storage policy");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
             return;
         }
 
@@ -812,16 +842,15 @@ void registerStorageApis() {
         }
 
         auto policy = policyFromJson(allArgs.getArgs());
-        policy.id = policy_id;
 
         std::string tier_err;
         if (!validatePolicyByDocRules(policy, tier_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIER_ORDER_INVALID, tier_err);
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
             return;
         }
 
         if (!TierStorageManager::Instance().updatePolicy(policy)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to update storage policy");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
             return;
         }
 
@@ -838,9 +867,15 @@ void registerStorageApis() {
         string policy_id = allArgs["id"];
         string new_name  = allArgs["name"];
 
+        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+        if (existing.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            return;
+        }
+
         auto new_id = TierStorageManager::Instance().clonePolicy(policy_id, new_name);
         if (new_id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Source policy not found");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_CLONE_FAILED, "Clone storage policy failed");
             return;
         }
 
@@ -855,14 +890,26 @@ void registerStorageApis() {
         CHECK_ARGS_("id");
 
         string policy_id = allArgs["id"];
+        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+        if (existing.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            return;
+        }
+        
         int camera_count = 0;
-        if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count)) {
+        bool is_default_policy = false;
+        if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count, is_default_policy)) {
+            val["data"]["camera_count"] = camera_count;
+            val["data"]["is_default_policy"] = is_default_policy;
+            if (is_default_policy) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage policy");
+                return;
+            }
             if (camera_count > 0) {
-                val["data"]["camera_count"] = camera_count;
                 RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_IN_USE, "Policy is applied to " + std::to_string(camera_count) + " cameras");
                 return;
             }
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Policy not found or could not be deleted");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED, "Policy not found or could not be deleted");
             return;
         }
         invoker(200, headerOut, val.toStyledString());
@@ -882,8 +929,20 @@ void registerStorageApis() {
         string policy_id = allArgs["policy_id"];
         string reason = allArgs["override_reason"];
 
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+
+        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+        if (existing.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            return;
+        }
+
         if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Policy not found");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED, "Assign policy to camera failed");
             return;
         }
 
@@ -894,18 +953,36 @@ void registerStorageApis() {
     api_regist("/media/mserver/storage/policy/assignCameras", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
-        CHECK_ARGS_("policy_id", "camera_ids");
+        CHECK_ARGS_("policy_id");
 
         std::string policy_id = allArgs["policy_id"];
-        Json::Value camera_ids_arr = allArgs["camera_ids"];
-        if (!camera_ids_arr.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_MISSING_PARAMS, "camera_ids must be an array");
+        Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+        if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
             return;
         }
 
         std::vector<std::string> camera_ids;
+        std::vector<std::string> non_existed_camera_ids;
         for (const auto &c : camera_ids_arr) {
-            camera_ids.push_back(c.asString());
+            std::string camera_id = c.asString();
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                non_existed_camera_ids.push_back(camera_id);
+                continue;  // Skip invalid camera IDs
+            }
+            camera_ids.push_back(camera_id);
+        }
+
+        if (camera_ids.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "No valid camera IDs provided");
+            return;
+        }
+
+        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+        if (existing.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            return;
         }
 
         std::vector<std::string> failed;
@@ -914,6 +991,9 @@ void registerStorageApis() {
         Json::Value data;
         data["assigned_count"] = assigned;
         Json::Value failed_arr(Json::arrayValue);
+        for (const auto &id : non_existed_camera_ids) {
+            failed_arr.append(id);
+        }
         for (const auto &id : failed) {
             failed_arr.append(id);
         }
@@ -930,7 +1010,15 @@ void registerStorageApis() {
         CHECK_ARGS_("camera_id");
 
         string camera_id = allArgs["camera_id"];
-        TierStorageManager::Instance().removeCameraOverride(camera_id);
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+        if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Failed to unassign storage policy from camera");
+            return;
+        }
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -938,17 +1026,23 @@ void registerStorageApis() {
     api_regist("/media/mserver/storage/policy/removeCameras", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
-        CHECK_ARGS_("camera_ids");
 
-        Json::Value camera_ids_arr = allArgs["camera_ids"];
-        if (!camera_ids_arr.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_MISSING_PARAMS, "camera_ids must be an array");
+        Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+        if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
             return;
         }
 
         std::vector<std::string> camera_ids;
+        std::vector<std::string> non_existed_camera_ids;
         for (const auto &c : camera_ids_arr) {
-            camera_ids.push_back(c.asString());
+            std::string camera_id = c.asString();
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                non_existed_camera_ids.push_back(camera_id);
+                continue;  // Skip invalid camera IDs
+            }
+            camera_ids.push_back(camera_id);
         }
 
         std::vector<std::string> failed;
@@ -956,6 +1050,9 @@ void registerStorageApis() {
         Json::Value data;
         data["removed_count"] = removed;
         Json::Value failed_arr(Json::arrayValue);
+        for (const auto &id : non_existed_camera_ids) {
+            failed_arr.append(id);
+        }
         for (const auto &id : failed) {
             failed_arr.append(id);
         }
@@ -971,9 +1068,14 @@ void registerStorageApis() {
         CHECK_ARGS_("camera_id");
 
         string camera_id = allArgs["camera_id"];
-
-        auto result = TierStorageManager::Instance().getEffectivePolicy(camera_id);
-        val["data"] = effectivePolicyToJson(result);
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+        auto device_tuple = device->getDeviceTuple();
+        auto result = TierStorageManager::Instance().getEffectivePolicy(device_tuple.device_id);
+        val["data"] = effectivePolicyToJson(result, device_tuple.name);
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -983,29 +1085,24 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
         string search = allArgs["search"];
-        //todo: search with camera name
-        std::set<std::string> camera_ids;
-        for (const auto &id : CameraManager::Instance().getCameraKeys()) {
-            if (!id.empty())
-                camera_ids.insert(id);
-        }
-
-        PolicyAssignmentImp assignment_imp;
-        for (const auto &assignment : assignment_imp.findAll()) {
-            if (!assignment.camera_id.empty())
-                camera_ids.insert(assignment.camera_id);
-        }
-
-        SegmentTierRangeImp range_imp;
-        for (const auto &id : range_imp.findDistinctAvailableCameras()) {
-            if (!id.empty())
-                camera_ids.insert(id);
-        }
+        string policy_id = allArgs["policy_id"];
+        
+        std::unordered_map<std::string, std::string> device_map;
+        DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+            auto device_tuple = src->getDeviceTuple();
+            if (!search.empty() && device_tuple.name.find(search) == std::string::npos)
+                return;
+            device_map.emplace(device_tuple.device_id, device_tuple.name);
+        }, GENERIC_RTSP_CAMERA_SCHEMA);
 
         Json::Value items(Json::arrayValue);
-        for (const auto &camera_id : camera_ids) {
-            auto result = TierStorageManager::Instance().getEffectivePolicy(camera_id);
-            items.append(effectivePolicyToJson(result));
+        for (const auto &it : device_map) {
+            const auto &device_id = it.first;
+            const auto &device_name = it.second;
+            auto result = TierStorageManager::Instance().getEffectivePolicy(device_id);
+            if (!policy_id.empty() && result.policy_id != policy_id)
+                continue;
+            items.append(effectivePolicyToJson(result, device_name));
         }
 
         Json::Value data;
@@ -1031,49 +1128,41 @@ void registerStorageApis() {
         bool include_deleted  = allArgs["include_deleted"];
 
         if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "start_time and end_time must be valid");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
             return;
         }
 
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+        auto device_tuple = device->getDeviceTuple();
+
         Json::Value ranges_json(Json::arrayValue);
-        SegmentTierImp seg_imp;
-        auto records = seg_imp.findByCamera(camera_id, start_time, end_time);
-        for (const auto &r : records) {
+        auto pool_map = loadPoolMap();
+        auto ranges = TierStorageManager::Instance().getCameraTimeline(camera_id, start_time, end_time);
+        for (const auto &r : ranges) {
             if (!include_deleted && r.status == segmentStatusToString(SegmentStatus::DELETED))
                 continue;
             Json::Value range;
-            range["start"]            = static_cast<Json::Int64>(r.start_time);
-            range["end"]              = static_cast<Json::Int64>(r.end_time);
+            range["start"]            = static_cast<Json::Int64>(r.start);
+            range["end"]              = static_cast<Json::Int64>(r.end);
             range["tier"]             = r.tier;
-            range["pool_id"]          = r.pool_id.value_or("");
+            range["pool_id"]          = r.pool_id;
             range["status"]           = r.status;
-            range["segment_count"]    = 1;
-            range["size_bytes"]       = static_cast<Json::Int64>(r.file_size);
-            range["restore_required"] = (r.tier == tierTypeToString(ColdTier));
-            range["has_motion"]       = false;
-            range["has_event"]        = false;
+            range["segment_count"]    = static_cast<Json::Int64>(r.segment_count);
+            range["size_bytes"]       = static_cast<Json::Int64>(r.size_bytes);
+            range["restore_required"] = isRestoreRequiredPool(r.pool_id, pool_map);
+            range["has_motion"]       = r.has_motion;
+            range["has_event"]        = r.has_event;
             ranges_json.append(range);
-        }
-        if (ranges_json.empty()) {
-            for (const auto &r : TierStorageManager::Instance().getCameraTimeline(camera_id, start_time, end_time)) {
-                Json::Value range;
-                range["start"]            = static_cast<Json::Int64>(r.start);
-                range["end"]              = static_cast<Json::Int64>(r.end);
-                range["tier"]             = r.tier;
-                range["pool_id"]          = "";
-                range["status"]           = r.status;
-                range["segment_count"]    = 0;
-                range["size_bytes"]       = static_cast<Json::Int64>(0);
-                range["restore_required"] = (r.tier == tierTypeToString(ColdTier));
-                range["has_motion"]       = false;
-                range["has_event"]        = r.has_event;
-                ranges_json.append(range);
-            }
         }
 
         auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
         Json::Value data;
         data["camera_id"] = camera_id;
+        data["camera_name"] = device_tuple.name;
         data["policy_id"] = effective.policy_id;
         data["ranges"]    = ranges_json;
         val["data"] = data;
@@ -1087,13 +1176,19 @@ void registerStorageApis() {
         CHECK_ARGS_("camera_id");
 
         string camera_id = allArgs["camera_id"];
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+        auto device_tuple = device->getDeviceTuple();
 
         auto summary = TierStorageManager::Instance().getCameraStorageSummary(camera_id);
         auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
 
         Json::Value data;
         data["camera_id"]           = summary.camera_id;
-        data["camera_name"]         = cameraNameOf(camera_id);
+        data["camera_name"]         = device_tuple.name;
         data["policy_id"]           = effective.policy_id;
         data["policy_name"]         = effective.policy_name;
         data["policy_source"]       = effective.source;
@@ -1118,6 +1213,59 @@ void registerStorageApis() {
         invoker(200, headerOut, val.toStyledString());
     });
 
+    // GET/POST /media/mserver/storage/camera/summary/list
+    api_regist("/media/mserver/storage/camera/summary/list", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
+
+        string search = allArgs["search"];
+
+        std::unordered_map<std::string, std::string> device_map;
+        DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+            auto device_tuple = src->getDeviceTuple();
+            if (!search.empty() && device_tuple.name.find(search) == std::string::npos)
+                return;
+            device_map.emplace(device_tuple.device_id, device_tuple.name);
+        }, GENERIC_RTSP_CAMERA_SCHEMA);
+        
+        Json::Value items(Json::arrayValue);
+
+        for (const auto &it : device_map) {
+            const auto &camera_id = it.first;
+            const auto &camera_name = it.second;
+
+            auto summary = TierStorageManager::Instance().getCameraStorageSummary(camera_id);
+            auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
+
+            Json::Value data;
+            data["camera_id"]           = summary.camera_id;
+            data["camera_name"]         = camera_name;
+            data["policy_id"]           = effective.policy_id;
+            data["policy_name"]         = effective.policy_name;
+            data["policy_source"]       = effective.source;
+            data["total_size_bytes"]    = static_cast<Json::Int64>(summary.total_used_bytes);
+            data["total_segment_count"] = static_cast<Json::Int64>(summary.total_segments);
+
+            Json::Value tiers_arr(Json::arrayValue);
+            for (const auto &t : summary.tiers) {
+                Json::Value tv;
+                tv["tier"]          = t.tier;
+                tv["from_time"]     = static_cast<Json::Int64>(t.oldest_segment_time);
+                tv["to_time"]       = static_cast<Json::Int64>(t.newest_segment_time);
+                tv["size_bytes"]    = static_cast<Json::Int64>(t.used_bytes);
+                tv["segment_count"] = static_cast<Json::Int64>(t.segment_count);
+                tiers_arr.append(tv);
+            }
+            data["tier_summary"] = tiers_arr;
+            data["last_tiering_job_time"] = static_cast<Json::Int64>(latestTieringJobTime(camera_id));
+            data["status"] = "OK";
+            items.append(data);
+        }
+
+        val["data"] = items;
+        invoker(200, headerOut, val.toStyledString());
+    });
+
     // ================================================================
     // === Section 5: Playback APIs ===================================
     // ================================================================
@@ -1125,63 +1273,144 @@ void registerStorageApis() {
     api_regist("/media/mserver/storage/playback/resolve", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE);
+        CHECK_ARGS_("camera_id", "start_time", "end_time");
 
         string camera_id = allArgs["camera_id"];
+        string stream_id = allArgs["stream_id"];
         int64_t start_time = allArgs["start_time"];
         int64_t end_time = allArgs["end_time"];
+        string protocol = allArgs["protocol"];
+        if (protocol.empty()) {
+            protocol = "HTTP_MP4";
+        }
 
         if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "start_time and end_time must be valid");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
             return;
         }
 
-        SegmentTierImp seg_imp;
-        auto segments = seg_imp.findByCamera(camera_id, start_time, end_time);
-        if (segments.empty()) {
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+
+        auto pool_map = loadPoolMap();
+        SegmentTierRangeImp range_imp;
+        auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
+
+        std::vector<SegmentTierRange> matched;
+        matched.reserve(ranges.size());
+        for (const auto &r : ranges) {
+            if (!stream_id.empty() && r.stream_id != stream_id)
+                continue;
+            if (r.end_time <= start_time || r.start_time >= end_time)
+                continue;
+            matched.push_back(r);
+        }
+
+        if (matched.empty()) {
             Json::Value data;
             data["status"] = "NOT_FOUND";
             data["tier"] = "";
             data["restore_required"] = false;
+            data["job_created"] = false;
+            data["protocol"] = protocol;
             val["data"] = data;
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND, "No segments found for the specified time range");
             return;
         }
 
-        std::string tier = segments.front().tier;
-        bool has_cold = false;
+        std::string tier = matched.front().tier;
+        std::string resolved_stream_id = stream_id.empty() ? matched.front().stream_id : stream_id;
+        bool restore_required = false;
         bool has_expired = false;
-        for (const auto &s : segments) {
-            if (s.status == segmentStatusToString(SegmentStatus::EXPIRED)) has_expired = true;
-            if (s.tier == tierTypeToString(ColdTier)) has_cold = true;
-            if (s.tier == tierTypeToString(ColdTier)) tier = s.tier;
+        bool has_deleted = false;
+        bool has_missing = false;
+        for (const auto &r : matched) {
+            if (r.status == segmentStatusToString(SegmentStatus::EXPIRED)) has_expired = true;
+            if (r.status == segmentStatusToString(SegmentStatus::DELETED)) has_deleted = true;
+            if (r.status == segmentStatusToString(SegmentStatus::MISSING)) has_missing = true;
+            if (isRestoreRequiredPool(r.pool_id, pool_map)) {
+                restore_required = true;
+                tier = r.tier;
+                if (resolved_stream_id.empty())
+                    resolved_stream_id = r.stream_id;
+            }
         }
 
-        if (has_expired) {
+        if (has_expired || has_deleted || has_missing) {
             Json::Value data;
-            data["status"] = "EXPIRED";
+            data["status"] = has_expired ? "EXPIRED" : (has_deleted ? "DELETED" : "MISSING");
             data["tier"] = tier;
             data["restore_required"] = false;
+            data["job_created"] = false;
+            data["protocol"] = protocol;
             val["data"] = data;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENTS_EXPIRED, "Some segments have expired");
+            RETURN_API_RESPONSE(has_expired ? ApiErrCode::CODE_STORAGE_SEGMENTS_EXPIRED
+                                            : ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND,
+                                has_expired ? "Some segments have expired"
+                                            : "Some segments are not available");
             return;
         }
 
-        if (has_cold) {
+        RestoreJobImp restore_imp;
+        auto jobs = restore_imp.queryOverlapping(camera_id, start_time, end_time, 20);
+        const RestoreJob *covering_done = nullptr;
+        const RestoreJob *active_job = nullptr;
+        const RestoreJob *latest_job = nullptr;
+        for (const auto &j : jobs) {
+            if (!latest_job)
+                latest_job = &j;
+            if (j.start_time <= start_time && j.end_time >= end_time &&
+                j.status == jobStatusToString(JobStatus::DONE)) {
+                covering_done = &j;
+                break;
+            }
+            if (!active_job &&
+                (j.status == jobStatusToString(JobStatus::PENDING) ||
+                 j.status == jobStatusToString(JobStatus::RUNNING))) {
+                active_job = &j;
+            }
+        }
+
+        if (restore_required && !covering_done) {
             Json::Value data;
-            data["status"] = "RESTORE_REQUIRED";
-            data["tier"] = tierTypeToString(ColdTier);
+            data["status"] = active_job ? "RESTORING" : "RESTORE_REQUIRED";
+            data["tier"] = tier.empty() ? tierTypeToString(ColdTier) : tier;
             data["restore_required"] = true;
+            data["job_created"] = (active_job  != nullptr || latest_job != nullptr);
+            data["protocol"] = protocol;
+            if (active_job) {
+                data["job_id"] = active_job->job_id;
+                data["restore_job_status"] = active_job->status;
+            } else if (latest_job) {
+                data["job_id"] = latest_job->job_id;
+                data["restore_job_status"] = latest_job->status;
+            } else {
+                data["job_id"] = "";
+                data["restore_job_status"] = "";
+            }
             data["estimated_restore_seconds"] = 120;
             val["data"] = data;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED, "Recording is in Cold Storage and must be restored before playback");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED,
+                                active_job ? "Restore job is running"
+                                           : "Recording is in object storage and must be restored before playback");
             return;
         }
 
         Json::Value data;
         data["status"] = "READY";
         data["tier"] = tier;
-        data["playback_url"] = "/media/mserver/playback/" + camera_id + "?start_time=" + std::to_string(start_time) + "&end_time=" + std::to_string(end_time);
-        data["expires_at"] = static_cast<Json::Int64>(time(nullptr) + 3600);
+        data["restore_required"] = false;
+        data["job_created"] = covering_done != nullptr;
+        data["protocol"] = protocol;
+        if (covering_done) {
+            data["job_id"] = covering_done->job_id;
+            data["restore_job_status"] = covering_done->status;
+        }
+        GET_CONFIG(int, restore_ttl_seconds, Storage::kRestoreTTLSeconds);
+        data["expires_at"] = static_cast<Json::Int64>(time(nullptr) + restore_ttl_seconds);
         val["data"] = data;
         invoker(200, headerOut, val.toStyledString());
     });
@@ -1201,20 +1430,35 @@ void registerStorageApis() {
             target_tier = "HOT";
         }
         if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "start_time and end_time must be valid");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
+            return;
+        }
+
+        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        if (!device) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
             return;
         }
 
         int64_t total_bytes = 0;
         std::string source_tier = "COLD";
-        SegmentTierImp seg_imp;
-        for (const auto &s : seg_imp.findByCamera(camera_id, start_time, end_time)) {
-            total_bytes += s.file_size;
-            if (s.tier == tierTypeToString(ColdTier)) source_tier = s.tier;
+        SegmentTierRangeImp range_imp;
+        bool found_cold = false;
+        for (const auto &r : range_imp.queryByCamera(camera_id, start_time, end_time)) {
+            if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+                r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
+                r.status == segmentStatusToString(SegmentStatus::MISSING)) {
+                continue;
+            }
+            total_bytes += std::max<int64_t>(0, r.size_bytes);
+            if (!found_cold || r.tier == tierTypeToString(ColdTier)) {
+                source_tier = r.tier;
+                found_cold = r.tier == tierTypeToString(ColdTier);
+            }
         }
 
         RestoreJob job;
-        job.job_id = makeStorageId("restore-job");
+        job.job_id = StrUUID::make_guid(8, "rj");
         job.camera_id = camera_id;
         job.source_tier = source_tier;
         job.target_tier = target_tier.empty() ? "HOT" : target_tier;
@@ -1229,7 +1473,7 @@ void registerStorageApis() {
 
         RestoreJobImp imp;
         if (!imp.add(job)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "Failed to create restore job");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED, "Failed to create restore job");
             return;
         }
 
@@ -1246,8 +1490,8 @@ void registerStorageApis() {
         CHECK_ARGS_("job_id");
 
         string job_id = allArgs["job_id"];
-        RestoreJobImp imp;
-        auto jobs = imp.findByJobId(job_id);
+
+        auto jobs = TierStorageManager::Instance().getRestoreJob(job_id);
         if (jobs.empty()) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_NOT_FOUND, "Restore job not found");
             return;
@@ -1268,16 +1512,18 @@ void registerStorageApis() {
         int size = allArgs["size"].empty() ? 20 : allArgs["size"].as<int>();
         if (size <= 0 || size > 100) size = 20;
 
-        RestoreJobImp imp;
+        auto jobs = TierStorageManager::Instance().listRestoreJobs(camera_id, status, from_time, to_time, page, size);
         Json::Value items(Json::arrayValue);
-        for (const auto &j : imp.query(camera_id, status, from_time, to_time, page, size))
+        for (const auto &j : jobs)
             items.append(restoreJobToDocJson(j, true));
+
+        auto total_count = TierStorageManager::Instance().countRestoreJobs(camera_id, status, from_time, to_time);
 
         Json::Value data;
         data["items"] = items;
         data["page"] = page;
         data["size"] = size;
-        data["total"] = imp.countQuery(camera_id, status, from_time, to_time);
+        data["total"] = total_count;
 
         val["data"] = data;
         invoker(200, headerOut, val.toStyledString());
@@ -1307,11 +1553,14 @@ void registerStorageApis() {
         for (const auto &j : jobs)
             items.append(tieringJobToDocJson(j));
 
+        auto total_count = TierStorageManager::Instance().countTieringJobs(
+            camera_id, status, from_time, to_time);
+
         Json::Value data;
         data["items"] = items;
         data["page"] = page;
         data["size"] = size;
-        data["total"] = TierStorageManager::Instance().countTieringJobs(camera_id, status, from_time, to_time);
+        data["total"] = total_count;
 
         val["data"] = data;
         invoker(200, headerOut, val.toStyledString());
@@ -1337,13 +1586,13 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("job_id");
         string job_id = allArgs["job_id"];
-        TieringJobImp imp;
-        auto jobs = imp.findByJobId(job_id);
+
+        auto jobs = TierStorageManager::Instance().getTieringJob(job_id);
         if (jobs.empty()) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
             return;
         }
-        if (!imp.updateStatus(job_id, "PENDING", 0)) {
+        if (!TierStorageManager::Instance().retryTieringJob(job_id)) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Failed to retry tiering job");
             return;
         }   
@@ -1432,7 +1681,7 @@ void registerStorageApis() {
         int size = allArgs["size"].empty() ? 20 : std::stoi(allArgs["size"]);
         if (size <= 0 || size > 100) size = 20;
 
-        SegmentTierImp imp;
+        SegmentTierRangeImp imp;
         Json::Value items(Json::arrayValue);
         for (const auto &r : imp.findExpired(camera_id, from_time, to_time, page, size))
             items.append(expiredSegmentToDocJson(r));
@@ -1450,21 +1699,20 @@ void registerStorageApis() {
     api_regist("/media/mserver/storage/expiredSegment/approve", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
-        CHECK_ARGS_("segment_ids");
 
-        Json::Value segment_ids = allArgs["segment_ids"];
-        if (!segment_ids.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_MISSING_PARAMS, "segment_ids must be an array");
+        Json::Value range_ids = allArgs.getArgs()["range_ids"];
+        if (range_ids.empty() || !range_ids.isArray()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
             return;
         }
 
-        SegmentTierImp imp;
+        SegmentTierRangeImp imp;
         int approved = 0;
-        for (const auto &idv : segment_ids) {
-            std::string camera_id, stream_id, segment_path;
-            if (!parseSegmentId(idv.asString(), camera_id, stream_id, segment_path))
+        for (const auto &idv : range_ids) {
+            std::string range_id = idv.asString();
+            if (range_id.empty())
                 continue;
-            if (imp.updateStatus(camera_id, stream_id, segment_path, segmentStatusToString(SegmentStatus::DELETED)))
+            if (imp.updateStatusByRangeId(range_id, segmentStatusToString(SegmentStatus::DELETED)))
                 ++approved;
         }
 
@@ -1477,29 +1725,30 @@ void registerStorageApis() {
     api_regist("/media/mserver/storage/expiredSegment/extend", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
-        CHECK_ARGS_("segment_ids");
 
-        Json::Value segment_ids = allArgs["segment_ids"];
+        Json::Value range_ids = allArgs.getArgs()["range_ids"];
+        if (range_ids.empty())
+            range_ids = allArgs.getArgs()["segment_ids"];
         int64_t extend_until = allArgs["extend_until"].empty() ? 0 : std::stoll(allArgs["extend_until"]);
 
-        if (!segment_ids.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_MISSING_PARAMS, "segment_ids must be an array");
+        if (range_ids.empty() || !range_ids.isArray()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
             return;
         }
 
         if (extend_until <= 0) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "extend_until is required");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "extend_until is required");
             return;
         }
 
-        SegmentTierImp imp;
+        SegmentTierRangeImp imp;
         int extended = 0;
-        for (const auto &idv : segment_ids) {
-            std::string camera_id, stream_id, segment_path;
-            if (!parseSegmentId(idv.asString(), camera_id, stream_id, segment_path))
+        for (const auto &idv : range_ids) {
+            std::string range_id = idv.asString();
+            if (range_id.empty())
                 continue;
             (void)extend_until;
-            if (imp.updateStatus(camera_id, stream_id, segment_path, segmentStatusToString(SegmentStatus::AVAILABLE)))
+            if (imp.updateStatusByRangeId(range_id, segmentStatusToString(SegmentStatus::AVAILABLE)))
                 ++extended;
         }
 
@@ -1524,12 +1773,12 @@ void registerStorageApis() {
         std::string reason = allArgs["reason"];
 
         if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_INVALID_PARAMS, "start_time and end_time must be valid");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
             return;
         }
 
         ProtectedVideo video;
-        video.protected_id = makeStorageId("prot");
+        video.protected_id = StrUUID::make_guid(8, "prot");
         video.camera_id = camera_id;
         video.start_time = start_time;
         video.end_time = end_time;
@@ -1539,7 +1788,7 @@ void registerStorageApis() {
 
         ProtectedVideoImp imp;
         if (!imp.add(video)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED, "Failed to create protected video");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_CREATE_FAILED, "Failed to create protected video");
             return;
         }
 

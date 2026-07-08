@@ -31,6 +31,9 @@ namespace managerkit {
     XX(CODE_FEATURE_NOT_SUPPORTED,          "Feature not supported",            400,         902005) \
     XX(CODE_MSERVER_NOT_FOUND,              "Media server not found",           404,         902006) \
     XX(CODE_INVALID_SYNC_CURSOR,            "Invalid sync db cursors",          404,         902007) \
+    XX(CODE_INVALID_WATERMARK_PERCENT,      "Invalid watermark percent",        404,         902008) \
+    XX(CODE_INVALID_TIME_RANGE,             "Invalid time range",               404,         902009) \
+    XX(CODE_ENDPOINT_NOT_SUPPORTED,         "Endpoint not supported",           404,         902010) \
     /* 903xxx - Timeline errors */                                                                   \
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         903001) \
     /* 904xxx - Thumbnail/snapshot errors */                                                         \
@@ -98,17 +101,27 @@ namespace managerkit {
     XX(CODE_STORAGE_POLICY_INVALID,         "Storage policy invalid",          404,         914007) \
     XX(CODE_STORAGE_TIER_ORDER_INVALID,     "Storage tier order invalid",      404,         914008) \
     XX(CODE_STORAGE_RESTORE_REQUIRED,       "Storage restore required",        404,         914009) \
-    XX(CODE_STORAGE_SEGMENT_PROTECTED,      "Storage segment protected",       404,         914010) \
-    XX(CODE_STORAGE_MISSING_PARAMS,         "Storage missing params",          404,         914011) \
-    XX(CODE_STORAGE_INVALID_PARAMS,         "Storage invalid params",          404,         914012) \
-    XX(CODE_STORAGE_SEGMENTS_NOT_FOUND,     "Storage segments not found",      404,         914013) \
-    XX(CODE_STORAGE_SEGMENTS_EXPIRED,       "Storage segments expired",        404,         914014) \
-    XX(CODE_STORAGE_RESTORE_JOB_NOT_FOUND,  "Storage restore job not found",   404,         914015) \
-    XX(CODE_STORAGE_TIERING_JOB_NOT_FOUND,  "Storage tiering job not found",   404,         914016) \
-    XX(CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Storage tiering job update failed", 500,    914017) \
-    XX(CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Storage tiering job cancel failed", 500,    914018) \
-    XX(CODE_STORAGE_ALERT_NOT_FOUND,        "Storage alert not found",         404,         914019) \
-    XX(CODE_STORAGE_SEGMENT_PROTECTED_NOT_FOUND, "Storage segment protected not found", 404, 914020) \
+    XX(CODE_STORAGE_POOL_CREATE_FAILED,     "Storage pool creation failed",    500,         914010) \
+    XX(CODE_STORAGE_POOL_UPDATE_FAILED,     "Storage pool update failed",      500,         914011) \
+    XX(CODE_STORAGE_POOL_DELETE_FAILED,     "Storage pool delete failed",      500,         914012) \
+    XX(CODE_STORAGE_POLICY_CREATE_FAILED,   "Storage policy creation failed",  500,         914013) \
+    XX(CODE_STORAGE_POLICY_UPDATE_FAILED,   "Storage policy update failed",    500,         914014) \
+    XX(CODE_STORAGE_POLICY_DELETE_FAILED,   "Storage policy delete failed",    500,         914015) \
+    XX(CODE_STORAGE_SEGMENTS_NOT_FOUND,     "Storage segments not found",      404,         914016) \
+    XX(CODE_STORAGE_SEGMENTS_EXPIRED,       "Storage segments expired",        404,         914017) \
+    XX(CODE_STORAGE_RESTORE_JOB_NOT_FOUND,  "Storage restore job not found",   404,         914018) \
+    XX(CODE_STORAGE_RESTORE_JOB_CREATION_FAILED, "Restore job creation failed", 500,        914019) \
+    XX(CODE_STORAGE_TIERING_JOB_NOT_FOUND,  "Storage tiering job not found",   404,         914020) \
+    XX(CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Storage tiering job update failed", 500,    914021) \
+    XX(CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Storage tiering job cancel failed", 500,    914022) \
+    XX(CODE_STORAGE_ALERT_NOT_FOUND,        "Storage alert not found",         404,         914023) \
+    XX(CODE_STORAGE_SEGMENT_PROTECTED_NOT_FOUND, "Storage segment protected not found", 404, 914024) \
+    XX(CODE_STORAGE_SEGMENT_PROTECTED_CREATE_FAILED, "Storage segment protected create failed", 500, 914025) \
+    XX(CODE_STORAGE_POLICY_CLONE_FAILED,   "Storage policy clone failed",      500,         914026) \
+    XX(CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED, "Storage policy assign to camera failed", 500, 914027) \
+    XX(CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Storage policy unassign from camera failed", 500, 914028) \
+    XX(CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Storage pool default cannot be deleted",  400, 914029) \
+    XX(CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Storage policy default cannot be deleted", 400, 914030) \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,

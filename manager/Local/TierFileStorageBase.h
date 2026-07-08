@@ -55,6 +55,8 @@ public:
                                       const std::string &stream_id,
                                       const std::string &segment_path);
 
+    static std::string normalizeBasePath(const std::string &base_path);
+
 protected:
     struct PoolEntry {
         std::string pool_id;
@@ -72,7 +74,6 @@ protected:
     bool copyFile(const std::string &src,
                   const std::string &dst) const;
 
-    static std::string normalizeBasePath(const std::string &base_path);
     static std::string normalizeKey(const std::string &key);
     static std::string parentDir(const std::string &path);
 

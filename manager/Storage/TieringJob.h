@@ -8,6 +8,7 @@
 #include "DbStorage.h"
 #include "DbSchema.h"
 #include "Util/util.h"
+#include "Common/StrUtil.h"
 #include "Local/StorageTier.h"
 
 namespace managerkit {
@@ -18,6 +19,8 @@ namespace managerkit {
 struct TieringJob {
     std::string job_id;
     std::string camera_id;
+    std::string stream_id;
+    std::string range_id;
     std::string source_tier;       // HOT | WARM | COLD
     std::string target_tier;
     std::string source_pool_id;
@@ -35,6 +38,8 @@ struct TieringJob {
         Json::Value v;
         v["job_id"]              = job_id;
         v["camera_id"]           = camera_id;
+        v["stream_id"]           = stream_id;
+        v["range_id"]            = range_id;
         v["source_tier"]         = source_tier;
         v["target_tier"]         = target_tier;
         v["source_pool_id"]      = source_pool_id;
@@ -55,6 +60,8 @@ DECLARE_ENTITY(TieringJob, "tiering_jobs",
     {"job_id"},
     &TieringJob::job_id,              "job_id",
     &TieringJob::camera_id,           "camera_id",
+    &TieringJob::stream_id,           "stream_id",
+    &TieringJob::range_id,            "range_id",
     &TieringJob::source_tier,         "source_tier",
     &TieringJob::target_tier,         "target_tier",
     &TieringJob::source_pool_id,      "source_pool_id",
@@ -77,7 +84,7 @@ struct SegmentTierRecord {
     std::string stream_id;
     std::string segment_path;   // relative path within record_root
     std::string tier;           // HOT | WARM | COLD
-    Optional<std::string> pool_id;
+    std::string pool_id;
     std::string status;         // AVAILABLE | RESTORING | EXPIRED | DELETED | MISSING
     int64_t start_time  = 0;
     int64_t end_time    = 0;
@@ -91,7 +98,7 @@ struct SegmentTierRecord {
         v["stream_id"]     = stream_id;
         v["segment_path"]  = segment_path;
         v["tier"]          = tier;
-        v["pool_id"]       = pool_id.value_or("");
+        v["pool_id"]       = pool_id;
         v["status"]        = status;
         v["start_time"]    = static_cast<Json::Int64>(start_time);
         v["end_time"]      = static_cast<Json::Int64>(end_time);
@@ -123,13 +130,12 @@ struct SegmentTierRange {
     std::string camera_id;
     std::string stream_id;
     std::string tier;           // HOT | WARM | COLD
-    Optional<std::string> pool_id;
+    std::string pool_id;
     std::string status;         // AVAILABLE | RESTORING | EXPIRED | DELETED | MISSING
     int64_t start_time    = 0;
     int64_t end_time      = 0;
     int64_t segment_count = 0;
     int64_t size_bytes    = 0;
-    Optional<std::string> path_pattern;
     int64_t created_at    = 0;
     int64_t updated_at    = 0;
 
@@ -139,13 +145,12 @@ struct SegmentTierRange {
         v["camera_id"]     = camera_id;
         v["stream_id"]     = stream_id;
         v["tier"]          = tier;
-        v["pool_id"]       = pool_id.value_or("");
+        v["pool_id"]       = pool_id;
         v["status"]        = status;
         v["start_time"]    = static_cast<Json::Int64>(start_time);
         v["end_time"]      = static_cast<Json::Int64>(end_time);
         v["segment_count"] = static_cast<Json::Int64>(segment_count);
         v["size_bytes"]    = static_cast<Json::Int64>(size_bytes);
-        v["path_pattern"]  = path_pattern.value_or("");
         return v;
     }
 };
@@ -162,7 +167,6 @@ DECLARE_ENTITY(SegmentTierRange, "segment_tier_ranges",
     &SegmentTierRange::end_time,      "end_time",
     &SegmentTierRange::segment_count, "segment_count",
     &SegmentTierRange::size_bytes,    "size_bytes",
-    &SegmentTierRange::path_pattern,  "path_pattern",
     &SegmentTierRange::created_at,    "created_at",
     &SegmentTierRange::updated_at,    "updated_at"
 )
@@ -416,6 +420,8 @@ public:
     }
 
     bool upsert(const SegmentTierRecord &rec) {
+        if (rec.pool_id.empty())
+            return false;
         // Delete any existing record then insert
         std::ostringstream where;
         std::vector<std::string> params;
@@ -434,6 +440,8 @@ public:
                     const std::string &segment_path,
                     const std::string &new_tier, const std::string &pool_id,
                     const std::string &status) {
+        if (pool_id.empty())
+            return false;
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
@@ -514,7 +522,11 @@ class SegmentTierRangeRepository : public SqliteRepository<SegmentTierRange> {
 public:
     SegmentTierRangeRepository() : SqliteRepository<SegmentTierRange>(Database::kMediaServerDb) {}
 
-    bool add(const SegmentTierRange &range) { return save(range, true); }
+    bool add(const SegmentTierRange &range) {
+        if (range.pool_id.empty())
+            return false;
+        return save(range, true);
+    }
 
     std::vector<SegmentTierRange> queryByCamera(const std::string &camera_id,
                                                 int64_t start_time = 0,
@@ -562,16 +574,16 @@ public:
     std::vector<SegmentTierRange> findByTierPoolAndAge(const std::string &tier,
                                                        const std::string &pool_id,
                                                        int64_t older_than_time) {
+        if (pool_id.empty())
+            return {};
         std::ostringstream where;
         std::vector<std::string> params;
         where << "tier = ? AND end_time <= ? AND status = ?";
         params.push_back(tier);
         params.push_back(std::to_string(older_than_time));
         params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
-        if (!pool_id.empty()) {
-            where << " AND pool_id = ?";
-            params.push_back(pool_id);
-        }
+        where << " AND pool_id = ?";
+        params.push_back(pool_id);
 
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
@@ -582,6 +594,71 @@ public:
         std::vector<SegmentTierRange> ret;
         for (const auto &row : rows)
             ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<SegmentTierRange> findExpired(const std::string &camera_id = "",
+                                              int64_t from_time = 0,
+                                              int64_t to_time = 0,
+                                              int page = 0,
+                                              int size = 20) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ?";
+        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+        if (!camera_id.empty()) { where << " AND camera_id = ?"; params.push_back(camera_id); }
+        if (from_time > 0) { where << " AND end_time >= ?"; params.push_back(std::to_string(from_time)); }
+        if (to_time > 0) { where << " AND start_time <= ?"; params.push_back(std::to_string(to_time)); }
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC")
+                .limit(size)
+                .offset(page * size));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    int countExpired(const std::string &camera_id = "",
+                     int64_t from_time = 0,
+                     int64_t to_time = 0) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ?";
+        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+        if (!camera_id.empty()) { where << " AND camera_id = ?"; params.push_back(camera_id); }
+        if (from_time > 0) { where << " AND end_time >= ?"; params.push_back(std::to_string(from_time)); }
+        if (to_time > 0) { where << " AND start_time <= ?"; params.push_back(std::to_string(to_time)); }
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COUNT(*)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params));
+        if (!rows.empty() && !rows[0].empty())
+            return std::stoi(rows[0][0]);
+        return 0;
+    }
+
+    std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
+        std::vector<SegmentTierRange> ret;
+        for (const auto &range_id : range_ids) {
+            if (range_id.empty())
+                continue;
+            SegmentTierRange key;
+            key.range_id = range_id;
+            auto rows = SqliteRepository<SegmentTierRange>::findById(key);
+            ret.insert(ret.end(), rows.begin(), rows.end());
+        }
+        std::sort(ret.begin(), ret.end(), [](const SegmentTierRange &a, const SegmentTierRange &b) {
+            if (a.camera_id != b.camera_id) return a.camera_id < b.camera_id;
+            return a.start_time < b.start_time;
+        });
         return ret;
     }
 
@@ -611,11 +688,13 @@ public:
     }
 
     bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = 90) {
+        if (range.pool_id.empty())
+            return false;
         int64_t now = static_cast<int64_t>(time(nullptr));
         if (range.created_at <= 0) range.created_at = now;
         range.updated_at = now;
         if (range.range_id.empty())
-            range.range_id = "rng-" + toolkit::format_guid(toolkit::strToLower(toolkit::makeRandStr(32))).substr(0, 8);
+            range.range_id = StrUUID::make_guid(8, "rng");
 
         std::ostringstream where;
         std::vector<std::string> params;
@@ -624,12 +703,8 @@ public:
         params.push_back(range.stream_id);
         params.push_back(range.tier);
         params.push_back(range.status);
-        if (range.pool_id.has_value() && !range.pool_id.value().empty()) {
-            where << " AND pool_id = ?";
-            params.push_back(range.pool_id.value());
-        } else {
-            where << " AND (pool_id IS NULL OR pool_id = '')";
-        }
+        where << " AND pool_id = ?";
+        params.push_back(range.pool_id);
         where << " AND end_time >= ? AND start_time <= ?";
         params.push_back(std::to_string(range.start_time - merge_gap_seconds));
         params.push_back(std::to_string(range.end_time + merge_gap_seconds));
@@ -665,12 +740,28 @@ public:
                             const std::string &new_tier,
                             const std::string &pool_id,
                             const std::string &status) {
+        if (pool_id.empty())
+            return false;
         int64_t now = static_cast<int64_t>(time(nullptr));
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
             .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(now)}})
             .where("camera_id = ? AND start_time >= ? AND end_time <= ?",
                    {camera_id, std::to_string(start_time), std::to_string(end_time)});
+        return _executor->execDML(q);
+    }
+
+    bool updateTierByRangeId(const std::string &range_id,
+                             const std::string &new_tier,
+                             const std::string &pool_id,
+                             const std::string &status) {
+        if (range_id.empty() || pool_id.empty())
+            return false;
+        int64_t now = static_cast<int64_t>(time(nullptr));
+        auto q = toolkit::QueryBuilder()
+            .update(EntityTraits<SegmentTierRange>::tableName())
+            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(now)}})
+            .where("range_id = ?", {range_id});
         return _executor->execDML(q);
     }
 
@@ -705,26 +796,7 @@ public:
         return _executor->execDML(q);
     }
 
-    bool updatePoolForTierIfMissing(const std::string &tier,
-                                    const std::string &pool_id) {
-        if (pool_id.empty())
-            return false;
-        int64_t now = static_cast<int64_t>(time(nullptr));
-        std::ostringstream where;
-        std::vector<std::string> params;
-        where << "tier = ? AND status = ? AND (pool_id IS NULL OR pool_id = '')";
-        params.push_back(tier);
-        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
-
-        std::vector<std::pair<std::string, std::string>> set;
-        set.push_back({"pool_id", pool_id});
-        set.push_back({"updated_at", std::to_string(now)});
-        auto q = toolkit::QueryBuilder()
-            .update(EntityTraits<SegmentTierRange>::tableName())
-            .set(set)
-            .where(where.str(), params);
-        return _executor->execDML(q);
-    }
+    bool updatePoolForTierIfMissing(const std::string &, const std::string &) { return false; }
 
     bool updateTierByExactWindow(const std::string &camera_id,
                                  const std::string &stream_id,
@@ -733,6 +805,8 @@ public:
                                  const std::string &new_tier,
                                  const std::string &pool_id,
                                  const std::string &status) {
+        if (pool_id.empty())
+            return false;
         int64_t now = static_cast<int64_t>(time(nullptr));
         std::ostringstream where;
         std::vector<std::string> params;

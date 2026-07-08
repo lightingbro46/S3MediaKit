@@ -12,12 +12,18 @@ namespace managerkit {
 
 struct TimeRange {
     TimeRange() = default;
-    TimeRange(uint64_t start, uint32_t dur, const std::string &storage_tier = "HOT")
-        : startTime(start), duration(dur), tier(storage_tier.empty() ? "HOT" : storage_tier) {}
+    TimeRange(uint64_t start, uint32_t dur,
+              const std::string &storage_tier = "HOT",
+              bool restore_required = false)
+        : startTime(start)
+        , duration(dur)
+        , tier(storage_tier.empty() ? "HOT" : storage_tier)
+        , restoreRequired(restore_required) {}
 
     uint64_t startTime = 0;
     uint32_t duration = 0;
     std::string tier = "HOT";
+    bool restoreRequired = false;
 };
 
 class TimeQuery final {

@@ -8,6 +8,7 @@
 #include "Storage/BookmarkIndex.h"
 #include "Storage/Bookmark.h"
 #include "Storage/UserEntity.h"
+#include "Storage/StoragePool.h"
 #include "Storage/TieringJob.h"
 #include "Server/ClusterManager.h"
 
@@ -89,6 +90,7 @@ struct PeriodEntry {
     uint64_t    end;        // exclusive (start + duration / start + timeLen)
     std::string serverId;
     std::string tier = "HOT";
+    bool restoreRequired = false;
     // type-0 only
     std::string cameraId;
     std::string streamId;
@@ -127,12 +129,30 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
         return a.updated_at < b.updated_at;
     });
 
+    StoragePoolImp pool_imp;
+    std::unordered_map<std::string, bool> restore_required_by_pool;
+    auto is_restore_required_pool = [&](const std::string &pool_id) {
+        if (pool_id.empty())
+            return false;
+        auto it = restore_required_by_pool.find(pool_id);
+        if (it != restore_required_by_pool.end())
+            return it->second;
+        auto pools = pool_imp.findByPoolId(pool_id);
+        const bool required = !pools.empty() && poolTypeIsObjectStorage(pools.front().type);
+        restore_required_by_pool[pool_id] = required;
+        return required;
+    };
+
     uint64_t cursor = start_time;
-    auto append_piece = [&result](uint64_t piece_start, uint64_t piece_end, const std::string &tier) {
+    auto append_piece = [&result](uint64_t piece_start,
+                                  uint64_t piece_end,
+                                  const std::string &tier,
+                                  bool restore_required) {
         if (piece_start >= piece_end)
             return;
         if (!result.empty() &&
             result.back().tier == tier &&
+            result.back().restoreRequired == restore_required &&
             result.back().startTime + result.back().duration == piece_start) {
             result.back().duration = static_cast<uint32_t>(piece_end - result.back().startTime);
             return;
@@ -141,6 +161,7 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
         tr.startTime = piece_start;
         tr.duration = static_cast<uint32_t>(piece_end - piece_start);
         tr.tier = tier.empty() ? "HOT" : tier;
+        tr.restoreRequired = restore_required;
         result.push_back(tr);
     };
 
@@ -150,15 +171,15 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
         if (re <= cursor)
             continue;
         if (rs > cursor)
-            append_piece(cursor, rs, "HOT");
-        append_piece(std::max(cursor, rs), re, r.tier);
+            append_piece(cursor, rs, "HOT", false);
+        append_piece(std::max(cursor, rs), re, r.tier, is_restore_required_pool(r.pool_id));
         cursor = re;
     }
     if (cursor < end_time)
-        append_piece(cursor, end_time, "HOT");
+        append_piece(cursor, end_time, "HOT", false);
 
     if (result.empty())
-        append_piece(start_time, end_time, "HOT");
+        append_piece(start_time, end_time, "HOT", false);
     return result;
 }
 
@@ -215,6 +236,7 @@ static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
         if (!merged.empty() &&
             merged.back().serverId == p.serverId &&
             merged.back().tier     == p.tier &&
+            merged.back().restoreRequired == p.restoreRequired &&
             merged.back().cameraId == p.cameraId &&
             merged.back().streamId == p.streamId &&
             merged.back().end      == p.start) {
@@ -263,6 +285,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             e.end      = e.start + p["duration"].asUInt64();
             e.serverId = p["mediaServerId"].asString();
             e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
+            e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
             out.push_back(e);
         }
     };
@@ -276,6 +299,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["duration"]      = (Json::UInt64)(e.end - e.start);
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
+            p["restore_required"] = e.restoreRequired;
             arr.append(p);
         }
         return arr;
@@ -291,6 +315,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.end      = e.start + p["timeLen"].asUInt64();
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
+                e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -303,6 +328,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.end      = e.start + p["timeLen"].asUInt64();
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
+                e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -318,6 +344,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["timeLen"]       = (Json::UInt64)(e.end - e.start);
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
+            p["restore_required"] = e.restoreRequired;
             dst["periods"].append(p);
         }
 
@@ -480,6 +507,7 @@ static void findTimePeriodLocal(
                             period["startTime"] = (Json::UInt64)tp.startTime;
                             period["duration"] = tp.duration;
                             period["tier"] = tp.tier;
+                            period["restore_required"] = tp.restoreRequired;
                             period["mediaServerId"] = mediaServerId;
                             result["periods"].append(period);
                         }
@@ -520,6 +548,7 @@ static void findTimePeriodLocal(
                                     period["startTime"] = (Json::UInt64)tp.startTime;
                                     period["duration"] = tp.duration;
                                     period["tier"] = tp.tier;
+                                    period["restore_required"] = tp.restoreRequired;
                                     period["mediaServerId"] = mediaServerId;
                                     stream["periods"].append(period);
                                 }
@@ -610,6 +639,7 @@ static void findTimePeriodLocal(
                                                 period["startTime"] = (Json::UInt64)tp.startTime;
                                                 period["duration"] = tp.duration;
                                                 period["tier"] = tp.tier;
+                                                period["restore_required"] = tp.restoreRequired;
                                                 period["mediaServerId"] = mediaServerId;
                                                 hour.append(period);
                                             }
@@ -670,6 +700,7 @@ static void findTimePeriodLocal(
                         period["startTime"] = (Json::UInt64)tp.startTime;
                         period["timeLen"] = tp.duration;
                         period["tier"] = tp.tier;
+                        period["restore_required"] = tp.restoreRequired;
                         period["mediaServerId"] = mediaServerId;
                         result["periods"].append(period);
                     }

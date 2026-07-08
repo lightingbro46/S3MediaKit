@@ -12,6 +12,7 @@
 #include "StorageTier.h"
 #include "Storage/StoragePool.h"
 #include "Storage/StoragePolicy.h"
+#include "Storage/StorageTierExtra.h"
 #include "Storage/PolicyAssignment.h"
 #include "Storage/TieringJob.h"
 #include "TierObjectStorage.h"
@@ -27,6 +28,17 @@ struct ColdAccessRestoreResult {
     std::string status;
     std::string message;
     int estimated_restore_seconds = 120;
+};
+
+struct TierRangeSegmentFile {
+    std::string camera_id;
+    std::string stream_id;
+    std::string segment_path;
+    std::string storage_key;
+    std::string full_path;
+    int64_t start_time = 0;
+    int64_t end_time = 0;
+    int64_t file_size = 0;
 };
 
 // ===================================================================
@@ -60,7 +72,7 @@ public:
     bool updatePool(const StoragePool &pool);
 
     // Delete a pool; fails (returns false) if any policy still references it
-    bool deletePool(const std::string &pool_id, int &out_ref_count);
+    bool deletePool(const std::string &pool_id, int &out_ref_count, bool &out_is_default_hot_pool);
 
     // List pools with optional filters
     std::vector<StoragePool> listPools(const std::string &tier    = "",
@@ -85,7 +97,7 @@ public:
     bool updatePolicy(const StoragePolicy &policy);
 
     // Delete a policy; fails if any camera assignment references it
-    bool deletePolicy(const std::string &policy_id, int &out_camera_count);
+    bool deletePolicy(const std::string &policy_id, int &out_camera_count, bool &out_is_default_policy);
 
     // Paginated list
     std::vector<StoragePolicy> listPolicies(const std::string &keyword = "",
@@ -163,11 +175,42 @@ public:
 
     std::vector<TieringJob> getTieringJob(const std::string &job_id);
 
+    bool retryTieringJob(const std::string &job_id);
+
     bool cancelTieringJob(const std::string &job_id);
 
     // Trigger async restore when a record MP4 access misses locally but the
     // segment is tracked in a cold tier range.
     ColdAccessRestoreResult handleColdAccessByPath(const std::string &file_path);
+
+    std::vector<RestoreJob> listRestoreJobs(const std::string &camera_id   = "",
+                                             const std::string &status      = "",
+                                             int64_t from_time = 0, int64_t to_time = 0,
+                                             int page = 0, int size = 20);
+
+    int countRestoreJobs(const std::string &camera_id = "",
+                          const std::string &status    = "",
+                          int64_t from_time = 0, int64_t to_time = 0);
+
+    std::vector<RestoreJob> getRestoreJob(const std::string &job_id);
+
+    /**
+     * Register a newly created HOT segment range (from record MP4) with the tiering engine.
+     * This allows the tiering engine to track the range and move it to WARM/COLD later if needed.
+     * @param camera_id The camera ID
+     * @param stream_id The stream ID
+     * @param file_path The full path to the MP4 file
+     * @param start_time The start time of the segment range (epoch ms)
+     * @param end_time The end time of the segment range (epoch ms)
+     * @param file_size The size of the MP4 file in bytes
+     * @return true if the range was successfully registered, false otherwise
+     */
+    bool registerHotSegmentRange(const std::string &camera_id,
+                                 const std::string &stream_id,
+                                 const std::string &file_path,
+                                 int64_t start_time,
+                                 int64_t end_time,
+                                 int64_t file_size);
 
 private:
     TierStorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);
@@ -179,16 +222,38 @@ private:
     void processCameraPressureTiering(const std::string &camera_id,
                                       const StoragePolicy &policy);
 
-    void enforceCameraArchiveRetention(const std::string &camera_id);
+    void enforceCameraArchiveRetention(const std::string &camera_id,
+                                       const StoragePolicy &policy);
+
+    void enforcePolicyDeleteRetention(const std::string &camera_id,
+                                      const StoragePolicy &policy);
+
+    std::string getSystemDefaultHotPoolId() const;
 
     void ensureDefaultHotPool();
+
+    void ensureSystemDefaultPolicy();
+
+    std::string getSystemDefaultPolicyId() const;
 
     bool queueTierMoveJob(const SegmentTierRange &range,
                           const PolicyTierConfig &src_tier_cfg,
                           const PolicyTierConfig &dst_tier_cfg,
                           bool pressure);
 
-    bool expireRangeBestEffort(const SegmentTierRange &range);
+    bool expireRangeBestEffort(const SegmentTierRange &range,
+                               const std::string &final_status = "EXPIRED");
+
+    std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
+
+    std::vector<TierRangeSegmentFile> collectSegmentFilesForWindow(const std::string &camera_id,
+                                                                   int64_t start_time,
+                                                                   int64_t end_time,
+                                                                   const std::string &tier = "",
+                                                                   const std::string &pool_id = "");
+
+    std::vector<TierRangeSegmentFile> collectSegmentFilesForJob(const TieringJob &job,
+                                                                SegmentTierRange &out_range);
 
     void notifyRebuildTimeFile(const std::string &camera_id,
                                uint64_t threshold);
@@ -216,17 +281,17 @@ private:
 
     void fillPoolRuntimeStats(StoragePool &pool);
 
-    // Scan the recording directory for a camera/stream and register
-    // newly discovered segments that are not yet in segment_tier_records
-    void syncSegmentRecords(const std::string &camera_id,
-                             const std::string &stream_id,
-                             const std::string &stream_path);
-
     // Maintenance
     void pruneOldMetrics();
     void cleanupRestoreTempFiles();
 
-    std::string generateId(const std::string &prefix = "");
+    // HOT range registration. Time files remain under kMP4SavePath, but the
+    // actual MP4 segment can live on any enabled HOT file pool.
+    void reconcileHotRangesFromTimeFiles();
+
+    bool resolveHotPoolForPath(const std::string &file_path,
+                               StoragePool &out_pool,
+                               std::string &out_pool_root) const;
 
 private:
     toolkit::EventPoller::Ptr _poller;
@@ -237,7 +302,7 @@ private:
     // In-memory cache of enabled pools (refreshed every tick)
     std::unordered_map<std::string, StoragePool> _pool_cache;
 
-    // System default policy id (first enabled policy, or empty)
+    // System default policy id (fixed built-in policy)
     mutable std::mutex _default_policy_mtx;
     std::string        _default_policy_id;
 
