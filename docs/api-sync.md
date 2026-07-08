@@ -10,7 +10,7 @@ Tuy nhiên, FE/admin dashboard có thể sử dụng để **giám sát trạng 
 
 | API | Mục đích |
 |-----|---------|
-| `GET /media/esc/sync/changes` | Lấy transaction log kể từ cursor nhất định |
+| `POST /media/esc/sync/changes` | Lấy transaction log kể từ cursor nhất định |
 | `GET /media/esc/sync/snapshot` | Lấy toàn bộ snapshot dữ liệu của một node |
 | `GET /media/esc/sync/misc` | Lấy dữ liệu misc (cấu hình, metadata) của một node |
 
@@ -50,10 +50,10 @@ sequenceDiagram
 
     Note over NodeB,NodeA: Đồng bộ liên tục (incremental)
     loop Mỗi chu kỳ sync
-        NodeB->>NodeA: GET sync/changes?peer=B&cursors=[{peer_A, db_X, seq=100}]&ack_cursors=[...]&limit=100
+        NodeB->>NodeA: POST sync/changes {peer:B,cursors:[...],ack_cursors:[...],limit:100}
         NodeA-->>NodeB: [{sequence:101,...}, {sequence:102,...}, ...]
         NodeB->>NodeB: Apply changes to local DB
-        NodeB->>NodeA: GET sync/changes?cursors=[{..., seq=102}]&ack_cursors=[{..., seq=101}]
+        NodeB->>NodeA: POST sync/changes {cursors:[{..., seq:102}],ack_cursors:[{..., seq:101}]}
     end
 ```
 
@@ -61,21 +61,43 @@ sequenceDiagram
 
 ## API 1: Lấy Transaction Log
 
-**GET / POST** `/media/esc/sync/changes`
+**POST** `/media/esc/sync/changes`
 
 Trả về danh sách transaction log kể từ các cursor được gửi lên. Đây là API cốt lõi của cơ chế incremental sync.
 
-### Request params
+### Request body (`application/json`)
 
 | Tham số | Kiểu | Bắt buộc | Mô tả |
 |---------|------|----------|-------|
 | `peer` | `string` | ✅ | `mediaServerId` của node đang gọi |
 | `db` | `string` | ✅ | GUID của database cần lấy log |
 | `limit` | `int` | ✅ | Số lượng log tối đa trả về mỗi lần |
-| `cursors` | `string` | ✅ | JSON array – danh sách cursor hiện tại của node gọi |
-| `ack_cursors` | `string` | ✅ | JSON array – danh sách cursor đã xử lý xong (để server prune log cũ) |
+| `cursors` | `array` | ✅ | Danh sách cursor hiện tại của node gọi |
+| `ack_cursors` | `array` | ✅ | Danh sách cursor đã xử lý xong (để server prune log cũ) |
 
-#### Format `cursors` (JSON array, stringify)
+```json
+{
+  "peer": "node-b-id",
+  "db": "db-uuid-1",
+  "limit": 100,
+  "cursors": [
+    {
+      "peer_guid": "node-A-id",
+      "db_guid": "db-uuid-1",
+      "sequence": 100
+    }
+  ],
+  "ack_cursors": [
+    {
+      "peer_guid": "node-A-id",
+      "db_guid": "db-uuid-1",
+      "sequence": 98
+    }
+  ]
+}
+```
+
+#### Format `cursors`
 
 ```json
 [
@@ -92,9 +114,9 @@ Trả về danh sách transaction log kể từ các cursor được gửi lên.
 ]
 ```
 
-> Server sẽ trả về tất cả transaction có `sequence > cursor.sequence` cho mỗi cặp `peer/db`.
+> Server sẽ trả về tất cả transaction có `sequence > cursor.sequence` cho mỗi cặp `peer/db`. Code hiện tại đọc `cursors` từ JSON body, không cần stringify array thành query string.
 
-#### Format `ack_cursors` (JSON array, stringify)
+#### Format `ack_cursors`
 
 ```json
 [
@@ -151,9 +173,9 @@ Trả về danh sách transaction log kể từ các cursor được gửi lên.
 | `tran_type` | `string` | Loại transaction, ví dụ: `bookmark_create`, `bookmark_update`, `bookmark_delete` |
 | `tran_data` | `string` | JSON data của transaction (nội dung phụ thuộc `tran_type`) |
 
-#### Cơ chế xử lý cursor mặc định
+#### Cơ chế xử lý cursor
 
-Nếu `cursors` không có entry cho một cặp `peer_guid/db_guid` nào đó mà server biết tồn tại, server sẽ **tự thêm cursor với `sequence = 0`** — đảm bảo node mới sẽ nhận được tất cả log từ đầu.
+`sync/changes` gọi `SyncManager::getCurrentCursors(cursors, limit)`. Node gọi nên gửi đủ các cursor đang lưu. Nếu muốn pull từ đầu, gửi cursor `sequence = 0` cho cặp `peer_guid/db_guid` tương ứng.
 
 ---
 
@@ -169,7 +191,7 @@ Trả về toàn bộ dữ liệu hiện tại của node dưới dạng snapsho
 |---------|------|----------|-------|
 | `peer` | `string` | ✅ | `mediaServerId` của node cần snapshot – phải là ID của node được gọi |
 
-> Nếu `peer` không khớp với `mediaServerId` của node đang nhận request → lỗi `200007` (Media server not found). Điều này ngăn node B request snapshot của node C thông qua node A.
+> Nếu `peer` không khớp với `mediaServerId` của node đang nhận request → lỗi `902006` (Media server not found). Điều này ngăn node B request snapshot của node C thông qua node A.
 
 ### Response thành công (`200`)
 
@@ -190,8 +212,7 @@ Trả về toàn bộ dữ liệu hiện tại của node dưới dạng snapsho
 
 | `code` | HTTP | Mô tả |
 |--------|------|--------|
-| `200007` | 404 | Node không tìm thấy (peer ID không khớp) |
-| `300022` | 404 | Snapshot rỗng (node chưa có dữ liệu) |
+| `902006` | 404 | Node không tìm thấy (peer ID không khớp) |
 
 ---
 
@@ -253,12 +274,12 @@ sequenceDiagram
 
     Note over B: Lưu cursors: [{peer=A, db=db1, seq=100}]
 
-    B->>A: GET sync/changes?peer=B&db=db1&limit=50&cursors=[{peer=A,db=db1,seq=100}]&ack_cursors=[{peer=A,db=db1,seq=98}]
+    B->>A: POST sync/changes {peer:B,db:db1,limit:50,cursors:[{peer:A,db:db1,seq:100}],ack_cursors:[{peer:A,db:db1,seq:98}]}
     A-->>B: [{seq:101, type:bookmark_create, ...}, {seq:102, type:bookmark_delete, ...}]
     B->>B: Apply 2 transactions
     B->>B: Update cursor: seq=102
 
-    B->>A: GET sync/changes?cursors=[{peer=A,db=db1,seq=102}]&ack_cursors=[{peer=A,db=db1,seq=100}]
+    B->>A: POST sync/changes {cursors:[{peer:A,db:db1,seq:102}],ack_cursors:[{peer:A,db:db1,seq:100}]}
     A-->>B: [] (no new changes)
     Note over B,A: Đồng bộ xong
 ```
@@ -295,14 +316,17 @@ const compareNodes = async (nodes) => {
 ```js
 // Pull changes từ node nguồn về node hiện tại
 const pullChanges = async (sourceNodeUrl, currentNodeId, cursors, ackCursors, limit = 100) => {
-  const params = new URLSearchParams({
-    peer: currentNodeId,
-    db: '', // để trống nếu muốn tất cả DB
-    limit,
-    cursors: JSON.stringify(cursors),
-    ack_cursors: JSON.stringify(ackCursors),
+  const res = await fetch(`${sourceNodeUrl}/media/esc/sync/changes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      peer: currentNodeId,
+      db: 'db-uuid',
+      limit,
+      cursors,
+      ack_cursors: ackCursors,
+    }),
   });
-  const res = await fetch(`${sourceNodeUrl}/media/esc/sync/changes?${params}`);
   const json = await res.json();
   return json.data; // mảng transaction log
 };

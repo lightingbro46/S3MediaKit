@@ -10,7 +10,7 @@ Nhóm API này phục vụ các chức năng:
 
 Tất cả API đều yêu cầu:
 - **JWT token** hợp lệ
-- **Quyền Playback** (permission code `"1002"`)
+- **Quyền Playback** (permission code `"1003"`)
 
 ---
 
@@ -29,13 +29,16 @@ Tất cả API đều yêu cầu:
 | `code` | HTTP | Mô tả |
 |--------|------|--------|
 | `0` | 200 | Thành công |
-| `100001` | 401 | Chưa xác thực |
-| `100004` | 401 | Không có quyền Playback |
-| `200001` | 404 | Camera không tìm thấy |
-| `200006` | 404 | Không có dữ liệu timeline trong khoảng thời gian |
-| `300022` | 404 | Snapshot rỗng (ffmpeg thất bại) |
-| `300003` | 500 | Extract video thất bại |
-| `200004` | 404 | Extract key không tìm thấy |
+| `901001` | 401 | Chưa xác thực |
+| `901004` | 401 | Không có quyền Playback |
+| `901009` | 401 | Không có quyền Extract |
+| `902001` | 400 | Thiếu hoặc sai tham số |
+| `902003` | 400 | Extension file không hợp lệ |
+| `903001` | 404 | Không có dữ liệu timeline trong khoảng thời gian |
+| `904001` | 404 | Snapshot rỗng hoặc FFmpeg không tạo được thumbnail |
+| `905001` | 404 | Camera không tìm thấy |
+| `909001` | 404 | Extract key không tìm thấy |
+| `909002` | 500 | Extract video thất bại |
 
 ---
 
@@ -103,6 +106,8 @@ const getTimeline = async (cameraId, startTime, endTime, jwtToken) => {
 
 **GET / POST** `/media/esc/recordedThumnail`
 
+> Route hiện tại trong code là `recordedThumnail`. Nếu FE muốn đặt tên hàm là `thumbnail`, vẫn cần gọi đúng path này.
+
 Trả về ảnh JPEG được chụp từ file recording tại hoặc gần nhất với thời điểm `pos`. Server dùng FFmpeg để extract frame từ file MP4.
 
 #### Request params
@@ -112,6 +117,7 @@ Trả về ảnh JPEG được chụp từ file recording tại hoặc gần nh�
 | `cameraId` | `string` | ✅ | ID camera |
 | `pos` | `string` | ✅ | Unix timestamp (giây) hoặc `"latest"` để lấy frame mới nhất |
 | `streamId` | `string` | ❌ | ID stream cụ thể (để trống = stream mặc định) |
+| `edge` | `bool/int` | ❌ | Dùng nội bộ khi node forward request |
 
 #### Response thành công (`200`)
 
@@ -122,8 +128,8 @@ Trả về ảnh JPEG được chụp từ file recording tại hoặc gần nh�
 
 | `code` | Mô tả |
 |--------|-------|
-| `200006` | Không có file recording tại thời điểm yêu cầu |
-| `300022` | FFmpeg không thể extract frame |
+| `903001` | Không có file recording tại thời điểm yêu cầu |
+| `904001` | FFmpeg không thể extract frame |
 
 #### Cơ chế cache
 
@@ -264,9 +270,9 @@ sequenceDiagram
 
 | `code` | Mô tả |
 |--------|-------|
-| `200001` | Camera không tìm thấy |
-| `400003` | Extension file không hợp lệ (chỉ chấp nhận .mp4, .mkv, .avi) |
-| `300003` | Tạo extract thất bại |
+| `905001` | Camera không tìm thấy |
+| `902003` | Extension file không hợp lệ (chỉ chấp nhận .mp4, .mkv, .avi) |
+| `909002` | Tạo extract thất bại |
 
 ---
 
@@ -296,8 +302,8 @@ sequenceDiagram
 
 | `code` | Mô tả |
 |--------|-------|
-| `200004` | Key không tìm thấy (đã hết hạn hoặc sai key) |
-| `300003` | Extract thất bại (kèm thông báo lỗi chi tiết) |
+| `909001` | Key không tìm thấy (đã hết hạn hoặc sai key) |
+| `909002` | Extract thất bại (kèm thông báo lỗi chi tiết) |
 
 ---
 
@@ -408,4 +414,4 @@ await fetch(`/media/esc/extractArchived/delete?key=${key}`);
 
 4. **File size giới hạn**: Không có giới hạn cứng từ API, nhưng extract đoạn quá dài (>1 giờ) có thể mất nhiều thời gian và tốn dung lượng disk trên server.
 
-5. **Phân quyền**: Tất cả API đều kiểm tra quyền của user với camera cụ thể. User chỉ thấy dữ liệu của camera mình có quyền xem.
+5. **Phân quyền**: Timeline, thumbnail và motion dùng quyền Playback (`1003`). Extract dùng quyền Extract (`1004`). Tất cả API đều kiểm tra quyền của user với camera cụ thể.

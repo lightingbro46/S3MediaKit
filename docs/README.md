@@ -1,5 +1,14 @@
 # 🚀 Hướng dẫn Build S3MediaKit từ Source
 
+## Tài liệu tích hợp/API
+
+- [Luồng Playback](./playback-flow.md)
+- [Timeline & Thumbnail](./api-timeline-thumbnail.md)
+- [Bookmark](./api-bookmark.md)
+- [PTZ Preset](./api-ptz-preset.md)
+- [Sync DB](./api-sync.md)
+- [Storage Tiering](./api-storage-tiering.md)
+
 ## Mục lục
 
 1. [Yêu cầu hệ thống](#-yêu-cầu-hệ-thống)
