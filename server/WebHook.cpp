@@ -546,6 +546,7 @@ static void reportServerKeepalive() {
 static Timer::Ptr g_report_timer;
 static atomic<bool> s_config_loaded { true };
 static atomic<bool> s_report_statistic { true };
+static atomic<uint64_t> s_last_load_time { 0 };
 static atomic<uint64_t> s_last_report_time { 0 };
 
 /**
@@ -624,14 +625,14 @@ static void reportServerStatistic() {
         }
 
         uint64_t now_time = time(nullptr);
-        uint64_t last_time = s_last_report_time.load();
+        uint64_t last_time = s_last_load_time.load();
         if (now_time >= last_time + static_cast<uint64_t>(report_interval)) {
             DebugL << "Reset report config loaded flag for next report statistic, last_time:" << getTimeStr("%Y-%m-%d %H:%M:%S", last_time) << ", now:" << getTimeStr("%Y-%m-%d %H:%M:%S", now_time);
             s_config_loaded = false;
         }
 
         if (!s_config_loaded.load()) {
-            s_last_report_time = now_time;
+            s_last_load_time = now_time;
             s_config_loaded = true;
             s_report_statistic = false;
             // Dispatch on WorkThread so that HttpRequester picks the WorkThread's isolated
@@ -668,6 +669,7 @@ static void reportServerStatistic() {
             //    HTTP I/O is not queued behind proxy-player stream events.
             WorkThreadPool::Instance().getPoller()->async([]() {
                 getServerStatisticJson([](const Value &data) {
+                    s_last_report_time = time(nullptr);
                     int online_count = 0, offline_count = 0;
                     countDeviceStatusJson(data, online_count, offline_count);
                     InfoL << "Report server statistic data: " << data.size() << " devices, " << online_count << " online, " << offline_count << " offline";
@@ -729,6 +731,15 @@ static void reportServerUsage() {
                 }
             });
         });
+
+        // use report usage timer to check if the last report time is too long ago, if so, print a warning log and try to restart media server to recover
+        auto last_report_time = s_last_report_time.load();
+        if (last_report_time > 0 && time(nullptr) - last_report_time > static_cast<uint64_t>(report_interval * 3)) {
+            WarnL << "Report statistic failed, last report time: " << getTimeStr("%Y-%m-%d %H:%M:%S", last_report_time) << ". Try to restart media server to recover";
+            NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::RESTART_CONFIG, 
+                string("Restart due to report statistic failed, last report time: ") + getTimeStr("%Y-%m-%d %H:%M:%S", last_report_time));
+            NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
+        }
         return true;
     };
 
