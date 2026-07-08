@@ -161,7 +161,7 @@ int TimeFileMemory::onRead(void *data, size_t bytes){
         return -1;
     }
     bytes = MIN(bytes, _memory.size() - _offset);
-    memcpy(data, _memory.data(), bytes);
+    memcpy(data, _memory.data() + _offset, bytes);
     _offset += bytes;
     return 0;
 }

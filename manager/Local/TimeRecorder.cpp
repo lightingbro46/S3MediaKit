@@ -74,6 +74,24 @@ void TimeRecorder::closeFile() {
     if (_mem_muxer) {
         _mem_muxer = nullptr ;
     }
+    _rebuild_mirror_recorder = nullptr;
+}
+
+void TimeRecorder::closeFileDirect() {
+    if (_muxer) {
+        TraceL << "Close time file directly: " << _full_path;
+        _muxer->closeFile();
+        _muxer = nullptr;
+    }
+    if (_mem_muxer) {
+        _mem_muxer = nullptr;
+    }
+    _rebuild_mirror_recorder = nullptr;
+}
+
+void TimeRecorder::closeNow() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    closeFileDirect();
 }
 
 bool TimeRecorder::inputBlock(const TimeBlock &block) {
@@ -86,7 +104,11 @@ bool TimeRecorder::inputBlock(const TimeBlock &block) {
         createFile();
     }
     if (_muxer) {
-        return _muxer->inputBlock(block);
+        auto ret = _muxer->inputBlock(block);
+        if (_rebuild_mirror_recorder) {
+            _rebuild_mirror_recorder->inputBlock(block);
+        }
+        return ret;
     }
     return false;
 }
@@ -113,6 +135,58 @@ void TimeRecorder::getMemoryBlockAndRefresh(const std::function<void(const strin
     // close file before run on_close callback because function on_close excute rename both old and new file
     closeFile();
     on_close();
+}
+
+bool TimeRecorder::beginRebuildCapture(const string &file, uint64_t &snapshot_size) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_full_path != file || !_muxer) {
+        return false;
+    }
+    if (!_mem_muxer) {
+        _mem_muxer = std::make_shared<TimeMuxerMemory>();
+        TraceL << "Enable rebuild capture for time file: " << file;
+    }
+    snapshot_size = File::fileSize(file);
+    return true;
+}
+
+bool TimeRecorder::drainRebuildCaptureAndStartMirror(const string &file,
+                                                     const Ptr &tmp_recorder,
+                                                     const function<void(const string &buf)> &on_data) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_full_path != file || !_muxer || !tmp_recorder) {
+        return false;
+    }
+    if (_mem_muxer) {
+        auto mem_muxer_ptr = dynamic_pointer_cast<TimeMuxerMemory>(_mem_muxer);
+        if (mem_muxer_ptr) {
+            auto buf = mem_muxer_ptr->getMemoryBlock();
+            on_data(buf);
+        }
+        _mem_muxer = nullptr;
+    }
+    _rebuild_mirror_recorder = tmp_recorder;
+    TraceL << "Mirror live time blocks to tmp recorder for: " << file;
+    return true;
+}
+
+void TimeRecorder::finishRebuildSwap(const string &file, const Ptr &tmp_recorder, const function<void()> &on_ready) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_rebuild_mirror_recorder == tmp_recorder) {
+        _rebuild_mirror_recorder = nullptr;
+    }
+    if (_mem_muxer) {
+        _mem_muxer = nullptr;
+    }
+    if (_full_path == file && _muxer) {
+        TraceL << "Close active time file before rebuild swap: " << file;
+        _muxer->closeFile();
+        _muxer = nullptr;
+    }
+    if (tmp_recorder) {
+        tmp_recorder->closeNow();
+    }
+    on_ready();
 }
 
 } // namespace managerkit

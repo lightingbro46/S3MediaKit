@@ -33,8 +33,16 @@ int64_t TimerDemuxerInterface::seekTo(uint64_t stamp_sec) {
 void TimerDemuxerInterface::readBlock(TimeBlock &block, bool &eof) {
     eof = false;
     uint32_t size;
+    if (_read_limit_bytes > 0 && static_cast<uint64_t>(_reader->tell()) + sizeof(uint32_t) > _read_limit_bytes) {
+        eof = true;
+        return;
+    }
     auto ret = _reader->read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
     if (ret < 0) {
+        eof = true;
+        return;
+    }
+    if (_read_limit_bytes > 0 && static_cast<uint64_t>(_reader->tell()) + size > _read_limit_bytes) {
         eof = true;
         return;
     }
@@ -71,6 +79,8 @@ void TimeDemuxer::openFile(const string &file) {
     closeFile();
     
     _file_name = file;
+    _read_limit_bytes = 0;
+    _read_guard = TimeFileAccessManager::Instance().acquireRead(_file_name);
     _file = std::make_shared<TimeFileDisk>();
     _file->openFile(_file_name.data(), "rb");
     _reader = _file->createReader();
@@ -88,6 +98,7 @@ void TimeDemuxer::closeFile() {
     _maker.reset();
     _reader.reset();
     _file.reset();
+    _read_guard.reset();
 }
 
 int64_t TimeDemuxer::seekTo(uint64_t stamp_sec) {

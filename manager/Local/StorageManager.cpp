@@ -146,14 +146,13 @@ static size_t recreateCameraTimeFile(const string &device_id, uint64_t threshold
 
     TimeRebuilder::KeepTimeMap keep_time_map;
     File::scanDir(device_path, [&](const string &stream_path, bool isDir) {
-        if (!isDir)
+        if (!isDir) {
             return true;
-        auto slash = stream_path.find_last_of('/');
-        if (slash == string::npos)
+        }
+        string stream_id = findSubString(stream_path.data() + device_path.size(), "/", nullptr);
+        if (stream_id.empty()) {
             return true;
-        string stream_id = stream_path.substr(slash + 1);
-        if (stream_id.empty())
-            return true;
+        }
         keep_time_map[(StrPrinter << device_id << "/" << stream_id)] = threshold;
         return true;
     }, false, false);

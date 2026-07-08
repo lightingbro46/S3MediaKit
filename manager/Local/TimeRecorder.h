@@ -34,6 +34,28 @@ public:
      */
     void getMemoryBlockAndRefresh(const std::function<void(const std::string &buf)> &on_data, const std::function<void()> &on_close);
 
+    /**
+     * Start capturing blocks written to the current active file for rebuild.
+     */
+    bool beginRebuildCapture(const std::string &file, uint64_t &snapshot_size);
+
+    /**
+     * Drain captured blocks and mirror future input blocks to the temporary recorder.
+     */
+    bool drainRebuildCaptureAndStartMirror(const std::string &file,
+                                           const Ptr &tmp_recorder,
+                                           const std::function<void(const std::string &buf)> &on_data);
+
+    /**
+     * Stop rebuild mirroring and close the active file before the caller renames tmp over it.
+     */
+    void finishRebuildSwap(const std::string &file, const Ptr &tmp_recorder, const std::function<void()> &on_ready);
+
+    /**
+     * Close muxers synchronously.
+     */
+    void closeNow();
+
 private:
 
     /**
@@ -46,6 +68,8 @@ private:
      */
     void closeFile();
 
+    void closeFileDirect();
+
     /**
      * Asynchronous close file
      */
@@ -57,6 +81,7 @@ private:
     std::string _full_path;
     TimeMuxer::Ptr _muxer;
     TimeMuxerMemory::Ptr _mem_muxer;
+    Ptr _rebuild_mirror_recorder;
     uint64_t _next_open_time = 0;
 };
 

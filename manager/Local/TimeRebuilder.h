@@ -35,6 +35,8 @@ private:
      */
     void closeTempFile();
 
+    void closeTempFileAfterActiveSwap();
+
 private:
     TimeRecorder::Ptr _writer;
     TimeRecorder::Ptr _recorder;

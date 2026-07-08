@@ -3,6 +3,7 @@
 
 #include "TimeFile.h"
 #include "TimeMaker.h"
+#include "TimeFileAccessManager.h"
 
 namespace managerkit {
 
@@ -25,6 +26,11 @@ public:
     void readBlock(TimeBlock &block, bool &eof);
 
     /**
+     * Stop reading once this absolute file offset is reached. 0 means no limit.
+     */
+    void setReadLimit(uint64_t limit_bytes) { _read_limit_bytes = limit_bytes; }
+
+    /**
      * Get timestamp of the first block in file
      */
     uint64_t getFirstStamp() { return _first_stamp; }
@@ -34,6 +40,7 @@ protected:
 
 protected:
     uint64_t _first_stamp;
+    uint64_t _read_limit_bytes = 0;
     TimeFileIO::Reader _reader;
 };
 
@@ -61,6 +68,7 @@ private:
 
 private:
     std::string _file_name;
+    TimeFileAccessManager::ReadGuard _read_guard;
     TimeFileDisk::Ptr _file;
     TimeMakerImp::Ptr _maker;
 };

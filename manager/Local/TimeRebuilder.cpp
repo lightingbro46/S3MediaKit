@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <vector>
 #include "TimeRebuilder.h"
 #include "Common/Parser.h"
 #include "TimeDemuxer.h"
+#include "TimeFileAccessManager.h"
 #include "Common/StrUtil.h"
 #include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
@@ -87,29 +90,76 @@ static void deleteMakerFile(const string &db_path) {
 
 void TimeRebuilder::closeTempFile() {
     // close writer to close tmp file
+    auto writer = _writer;
     _writer.reset();
+    if (writer) {
+        writer->closeNow();
+    }
 
     // rename file with original name in background thread
     auto full_path_tmp = _full_path_tmp;;
     auto full_path = _full_path;
     auto src_path = _src_path;
+    TimeFileAccessManager::Instance().beginPendingSwap(full_path);
     WorkThreadPool::Instance().getExecutor()->async([full_path_tmp, full_path, src_path]() {
-        if (!src_path.empty()) {
-            deleteTimeFile(src_path);
-            deleteMakerFile(src_path);
-        }
-        if (!full_path_tmp.empty()) {
-            // Get file size
-            uint64_t file_size = File::fileSize(full_path_tmp);
-            if (file_size == 0) {
-                deleteTimeFile(full_path_tmp);
-                deleteMakerFile(full_path_tmp);
-                return;
+        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path]() {
+            if (!src_path.empty()) {
+                deleteTimeFile(src_path);
+                deleteMakerFile(src_path);
             }
-            // Change the temporary file name to the official file name to prevent access to the file before it is completed
-            renameTimeFile(full_path_tmp, full_path);
-            renameMakerFile(full_path_tmp, full_path);
-        }
+            if (!full_path_tmp.empty()) {
+                // Get file size
+                uint64_t file_size = File::fileSize(full_path_tmp);
+                if (file_size == 0) {
+                    deleteTimeFile(full_path_tmp);
+                    deleteMakerFile(full_path_tmp);
+                    return;
+                }
+                // Change the temporary file name to the official file name to prevent access to the file before it is completed
+                renameTimeFile(full_path_tmp, full_path);
+                renameMakerFile(full_path_tmp, full_path);
+            }
+        });
+    });
+}
+
+void TimeRebuilder::closeTempFileAfterActiveSwap() {
+    auto writer = _writer;
+    auto recorder = _recorder;
+    _writer.reset();
+
+    auto full_path_tmp = _full_path_tmp;
+    auto full_path = _full_path;
+    auto src_path = _src_path;
+    TimeFileAccessManager::Instance().beginPendingSwap(full_path);
+    WorkThreadPool::Instance().getExecutor()->async([writer, recorder, full_path_tmp, full_path, src_path]() {
+        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [writer, recorder, full_path_tmp, full_path, src_path]() {
+            auto swap_file = [full_path_tmp, full_path, src_path]() {
+                if (!src_path.empty()) {
+                    deleteTimeFile(src_path);
+                    deleteMakerFile(src_path);
+                }
+                if (!full_path_tmp.empty()) {
+                    uint64_t file_size = File::fileSize(full_path_tmp);
+                    if (file_size == 0) {
+                        deleteTimeFile(full_path_tmp);
+                        deleteMakerFile(full_path_tmp);
+                        return;
+                    }
+                    renameTimeFile(full_path_tmp, full_path);
+                    renameMakerFile(full_path_tmp, full_path);
+                }
+            };
+
+            if (recorder) {
+                recorder->finishRebuildSwap(src_path, writer, swap_file);
+            } else if (writer) {
+                writer->closeNow();
+                swap_file();
+            } else {
+                swap_file();
+            }
+        });
     });
 }
 
@@ -164,33 +214,52 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     // step 1: delete old template file and create writer
     createTempFile();
     
+    bool capture_started = false;
+    uint64_t snapshot_size = 0;
     if (_in_use) {
-        // step 2: flush time recorder and start recording time block to both file and memory
-        _recorder->enableMemoryMuxer();
+        // step 2: start recording time block to both old file and memory, and freeze the read snapshot.
+        capture_started = _recorder && _recorder->beginRebuildCapture(_src_path, snapshot_size);
+        if (!capture_started) {
+            _in_use = false;
+            TraceL << "Time file is not active in recorder, rebuild as inactive file: " << _src_path;
+        }
     }
 
     CameraArchivedChanges tmp_changes;
+    vector<TimeBlock> keep_blocks;
     {
-        // step 3: read all block in current file with filter and write them into new one 
+        // step 3: read all block in current file with filter, then sort before writing tmp.
         auto demuxer = make_shared<TimeDemuxer>();
-        demuxer->openFile(_src_path);
-        bool eof = false;
-        while (!eof) {
-            TimeBlock block;
-            demuxer->readBlock(block, eof);
-            if (eof) {
-                break;
+        if (!capture_started || snapshot_size > 0) {
+            demuxer->openFile(_src_path);
+            if (capture_started) {
+                demuxer->setReadLimit(snapshot_size);
             }
-            if (keep_block(block)) {
-                _writer->inputBlock(block);
-            } else {
-                addTempArchivedChanges(tmp_changes, block);
+            bool eof = false;
+            while (!eof) {
+                TimeBlock block;
+                demuxer->readBlock(block, eof);
+                if (eof) {
+                    break;
+                }
+                if (keep_block(block)) {
+                    keep_blocks.emplace_back(std::move(block));
+                } else {
+                    addTempArchivedChanges(tmp_changes, block);
+                }
             }
         }
     }
 
+    stable_sort(keep_blocks.begin(), keep_blocks.end(), [](const TimeBlock &a, const TimeBlock &b) {
+        return a.start_time() < b.start_time();
+    });
+    for (const auto &block : keep_blocks) {
+        _writer->inputBlock(block);
+    }
+
     if (_in_use) {
-        // step 3: enable atomic flag, read all block in memory and write them into new file
+        // step 4: drain captured blocks to tmp and mirror future live blocks to tmp until rename is safe.
         auto writeMemoryBlock = [&](const string &buf) {
             auto demuxer = std::make_shared<TimeMemoryDemuxer>(buf);
             bool eof = false;
@@ -208,15 +277,15 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
             }
         };
 
-        // step 4: close file and rename filename
-        auto afterClose = [&]() { 
-            closeTempFile(); 
-            commitArchivedChanges(tmp_changes);
-        };
-        
-        _recorder->getMemoryBlockAndRefresh(writeMemoryBlock, afterClose);
+        if (_recorder->drainRebuildCaptureAndStartMirror(_src_path, _writer, writeMemoryBlock)) {
+            closeTempFileAfterActiveSwap();
+        } else {
+            WarnL << "Failed to start live mirror for active time file, close tmp without active swap: " << _src_path;
+            closeTempFile();
+        }
+        commitArchivedChanges(tmp_changes);
     } else {
-        // step 4: close file and rename filename
+        // step 4: close file and rename filename when there is no reader
         closeTempFile(); 
         commitArchivedChanges(tmp_changes);
     }
