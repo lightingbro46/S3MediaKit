@@ -380,7 +380,10 @@ static Json::Value dashboardSummaryToDocJson() {
         int64_t used = 0;
         std::string status = "OK";
     };
-    std::map<std::string, TierAgg> tiers;
+    struct TierAggCompare {
+        bool operator()(const std::string &x, const std::string &y) const { return tierTypeFromString(x) < tierTypeFromString(y); }
+    };
+    std::map<std::string, TierAgg, TierAggCompare> tiers;
     tiers["HOT"];
     tiers["WARM"];
     tiers["COLD"];

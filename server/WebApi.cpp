@@ -1138,13 +1138,17 @@ static std::string apiWorstStorageStatus(const std::string &a, const std::string
 }
 
 static Json::Value apiDashboardSummaryToJson() {
+    auto pools = TierStorageManager::Instance().listPools();
+
     struct TierAgg {
         int64_t total = 0;
         int64_t used = 0;
         std::string status = "OK";
     };
-
-    auto pools = TierStorageManager::Instance().listPools();
+    struct TierAggCompare {
+        bool operator()(const std::string &x, const std::string &y) const { return tierTypeFromString(x) < tierTypeFromString(y); }
+    };
+    std::map<std::string, TierAgg, TierAggCompare> tiers;
     std::map<std::string, TierAgg> tiers;
     tiers["HOT"];
     tiers["WARM"];
