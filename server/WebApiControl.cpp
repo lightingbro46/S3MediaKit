@@ -4,6 +4,7 @@
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 #include "Control/SubnetScan.h"
+#include "Speaker/SpeakerController.h"
 #include "Manager.h"
 
 using namespace std;
@@ -560,6 +561,93 @@ void registerControlApis() {
             ret->getOwnerPoller()->async([=]() mutable {
                 val["data"] = makeDeviceMediaProfileJson(ret);
                 invoker(200, headerOut, val.toStyledString());
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    api_regist("/media/mserver/device/speaker/playAudioFile", [](API_ARGS_JSON_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ARGS_("fileId");
+
+        const auto &json = allArgs.args;
+        std::string fileId = json["fileId"].asString();
+
+        auto deviceIds = json["deviceIds"];
+        if (!deviceIds.isArray() || deviceIds.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "deviceIds is empty or invalid");
+            return;
+        }
+        for (const auto &deviceId : deviceIds) {
+            std::string speakerId = deviceId.asString();
+            auto ret = findDeviceSource(speakerId, GENERIC_IP_SPEAKER_SCHEMA);
+            if (!ret) {
+                WarnL << "Device not found: " << speakerId;
+                continue;
+            }
+
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                WarnL << "Device is controlled by other user";
+                continue;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener);
+                    if (impl) {
+                        impl->playAudioFile(speakerId, fileId, [](const SockException &ex) mutable {
+                            InfoL << ex.what();
+                        });
+                    }
+                }
+            });
+        }
+        invoker(200, headerOut, val.toStyledString());
+    });
+
+    api_regist("/media/mserver/device/validateCredential", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ARGS_("deviceId");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            std::string deviceId = allArgs["deviceId"];
+            std::string username = allArgs["deviceUsername"];
+            std::string password = allArgs["devicePassword"];
+            int port = allArgs["devicePort"];
+
+            auto ret = findDeviceSource(deviceId, GENERIC_IP_SPEAKER_SCHEMA);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Speaker not found");
+                return;
+            }
+
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                auto weak_listener = ret->getListener();
+                if (auto strong_listener = weak_listener.lock()) {
+                    auto impl = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener);
+                    if (impl) {
+                        impl->validateCredential(username, password, port, [=](const SockException &ex) mutable {
+                            if (ex) {
+                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                            } else {
+                                invoker(200, headerOut, val.toStyledString());
+                            }
+                        });
+                    } else {
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a speaker");
+                    }
+                } else {
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                }
             });
         };
 

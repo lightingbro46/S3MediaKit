@@ -1149,7 +1149,6 @@ static Json::Value apiDashboardSummaryToJson() {
         bool operator()(const std::string &x, const std::string &y) const { return tierTypeFromString(x) < tierTypeFromString(y); }
     };
     std::map<std::string, TierAgg, TierAggCompare> tiers;
-    std::map<std::string, TierAgg> tiers;
     tiers["HOT"];
     tiers["WARM"];
     tiers["COLD"];

@@ -670,6 +670,20 @@ extern const std::string kSegmentRecordTTLSeconds;
 
 } // namespace Storage
 
+// //////////Speaker Configuration///////////
+namespace Speaker {
+// Speaker save path
+extern const std::string kSpeakerSavePath;
+// Directory for speaker-related data
+extern const std::string kSpeakerDir;
+// Directory for storing audio files
+extern const std::string kAudioFilesDir;
+// Maximum allowed audio file size in bytes
+extern const std::string kMaxAudioFileSizeBytes;
+// Audio file download path
+extern const std::string kFileDownloadPath;
+} // namespace Speaker
+
 } // namespace mediakit
 
 #endif /* COMMON_CONFIG_H */

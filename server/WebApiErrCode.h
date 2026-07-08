@@ -122,6 +122,9 @@ namespace managerkit {
     XX(CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Storage policy unassign from camera failed", 500, 914028) \
     XX(CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Storage pool default cannot be deleted",  400, 914029) \
     XX(CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Storage policy default cannot be deleted", 400, 914030) \
+    /* 915xxx - Audio errors */                                                                        \
+    XX(CODE_AUDIO_FILE_NOT_FOUND,           "Audio file not found",             404,         915001) \
+    XX(CODE_PLAY_AUDIO_FAILED,              "Failed to play audio file",        500,         915002) \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,

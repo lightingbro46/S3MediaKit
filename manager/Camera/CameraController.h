@@ -2,74 +2,8 @@
 #define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
-#include "Control/OnvifDeviceControl.h"
 
 namespace managerkit {
-
-struct OnvifProfile {
-    std::vector<OnvifMediaProfile> mediaProfiles;
-    OnvifPTZProfile ptzProfile;
-    OnvifDeviceInfo deviceInfo;
-    OnvifImageProfile imageProfile;
-    std::vector<OnvifRelayOutputProfile> relayOutputProfiles;
-    OnvifAudioOutputProfile audioOutputProfile;
-    OnvifAudioInputProfile audioInputProfile;
-
-    bool operator==(const OnvifProfile &o) const {
-        return mediaProfiles   == o.mediaProfiles
-            && ptzProfile      == o.ptzProfile
-            && deviceInfo      == o.deviceInfo
-            && imageProfile    == o.imageProfile
-            && relayOutputProfiles == o.relayOutputProfiles
-            && audioOutputProfile   == o.audioOutputProfile
-            && audioInputProfile    == o.audioInputProfile;
-    }
-    bool operator!=(const OnvifProfile &o) const { return !(*this == o); }
-};
-
-struct DeviceCapabilities {
-    bool isOnvifDevice = false;
-    OnvifProfile onvifProfile;
-
-    bool operator==(const DeviceCapabilities &o) const {
-        return isOnvifDevice == o.isOnvifDevice && onvifProfile == o.onvifProfile;
-    }
-    bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }
-};
-
-// Connection-relevant fields that require a full controller recreate when changed.
-struct ControllerOption {
-    std::string manufacturer;
-    std::string ip;
-    int  port        = 0;
-    int  webPort     = 0;
-    bool autoWebPort = true;
-    std::string username;
-    std::string password;
-
-    static ControllerOption from(const CameraOption &o) {
-        ControllerOption c;
-        c.manufacturer = o.manufacturer;
-        c.ip           = o.ip;
-        c.port         = o.port;
-        c.webPort      = o.webPort;
-        c.autoWebPort  = o.autoWebPort;
-        c.username     = o.username;
-        c.password     = o.password;
-        return c;
-    }
-
-    bool operator==(const ControllerOption &o) const {
-        return manufacturer == o.manufacturer
-            && ip           == o.ip
-            && port         == o.port
-            && webPort      == o.webPort
-            && autoWebPort  == o.autoWebPort
-            && username     == o.username
-            && password     == o.password;
-    }
-    bool operator!=(const ControllerOption &o) const { return !(*this == o); }
-};
 
 class CameraController : public DeviceSourceEventInterceptor, public std::enable_shared_from_this<CameraController>  {
 public:

@@ -76,6 +76,11 @@ static void loadSavedDeviceInfo() {
         CameraManager::Instance().loadSavedCameraInfo();
         return 0;
     });
+    EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
+        DebugL << "Speaker manager has been started loading saved speaker";
+        SpeakerManager::Instance().loadSavedSpeakerInfo();
+        return 0;
+    });
 }
 
 static void loadSavedMediaServerInfo() {
@@ -301,6 +306,8 @@ void installManagerHook () {
 static void releaseAllDevice() {
     // release all camera
     CameraManager::Instance().clear();
+    // release all speaker
+    SpeakerManager::Instance().clear();
 }
 
 static void releaseSyncDatabase() {
@@ -531,6 +538,46 @@ static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &da
     }
 }
 
+static void fromJson(SpeakerOption &option, const Json::Value &data) {
+    GET_OPTION_PROPERTY(option, name, data, name)
+    GET_OPTION_PROPERTY(option, manufacturer, data, manufacturer)
+    GET_OPTION_PROPERTY(option, model, data, model)
+    GET_OPTION_PROPERTY(option, username, data, username)
+    GET_OPTION_PROPERTY(option, password, data, password)
+    GET_OPTION_PROPERTY(option, ip, data, ip)
+    GET_OPTION_PROPERTY(option, deviceUsername, data, deviceUsername)
+    GET_OPTION_PROPERTY(option, devicePassword, data, devicePassword)
+    // http port default 80
+    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, port, data, httpPort, 80)
+    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, devicePort, data, devicePort, 80)
+    GET_OPTION_PROPERTY(option, enableActive, data, enabled)
+    GET_OPTION_PROPERTY(option, preferedMediaServer, data, priMediaServerId)
+    GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+    if (data.isMember("vendorFeaturesConfig") && !data["vendorFeaturesConfig"].isNull()) {
+        const Json::Value &vfc = data["vendorFeaturesConfig"];
+
+        GET_OPTION_PROPERTY(option, enableVendorFeature, vfc, enableVendorFeature)
+        GET_OPTION_PROPERTY(option, separateCredentialConfigured, vfc, separateCredentialConfigured)
+
+        if (vfc.isMember("enabledVendorFeatures") && !vfc["enabledVendorFeatures"].isNull()) {
+            for (const auto &feature : vfc["enabledVendorFeatures"]) {
+                option.enabledVendorFeatures.push_back(feature.asString());
+            }
+        }
+    }
+}
+
+static void fromJson(AudioFile &file, const Json::Value &data) {
+    file.id = data["id"].asString();
+    file.name = data["fileName"].asString();
+    file.size = data["size"].asUInt64();
+    file.soundPath = data["soundPath"].asString();
+    file.duration = data["duration"].asFloat();
+    file.createdAt = data["createdAt"].asString();
+    file.updatedAt = data["updatedAt"].asString();
+    file.downloaded = false;
+}
+
 static void loadServerConfigFromJson(const Json::Value &data) {
     int change = 0;
     auto &ini = mINI::Instance();
@@ -717,7 +764,56 @@ void loadServerConfigJson(const Json::Value &data_api) {
             CameraManager::Instance().delCamera(key);
         }
     }
-    DebugL << "Server configuration loaded completed, took " << _ticker.elapsedTime() << " ms";
+    DebugL << "Server configuration for camera loaded completed, took " << _ticker.elapsedTime() << " ms";
+    _ticker.resetTime();
+
+    if (data.isMember("speakers") && data["speakers"].isArray()) {
+        // get vector of current speaker key 
+        auto current_speakers = SpeakerManager::Instance().getSpeakerKeys();
+
+        for (const auto &speaker : data["speakers"]) {
+            // Get speaker config from json data
+            DeviceTuple tuple;
+            fromJson(tuple, speaker);
+            SpeakerOption option;
+            fromJson(option, speaker);
+
+            // Add or update speaker config
+            SpeakerManager::Instance().addSpeaker(tuple, option);
+
+            // Remove active speaker key from vector
+            current_speakers.erase(std::remove(current_speakers.begin(), current_speakers.end(), tuple.shortUrl()), current_speakers.end());
+        }
+
+        // Remove all inactive speaker
+        for (const auto &key : current_speakers) {
+            SpeakerManager::Instance().delSpeaker(key);
+        }
+    }
+    DebugL << "Server configuration for speaker loaded completed, took " << _ticker.elapsedTime() << " ms";
+
+    if (data.isMember("list_audio_file") && data["list_audio_file"].isArray()) {
+        // get vector of current audio files
+        auto current_audio_list = AudioFileManager::Instance().getAllAudioFileIds();
+
+        for (const auto &audio_file : data["list_audio_file"]) {
+            // Add or update audio file config
+            AudioFile file;
+            fromJson(file, audio_file);
+            AudioFileManager::Instance().addAudioFile(file);
+
+            // Remove active audio file id from vector
+            current_audio_list.erase(std::remove(current_audio_list.begin(), current_audio_list.end(), file.id), current_audio_list.end());
+        }
+
+        // Remove all inactive file
+        for (const auto &key : current_audio_list) {
+            AudioFileManager::Instance().delAudioFile(key);
+        }
+
+        AudioFileManager::Instance().save();
+        AudioFileManager::Instance().syncDownload();
+    }
 }
 
 static Json::Value makeMediaSourceJson(MediaSource &media) {
@@ -825,14 +921,13 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
         try {
             auto weak_listener = device->getListener();
             if (auto strong_listener = weak_listener.lock()) {
-                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                if (impl) {
+                if (auto cameraImp = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener)) {
                     auto camera = dynamic_pointer_cast<GenericRtspCamera>(device);
-                    auto stats_imp = impl->getCameraStatisticImp();
+                    auto stats_imp = cameraImp->getCameraStatisticImp();
                     if (stats_imp) {
                         auto params = stats_imp->getParams();
                         auto option = params.option;
-                        if (option.enableFailover && !impl->isEnabled()) {
+                        if (option.enableFailover && !cameraImp->isEnabled()) {
                             // this camera run in failover mode and actual camera connection run on prefered media server
                             return;
                         }
@@ -863,6 +958,27 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                         if (option.manufacturer != GENERIC_RTSP_CAMERA && !option.manufacturer.empty()) {
                             item["controller"]["status"] = params.device_stats.connect;
                             item["controller"]["errMsg"] = params.device_stats.status;
+                        } else {
+                            item["controller"] = Json::nullValue;
+                        }
+                        data.append(item);
+                    }
+                }
+
+                if (auto speakerImp = std::dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
+                    auto stats_imp = speakerImp->getSpeakerStatisticImp();
+                    if (stats_imp) {
+                        auto params = stats_imp->getParams();
+                        auto option = params.option;
+                        Json::Value item;
+                        item["deviceId"] = params.tuple.device_id;
+                        // Currently, the speaker online status is determined based on the ONVIF connection status.
+                        item["status"] = params.connect;
+                        item["errMsg"] = params.status;
+                        // Get controller status
+                        if (!option.manufacturer.empty()) {
+                            item["controller"]["status"] = params.connect;
+                            item["controller"]["errMsg"] = params.status;
                         } else {
                             item["controller"] = Json::nullValue;
                         }
@@ -933,13 +1049,26 @@ static Json::Value getOnvifProfileJsonArray(const std::vector<OnvifMediaProfile>
     return ret;
 }
 
+static Json::Value getVendorFeatureSupportJson(const VendorFeatureSupport &features) {
+    Json::Value ret = Json::objectValue;
+    ret["requiresSeparateCredential"] = features.requiresSeparateCredential;
+    ret["supportsVendorFeatures"] = features.supportsVendorFeatures;
+
+    Json::Value featureArray = Json::arrayValue;
+    for (const auto &feature : features.supportedVendorFeatures) {
+        featureArray.append(feature);
+    }
+    ret["supportedVendorFeatures"] = featureArray;
+
+    return ret;
+}
+
 Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const DeviceCapabilities* caps) {
     Json::Value data;
     auto weak_listener = device->getListener();
     if (auto strong_listener = weak_listener.lock()) {
-        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-        if (impl) {
-            auto option = impl->getCameraOption();
+        if (auto cameraImp = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener)) {
+            auto option = cameraImp->getCameraOption();
             data["deviceId"] = device->getDeviceTuple().device_id;
             if (caps->isOnvifDevice) {
                 data["onvifDevice"] = true;
@@ -988,6 +1117,33 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
             data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
             data["supportsSdCardPlayback"] = false;
+            data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
+        }
+
+        if (auto speakerImp = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
+            auto option = speakerImp->getSpeakerOption();
+            data["deviceId"] = device->getDeviceTuple().device_id;
+            data["onvifDevice"] = caps->isOnvifDevice;
+            auto deviceInfo = caps->onvifProfile.deviceInfo;
+            data["manufacturer"] = deviceInfo.manufacturer;
+            data["model"] = deviceInfo.model;
+            data["serialNumber"] = deviceInfo.serialNumber;
+            data["firmwareVersion"] = deviceInfo.firmwareVersion;
+            data["hardwareId"] = deviceInfo.hardwareId;
+            data["macAddress"] = deviceInfo.macAddress;
+            data["hasWebPage"] = true;
+            data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort);                                
+            auto mediaProfiles = caps->onvifProfile.mediaProfiles;
+            Json::Value onvifProfileJson = Json::objectValue;
+            onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
+            onvifProfileJson["isPTZ"] = false;
+            onvifProfileJson["ptzControlMode"] = Json::arrayValue;
+            data["onvifProfiles"] = onvifProfileJson;
+            data["motionDetection"]["mediaSupport"] = false;
+            data["enableAutoProfile"] = false;
+            data["enableOnvifProfileConfig"] = false;
+            data["supportsSdCardPlayback"] = false;
+            data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
         }
     }
     return data;
@@ -1220,14 +1376,34 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     return val;
 }
 
+Json::Value makeSpeakerOptionJson(const SpeakerOption &option) {
+    Json::Value val;
+    // Basic info
+    val["name"]         = option.name;
+    val["manufacturer"] = option.manufacturer;
+    val["model"]        = option.model;
+    val["ip"]           = option.ip;
+    val["port"]         = option.port;
+    val["username"]     = option.username;
+    val["password"]     = option.password;
+
+    val["preferedMediaServer"]     = option.preferedMediaServer;
+    val["enableActive"]            = option.enableActive;
+
+    // Web access
+    val["webPort"]                 = option.webPort;
+    val["autoWebPort"]             = option.autoWebPort;
+
+    return val;
+}
+
 Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
     Json::Value item;
     auto weak_listener = device->getListener();
     if (auto strong_listener = weak_listener.lock()) {
-        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-        if (impl) {
-            auto camera = impl->getCameraSource();
-            auto stats_imp = impl->getCameraStatisticImp();
+        if (auto cameraImp = std::dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener)) {
+            auto camera = cameraImp->getCameraSource();
+            auto stats_imp = cameraImp->getCameraStatisticImp();
             if (stats_imp) {
                 auto params = stats_imp->getParams();
                 auto option = params.option;
@@ -1265,6 +1441,26 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
                 // Get stream reader count
                 item["readerAvailableOnMServer"] = GlobalMonitor::Instance().isReaderCountAvailable();
                 item["readerAvailablePerCamera"] = GlobalMonitor::Instance().isReaderCountAvailable(params.tuple.device_id);
+            }
+        }
+
+        if (auto speakerImp = std::dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
+            auto stats_imp = speakerImp->getSpeakerStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                auto option = params.option;
+                item["deviceId"] = params.tuple.device_id;
+                // Currently, the speaker online status is determined based on the ONVIF connection status.
+                item["status"] = params.connect;
+                item["errMsg"] = params.status;
+                // Get controller status
+                if (!option.manufacturer.empty()) {
+                    item["controller"]["status"] = params.connect;
+                    item["controller"]["errMsg"] = params.status;
+                } else {
+                    item["controller"] = Json::nullValue;
+                }
+                item["options"] = makeSpeakerOptionJson(option);
             }
         }
     }

@@ -5,6 +5,8 @@
 #include <functional>
 #include "json/json.h"
 #include "Camera/CameraManager.h"
+#include "Speaker/SpeakerManager.h"
+#include "Speaker/AudioFileManager.h"
 
 namespace managerkit {
 

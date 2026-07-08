@@ -2,13 +2,14 @@
 #define CAMERA_GENERICRTSPCAMERA_H
 
 #include "Common/DeviceSource.h"
+#include "Common/DeviceOption.h"
 #include "StreamSource.h"
 
 #define GENERIC_RTSP_CAMERA "GENERIC-RTSP"
 
 namespace managerkit {
 
-class CameraOption {
+class CameraOption : public DeviceOption {
 public:
     CameraOption() {
         // todo: load default value from database
@@ -17,23 +18,8 @@ public:
     // camera name 
     std::string name;
 
-    // camera manufacturer
-    std::string manufacturer;
-
     // camera model
     std::string model;
-
-    // camera IP address or domain name
-    std::string ip;
-
-    // camera http port
-    int port = 0;
-
-    // camera credential username
-    std::string username;
-
-    // camera credential password
-    std::string password;
 
     // whether to disable primary stream
     bool disablePrimaryStream = false;
@@ -97,12 +83,6 @@ public:
 
     // whether to disable audio
     bool disableAudio = false;
-
-    // web port for camera web access, use if useDefaultWebPort is false
-    int webPort = 0;
-
-    // whether to use default web port 80
-    bool autoWebPort = true;
 
     // keep config of profile and stream changed from camera web page
     bool keepConfigProfileAndStream = false;

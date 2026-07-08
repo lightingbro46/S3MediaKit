@@ -11,6 +11,9 @@ namespace managerkit {
 
 bool eligibleForPrimaryStream(string vcodec, int width, int height, int bitrate, int fps) {
     // todo: select by width, height and bitrate
+    if (vcodec.empty() && width == 0 && height == 0 && bitrate == 0 && fps == 0.0f) {    // IP Speaker
+        return true;
+    }
     if (vcodec == "H264" && height >= 1080) {
         return true;
     }
