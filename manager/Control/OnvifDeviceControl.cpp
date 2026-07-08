@@ -259,11 +259,11 @@ bool OnvifControl::getDeviceInformation() {
     _deviceInfo.firmwareVersion = GetDeviceInformationResponse.FirmwareVersion;
     _deviceInfo.serialNumber = GetDeviceInformationResponse.SerialNumber;
     _deviceInfo.hardwareId = GetDeviceInformationResponse.HardwareId;
-    DebugL << "Manufacturer:     " << _deviceInfo.manufacturer;
-    DebugL << "Model:            " << _deviceInfo.model;
-    DebugL << "FirmwareVersion:  " << _deviceInfo.firmwareVersion;
-    DebugL << "SerialNumber:     " << _deviceInfo.serialNumber;
-    DebugL << "HardwareId:       " << _deviceInfo.hardwareId;
+    TraceL << "Manufacturer:     " << _deviceInfo.manufacturer;
+    TraceL << "Model:            " << _deviceInfo.model;
+    TraceL << "FirmwareVersion:  " << _deviceInfo.firmwareVersion;
+    TraceL << "SerialNumber:     " << _deviceInfo.serialNumber;
+    TraceL << "HardwareId:       " << _deviceInfo.hardwareId;
     return true;
 }
 
@@ -343,7 +343,7 @@ bool OnvifControl::getDeviceCapabilities() {
             return false;
         }
         if (GetProfilesResponse.Profiles[0]->PTZConfiguration) {
-            DebugL << "MediaProfile token for PTZ:" << GetProfilesResponse.Profiles[0]->token;
+            TraceL << "MediaProfile token for PTZ:" << GetProfilesResponse.Profiles[0]->token;
             _ptzProfile.strMediaProfileToken = GetProfilesResponse.Profiles[0]->token;
 
             _tptz__GetConfigurationOptions *GetConfigurationOptions = soap_new__tptz__GetConfigurationOptions(_m_soap);
@@ -366,7 +366,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 _ptzProfile.absMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace[0]->YRange->Max;
                 _ptzProfile.absMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsoluteZoomPositionSpace[0]->XRange->Min;
                 _ptzProfile.absMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsoluteZoomPositionSpace[0]->XRange->Max;
-                DebugL << "AbsoluteMove supported: Pan[" << _ptzProfile.absMinPan << "~" << _ptzProfile.absMaxPan << "] Tilt[" << _ptzProfile.absMinTilt << "~" << _ptzProfile.absMaxTilt
+                TraceL << "AbsoluteMove supported: Pan[" << _ptzProfile.absMinPan << "~" << _ptzProfile.absMaxPan << "] Tilt[" << _ptzProfile.absMinTilt << "~" << _ptzProfile.absMaxTilt
                     << "] Zoom[" << _ptzProfile.absMinZoom << "~" << _ptzProfile.absMaxZoom << "]";
             }
 
@@ -378,7 +378,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 _ptzProfile.consMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace[0]->YRange->Max;
                 _ptzProfile.consMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousZoomVelocitySpace[0]->XRange->Min;
                 _ptzProfile.consMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousZoomVelocitySpace[0]->XRange->Max;
-                DebugL << "ContinuousMove supported: Pan[" << _ptzProfile.consMinPan << "~" << _ptzProfile.consMaxPan << "] Tilt[" << _ptzProfile.consMinTilt << "~" << _ptzProfile.consMaxTilt
+                TraceL << "ContinuousMove supported: Pan[" << _ptzProfile.consMinPan << "~" << _ptzProfile.consMaxPan << "] Tilt[" << _ptzProfile.consMinTilt << "~" << _ptzProfile.consMaxTilt
                     << "] Zoom[" << _ptzProfile.consMinZoom << "~" << _ptzProfile.consMaxZoom << "]";
             }
 
@@ -390,7 +390,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 _ptzProfile.relMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace[0]->YRange->Max;
                 _ptzProfile.relMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativeZoomTranslationSpace[0]->XRange->Min;
                 _ptzProfile.relMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativeZoomTranslationSpace[0]->XRange->Max;
-                DebugL << "RelativeMove supported: Pan[" << _ptzProfile.relMinPan << "~" << _ptzProfile.relMaxPan << "] Tilt[" << _ptzProfile.relMinTilt << "~" << _ptzProfile.relMaxTilt
+                TraceL << "RelativeMove supported: Pan[" << _ptzProfile.relMinPan << "~" << _ptzProfile.relMaxPan << "] Tilt[" << _ptzProfile.relMinTilt << "~" << _ptzProfile.relMaxTilt
                     << "] Zoom[" << _ptzProfile.relMinZoom << "~" << _ptzProfile.relMaxZoom << "]";
             }
 
@@ -401,7 +401,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 _ptzProfile.isHomePresetEnable = false;
                 _ptzProfile.homePresetToken = "";
                 _ptzProfile.presetMap.clear();
-                DebugL << "Preset is not supported since AbsoluteMove is not supported";
+                TraceL << "Preset is not supported since AbsoluteMove is not supported";
             }
         }
     }
@@ -1457,7 +1457,7 @@ bool OnvifControl::getPTZPresets() {
             auto pAbsTilt = preset->PTZPosition->PanTilt ? preset->PTZPosition->PanTilt->y : 0.0f;
             auto pAbsZoom = preset->PTZPosition->Zoom ? preset->PTZPosition->Zoom->x : 0.0f;
 
-            DebugL << "Preset token: " << pToken << " name: " << pName << " pan: " << pAbsPan << " tilt: " << pAbsTilt << " zoom: " << pAbsZoom;
+            TraceL << "Preset token: " << pToken << " name: " << pName << " pan: " << pAbsPan << " tilt: " << pAbsTilt << " zoom: " << pAbsZoom;
             OnvifPTZProfile::PTZPreset p;
             p.Token = pToken;
             p.Name = pName;
@@ -1486,13 +1486,13 @@ bool OnvifControl::getPTZPresets() {
         //     homePreset.absZoom = zoom;
         //     _ptzProfile.homePresetToken = homePresetToken;
         //     _ptzProfile.presetMap.emplace(homePresetToken, std::move(homePreset));
-        //     DebugL << "Home preset is supported by setting preset with token: " << homePresetToken << " and name: " << homePresetName;
+        //     TraceL << "Home preset is supported by setting preset with token: " << homePresetToken << " and name: " << homePresetName;
         // }
     }
 
     _ptzProfile.isHomePresetEnable = isHomePresetEnable;
     _ptzProfile.homePresetToken = homePresetToken;
-    DebugL << (isHomePresetEnable ? "Home preset is supported" : "Home preset can be not found");
+    TraceL << (isHomePresetEnable ? "Home preset is supported" : "Home preset can be not found");
     return true;
 }
 
