@@ -10,7 +10,7 @@ using namespace toolkit;
 namespace managerkit {
 
 MigrationHistoryImp::~MigrationHistoryImp() {
-    removeFile(_folder_path);
+    // removeFile(_folder_path);
 }
 
 void MigrationHistoryImp::migrate(const string &files_string) {
