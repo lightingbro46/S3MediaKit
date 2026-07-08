@@ -67,12 +67,12 @@ Camera override
 
 Hiện backend mới triển khai camera override; group/project được giữ trong thiết kế để mở rộng.
 
-### 2.3 SegmentTierRange Và SegmentTierRecord
+### 2.3 SegmentTierRange
 
-Với mô hình mỗi camera ghi 1 segment MP4/phút, 300 camera trong 6 tháng tạo khoảng 77 triệu bản ghi nếu lưu từng segment lâu dài. Vì vậy backend dùng hai mức metadata:
+Với mô hình mỗi camera ghi 1 segment MP4/phút, 300 camera trong 6 tháng tạo khoảng 77 triệu bản ghi nếu lưu từng segment lâu dài. Vì vậy backend dùng metadata dạng range compact:
 
 - `segment_tier_ranges`: bảng chính, lưu trạng thái tier theo khoảng thời gian liên tục.
-- `segment_tier_records`: bảng chi tiết/compatibility ngắn hạn, tự xóa theo TTL cấu hình.
+- `segment_tier_records`: bảng chi tiết ngắn hạn, dùng hỗ trợ thao tác file-level khi cần; không còn là nguồn chọn camera/tiering chính.
 
 `segment_tier_ranges` lưu:
 
@@ -80,39 +80,64 @@ Với mô hình mỗi camera ghi 1 segment MP4/phút, 300 camera trong 6 tháng 
 - `camera_id`
 - `stream_id`
 - `tier`: `HOT`, `WARM`, `COLD`
-- `pool_id`
+- `pool_id`: bắt buộc, phải là id của một pool thật trong `storage_pools`
 - `status`: `AVAILABLE`, `RESTORING`, `EXPIRED`, `DELETED`, `MISSING`
 - `start_time`, `end_time`
 - `segment_count`, `size_bytes`
-- `path_pattern`
 
-`segment_tier_records` chỉ lưu từng segment trong TTL ngắn:
+Các luồng tiering, timeline, summary, playback và restore phải lấy `segment_tier_ranges` làm nguồn dữ liệu chính. `pool_id`, `source_pool_id`, `target_pool_id` không được rỗng; nếu không resolve được pool thật thì backend bỏ qua metadata/job hoặc fail ngay.
 
-- `camera_id`
-- `stream_id`
-- `segment_path`
-- `tier`: `HOT`, `WARM`, `COLD`
-- `pool_id`
-- `status`: `AVAILABLE`, `RESTORING`, `EXPIRED`, `DELETED`, `MISSING`
-- `start_time`, `end_time`
-- `file_size`
+### 2.4 Dữ Liệu `segment_tier_ranges` Được Lấy Từ Đâu
 
-Mọi API timeline/playback/restore/tiering nên ưu tiên `segment_tier_ranges`. Chỉ dùng `segment_tier_records` để tương thích API cũ, debug ngắn hạn hoặc xử lý chi tiết trong khoảng còn TTL.
+`segment_tier_ranges` được tạo/cập nhật từ các nguồn sau:
 
-### 2.4 TierStorageManager
+1. **Luồng ghi hình local/HOT**
+   - `MP4Recorder` emit `Broadcast::kBroadcastRecordMP4` sau khi file `.tmp` đã close và rename sang `.mp4`.
+   - `TierStorageManager` nhận `RecordInfo`, lấy `camera_id`, `stream_id`, `start_time`, `time_len`, `file_size`, `file_path`.
+   - Backend resolve HOT pool bằng longest-prefix match từ `file_path` với `mount_path/network_path` của các HOT pool enabled.
+   - Backend tạo `SegmentTierRange` tier `HOT`, đúng `pool_id`, status `AVAILABLE`, rồi gọi `mergeOrInsert(...)` để gộp các segment liền kề thành range compact.
+   - Nếu không match được HOT pool, segment không được ghi vào `segment_tier_ranges`.
+   - Timefile vẫn được ghi dưới `Protocol::kMP4SavePath`; `file_path` trong `TimeBlock` trỏ tới segment MP4 thật, có thể nằm ở HOT pool khác.
+
+2. **Luồng move tier thành công**
+   - Khi `tiering_jobs` move thành công, backend gọi `updateTierByRangeId(...)` để đổi tier/pool/status của đúng range đã move.
+   - Move LOCAL/NAS và object storage đều cập nhật range theo cùng nguyên tắc này.
+
+3. **Luồng expire/delete**
+   - Khi retention hoặc pressure delete cần hết hạn range, backend gọi `updateStatusByRangeId(...)` để chuyển status sang `EXPIRED`.
+
+4. **Luồng restore COLD**
+   - Khi truy cập segment COLD, backend dùng `splitWindowStatus(...)` để tách phần segment cần restore ra khỏi range lớn và đặt status `RESTORING`.
+   - Khi restore xong về cache, backend gọi `updateStatusByExactWindow(...)` trả status về `AVAILABLE`; tier/pool vẫn là COLD vì file restore chỉ nằm trong cache tạm.
+
+### 2.5 TierStorageManager
 
 `TierStorageManager` chịu trách nhiệm:
 
 - CRUD pool/policy.
 - Gán policy cho camera.
 - Kiểm tra health/capacity pool.
-- Sync metadata segment vào `segment_tier_ranges`; ghi `segment_tier_records` ngắn hạn để tương thích/debug.
+- Tạo HOT pool mặc định từ `Protocol::kMP4SavePath` nếu chưa có HOT pool.
+- Tạo/duy trì system default policy cố định `policy-system-default`.
+- Đọc metadata chính từ `segment_tier_ranges`.
 - Tạo và thực thi tiering job.
 - Upload segment lên MinIO/S3 qua `TierObjectStorage`.
+- Restore segment COLD về restore cache tạm theo `storage.restore_save_path`.
+- Ghi nhận HOT range từ event `kBroadcastRecordMP4` và reconcile định kỳ từ timefile.
 
-### 2.5 TierObjectStorage
+### 2.6 File Storage Backend
 
-`TierObjectStorage` quản lý client MinIO/S3 theo `pool_id`.
+Các pool dạng filesystem được tách theo backend:
+
+- `TierFileStorageBase`: helper chung register pool, test path, resolve path, copy qua file `.tmp`, rename atomic, delete, `statvfs`.
+- `TierLocalDiskStorage`: dùng cho `LOCAL_DISK`.
+- `TierNASStorage`: dùng cho `NAS`, hiện yêu cầu `network_path`/`mount_path` đã mount và writable; đây là hook để bổ sung stale-mount/retry/timeout.
+
+`TierStorageManager` chọn backend theo `StoragePool.type`; nghiệp vụ tiering không xử lý trực tiếp chi tiết copy/delete của từng backend.
+
+### 2.7 TierObjectStorage
+
+`TierObjectStorage` quản lý client MinIO/S3/ARCHIVE theo `pool_id`.
 
 Các hàm quan trọng:
 
@@ -125,12 +150,12 @@ Các hàm quan trọng:
 
 Đây là lớp nên được tái sử dụng cho restore segment từ COLD.
 
-### 2.6 Job Tables
+### 2.8 Job Tables
 
 Các bảng job/trạng thái hỗ trợ:
 
 - `tiering_jobs`: di chuyển segment giữa tier.
-- `restore_jobs`: khôi phục segment từ COLD về HOT/WARM để phát lại.
+- `restore_jobs`: theo dõi restore segment từ COLD về restore cache tạm.
 - `storage_alerts`: cảnh báo storage.
 - `protected_videos`: đoạn video được bảo vệ/evidence/locked.
 
@@ -147,12 +172,16 @@ POST /media/mserver/storage/pool/create
 Backend kiểm tra:
 
 - `name`, `type`, `tier` bắt buộc.
-- `LOCAL_DISK` cần `mount_path`.
-- `NAS` cần `mount_path` hoặc `network_path`.
+- `LOCAL_DISK` cần `mount_path` và được xử lý qua `TierLocalDiskStorage`.
+- `NAS` cần `mount_path` hoặc `network_path`, path phải được mount/writable và được xử lý qua `TierNASStorage`.
 - `MINIO/S3` cần `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key`.
 - `high_watermark_percent < critical_watermark_percent`.
 
-Sau khi tạo pool object storage, `TierStorageManager` cần register pool với `TierObjectStorage` để upload/download hoạt động.
+Sau khi tạo pool, `TierStorageManager` register pool vào backend tương ứng:
+
+- Object storage: `TierObjectStorage`.
+- Local disk: `TierLocalDiskStorage`.
+- NAS: `TierNASStorage`.
 
 ### 3.2 Test Connection
 
@@ -191,6 +220,22 @@ POST /media/mserver/storage/policy/assignCamera
 
 Từ thời điểm này, camera dùng policy được gán để quyết định chuyển tầng.
 
+### 3.5 System Default Policy
+
+Khi start, `TierStorageManager` đảm bảo tồn tại policy mặc định cố định:
+
+```text
+policy_id = policy-system-default
+name      = System Default
+source    = SYSTEM_DEFAULT
+```
+
+Policy này trỏ vào HOT pool mặc định có id `pool-default-hot`. Nếu chưa có HOT pool, backend tạo HOT pool mặc định từ `{Protocol::kMP4SavePath}/{Record::kAppName}` trước, sau đó tạo policy default.
+
+Khi gọi `/media/mserver/storage/policy/removeCamera`, backend chỉ xóa camera-level override trong `camera_policy_assignments`. Camera không được assign cứng về default; `getEffectivePolicy(camera_id)` tự fallback về `policy-system-default`.
+
+Lưu ý theo code hiện tại: `ensureDefaultHotPool()` chỉ tạo `pool-default-hot` khi chưa có HOT pool nào. `ensureSystemDefaultPolicy()` lại cần `pool-default-hot` để tạo policy mặc định mới. Nếu DB đã có HOT pool custom nhưng chưa có `pool-default-hot`, cần tạo system default policy qua migration/repair hoặc chỉnh code chọn HOT pool enabled hiện có.
+
 ## 4. Luồng Ghi Hình Và Ghi Nhận Segment
 
 Luồng ghi hình hiện tại tạo file MP4/HLS trong root cấu hình bởi:
@@ -198,66 +243,122 @@ Luồng ghi hình hiện tại tạo file MP4/HLS trong root cấu hình bởi:
 - `Protocol::kMP4SavePath`
 - `Record::kAppName`
 
-Để tiering hoạt động đúng, mỗi segment mới cần được gom vào `segment_tier_ranges`. Backend có thể ghi thêm `segment_tier_records`, nhưng bảng này chỉ giữ ngắn hạn.
+Timefile vẫn nằm dưới `{Protocol::kMP4SavePath}/{Record::kAppName}/{camera_id}`. Segment MP4 thật có thể nằm ở HOT pool khác; `TimeBlock.file_path` lưu absolute path thật của segment.
 
-Luồng đề xuất:
+Để tiering hoạt động đúng, mỗi segment mới cần được gom vào `segment_tier_ranges` với `pool_id` thật.
+
+Luồng cập nhật `segment_tier_ranges`:
 
 ```text
-Recorder tạo segment local
-  -> phát sinh segment_path, start_time, end_time, file_size
+MP4Recorder close/rename segment
+  -> emit kBroadcastRecordMP4
+  -> TierStorageManager resolve HOT pool từ RecordInfo.file_path
+  -> nếu không resolve được HOT pool: log và bỏ qua
   -> merge/upsert SegmentTierRange
       tier = HOT
-      pool_id = HOT pool id
+      pool_id = matched HOT pool id
       status = AVAILABLE
       segment_count += 1
       size_bytes += file_size
-  -> optional upsert SegmentTierRecord để debug/compatibility
 ```
 
-Nếu chưa có event realtime từ recorder, `TierStorageManager::syncSegmentRecords(...)` scan thư mục record theo chu kỳ và merge metadata vào range. Scanner phải kiểm tra range đã bao phủ segment trước khi cộng `segment_count/size_bytes` để không cộng lặp khi scan lại.
+Định kỳ, `TierStorageManager::reconcileHotRangesFromTimeFiles()` đọc timefile ở `kMP4SavePath` bằng `TimeQuery`, query từ `last_hot_range_end - overlap`, decode `TimeBlock.file_path`, rồi merge lại các HOT range bị thiếu.
 
 ## 5. Luồng Chuyển Tầng
 
-`TierStorageManager::runTieringCycle()` chạy định kỳ.
+`TierStorageManager::runTieringCycle()` chạy định kỳ bằng timer của `TierStorageManager` (hiện 300 giây/lần). Hàm này dispatch async sang `WorkThreadPool`.
 
-### 5.1 Chọn Segment Cần Move
+### 5.1 Các bước của một cycle
 
-Với mỗi camera:
+Luồng hiện tại theo code:
 
-1. Resolve effective policy.
-2. Sắp xếp tier theo thứ tự `HOT -> WARM -> COLD`.
-3. Query `segment_tier_ranges` theo tier/status/end_time.
-4. Với từng cặp tier liền kề:
-   - Tính `move_threshold = now - retain_until_days`.
-   - Query range `AVAILABLE` có `end_time <= threshold`.
-   - Bỏ qua range đang có job `PENDING/RUNNING`.
-   - Tạo `tiering_jobs`.
+1. Reset ticker và ghi log bắt đầu.
+2. Refresh `_pool_cache` từ `storage_pools`.
+3. Gọi `ensureSystemDefaultPolicy()` để đảm bảo policy `policy-system-default` tồn tại.
+4. Gọi `reconcileHotRangesFromTimeFiles()` để bù HOT range còn thiếu từ timefile.
+5. Query `tiering_jobs` trạng thái `PENDING` và execute trước.
+6. Lấy danh sách camera có dữ liệu `AVAILABLE`:
+   - Từ `segment_tier_ranges.findDistinctAvailableCameras()`.
+7. Với từng camera:
+   - `getEffectivePolicy(camera_id)`.
+   - Nếu có policy hiệu lực, chạy `processCameraTiering(camera_id, policy)`.
+   - Chạy `processCameraPressureTiering(camera_id, policy)`.
+   - Chạy `enforceCameraArchiveRetention(camera_id)`.
+8. Ghi log thời gian hoàn tất.
 
-### 5.2 Move LOCAL/NAS
+### 5.2 Move Theo Tuổi Dữ Liệu
+
+`processCameraTiering()` xử lý move theo `retain_until_days`.
+
+Với từng cặp tier liền kề sau khi sort `HOT -> WARM -> COLD`:
+
+1. Bỏ qua nếu source/destination tier disabled.
+2. Bỏ qua nếu source hoặc destination `pool_id` rỗng.
+3. Tính:
+
+```text
+move_threshold = now - source_tier.retain_until_days * 86400
+move_threshold không được mới hơn now - min_segment_age_minutes_before_move
+```
+
+4. Query `segment_tier_ranges` theo source tier và age.
+5. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
+
+`queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị.
+
+`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window.
+
+### 5.3 Move Sớm Khi Pool HOT/WARM Đầy
+
+`processCameraPressureTiering()` xử lý trường hợp pool source vượt `high_watermark_percent` trước khi dữ liệu đạt `move_threshold`.
+
+Điều kiện chính:
+
+- Source/destination tier enabled.
+- Source/destination `pool_id` không rỗng.
+- Destination pool tồn tại và chưa vượt `critical_watermark_percent`.
+- Source pool trong policy tồn tại và usage >= `high_watermark_percent`.
+- Range source đang `AVAILABLE`.
+- Range đủ ổn định theo `min_segment_age_minutes_before_move`, tối thiểu 60 giây.
+
+Luồng này cũng tạo `tiering_jobs` qua `queueTierMoveJob(..., pressure=true)`. Mục tiêu reclaim xấp xỉ tới dưới high watermark 5%.
+
+### 5.4 Retention Theo CameraOption
+
+`enforceCameraArchiveRetention()` giữ ý nghĩa hiện tại của cấu hình từng camera:
+
+- `keepArchivedMaxFor`: nếu không auto và > 0, dữ liệu cũ hơn mốc này được expire kể cả khi storage còn dung lượng.
+- `keepArchivedMinFor`: dữ liệu mới hơn mốc này được bảo vệ khỏi xóa khi pressure; pressure move vẫn được phép vì không làm mất dữ liệu.
+
+Nếu HOT/WARM pool critical, backend expire các range đủ cũ và không còn trong vùng protected minimum.
+
+Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại trong cache. Nếu range thiếu pool hoặc pool không tồn tại, backend return ngay và không fallback sang `kMP4SavePath`.
+
+### 5.5 Move LOCAL/NAS
 
 Nếu target pool là local/NAS:
 
 ```text
-copy file sang mount_path/network_path
+resolve backend theo pool.type:
+  LOCAL_DISK -> TierLocalDiskStorage
+  NAS        -> TierNASStorage
+require source_pool_id/target_pool_id non-empty và tồn tại
+copy file sang mount_path/network_path qua file .tmp
   -> verify copy
   -> remove source
-  -> update SegmentTierRecord.tier/pool_id/status
   -> update SegmentTierRange.tier/pool_id/status cho window đã move
   -> update tiering job DONE/FAILED
 ```
 
-### 5.3 Move MINIO/S3
+### 5.6 Move MINIO/S3/ARCHIVE
 
-Nếu target pool là MinIO/S3:
+Nếu target pool là MinIO/S3/ARCHIVE:
 
 ```text
 resolve local_path
+  -> require source_pool_id non-empty và source pool có mount_path/network_path
   -> s3_key = base_path/camera_id/stream_id/segment_path.mp4
   -> uploadSegment(pool_id, local_path, s3_key)
-  -> update SegmentTierRecord:
-       tier = COLD
-       pool_id = cold_pool_id
-       status = AVAILABLE
   -> update SegmentTierRange:
        tier = COLD
        pool_id = cold_pool_id
@@ -265,6 +366,8 @@ resolve local_path
   -> unlink local file sau khi upload thành công
   -> update tiering job
 ```
+
+Nếu không resolve được source pool hoặc local path từ `pool_id`, job fail ngay; backend không đoán lại path bằng `kMP4SavePath`.
 
 Quy ước object key:
 
@@ -298,6 +401,8 @@ Backend ưu tiên đọc `segment_tier_ranges` và trả:
 - `segment_count`
 
 FE dùng response này để vẽ timeline HOT/WARM/COLD.
+
+Nếu không có metadata trong `segment_tier_ranges` hoặc detail record hợp lệ, backend trả rỗng/NOT_FOUND; không tạo range giả `HOT` với `pool_id` rỗng.
 
 ### 6.2 Camera Summary
 
@@ -432,17 +537,15 @@ Nhược điểm:
 
 Hiện tại dùng phương án A làm hook chính. Phương án B vẫn có thể bổ sung sau như pre-check tối ưu cho VOD playback.
 
-### 8.2 Hàm Helper Đề Xuất
+### 8.2 Hàm Helper Hiện Tại
 
-Tạo helper mới, ví dụ:
+`TierStorageManager` hiện có helper:
 
 ```text
-TierStorageManager::resolveSegmentByLocalPath(file_path)
-TierStorageManager::requestRestoreForSegment(segment, target_tier, reason)
-TierStorageManager::getOrCreateRestoreJob(camera_id, start_time, end_time, target_tier, reason)
+TierStorageManager::handleColdAccessByPath(file_path)
 ```
 
-Hoặc tạo lớp riêng:
+Có thể tách riêng thành `TierRestoreManager` sau nếu luồng restore phức tạp hơn:
 
 ```text
 manager/Local/TierRestoreManager.h
@@ -451,14 +554,14 @@ manager/Local/TierRestoreManager.cpp
 
 Trách nhiệm:
 
-- Parse `file_path` hoặc `MediaInfo` thành segment identity.
+- Parse `file_path` thành `camera_id`, `stream_id`, `segment_path`, timestamp.
 - Tìm `SegmentTierRange` chứa timestamp của segment.
 - Nếu range `tier != COLD`, không xử lý.
 - Nếu range `COLD`:
   - Nếu đang `RESTORING`, trả job hiện có.
   - Nếu chưa có job, tạo restore job.
   - Split range lớn thành `before / requested segment / after` để chỉ segment được truy cập chuyển sang `RESTORING`.
-  - Dispatch task tải object từ MinIO/S3 về local restore cache hoặc HOT pool.
+  - Dispatch task tải object từ MinIO/S3 về `storage.restore_save_path`.
 
 ### 8.3 Response Khi Truy Cập File COLD
 
@@ -513,9 +616,8 @@ worker:
   -> s3_key = makeS3Key(base_path, camera_id, stream_id, segment_path)
   -> local_path = restore target path
   -> downloadSegment(pool_id, s3_key, local_path.tmp)
-  -> fsync/rename .tmp -> .mp4
-  -> update requested SegmentTierRange tier = HOT, status = AVAILABLE
-  -> optional update SegmentTierRecord nếu bản ghi chi tiết còn tồn tại
+  -> rename .restore -> .mp4
+  -> update requested SegmentTierRange status = AVAILABLE
   -> update RestoreJob DONE
 ```
 
@@ -527,42 +629,32 @@ update SegmentTierRange status = AVAILABLE hoặc MISSING tùy lỗi
 ghi error_message
 ```
 
-### 8.5 Restore Target Path
+### 8.5 Restore Target Path Hiện Tại
 
-Có hai lựa chọn:
-
-#### Lựa chọn 1: Restore về HOT path gốc
+Code hiện tại restore segment COLD về cache riêng, không ghi ngược vào HOT pool:
 
 ```text
-{mp4_save_path}/{Record::kAppName}/{camera_id}/{stream_id}/{segment_path}.mp4
+{storage.restore_save_path}/{camera_id}/{stream_id}/{segment_path}.mp4
 ```
 
-Ưu điểm:
-
-- Luồng phát file hiện tại không cần đổi nhiều.
-- Sau khi restore xong, request URL cũ có thể đọc được file.
-
-Nhược điểm:
-
-- Có thể làm HOT pool đầy.
-- Cần cleanup file restored theo TTL.
-
-#### Lựa chọn 2: Restore về cache riêng
+Luồng ghi file:
 
 ```text
-{mp4_save_path}/restore_cache/{camera_id}/{stream_id}/{segment_path}.mp4
+download object -> {path}.restore
+rename atomic  -> {path}.mp4
+update RestoreJob DONE
+update SegmentTierRange status = AVAILABLE
 ```
+
+Range được restore vẫn giữ `tier = COLD` và `pool_id = cold_pool_id`. File restore nằm trong cache tạm để phục vụ request retry, không được tính là dữ liệu HOT chính thức.
 
 Ưu điểm:
 
 - Tách dữ liệu restore tạm khỏi dữ liệu HOT thật.
-- Dễ cleanup theo TTL.
+- Không làm HOT pool đầy do dữ liệu restore.
+- Có thể cleanup theo TTL độc lập.
 
-Nhược điểm:
-
-- Cần map URL/file_path sang cache path trong `HttpFileManager`.
-
-Khuyến nghị giai đoạn đầu: restore về HOT path gốc để tận dụng playback hiện tại, sau đó bổ sung cleanup TTL.
+Cleanup hiện dựa trên `restore_jobs`: job `DONE` có `updated_at <= now - storage.restore_ttl_seconds` sẽ bị xử lý xóa cache, sau đó update status sang `EXPIRED` để không quét lặp. Đường dẫn file restore được lấy từ metadata của job và layout `{storage.restore_save_path}/{camera_id}/{stream_id}/{segment_path}.mp4`.
 
 ### 8.6 Chống Tạo Trùng Job
 
@@ -690,40 +782,38 @@ Các thông tin cần hiển thị:
 - Expired segments chờ duyệt.
 - Protected/evidence video ranges.
 
-## 12. Đề Xuất API/Code Bổ Sung
+## 12. Cấu Hình Và Hook Nội Bộ
 
 ### 12.1 Backend Config
 
-Thêm cấu hình:
+Các cấu hình liên quan trong codebase hiện tại:
 
 ```ini
 storage.auto_restore_on_record_access=1
-storage.restore_target_tier=HOT
-storage.restore_cache_ttl_seconds=3600
-storage.restore_max_concurrency=4
-storage.restore_retry_count=3
-storage.segment_record_ttl_seconds=604800
+storage.auto_restore_max_concurrent=5
+storage.restore_save_path=/dev/shm/restore
+storage.restore_ttl_seconds=3600
 ```
 
-`storage.segment_record_ttl_seconds` điều khiển TTL của `segment_tier_records`. Giá trị mặc định nên ngắn, ví dụ 7 ngày. `segment_tier_ranges` là bảng chính nên không bị xóa theo TTL này; chỉ range `DELETED/EXPIRED` có thể cleanup bằng retention riêng.
+`segment_tier_ranges` là bảng metadata chính của luồng tiering nên không bị cleanup bằng TTL ngắn hạn. Chỉ các range `DELETED/EXPIRED` nên được cleanup bằng retention riêng sau khi không còn cần cho timeline, thống kê hoặc audit.
+
+`storage.restore_save_path` là thư mục restore cache tạm. `storage.restore_ttl_seconds` được áp dụng thông qua `restore_jobs`: job `DONE` quá TTL sẽ được đánh dấu `EXPIRED` sau khi xóa file cache tương ứng.
 
 ### 12.2 TierStorageManager API Nội Bộ
 
-Đề xuất thêm:
+Hook nội bộ hiện có/phục vụ luồng autorestore:
 
 ```cpp
-struct RestoreRequestResult {
+struct ColdAccessRestoreResult {
     bool handled = false;
-    bool ready = false;
     std::string job_id;
     std::string status;
     std::string message;
     int estimated_restore_seconds = 120;
 };
 
-RestoreRequestResult TierStorageManager::handleColdAccessByPath(
-    const std::string &file_path,
-    const MediaInfo &media_info);
+ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(
+    const std::string &file_path);
 ```
 
 Logic:
@@ -775,17 +865,17 @@ if (!is_hls && !File::fileExist(file_path)) {
 void RestoreWorker::execute(RestoreJob job) {
     updateJob(job_id, RUNNING);
 
-    for each segment in job window:
-        pool = getPool(segment.pool_id)
-        key = TierObjectStorage::makeS3Key(pool.base_path, camera_id, stream_id, segment_path)
-        local_tmp = local_path + ".restore"
+    pool = source_pool_from_cold_range.pool_id
+    key = TierObjectStorage::makeS3Key(pool.base_path, camera_id, stream_id, segment_path)
+    restore_path = storage.restore_save_path + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4"
+    local_tmp = restore_path + ".restore"
 
-        ok = objectStorage.downloadSegment(pool.id, key, local_tmp)
-        if (!ok) fail
+    ok = objectStorage.downloadSegment(pool.id, key, local_tmp)
+    if (!ok) fail
 
-        rename(local_tmp, local_path)
-        update segment tier/status/pool
-        update processed_bytes
+    rename(local_tmp, restore_path)
+    update SegmentTierRange status = AVAILABLE
+    update processed_bytes
 
     updateJob(job_id, DONE)
 }
@@ -796,21 +886,21 @@ void RestoreWorker::execute(RestoreJob job) {
 - Không block event poller/HTTP thread khi download từ MinIO/S3.
 - Cần giới hạn số restore đồng thời để tránh bão I/O.
 - Cần chống job trùng khi player retry liên tục.
-- Cần cleanup restored file nếu restore về HOT path gốc.
+- Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; job đã cleanup chuyển sang `EXPIRED`.
 - Cần verify checksum/size sau download.
 - Cần xử lý Range request nếu client phát MP4 bằng byte-range:
   - Nếu file chưa restore xong, trả `202`.
-  - Khi restore xong, request Range tiếp theo đọc local file bình thường.
+  - Khi restore xong, request Range tiếp theo cần map sang restore cache.
 - Với HLS, nên restore cả playlist window trước khi player request từng segment.
 - Nếu object trên MinIO mất, update segment `MISSING` và job `FAILED`.
 
 ## 14. Thứ Tự Triển Khai Khuyến Nghị
 
 1. Hoàn thiện `restore_jobs` repository và restore worker thực thi thật.
-2. Thêm helper resolve segment từ `file_path`/`MediaInfo`.
+2. Hoàn thiện helper resolve segment từ `file_path`.
 3. Hook `HttpFileManager::accessFile` khi local file missing.
 4. Trả `202 + code 300056 + job_id` khi COLD restore được trigger.
-5. Tải object từ MinIO/S3 về HOT path hoặc restore cache.
+5. Tải object từ MinIO/S3 về `storage.restore_save_path`.
 6. Update `SegmentTierRange` và `RestoreJob` khi restore hoàn tất.
-7. Bổ sung cleanup TTL cho restored file.
+7. Cleanup TTL dựa trên `restore_jobs` trạng thái `DONE`.
 8. Bổ sung metrics/alert cho restore throughput, failures, queue depth.

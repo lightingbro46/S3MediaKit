@@ -780,7 +780,7 @@ Request body giống **tạo policy**, thêm field `id`.
 
 **POST** `/media/mserver/storage/policy/removeCamera`
 
-Sau khi xóa, camera sẽ dùng policy từ group → project → system default.
+Sau khi xóa, backend chỉ xóa camera-level override trong `camera_policy_assignments`. Camera không bị gán cứng về policy mặc định; khi resolve policy hiệu lực, camera sẽ tự fallback về `SYSTEM_DEFAULT`.
 
 ### Request body
 
@@ -812,17 +812,18 @@ Sau khi xóa, camera sẽ dùng policy từ group → project → system default
     "camera_id": "cam-003",
     "camera_name": "GT.003_HoaCuong_N4-CMT8-LeThanhNghi",
     "policy_id": "policy-default-traffic",
+    "effective_policy_id": "policy-default-traffic",
     "policy_name": "Default Traffic",
-    "source": "GROUP",
-    "source_id": "group-traffic",
+    "source": "CAMERA",
+    "source_id": "cam-003",
     "allow_camera_override": true
   }
 }
 ```
 
-`source` có thể là: `CAMERA` / `GROUP` / `PROJECT` / `SYSTEM_DEFAULT`
+`source` hiện tại backend trả về: `CAMERA` hoặc `SYSTEM_DEFAULT`.
 
-> FE dùng để hiển thị nguồn policy và quyết định có hiển thị nút **[Khôi phục theo group/project]** hay không.
+> FE dùng `policy_id` để xác định camera có camera-level override hay chưa. Khi `source = SYSTEM_DEFAULT`, backend trả `policy_id = ""`, `source_id = ""`, và trả thêm `effective_policy_id = "policy-system-default"` để FE vẫn biết policy thực tế đang có hiệu lực.
 
 ---
 
@@ -854,8 +855,9 @@ Không bắt buộc tham số.
       {
         "camera_id": "cam-001",
         "camera_name": "GT.001_NguyenVanLinh",
-        "policy_id": "policy-default-traffic",
-        "policy_name": "Default Traffic",
+        "policy_id": "",
+        "effective_policy_id": "policy-system-default",
+        "policy_name": "System Default",
         "source": "SYSTEM_DEFAULT",
         "source_id": "",
         "allow_camera_override": true
@@ -864,6 +866,7 @@ Không bắt buộc tham số.
         "camera_id": "cam-003",
         "camera_name": "GT.003_HoaCuong_N4-CMT8-LeThanhNghi",
         "policy_id": "policy-high-priority",
+        "effective_policy_id": "policy-high-priority",
         "policy_name": "High Priority",
         "source": "CAMERA",
         "source_id": "cam-003",
@@ -878,10 +881,11 @@ Không bắt buộc tham số.
 |--------|------|-------|
 | `camera_id` | `string` | ID camera |
 | `camera_name` | `string` | Tên camera để FE hiển thị |
-| `policy_id` | `string` | Policy hiệu lực, rỗng nếu chưa có policy |
+| `policy_id` | `string` | Camera override policy id. Rỗng khi camera đang dùng `SYSTEM_DEFAULT` |
+| `effective_policy_id` | `string` | Policy thực tế đang có hiệu lực. Với default hiện là `policy-system-default` |
 | `policy_name` | `string` | Tên policy hiệu lực |
 | `source` | `PolicySource` | Nguồn policy hiệu lực |
-| `source_id` | `string` | ID nguồn áp dụng policy. Với `CAMERA` là `camera_id`; với default có thể rỗng |
+| `source_id` | `string` | Với `CAMERA` là `camera_id`; với `SYSTEM_DEFAULT` là rỗng |
 | `allow_camera_override` | `boolean` | Có cho phép camera override policy hay không |
 
 > FE dùng API này cho màn hình tổng quan gán policy: bảng camera, tên camera, policy đang áp dụng và nguồn áp dụng.
@@ -1003,7 +1007,7 @@ API này mở rộng `/media/mserver/recordedTimePeriod` — trả về thêm th
     "camera_name": "GT.003_HoaCuong_N4-CMT8-LeThanhNghi",
     "policy_id": "policy-default-traffic",
     "policy_name": "Default Traffic",
-    "policy_source": "GROUP",
+    "policy_source": "CAMERA",
     "total_size_bytes": 1420000000000,
     "total_segment_count": 29370,
     "tier_summary": [
@@ -1343,6 +1347,41 @@ API này mở rộng `/media/mserver/recordedTimePeriod` — trả về thêm th
   "job_id": "tiering-job-000001"
 }
 ```
+
+---
+
+## 6.5 Luồng backend tạo và xử lý tiering job
+
+`TierStorageManager::runTieringCycle()` chạy định kỳ trong backend, hiện được timer gọi mỗi 300 giây. API FE không gọi trực tiếp hàm này, nhưng các API `tieringJob/list`, dashboard và timeline phản ánh kết quả của chu kỳ này.
+
+Luồng hiện tại:
+
+1. Refresh `_pool_cache` từ bảng `storage_pools`.
+2. Đảm bảo system default policy cố định `policy-system-default` tồn tại.
+3. Thực thi toàn bộ `tiering_jobs` trạng thái `PENDING` còn tồn từ chu kỳ trước.
+4. Lấy danh sách camera có dữ liệu `AVAILABLE` từ `segment_tier_ranges`.
+5. Với từng camera:
+   - Resolve effective policy.
+   - Chạy move theo tuổi dữ liệu (`processCameraTiering`).
+   - Chạy move sớm khi pool HOT/WARM vượt high watermark (`processCameraPressureTiering`).
+   - Chạy retention/delete theo `CameraOption::keepArchivedMaxFor` và bảo vệ xóa theo `keepArchivedMinFor`.
+6. Ghi log thời gian hoàn tất chu kỳ.
+
+Quy tắc dữ liệu:
+
+| Nguồn metadata | Vai trò |
+|----------------|---------|
+| `segment_tier_ranges` | Nguồn chính, lưu range compact theo camera/stream/tier/pool/status |
+| `tiering_jobs` | Queue move thực tế. Job `PENDING` được execute trước khi tạo job mới |
+
+`pool_id`, `source_pool_id` và `target_pool_id` trong các bảng tiering là bắt buộc, không được rỗng, và phải trỏ tới một pool thật.
+
+`segment_tier_ranges` được cập nhật từ các luồng chính:
+
+- Ghi hình HOT: nhận `Broadcast::kBroadcastRecordMP4`, resolve HOT pool từ `RecordInfo.file_path`, parse `segment_path`, tính `start_time/end_time/file_size`, rồi `mergeOrInsert(...)` vào range HOT đúng `pool_id`. Reconcile định kỳ đọc timefile ở `kMP4SavePath` bằng `TimeQuery` và decode `TimeBlock.file_path` để bù range thiếu.
+- Move tier thành công: `updateTierByWindow(...)` đổi tier/pool/status cho window đã move.
+- Expire/delete: `updateStatusByRangeId(...)` chuyển range sang `EXPIRED`.
+- Restore COLD: `splitWindowStatus(...)` tách segment cần restore sang `RESTORING`, sau đó `updateStatusByExactWindow(...)` trả về `AVAILABLE` khi restore xong.
 
 ---
 
@@ -1773,7 +1812,8 @@ export interface StorageAdvancedRules {
 export interface EffectiveCameraPolicy {
   camera_id: string;
   camera_name: string;
-  policy_id: string;
+  policy_id: string;           // camera override id; empty when source is SYSTEM_DEFAULT
+  effective_policy_id: string; // actual policy id currently applied
   policy_name: string;
   source: PolicySource;
   source_id: string;
@@ -1947,7 +1987,7 @@ Gán hàng loạt:
 
 Xóa override camera:
   POST /media/mserver/storage/policy/removeCamera
-  → Hiển thị nguồn policy mới: GROUP / PROJECT / SYSTEM_DEFAULT
+  → Hiển thị nguồn policy mới: SYSTEM_DEFAULT nếu camera không còn override
 ```
 
 ---
