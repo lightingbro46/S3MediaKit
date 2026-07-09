@@ -101,11 +101,14 @@ void installManagerHook () {
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
         DebugL << "Record mp4 file " << info.app << "/" << info.stream << "/" << info.start_time << "/" << info.time_len << "/" << info.file_path;
         TimeBlock block;
-        block.set_app(info.app);
+        const bool isReplay = start_with(info.app, kReplayPrefix);
+        std::string app = isReplay ? info.app.substr(kReplayPrefix.size()) : info.app;
+        block.set_app(app);
         block.set_stream(info.stream);
         block.set_start_time(info.start_time);
         block.set_time_len(round(info.time_len));
         block.set_file_size(info.file_size);
+        block.set_is_replay(isReplay);
         auto encoded_path = encodeBase64(info.file_path);
         block.set_file_path(encoded_path);
 
@@ -501,6 +504,14 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             return StreamType::SecondaryStream;
         };
         option.motionDetectOnStream = parseStreamType(mdc["chooseStream"]);
+    }
+
+    if (data.isMember("sdCardSyncConfig") && !data["sdCardSyncConfig"].isNull()) {
+        const Json::Value &cfg = data["sdCardSyncConfig"];
+        option.sdCardSyncEnabled = cfg["syncEnabled"].asBool();
+        option.sdCardSyncAutoSyncEnabled = cfg["autoSyncEnabled"].asBool();
+        option.sdCardSyncMinSegmentGapSec = cfg["minSegmentGapSec"].asInt();
+        option.sdCardSyncRetryCount = cfg["retryCount"].asInt();
     }
 }
 
@@ -1116,7 +1127,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["enableAutoProfile"] = enableAutoProfile ? true : false;
             // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
             data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
-            data["supportsSdCardPlayback"] = false;
+            data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
             data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
         }
 

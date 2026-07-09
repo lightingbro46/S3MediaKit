@@ -17,6 +17,7 @@ public:
     toolkit::EventPoller::Ptr getPoller();
     void setOnCreateSocket(toolkit::Socket::onCreateSocket cb);
     const PlayerBase::Ptr& getDelegate() const { return _delegate; }
+    float getProgress() const override;
 
 private:
     toolkit::EventPoller::Ptr _poller;

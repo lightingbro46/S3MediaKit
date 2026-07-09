@@ -35,7 +35,7 @@ std::string getRecordEventTypeString(RecordEventType type) {
     }
 }
 
-static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const string &str) {
+unordered_map<std::string, RecordScheduleItem> RecordScheduler::parseRecordScheduleStr(const string &str) {
     unordered_map<std::string, RecordScheduleItem> ret;
 
     if (!str.empty()) {

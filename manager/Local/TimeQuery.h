@@ -24,6 +24,7 @@ struct TimeRange {
     uint32_t duration = 0;
     std::string tier = "HOT";
     bool restoreRequired = false;
+    bool isReplay = false;
 };
 
 class TimeQuery final {

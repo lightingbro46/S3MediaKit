@@ -21,6 +21,11 @@ typedef enum {
     RTP_MULTICAST = 2,
 } eRtpType;
 
+typedef enum {
+    Live = 0,
+    Replay = 1
+} eRtpMode;
+
 #define RTP_PT_MAP(XX)                                                                                                                                         \
     XX(PCMU, TrackAudio, 0, 8000, 1, CodecG711U)                                                                                                               \
     XX(GSM, TrackAudio, 3, 8000, 1, CodecInvalid)                                                                                                              \

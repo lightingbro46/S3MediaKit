@@ -7,4 +7,5 @@ message TimeBlock {
   uint32 time_len = 4;
   uint64 file_size = 5;
   bytes  file_path = 6;
+  bool   is_replay = 7;
 }

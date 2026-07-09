@@ -9,6 +9,8 @@ namespace mediakit {
 class MediaSinkInterface;
 class ProtocolOption;
 
+const std::string kReplayPrefix = "replay_";
+
 struct MediaTuple {
     std::string vhost;
     std::string app;

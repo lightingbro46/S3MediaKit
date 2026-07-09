@@ -41,11 +41,19 @@ void PlayerProxy::setOnClose(function<void(const SockException &ex)> cb) {
 }
 
 void PlayerProxy::setOnDisconnect(std::function<void(const SockException &ex)> cb) {
-    _on_disconnect = cb ? std::move(cb) : [](const SockException &) {};
+    _on_disconnect = cb ? std::move(cb) : [] (const SockException &) {};
 }
 
 void PlayerProxy::setOnConnect(std::function<void(const TranslationInfo&)> cb) {
     _on_connect = cb ? std::move(cb) : [](const TranslationInfo&) {};
+}
+
+void PlayerProxy::setOnReplayClose(std::function<void(const std::string &proxyKey, const float &progress)> cb) {
+    _on_replay_close = std::move(cb);
+}
+
+void PlayerProxy::setOnReplayRetry(std::function<bool(const std::string &proxyKey, const float &progress, std::string &newUrl)> cb) {
+    _on_replay_retry = std::move(cb);
 }
 
 void PlayerProxy::setTranslationInfo()
@@ -94,7 +102,8 @@ void PlayerProxy::play(const string &strUrlTmp) {
     _option.max_track = getMaxTrackSize(strUrlTmp);
     weak_ptr<PlayerProxy> weakSelf = shared_from_this();
     std::shared_ptr<int> piFailedCnt(new int(0)); // Number of consecutive playback failures
-    setOnPlayResult([weakSelf, strUrlTmp, piFailedCnt](const SockException &err) {
+    const bool is_replay = start_with(_tuple.app, kReplayPrefix);
+    setOnPlayResult([weakSelf, strUrlTmp, piFailedCnt, is_replay](const SockException &err) {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             return;
@@ -119,14 +128,23 @@ void PlayerProxy::play(const string &strUrlTmp) {
             InfoL << "play " << strUrlTmp << " success";
         } else if (*piFailedCnt < strongSelf->_retry_count || strongSelf->_retry_count < 0) {
             // Play failed, retry playing with delay
+            std::string newUrl = strUrlTmp;
+            if (is_replay && strongSelf->_on_replay_retry) {
+                if (!strongSelf->_on_replay_retry(strongSelf->_tuple.shortUrl(), strongSelf->MediaPlayer::getProgress(), newUrl)) {
+                    return;
+                }
+            }
             strongSelf->_on_disconnect(err);
-            strongSelf->rePlay(strUrlTmp, (*piFailedCnt)++);
+            strongSelf->rePlay(newUrl, (*piFailedCnt)++);
         } else {
             // Reached the maximum number of retries, callback to close
+            if (is_replay && strongSelf->_on_replay_close) {
+                strongSelf->_on_replay_close(strongSelf->_tuple.shortUrl(), strongSelf->MediaPlayer::getProgress());
+            }
             strongSelf->_on_close(err);
         }
     });
-    setOnShutdown([weakSelf, strUrlTmp, piFailedCnt](const SockException &err) {
+    setOnShutdown([weakSelf, strUrlTmp, piFailedCnt, is_replay](const SockException &err) {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             return;
@@ -156,12 +174,21 @@ void PlayerProxy::play(const string &strUrlTmp) {
             TraceL << " live secs " << strongSelf->_live_secs;
         }
 
-        // Play interrupted abnormally, retry playing with delay
+        // Play interrupted abnormally, retry playing with delay        
         if (*piFailedCnt < strongSelf->_retry_count || strongSelf->_retry_count < 0) {
+            std::string newUrl = strUrlTmp;
+            if (is_replay && strongSelf->_on_replay_retry) {
+                if (!strongSelf->_on_replay_retry(strongSelf->_tuple.shortUrl(), strongSelf->MediaPlayer::getProgress(), newUrl)) {
+                    return;
+                }
+            }
             strongSelf->_repull_count++;
-            strongSelf->rePlay(strUrlTmp, (*piFailedCnt)++);
+            strongSelf->rePlay(newUrl, (*piFailedCnt)++);
         } else {
             // Reached the maximum number of retries, callback to close
+            if (is_replay && strongSelf->_on_replay_close) {
+                strongSelf->_on_replay_close(strongSelf->_tuple.shortUrl(), strongSelf->MediaPlayer::getProgress());
+            }
             strongSelf->_on_close(err);
         }
     });
@@ -278,6 +305,7 @@ void PlayerProxy::onPlaySuccess() {
             auto old = _option.enable_rtsp;
             _option.enable_rtsp = false;
             _muxer = std::make_shared<MultiMediaSourceMuxer>(_tuple, getDuration(), _option);
+            _muxer->setRecorderTimeFileReplay(_replay_recoder_time_file);
             _option.enable_rtsp = old;
         }
     } else if (dynamic_pointer_cast<RtmpMediaSource>(_media_src)) {

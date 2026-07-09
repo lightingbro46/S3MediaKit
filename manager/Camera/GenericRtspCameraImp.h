@@ -49,6 +49,8 @@ public:
 
     void getMediaProfile(const std::string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb);
 
+    void getSDCardInfo(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
+
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }

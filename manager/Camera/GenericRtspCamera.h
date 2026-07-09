@@ -127,6 +127,12 @@ public:
     // use for some scenarios that need to trigger recording or other action when stream is ready such as video push stream from mobile device
     bool emitStreamStatusChangeEvent = false;
 
+    // SD card synchronization config
+    bool sdCardSyncEnabled = false;
+    bool sdCardSyncAutoSyncEnabled = false;
+    int sdCardSyncMinSegmentGapSec = 0;
+    int sdCardSyncRetryCount = 0;
+
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
     bool operator==(const CameraOption& other) const{
@@ -168,11 +174,31 @@ public:
                onvifSubProfile == other.onvifSubProfile && 
                enableMotion == other.enableMotion &&
                roiValue == other.roiValue &&
-               motionDetectOnStream == other.motionDetectOnStream;
+               motionDetectOnStream == other.motionDetectOnStream &&
+               sdCardSyncEnabled == other.sdCardSyncEnabled &&
+               sdCardSyncAutoSyncEnabled == other.sdCardSyncAutoSyncEnabled &&
+               sdCardSyncMinSegmentGapSec == other.sdCardSyncMinSegmentGapSec &&
+               sdCardSyncRetryCount == other.sdCardSyncRetryCount;
     }
 
     bool operator!=(const CameraOption& other) const {
         return !(*this == other);
+    }
+};
+
+struct SdCardSyncConfig {
+    bool sdCardSyncEnabled = false;
+    bool sdCardSyncAutoSyncEnabled = false;
+    int sdCardSyncMinSegmentGapSec = 0;
+    int sdCardSyncRetryCount = 0;
+
+    static SdCardSyncConfig from(const CameraOption &o) {
+        SdCardSyncConfig cfg;
+        cfg.sdCardSyncEnabled             = o.sdCardSyncEnabled;
+        cfg.sdCardSyncAutoSyncEnabled     = o.sdCardSyncAutoSyncEnabled;
+        cfg.sdCardSyncMinSegmentGapSec    = o.sdCardSyncMinSegmentGapSec;
+        cfg.sdCardSyncRetryCount          = o.sdCardSyncRetryCount;
+        return cfg;
     }
 };
 

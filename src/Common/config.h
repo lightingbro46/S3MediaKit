@@ -566,6 +566,8 @@ extern const std::string kNetAdapter;
 // Set rtp transport type, options are 0 (tcp, default), 1 (udp), 2 (multicast)
 // Set method: player[PlayerBase::kRtpType] = 0/1/2;
 extern const std::string kRtpType;
+// Set method: player[PlayerBase::kRtpMode] = 0/1 (0-live, 1-replay);
+extern const std::string kRtpMode;
 // Whether the RTSP player sends signaling heartbeat or RTCP heartbeat, options are 0 (both), 1 (RTCP heartbeat), 2 (signaling heartbeat)
 // Set method: player[PlayerBase::kRtspBeatType] = 0/1/2;
 extern const std::string kRtspBeatType;

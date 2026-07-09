@@ -22,8 +22,13 @@ public:
     }
 
     float getProgress() const override {
-        if (getDuration() > 0) {
-            return getProgressMilliSecond() / (getDuration() * 1000);
+        if (_rtp_mode == Rtsp::Replay) {
+            uint32_t dur = _seek_to_ms - _seek_from_ms;
+            return (dur != 0) ? static_cast<float>(getProgressMilliSecond()) / dur : 0.0f;
+        } else {
+            if (getDuration() > 0) {
+                return getProgressMilliSecond() / (getDuration() * 1000);
+            }
         }
         return PlayerBase::getProgress();
     }

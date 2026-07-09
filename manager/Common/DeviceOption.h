@@ -93,11 +93,13 @@ struct VendorFeatureSupport {
 struct DeviceCapabilities {
     bool isOnvifDevice = false;
     OnvifProfile onvifProfile;
+    bool supportsSdCardPlayback = false;
     VendorFeatureSupport vendorFeatureSupport;
 
     bool operator==(const DeviceCapabilities &o) const {
         return isOnvifDevice == o.isOnvifDevice
             && onvifProfile == o.onvifProfile
+            && supportsSdCardPlayback == o.supportsSdCardPlayback
             && vendorFeatureSupport == o.vendorFeatureSupport;
     }
     bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }

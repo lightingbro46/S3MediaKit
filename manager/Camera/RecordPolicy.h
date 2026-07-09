@@ -61,6 +61,8 @@ public:
 
     bool isEventActive() const { return _event_active; }
 
+    static std::unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const std::string &str);
+
 private:
     void onSchedulerChange(RecordScheduleItem &item);
 

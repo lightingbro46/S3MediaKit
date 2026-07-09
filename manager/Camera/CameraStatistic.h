@@ -102,6 +102,10 @@ public:
 
     void setCameraOption(const CameraOption &input_option);
 
+    std::string getStreamID(const int &stream_type);
+
+    std::unordered_map<std::string, VideoEncoderConfig> getStreamVideoEncoderConfigMap();
+
     void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
 
     void addBookmarkCount(uint64_t bm_created_at,  size_t size, bool add = true);

@@ -3,6 +3,7 @@
 #include "Util/logger.h" 
 #include "Extension/Plugin.h" 
 #include "OnvifDeviceControl.h"
+#include <algorithm>
 
 using namespace std;
 using namespace toolkit;
@@ -184,6 +185,32 @@ static time_t build_camera_utc(const std::string& camera_tz, const time_t& time_
     return time_point + (offset_system - offset_camera);
 }
 
+static bool parseIsDataPresentFromXml(const char* raw, const std::string& key, std::string& value)
+{
+    if (!raw) return false;
+
+    std::string xml(raw);
+    std::string nameKey = "Name=\"" + key + "\"";
+    
+    size_t pos = xml.find(nameKey);
+    if (pos == std::string::npos)
+        return false;
+
+    // search Value="..."
+    size_t valuePos = xml.find("Value=\"", pos);
+    if (valuePos == std::string::npos)
+        return false;
+
+    valuePos += 7; // skip 'Value="'
+
+    size_t endPos = xml.find("\"", valuePos);
+    if (endPos == std::string::npos)
+        return false;
+
+    value = xml.substr(valuePos, endPos - valuePos);
+    return true;
+}
+
 bool OnvifControl::connect() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_m_soap == nullptr) {
@@ -217,6 +244,10 @@ bool OnvifControl::connect() {
 
     getRelayOutputCapabilities(); // non-critical
 
+    getRecordingSummary();
+
+    getStorageConfiguration();
+
     return true;
 }
 
@@ -230,6 +261,9 @@ void OnvifControl::disconnect() {
     delete _proxyMedia2;  _proxyMedia2 = nullptr;
     delete _proxyImaging; _proxyImaging = nullptr;
     delete _proxyPTZ;     _proxyPTZ = nullptr;
+    delete _proxySearch;  _proxySearch = nullptr;
+    delete _proxyReplay;  _proxyReplay = nullptr;
+    delete _proxyRecording;  _proxyRecording = nullptr;
     if (_m_soap != nullptr) {
         soap_destroy(_m_soap);
         soap_end(_m_soap);
@@ -404,6 +438,47 @@ bool OnvifControl::getDeviceCapabilities() {
                 TraceL << "Preset is not supported since AbsoluteMove is not supported";
             }
         }
+    }
+    if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Search != nullptr) {
+        thread_local string strUrl;
+        strUrl = GetCapabilitiesResponse.Capabilities->Extension->Search->XAddr;
+        int indexFooter = strUrl.find("/onvif");
+        // Check if contains onvif then replace cameraip to header
+        if (indexFooter > 0) {
+            strUrl.erase(0, indexFooter);
+            strUrl.insert(0, "http://" + _strDeviceIp);
+        }
+        
+        _proxySearch = new SearchBindingProxy(_m_soap);
+        _proxySearch->soap_endpoint = strUrl.c_str();
+    }
+
+    if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Replay != nullptr) {
+        thread_local string strUrl;
+        strUrl = GetCapabilitiesResponse.Capabilities->Extension->Replay->XAddr;
+        int indexFooter = strUrl.find("/onvif");
+        // Check if contains onvif then replace cameraip to header
+        if (indexFooter > 0) {
+            strUrl.erase(0, indexFooter);
+            strUrl.insert(0, "http://" + _strDeviceIp);
+        }
+        
+        _proxyReplay = new ReplayBindingProxy(_m_soap);
+        _proxyReplay->soap_endpoint = strUrl.c_str();
+    }
+
+    if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Recording != nullptr) {
+        thread_local string strUrl;
+        strUrl = GetCapabilitiesResponse.Capabilities->Extension->Recording->XAddr;
+        int indexFooter = strUrl.find("/onvif");
+        // Check if contains onvif then replace cameraip to header
+        if (indexFooter > 0) {
+            strUrl.erase(0, indexFooter);
+            strUrl.insert(0, "http://" + _strDeviceIp);
+        }
+        
+        _proxyRecording = new RecordingBindingProxy(_m_soap);
+        _proxyRecording->soap_endpoint = strUrl.c_str();
     }
     return true;
 }
@@ -1738,6 +1813,478 @@ bool OnvifControl::Relay_SetOutputState(const std::string &relayToken, bool acti
         return false;
     }
     return true;
+}
+
+std::string OnvifControl::getReplayUri(const std::string& recordingToken) {
+    std::string uri;
+    if (!_proxyReplay) {
+        return uri;
+    }
+    _trp__GetReplayUri *GetReplayUri = soap_new__trp__GetReplayUri(_m_soap);
+    GetReplayUri->RecordingToken = recordingToken;
+    GetReplayUri->StreamSetup = soap_new_tt__StreamSetup(_m_soap);
+    if (!GetReplayUri->StreamSetup->Transport)
+        GetReplayUri->StreamSetup->Transport = soap_new_tt__Transport(_m_soap);
+    GetReplayUri->StreamSetup->Transport->Protocol = tt__TransportProtocol__RTSP;
+    GetReplayUri->StreamSetup->Stream = tt__StreamType__RTP_Unicast;
+    _trp__GetReplayUriResponse GetReplayUriResponse;
+    if (!setCredentials()) {
+        return uri;
+    }
+
+    if (_proxyReplay->GetReplayUri(GetReplayUri, GetReplayUriResponse)) {
+        reportError();
+        return uri;
+    }
+
+    uri = GetReplayUriResponse.Uri;
+    return uri;
+}
+
+void OnvifControl::getRecordingSearchResults() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (!_proxySearch) {
+        return;
+    }
+
+    _tse__FindRecordings *FindRecordings = soap_new__tse__FindRecordings(_m_soap);
+    FindRecordings->KeepAliveTime = "PT60S";
+    _tse__FindRecordingsResponse FindRecordingsResponse;
+    if (!setCredentials()) {
+        return;
+    }
+
+    if (_proxySearch->FindRecordings(FindRecordings, FindRecordingsResponse)) {
+        reportError();
+        return;
+    }
+
+    if(FindRecordingsResponse.SearchToken.empty()) {
+        return;
+    }
+
+    _tse__GetRecordingSearchResults *GetRecordingSearchResults = soap_new__tse__GetRecordingSearchResults(_m_soap);
+    GetRecordingSearchResults->SearchToken = FindRecordingsResponse.SearchToken;
+    _tse__GetRecordingSearchResultsResponse GetRecordingSearchResultsResponse;
+    if (!setCredentials()) {
+        return;
+    }
+
+    if (_proxySearch->GetRecordingSearchResults(GetRecordingSearchResults, GetRecordingSearchResultsResponse)) {
+        endSearch(GetRecordingSearchResults->SearchToken);
+        reportError();
+        return;
+    }
+
+    endSearch(GetRecordingSearchResults->SearchToken);
+
+    if (GetRecordingSearchResultsResponse.ResultList) {
+        for (auto info : GetRecordingSearchResultsResponse.ResultList->RecordingInformation) {
+            for (auto track : info->Track) {
+                if (track->TrackType == tt__TrackType__Video) {
+                    RecordingInformation rec_info;
+                    rec_info.recordingToken = info->RecordingToken;
+                    rec_info.trackToken = track->TrackToken;
+                    if (info->EarliestRecording) {
+                        rec_info.earliestRecording = *info->EarliestRecording;
+                    }
+                    if (info->LatestRecording) {
+                        rec_info.latestRecording = *info->LatestRecording;
+                    }
+                    rec_info.uri = getReplayUri(rec_info.recordingToken);
+                    rec_info.hasRecord = rec_info.earliestRecording != 0 && rec_info.latestRecording != 0 && !rec_info.uri.empty();
+                    if (rec_info.hasRecord) {
+                        rec_info.vEncoder = GetRecordingVideoEncoder(rec_info.recordingToken, rec_info.latestRecording);
+                    }
+                    _recordingInformations.push_back(rec_info);
+                }
+            }
+        }
+    }
+
+    std::sort(_recordingInformations.begin(), _recordingInformations.end(),
+        [](const RecordingInformation& a, const RecordingInformation& b) {
+            if (a.recordingToken != b.recordingToken)
+                return a.recordingToken < b.recordingToken;
+            return a.trackToken < b.trackToken;
+        });
+
+    if (_recordingInformations.size() > 2)
+        _recordingInformations.erase(_recordingInformations.begin() + 2, _recordingInformations.end());
+
+    _recordingInformations[0].streamType = 0;
+
+    if (_recordingInformations.size() == 2)
+        _recordingInformations[1].streamType = 1;
+
+}
+
+bool OnvifControl::findEvents(time_t& startTime, time_t& endTime, const RecordingInformation &info, std::string& outSearchToken) {
+    if (!_proxySearch) {
+        return false;
+    }
+
+    time_t sys_start = build_camera_utc(_camTimeInfo.TZ, startTime);
+    time_t sys_end = build_camera_utc(_camTimeInfo.TZ, endTime);
+
+    startTime = std::max(sys_start, info.earliestRecording);
+    endTime = std::min(sys_end, info.latestRecording);
+
+    _tse__FindEvents *FindEvents = soap_new__tse__FindEvents(_m_soap);
+
+    FindEvents->StartPoint = startTime;
+    FindEvents->EndPoint   = &endTime;
+    FindEvents->Scope = soap_new_tt__SearchScope(_m_soap);
+    FindEvents->Scope->IncludedRecordings.push_back(info.recordingToken);
+    auto sr = soap_new_tt__SourceReference(_m_soap);
+    sr->Token = info.recordingToken;
+    FindEvents->Scope->IncludedSources.push_back(sr);
+    FindEvents->SearchFilter = soap_new_tt__EventFilter(_m_soap);
+    FindEvents->IncludeStartState = true;
+    int maxMatches = 100;
+    FindEvents->MaxMatches = &maxMatches;
+    FindEvents->KeepAliveTime = "PT60S";
+    _tse__FindEventsResponse FindEventsResponse;
+
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (_proxySearch->FindEvents(FindEvents, FindEventsResponse)) {
+        reportError();
+        return false;
+    }
+    outSearchToken = FindEventsResponse.SearchToken;
+    if (outSearchToken.empty()) {
+        return false;
+    }
+
+    return true;
+}
+
+bool OnvifControl::getEventSearchResults(const std::string& searchToken, const RecordingInformation &info, std::vector<TrackStateEvent>& outEvents) {
+    if (!_proxySearch) {
+        return false;
+    }
+    int totalProcessed = 0;
+
+    while(true) {
+        _tse__GetEventSearchResults *GetEventSearchResults = soap_new__tse__GetEventSearchResults(_m_soap);
+        GetEventSearchResults->SearchToken = searchToken;
+        GetEventSearchResults->MinResults = nullptr;
+        int max = 100;
+        GetEventSearchResults->MaxResults = &max;
+        std::string waitTime = "PT60S";
+        GetEventSearchResults->WaitTime = &waitTime;
+        _tse__GetEventSearchResultsResponse GetEventSearchResultsResponse;
+        if (!setCredentials()) {
+            return false;
+        }
+
+        if (_proxySearch->GetEventSearchResults(GetEventSearchResults, GetEventSearchResultsResponse)) {
+            endSearch(searchToken);
+            reportError();
+            return false;
+        }
+
+        auto resultList = GetEventSearchResultsResponse.ResultList;
+        if (!resultList) {
+            InfoL << "[GetEventSearchResults] Null ResultList";
+            break;
+        }
+
+        for (auto result : resultList->Result)
+        {
+            TrackStateEvent ev;
+            ev.recordingToken = result->RecordingToken;
+            ev.trackToken = result->TrackToken;
+            if (ev.trackToken != info.trackToken) {
+                continue;
+            }
+            ev.time = result->Time;
+            // true = virtual event do IncludeStartState=true
+            ev.isStartState = result->StartStateEvent;
+            // Parse IsDataPresent from XML Event
+            std::string isDataPresent = "";
+            if (!parseIsDataPresentFromXml(result->Event->Message.__any, "IsDataPresent", isDataPresent)) {
+                TraceL << "[ParseEvent] Cannot parse IsDataPresent: "
+                        << ev.recordingToken << "|" << ev.trackToken
+                        << " t=" << ev.time
+                        << " startState=" << ev.isStartState;
+                continue;
+            }
+
+            ev.isDataPresent = isDataPresent == "true";
+            outEvents.push_back(ev);
+            ++totalProcessed;
+        }
+        InfoL << "[GetEventSearchResults] Received " << resultList->Result.size()
+              << " totalProcessed " << totalProcessed
+              << " SearchState " << resultList->SearchState;
+        if (resultList->SearchState == tt__SearchState__Searching) {
+            continue;
+        }
+        break;
+    }
+
+    endSearch(searchToken);
+    return outEvents.size() > 0;
+}
+
+void OnvifControl::reconstructVideoSegments(const std::vector<TrackStateEvent>& events, const time_t& startTime, const time_t& endTime, const int &min_segment_sec, std::vector<VideoSegment>& outSegments) {
+    if (events.empty()) return;
+
+    // Group events (recordingToken + trackToken)
+    using GroupKey = std::string;
+    std::map<GroupKey, std::vector<const TrackStateEvent*>> groups;
+
+    for (const TrackStateEvent& ev : events) {
+        GroupKey key = ev.recordingToken + "|" + ev.trackToken;
+        groups[key].push_back(&ev);
+    }
+
+    for (auto& group : groups) {
+        // Sort by time in ascending order
+        std::sort(group.second.begin(), group.second.end(),
+            [](const TrackStateEvent* a, const TrackStateEvent* b) {
+                return a->time < b->time;
+            });
+
+        const std::string& recToken = group.second.front()->recordingToken;
+        const std::string& trackToken = group.second.front()->trackToken;
+
+        bool intervalOpen  = false;
+        time_t intervalStart = 0;
+
+        for (const TrackStateEvent* ev : group.second) {
+
+            if (ev->isStartState) {
+                // Virtual event at startTime:
+                //   IsDataPresent=true  -> the track contains data when the connection is lost
+                //   IsDataPresent=false -> the track contains no data when the connection is lost
+                if (ev->isDataPresent && !intervalOpen) {
+                    intervalOpen = true;
+                    intervalStart = startTime; // clamp start to startTime
+                }
+                // If false: do not open the interval, wait for the next event
+                continue;
+            }
+
+            if (ev->isDataPresent) {
+                // The camera starts recording to this track
+                if (!intervalOpen) {
+                    intervalOpen  = true;
+                    intervalStart = ev->time;
+                }
+                // If already opened: ignore (redundant event)
+            } else {
+                // The camera stops recording to this track
+                if (intervalOpen) {
+                    time_t segStart = intervalStart;
+                    time_t segEnd   = ev->time;
+
+                    // Clamp to [startTime, endTime]
+                    if (segStart < startTime) segStart = startTime;
+                    if (segEnd   > endTime)  segEnd = endTime;
+
+                    int dur = static_cast<int>(segEnd - segStart);
+
+                    // keep only segments with duration >= minSegmentSec
+                    if (segStart < segEnd && dur >= min_segment_sec) {
+                        VideoSegment seg;
+                        seg.recordingToken = recToken;
+                        seg.trackToken = trackToken;
+                        seg.start_time = segStart;
+                        seg.end_time = segEnd;
+                        outSegments.push_back(seg);
+
+                        InfoL << "[Segment] " << recToken << "|" << trackToken << " dur=" << dur << "s";
+                    } else {
+                        InfoL << "[Skip] " << trackToken << " dur=" << dur << "s";
+                    }
+
+                    intervalOpen = false;
+                }
+            }
+        }
+
+        // The interval is still open after all events are processed
+        // -> camera is still recording at endTime -> close the interval at endTime
+        if (intervalOpen) {
+            time_t segStart = intervalStart;
+            time_t segEnd   = endTime;
+
+            if (segStart < startTime) segStart = startTime;
+
+            int dur = static_cast<int>(segEnd - segStart);
+            if (segStart < segEnd && dur >= min_segment_sec) {
+                VideoSegment seg;
+                seg.recordingToken = recToken;
+                seg.trackToken = trackToken;
+                seg.start_time = segStart;
+                seg.end_time = segEnd;
+                outSegments.push_back(seg);
+
+                InfoL << "[Segment] " << recToken << "|" << trackToken << " dur=" << dur << "s (open->close at reconnect)";
+            }
+        }
+    }
+
+    // Sort output by startTime
+    std::sort(outSegments.begin(), outSegments.end(),
+        [](const VideoSegment& a, const VideoSegment& b) {
+            return a.start_time < b.start_time;
+        });
+}
+
+void OnvifControl::endSearch(const std::string& searchToken) {
+    _tse__EndSearch *EndSearch = soap_new__tse__EndSearch(_m_soap);
+    EndSearch->SearchToken = searchToken;
+    _tse__EndSearchResponse EndSearchResponse;
+
+    if (!setCredentials()) {
+        reportError();
+        return;
+    }
+
+    int ret = _proxySearch->EndSearch(EndSearch, EndSearchResponse);
+    if (ret != SOAP_OK) {
+        TraceL << "EndSearch error " << ret << " but ok if already completed";
+    }
+}
+
+VideoEncoderConfig OnvifControl::GetRecordingVideoEncoder(const std::string& recordingToken, const time_t& time) {
+    VideoEncoderConfig config;
+    if (!_proxySearch) {
+        return config;
+    }
+
+    _tse__GetMediaAttributes *GetMediaAttributes = soap_new__tse__GetMediaAttributes(_m_soap);
+    GetMediaAttributes->RecordingTokens.push_back(recordingToken);
+    GetMediaAttributes->Time = time;
+    _tse__GetMediaAttributesResponse GetMediaAttributesResponse;
+    if (!setCredentials()) {
+        return config;
+    }
+
+    if (_proxySearch->GetMediaAttributes(GetMediaAttributes, GetMediaAttributesResponse)) {
+        reportError();
+        return config;
+    }
+
+    auto attributes = GetMediaAttributesResponse.MediaAttributes[0];
+    if (attributes && !attributes->TrackAttributes.empty()) {
+        for (const auto trackAttribute : attributes->TrackAttributes) {
+            if (!trackAttribute->TrackInformation) continue;
+            if (!trackAttribute->TrackInformation->TrackType != tt__TrackType__Video) continue;
+            if (!trackAttribute->VideoAttributes) continue;
+
+            if (trackAttribute->VideoAttributes->Bitrate) {
+                config.bitrate = *trackAttribute->VideoAttributes->Bitrate;
+            }
+            config.vcodec = trackAttribute->VideoAttributes->Encoding;
+            config.width = trackAttribute->VideoAttributes->Width;
+            config.height = trackAttribute->VideoAttributes->Height;
+            config.fps = trackAttribute->VideoAttributes->Framerate;
+        }
+    }
+    return config;
+}
+
+std::unordered_map<int, std::vector<VideoSegment>> OnvifControl::findVideoSegments(time_t startTime, time_t endTime, const int &min_segment_sec) {
+    std::unordered_map<int, std::vector<VideoSegment>> outSegments;
+
+    std::vector<VideoSegment> segments;
+
+    if (startTime >= endTime) {
+        ErrorL << "Invalid: startTime >= endTime";
+        return outSegments;
+    }
+
+    InfoL << " Searching ["<< startTime << ", " << endTime << "]";
+
+    getRecordingSearchResults();
+    if (_recordingInformations.empty()) {
+        InfoL << "No segments found in the session: startTime=" << startTime << ", endTime=" << endTime;
+        return outSegments;
+    }
+
+    for (auto &info : _recordingInformations) {
+        if (!info.hasRecord) {
+            continue;
+        }
+        std::vector<TrackStateEvent> events;
+        // Step 1: FindEvents
+        std::string searchToken;
+        if (!findEvents(startTime, endTime, info, searchToken))
+            continue;
+
+        // Step 2: Collect events
+        if (!getEventSearchResults(searchToken, info, events))
+            continue;
+
+        // Step 4: Reconstruct + filter
+        reconstructVideoSegments(events, startTime, endTime, min_segment_sec, segments);
+    }
+
+    for (const auto &info : _recordingInformations) {
+        std::vector<VideoSegment> segs;
+        for (const auto &seg : segments) {
+            if (info.recordingToken == seg.recordingToken && info.trackToken == seg.trackToken) {
+                segs.push_back(seg);
+            }
+        }
+        outSegments.emplace(info.streamType, segs);
+    }
+
+    return outSegments;
+}
+
+void OnvifControl::getRecordingSummary() {
+    if (!_proxySearch) {
+        return;
+    }
+
+    _tse__GetRecordingSummary *GetRecordingSummary = soap_new__tse__GetRecordingSummary(_m_soap);
+    _tse__GetRecordingSummaryResponse GetRecordingSummaryResponse;
+    if (!setCredentials()) {
+        return;
+    }
+
+    if (_proxySearch->GetRecordingSummary(GetRecordingSummary, GetRecordingSummaryResponse)) {
+        reportError();
+        disconnect();
+        return;
+    }
+
+    auto Summary = GetRecordingSummaryResponse.Summary;
+    if (!Summary) return;
+
+    _sdCardInfo.DataFrom = static_cast<uint64_t>(Summary->DataFrom);
+    _sdCardInfo.DataUntil = static_cast<uint64_t>(Summary->DataUntil);
+    _sdCardInfo.NumberRecordings = Summary->NumberRecordings;
+}
+
+void OnvifControl::getStorageConfiguration() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (!_proxyDevice) {
+        return;
+    }
+
+    _tds__GetStorageConfigurations *GetStorageConfigurations = soap_new__tds__GetStorageConfigurations(_m_soap);
+    _tds__GetStorageConfigurationsResponse GetStorageConfigurationsResponse;
+    if (!setCredentials()) {
+        return;
+    }
+
+    if (_proxyDevice->GetStorageConfigurations(GetStorageConfigurations, GetStorageConfigurationsResponse)) {
+        reportError();
+    } else {
+        auto StorageConfig = GetStorageConfigurationsResponse.StorageConfigurations[0];
+        if (StorageConfig->Data) {
+            _sdCardInfo.type = StorageConfig->Data->type;
+        }
+    }
 }
 
 } // namespace managerkit

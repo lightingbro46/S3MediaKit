@@ -152,12 +152,13 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
+                auto isReplay = block.is_replay();
                 if (!result.empty()) {
                     TimeRange &last = result.back();
                     uint64_t last_start = last.startTime;
                     uint64_t last_end = last.startTime + last.duration;
 
-                    if (block_start_time <= last_end + 1) {
+                    if (block_start_time <= last_end + 1 && last.isReplay == isReplay) {
                         uint64_t new_start = MIN(last_start, block_start_time);
                         uint64_t new_end = MAX(last_end, block_end_time);
                         last.startTime = new_start;
@@ -165,7 +166,11 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                         return;
                     }
                 }
-                result.push_back({ block_start_time, static_cast<uint32_t>(block_end_time - block_start_time) });
+                TimeRange time_range;
+                time_range.startTime = block_start_time;
+                time_range.duration = static_cast<uint32_t>(block_end_time - block_start_time);
+                time_range.isReplay = isReplay;
+                result.push_back(time_range);
             });
         } catch(...) {}
         
@@ -187,6 +192,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
+                auto isReplay = block.is_replay();
                 auto &range_map = result[block.stream()];
 
                 if (!range_map.empty()) {
@@ -194,7 +200,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     uint64_t last_start = last.startTime;
                     uint64_t last_end = last.startTime + last.duration;
 
-                    if (block_start_time <= last_end + 1) {
+                    if (block_start_time <= last_end + 1 && last.isReplay == isReplay) {
                         uint64_t new_start = MIN(last_start, block_start_time);
                         uint64_t new_end = MAX(last_end, block_end_time);
                         last.startTime = new_start;
@@ -202,7 +208,11 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                         return;
                     }
                 }
-                range_map.push_back({ block_start_time, static_cast<uint32_t>(block_end_time - block_start_time)});
+                TimeRange time_range;
+                time_range.startTime = block_start_time;
+                time_range.duration = static_cast<uint32_t>(block_end_time - block_start_time);
+                time_range.isReplay = isReplay;
+                range_map.push_back(time_range);
             });
         } catch (...) {}
        
@@ -281,6 +291,8 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 uint64_t current = block_start_time;
                 uint32_t remaining = block_end_time - block_start_time;
 
+                auto isReplay = block.is_replay();
+
                 while(remaining > 0) {
                     string date_str = getTimeStr("%Y-%m-%d", current);
                     string hour_str = getTimeStr("%H", current);
@@ -294,13 +306,18 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     
                     auto &range_map = result[stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
                     auto chunk_start = current;
-                    if (!range_map.empty() && range_map.back().startTime + range_map.back().duration + 1 >= chunk_start) {
+                    if (!range_map.empty() && range_map.back().startTime + range_map.back().duration + 1 >= chunk_start && range_map.back().isReplay == isReplay) {
                         uint64_t new_start = MIN(range_map.back().startTime, chunk_start);
                         uint64_t new_end = MAX(range_map.back().startTime + range_map.back().duration, chunk_start + chunk);
                         range_map.back().startTime = new_start;
                         range_map.back().duration = static_cast<uint32_t>(new_end - range_map.back().startTime);
+                        range_map.back().isReplay = isReplay;
                     } else {
-                        range_map.push_back({chunk_start, chunk});
+                        TimeRange time_range;
+                        time_range.startTime = chunk_start;
+                        time_range.duration = chunk;
+                        time_range.isReplay = isReplay;
+                        range_map.push_back(time_range);
                     }
                     current += chunk;
                     remaining -= chunk;

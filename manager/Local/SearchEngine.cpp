@@ -91,6 +91,7 @@ struct PeriodEntry {
     std::string serverId;
     std::string tier = "HOT";
     bool restoreRequired = false;
+    bool isReplay = false;
     // type-0 only
     std::string cameraId;
     std::string streamId;
@@ -286,6 +287,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             e.serverId = p["mediaServerId"].asString();
             e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
             e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+            e.isReplay = p["isReplay"].asBool();
             out.push_back(e);
         }
     };
@@ -300,6 +302,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             p["restore_required"] = e.restoreRequired;
+            p["isReplay"]      = e.isReplay;
             arr.append(p);
         }
         return arr;
@@ -316,6 +319,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+                e.isReplay = p["isReplay"].asBool();
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -329,6 +333,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+                e.isReplay = p["isReplay"].asBool();
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -345,6 +350,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             p["restore_required"] = e.restoreRequired;
+            p["isReplay"]      = e.isReplay;
             dst["periods"].append(p);
         }
 
@@ -508,6 +514,7 @@ static void findTimePeriodLocal(
                             period["duration"] = tp.duration;
                             period["tier"] = tp.tier;
                             period["restore_required"] = tp.restoreRequired;
+                            period["isReplay"] = p.isReplay;
                             period["mediaServerId"] = mediaServerId;
                             result["periods"].append(period);
                         }
@@ -549,6 +556,7 @@ static void findTimePeriodLocal(
                                     period["duration"] = tp.duration;
                                     period["tier"] = tp.tier;
                                     period["restore_required"] = tp.restoreRequired;
+                                    period["isReplay"] = p.isReplay;
                                     period["mediaServerId"] = mediaServerId;
                                     stream["periods"].append(period);
                                 }
@@ -639,6 +647,7 @@ static void findTimePeriodLocal(
                                                 period["startTime"] = (Json::UInt64)tp.startTime;
                                                 period["duration"] = tp.duration;
                                                 period["tier"] = tp.tier;
+                                                period["isReplay"] = p.isReplay;
                                                 period["restore_required"] = tp.restoreRequired;
                                                 period["mediaServerId"] = mediaServerId;
                                                 hour.append(period);
@@ -701,6 +710,7 @@ static void findTimePeriodLocal(
                         period["timeLen"] = tp.duration;
                         period["tier"] = tp.tier;
                         period["restore_required"] = tp.restoreRequired;
+                        period["isReplay"] = tp.isReplay;
                         period["mediaServerId"] = mediaServerId;
                         result["periods"].append(period);
                     }

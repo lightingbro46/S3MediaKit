@@ -275,6 +275,25 @@ void RtspUrl::parse(const string &strUrl) {
     return setup(is_ssl, url, user, pwd);
 }
 
+void RtspUrl::parse(const string &strUrl, uint32_t &start, uint32_t &end) {
+    start = 0;
+    end = 0;
+
+    string cleanUrl = strUrl;
+    auto starttime_pos = strUrl.find("&starttime=");
+    if (starttime_pos != string::npos) {
+        auto starttime_str = findSubString(strUrl.data(), "&starttime=", "&");
+        auto endtime_str   = findSubString(strUrl.data(), "&endtime=", nullptr);
+
+        if (!starttime_str.empty()) start = static_cast<uint32_t>(stoul(starttime_str));
+        if (!endtime_str.empty())   end   = static_cast<uint32_t>(stoul(endtime_str));
+
+        cleanUrl = strUrl.substr(0, starttime_pos);
+    }
+
+    parse(cleanUrl);
+}
+
 void RtspUrl::setup(bool is_ssl, const string &url, const string &user, const string &passwd) {
     auto ip = findSubString(url.data(), "://", "/");
     if (ip.empty()) {

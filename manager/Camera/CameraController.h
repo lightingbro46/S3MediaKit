@@ -2,6 +2,7 @@
 #define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
+#include "Control/OnvifDeviceControl.h"
 
 namespace managerkit {
 
@@ -43,6 +44,8 @@ public:
 
     void addProfileConfig(const std::string &profileToken, const VideoEncoderConfig &config, bool emitEvent = true);
 
+    void getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
+
 private:
     void onManager();
 
@@ -74,6 +77,7 @@ private:
     // but system still use old profile and stream config until user change camera option to trigger controller recreate or manually update media profile config through api
     bool _keepConfigProfileAndStream = false;
     VideoEncoderConfig::VideoEncoderConfigMap _profileConfigMap; // current profile config map, used for checking whether media profile config is changed when camera report controller ready
+    SdCardSyncConfig _sd_sync_config;
 };
 
 } // namespace managerkit
