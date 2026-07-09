@@ -622,6 +622,93 @@ public:
         return ret;
     }
 
+    std::vector<SegmentTierRange> findByTierStartedBefore(const std::string &tier,
+                                                          int64_t before_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND start_time < ? AND status = ?";
+        params.push_back(tier);
+        params.push_back(std::to_string(before_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<SegmentTierRange> findByCameraTierStartedBefore(const std::string &camera_id,
+                                                                const std::string &tier,
+                                                                int64_t before_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND tier = ? AND start_time < ? AND status = ?";
+        params.push_back(camera_id);
+        params.push_back(tier);
+        params.push_back(std::to_string(before_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<SegmentTierRange> findByCameraTierAndAge(const std::string &camera_id,
+                                                         const std::string &tier,
+                                                         int64_t older_than_time) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND tier = ? AND end_time <= ? AND status = ?";
+        params.push_back(camera_id);
+        params.push_back(tier);
+        params.push_back(std::to_string(older_than_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    int countActiveByPool(const std::string &pool_id) {
+        if (pool_id.empty())
+            return 0;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "pool_id = ? AND status NOT IN (?, ?)";
+        params.push_back(pool_id);
+        params.push_back(segmentStatusToString(SegmentStatus::DELETED));
+        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COUNT(*)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params));
+        if (!rows.empty() && !rows[0].empty())
+            return std::stoi(rows[0][0]);
+        return 0;
+    }
+
     std::vector<SegmentTierRange> findExpired(const std::string &camera_id = "",
                                               int64_t from_time = 0,
                                               int64_t to_time = 0,

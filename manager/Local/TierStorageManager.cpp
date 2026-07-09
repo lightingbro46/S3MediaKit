@@ -970,6 +970,14 @@ bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_cou
         WarnL << "Cannot delete pool " << pool_id << ": referenced by " << out_ref_count << " policies";
         return false;
     }
+    SegmentTierRangeImp range_imp;
+    int range_ref_count = range_imp.countActiveByPool(pool_id);
+    if (range_ref_count > 0) {
+        out_ref_count = range_ref_count;
+        WarnL << "Cannot delete pool " << pool_id << ": referenced by "
+              << range_ref_count << " active segment tier ranges";
+        return false;
+    }
     if (!imp.remove(pool_id)) {
         WarnL << "Failed to remove storage pool: " << pool_id;
         return false;
@@ -1484,18 +1492,16 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
         int64_t move_threshold = now - (static_cast<int64_t>(src_tier_cfg.retain_until_days) * 86400);
 
         // Respect min_segment_age
-        // if (move_threshold > now - min_age_secs)
-        //     move_threshold = now - min_age_secs;
+        if (move_threshold > now - min_age_secs)
+            move_threshold = now - min_age_secs;
         DebugL << "Processing tiering for camera=" << camera_id
                << " source_tier=" << src_tier_cfg.tier
                << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "")
                << " move_threshold=" << getTimeStr("%Y-%m-%d %H:%M:%S", move_threshold);
-        auto ranges = range_imp.findByTierPoolStartedBefore(src_tier_cfg.tier,
-                                                            src_tier_cfg.pool_id,
-                                                            move_threshold);
+        auto ranges = range_imp.findByCameraTierStartedBefore(camera_id, src_tier_cfg.tier, move_threshold);
 
         for (const auto &range : ranges) {
-            if (range.camera_id != camera_id) continue;
+            if (range.pool_id.empty()) continue;
             SegmentTierRange move_range;
             if (!splitRangeForTieringThreshold(range, move_threshold, move_range))
                 continue;
@@ -1617,17 +1623,15 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
         }
 
         StoragePool dst_pool;
-        std::vector<StoragePool> src_pools;
         {
             std::lock_guard<std::mutex> lk(_pool_cache_mtx);
             auto dit = _pool_cache.find(dst_tier_cfg->pool_id);
             if (dit == _pool_cache.end())
                 continue;
             dst_pool = dit->second;
-            auto sit = _pool_cache.find(src_tier_cfg.pool_id);
-            if (sit != _pool_cache.end())
-                src_pools.push_back(sit->second);
         }
+        if (!dst_pool.enabled)
+            continue;
 
         fillPoolRuntimeStats(dst_pool);
         if (rules.skip_move_if_pool_offline && dst_pool.total_bytes <= 0)
@@ -1635,30 +1639,47 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
         if (dst_pool.usage_pct >= static_cast<float>(dst_pool.critical_watermark_percent))
             continue;
 
-        for (auto src_pool : src_pools) {
-            fillPoolRuntimeStats(src_pool);
+        auto ranges = range_imp.findByCameraTierAndAge(camera_id, src_tier_cfg.tier, stable_threshold);
+        std::unordered_map<std::string, StoragePool> source_pool_cache;
+        std::unordered_map<std::string, int64_t> moved_by_pool;
+        std::unordered_map<std::string, bool> reclaimed_pool;
+        for (const auto &range : ranges) {
+            if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
+            if (range.pool_id.empty()) continue;
+            if (reclaimed_pool[range.pool_id]) continue;
+
+            StoragePool src_pool;
+            auto cached = source_pool_cache.find(range.pool_id);
+            if (cached != source_pool_cache.end()) {
+                src_pool = cached->second;
+            } else {
+                std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+                auto sit = _pool_cache.find(range.pool_id);
+                if (sit == _pool_cache.end())
+                    continue;
+                src_pool = sit->second;
+                if (!src_pool.enabled)
+                    continue;
+                fillPoolRuntimeStats(src_pool);
+                source_pool_cache[src_pool.id] = src_pool;
+            }
+
             if (rules.skip_move_if_pool_offline && src_pool.total_bytes <= 0)
                 continue;
             if (src_pool.usage_pct < static_cast<float>(src_pool.high_watermark_percent))
                 continue;
 
-            auto ranges = range_imp.findByTierPoolAndAge(src_tier_cfg.tier, src_pool.id, stable_threshold);
-            int64_t moved_bytes = 0;
-            for (const auto &range : ranges) {
-                if (range.camera_id != camera_id) continue;
-                if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
+            if (queueTierMoveJob(range, src_tier_cfg, *dst_tier_cfg, true)) {
+                moved_by_pool[src_pool.id] += std::max<int64_t>(0, range.size_bytes);
+            }
 
-                if (queueTierMoveJob(range, src_tier_cfg, *dst_tier_cfg, true)) {
-                    moved_bytes += std::max<int64_t>(0, range.size_bytes);
-                }
-
-                // Hysteresis: reclaim roughly enough to go below high watermark by 5%.
-                if (src_pool.total_bytes > 0 && moved_bytes > 0) {
-                    float target_pct = std::max(0.0f, static_cast<float>(src_pool.high_watermark_percent) - 5.0f);
-                    int64_t target_used = static_cast<int64_t>(src_pool.total_bytes * target_pct / 100.0f);
-                    if (src_pool.used_bytes - moved_bytes <= target_used)
-                        break;
-                }
+            // Hysteresis: reclaim roughly enough to go below high watermark by 5%.
+            auto moved_bytes = moved_by_pool[src_pool.id];
+            if (src_pool.total_bytes > 0 && moved_bytes > 0) {
+                float target_pct = std::max(0.0f, static_cast<float>(src_pool.high_watermark_percent) - 5.0f);
+                int64_t target_used = static_cast<int64_t>(src_pool.total_bytes * target_pct / 100.0f);
+                if (src_pool.used_bytes - moved_bytes <= target_used)
+                    reclaimed_pool[src_pool.id] = true;
             }
         }
     }
