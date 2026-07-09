@@ -171,6 +171,42 @@ static std::string buildRestoreSegmentPath(const std::string &camera_id,
     return root + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4";
 }
 
+static bool ensureDirectoryPath(const std::string &dir, unsigned int mode, std::string &err) {
+    if (dir.empty()) {
+        err = "Directory path is empty";
+        return false;
+    }
+    std::string mkdir_path = dir;
+    if (mkdir_path.back() != '/')
+        mkdir_path += '/';
+    if (!File::create_path(mkdir_path, mode)) {
+        err = "Cannot create directory: " + dir;
+        return false;
+    }
+    struct stat st{};
+    if (::stat(dir.c_str(), &st) != 0) {
+        err = std::string("Cannot stat directory: ") + dir + ": " + strerror(errno);
+        return false;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        err = "Path is not a directory: " + dir;
+        return false;
+    }
+    return true;
+}
+
+static bool isSameFileOnDisk(const std::string &a, const std::string &b) {
+    if (a.empty() || b.empty())
+        return false;
+    if (a == b)
+        return true;
+    struct stat sa{};
+    struct stat sb{};
+    if (::stat(a.c_str(), &sa) != 0 || ::stat(b.c_str(), &sb) != 0)
+        return false;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
 } // namespace
 
 // ===================================================================
@@ -1448,9 +1484,12 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
         int64_t move_threshold = now - (static_cast<int64_t>(src_tier_cfg.retain_until_days) * 86400);
 
         // Respect min_segment_age
-        if (move_threshold > now - min_age_secs)
-            move_threshold = now - min_age_secs;
-
+        // if (move_threshold > now - min_age_secs)
+        //     move_threshold = now - min_age_secs;
+        DebugL << "Processing tiering for camera=" << camera_id
+               << " source_tier=" << src_tier_cfg.tier
+               << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "")
+               << " move_threshold=" << getTimeStr("%Y-%m-%d %H:%M:%S", move_threshold);
         auto ranges = range_imp.findByTierPoolStartedBefore(src_tier_cfg.tier,
                                                             src_tier_cfg.pool_id,
                                                             move_threshold);
@@ -1930,33 +1969,73 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
 
     int64_t moved = 0;
     std::vector<std::string> copied_keys;
+    std::vector<std::string> copied_paths;
 
     for (const auto &seg : segments) {
         if (seg.full_path.empty()) {
             WarnL << "Cannot resolve source segment path from pool_id=" << job.source_pool_id
                   << " segment=" << seg.segment_path;
-            for (const auto &key : copied_keys)
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after source resolve failure: pool=" << dst_pool.id
+                      << " key=" << key;
                 dst_storage->deleteSegment(dst_pool.id, key);
+            }
             return false;
         }
 
-        struct stat st{};
-        if (stat(seg.full_path.c_str(), &st) != 0) {
+        struct stat src_st{};
+        if (stat(seg.full_path.c_str(), &src_st) != 0) {
             WarnL << "Cannot stat source segment: " << seg.full_path;
-            for (const auto &key : copied_keys)
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after source stat failure: pool=" << dst_pool.id
+                      << " key=" << key;
                 dst_storage->deleteSegment(dst_pool.id, key);
+            }
+            return false;
+        }
+
+        std::string dst_path = dst_storage->resolvePath(dst_pool.id, seg.storage_key);
+        if (dst_path.empty()) {
+            WarnL << "Cannot resolve destination segment path pool=" << dst_pool.id
+                  << " key=" << seg.storage_key;
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after destination resolve failure: pool=" << dst_pool.id
+                      << " key=" << key;
+                dst_storage->deleteSegment(dst_pool.id, key);
+            }
+            return false;
+        }
+        if (isSameFileOnDisk(seg.full_path, dst_path)) {
+            WarnL << "Refuse to move segment because source and destination are the same file: "
+                  << seg.full_path << " -> " << dst_path
+                  << " source_pool=" << job.source_pool_id
+                  << " target_pool=" << dst_pool.id;
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after same-file detection: pool=" << dst_pool.id
+                      << " key=" << key;
+                dst_storage->deleteSegment(dst_pool.id, key);
+            }
             return false;
         }
 
         if (!dst_storage->uploadSegment(dst_pool.id, seg.full_path, seg.storage_key)) {
             WarnL << "File storage upload failed for " << seg.full_path
-                  << " -> pool " << dst_pool.id;
-            for (const auto &key : copied_keys)
+                  << " -> " << dst_path
+                  << " pool=" << dst_pool.id;
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after upload failure: pool=" << dst_pool.id
+                      << " key=" << key;
                 dst_storage->deleteSegment(dst_pool.id, key);
+            }
             return false;
         }
+
         copied_keys.push_back(seg.storage_key);
-        moved += st.st_size;
+        copied_paths.push_back(dst_path);
+        moved += src_st.st_size;
+        InfoL << "Copied tier segment: " << seg.full_path
+              << " -> " << dst_path
+              << " bytes=" << src_st.st_size;
     }
 
     job.bytes_moved = moved;
@@ -1966,22 +2045,39 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
                                            job.target_tier,
                                            dst_pool.id,
                                            segmentStatusToString(SegmentStatus::AVAILABLE))) {
-            WarnL << "Failed to update tier range after local move, range=" << job_range.range_id;
-            for (const auto &key : copied_keys)
+            job.error_message = Optional<std::string>("Failed to update tier range after local move");
+            WarnL << job.error_message.value() << ", rollback copied files"
+                  << " range=" << job_range.range_id
+                  << " source_pool=" << job.source_pool_id
+                  << " target_pool=" << dst_pool.id;
+            for (const auto &key : copied_keys) {
+                WarnL << "Rollback copied segment after DB update failure: pool=" << dst_pool.id
+                      << " key=" << key;
                 dst_storage->deleteSegment(dst_pool.id, key);
+            }
             return false;
         }
-        notifyRebuildTimeFile(job.camera_id, static_cast<uint64_t>(job.segment_end_time));
     }
 
-    for (const auto &seg : segments) {
+    for (size_t i = 0; i < segments.size(); ++i) {
+        const auto &seg = segments[i];
+        const std::string dst_path = i < copied_paths.size() ? copied_paths[i] : "";
+        if (isSameFileOnDisk(seg.full_path, dst_path)) {
+            WarnL << "Skip deleting source because it matches destination: "
+                  << seg.full_path << " -> " << dst_path;
+            continue;
+        }
         if (::remove(seg.full_path.c_str()) != 0) {
             WarnL << "Cannot remove old source segment after successful copy: " << seg.full_path
                   << ": " << strerror(errno);
             continue;
         }
-        DebugL << "Moved segment: " << seg.segment_path << " -> " << dst_pool.tier;
+        InfoL << "Moved segment: " << seg.full_path
+              << " -> " << dst_path
+              << " tier=" << dst_pool.tier;
     }
+    if (moved > 0)
+        notifyRebuildTimeFile(job.camera_id, static_cast<uint64_t>(job.segment_end_time));
     return moved > 0;
 }
 
@@ -2204,7 +2300,13 @@ void TierStorageManager::executeRestoreSegment(const std::string &job_id,
     std::string restore_dir = restore_path.substr(0, restore_path.rfind('/'));
     std::string tmp_path = restore_path + ".restore";
 
-    File::create_path(restore_dir, S_IRWXO | S_IRWXG | S_IRWXU);
+    std::string mkdir_err;
+    if (!ensureDirectoryPath(restore_dir, S_IRWXO | S_IRWXG | S_IRWXU, mkdir_err)) {
+        restore_imp.updateStatus(job_id, "FAILED", -1, mkdir_err);
+        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
+                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        return;
+    }
 
     struct stat st{};
     if (stat(restore_path.c_str(), &st) == 0) {

@@ -89,6 +89,31 @@ std::string TierFileStorageBase::parentDir(const std::string &path) {
     return path.substr(0, pos);
 }
 
+bool TierFileStorageBase::ensureDirectory(const std::string &dir) const {
+    if (dir.empty())
+        return true;
+
+    std::string mkdir_path = dir;
+    if (mkdir_path.back() != '/')
+        mkdir_path += '/';
+    if (!File::create_path(mkdir_path, 0755)) {
+        WarnL << storageName() << "::ensureDirectory: create_path failed " << dir;
+        return false;
+    }
+
+    struct stat st{};
+    if (::stat(dir.c_str(), &st) != 0) {
+        WarnL << storageName() << "::ensureDirectory: stat failed " << dir
+              << ": " << strerror(errno);
+        return false;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        WarnL << storageName() << "::ensureDirectory: path is not a directory " << dir;
+        return false;
+    }
+    return true;
+}
+
 bool TierFileStorageBase::registerPool(const std::string &pool_id,
                                        const std::string &type,
                                        const std::string &base_path) {
@@ -183,8 +208,10 @@ bool TierFileStorageBase::copyFile(const std::string &src,
     }
 
     auto dir = parentDir(dst);
-    if (!dir.empty())
-        File::create_path(dir, 0755);
+    if (!ensureDirectory(dir)) {
+        ::close(src_fd);
+        return false;
+    }
 
     std::string tmp = dst + ".tmp";
     int dst_fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);

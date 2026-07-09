@@ -74,6 +74,8 @@ protected:
     bool copyFile(const std::string &src,
                   const std::string &dst) const;
 
+    bool ensureDirectory(const std::string &dir) const;
+
     static std::string normalizeKey(const std::string &key);
     static std::string parentDir(const std::string &path);
 

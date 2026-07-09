@@ -5,6 +5,7 @@
 #include "Util/util.h"
 #include "Util/TimeTicker.h"
 
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -34,6 +35,38 @@ namespace managerkit {
 // ============================================================================
 static constexpr size_t MULTIPART_THRESHOLD = 64ULL * 1024 * 1024;
 static constexpr size_t MULTIPART_PART_SIZE = 32ULL * 1024 * 1024;
+
+#ifdef ENABLE_AWS_SDK
+static std::string parentDir(const std::string &path) {
+    auto pos = path.rfind('/');
+    if (pos == std::string::npos)
+        return "";
+    return path.substr(0, pos);
+}
+
+static bool ensureDirectory(const std::string &dir) {
+    if (dir.empty())
+        return true;
+    std::string mkdir_path = dir;
+    if (mkdir_path.back() != '/')
+        mkdir_path += '/';
+    if (!File::create_path(mkdir_path, 0755)) {
+        WarnL << "TierObjectStorage: create_path failed " << dir;
+        return false;
+    }
+    struct stat st{};
+    if (::stat(dir.c_str(), &st) != 0) {
+        WarnL << "TierObjectStorage: stat directory failed " << dir
+              << ": " << strerror(errno);
+        return false;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        WarnL << "TierObjectStorage: path is not a directory " << dir;
+        return false;
+    }
+    return true;
+}
+#endif
 
 // ============================================================================
 // Constructor / Destructor
@@ -449,9 +482,8 @@ bool TierObjectStorage::downloadSegment(const std::string &pool_id,
         return false;
     }
 
-    // Create parent directories
-    auto dir = local_path.substr(0, local_path.rfind('/'));
-    if (!dir.empty()) File::create_path(dir, 0755);
+    if (!ensureDirectory(parentDir(local_path)))
+        return false;
 
     std::ofstream ofs(local_path, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
