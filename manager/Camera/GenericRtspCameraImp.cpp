@@ -263,7 +263,8 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
     // Emit only on status change (false → true or true → false) or when caps actually changed
-    bool is_restart = prev_connect != connect;
+    bool is_first_time = _src && (time(nullptr) - _src->getCreateStamp() < 300);
+    bool is_restart = prev_connect != connect || is_first_time;
     bool caps_changed = caps && (*caps != prev_caps);
     if (!is_restart && !caps_changed) {
         return;
