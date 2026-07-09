@@ -55,7 +55,7 @@ Tất cả API đều yêu cầu JWT token hợp lệ. Các permission code:
 | `300052` | 502 | Kết nối storage pool thất bại |
 | `300053` | 409 | Storage policy đang được camera sử dụng (không xóa được) |
 | `300054` | 422 | Storage policy không hợp lệ |
-| `300055` | 422 | Thứ tự mốc ngày tầng không hợp lệ (HOT ≥ WARM hoặc WARM ≥ COLD) |
+| `300055` | 422 | Thứ tự mốc ngày tầng không hợp lệ giữa các tier enabled |
 | `300056` | 202 | Dữ liệu cần restore từ Cold Storage trước khi phát |
 | `300057` | 500 | Tiering job lỗi |
 | `300058` | 409 | Segment đang được bảo vệ (protected/evidence) |
@@ -614,10 +614,13 @@ Không yêu cầu tham số.
 ```
 - name không được rỗng
 - total_retention_days > 0
-- HOT.retain_until_days < WARM.retain_until_days < COLD.retain_until_days
+- HOT phải enabled nếu policy dùng để ghi hình
+- WARM là optional; nếu WARM disabled và COLD enabled thì HOT có thể move trực tiếp sang COLD
+- Các tier enabled phải có retain_until_days tăng dần theo thứ tự HOT -> WARM -> COLD
+- Nếu một tier enabled phía sau cần nhận dữ liệu, tier enabled liền trước phải có overflow_action = MOVE_TO_NEXT_TIER
 - delete_after_days >= retain_until_days lớn nhất
 - pool_id phải tồn tại và enabled
-- HOT phải enabled nếu policy dùng để ghi hình
+- pool_id phải đúng tier đang cấu hình và type phải được tier đó hỗ trợ
 - high_watermark_percent < critical_watermark_percent
 - critical_watermark_percent <= 95
 ```
@@ -1886,7 +1889,9 @@ export interface TieringJob {
 - HOT enabled → HOT.pool_id bắt buộc
 - WARM enabled → WARM.pool_id bắt buộc
 - COLD enabled → COLD.pool_id bắt buộc
-- retain_until_days phải tăng dần: HOT < WARM < COLD
+- WARM optional; nếu WARM disabled và COLD enabled thì HOT có thể move trực tiếp sang COLD
+- retain_until_days phải tăng dần giữa các tier enabled theo thứ tự HOT -> WARM -> COLD
+- tier enabled phía sau yêu cầu tier enabled liền trước có overflow_action = MOVE_TO_NEXT_TIER
 - delete_after_days >= retain_until_days lớn nhất của tier cuối cùng
 - high_watermark_percent < critical_watermark_percent
 - critical_watermark_percent <= 95
@@ -1899,6 +1904,7 @@ export interface TieringJob {
 - type và tier bắt buộc
 - LOCAL_DISK / NAS: cần mount_path
 - MINIO / S3: cần endpoint + bucket
+- MINIO / S3 / ARCHIVE chỉ hợp lệ cho COLD
 - Khi tạo mới MINIO / S3: cần access_key + secret_key
 - high_watermark_percent < critical_watermark_percent
 ```
@@ -1956,7 +1962,7 @@ Khi mở:
 Tạo policy:
   1. User nhập thông tin chung
   2. User cấu hình HOT / WARM / COLD
-  3. FE validate: HOT < WARM < COLD, deleteAfterDays >= tier cuối
+  3. FE validate: các tier enabled tăng dần, WARM optional, deleteAfterDays >= tier cuối
   4. POST /media/mserver/storage/policy/create
 
 Sửa policy:
@@ -2082,7 +2088,7 @@ Hệ thống sẽ chuyển dữ liệu sang Warm Storage sớm hơn cấu hình 
 [ ] Tích hợp Test Connection khi tạo pool
 [ ] Tạo màn hình Storage Policy Management
 [ ] Tạo form tạo/sửa Storage Policy
-[ ] Validate thứ tự HOT < WARM < COLD và deleteAfterDays
+[ ] Validate thứ tự các tier enabled và deleteAfterDays
 [ ] Tạo màn hình gán policy cho project/group/camera
 [ ] Hiển thị nguồn policy hiệu lực (CAMERA/GROUP/PROJECT/SYSTEM_DEFAULT)
 [ ] Hiển thị camera storage summary

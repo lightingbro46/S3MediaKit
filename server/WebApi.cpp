@@ -1,4 +1,5 @@
-﻿#include <exception>
+﻿#include <algorithm>
+#include <exception>
 #include <sys/stat.h>
 #include <math.h>
 #include <signal.h>
@@ -854,6 +855,11 @@ static Json::Value apiPolicyDetailToJson(const StoragePolicy &p, const std::unor
 }
 
 static bool apiValidateStoragePoolByType(const StoragePool &pool, std::string &err) {
+    auto support = poolTypeSupport(tierTypeFromString(pool.tier));
+    if (support.isMember(pool.type) && !support[pool.type].asBool()) {
+        err = pool.type + " pool is not supported for " + pool.tier + " tier";
+        return false;
+    }
     if (pool.type == "LOCAL_DISK") {
         if (!pool.mount_path.has_value() || pool.mount_path.value().empty()) {
             err = "mount_path is required for LOCAL_DISK";
@@ -911,28 +917,23 @@ static StoragePool apiPoolFromJson(const Json::Value &body) {
 }
 
 static bool apiValidatePolicyTierMoveChain(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
-    const PolicyTierConfig *hot = nullptr;
-    const PolicyTierConfig *warm = nullptr;
-    const PolicyTierConfig *cold = nullptr;
+    std::vector<PolicyTierConfig> sorted;
     for (const auto &tier : tiers) {
-        if (tier.tier == "HOT") hot = &tier;
-        else if (tier.tier == "WARM") warm = &tier;
-        else if (tier.tier == "COLD") cold = &tier;
-    }
-
-    if (warm && warm->enabled) {
-        if (!hot || !hot->enabled || hot->overflow_action != "MOVE_TO_NEXT_TIER") {
-            err = "WARM tier can only be enabled when HOT overflow_action is MOVE_TO_NEXT_TIER";
-            return false;
+        if (tier.enabled) {
+            sorted.push_back(tier);
         }
     }
-    if (cold && cold->enabled) {
-        if (!warm || !warm->enabled) {
-            err = "COLD tier can only be enabled when WARM tier is enabled";
-            return false;
-        }
-        if (warm->overflow_action != "MOVE_TO_NEXT_TIER") {
-            err = "COLD tier can only be enabled when WARM overflow_action is MOVE_TO_NEXT_TIER";
+    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+    });
+    if (sorted.empty() || sorted.front().tier != "HOT") {
+        err = "HOT tier must be enabled";
+        return false;
+    }
+    for (size_t i = 0; i + 1 < sorted.size(); ++i) {
+        if (sorted[i].overflow_action != "MOVE_TO_NEXT_TIER") {
+            err = sorted[i + 1].tier + " tier can only be enabled when " +
+                  sorted[i].tier + " overflow_action is MOVE_TO_NEXT_TIER";
             return false;
         }
     }
@@ -944,22 +945,26 @@ static bool apiValidatePolicyTiers(const std::vector<PolicyTierConfig> &tiers, s
         return false;
     }
 
-    int hot_days = -1;
-    int warm_days = -1;
+    std::vector<PolicyTierConfig> sorted;
     for (const auto &t : tiers) {
-        if (!t.enabled) continue;
-        if (t.tier == "HOT") hot_days = t.retain_until_days;
-        if (t.tier == "WARM") warm_days = t.retain_until_days;
-        if (t.tier == "COLD") {
-            if (hot_days >= 0 && warm_days >= 0 && hot_days >= warm_days) {
-                err = "HOT.retain_until_days must be less than WARM.retain_until_days";
-                return false;
-            }
-            if (warm_days >= 0 && warm_days >= t.retain_until_days) {
-                err = "WARM.retain_until_days must be less than COLD.retain_until_days";
-                return false;
-            }
+        if (t.enabled) {
+            sorted.push_back(t);
         }
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+    });
+
+    int previous_days = -1;
+    std::string previous_tier;
+    for (const auto &t : sorted) {
+        if (previous_days >= 0 && previous_days >= t.retain_until_days) {
+            err = previous_tier + ".retain_until_days must be less than " +
+                  t.tier + ".retain_until_days";
+            return false;
+        }
+        previous_days = t.retain_until_days;
+        previous_tier = t.tier;
         if (t.high_watermark_percent >= t.critical_watermark_percent) {
             err = "high_watermark_percent must be less than critical_watermark_percent";
             return false;
@@ -1007,6 +1012,16 @@ static bool apiValidateStoragePolicy(const StoragePolicy &policy, std::string &e
         auto it = pool_map.find(tier.pool_id);
         if (it == pool_map.end() || it->second.enabled == 0) {
             err = "pool_id must exist and be enabled: " + tier.pool_id;
+            return false;
+        }
+        if (it->second.tier != tier.tier) {
+            err = "pool_id " + tier.pool_id + " belongs to " + it->second.tier +
+                  " tier, expected " + tier.tier;
+            return false;
+        }
+        auto support = poolTypeSupport(tierTypeFromString(tier.tier));
+        if (support.isMember(it->second.type) && !support[it->second.type].asBool()) {
+            err = it->second.type + " pool is not supported for " + tier.tier + " tier";
             return false;
         }
         if (tier.critical_watermark_percent > 95) {

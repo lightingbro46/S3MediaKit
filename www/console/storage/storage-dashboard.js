@@ -960,7 +960,8 @@
 
         function syncTierAvailability() {
             var warmEnabled = hotOverflow && hotOverflow.value === 'MOVE_TO_NEXT_TIER';
-            var coldEnabled = warmEnabled && warmOverflow && warmOverflow.value === 'MOVE_TO_NEXT_TIER';
+            var warmChecked = form.elements.tier_WARM_enabled && form.elements.tier_WARM_enabled.checked;
+            var coldEnabled = warmEnabled && (!warmChecked || (warmOverflow && warmOverflow.value === 'MOVE_TO_NEXT_TIER'));
             setTierConfigEnabled('HOT', true);
             setTierConfigEnabled('WARM', warmEnabled);
             setTierConfigEnabled('COLD', coldEnabled);
@@ -968,6 +969,7 @@
 
         if (hotOverflow) hotOverflow.addEventListener('change', syncTierAvailability);
         if (warmOverflow) warmOverflow.addEventListener('change', syncTierAvailability);
+        if (form.elements.tier_WARM_enabled) form.elements.tier_WARM_enabled.addEventListener('change', syncTierAvailability);
         syncTierAvailability();
     }
 
@@ -975,8 +977,9 @@
         if (tier === 'HOT') return true;
         var hotMoves = form.elements.tier_HOT_overflow && form.elements.tier_HOT_overflow.value === 'MOVE_TO_NEXT_TIER';
         if (tier === 'WARM') return hotMoves;
+        var warmEnabled = form.elements.tier_WARM_enabled && form.elements.tier_WARM_enabled.checked;
         var warmMoves = form.elements.tier_WARM_overflow && form.elements.tier_WARM_overflow.value === 'MOVE_TO_NEXT_TIER';
-        return hotMoves && warmMoves;
+        return hotMoves && (!warmEnabled || warmMoves);
     }
 
     function _openPolicyModal(policy) {

@@ -1339,9 +1339,17 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
 
     SegmentTierRangeImp range_imp;
 
-    for (size_t i = 0; i + 1 < tiers.size(); ++i) {
+    auto next_enabled_tier = [&](size_t index) -> const PolicyTierConfig * {
+        for (size_t j = index + 1; j < tiers.size(); ++j) {
+            if (tiers[j].enabled)
+                return &tiers[j];
+        }
+        return nullptr;
+    };
+
+    for (size_t i = 0; i < tiers.size(); ++i) {
         const auto &src_tier_cfg = tiers[i];
-        const auto &dst_tier_cfg = tiers[i + 1];
+        const auto *dst_tier_cfg = next_enabled_tier(i);
         if (!src_tier_cfg.enabled)
             continue;
         if (src_tier_cfg.pool_id.empty()) {
@@ -1350,7 +1358,9 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
             continue;
         }
 
-        // Age threshold: segments whose end_time is before this should move
+        // Age threshold: segments whose end_time is before this should move.
+        // Compact ranges may still be open because cameras keep recording, so
+        // query by start_time and split the old portion at segment boundaries.
         int64_t move_threshold = now - (static_cast<int64_t>(src_tier_cfg.retain_until_days) * 86400);
 
         // Respect min_segment_age
@@ -1456,16 +1466,24 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
     });
 
     SegmentTierRangeImp range_imp;
-    for (size_t i = 0; i + 1 < tiers.size(); ++i) {
+    auto next_enabled_tier = [&](size_t index) -> const PolicyTierConfig * {
+        for (size_t j = index + 1; j < tiers.size(); ++j) {
+            if (tiers[j].enabled)
+                return &tiers[j];
+        }
+        return nullptr;
+    };
+
+    for (size_t i = 0; i < tiers.size(); ++i) {
         const auto &src_tier_cfg = tiers[i];
-        const auto &dst_tier_cfg = tiers[i + 1];
-        if (!src_tier_cfg.enabled || !dst_tier_cfg.enabled) continue;
+        const auto *dst_tier_cfg = next_enabled_tier(i);
+        if (!src_tier_cfg.enabled) continue;
         if (src_tier_cfg.overflow_action != overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER))
             continue;
-        if (src_tier_cfg.pool_id.empty() || dst_tier_cfg.pool_id.empty()) {
+        if (src_tier_cfg.pool_id.empty() || !dst_tier_cfg || dst_tier_cfg->pool_id.empty()) {
             WarnL << "Skip pressure tiering config with empty pool_id camera=" << camera_id
                   << " source_tier=" << src_tier_cfg.tier
-                  << " target_tier=" << dst_tier_cfg.tier;
+                  << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "");
             continue;
         }
 
@@ -1473,7 +1491,7 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
         std::vector<StoragePool> src_pools;
         {
             std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-            auto dit = _pool_cache.find(dst_tier_cfg.pool_id);
+            auto dit = _pool_cache.find(dst_tier_cfg->pool_id);
             if (dit == _pool_cache.end())
                 continue;
             dst_pool = dit->second;
@@ -1501,7 +1519,7 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
                 if (range.camera_id != camera_id) continue;
                 if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
 
-                if (queueTierMoveJob(range, src_tier_cfg, dst_tier_cfg, true)) {
+                if (queueTierMoveJob(range, src_tier_cfg, *dst_tier_cfg, true)) {
                     moved_bytes += std::max<int64_t>(0, range.size_bytes);
                 }
 

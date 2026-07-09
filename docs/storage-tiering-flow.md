@@ -204,10 +204,13 @@ POST /media/mserver/storage/policy/create
 Backend validate:
 
 - `total_retention_days > 0`
-- `HOT < WARM < COLD`
+- `HOT` phải enabled
+- WARM optional; nếu WARM disabled và COLD enabled thì HOT có thể move trực tiếp sang COLD
+- `retain_until_days` tăng dần giữa các tier enabled theo thứ tự `HOT -> WARM -> COLD`
+- Tier enabled phía sau yêu cầu tier enabled liền trước có `overflow_action = MOVE_TO_NEXT_TIER`
 - `delete_after_days >= retain_until_days` lớn nhất
 - `pool_id` tồn tại và enabled
-- `HOT` phải enabled
+- `pool_id` phải đúng tier đang cấu hình và type phải được tier đó hỗ trợ
 - watermark hợp lệ
 
 ### 3.4 Assign Policy
@@ -290,19 +293,21 @@ Luồng hiện tại theo code:
 
 `processCameraTiering()` xử lý move theo `retain_until_days`.
 
-Với từng cặp tier liền kề sau khi sort `HOT -> WARM -> COLD`:
+Backend sort tier theo thứ tự `HOT -> WARM -> COLD`, nhưng tier đích là **tier enabled kế tiếp** chứ không bắt buộc là tier liền kề vật lý. Vì vậy WARM có thể disabled; khi HOT có `overflow_action = MOVE_TO_NEXT_TIER`, dữ liệu HOT sẽ move trực tiếp sang COLD.
 
-1. Bỏ qua nếu source/destination tier disabled.
-2. Bỏ qua nếu source hoặc destination `pool_id` rỗng.
-3. Tính:
+1. Bỏ qua source tier disabled.
+2. Tìm destination là tier enabled kế tiếp.
+3. Bỏ qua nếu source hoặc destination `pool_id` rỗng.
+4. Tính:
 
 ```text
 move_threshold = now - source_tier.retain_until_days * 86400
 move_threshold không được mới hơn now - min_segment_age_minutes_before_move
 ```
 
-4. Query `segment_tier_ranges` theo source tier và age.
-5. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
+5. Query `segment_tier_ranges` theo source tier/source pool với `start_time < move_threshold`.
+6. Nếu range vượt quá ngưỡng nhưng còn phần mới chưa đủ tuổi, backend split range tại ranh giới segment gần `move_threshold`.
+7. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
 
 `queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị.
 
@@ -316,6 +321,7 @@ move_threshold không được mới hơn now - min_segment_age_minutes_before_m
 
 - Source/destination tier enabled.
 - Source/destination `pool_id` không rỗng.
+- Destination là tier enabled kế tiếp, nên HOT có thể move trực tiếp sang COLD khi WARM disabled.
 - Destination pool tồn tại và chưa vượt `critical_watermark_percent`.
 - Source pool trong policy tồn tại và usage >= `high_watermark_percent`.
 - Range source đang `AVAILABLE`.
