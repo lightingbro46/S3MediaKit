@@ -90,6 +90,42 @@ static void loadSavedMediaServerInfo() {
 
 static void *manager_hook_tag = nullptr;
 
+#ifdef ENABLE_MP4
+static std::string resolveRecordedBlockPath(const TimeBlock &block) {
+    std::string timefile_path;
+    if (!block.file_path().empty())
+        timefile_path = decodeBase64(block.file_path());
+    if (timefile_path.empty())
+        return "";
+
+    auto resolved = TierStorageManager::Instance().resolvePlaybackSegmentPath(
+        block.app(),
+        block.stream(),
+        static_cast<int64_t>(block.start_time()),
+        timefile_path);
+
+    if (resolved.ready && !resolved.read_path.empty())
+        return resolved.read_path;
+
+    if (resolved.restore_required) {
+        auto restore = TierStorageManager::Instance().handleColdAccessByPath(timefile_path);
+        WarnL << "Recorded MP4 segment requires restore before playback, camera=" << block.app()
+              << " stream=" << block.stream()
+              << " start_time=" << block.start_time()
+              << " pool=" << resolved.pool_id
+              << " range=" << resolved.range_id
+              << " restore_job=" << restore.job_id
+              << " status=" << restore.status;
+    } else {
+        WarnL << "Recorded MP4 segment path is not ready, camera=" << block.app()
+              << " stream=" << block.stream()
+              << " start_time=" << block.start_time()
+              << " message=" << resolved.message;
+    }
+    return "";
+}
+#endif
+
 void installManagerHook () {
 
 #ifdef ENABLE_MP4
@@ -166,7 +202,9 @@ void installManagerHook () {
                 duration = first_range.duration;
                 query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
                     for (const auto &block : ret) {
-                        files[block.stream()][block.start_time()] = decodeBase64(block.file_path());
+                        auto resolved_path = resolveRecordedBlockPath(block);
+                        if (!resolved_path.empty())
+                            files[block.stream()][block.start_time()] = resolved_path;
                     }
                 });
             }
@@ -184,7 +222,9 @@ void installManagerHook () {
         if (query) {
             query->getRecordedTimePeriod(stamp, stamp + max_duration, [&](vector<TimeBlock> &ret) {
                 for (const auto &block : ret) {
-                    files[block.stream()][block.start_time()] = decodeBase64(block.file_path());
+                    auto resolved_path = resolveRecordedBlockPath(block);
+                    if (!resolved_path.empty())
+                        files[block.stream()][block.start_time()] = resolved_path;
                 }
             });
         }

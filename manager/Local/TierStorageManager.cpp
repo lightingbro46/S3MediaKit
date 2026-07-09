@@ -769,6 +769,122 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForWind
     return ret;
 }
 
+std::string TierStorageManager::getRestoreSegmentPath(const std::string &camera_id,
+                                                      const std::string &stream_id,
+                                                      const std::string &segment_path) const {
+    return buildRestoreSegmentPath(camera_id, stream_id, segment_path);
+}
+
+PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const std::string &camera_id,
+                                                                         const std::string &stream_id,
+                                                                         int64_t segment_start_time,
+                                                                         const std::string &timefile_path) {
+    PlaybackPathResolveResult ret;
+    ret.read_path = timefile_path;
+    ret.tier = tierTypeToString(HotTier);
+
+    if (camera_id.empty() || stream_id.empty() || segment_start_time <= 0) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "Invalid segment identity, fallback to timefile path";
+        return ret;
+    }
+
+    std::string segment_path;
+    if (!deriveSegmentPathFromFullPath(timefile_path, camera_id, stream_id, segment_path)) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "Cannot derive segment path, fallback to timefile path";
+        return ret;
+    }
+
+    SegmentTierRangeImp range_imp;
+    auto ranges = range_imp.queryByCamera(camera_id, segment_start_time, segment_start_time + 1);
+    SegmentTierRange matched;
+    bool found = false;
+    for (const auto &r : ranges) {
+        if (r.stream_id != stream_id)
+            continue;
+        if (r.start_time <= segment_start_time && r.end_time > segment_start_time &&
+            r.status != segmentStatusToString(SegmentStatus::DELETED) &&
+            r.status != segmentStatusToString(SegmentStatus::EXPIRED) &&
+            r.status != segmentStatusToString(SegmentStatus::MISSING)) {
+            matched = r;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "No segment tier range found, fallback to timefile path";
+        return ret;
+    }
+
+    ret.tier = matched.tier;
+    ret.pool_id = matched.pool_id;
+    ret.range_id = matched.range_id;
+
+    StoragePool pool;
+    bool has_pool = false;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        auto it = _pool_cache.find(matched.pool_id);
+        if (it != _pool_cache.end()) {
+            pool = it->second;
+            has_pool = true;
+        }
+    }
+    if (!has_pool) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "Segment pool not found, fallback to timefile path";
+        return ret;
+    }
+
+    if (poolTypeIsObjectStorage(pool.type)) {
+        auto restore_path = buildRestoreSegmentPath(camera_id, stream_id, segment_path);
+        struct stat st{};
+        if (::stat(restore_path.c_str(), &st) == 0) {
+            ret.read_path = restore_path;
+            ret.ready = true;
+            ret.restore_required = false;
+            ret.message = "Resolved to restore cache";
+        } else {
+            ret.read_path.clear();
+            ret.ready = false;
+            ret.restore_required = true;
+            ret.message = "Segment is in object storage and restore cache is not ready";
+        }
+        return ret;
+    }
+
+    auto storage = fileStorageForPoolType(pool.type);
+    if (!storage) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "Unsupported file storage pool, fallback to timefile path";
+        return ret;
+    }
+    if (!storage->isRegistered(pool.id) && pool.enabled) {
+        registerPoolFileStorage(pool);
+    }
+
+    std::string storage_key = TierFileStorageBase::makeStorageKey(camera_id, stream_id, segment_path);
+    std::string resolved_path = storage->resolvePath(pool.id, storage_key);
+    if (resolved_path.empty()) {
+        ret.ready = !timefile_path.empty();
+        ret.fallback = true;
+        ret.message = "Cannot resolve file storage path, fallback to timefile path";
+        return ret;
+    }
+    ret.read_path = resolved_path;
+    ret.ready = true;
+    ret.restore_required = false;
+    ret.message = "Resolved to file storage pool";
+    return ret;
+}
+
 std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
                                                                                SegmentTierRange &out_range) {
     SegmentTierRangeImp range_imp;

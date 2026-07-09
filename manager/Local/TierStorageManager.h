@@ -30,6 +30,17 @@ struct ColdAccessRestoreResult {
     int estimated_restore_seconds = 120;
 };
 
+struct PlaybackPathResolveResult {
+    std::string read_path;
+    std::string tier;
+    std::string pool_id;
+    std::string range_id;
+    bool restore_required = false;
+    bool ready = false;
+    bool fallback = false;
+    std::string message;
+};
+
 struct TierRangeSegmentFile {
     std::string camera_id;
     std::string stream_id;
@@ -182,6 +193,15 @@ public:
     // Trigger async restore when a record MP4 access misses locally but the
     // segment is tracked in a cold tier range.
     ColdAccessRestoreResult handleColdAccessByPath(const std::string &file_path);
+
+    PlaybackPathResolveResult resolvePlaybackSegmentPath(const std::string &camera_id,
+                                                         const std::string &stream_id,
+                                                         int64_t segment_start_time,
+                                                         const std::string &timefile_path);
+
+    std::string getRestoreSegmentPath(const std::string &camera_id,
+                                      const std::string &stream_id,
+                                      const std::string &segment_path) const;
 
     std::vector<RestoreJob> listRestoreJobs(const std::string &camera_id   = "",
                                              const std::string &status      = "",
