@@ -767,6 +767,90 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForJob(
     return {};
 }
 
+bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &range,
+                                                       int64_t move_threshold,
+                                                       SegmentTierRange &out_move_range) {
+    out_move_range = SegmentTierRange();
+    if (range.range_id.empty() || range.pool_id.empty())
+        return false;
+    if (range.start_time >= move_threshold)
+        return false;
+    if (range.end_time <= move_threshold) {
+        out_move_range = range;
+        return true;
+    }
+
+    auto segments = collectSegmentFilesForRange(range);
+    if (segments.empty()) {
+        WarnL << "Cannot split tier range without timefile segments, range=" << range.range_id
+              << " camera=" << range.camera_id;
+        return false;
+    }
+
+    std::sort(segments.begin(), segments.end(), [](const TierRangeSegmentFile &a,
+                                                   const TierRangeSegmentFile &b) {
+        return a.start_time < b.start_time;
+    });
+
+    int64_t split_time = 0;
+    for (const auto &seg : segments) {
+        if (seg.end_time <= move_threshold)
+            split_time = std::max(split_time, seg.end_time);
+        else
+            break;
+    }
+    if (split_time <= range.start_time)
+        return false;
+    if (split_time >= range.end_time) {
+        out_move_range = range;
+        return true;
+    }
+
+    int64_t now = static_cast<int64_t>(time(nullptr));
+    SegmentTierRange move_piece = range;
+    SegmentTierRange remain_piece = range;
+    move_piece.end_time = split_time;
+    move_piece.updated_at = now;
+    remain_piece.range_id = StrUUID::make_guid(8, "rng");
+    remain_piece.start_time = split_time;
+    remain_piece.created_at = now;
+    remain_piece.updated_at = now;
+
+    auto refresh_stats = [&](SegmentTierRange &piece) {
+        auto files = collectSegmentFilesForRange(piece);
+        if (files.empty())
+            return false;
+        int64_t size = 0;
+        for (const auto &f : files)
+            size += std::max<int64_t>(0, f.file_size);
+        piece.segment_count = static_cast<int64_t>(files.size());
+        piece.size_bytes = size;
+        return true;
+    };
+
+    if (!refresh_stats(move_piece) || !refresh_stats(remain_piece)) {
+        WarnL << "Cannot refresh split range stats, range=" << range.range_id
+              << " camera=" << range.camera_id
+              << " split_time=" << split_time;
+        return false;
+    }
+
+    SegmentTierRangeImp range_imp;
+    if (!range_imp.replaceRangeWithPieces(range.range_id, {move_piece, remain_piece})) {
+        WarnL << "Failed to split tier range for scheduled move, range=" << range.range_id
+              << " camera=" << range.camera_id
+              << " split_time=" << split_time;
+        return false;
+    }
+
+    DebugL << "Split tier range " << range.range_id
+           << " camera=" << range.camera_id
+           << " move_window=" << move_piece.start_time << "-" << move_piece.end_time
+           << " remain_window=" << remain_piece.start_time << "-" << remain_piece.end_time;
+    out_move_range = move_piece;
+    return true;
+}
+
 // ===================================================================
 // Section 1 — Storage Pool APIs
 // ===================================================================
@@ -1367,20 +1451,26 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
         if (move_threshold > now - min_age_secs)
             move_threshold = now - min_age_secs;
 
-        auto ranges = range_imp.findByTierPoolAndAge(src_tier_cfg.tier, src_tier_cfg.pool_id, move_threshold);
+        auto ranges = range_imp.findByTierPoolStartedBefore(src_tier_cfg.tier,
+                                                            src_tier_cfg.pool_id,
+                                                            move_threshold);
 
         for (const auto &range : ranges) {
             if (range.camera_id != camera_id) continue;
+            SegmentTierRange move_range;
+            if (!splitRangeForTieringThreshold(range, move_threshold, move_range))
+                continue;
+
             if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER)) {
-                if (!dst_tier_cfg.enabled || dst_tier_cfg.pool_id.empty()) {
+                if (!dst_tier_cfg || dst_tier_cfg->pool_id.empty()) {
                     WarnL << "Skip move because target tier is disabled or has empty pool_id camera=" << camera_id
                           << " source_tier=" << src_tier_cfg.tier
-                          << " target_tier=" << dst_tier_cfg.tier;
+                          << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "");
                     continue;
                 }
-                queueTierMoveJob(range, src_tier_cfg, dst_tier_cfg, false);
+                queueTierMoveJob(move_range, src_tier_cfg, *dst_tier_cfg, false);
             } else if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::DELETE_OLDEST)) {
-                expireRangeBestEffort(range, segmentStatusToString(SegmentStatus::DELETED));
+                expireRangeBestEffort(move_range, segmentStatusToString(SegmentStatus::DELETED));
             } else if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::STOP_RECORDING_AND_ALERT)) {
                 WarnL << "Storage policy requests STOP_RECORDING_AND_ALERT camera=" << camera_id
                       << " tier=" << src_tier_cfg.tier;

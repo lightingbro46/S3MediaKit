@@ -597,6 +597,31 @@ public:
         return ret;
     }
 
+    std::vector<SegmentTierRange> findByTierPoolStartedBefore(const std::string &tier,
+                                                              const std::string &pool_id,
+                                                              int64_t before_time) {
+        if (pool_id.empty())
+            return {};
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND start_time < ? AND status = ? AND pool_id = ?";
+        params.push_back(tier);
+        params.push_back(std::to_string(before_time));
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(pool_id);
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     std::vector<SegmentTierRange> findExpired(const std::string &camera_id = "",
                                               int64_t from_time = 0,
                                               int64_t to_time = 0,
@@ -899,6 +924,25 @@ public:
         ok = save(make_piece(window_start, window_end, status, true), true) && ok;
         if (window_end < range.end_time)
             ok = save(make_piece(window_end, range.end_time, range.status, false), true) && ok;
+        return ok;
+    }
+
+    bool replaceRangeWithPieces(const std::string &range_id,
+                                const std::vector<SegmentTierRange> &pieces) {
+        if (range_id.empty() || pieces.empty())
+            return false;
+
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
+                .where("range_id = ?", {range_id}));
+
+        bool ok = true;
+        for (const auto &piece : pieces) {
+            if (piece.range_id.empty() || piece.pool_id.empty())
+                return false;
+            ok = save(piece, true) && ok;
+        }
         return ok;
     }
 

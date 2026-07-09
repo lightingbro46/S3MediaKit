@@ -241,6 +241,10 @@ private:
                           const PolicyTierConfig &dst_tier_cfg,
                           bool pressure);
 
+    bool splitRangeForTieringThreshold(const SegmentTierRange &range,
+                                       int64_t move_threshold,
+                                       SegmentTierRange &out_move_range);
+
     bool expireRangeBestEffort(const SegmentTierRange &range,
                                const std::string &final_status = "EXPIRED");
 
