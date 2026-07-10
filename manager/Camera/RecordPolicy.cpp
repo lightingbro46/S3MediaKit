@@ -35,6 +35,11 @@ std::string getRecordEventTypeString(RecordEventType type) {
     }
 }
 
+static int toRecordScheduleDay(int tm_wday) {
+    // Scheduler dh day index starts at Monday 00:00: Monday=0, ..., Sunday=6.
+    return (tm_wday + 6) % 7;
+}
+
 static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const string &str) {
     unordered_map<std::string, RecordScheduleItem> ret;
 
@@ -53,7 +58,7 @@ static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(con
         // The json array is expected to contain items with the following format:
         // [
         //   {
-        //     "dh": "0,13", // day and hour, e.g. "0,13" = Sunday 13:00
+        //     "dh": "0,13", // day and hour, e.g. "0,13" = Monday 13:00
         //     "ty": 1, // record mode, e.g. 1 = RecordOnlyMotion
         //     "fps": 15, // optional, fps for recording
         //     "q": "M" // optional, image quality for recording, e.g. "M" = Medium, "L" = Low, "H" = High
@@ -64,7 +69,7 @@ static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(con
             RecordScheduleItem s;
             string key;
             if (item.isMember("dh") && item["dh"].isString()) {
-                // format: "d,h", e.g. "0,13" = Sunday 13:00
+                // format: "d,h", e.g. "0,13" = Monday 13:00
                 string dh_str = item["dh"].asString();
                 auto tmp = split(dh_str, ",");
                 if (tmp.size() == 2) {
@@ -72,9 +77,15 @@ static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(con
                     string hour_str = tmp[1];
                     s.day = stoi(day_str);
                     s.hour = stoi(hour_str);
+                    if (s.day < 0 || s.day > 6 || s.hour < 0 || s.hour > 23) {
+                        WarnL << "Invalid record schedule dh value: " << dh_str;
+                        continue;
+                    }
+                    key = to_string(s.day) + "," + to_string(s.hour);
                 }
-                key = dh_str;
             }
+            if (key.empty())
+                continue;
 
             if (item.isMember("fps") && item["fps"].isInt()) {
                 // optional, default to 0 if not specified
@@ -186,7 +197,7 @@ void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
 
 RecordScheduler::RecordScheduleMap::iterator RecordScheduler::getRecordScheduledActive(time_t time) {
     auto week_time = StrTimeUtils::getWeekTime(time);
-    string time_str = (StrPrinter << week_time.day_of_week << "," << week_time.hour);
+    string time_str = (StrPrinter << toRecordScheduleDay(week_time.day_of_week) << "," << week_time.hour);
     auto it = _items.find(time_str);
     if (it == _items.end()) {
         // throw exception if no schedule found for current time, this should not happen because we fill in default schedule for all time in parseRecordScheduleStr

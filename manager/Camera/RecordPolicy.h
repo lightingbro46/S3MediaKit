@@ -26,7 +26,7 @@ enum class ImageQuality : uint8_t {
 std::string getImageQualityString(ImageQuality quality);
 
 struct RecordScheduleItem {
-    int day = 0; // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+    int day = 0; // 0 = Monday, 1 = Tuesday, ... 6 = Sunday
     int hour = 0; // 0-23
     RecordMode mode = RecordMode::NoRecord;
     int fps = 0;
