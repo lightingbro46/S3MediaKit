@@ -32,6 +32,8 @@ option(ENABLE_SERVER "Enable Server" ON)
 option(ENABLE_SERVER_LIB "Enable server as android static library" OFF)
 option(ENABLE_SRT "Enable SRT" OFF)
 option(ENABLE_TESTS "Enable Tests" OFF)
+option(ENABLE_LEGACY_TESTS "Build legacy test/demo executables" OFF)
+option(ENABLE_COVERAGE "Enable GCC/Clang coverage instrumentation" OFF)
 option(ENABLE_SCTP "Enable SCTP" OFF)
 option(ENABLE_WEBRTC "Enable WebRTC" OFF)
 option(ENABLE_X264 "Enable x264" ON)
@@ -46,6 +48,15 @@ option(USE_SOLUTION_FOLDERS "Enable solution dir supported" OFF)
 option(ENABLE_OBJCOPY "Enable use objcopy to generate debug info file" ON)
 # Compile static library
 option(BUILD_SHARED_LIBS "Build shared instead of static" OFF)
+
+if(ENABLE_COVERAGE)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-O0 -g --coverage)
+    add_link_options(--coverage)
+  else()
+    message(FATAL_ERROR "ENABLE_COVERAGE requires GCC or Clang")
+  endif()
+endif()
 
 ##############################################################################
 # Set the default buffer size of the socket to 256k. If set to 0, the default buffer size of the socket will not be set,
@@ -586,8 +597,15 @@ if(IOS)
   return()
 endif()
 
-#cpp test demo program
+# Automated unit/integration tests managed by CTest.
 if (ENABLE_TESTS)
+  include(CTest)
+  enable_testing()
+  add_subdirectory(tests/unit)
+endif ()
+
+# Interactive examples, benchmarks and protocol clients kept for compatibility.
+if (ENABLE_LEGACY_TESTS)
   add_subdirectory(tests)
 endif ()
 
