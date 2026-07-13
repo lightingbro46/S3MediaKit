@@ -193,6 +193,29 @@ void GenericRtspCameraImp::onRecordModeChange(DeviceSource &sender, int archive_
     _sink->setupRecord(archive_mode, start);
 }
 
+bool GenericRtspCameraImp::onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onRecordRootPathChange in it's owner poller");
+    return applyRecordRootPath(record_root_path);
+}
+
+bool GenericRtspCameraImp::applyRecordRootPath(const std::string &record_root_path) {
+    if (_option.recordRootPath == record_root_path) {
+        return true;
+    }
+
+    _option.recordRootPath = record_root_path;
+    saveCameraOption(_option);
+
+    if (!_enabled.load()) {
+        return true;
+    }
+    if (_sink) {
+        setupStreamSink();
+    }
+    InfoL << "Updated record root path for camera " << _src->getUrl() << " root=" << record_root_path;
+    return true;
+}
+
 void GenericRtspCameraImp::onImageQualityChange(DeviceSource &sender, int fps, int q) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onImageQualityChange in it's owner poller");
     if (!_controller) {

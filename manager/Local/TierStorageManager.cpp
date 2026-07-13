@@ -1417,7 +1417,11 @@ bool TierStorageManager::updatePolicy(const StoragePolicy &policy) {
     if (updated.advanced_rules_json.empty()) updated.advanced_rules_json = "{}";
 
     StoragePolicyImp imp;
-    return imp.update(updated);
+    bool ok = imp.update(updated);
+    if (ok) {
+        refreshCamerasRecordRootForPolicy(updated.id);
+    }
+    return ok;
 }
 
 bool TierStorageManager::deletePolicy(const std::string &policy_id, int &out_camera_count, bool &out_is_system_default) {
@@ -1494,7 +1498,11 @@ bool TierStorageManager::assignPolicyToCamera(const std::string &camera_id,
     a.assigned_at   = static_cast<int64_t>(time(nullptr));
 
     PolicyAssignmentImp imp;
-    return imp.assign(a);
+    bool ok = imp.assign(a);
+    if (ok) {
+        refreshCameraRecordRoot(camera_id);
+    }
+    return ok;
 }
 
 int TierStorageManager::assignPolicyToCameras(const std::vector<std::string> &camera_ids,
@@ -1512,7 +1520,11 @@ int TierStorageManager::assignPolicyToCameras(const std::vector<std::string> &ca
 
 bool TierStorageManager::removeCameraOverride(const std::string &camera_id) {
     PolicyAssignmentImp imp;
-    return imp.remove(camera_id);
+    bool ok = imp.remove(camera_id);
+    if (ok) {
+        refreshCameraRecordRoot(camera_id);
+    }
+    return ok;
 }
 
 int TierStorageManager::removeCamerasOverride(const std::vector<std::string> &camera_ids, std::vector<std::string> &out_failed) {
@@ -1571,6 +1583,197 @@ EffectivePolicyResult TierStorageManager::getEffectivePolicy(const std::string &
     }
     result.source = policySourceToString(PolicySource::SYSTEM_DEFAULT);
     return result;
+}
+
+bool TierStorageManager::getPoolById(const std::string &pool_id, StoragePool &out_pool) const {
+    out_pool = StoragePool();
+    if (pool_id.empty()) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        auto it = _pool_cache.find(pool_id);
+        if (it != _pool_cache.end()) {
+            out_pool = it->second;
+            return true;
+        }
+    }
+
+    StoragePoolImp pool_imp;
+    auto pools = pool_imp.findByPoolId(pool_id);
+    if (pools.empty()) {
+        return false;
+    }
+    out_pool = pools.front();
+    return true;
+}
+
+bool TierStorageManager::getPolicyHotPoolId(const StoragePolicy &policy, std::string &out_pool_id) const {
+    out_pool_id.clear();
+    auto tiers = policy.parsedTiers();
+    std::sort(tiers.begin(), tiers.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+    });
+
+    for (const auto &tier : tiers) {
+        if (!tier.enabled || tier.tier != tierTypeToString(HotTier)) {
+            continue;
+        }
+        out_pool_id = tier.pool_id;
+        return !out_pool_id.empty();
+    }
+    return false;
+}
+
+bool TierStorageManager::resolveHotPoolRecordRoot(const StoragePool &pool, std::string &out_record_root) const {
+    out_record_root.clear();
+    if (pool.id.empty() || pool.enabled == 0 || pool.tier != tierTypeToString(HotTier)) {
+        WarnL << "Cannot resolve record root, invalid HOT pool pool_id=" << pool.id;
+        return false;
+    }
+    if (poolTypeIsObjectStorage(pool.type)) {
+        WarnL << "Cannot use object storage as MP4 record root pool_id=" << pool.id
+              << " type=" << pool.type;
+        return false;
+    }
+
+    std::string root = pool.mount_path.value_or("");
+    if (root.empty()) {
+        root = pool.network_path.value_or("");
+    }
+    if (root.empty()) {
+        WarnL << "Cannot resolve record root, HOT pool has no filesystem path pool_id=" << pool.id;
+        return false;
+    }
+
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    while (root.size() > 1 && root.back() == '/') {
+        root.pop_back();
+    }
+    std::string suffix = "/" + app_name;
+    if (!app_name.empty() && root.size() > suffix.size() &&
+        root.compare(root.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        root.resize(root.size() - suffix.size());
+    }
+    out_record_root = root;
+    return !out_record_root.empty();
+}
+
+std::string TierStorageManager::resolvePolicyRecordRoot(const StoragePolicy &policy) const {
+    std::string hot_pool_id;
+    if (!getPolicyHotPoolId(policy, hot_pool_id)) {
+        return "";
+    }
+
+    StoragePool pool;
+    if (!getPoolById(hot_pool_id, pool)) {
+        WarnL << "Cannot resolve record root, HOT pool not found policy=" << policy.id
+              << " pool_id=" << hot_pool_id;
+        return "";
+    }
+
+    std::string record_root;
+    if (!resolveHotPoolRecordRoot(pool, record_root)) {
+        WarnL << "Cannot resolve record root for policy=" << policy.id
+              << " pool_id=" << hot_pool_id;
+        return "";
+    }
+    return record_root;
+}
+
+std::string TierStorageManager::resolveCameraRecordRoot(const std::string &camera_id,
+                                                        EffectivePolicyResult *out_effective) {
+    auto effective = getEffectivePolicy(camera_id);
+    if (out_effective) {
+        *out_effective = effective;
+    }
+
+    auto policies = getPolicy(effective.policy_id);
+    if (!policies.empty()) {
+        auto record_root = resolvePolicyRecordRoot(policies.front());
+        if (!record_root.empty()) {
+            return record_root;
+        }
+    }
+
+    // fallback to system default policy if the effective policy is not valid
+    const auto default_policy_id = getSystemDefaultPolicyId();
+    auto default_policies = getPolicy(default_policy_id);
+    if (!default_policies.empty()) {
+        auto record_root = resolvePolicyRecordRoot(default_policies.front());
+        if (!record_root.empty()) {
+            if (out_effective) {
+                out_effective->policy_id = default_policy_id;
+                out_effective->policy_name = default_policies.front().name;
+                out_effective->source = policySourceToString(PolicySource::SYSTEM_DEFAULT);
+                out_effective->allow_camera_override = (default_policies.front().allow_camera_override != 0);
+            }
+            return record_root;
+        }
+    }
+    // Return the default mp4_save_path if no valid policy or pool is found
+    GET_CONFIG(std::string, mp4_save_path, Protocol::kMP4SavePath);
+    string default_root = File::absolutePath("", mp4_save_path);
+    return default_root;
+}
+
+bool TierStorageManager::refreshCameraRecordRoot(const std::string &camera_id) {
+    if (camera_id.empty()) {
+        return false;
+    }
+
+    EffectivePolicyResult effective;
+    std::string record_root = resolveCameraRecordRoot(camera_id, &effective);
+
+    bool ok = false;
+    DeviceSource::Ptr device_source;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        if (!device_source && src && src->getDeviceTuple().device_id == camera_id) {
+            device_source = src;
+        }
+    }, GENERIC_RTSP_CAMERA_SCHEMA, "", camera_id);
+
+    if (device_source) {
+        device_source->getOwnerPoller()->async([device_source, record_root]() {
+            if(!device_source->setRecordRootPath(record_root)) {
+                WarnL << "Camera do not support setRecordRootPath, camera=" << device_source->getDeviceTuple().device_id
+                      << " record_root=" << record_root;
+            }
+        });
+        ok = true;
+    }
+
+    if (!ok) {
+        WarnL << "Failed to refresh mp4_save_path for camera=" << camera_id
+              << " policy=" << effective.policy_id
+              << " root=" << record_root;
+    } else {
+        InfoL << "Refreshed mp4_save_path for camera=" << camera_id
+              << " policy=" << effective.policy_id
+              << " root=" << record_root;
+    }
+    return ok;
+}
+
+void TierStorageManager::refreshCamerasRecordRootForPolicy(const std::string &policy_id) {
+    if (policy_id.empty()) {
+        return;
+    }
+
+    if (policy_id == getSystemDefaultPolicyId()) {
+        for (const auto &tuple : collectGenericRtspCameraSources()) {
+            auto effective = getEffectivePolicy(tuple.device_id);
+            if (effective.policy_id == policy_id) {
+                refreshCameraRecordRoot(tuple.device_id);
+            }
+        }
+        return;
+    }
+
+    PolicyAssignmentImp assignment_imp;
+    for (const auto &camera_id : assignment_imp.findCamerasByPolicyId(policy_id)) {
+        refreshCameraRecordRoot(camera_id);
+    }
 }
 
 // ===================================================================

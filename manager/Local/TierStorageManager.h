@@ -156,6 +156,10 @@ public:
     // Per-tier storage summary for a camera
     CameraStorageSummary getCameraStorageSummary(const std::string &camera_id);
 
+    // Resolve the MP4 record root for a camera from its effective storage policy.
+    std::string resolveCameraRecordRoot(const std::string &camera_id,
+                                        EffectivePolicyResult *out_effective = nullptr);
+
     // ------------------------------------------------------------------
     // Tiering engine — called internally from the timer
     // ------------------------------------------------------------------
@@ -317,6 +321,21 @@ private:
     bool resolveHotPoolForPath(const std::string &file_path,
                                StoragePool &out_pool,
                                std::string &out_pool_root) const;
+
+    bool getPoolById(const std::string &pool_id,
+                     StoragePool &out_pool) const;
+
+    bool getPolicyHotPoolId(const StoragePolicy &policy,
+                            std::string &out_pool_id) const;
+
+    bool resolveHotPoolRecordRoot(const StoragePool &pool,
+                                  std::string &out_record_root) const;
+
+    std::string resolvePolicyRecordRoot(const StoragePolicy &policy) const;
+
+    bool refreshCameraRecordRoot(const std::string &camera_id);
+
+    void refreshCamerasRecordRootForPolicy(const std::string &policy_id);
 
 private:
     toolkit::EventPoller::Ptr _poller;

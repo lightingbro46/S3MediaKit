@@ -104,6 +104,14 @@ string DeviceSource::getOriginUrl() const {
     return getUrl();
 }
 
+bool DeviceSource::setRecordRootPath(const std::string &record_root_path) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return false;
+    }
+    return listener->onRecordRootPathChange(*this, record_root_path);
+}
+
 toolkit::EventPoller::Ptr DeviceSource::getOwnerPoller() {
     toolkit::EventPoller::Ptr ret;
     auto listener = _listener.lock();
@@ -279,6 +287,14 @@ void DeviceSourceEventInterceptor::onRecordModeChange(DeviceSource &sender, int 
         return DeviceSourceEvent::onRecordModeChange(sender, archive_mode, start);
     }
     listener->onRecordModeChange(sender, archive_mode, start);
+}
+
+bool DeviceSourceEventInterceptor::onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::onRecordRootPathChange(sender, record_root_path);
+    }
+    return listener->onRecordRootPathChange(sender, record_root_path);
 }
 
 void DeviceSourceEventInterceptor::onImageQualityChange(DeviceSource &sender, int fps, int q) {

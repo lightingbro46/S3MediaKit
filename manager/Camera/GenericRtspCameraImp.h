@@ -55,6 +55,8 @@ public:
 
     void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
 
+    bool onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) override;
+
     void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
 
     void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
@@ -71,6 +73,8 @@ private:
     void setupScheduler();
 
     void saveCameraOption(const CameraOption &option);
+
+    bool applyRecordRootPath(const std::string &record_root_path);
 
     void stop();
 

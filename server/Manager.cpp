@@ -1222,6 +1222,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
 
     // Recording
     val["enableRecord"]            = option.enableRecord;
+    val["recordRootPath"]           = option.recordRootPath;
     val["keepArchivedMinForAuto"]  = option.keepArchivedMinForAuto;
     val["keepArchivedMinFor"]      = (Json::UInt64)option.keepArchivedMinFor;
     val["keepArchivedMaxForAuto"]  = option.keepArchivedMaxForAuto;

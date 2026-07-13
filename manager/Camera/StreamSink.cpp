@@ -58,6 +58,7 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     new_cfg.username               = option.username;
     new_cfg.password               = option.password;
     new_cfg.protocol.enable_mp4    = false; // recording is controlled by StreamSource itself
+    new_cfg.protocol.mp4_save_path = option.recordRootPath;
     new_cfg.protocol.enable_audio  = !option.disableAudio;
     // GOP ring buffer: only primary needs it (pre-event backfill for startEventRecord).
     // Secondary uses setupRecord(type_mp4) for continuous recording which does not

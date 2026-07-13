@@ -50,6 +50,9 @@ public:
     // whether to enable recording
     bool enableRecord = false;
 
+    // custom MP4 recording root. Empty means use Protocol::kMP4SavePath.
+    std::string recordRootPath;
+
     // whether to enable automatic choose minium value of block retention
     bool keepArchivedMinForAuto = true;
 
@@ -162,6 +165,7 @@ public:
                doNotRecordPrimaryStream == other.doNotRecordPrimaryStream &&
                doNotRecordSecondaryStream == other.doNotRecordSecondaryStream &&
                enableRecord == other.enableRecord &&
+               recordRootPath == other.recordRootPath &&
                keepArchivedMinForAuto == other.keepArchivedMinForAuto &&
                keepArchivedMinFor == other.keepArchivedMinFor &&
                keepArchivedMaxForAuto == other.keepArchivedMaxForAuto &&

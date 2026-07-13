@@ -478,6 +478,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.doNotRecordSecondaryStream = ret["doNotRecordSecondaryStream"].asBool();
     option.enableActive = ret["enableActive"].asBool();
     option.enableRecord = ret["enableRecord"].asBool();
+    option.recordRootPath = ret["recordRootPath"].asString();
     option.keepArchivedMaxFor = ret["keepArchivedMaxFor"].asUInt64();
     option.keepArchivedMaxForAuto = ret["keepArchivedMaxForAuto"].asBool();
     option.keepArchivedMinFor = ret["keepArchivedMinFor"].asUInt64();
@@ -591,6 +592,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["doNotRecordSecondaryStream"] = stats.option.doNotRecordSecondaryStream;
     root["enableActive"] = stats.option.enableActive;
     root["enableRecord"] = stats.option.enableRecord;
+    root["recordRootPath"] = stats.option.recordRootPath;
     root["keepArchivedMaxFor"] = stats.option.keepArchivedMaxFor;
     root["keepArchivedMaxForAuto"] = stats.option.keepArchivedMaxForAuto;
     root["keepArchivedMinFor"] = stats.option.keepArchivedMinFor;
@@ -1141,14 +1143,15 @@ struct ResourceAdapter<CameraStatistic> {
     static std::vector<LocalResource> toLocalProps(const CameraStatistic &stats) {
         const std::string &resource_id = stats.tuple.device_id;
         std::vector<LocalResource> props;
-        // auto make = [&resource_id](const std::string &key, const std::string &val) {
-        //     LocalResource props;
-        //     props.resource_id    = resource_id;
-        //     props.property_name  = key;
-        //     props.property_value = val;
-        //     return props;
-        // };
+        auto make = [&resource_id](const std::string &key, const std::string &val) {
+            LocalResource props;
+            props.resource_id    = resource_id;
+            props.property_name  = key;
+            props.property_value = val;
+            return props;
+        };
         // add if needed, currently no local property for camera statistic
+        props.push_back(make("recordRootPath", stats.option.recordRootPath));
         return props;
     }
 
@@ -1263,6 +1266,16 @@ struct ResourceAdapter<CameraStatistic> {
                 }
             } catch (const std::exception &e) {
                 WarnL << "Failed to parse KV pair '" << kv.name << "' = '" << kv.value << "': " << e.what();
+            }
+        }
+        
+        for (const auto &prop : props) {
+            try {
+                if (prop.property_name == "recordRootPath") {
+                    stats.option.recordRootPath = prop.property_value;
+                }
+            } catch (const std::exception &e) {
+                WarnL << "Failed to parse local property '" << prop.property_name << "' = '" << prop.property_value << "': " << e.what();
             }
         }
         return stats;

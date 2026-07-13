@@ -57,6 +57,7 @@ struct StreamOption {
             && media_port             == o.media_port
             && username               == o.username
             && password               == o.password
+            && protocol.mp4_save_path == o.protocol.mp4_save_path
             && protocol.enable_audio  == o.protocol.enable_audio
             && protocol.enable_motion == o.protocol.enable_motion
             && protocol.roi_mask      == o.protocol.roi_mask

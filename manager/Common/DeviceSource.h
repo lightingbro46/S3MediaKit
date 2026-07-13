@@ -50,6 +50,8 @@ public:
     virtual void onRegist(DeviceSource &sender, bool regist) {}
     // Device record mode change event
     virtual void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {}
+    // Device MP4 record root path change event
+    virtual bool onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) { return false; }
     // Device image quality configuration change event
     virtual void onImageQualityChange(DeviceSource &sender, int fps, int q) {}
     // Device stream ready event, generally triggered when the stream source of the device is ready or status changed, and report the stream status to the listener
@@ -68,6 +70,7 @@ public:
 
     void onRegist(DeviceSource &sender, bool regist) override;
     void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
+    bool onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) override;
     void onImageQualityChange(DeviceSource &sender, int fps, int q) override;
     void onStreamReady(DeviceSource &sender, int type, bool live, const std::string &status, const toolkit::Any &data) override;
     void onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) override;
@@ -113,6 +116,9 @@ public:
     DeviceOriginType getOriginType() const;
     // Get the device source url or file path
     std::string getOriginUrl() const;
+
+    // Set the runtime MP4 record root path through the device owner.
+    bool setRecordRootPath(const std::string &record_root_path);
 
     // Get the thread where it is running
     toolkit::EventPoller::Ptr getOwnerPoller();
