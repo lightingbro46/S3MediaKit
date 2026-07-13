@@ -309,9 +309,10 @@ private:
     void pruneOldMetrics();
     void cleanupRestoreTempFiles();
 
-    // HOT range registration. Time files remain under kMP4SavePath, but the
-    // actual MP4 segment can live on any enabled HOT file pool.
-    void reconcileHotRangesFromTimeFiles();
+    // Historical bootstrap from timefile blocks to compact SegmentTierRange.
+    // This lets TierStorageManager take over media cleanup for old recordings
+    // created before tier ranges existed.
+    void backfillHotRangesFromTimeFiles();
 
     bool resolveHotPoolForPath(const std::string &file_path,
                                StoragePool &out_pool,

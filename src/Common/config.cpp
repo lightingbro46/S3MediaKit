@@ -524,6 +524,10 @@ const string kRestoreTTLSeconds = STORAGE_FIELD "restore_ttl_seconds";
 const string kDefaultHotHighWatermarkPercent = STORAGE_FIELD "default_hot_high_watermark_percent";
 const string kDefaultHotCriticalWatermarkPercent = STORAGE_FIELD "default_hot_critical_watermark_percent";
 const string kSegmentRecordTTLSeconds = STORAGE_FIELD "segment_record_ttl_seconds";
+const string kTierRangeBackfillEnabled = STORAGE_FIELD "tier_range_backfill_enabled";
+const string kTierRangeBackfillDays = STORAGE_FIELD "tier_range_backfill_days";
+const string kTierRangeBackfillChunkSeconds = STORAGE_FIELD "tier_range_backfill_chunk_seconds";
+const string kTierRangeBackfillMaxCamerasPerCycle = STORAGE_FIELD "tier_range_backfill_max_cameras_per_cycle";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -543,6 +547,10 @@ static onceToken token([]() {
     mINI::Instance()[kDefaultHotHighWatermarkPercent] = 85;
     mINI::Instance()[kDefaultHotCriticalWatermarkPercent] = 95;
     mINI::Instance()[kSegmentRecordTTLSeconds] = 7 * 86400; // 7 days
+    mINI::Instance()[kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[kTierRangeBackfillDays] = 180;
+    mINI::Instance()[kTierRangeBackfillChunkSeconds] = 24 * 3600;
+    mINI::Instance()[kTierRangeBackfillMaxCamerasPerCycle] = 20;
 });
 
 } // namespace Storage

@@ -667,6 +667,14 @@ extern const std::string kDefaultHotCriticalWatermarkPercent;
 // TTL (Time To Live) for segment records in seconds, when the segment record is older than this value, it will be deleted according to the file deletion strategy. 
 // The value range is 0~31536000 (1 year), and the default value is 604800 (7 days).
 extern const std::string kSegmentRecordTTLSeconds;
+// Enable background Timefile-to-TierRange backfill for historical MP4 records.
+extern const std::string kTierRangeBackfillEnabled;
+// Historical window in days for Timefile-to-TierRange backfill. Default: 180 days.
+extern const std::string kTierRangeBackfillDays;
+// Time chunk size in seconds processed per camera on each tiering cycle.
+extern const std::string kTierRangeBackfillChunkSeconds;
+// Maximum cameras processed by backfill on each tiering cycle.
+extern const std::string kTierRangeBackfillMaxCamerasPerCycle;
 
 } // namespace Storage
 
