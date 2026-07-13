@@ -52,6 +52,17 @@ genhtml build-test/coverage.filtered.info \
   --output-directory build-test/coverage-html
 ```
 
-Jenkins can archive the LCOV file and publish `coverage-html/index.html` with
-the HTML Publisher plugin. If the Coverage plugin requires Cobertura, convert
-the filtered LCOV report with `lcov_cobertura`.
+The repository also provides a reproducible gcovr gate. It includes first-party
+code under `src/`, `manager/`, `server/`, `ext-codec/`, and `api/`; it excludes
+`3rdpart/`, tests, and generated protobuf sources.
+
+```bash
+cmake -DBUILD_DIR="$PWD/build-test" \
+      -DCOVERAGE_THRESHOLD=40 \
+      -P cmake/RunCoverage.cmake
+```
+
+This creates Jenkins-compatible Cobertura XML at `build-test/coverage.xml` and
+HTML at `build-test/coverage-html/index.html`. The command exits non-zero when
+line coverage is below 40%, so it can be used directly as a pipeline quality
+gate.
