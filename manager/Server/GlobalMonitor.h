@@ -27,6 +27,13 @@ extern const std::string kMetricsRetentionDays;
 extern const std::string kMetricsSampleIntervalSec;
 // Maximum number of camera devices the server hardware can handle, based on CPU cores, RAM and NIC speed (default 0)
 extern const std::string kMaxAvailableDevicesByHardware;
+// Default warning/critical thresholds used when the management API omits them
+extern const std::string kCpuWarningThreshold;
+extern const std::string kCpuCriticalThreshold;
+extern const std::string kMemoryWarningThreshold;
+extern const std::string kMemoryCriticalThreshold;
+extern const std::string kHddWarningThreshold;
+extern const std::string kHddCriticalThreshold;
 } // namespace GlobalMonitorConfig
 
 class GlobalMonitor : public std::enable_shared_from_this<GlobalMonitor> {

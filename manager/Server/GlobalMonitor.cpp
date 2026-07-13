@@ -24,11 +24,23 @@ namespace GlobalMonitorConfig {
 const string kMetricsRetentionDays    = GM_FIELD "metrics_retention_days";
 const string kMetricsSampleIntervalSec = GM_FIELD "metrics_sample_interval_sec";
 const string kMaxAvailableDevicesByHardware = GM_FIELD "max_available_devices_by_hardware";
+const string kCpuWarningThreshold      = GM_FIELD "cpu_warning_threshold";
+const string kCpuCriticalThreshold     = GM_FIELD "cpu_critical_threshold";
+const string kMemoryWarningThreshold   = GM_FIELD "memory_warning_threshold";
+const string kMemoryCriticalThreshold  = GM_FIELD "memory_critical_threshold";
+const string kHddWarningThreshold      = GM_FIELD "hdd_warning_threshold";
+const string kHddCriticalThreshold     = GM_FIELD "hdd_critical_threshold";
 
 static onceToken token([]() {
     mINI::Instance()[kMetricsRetentionDays]     = 30;
     mINI::Instance()[kMetricsSampleIntervalSec] = 10;
     mINI::Instance()[kMaxAvailableDevicesByHardware] = 0;
+    mINI::Instance()[kCpuWarningThreshold]      = 80.0;
+    mINI::Instance()[kCpuCriticalThreshold]     = 90.0;
+    mINI::Instance()[kMemoryWarningThreshold]   = 80.0;
+    mINI::Instance()[kMemoryCriticalThreshold]  = 90.0;
+    mINI::Instance()[kHddWarningThreshold]      = 80.0;
+    mINI::Instance()[kHddCriticalThreshold]     = 90.0;
 });
 
 } // namespace GlobalMonitorConfig
