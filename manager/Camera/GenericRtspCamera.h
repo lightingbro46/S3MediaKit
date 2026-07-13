@@ -145,7 +145,7 @@ public:
 
     // whether to trigger stream status change event when stream source is ready or failed to pull stream, default false
     // use for some scenarios that need to trigger recording or other action when stream is ready such as video push stream from mobile device
-    bool emitStreamStatusChangeEvent = false;
+    bool emitStreamStatusChangeEvent = true;
 
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 

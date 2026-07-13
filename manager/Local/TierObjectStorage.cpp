@@ -606,9 +606,6 @@ TierPoolStats TierObjectStorage::getPoolStats(const std::string &pool_id) {
 #else // !ENABLE_AWS_SDK — stub implementations
 // ============================================================================
 
-TierObjectStorage::TierObjectStorage()  = default;
-TierObjectStorage::~TierObjectStorage() = default;
-
 bool TierObjectStorage::registerPool(const std::string &pool_id,
                                       const std::string &, const std::string &,
                                       const std::string &, const std::string &,

@@ -415,7 +415,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
     GET_OPTION_PROPERTY(option, enablePTZControl, data, enablePtzControl)
     // todo: we can optimize the logic of emitStreamStatusChangeEvent by adding a specific field 
     // in the request to indicate whether to emit the event, instead of relying on the name or manufacturer containing "VIDEO PUSH"
-    option.emitStreamStatusChangeEvent = option.name.find("VIDEO PUSH") != string::npos || option.manufacturer.find("VIDEO PUSH") != string::npos; 
+    // option.emitStreamStatusChangeEvent = option.name.find("VIDEO PUSH") != string::npos || option.manufacturer.find("VIDEO PUSH") != string::npos; 
 
     if (data.isMember("recordingConfig") && !data["recordingConfig"].isNull()) {
         const Json::Value &rc = data["recordingConfig"];
