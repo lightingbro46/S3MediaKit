@@ -2,7 +2,7 @@
 #include <stdexcept>
 #include "Bosch/BoschIpSpeaker.h"
 
-namespace mediakit{
+namespace managerkit {
 
 IDevice::Ptr DeviceFactory::create(const IDeviceConfig& cfg) {
     switch (cfg.type) {
@@ -27,4 +27,4 @@ IDevice::Ptr DeviceFactory::createSpeaker(const IDeviceConfig& cfg) {
     }
 }
 
-}//namespace mediakit
+} //namespace managerkit

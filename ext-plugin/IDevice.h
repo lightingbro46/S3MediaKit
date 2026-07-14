@@ -7,7 +7,7 @@
 #include <string>
 #include "Common/config.h"
 
-namespace mediakit{
+namespace managerkit {
 
 using OnDeviceResult = std::function<void(bool success, const std::string& data)>;
 
@@ -84,6 +84,6 @@ public:
     virtual IDeviceConfig getConfig() const = 0;
 };
 
-}//namespace mediakit
+} //namespace managerkit
 
 #endif // S3MEDIAKIT_ISPEAKER_H

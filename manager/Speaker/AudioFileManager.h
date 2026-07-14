@@ -6,7 +6,6 @@
 #include <stdexcept>
 
 #include "ext-plugin/IAudioPlayback.h"
-#include "Http/HttpDownloader.h"
 #include "Local/FileRecorder.h"
 #include "Util/File.h"
 
@@ -14,9 +13,9 @@ namespace managerkit {
 
 class FileTypeUtil {
 public:
-    static std::string getMimeType(const std::string& fileName, mediakit::DeviceBrand brand);
+    static std::string getMimeType(const std::string& fileName, managerkit::DeviceBrand brand);
 
-    static bool isSupported(const std::string& fileName, mediakit::DeviceBrand brand);
+    static bool isSupported(const std::string& fileName, managerkit::DeviceBrand brand);
 
 private:
     static std::string getExtension(const std::string& fileName);
@@ -27,27 +26,26 @@ private:
 
 class AudioFileManagerHelper {
 public:
-    static bool getParams(const std::string &json_str, std::vector<mediakit::AudioFile> &files);
+    static bool getParams(const std::string &json_str, std::unordered_map<std::string, managerkit::AudioFile> &files);
 
-    static std::string getParamsString(const std::vector<mediakit::AudioFile> &files);
+    static std::string getParamsString(const std::unordered_map<std::string, managerkit::AudioFile> &files);
 };
 
 class AudioFileManager : public std::enable_shared_from_this<AudioFileManager> {
 public:
     using Ptr = std::shared_ptr<AudioFileManager>;
+    using DataType = std::unordered_map<std::string, managerkit::AudioFile>;
 
     static AudioFileManager& Instance();
     ~AudioFileManager() = default;
 
-    bool addAudioFile(mediakit::AudioFile file);
+    bool addAudioFile(managerkit::AudioFile file);
 
     bool delAudioFile(const std::string &fileId);
 
-    mediakit::AudioFile getAudioFile(const std::string &fileId);
+    managerkit::AudioFile getAudioFile(const std::string &fileId);
     
     std::vector<std::string> getAllAudioFileIds();
-
-    bool save();
 
     void syncDownload();
     
@@ -55,20 +53,24 @@ private:
     AudioFileManager();
     
     void load();
+
+    bool save();
     
-    void downloadFile(const std::string& url, const std::string& fileName, mediakit::OnDeviceResult cb);
-    
-    void downloadNext(size_t index);
+    void downloadFile(const std::string& sound_path, const std::string &folder_path, managerkit::OnDeviceResult cb);
+
+    void downloadNext();
     
     void deleteLocalFile(const std::string& localPath);
 
-    void keepDownloader(mediakit::HttpDownloader::Ptr downloader);
-
 private:
-    std::string _file_path;
-    FileRecorder<std::vector<mediakit::AudioFile>, AudioFileManagerHelper>::Ptr _file;
-    std::vector<mediakit::AudioFile> _audio_files;
+    std::mutex _mtx;
+    std::string _folder_path;
+    FileRecorder<DataType, AudioFileManagerHelper>::Ptr _recorder;
+    DataType _audio_files;
+
+    // runtime
     std::atomic<bool> _downloading{false};
+    DataType::iterator _downloading_it;
 };
 
 } // namespace managerkit

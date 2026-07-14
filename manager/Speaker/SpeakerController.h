@@ -28,26 +28,26 @@ public:
 
     void stopController();
 
-    void validateCredential(const std::string& username, const std::string& password, const int port, mediakit::OnDeviceResult cb);
+    void validateCredential(const std::string& username, const std::string& password, const int port, OnDeviceResult cb);
 
-    void playAudio(const std::string& fileId, const std::string& fileRemoteId, mediakit::OnDeviceResult cb, bool autoDisconnect = true);
+    void playAudio(const std::string& fileId, const std::string& fileRemoteId, OnDeviceResult cb, bool autoDisconnect = true);
 
-    void uploadAudio(const mediakit::AudioFile& file, mediakit::OnDeviceResult cb, bool autoDisconnect = true);
+    void uploadAudio(const AudioFile& file, OnDeviceResult cb, bool autoDisconnect = true);
 
-    void stopAudio(const std::string& remoteId, mediakit::OnDeviceResult cb, bool autoDisconnect = true);
+    void stopAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect = true);
 
-    void deleteAudio(const std::string& remoteId, mediakit::OnDeviceResult cb, bool autoDisconnect = true);
+    void deleteAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect = true);
 
-    void listAudio(mediakit::OnDeviceResult cb, bool autoDisconnect = true);
+    void listAudio(OnDeviceResult cb, bool autoDisconnect = true);
 
 private:
     void onManager();
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
-    void doUploadAudio(const mediakit::AudioFile& file, mediakit::OnDeviceResult cb);
+    void doUploadAudio(const AudioFile& file, OnDeviceResult cb);
 
-    void doDisconnect(bool result, const std::string& resultData, mediakit::OnDeviceResult cb);
+    void doDisconnect(bool result, const std::string& resultData, OnDeviceResult cb);
 
     void setupDeviceController(const SpeakerOption &option);
 
@@ -60,8 +60,8 @@ private:
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
     OnvifControl::Ptr _onvif_ctr;
-    mediakit::IDevice::Ptr _device_ctr;
-    mediakit::IAudioPlayback* _audio_playback_ctr = nullptr;
+    IDevice::Ptr _device_ctr;
+    IAudioPlayback* _audio_playback_ctr = nullptr;
     std::string _address;
     std::string _device_name;
     bool _requires_device_credential = false;

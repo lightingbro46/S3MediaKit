@@ -1,6 +1,7 @@
 #include "SpeakerManager.h"
 #include "Local/StatisticRecorder.h"
 #include "Server/ResourceMonitor.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -112,7 +113,7 @@ void SpeakerManager::loadSavedSpeakerInfo() {
     std::lock_guard<std::recursive_mutex> lck(_mtx);
     std::weak_ptr<SpeakerManager> weak_self = shared_from_this();
 
-    WorkThreadPool::Instance().getExecutor()->async([weak_self]() { 
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() { 
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;

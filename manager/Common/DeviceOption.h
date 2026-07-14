@@ -82,9 +82,9 @@ struct VendorFeatureSupport {
     }
     bool operator!=(const VendorFeatureSupport &o) const { return !(*this == o); }
 
-    static std::string toString(mediakit::SupportedFeatures feature) {
+    static std::string toString(SupportedFeatures feature) {
         switch (feature) {
-            case mediakit::SupportedFeatures::PlayAudioFile: return "PlayAudioFile";
+            case SupportedFeatures::PlayAudioFile: return "PlayAudioFile";
             default: return "unknown";
         }
     }

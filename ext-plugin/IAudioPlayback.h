@@ -6,7 +6,7 @@
 
 #include "IDevice.h"
 
-namespace mediakit{
+namespace managerkit {
 
 struct AudioFile {
     std::string id;
@@ -49,6 +49,6 @@ public:
     virtual void listAudio(OnDeviceResult cb) = 0;
 };
 
-}//namespace mediakit
+} //namespace managerkit
 
 #endif // S3MEDIAKIT_IAUDIOPLAYBACK_H

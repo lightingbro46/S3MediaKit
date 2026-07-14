@@ -13,7 +13,7 @@
 #include "Util/logger.h"
 #include "Util/File.h"
 
-namespace mediakit{
+namespace managerkit {
 
 static constexpr size_t kBoschChunkSizeBytes = 524288; // 512 * 1024
 
@@ -100,6 +100,6 @@ private:
     void keep(mediakit::HttpRequester::Ptr req);
 };
 
-}//namespace mediakit
+} //namespace managerkit
 
 #endif // S3MEDIAKIT_BOSCHIPSPEAKER_H

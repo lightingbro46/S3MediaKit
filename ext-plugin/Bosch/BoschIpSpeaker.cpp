@@ -7,9 +7,9 @@
 using namespace std;
 using namespace Json;
 using namespace toolkit;
-using namespace managerkit;
+using namespace mediakit;
 
-namespace mediakit{
+namespace managerkit {
 
 BoschIpSpeaker::BoschIpSpeaker(const SpeakerConfig& cfg)
     : m_cfg(cfg), m_baseUrl("http://" + cfg.ip + ":" + std::to_string(cfg.port)) {}
@@ -552,4 +552,4 @@ void BoschIpSpeaker::keep(HttpRequester::Ptr req) {
     m_pendingReqs.push_back(std::move(req));
 }
 
-}//namespace mediakit
+} //namespace managerkit

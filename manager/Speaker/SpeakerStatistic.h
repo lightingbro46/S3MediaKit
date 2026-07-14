@@ -58,7 +58,7 @@ public:
 
     void setAudioRemoteId(const std::string &fileId, const std::string &remoteId);
 
-    bool isFeatureSupported(mediakit::SupportedFeatures feature);
+    bool isFeatureSupported(SupportedFeatures feature);
 
 public:
     SpeakerStatistic getParams();

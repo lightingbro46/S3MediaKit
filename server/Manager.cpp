@@ -822,7 +822,6 @@ void loadServerConfigJson(const Json::Value &data_api) {
             AudioFileManager::Instance().delAudioFile(key);
         }
 
-        AudioFileManager::Instance().save();
         AudioFileManager::Instance().syncDownload();
     }
 }

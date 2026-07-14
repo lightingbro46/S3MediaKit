@@ -1,6 +1,7 @@
 #include "AudioFileManager.h"
 #include "Common/StrUtil.h"
-#include "server/WebHook.h"
+#include "Common/config.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -53,10 +54,15 @@ std::string FileTypeUtil::getMimeTypeBosch(const std::string& ext) {
 
 // ################### AudioFileManagerHelper ###########################
 
-bool AudioFileManagerHelper::getParams(const std::string &json_str, std::vector<AudioFile> &files) {
+bool AudioFileManagerHelper::getParams(const std::string &json_str, std::unordered_map<std::string, managerkit::AudioFile> &files) {
     Json::Value root;
     if (!StrJsonUtils::readJsonString(json_str, root)) {
         WarnL << "Parse json string failed";
+        return false;
+    }
+
+    if (!root.isArray()) {
+        WarnL << "Audio files list must be array";
         return false;
     }
 
@@ -72,15 +78,16 @@ bool AudioFileManagerHelper::getParams(const std::string &json_str, std::vector<
         file.updatedAt = item["updatedAt"].asString();
         file.downloaded = item["downloaded"].asBool();
 
-        files.emplace_back(std::move(file));
+        files.emplace(file.id, std::move(file));
     }
     return true;
 }
 
-std::string AudioFileManagerHelper::getParamsString(const std::vector<AudioFile> &files) {
+std::string AudioFileManagerHelper::getParamsString(const std::unordered_map<std::string, managerkit::AudioFile> &files) {
     Json::Value root(Json::arrayValue);
 
-    for (const auto &file : files) {
+    for (const auto &it : files) {
+        const auto &file = it.second;
         Json::Value item;
         item["id"] = file.id;
         item["fileName"] = file.name;
@@ -88,7 +95,7 @@ std::string AudioFileManagerHelper::getParamsString(const std::vector<AudioFile>
         item["soundPath"] = file.soundPath;
         item["duration"] = file.duration;
         item["createdAt"] = file.createdAt;
-        item["createdAt"] = file.updatedAt;
+        item["updatedAt"] = file.updatedAt;
         item["downloaded"] = file.downloaded;
 
         root.append(item);
@@ -102,63 +109,45 @@ INSTANCE_IMP(AudioFileManager)
 AudioFileManager::AudioFileManager() {
     GET_CONFIG(string, speaker_path, Speaker::kSpeakerSavePath);
     GET_CONFIG(string, audio_file_dir, Speaker::kAudioFilesDir);
-    _file_path = File::absolutePath(audio_file_dir, speaker_path);
-    CHECK(!_file_path.empty(), "File path cannot be empty");
-    _file = std::make_shared<FileRecorder<std::vector<AudioFile>, AudioFileManagerHelper>>(_file_path + "/info.txt");
-    if (!_file->empty()) {
+    _folder_path = File::absolutePath(audio_file_dir, speaker_path);
+    CHECK(!_folder_path.empty(), "File path cannot be empty");
+    auto record_file = _folder_path + "/info.txt";
+    _recorder = std::make_shared<FileRecorder<DataType, AudioFileManagerHelper>>(record_file);
+    if (!_recorder->empty()) {
         load();
     }
 }
 
 bool AudioFileManager::addAudioFile(AudioFile audioFile) {
-    auto it = std::find_if(_audio_files.begin(), _audio_files.end(),
-        [&audioFile](const AudioFile &item)
-        {
-            return item.id == audioFile.id;
-        });
-
+    std::lock_guard<std::mutex> lock(_mtx);
+    auto it = _audio_files.find(audioFile.id);
     if (it != _audio_files.end()) {
-        audioFile.downloaded = it->downloaded;
-        *it = std::move(audioFile);
-    } else {
-        _audio_files.emplace_back(std::move(audioFile));
+        audioFile.downloaded = it->second.downloaded;
     }
+    _audio_files[audioFile.id] = std::move(audioFile);
 
+    save();
     return true;
 }
 
 bool AudioFileManager::delAudioFile(const std::string &fileId) {
-    auto it = std::find_if(_audio_files.begin(), _audio_files.end(),
-        [&fileId](const AudioFile &item)
-        {
-            return item.id == fileId;
-        });
-
+    std::lock_guard<std::mutex> lock(_mtx);
+    auto it = _audio_files.find(fileId);
     if (it == _audio_files.end()) {
         return false;
     }
-    GET_CONFIG(std::string, speaker_path, Speaker::kSpeakerSavePath);
-    GET_CONFIG(std::string, audio_file_dir, Speaker::kAudioFilesDir);
-    auto audioFilesDir = File::absolutePath(audio_file_dir, speaker_path);
-    std::string localPath = it->localPath(audioFilesDir);
+    std::string localPath = it->second.localPath(_folder_path);
     deleteLocalFile(localPath);
     _audio_files.erase(it);
+    save();
     return true;
 }
 
 AudioFile AudioFileManager::getAudioFile(const std::string &fileId) {
-    auto it = std::find_if(
-        _audio_files.begin(),
-        _audio_files.end(),
-        [&fileId](const AudioFile &item)
-        {
-            return item.id == fileId;
-        });
-
+    auto it = _audio_files.find(fileId);
     if (it != _audio_files.end()) {
-        return *it;
+        return it->second;
     }
-
     return AudioFile{};
 }
 
@@ -168,17 +157,15 @@ std::vector<std::string> AudioFileManager::getAllAudioFileIds() {
     }
 
     std::vector<std::string> ids;
-    ids.reserve(_audio_files.size());
-
     for (const auto &file : _audio_files) {
-        ids.push_back(file.id);
+        ids.push_back(file.first);
     }
     return ids;
 }
 
 bool AudioFileManager::save() {
-    if (_file) {
-        _file->save(_audio_files);
+    if (_recorder) {
+        _recorder->save(_audio_files);
     }
     return true;
 }
@@ -189,85 +176,73 @@ void AudioFileManager::syncDownload() {
         return;
     }
 
-    WorkThreadPool::Instance().getPoller()->async(
-        [this]() {
-            downloadNext(0);
-        });
+    std::weak_ptr<AudioFileManager> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->_downloading_it = self->_audio_files.begin();
+        self->downloadNext();
+    });
 }
 
 void AudioFileManager::load() {
-    std::vector<AudioFile> files;
-    if (_file->load(files)) {
+    DataType files;
+    if (_recorder->load(files)) {
         _audio_files = files;
     }
 }
 
-void AudioFileManager::downloadFile(const std::string& url, const std::string& fileName, OnDeviceResult cb) {
-    if (url.empty())        { cb(false, "URL is empty");        return; }
-    if (fileName.empty())   { cb(false, "File name is empty");  return; }
-    if (_file_path.empty()) { cb(false, "File path is empty");  return; }
+void AudioFileManager::downloadFile(const std::string& sound_path, const std::string &local_save_path, OnDeviceResult cb) {
+    if (sound_path.empty())   { cb(false, "Sound path is empty");  return; }
+    if (local_save_path.empty()) { cb(false, "Local save path is empty");  return; }
 
-
-    std::string localPath = _file_path + "/" + fileName;
-
-    InfoL << "Start downloading file: " << url << " -> " << localPath;
-    auto downloader = std::make_shared<HttpDownloader>();
-
-    downloader->setOnResult([downloader, cb, url]
-        (const SockException& ex, const std::string& filePath) {
-            if (ex) {
-                WarnL << "Download failed: " << url << " — " << ex.what();
-                cb(false, ex.what());
-                return;
-            }
-
-            uint64_t size = File::fileSize(filePath);
-            if (size == 0) {
-                cb(false, "Downloaded file is empty: " + filePath);
-                return;
-            }
-
-            InfoL << "Download completed: " << filePath << " (" << size << " bytes)";
-            cb(true, filePath);
+    Broadcast::DownloadFileInvoker invoker = [cb](const std::string& err, const std::string& path) {
+        if (!err.empty()) {
+            WarnL << "Download failed: " << err;
+            cb(false, "");
+            return;
         }
-    );
+        cb(true, path);
+    };
 
-    downloader->startDownload(url, localPath);
-
-    keepDownloader(downloader);
+    NOTICE_EMIT(BroadcastDownloadAudioFileArgs, Broadcast::kBroadcastDownloadAudioFile, sound_path, local_save_path, invoker);
 }
 
-void AudioFileManager::downloadNext(size_t index) {
-    if (index >= _audio_files.size()) {
+void AudioFileManager::downloadNext() {
+    if (_downloading_it == _audio_files.end()) {
         _downloading = false;
-        save();
         InfoL << "All audio files downloaded";
         return;
     }
 
-    auto file = _audio_files[index];
-
+    auto file = _downloading_it->second;
     if (file.downloaded) {
-        downloadNext(index + 1);
+        ++_downloading_it;
+        downloadNext();
         return;
     }
 
-    GET_CONFIG(string, api_url, Hook::kApiUrl);
-    GET_CONFIG(string, download_path, Speaker::kFileDownloadPath);
-    std::string url = api_url + "/" + download_path + "/" + file.soundPath;
-
-    downloadFile(url, file.name,
-        [this, index](bool ok, const std::string& data)
-        {
-            if (ok) {
-                _audio_files[index].downloaded = true;
-                save();
+    _downloading = true;
+    auto file_id = file.id;
+    auto sound_path = file.soundPath;
+    auto local_save_path = _folder_path + "/" + file.name;
+    weak_ptr<AudioFileManager> weak_self = shared_from_this();
+    downloadFile(sound_path, local_save_path, [weak_self, file_id](bool ok, const std::string& path) {
+        auto self = weak_self.lock();
+        if (!self) return;
+        if (ok) {
+            auto it = self->_audio_files.find(file_id);
+            if (it != self->_audio_files.end()) {
+                it->second.downloaded = true;
+                self->save();
             } else {
-                WarnL << "Download failed: " << data;
+                WarnL << "Downloaded file not found in audio files list: " << file_id;
+                self->deleteLocalFile(path);
             }
-
-            downloadNext(index + 1);
-        });
+        }
+        ++self->_downloading_it;
+        self->downloadNext();
+    });
 }
 
 void AudioFileManager::deleteLocalFile(const std::string& localPath) {
@@ -275,18 +250,6 @@ void AudioFileManager::deleteLocalFile(const std::string& localPath) {
 
     File::delete_file(localPath);
     InfoL << "Local file deleted: " << localPath;
-}
-
-void AudioFileManager::keepDownloader(HttpDownloader::Ptr downloader) {
-    static std::vector<HttpDownloader::Ptr> pending;
-    static std::mutex mtx;
-    std::lock_guard<std::mutex> lock(mtx);
-    pending.push_back(downloader);
-    pending.erase(
-        std::remove_if(pending.begin(), pending.end(),
-            [](const HttpDownloader::Ptr& d) { return d.use_count() <= 1; }),
-        pending.end()
-    );
 }
 
 } // namespace managerkit

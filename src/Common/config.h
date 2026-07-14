@@ -237,6 +237,11 @@ extern const std::string kBroadcastStreamSettingChange;
 extern const std::string kBroadcastClusterAcrossAccess;
 #define BroadcastClusterAcrossAccessArgs const std::string &authorId, const std::string &secretKey, const Broadcast::AuthInvoker &invoker
 
+// Broadcast for downloading file. Control downloading through this event.
+using DownloadFileInvoker = std::function<void(const std::string&, const std::string&)>;
+extern const std::string kBroadcastDownloadAudioFile;
+#define BroadcastDownloadAudioFileArgs const std::string &audio_file_id, const std::string &local_path, const Broadcast::DownloadFileInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
@@ -682,8 +687,6 @@ extern const std::string kSpeakerDir;
 extern const std::string kAudioFilesDir;
 // Maximum allowed audio file size in bytes
 extern const std::string kMaxAudioFileSizeBytes;
-// Audio file download path
-extern const std::string kFileDownloadPath;
 } // namespace Speaker
 
 } // namespace mediakit

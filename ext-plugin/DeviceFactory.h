@@ -3,7 +3,7 @@
 
 #include "IDevice.h"
 
-namespace mediakit{
+namespace managerkit {
 
 class DeviceFactory {
 public:
@@ -14,6 +14,6 @@ private:
     // static IDevice::Ptr createCamera(const IDeviceConfig& cfg);
 };
 
-}//namespace mediakit
+}//namespace managerkit
 
 #endif // S3MEDIAKIT_DEVICEFACTORY_H

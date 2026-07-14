@@ -101,6 +101,7 @@ const string kBroadcastSyncBookmarkDelete = "kBroadcastSyncBookmarkDelete";
 const string kBroadcastSyncBookmarkThumbnail = "kBroadcastSyncBookmarkThumbnail";
 const string kBroadcastStreamSettingChange = "kBroadcastStreamSettingChange";
 const string kBroadcastClusterAcrossAccess = "kBroadcastClusterAcrossAccess";
+const string kBroadcastDownloadAudioFile = "kBroadcastDownloadAudioFile";
 
 } // namespace Broadcast
 
@@ -555,14 +556,12 @@ const string kSpeakerSavePath = SPEAKER_FIELD "speakerSavePath";
 const string kSpeakerDir = SPEAKER_FIELD "speakerDir";
 const string kAudioFilesDir = SPEAKER_FIELD "audioFileDir";
 const string kMaxAudioFileSizeBytes = SPEAKER_FIELD "maxAudioFileSizeBytes";
-const string kFileDownloadPath = SPEAKER_FIELD "fileDownloadPath";
 
 static onceToken token([]() {
     mINI::Instance()[kSpeakerSavePath] = "./www";
     mINI::Instance()[kSpeakerDir] = "speaker";
     mINI::Instance()[kAudioFilesDir] = "audioFile";
     mINI::Instance()[kMaxAudioFileSizeBytes] = 2 * 1024 * 1024;
-    mINI::Instance()[kFileDownloadPath] = "api/static/audio";
 });
 } // namespace Speaker
 
