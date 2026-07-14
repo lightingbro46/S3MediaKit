@@ -92,14 +92,15 @@ void registerExtractionApis() {
             return;
         }
 
-        if (ffmpeg->finished() && !ffmpeg->success()) {
-            auto err_detail = "Extract video failed: " + ffmpeg->errMsg();
+        auto status = ffmpeg->status();
+        if (status.finished && !status.success) {
+            auto err_detail = "Extract video failed: " + status.err_msg;
             RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, err_detail.data());
             return;
         }
 
-        val["data"]["progress"] = ffmpeg->progress();
-        val["data"]["ready"] = ffmpeg->finished() && ffmpeg->success() ? true : false;
+        val["data"]["progress"] = status.progress;
+        val["data"]["ready"] = status.finished && status.success;
         invoker(202, headerOut, val.toStyledString());
     });
 
@@ -108,7 +109,12 @@ void registerExtractionApis() {
 
         auto key = allArgs["key"];
         auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
-        if (!ffmpeg || !ffmpeg->finished() || !ffmpeg->success()) {
+        if (!ffmpeg) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
+            return;
+        }
+        auto status = ffmpeg->status();
+        if (!status.finished || !status.success) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
             return;
         }
@@ -138,8 +144,9 @@ void registerExtractionApis() {
             }
             Json::Value item;
             item["key"] = key;
-            item["progress"] = src->progress();
-            item["ready"] = src->finished() && src->success() ? true : false;
+            auto status = src->status();
+            item["progress"] = status.progress;
+            item["ready"] = status.finished && status.success;
             val["data"].append(item);
         });
     });

@@ -167,15 +167,19 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
 
 void SubnetScan::makeScan(const std::string &key, const std::function<void(const SockException &)> &cb) {
     auto ip_range = SockUtil::get_ipv4_range(_option.startIp, _option.endIp);
-    _total_ip = ip_range.size();
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        _total_ip = ip_range.size();
+        _processed_ip = 0;
+        _finished = false;
+        _progress = 0.0f;
+        _result.clear();
+    }
 
-    if (_total_ip == 0) {
+    if (ip_range.empty()) {
         cb(SockException(Err_other, "Invalid IP range", ApiErrCode::CODE_INVALID_IP_RANGE));
         return;
     }
-
-    _processed_ip = 0;
-    _finished = false;
 
     weak_ptr<SubnetScan> weak_self = shared_from_this();
 
@@ -187,7 +191,7 @@ void SubnetScan::makeScan(const std::string &key, const std::function<void(const
         }
         auto option = strong_self->_option;
         for (auto &ip : ip_range) {
-            if (strong_self->_finished) {
+            if (strong_self->finished()) {
                 break;
             }
             strong_self->discovery_device(const_cast<std::string&>(ip),
@@ -200,16 +204,21 @@ void SubnetScan::makeScan(const std::string &key, const std::function<void(const
                 if (!strong_self) {
                     return;
                 }
+                {
+                    lock_guard<mutex> lock(strong_self->_status_mtx);
+                    if (!ex) {
+                        strong_self->_result.push_back(data);
+                    }
+                    strong_self->_processed_ip++;
+                    strong_self->_progress = (static_cast<float>(strong_self->_processed_ip) / strong_self->_total_ip) * 100.0f;
+                    if (!strong_self->_finished) {
+                        strong_self->_finished = (strong_self->_processed_ip == strong_self->_total_ip);
+                    }
+                }
                 if (!ex) {
-                    strong_self->_result.push_back(std::move(data));
                     DebugL << "Found device at ip: " << ip;
                 } else {
                     DebugL << "Scan device at ip " << ip << " failed: " << ex.what();
-                }
-                strong_self->_processed_ip++;
-                strong_self->_progress = (static_cast<float>(strong_self->_processed_ip) / strong_self->_total_ip) * 100.0f;
-                if (!strong_self->_finished) {
-                    strong_self->_finished = (strong_self->_processed_ip == strong_self->_total_ip);
                 }
             }, strong_self->_poller);
         }
@@ -217,6 +226,15 @@ void SubnetScan::makeScan(const std::string &key, const std::function<void(const
     });
 
     cb(SockException(Err_success));
+}
+
+SubnetScan::Status SubnetScan::status() const {
+    lock_guard<mutex> lock(_status_mtx);
+    Status ret;
+    ret.progress = _progress;
+    ret.finished = _finished;
+    ret.result = _result;
+    return ret;
 }
 
 void SubnetScan::closeAfterDelaySec() {

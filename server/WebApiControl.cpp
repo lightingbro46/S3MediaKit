@@ -136,16 +136,14 @@ void registerControlApis() {
             return;
         }
 
-        bool isFinished = scanner->finished();
-        double  progress = scanner->progress();
-        auto devices = scanner->result();
+        auto status = scanner->status();
         Json::Value ret = Json::arrayValue;
-        for (auto &d : devices) {
+        for (auto &d : status.result) {
             ret.append(toJsonValue(d));
         }
 
-        val["data"]["finished"] = isFinished;
-        val["data"]["progress"] = progress;
+        val["data"]["finished"] = status.finished;
+        val["data"]["progress"] = status.progress;
         val["data"]["devices"] = ret;
         invoker(200, headerOut, val.toStyledString());
     });
