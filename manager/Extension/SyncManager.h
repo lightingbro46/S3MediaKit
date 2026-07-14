@@ -94,10 +94,10 @@ private:
     void applyBatch(const Json::Value &rows);
 
     // ── Bootstrap path ─────────────────────────
-    // Returns true if transaction_sequence table is empty (never synced)
+    // Returns true unless the persisted bootstrap state is "completed".
     bool needsBootstrap();
-    // Mark bootstrap as done by setting a flag in the database, so that next time onTick() knows to start incremental pull instead of bootstrapping again.
-    void markBootstrapDone();
+    // Persist completion metadata, including snapshot source and row counts.
+    void markBootstrapDone(const SnapshotData &snap);
     // Full bootstrap from a single peer: fetches all tables, used for initial cluster join.
     void doBootstrap(const std::string &peer_id, const std::string &base_url, DoneCb cb = nullptr);
     void applySnapshot(const SnapshotData &snap);

@@ -12,6 +12,7 @@ namespace managerkit {
 #define MISC_DATA_VERSION_KEY "VERSION"
 #define MISC_DATA_DB_INSTANCE_ID_KEY "DB_INSTANCE_ID"
 #define MISC_DATA_DB_BOOTSTRAP_DONE "DB_BOOTSTRAP_DONE"
+#define MISC_DATA_DB_BOOTSTRAP_PENDING_VALUE "{\"schema_version\":1,\"status\":\"pending\"}"
 
 struct MiscData {
     std::string key;
@@ -104,8 +105,9 @@ public:
         MiscData db_guid = { .key = MISC_DATA_DB_INSTANCE_ID_KEY, .value = toolkit::format_guid_without_dash(toolkit::makeUuidStr()) };
         add(db_guid, false);
 
-        // insert bootstrap done flag
-        MiscData bootstrap_done = { .key = MISC_DATA_DB_BOOTSTRAP_DONE, .value = "0" };
+        // Persist a structured state so operators can distinguish a database
+        // that still needs bootstrap from one that completed it.
+        MiscData bootstrap_done = { .key = MISC_DATA_DB_BOOTSTRAP_DONE, .value = MISC_DATA_DB_BOOTSTRAP_PENDING_VALUE };
         add(bootstrap_done, false);
     }
 }; 
