@@ -6,14 +6,15 @@
 #include "Util/TimeTicker.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 
 #ifdef ENABLE_AWS_SDK
 
-#include <aws/core/utils/logging/DefaultLogSystem.h>
 #include <aws/core/utils/HashingUtils.h>
+#include <aws/core/utils/logging/LogLevel.h>
 #include <aws/s3/model/CompletedMultipartUpload.h>
 #include <aws/s3/model/CompletedPart.h>
 #include <aws/s3/model/CreateMultipartUploadRequest.h>
@@ -73,7 +74,7 @@ static bool ensureDirectory(const std::string &dir) {
 // ============================================================================
 TierObjectStorage::TierObjectStorage() {
 #ifdef ENABLE_AWS_SDK
-    Aws::Utils::Logging::InitializeAWSLogging(nullptr); // silent
+    _sdk_options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Off;
     Aws::InitAPI(_sdk_options);
     _sdk_initialized = true;
     DebugL << "TierObjectStorage: AWS SDK initialised";
@@ -127,7 +128,9 @@ TierObjectStorage::buildClient(const std::string &endpoint,
 
     Aws::Client::ClientConfiguration cc;
     cc.endpointOverride = Aws::String(endpoint);
-    cc.scheme           = Aws::Http::Scheme::HTTP;
+    cc.scheme           = endpoint.compare(0, 8, "https://") == 0
+                            ? Aws::Http::Scheme::HTTPS
+                            : Aws::Http::Scheme::HTTP;
     cc.verifySSL        = false;
     cc.connectTimeoutMs = 5000;
     cc.requestTimeoutMs = 60000;
@@ -169,8 +172,13 @@ bool TierObjectStorage::ensureBucketExists(const PoolEntry &entry) {
 // ---------------------------------------------------------------------------
 static size_t curlWrite(char *ptr, size_t sz, size_t nmemb, void *ud) {
     auto *buf = static_cast<std::string *>(ud);
-    buf->append(ptr, sz * nmemb);
-    return sz * nmemb;
+    const size_t bytes = sz * nmemb;
+    try {
+        buf->append(ptr, bytes);
+        return bytes;
+    } catch (...) {
+        return 0;
+    }
 }
 
 static std::string httpGet(const std::string &url, int timeout_s = 3) {
@@ -183,9 +191,9 @@ static std::string httpGet(const std::string &url, int timeout_s = 3) {
     curl_easy_setopt(c, CURLOPT_TIMEOUT,       static_cast<long>(timeout_s));
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_perform(c);
+    CURLcode result = curl_easy_perform(c);
     curl_easy_cleanup(c);
-    return body;
+    return result == CURLE_OK ? body : std::string();
 }
 
 static double firstMetric(const std::string &body, const std::string &name) {
@@ -285,14 +293,18 @@ bool TierObjectStorage::isRegistered(const std::string &pool_id) const {
 // ============================================================================
 bool TierObjectStorage::testConnection(const std::string &pool_id,
                                         std::string &out_message, int &out_latency_ms) {
-    std::lock_guard<std::mutex> lk(_mtx);
-    auto it = _pool_map.find(pool_id);
-    if (it == _pool_map.end()) {
-        out_message = "Pool not registered: " + pool_id;
-        return false;
+    out_latency_ms = 0;
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) {
+            out_message = "Pool not registered: " + pool_id;
+            return false;
+        }
+        entry = it->second;
     }
 
-    const auto &entry = it->second;
     Ticker ticker;
     Aws::S3::Model::HeadBucketRequest req;
     req.SetBucket(entry.bucket.c_str());
@@ -312,6 +324,7 @@ bool TierObjectStorage::testConnectionParams(const std::string &endpoint,
                                               const std::string &secret_key,
                                               std::string &out_message,
                                               int &out_latency_ms) {
+    out_latency_ms = 0;
     auto client = buildClient(endpoint, access_key, secret_key);
     Ticker ticker;
     Aws::S3::Model::HeadBucketRequest req;
@@ -391,9 +404,21 @@ bool TierObjectStorage::uploadSegment(const std::string &pool_id,
         return false;
     }
     const Aws::String uploadId = createOut.GetResult().GetUploadId();
+    auto abortUpload = [&]() {
+        Aws::S3::Model::AbortMultipartUploadRequest abort;
+        abort.SetBucket(bucket);
+        abort.SetKey(key);
+        abort.SetUploadId(uploadId);
+        entry.client->AbortMultipartUpload(abort);
+    };
 
     Aws::Vector<Aws::S3::Model::CompletedPart> completedParts;
     std::ifstream ifs(local_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        abortUpload();
+        WarnL << "TierObjectStorage: cannot read " << local_path;
+        return false;
+    }
     int partNum = 1;
     size_t offset = 0;
 
@@ -406,6 +431,11 @@ bool TierObjectStorage::uploadSegment(const std::string &pool_id,
 
         std::string chunk(partSize, '\0');
         ifs.read(&chunk[0], static_cast<std::streamsize>(partSize));
+        if (ifs.gcount() != static_cast<std::streamsize>(partSize)) {
+            abortUpload();
+            WarnL << "TierObjectStorage: short read while uploading " << local_path;
+            return false;
+        }
 
         auto partStream = Aws::MakeShared<Aws::StringStream>(
             "TierPart", std::move(chunk));
@@ -420,11 +450,7 @@ bool TierObjectStorage::uploadSegment(const std::string &pool_id,
 
         auto partOut = entry.client->UploadPart(partReq);
         if (!partOut.IsSuccess()) {
-            Aws::S3::Model::AbortMultipartUploadRequest abort;
-            abort.SetBucket(bucket);
-            abort.SetKey(key);
-            abort.SetUploadId(uploadId);
-            entry.client->AbortMultipartUpload(abort);
+            abortUpload();
             WarnL << "TierObjectStorage: UploadPart " << partNum << " failed: "
                   << partOut.GetError().GetMessage();
             return false;
@@ -450,6 +476,7 @@ bool TierObjectStorage::uploadSegment(const std::string &pool_id,
 
     auto completeOut = entry.client->CompleteMultipartUpload(completeReq);
     if (!completeOut.IsSuccess()) {
+        abortUpload();
         WarnL << "TierObjectStorage: CompleteMultipartUpload failed: "
               << completeOut.GetError().GetMessage();
         return false;
@@ -491,6 +518,12 @@ bool TierObjectStorage::downloadSegment(const std::string &pool_id,
         return false;
     }
     ofs << out.GetResult().GetBody().rdbuf();
+    if (!ofs.good()) {
+        ofs.close();
+        std::remove(local_path.c_str());
+        WarnL << "TierObjectStorage: failed writing " << local_path;
+        return false;
+    }
     return true;
 }
 
@@ -618,6 +651,7 @@ void TierObjectStorage::unregisterPool(const std::string &) {}
 bool TierObjectStorage::isRegistered(const std::string &) const { return false; }
 
 bool TierObjectStorage::testConnection(const std::string &, std::string &out_msg, int &out_latency_ms) {
+    out_latency_ms = 0;
     out_msg = "AWS SDK not enabled";
     return false;
 }
@@ -625,6 +659,7 @@ bool TierObjectStorage::testConnection(const std::string &, std::string &out_msg
 bool TierObjectStorage::testConnectionParams(const std::string &, const std::string &,
                                               const std::string &, const std::string &,
                                               std::string &out_msg, int &out_latency_ms) {
+    out_latency_ms = 0;
     out_msg = "AWS SDK not enabled";
     return false;
 }
