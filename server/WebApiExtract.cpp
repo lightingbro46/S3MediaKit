@@ -71,7 +71,7 @@ void registerExtractionApis() {
 
             addFFmpegExtractor(tuple, options, token_cache, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
                 if (ex) {
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, ex.what());
+                    RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {
                     UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
                     val["data"]["key"] = key;

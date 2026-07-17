@@ -12,6 +12,7 @@
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
 #include "Local/StatisticRecorder.h"
+#include "WebApiErrCode.h"
 
 using namespace std;
 using namespace toolkit;
@@ -461,7 +462,7 @@ FFmpegExtractor::~FFmpegExtractor() {
 }
 
 static void makeIndexFile(string &file_path, string &camera_id, string &stream_id, uint64_t start_time, uint64_t end_time,
-        const function<void(const string &err, uint32_t &duration_start, uint32_t &duration_end)> &cb) {
+        const function<void(const SockException &ex, uint32_t &duration_start, uint32_t &duration_end)> &cb) {
     uint32_t duration_start = 0;
     uint32_t duration_end = 0;
     auto file_ptr = std::shared_ptr<FILE>(File::create_file(file_path, "wb"), [](FILE *fp) {
@@ -472,7 +473,7 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
     });
     if (!file_ptr) {
         string err = (StrPrinter << "Failed to open the file:" << file_path);
-        return cb(err, duration_start, duration_end);
+        return cb(SockException(Err_other, err, ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
     }
 
     struct FileIndexs {
@@ -526,7 +527,7 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         }
     }
     // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
-    return cb(total_dur == 0 ? "No data in time period" : "", duration_start, duration_end);
+    return cb(total_dur == 0 ? SockException(Err_other, "No data in time period", ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA) : SockException(), duration_start, duration_end);
 }
 
 static std::string getFileExtension(const std::string &filename) {
@@ -560,9 +561,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     uint32_t duration_start = 0;
     uint32_t duration_end = 0;
     _src_path = File::absolutePath(key + ".txt", root_path);
-    makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const string &err, uint32_t &start, uint32_t &end) {
-        if (!err.empty()) {
-            cb(SockException(Err_other, err));
+    makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const SockException &ex, uint32_t &start, uint32_t &end) {
+        if (ex) {
+            cb(ex);
             return;
         }
         _duration = end - start;
@@ -629,7 +630,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         } else {
             string err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
             strongSelf->emitEvent(false, err_msg);
-            cb(SockException(Err_other, err_msg));            
+            cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         }
         // close after process finished
         strongSelf->closeAfterDelaySec();
