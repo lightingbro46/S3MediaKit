@@ -482,26 +482,30 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         uint64_t dur_end;
     };
     unordered_map<string, FileIndexs> file_indexs_map;
-    MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-    auto query = std::make_shared<TimeQuery>(tuple);
-    query->getRecordedTimePeriod(start_time, end_time, [start_time, end_time, &file_indexs_map](const vector<TimeBlock> &ret) {
-        for (const auto &block : ret) {
-            auto stream_id = block.stream();
-            auto &file_indexs = file_indexs_map[stream_id];
-            uint64_t start_pos = block.start_time();
-            uint64_t end_pos = block.start_time() + block.time_len();
-            if (start_pos < start_time) {
-                file_indexs.dur_start += start_time - start_pos;
-                file_indexs.dur_end += file_indexs.dur_start;
-                start_pos = start_time;
+    try {
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+        auto query = std::make_shared<TimeQuery>(tuple);
+        query->getRecordedTimePeriod(start_time, end_time, [start_time, end_time, &file_indexs_map](const vector<TimeBlock> &ret) {
+            for (const auto &block : ret) {
+                auto stream_id = block.stream();
+                auto &file_indexs = file_indexs_map[stream_id];
+                uint64_t start_pos = block.start_time();
+                uint64_t end_pos = block.start_time() + block.time_len();
+                if (start_pos < start_time) {
+                    file_indexs.dur_start += start_time - start_pos;
+                    file_indexs.dur_end += file_indexs.dur_start;
+                    start_pos = start_time;
+                }
+                if (end_pos > end_time) {
+                    end_pos = end_time;
+                }
+                file_indexs.dur_end += end_pos - start_pos;
+                file_indexs.file_path.push_back(block.file_path());
             }
-            if (end_pos > end_time) {
-                end_pos = end_time;
-            }
-            file_indexs.dur_end += end_pos - start_pos;
-            file_indexs.file_path.push_back(block.file_path());
-        }
-    });
+        });
+    } catch (const std::exception& ex) {
+        WarnL << "TimeQuery init failed: " << ex.what();
+    }
 
     uint64_t total_dur = 0;
     // Find the stream with the longest duration in the time period, and then extract the video based on this stream
