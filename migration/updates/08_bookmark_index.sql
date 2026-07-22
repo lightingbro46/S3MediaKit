@@ -27,7 +27,6 @@ DROP TABLE IF EXISTS bookmark_index_fts;
 CREATE VIRTUAL TABLE bookmark_index_fts USING fts5(
     bookmark_guid UNINDEXED,
     search_text,                     -- name || ' ' || description || ' ' || tags_csv
-    content='bookmark_index',
     tokenize='trigram'
 );
 
