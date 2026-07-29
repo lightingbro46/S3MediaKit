@@ -160,6 +160,7 @@ void StreamSource::createPlayer() {
         }
 
         (*player)[Client::kRtpType] = strong_self->_option.rtp_type;
+        (*player)[Client::kRtpMode] = strong_self->_option.rtp_mode;
 
         if (strong_self->_option.timeout_sec > 0.1f) {
             // Play handshake timeout

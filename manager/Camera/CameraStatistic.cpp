@@ -1,6 +1,7 @@
 #include "CameraStatistic.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
+#include "SdCardSyncManager.h"
 #include "Local/TierStorageManager.h"
 #include "Extension/Resource.h"
 
@@ -505,6 +506,10 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.enableMotion = ret["enableMotion"].asBool();
     option.roiValue = ret["roiValue"].asString();
     option.motionDetectOnStream = ret["motionDetectOnStream"].asInt();
+    option.sdCardSyncEnabled = ret["sdCardSyncEnabled"].asBool();
+    option.sdCardSyncAutoSyncEnabled = ret["sdCardSyncAutoSyncEnabled"].asBool();
+    option.sdCardSyncMinSegmentGapSec = ret["sdCardSyncMinSegmentGapSec"].asInt();
+    option.sdCardSyncRetryCount = ret["sdCardSyncRetryCount"].asInt();
     stats.option = option;
 
     // stream tuple map
@@ -619,6 +624,10 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["enableMotion"] = stats.option.enableMotion;
     root["roiValue"] = stats.option.roiValue;
     root["motionDetectOnStream"] = stats.option.motionDetectOnStream;
+    root["sdCardSyncEnabled"] = stats.option.sdCardSyncEnabled;
+    root["sdCardSyncAutoSyncEnabled"] = stats.option.sdCardSyncAutoSyncEnabled;
+    root["sdCardSyncMinSegmentGapSec"] = stats.option.sdCardSyncMinSegmentGapSec;
+    root["sdCardSyncRetryCount"] = stats.option.sdCardSyncRetryCount;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;
@@ -767,6 +776,37 @@ void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
     save();
 }
 
+std::string CameraStatisticImp::getStreamID(const int &stream_type) {
+    return stream_map[stream_type].stream_id;
+}
+
+std::unordered_map<std::string, VideoEncoderConfig> CameraStatisticImp::getStreamVideoEncoderConfigMap() {
+    const auto& profiles = device_stats.device_caps.onvifProfile.mediaProfiles;
+    std::unordered_map<std::string, VideoEncoderConfig> result;
+
+    std::unordered_map<std::string, const OnvifMediaProfile*> profileByUrl;
+    for (const auto& profile : profiles) {
+        profileByUrl[profile.url] = &profile;
+    }
+
+    for (const auto& streamPair : stream_map) {
+        const StreamTuple& stream = streamPair.second;
+        auto it = profileByUrl.find(stream.full_url);
+        if (it == profileByUrl.end()) continue;
+
+        const OnvifMediaProfile* profile = it->second;
+        VideoEncoderConfig vConfig;
+        vConfig.vcodec  = profile->vcodec;
+        vConfig.width   = profile->width;
+        vConfig.height  = profile->height;
+        vConfig.bitrate = profile->bitrate;
+        vConfig.fps     = profile->fps;
+        result[stream.stream_id] = vConfig;
+    }
+
+    return result;
+}
+
 void CameraStatisticImp::addArchiveSize(string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add) {
     std::lock_guard<std::mutex> lck(_mtx);
     // Do not process time blocks with an end time earlier than the info file creation time, so that old media data does not need to be re-aggregated
@@ -911,6 +951,9 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
     if (device_caps) {
         device_stats.device_caps = *device_caps;
     }
+
+    SdCardSyncManager::Instance().onDeviceStateChanged(tuple.device_id, connect);
+
     DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
            << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
            << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();

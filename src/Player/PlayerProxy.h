@@ -107,6 +107,9 @@ public:
     const std::string& getUrl() const { return _pull_url; }
     const MediaTuple& getMediaTuple() const { return _tuple; }
     const ProtocolOption& getOption() const { return _option; }
+    void setReplayRecorderTimeFile(const time_t &recoder_time_file) { _replay_recoder_time_file = recoder_time_file; }
+    void setOnReplayClose(std::function<void(const std::string &proxyKey, const float &progress)> cb);
+    void setOnReplayRetry(std::function<bool(const std::string &proxyKey, const float &progress, std::string &newUrl)> cb);
 
 private:
     // MediaSourceEvent override
@@ -136,6 +139,8 @@ private:
     std::function<void(const TranslationInfo &info)> _on_connect;
     std::function<void(const toolkit::SockException &ex)> _on_close;
     std::function<void(const toolkit::SockException &ex)> _on_play;
+    std::function<void(const std::string &proxyKey, const float &progress)> _on_replay_close;
+    std::function<bool(const std::string &proxyKey, const float &progress, std::string &newUrl)> _on_replay_retry;
     TranslationInfo _transtalion_info;
     MultiMediaSourceMuxer::Ptr _muxer;
 
@@ -145,6 +150,7 @@ private:
     std::atomic<uint64_t> _live_secs;
 
     std::atomic<uint64_t> _repull_count;
+    time_t _replay_recoder_time_file;
 };
 
 } /* namespace mediakit */

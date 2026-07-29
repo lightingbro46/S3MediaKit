@@ -56,6 +56,7 @@ private:
     bool _have_video = false;
     size_t _max_second;
     time_t _next_file_time = 0; // 0 = use ::time(NULL)
+    time_t _next_replay_file_time_offset = 0;
     DeltaStamp _delta_stamp[TrackMax];
     std::atomic<uint64_t> _file_index { 0 };
     std::string _full_path_tmp;

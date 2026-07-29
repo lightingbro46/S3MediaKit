@@ -1,6 +1,7 @@
 #ifndef CONTROL_SUBNETSCAN_H
 #define CONTROL_SUBNETSCAN_H
 
+#include <mutex>
 #include "Network/sockutil.h"
 #include "Thread/WorkThreadPool.h"
 
@@ -56,6 +57,12 @@ public:
     using Ptr = std::shared_ptr<SubnetScan>;
     using onScan = std::function<void(const toolkit::SockException &, const DeviceScanResult &)>;
 
+    struct Status {
+        float progress = 0.0f;
+        bool finished = false;
+        std::vector<DeviceScanResult> result;
+    };
+
     SubnetScan(const SubnetScanOption &option, uint64_t timeout_ms = 0);
     ~SubnetScan();
 
@@ -64,9 +71,10 @@ public:
     void makeScan(const std::string &key, const std::function<void(const toolkit::SockException &)> &cb);
 
     // Get scan progress
-    const float& progress() const { return _progress; }
-    const bool& finished() const { return _finished; }
-    const std::vector<DeviceScanResult>& result() const { return _result; }
+    Status status() const;
+    float progress() const { return status().progress; }
+    bool finished() const { return status().finished; }
+    std::vector<DeviceScanResult> result() const { return status().result; }
 
 public:
     static void discovery_device(std::string &address, int &port, bool &defaultPort, 
@@ -85,6 +93,7 @@ private:
     bool _finished = false;
     float _progress = 0.0f;
     int _timeout_ms;
+    mutable std::mutex _status_mtx;
 
 private:
     // create delay task to close process

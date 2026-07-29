@@ -118,7 +118,7 @@ public:
 
 public:
     void parse(const std::string &url);
-
+    void parse(const std::string &strUrl, uint32_t &start, uint32_t &end);
 private:
     void setup(bool, const std::string &, const std::string &, const std::string &);
 };

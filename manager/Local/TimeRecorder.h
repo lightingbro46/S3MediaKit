@@ -20,6 +20,11 @@ public:
     bool inputBlock(const TimeBlock &block);
 
     /**
+     * Input block, write block to file if it is an SD playback block
+     */
+    bool inputSDBlock(const TimeBlock &block);
+
+    /**
      * Get close time of current file
      */
     uint64_t getNextOpenTime() { return _next_open_time; }
@@ -62,6 +67,11 @@ private:
      * Create file
      */
     void createFile();
+
+    /**
+     * Create file for SD card playback
+     */
+    void createSDFile(uint64_t date_time = 0);
 
     /**
      * Close file

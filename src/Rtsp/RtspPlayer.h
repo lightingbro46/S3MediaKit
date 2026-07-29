@@ -95,7 +95,7 @@ private:
 
     void sendOptions();
     void sendSetup(unsigned int track_idx);
-    void sendPause(int type , uint32_t ms);
+    void sendPause(int type , uint32_t ms, uint32_t to_ms = 0);
     void sendDescribe();
     void sendTeardown();
     void sendKeepAlive();
@@ -136,6 +136,9 @@ private:
     std::string _control_url;
 protected:   
     Rtsp::eRtpType _rtp_type = Rtsp::RTP_TCP;
+    Rtsp::eRtpMode _rtp_mode = Rtsp::Live;
+    uint32_t _seek_from_ms = 0;
+    uint32_t _seek_to_ms = 0;
 
 private:
     // start timestamp

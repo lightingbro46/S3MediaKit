@@ -360,6 +360,10 @@ void addStreamProxy(const mediakit::MediaTuple &tuple, const std::string &url, i
 void addStreamProxy(const mediakit::MediaTuple &tuple, const mediakit::ProtocolOption &option,
                     const std::function<void(const std::string &err, const mediakit::PlayerProxy::Ptr &ptr)> &cb);
 void delStreamProxy(const mediakit::MediaTuple &tuple);
+void addReplayStreamProxy(const mediakit::MediaTuple &tuple, const mediakit::ProtocolOption &option,
+                    const std::function<void(const std::string &err, const mediakit::PlayerProxy::Ptr &ptr)> &cb, int retry_count);
+const mediakit::PlayerProxy::Ptr getReplayStreamProxy(const std::string &key);
+void delReplayStreamProxy(const std::string &key);
 void addFFmpegSource(const std::string &dst_url, const std::function<void(const std::string &err, const FFmpegSource::Ptr &player)> &cb);
 void delFFmpegSource(const std::string &dst_url);
 
@@ -510,6 +514,9 @@ void unregisterControlApis();
 
 // Register the Web API storage endpoints 
 void registerStorageApis();
+
+// Register the Web API SD card sync endpoints 
+void registerHistoricalSDCardSyncApis();
 
 } // namespace managerkit
 

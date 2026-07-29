@@ -27,15 +27,16 @@ Tất cả request phải đính kèm JWT token trong header hoặc query param.
 | `code` | HTTP | Mô tả |
 |--------|------|--------|
 | `0` | 200 | Thành công |
-| `100001` | 401 | Chưa xác thực (thiếu/sai token) |
-| `100005` | 401 | Không có quyền PTZ Control |
-| `200001` | 404 | Device không tìm thấy |
-| `200009` | 404 | User preset không tìm thấy |
-| `300001` | 400 | Device offline |
-| `300014` | 403 | Device đang bị điều khiển bởi người dùng khác |
-| `300017` | 500 | PTZ goto preset thất bại (ONVIF preset) |
-| `300018` | 500 | PTZ goto preset thất bại (user-defined preset) |
-| `300019` | 500 | Device không hỗ trợ PTZ Preset |
+| `901001` | 401 | Chưa xác thực (thiếu/sai token) |
+| `901005` | 401 | Không có quyền PTZ Control |
+| `902001` | 400 | Thiếu tham số bắt buộc |
+| `905001` | 404 | Device không tìm thấy |
+| `905002` | 400 | Device offline |
+| `905003` | 403 | Device đang bị điều khiển bởi người dùng khác |
+| `907001` | 404 | User preset không tìm thấy |
+| `907011` | 500 | PTZ goto preset thất bại (ONVIF preset) |
+| `907012` | 500 | PTZ goto preset thất bại (user-defined preset) |
+| `907013` | 500 | Device không hỗ trợ PTZ Preset |
 
 ---
 
@@ -95,7 +96,7 @@ const getPresets = async (deviceId, jwtToken) => {
 
 **POST** `/media/mserver/device/ptz_control/goto_preset`
 
-Yêu cầu camera đang được **sở hữu** bởi user hiện tại (ownership). Nếu camera đang bị người khác điều khiển sẽ trả về lỗi `300014`.
+Yêu cầu camera đang được **sở hữu** bởi user hiện tại (ownership). Nếu camera đang bị người khác điều khiển sẽ trả về lỗi `905003`.
 
 ### Request body (`application/json` hoặc form)
 
@@ -250,9 +251,9 @@ sequenceDiagram
 
 ## Lưu ý quan trọng
 
-1. **Ownership**: Các API `goto_preset`, `set_preset`, `remove_preset` đều cần camera đang trong trạng thái "sở hữu" bởi user hiện tại. Nếu camera đang bị người khác điều khiển → lỗi `300014`. FE cần gọi API lấy ownership trước khi thực hiện các thao tác này.
+1. **Ownership**: API `goto_preset` cần camera đang trong trạng thái "sở hữu" bởi user hiện tại. Nếu camera đang bị người khác điều khiển → lỗi `905003`. `set_preset` và `remove_preset` kiểm tra quyền user với camera, sau đó thao tác trên owner poller của camera.
 
-2. **isUserPreset phải chính xác**: Khi gọi `goto_preset`, truyền `isUserPreset` đúng với giá trị `isUserDefined` trong danh sách preset. Sai giá trị có thể dẫn đến lỗi `300017` hoặc `300018`.
+2. **isUserPreset phải chính xác**: Khi gọi `goto_preset`, truyền `isUserPreset` đúng với giá trị `isUserDefined` trong danh sách preset. Sai giá trị có thể dẫn đến lỗi `907011` hoặc `907012`.
 
 3. **Reload sau thay đổi**: Sau khi `set_preset` hoặc `remove_preset` thành công, FE nên gọi lại `get_presets` để đồng bộ danh sách.
 

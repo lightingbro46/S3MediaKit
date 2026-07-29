@@ -999,4 +999,13 @@ bool MultiMediaSourceMuxer::isEnabled(){
     return _is_enable;
 }
 
+void MultiMediaSourceMuxer::setRecorderTimeFileReplay(const time_t time) {
+    if (_mp4) {
+        auto d = std::dynamic_pointer_cast<MP4Recorder>(_mp4);
+        if (d) {
+            d->setNextFileTime(time);
+        }
+    }
+}
+
 }//namespace mediakit

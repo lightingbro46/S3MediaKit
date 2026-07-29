@@ -91,6 +91,7 @@ struct PeriodEntry {
     std::string serverId;
     std::string tier = "HOT";
     bool restoreRequired = false;
+    bool isReplay = false;
     // type-0 only
     std::string cameraId;
     std::string streamId;
@@ -286,6 +287,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             e.serverId = p["mediaServerId"].asString();
             e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
             e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+            e.isReplay = p["isReplay"].asBool();
             out.push_back(e);
         }
     };
@@ -300,6 +302,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             p["restore_required"] = e.restoreRequired;
+            p["isReplay"]      = e.isReplay;
             arr.append(p);
         }
         return arr;
@@ -316,6 +319,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+                e.isReplay = p["isReplay"].asBool();
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -329,6 +333,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 e.serverId = p["mediaServerId"].asString();
                 e.tier     = p.isMember("tier") ? p["tier"].asString() : "HOT";
                 e.restoreRequired = p.isMember("restore_required") ? p["restore_required"].asBool() : false;
+                e.isReplay = p["isReplay"].asBool();
                 e.cameraId = p["cameraId"].asString();
                 e.streamId = p["streamId"].asString();
                 periods.push_back(e);
@@ -345,6 +350,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             p["mediaServerId"] = e.serverId;
             p["tier"]          = e.tier.empty() ? "HOT" : e.tier;
             p["restore_required"] = e.restoreRequired;
+            p["isReplay"]      = e.isReplay;
             dst["periods"].append(p);
         }
 
@@ -457,7 +463,33 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 dst["motionPeriods"].append(p);
             }
         } else if (src_motion.isObject()) {
-            // Hour-bitmap representation – OR the bitmaps.
+            auto mergeMotionRanges = [](const Value &dst_arr, const Value &src_arr) {
+                std::vector<MotionPeriodEntry> motions;
+                auto extract = [&](const Value &arr) {
+                    if (!arr.isArray()) {
+                        return;
+                    }
+                    for (const auto &p : arr) {
+                        MotionPeriodEntry e;
+                        e.start = p["startTime"].asUInt64();
+                        e.end   = e.start + p["duration"].asUInt64();
+                        motions.push_back(e);
+                    }
+                };
+
+                extract(dst_arr);
+                extract(src_arr);
+
+                Value merged = Json::arrayValue;
+                for (const auto &e : resolveMotionPeriods(motions)) {
+                    Value period;
+                    period["startTime"] = (Json::UInt64)e.start;
+                    period["duration"]  = (Json::UInt64)(e.end - e.start);
+                    merged.append(period);
+                }
+                return merged;
+            };
+
             for (const auto &date_key : src_motion.getMemberNames()) {
                 const auto &src_hours = src_motion[date_key];
                 if (!dst["motionPeriods"].isMember(date_key)) {
@@ -465,7 +497,65 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 } else {
                     auto &dst_hours = dst["motionPeriods"][date_key];
                     for (int h = 0; h < 24 && h < (int)src_hours.size(); ++h) {
-                        if (src_hours[h].asInt() > 0) dst_hours[h] = 1;
+                        const auto &src_hour = src_hours[h];
+                        if (src_hour.isArray()) {
+                            dst_hours[h] = mergeMotionRanges(dst_hours[h], src_hour);
+                        } else if (src_hour.isInt() || src_hour.isUInt() || src_hour.isBool()) {
+                            if (src_hour.asInt() > 0) {
+                                dst_hours[h] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Keep motionPeriods aligned with findTimePeriodLocal: when period_type == 2,
+    // every recorded date/hour must still carry an explicit "no motion" marker.
+    if (period_type == 2 && (dst.isMember("motionPeriods") || src.isMember("motionPeriods"))) {
+        if (detail == 0 && dst.isMember("periods") && dst["periods"].isObject()) {
+            if (!dst.isMember("motionPeriods") || !dst["motionPeriods"].isObject()) {
+                dst["motionPeriods"] = Json::objectValue;
+            }
+
+            for (const auto &date_key : dst["periods"].getMemberNames()) {
+                if (!dst["motionPeriods"].isMember(date_key) || !dst["motionPeriods"][date_key].isArray()) {
+                    dst["motionPeriods"][date_key] = Json::arrayValue;
+                }
+
+                auto &motion_hours = dst["motionPeriods"][date_key];
+                for (int h = 0; h < 24; ++h) {
+                    if (h >= (int)motion_hours.size() ||
+                        !(motion_hours[h].isInt() || motion_hours[h].isUInt() || motion_hours[h].isBool())) {
+                        motion_hours[h] = 0;
+                    }
+                }
+            }
+        } else if (detail == 1 && dst.isMember("streams") && dst["streams"].isArray()) {
+            if (!dst.isMember("motionPeriods") || !dst["motionPeriods"].isObject()) {
+                dst["motionPeriods"] = Json::objectValue;
+            }
+
+            std::set<std::string> date_keys;
+            for (const auto &stream : dst["streams"]) {
+                if (!stream.isMember("dates") || !stream["dates"].isObject()) {
+                    continue;
+                }
+                for (const auto &date_key : stream["dates"].getMemberNames()) {
+                    date_keys.emplace(date_key);
+                }
+            }
+
+            for (const auto &date_key : date_keys) {
+                if (!dst["motionPeriods"].isMember(date_key) || !dst["motionPeriods"][date_key].isArray()) {
+                    dst["motionPeriods"][date_key] = Json::arrayValue;
+                }
+
+                auto &motion_hours = dst["motionPeriods"][date_key];
+                for (int h = 0; h < 24; ++h) {
+                    if (h >= (int)motion_hours.size() || !motion_hours[h].isArray()) {
+                        motion_hours[h] = Json::arrayValue;
                     }
                 }
             }
@@ -508,6 +598,7 @@ static void findTimePeriodLocal(
                             period["duration"] = tp.duration;
                             period["tier"] = tp.tier;
                             period["restore_required"] = tp.restoreRequired;
+                            period["isReplay"] = p.isReplay;
                             period["mediaServerId"] = mediaServerId;
                             result["periods"].append(period);
                         }
@@ -549,6 +640,7 @@ static void findTimePeriodLocal(
                                     period["duration"] = tp.duration;
                                     period["tier"] = tp.tier;
                                     period["restore_required"] = tp.restoreRequired;
+                                    period["isReplay"] = p.isReplay;
                                     period["mediaServerId"] = mediaServerId;
                                     stream["periods"].append(period);
                                 }
@@ -639,6 +731,7 @@ static void findTimePeriodLocal(
                                                 period["startTime"] = (Json::UInt64)tp.startTime;
                                                 period["duration"] = tp.duration;
                                                 period["tier"] = tp.tier;
+                                                period["isReplay"] = p.isReplay;
                                                 period["restore_required"] = tp.restoreRequired;
                                                 period["mediaServerId"] = mediaServerId;
                                                 hour.append(period);
@@ -701,6 +794,7 @@ static void findTimePeriodLocal(
                         period["timeLen"] = tp.duration;
                         period["tier"] = tp.tier;
                         period["restore_required"] = tp.restoreRequired;
+                        period["isReplay"] = tp.isReplay;
                         period["mediaServerId"] = mediaServerId;
                         result["periods"].append(period);
                     }

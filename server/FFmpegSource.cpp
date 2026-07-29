@@ -625,14 +625,24 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
             return 0;
         }
         // ffmpeg process has exited
-        strongSelf->_finished = true;
-        strongSelf->_success = strongSelf->_process.exit_code() == 0;
-        if (strongSelf->_success) {
-            strongSelf->_progress = 100.0f;
+        bool success = strongSelf->_process.exit_code() == 0;
+        string err_msg;
+        if (!success) {
+            err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
+        }
+        {
+            lock_guard<mutex> lock(strongSelf->_status_mtx);
+            strongSelf->_finished = true;
+            strongSelf->_success = success;
+            strongSelf->_err_msg = err_msg;
+            if (success) {
+                strongSelf->_progress = 100.0f;
+            }
+        }
+        if (success) {
             strongSelf->emitEvent(true);
             cb(SockException());
         } else {
-            string err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
             strongSelf->emitEvent(false, err_msg);
             cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         }
@@ -708,21 +718,41 @@ void FFmpegExtractor::startTimer() {
                 strongSelf->_process.kill(2000);
             }
             // find progress bar
-            strongSelf->_progress = trackFFmpegProgress(strongSelf->_log_file, strongSelf->_duration);
+            auto progress = trackFFmpegProgress(strongSelf->_log_file, strongSelf->_duration);
+            {
+                lock_guard<mutex> lock(strongSelf->_status_mtx);
+                strongSelf->_progress = progress;
+            }
             return true;
         } else {
             // ffmpeg is not online, check output file and set status
-            strongSelf->_finished = true;
             bool success = strongSelf->_process.exit_code() == 0 && File::fileSize(strongSelf->_save_path);
-            strongSelf->_success = success;
-            strongSelf->_progress = success ? 100.0f : strongSelf->_progress;
-            strongSelf->_err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
-            strongSelf->emitEvent(success, strongSelf->_err_msg);
+            string err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
+            {
+                lock_guard<mutex> lock(strongSelf->_status_mtx);
+                strongSelf->_finished = true;
+                strongSelf->_success = success;
+                if (success) {
+                    strongSelf->_progress = 100.0f;
+                }
+                strongSelf->_err_msg = err_msg;
+            }
+            strongSelf->emitEvent(success, err_msg);
             // close after process finished
             strongSelf->closeAfterDelaySec();
             return false;
         }
     }, _poller);
+}
+
+FFmpegExtractor::Status FFmpegExtractor::status() const {
+    lock_guard<mutex> lock(_status_mtx);
+    Status ret;
+    ret.progress = _progress;
+    ret.finished = _finished;
+    ret.success = _success;
+    ret.err_msg = _err_msg;
+    return ret;
 }
 
 void FFmpegExtractor::setOnClose(const function<void()> &cb){

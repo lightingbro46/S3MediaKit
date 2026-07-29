@@ -101,6 +101,7 @@ const string kBroadcastSyncBookmarkDelete = "kBroadcastSyncBookmarkDelete";
 const string kBroadcastSyncBookmarkThumbnail = "kBroadcastSyncBookmarkThumbnail";
 const string kBroadcastStreamSettingChange = "kBroadcastStreamSettingChange";
 const string kBroadcastClusterAcrossAccess = "kBroadcastClusterAcrossAccess";
+const string kBroadcastDownloadAudioFile = "kBroadcastDownloadAudioFile";
 
 } // namespace Broadcast
 
@@ -435,6 +436,7 @@ static onceToken token([]() {
 namespace Client {
 const string kNetAdapter = "net_adapter";
 const string kRtpType = "rtp_type";
+const string kRtpMode = "rtp_mode";
 const string kRtspBeatType = "rtsp_beat_type";
 const string kRtspUser = "rtsp_user";
 const string kRtspPwd = "rtsp_pwd";
@@ -554,6 +556,22 @@ static onceToken token([]() {
 });
 
 } // namespace Storage
+
+// //////////Speaker Configuration///////////
+namespace Speaker {
+#define SPEAKER_FIELD "speaker."
+const string kSpeakerSavePath = SPEAKER_FIELD "speakerSavePath";
+const string kSpeakerDir = SPEAKER_FIELD "speakerDir";
+const string kAudioFilesDir = SPEAKER_FIELD "audioFileDir";
+const string kMaxAudioFileSizeBytes = SPEAKER_FIELD "maxAudioFileSizeBytes";
+
+static onceToken token([]() {
+    mINI::Instance()[kSpeakerSavePath] = "./www";
+    mINI::Instance()[kSpeakerDir] = "speaker";
+    mINI::Instance()[kAudioFilesDir] = "audioFile";
+    mINI::Instance()[kMaxAudioFileSizeBytes] = 2 * 1024 * 1024;
+});
+} // namespace Speaker
 
 } // namespace mediakit
 

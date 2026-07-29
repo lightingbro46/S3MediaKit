@@ -15,11 +15,17 @@ StatisticRecorder::StatisticRecorder(const string &record_path) : _record_path(r
         GET_CONFIG(string, app_name, Record::kAppName)
         _record_path = File::absolutePath(app_name, mp4_save_path);
     } 
+    if (_speaker_path.empty()) {
+        GET_CONFIG(string, speaker_save_path, Speaker::kSpeakerSavePath)
+        GET_CONFIG(string, speaker_dir, Speaker::kSpeakerDir)
+        _speaker_path = File::absolutePath(speaker_dir, speaker_save_path);
+    }
 }
 
 StatisticRecorder::~StatisticRecorder() {
     std::lock_guard<std::mutex> lock(_mtx_stats);
     _cam_stats_map.clear();
+    _sp_stats_map.clear();
 }
 
 CameraStatisticImp::Ptr StatisticRecorder::getRecorder(const string &device_id, bool create_if_not_exist) {
@@ -57,6 +63,44 @@ bool StatisticRecorder::removeRecorder(const string &device_id) {
         return false;
     }
     _cam_stats_map.erase(device_id);
+    return true;
+}
+
+SpeakerStatisticImp::Ptr StatisticRecorder::getSpeakerRecorder(const string &device_id, bool create_if_not_exist) {
+    CHECK(!device_id.empty());
+    {
+        std::lock_guard<std::mutex> lock(_mtx_stats);
+        if (_sp_stats_map.find(device_id) != _sp_stats_map.end()) {
+            return _sp_stats_map[device_id];
+        }
+    }
+    return create_if_not_exist ? addSpeakerRecorder(device_id) : nullptr;
+}
+
+SpeakerStatisticImp::Ptr StatisticRecorder::addSpeakerRecorder(const string &device_id) {
+    auto device_path = _speaker_path + "/" + device_id;
+    auto imp = std::make_shared<SpeakerStatisticImp>(device_path);
+    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
+    imp->setOnRemove([weak_self](const std::string &device_id) {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        strong_self->removeSpeakerRecorder(device_id);
+    });
+    {
+        std::lock_guard<std::mutex> lock(_mtx_stats);
+        _sp_stats_map.emplace(device_id, imp);
+    }
+    return imp;
+}
+
+bool StatisticRecorder::removeSpeakerRecorder(const string &device_id) {
+    std::lock_guard<std::mutex> lock(_mtx_stats);
+    if (_sp_stats_map.find(device_id) == _sp_stats_map.end()) {
+        return false;
+    }
+    _sp_stats_map.erase(device_id);
     return true;
 }
 
@@ -115,6 +159,35 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
                 {
                     std::lock_guard<std::mutex> lock(_mtx_stats);
                     _cam_stats_map.emplace(stats.tuple.device_id, imp);
+                }
+                invoker(imp);
+                return true;
+            }
+            WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
+            File::delete_file(saved_path, true);
+        }
+        return true;
+    });
+}
+
+void StatisticRecorder::loadSavedSpeakerStatistics(const std::function<void(SpeakerStatisticImp::Ptr &stats)> &invoker) {
+    File::scanDir(_speaker_path, [&](const string &path, bool isDir) {
+        if (isDir) {
+            auto saved_path = path + "/info.txt";
+            if (File::fileExist(saved_path) && File::fileSize(saved_path) > 0) {
+                DebugL << "Found saved file: " << saved_path << ". Loading...";
+                auto imp = std::make_shared<SpeakerStatisticImp>(saved_path);
+                weak_ptr<StatisticRecorder> weak_self = shared_from_this();
+                imp->setOnRemove([weak_self](const string &device_id) {
+                    auto strong_self = weak_self.lock();
+                    if (!strong_self) {
+                        return;
+                    }
+                });
+                auto stats = imp->getParams();
+                {
+                    std::lock_guard<std::mutex> lock(_mtx_stats);
+                    _sp_stats_map.emplace(stats.tuple.device_id, imp);
                 }
                 invoker(imp);
                 return true;

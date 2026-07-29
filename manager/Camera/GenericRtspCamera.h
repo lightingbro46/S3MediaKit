@@ -2,13 +2,14 @@
 #define CAMERA_GENERICRTSPCAMERA_H
 
 #include "Common/DeviceSource.h"
+#include "Common/DeviceOption.h"
 #include "StreamSource.h"
 
 #define GENERIC_RTSP_CAMERA "GENERIC-RTSP"
 
 namespace managerkit {
 
-class CameraOption {
+class CameraOption : public DeviceOption {
 public:
     CameraOption() {
         // todo: load default value from database
@@ -17,23 +18,8 @@ public:
     // camera name 
     std::string name;
 
-    // camera manufacturer
-    std::string manufacturer;
-
     // camera model
     std::string model;
-
-    // camera IP address or domain name
-    std::string ip;
-
-    // camera http port
-    int port = 0;
-
-    // camera credential username
-    std::string username;
-
-    // camera credential password
-    std::string password;
 
     // whether to disable primary stream
     bool disablePrimaryStream = false;
@@ -101,12 +87,6 @@ public:
     // whether to disable audio
     bool disableAudio = false;
 
-    // web port for camera web access, use if useDefaultWebPort is false
-    int webPort = 0;
-
-    // whether to use default web port 80
-    bool autoWebPort = true;
-
     // keep config of profile and stream changed from camera web page
     bool keepConfigProfileAndStream = false;
 
@@ -150,6 +130,12 @@ public:
     // use for some scenarios that need to trigger recording or other action when stream is ready such as video push stream from mobile device
     bool emitStreamStatusChangeEvent = true;
 
+    // SD card synchronization config
+    bool sdCardSyncEnabled = false;
+    bool sdCardSyncAutoSyncEnabled = false;
+    int sdCardSyncMinSegmentGapSec = 0;
+    int sdCardSyncRetryCount = 0;
+
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
     bool operator==(const CameraOption& other) const{
@@ -192,11 +178,31 @@ public:
                onvifSubProfile == other.onvifSubProfile && 
                enableMotion == other.enableMotion &&
                roiValue == other.roiValue &&
-               motionDetectOnStream == other.motionDetectOnStream;
+               motionDetectOnStream == other.motionDetectOnStream &&
+               sdCardSyncEnabled == other.sdCardSyncEnabled &&
+               sdCardSyncAutoSyncEnabled == other.sdCardSyncAutoSyncEnabled &&
+               sdCardSyncMinSegmentGapSec == other.sdCardSyncMinSegmentGapSec &&
+               sdCardSyncRetryCount == other.sdCardSyncRetryCount;
     }
 
     bool operator!=(const CameraOption& other) const {
         return !(*this == other);
+    }
+};
+
+struct SdCardSyncConfig {
+    bool sdCardSyncEnabled = false;
+    bool sdCardSyncAutoSyncEnabled = false;
+    int sdCardSyncMinSegmentGapSec = 0;
+    int sdCardSyncRetryCount = 0;
+
+    static SdCardSyncConfig from(const CameraOption &o) {
+        SdCardSyncConfig cfg;
+        cfg.sdCardSyncEnabled             = o.sdCardSyncEnabled;
+        cfg.sdCardSyncAutoSyncEnabled     = o.sdCardSyncAutoSyncEnabled;
+        cfg.sdCardSyncMinSegmentGapSec    = o.sdCardSyncMinSegmentGapSec;
+        cfg.sdCardSyncRetryCount          = o.sdCardSyncRetryCount;
+        return cfg;
     }
 };
 

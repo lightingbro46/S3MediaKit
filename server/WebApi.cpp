@@ -108,7 +108,6 @@ static onceToken token([]() {
     mINI::Instance()[kExtractRoot] = "./www/extract/";
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
     mINI::Instance()[kDownloadRoot] = "./www";
-    mINI::Instance()[kJsonNotFoundPrefixs] = "/media/mserver,/media/esc,/media/api";
 });
 } // namespace API
 
@@ -386,6 +385,9 @@ static inline void addHttpListener() {
 
 // Pull stream proxy list
 static ServiceController<PlayerProxy> s_player_proxy;
+
+// Pull replay stream proxy list
+static ServiceController<PlayerProxy> s_replay_player_proxy;
 
 // Push stream proxy list
 static ServiceController<PusherProxy> s_pusher_proxy;
@@ -687,6 +689,30 @@ void delStreamProxy(const MediaTuple &tuple) {
     auto player_proxy = s_player_proxy.find(key);
     if (player_proxy) {
         s_player_proxy.erase(key);
+    }
+}
+
+void addReplayStreamProxy(const mediakit::MediaTuple &tuple, const ProtocolOption &option, const std::function<void(const std::string &err, const PlayerProxy::Ptr &player)> &cb, int retry_count) {
+    auto key = tuple.shortUrl();
+    if (s_replay_player_proxy.find(key)) {
+        // Already pulling stream
+        cb("This replay stream already exists", nullptr);
+        return;
+    }
+    // Add pull stream proxy
+    auto player = s_replay_player_proxy.make(key, tuple, option, retry_count);
+    cb("", player);
+}
+
+const PlayerProxy::Ptr getReplayStreamProxy(const std::string &key) {
+    auto replay_player_proxy = s_replay_player_proxy.find(key);
+    return replay_player_proxy ? replay_player_proxy : nullptr;
+}
+
+void delReplayStreamProxy(const std::string &key) {
+    auto player_proxy = s_replay_player_proxy.find(key);
+    if (player_proxy) {
+        s_replay_player_proxy.erase(key);
     }
 }
 
@@ -3722,6 +3748,8 @@ void installWebApi() {
     if (!legacy_record_cleanup_enabled) {
         managerkit::registerStorageApis();
     }
+    // Historical sd card sync APIs
+    managerkit::registerHistoricalSDCardSyncApis();
 }
 
 void unInstallWebApi(){

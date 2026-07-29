@@ -6,7 +6,7 @@ Bookmark là chức năng đánh dấu một đoạn video đã ghi lại để 
 
 Tất cả API bookmark đều yêu cầu:
 - **JWT token** hợp lệ
-- **Quyền Playback** (permission code `"1002"`)
+- **Quyền Playback** (permission code `"1003"`)
 
 ---
 
@@ -25,14 +25,16 @@ Tất cả API bookmark đều yêu cầu:
 | `code` | HTTP | Mô tả |
 |--------|------|--------|
 | `0` | 200 | Thành công |
-| `100001` | 401 | Chưa xác thực |
-| `100004` | 401 | Không có quyền Playback |
-| `200001` | 404 | Camera không tìm thấy |
-| `200003` | 404 | Bookmark không tìm thấy |
-| `300023` | 500 | Tạo bookmark thất bại |
-| `300024` | 500 | Cập nhật bookmark thất bại |
-| `300025` | 500 | Xóa bookmark thất bại |
-| `400001` | 400 | Thiếu tham số bắt buộc |
+| `901001` | 401 | Chưa xác thực |
+| `901004` | 401 | Không có quyền Playback |
+| `902001` | 400 | Thiếu tham số bắt buộc |
+| `903001` | 404 | Không có dữ liệu recording/timeline |
+| `904001` | 404 | FFmpeg không tạo được thumbnail |
+| `905001` | 404 | Camera không tìm thấy |
+| `908001` | 404 | Bookmark không tìm thấy |
+| `908003` | 500 | Tạo bookmark thất bại |
+| `908004` | 500 | Cập nhật bookmark thất bại |
+| `908005` | 500 | Xóa bookmark thất bại |
 
 ---
 
@@ -77,6 +79,7 @@ Tìm kiếm bookmark theo nhiều tiêu chí, hỗ trợ phân trang và sắp x
 | `sort` | `string` | ✅ | Sắp xếp, ví dụ: `"start_time DESC"`, `"created ASC"` |
 | `camera_id` | `string` | ❌ | Lọc theo camera cụ thể (nếu bỏ trống: lấy tất cả camera được phép) |
 | `search` | `string` | ❌ | Tìm kiếm theo tên hoặc mô tả bookmark |
+| `edge` | `bool/int` | ❌ | Dùng nội bộ khi node forward request |
 
 ### Response thành công (`200`)
 
@@ -164,6 +167,7 @@ Cấu trúc giống `/search`, có các field: `data`, `currentPage`, `totalItem
 | `end_time` | `int64` | ❌ | Unix timestamp kết thúc (nếu bỏ = `start_time + duration`) |
 | `description` | `string` | ❌ | Mô tả |
 | `tags` | `string` | ❌ | Tag phân cách bằng dấu phẩy, ví dụ: `"incident,vehicle"` |
+| `edge` | `bool/int` | ❌ | Dùng nội bộ khi node forward request |
 
 ### Response thành công (`200`)
 
@@ -297,9 +301,9 @@ Trả về ảnh JPEG được chụp tại thời điểm `start_time` của bo
 
 | `code` | Mô tả |
 |--------|-------|
-| `200003` | Bookmark không tìm thấy |
-| `200006` | Không có dữ liệu recording tại thời điểm bookmark |
-| `300022` | Snapshot rỗng (ffmpeg thất bại) |
+| `908001` | Bookmark không tìm thấy |
+| `903001` | Không có dữ liệu recording tại thời điểm bookmark |
+| `904001` | Snapshot rỗng hoặc ffmpeg thất bại |
 
 ### Ví dụ
 
@@ -358,4 +362,6 @@ sequenceDiagram
 
 4. **Thumbnail**: API `recordThumbnail` có thể chậm (~2 giây) vì cần dùng ffmpeg để chụp frame từ file MP4. Nên hiển thị skeleton/loading placeholder khi chờ.
 
-5. **Phân quyền camera**: API `create`, `update`, `delete` kiểm tra quyền của user với camera liên quan. Nếu user không có quyền trên camera → lỗi `100002` (Permission denied).
+5. **Phân quyền camera**: API `create`, `update`, `delete` kiểm tra quyền của user với camera liên quan. Nếu user không có quyền trên camera → lỗi `901002` (Permission denied).
+
+6. **Endpoint nội bộ**: `/media/esc/bookmark/detail` được dùng để node aggregator lấy detail theo danh sách `ids`. FE thông thường không cần gọi endpoint này.

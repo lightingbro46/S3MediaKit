@@ -40,7 +40,7 @@ static int toRecordScheduleDay(int tm_wday) {
     return (tm_wday + 6) % 7;
 }
 
-static unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const string &str) {
+unordered_map<std::string, RecordScheduleItem> RecordScheduler::parseRecordScheduleStr(const string &str) {
     unordered_map<std::string, RecordScheduleItem> ret;
 
     if (!str.empty()) {

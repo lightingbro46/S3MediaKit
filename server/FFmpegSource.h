@@ -111,6 +111,13 @@ class FFmpegExtractor : public std::enable_shared_from_this<FFmpegExtractor> {
 public:
     using Ptr = std::shared_ptr<FFmpegExtractor>;
     using onExtract = std::function<void(const toolkit::SockException &ex)>;
+
+    struct Status {
+        float progress = 0.0f;
+        bool finished = false;
+        bool success = false;
+        std::string err_msg;
+    };
     
     FFmpegExtractor(mediakit::MediaTuple &tuple, ExtractOptions &options, int timeout_ms = 500, toolkit::EventPoller::Ptr poller = nullptr);
     ~FFmpegExtractor();
@@ -131,10 +138,11 @@ public:
     const std::string& getFilename() const { return _options.filename; }
     const std::string& getSavePath() const { return _save_path; }
     const std::string& getCmd() const { return _cmd; }
-    const float& progress() const { return _progress; }
-    const bool& finished() const { return _finished; }
-    const bool& success() const { return _success; }
-    const std::string& errMsg() const { return _err_msg; }
+    Status status() const;
+    float progress() const { return status().progress; }
+    bool finished() const { return status().finished; }
+    bool success() const { return status().success; }
+    std::string errMsg() const { return status().err_msg; }
 
 private:
     // create txt file include mp4 list
@@ -167,6 +175,7 @@ private:
     bool _finished = false;
     bool _success = false;
     std::string _err_msg;
+    mutable std::mutex _status_mtx;
     managerkit::UserSessionCache::Ptr _session;
 };
 

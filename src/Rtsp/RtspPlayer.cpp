@@ -58,7 +58,7 @@ void RtspPlayer::teardown() {
 void RtspPlayer::play(const string &strUrl) {
     RtspUrl url;
     try {
-        url.parse(strUrl);
+        url.parse(strUrl, _seek_from_ms, _seek_to_ms);
     } catch (std::exception &ex) {
         onPlayResult_l(SockException(Err_other, StrPrinter << "illegal rtsp url:" << ex.what()), false);
         return;
@@ -79,6 +79,7 @@ void RtspPlayer::play(const string &strUrl) {
     _beat_type = (*this)[Client::kRtspBeatType].as<int>();
     _beat_interval_ms = (*this)[Client::kBeatIntervalMS].as<int>();
     _speed = (*this)[Client::kRtspSpeed].as<float>();
+    _rtp_mode = (Rtsp::eRtpMode)(int)(*this)[Client::kRtpMode];
     TraceL << url._url << " " << (url._user.size() ? url._user : "null") << " " << (url._passwd.size() ? url._passwd : "null") << " " << _rtp_type;
 
     weak_ptr<RtspPlayer> weak_self = static_pointer_cast<RtspPlayer>(shared_from_this());
@@ -381,7 +382,7 @@ void RtspPlayer::handleResSETUP(const Parser &parser, unsigned int track_idx) {
     // All SETUP commands have been sent
     // Send PLAY command
     if (_speed == 0.0f) {
-        sendPause(type_play, 0);
+        sendPause(type_play, _seek_from_ms, _seek_to_ms);
     } else {
         sendPause(type_speed, 0);
     }
@@ -422,15 +423,21 @@ void RtspPlayer::sendKeepAlive() {
     }
 }
 
-void RtspPlayer::sendPause(int type, uint32_t seekMS) {
+void RtspPlayer::sendPause(int type, uint32_t seekMS, uint32_t seekToMS) {
     _on_response = std::bind(&RtspPlayer::handleResPAUSE, this, placeholders::_1, type);
     // Start or pause RTSP
     switch (type) {
         case type_pause: sendRtspRequest("PAUSE", _control_url, {}); break;
         case type_play:
         case type_seek:
-            sendRtspRequest("PLAY", _control_url, { "Range", StrPrinter << "npt=" << setiosflags(ios::fixed) << setprecision(2) << seekMS / 1000.0 << "-" });
+        {
+            if (seekToMS != 0 && _rtp_mode == Rtsp::Replay) {
+                sendRtspRequest("PLAY", _control_url, { "Range", StrPrinter << "npt=" << setiosflags(ios::fixed) << setprecision(2) << seekMS / 1000.0 << "-" << setiosflags(ios::fixed) << setprecision(2) << seekToMS / 1000.0 });
+            } else {
+                sendRtspRequest("PLAY", _control_url, { "Range", StrPrinter << "npt=" << setiosflags(ios::fixed) << setprecision(2) << seekMS / 1000.0 << "-" });
+            }
             break;
+        }
         case type_speed: speed(_speed); break;
         default:
             WarnL << "unknown type : " << type;

@@ -78,6 +78,13 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
     SnapshotData snap;
     snap.peer_id = peer_id;
     snap.db_guid = db_guid;
+    // Preserve empty tables as JSON arrays. This lets the receiver distinguish
+    // a valid empty snapshot from a malformed/missing snapshot field.
+    snap.sequences           = Json::arrayValue;
+    snap.vms_resource        = Json::arrayValue;
+    snap.vms_kvpair          = Json::arrayValue;
+    snap.resource_assignment = Json::arrayValue;
+    snap.bookmark_index      = Json::arrayValue;
 
     auto executor = make_shared<SqliteQueryExecutor>(db_tag);
 
@@ -208,7 +215,7 @@ void SyncManager::start() {
         return true;
     }, nullptr);
 
-    // If transaction_sequence already has data from a previous run, skip bootstrap
+    // Resume directly in pull mode when a previous bootstrap was persisted.
     if (!needsBootstrap()) {
         lock_guard<mutex> lock(_mtx);
         _bootstrapped = true;
@@ -363,7 +370,6 @@ void SyncManager::onTick() {
             }
             if (ok) {
                 InfoL << "Bootstrap done, peer=" << target_id;
-                self->markBootstrapDone();
             } else {
                 WarnL << "Bootstrap failed, peer=" << target_id << ", will try next peer on next tick";
             }
@@ -399,14 +405,40 @@ void SyncManager::onTick() {
 bool SyncManager::needsBootstrap() {
     auto imp = make_shared<MiscDataImp>();
     auto ret = imp->findByKey(MISC_DATA_DB_BOOTSTRAP_DONE);
-    return ret.empty() || ret[0].value != "1";
+    if (ret.empty()) return true;
+
+    // Keep accepting the old value during development so an existing local DB
+    // does not unexpectedly bootstrap again after upgrading this code.
+    if (ret[0].value == "1") return false;
+
+    Json::Value state;
+    if (!StrJsonUtils::readJsonString(ret[0].value, state) || !state.isObject()) {
+        WarnL << "Invalid persisted bootstrap state; bootstrap will run again";
+        return true;
+    }
+    return state["status"].asString() != "completed";
 }
 
-void SyncManager::markBootstrapDone() {
+void SyncManager::markBootstrapDone(const SnapshotData &snap) {
+    Json::Value counts;
+    counts["transaction_sequence"]   = static_cast<Json::UInt64>(snap.sequences.size());
+    counts["vms_resource"]           = static_cast<Json::UInt64>(snap.vms_resource.size());
+    counts["vms_kvpair"]             = static_cast<Json::UInt64>(snap.vms_kvpair.size());
+    counts["vms_resource_assignment"] = static_cast<Json::UInt64>(snap.resource_assignment.size());
+    counts["bookmark_index"]         = static_cast<Json::UInt64>(snap.bookmark_index.size());
+
+    Json::Value state;
+    state["schema_version"]    = 1;
+    state["status"]            = "completed";
+    state["source_peer_id"]    = snap.peer_id;
+    state["source_db_guid"]    = snap.db_guid;
+    state["completed_at_ms"]   = static_cast<Json::Int64>(toolkit::getCurrentMillisecond(true));
+    state["snapshot_row_counts"] = counts;
+
     auto imp = make_shared<MiscDataImp>();
     MiscData data;
     data.key = MISC_DATA_DB_BOOTSTRAP_DONE;
-    data.value = "1";
+    data.value = StrJsonUtils::writeJsonString(state);
     imp->add(data);
 }
 
@@ -425,7 +457,14 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
         }
         try {
             auto snap = SnapshotBuilder::deserialize(data["data"].asString());
+            if (snap.peer_id.empty() || snap.db_guid.empty() ||
+                !snap.sequences.isArray() || !snap.vms_resource.isArray() ||
+                !snap.vms_kvpair.isArray() || !snap.resource_assignment.isArray() ||
+                !snap.bookmark_index.isArray()) {
+                throw std::runtime_error("bootstrap response contains an invalid snapshot");
+            }
             self->applySnapshot(snap);
+            self->markBootstrapDone(snap);
             InfoL << "Bootstrap from " << peer_id << " done:"
                   << " peer_id=" << snap.peer_id
                   << " db_guid=" << snap.db_guid

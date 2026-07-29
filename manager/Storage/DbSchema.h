@@ -87,6 +87,11 @@ inline std::string serialize_sql_value(const int64_t& val) {
 }
 
 template<>
+inline std::string serialize_sql_value(const uint64_t& val) {
+    return std::to_string(val);
+}
+
+template<>
 inline std::string serialize_sql_value(const std::string& val) {
     return val;
 }
@@ -131,6 +136,11 @@ template<typename T>
 inline Optional<T> parse_sql_value(const std::string& s, Optional<T> mem) {
     if (s == "NULL") return Optional<T>();
     return Optional<T>(parse_sql_value<T>(s, T{}));
+}
+
+template<>
+inline uint64_t parse_sql_value<uint64_t>(const std::string& s, uint64_t) {
+    return std::stol(s);
 }
 
 template<>

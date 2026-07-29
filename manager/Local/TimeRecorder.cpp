@@ -54,6 +54,31 @@ void TimeRecorder::createFile() {
     }
 }
 
+void TimeRecorder::createSDFile(uint64_t date_sec) {
+    closeFile();
+
+    if (File::is_dir(_path)) {
+        uint64_t now = time(nullptr);
+        if (date_sec == 0) 
+            date_sec = now;
+        std::string date_str = getTimeStr("%Y-%m-%d", date_sec);
+        _full_path = StrPrinter << _path << "/" << date_str << "_sd" << ".s3db";
+        _next_open_time = StampUtils::getStartOfDay(date_sec) + 86400; // close file after one day
+    } else {
+        _full_path = _path;
+    }
+    
+    try {
+        // open time file
+        _muxer = std::make_shared<TimeMuxer>();
+        TraceL << "Open replay time file: " << _full_path;
+        _muxer->openFile(_full_path);
+
+    } catch (std::exception &ex) {
+        WarnL << ex.what();
+    }
+}
+
 void TimeRecorder::asyncClose() {
     auto muxer = _muxer;
     auto full_path = _full_path;
@@ -109,6 +134,26 @@ bool TimeRecorder::inputBlock(const TimeBlock &block) {
             _rebuild_mirror_recorder->inputBlock(block);
         }
         return ret;
+    }
+    return false;
+}
+
+bool TimeRecorder::inputSDBlock(const TimeBlock &block) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_mem_muxer) {
+        _mem_muxer->inputBlock(block);
+    }
+    if (!_muxer) {
+        // Generate time file
+        createSDFile(block.start_time());
+    }
+    if (_muxer) {
+        std::string date_str = getTimeStr("%Y-%m-%d", block.start_time());
+        std::string new_path = StrPrinter << _path << "/" << date_str << "_sd" << ".s3db";
+        if (new_path != _full_path){
+            createSDFile(block.start_time());
+        }
+        return _muxer->inputBlock(block);
     }
     return false;
 }

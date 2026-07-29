@@ -237,6 +237,11 @@ extern const std::string kBroadcastStreamSettingChange;
 extern const std::string kBroadcastClusterAcrossAccess;
 #define BroadcastClusterAcrossAccessArgs const std::string &authorId, const std::string &secretKey, const Broadcast::AuthInvoker &invoker
 
+// Broadcast for downloading file. Control downloading through this event.
+using DownloadFileInvoker = std::function<void(const std::string&, const std::string&)>;
+extern const std::string kBroadcastDownloadAudioFile;
+#define BroadcastDownloadAudioFileArgs const std::string &audio_file_id, const std::string &local_path, const Broadcast::DownloadFileInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
@@ -566,6 +571,8 @@ extern const std::string kNetAdapter;
 // Set rtp transport type, options are 0 (tcp, default), 1 (udp), 2 (multicast)
 // Set method: player[PlayerBase::kRtpType] = 0/1/2;
 extern const std::string kRtpType;
+// Set method: player[PlayerBase::kRtpMode] = 0/1 (0-live, 1-replay);
+extern const std::string kRtpMode;
 // Whether the RTSP player sends signaling heartbeat or RTCP heartbeat, options are 0 (both), 1 (RTCP heartbeat), 2 (signaling heartbeat)
 // Set method: player[PlayerBase::kRtspBeatType] = 0/1/2;
 extern const std::string kRtspBeatType;
@@ -677,6 +684,18 @@ extern const std::string kTierRangeBackfillChunkSeconds;
 extern const std::string kTierRangeBackfillMaxCamerasPerCycle;
 
 } // namespace Storage
+
+// //////////Speaker Configuration///////////
+namespace Speaker {
+// Speaker save path
+extern const std::string kSpeakerSavePath;
+// Directory for speaker-related data
+extern const std::string kSpeakerDir;
+// Directory for storing audio files
+extern const std::string kAudioFilesDir;
+// Maximum allowed audio file size in bytes
+extern const std::string kMaxAudioFileSizeBytes;
+} // namespace Speaker
 
 } // namespace mediakit
 

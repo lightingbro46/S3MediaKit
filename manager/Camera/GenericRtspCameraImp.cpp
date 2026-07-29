@@ -389,6 +389,17 @@ void GenericRtspCameraImp::getMediaProfile(const std::string &profileToken, cons
     _controller->getMediaProfileAsync(profileToken, cb);
 }
 
+void GenericRtspCameraImp::getSDCardInfo(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call getSDCardInfo in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore SD card info request";
+        SDCardInformation info;
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), info);
+        return;
+    }
+    _controller->getSDCardInfoAsync(cb);
+}
+
 void GenericRtspCameraImp::ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ImageMoveControl in it's owner poller");
     if (!_controller) {

@@ -8,6 +8,9 @@
 #include "soapMedia2BindingProxy.h"
 #include "soapImagingBindingProxy.h"
 #include "soapPTZBindingProxy.h"
+#include "soapSearchBindingProxy.h"
+#include "soapReplayBindingProxy.h"
+#include "soapRecordingBindingProxy.h"
 #include "Common/DeviceControl.h"
 
 namespace managerkit {
@@ -269,6 +272,43 @@ struct OnvifRelayOutputProfile {
     bool operator!=(const OnvifRelayOutputProfile &o) const { return !(*this == o); }
 };
 
+struct RecordingInformation {
+    int streamType = -1;
+    std::string uri;
+    std::string recordingToken;
+    std::string trackToken;
+    time_t earliestRecording = 0;
+    time_t latestRecording = 0;
+    VideoEncoderConfig vEncoder;
+    bool hasRecord = false;
+};
+
+struct TrackStateEvent {
+    std::string recordingToken;
+    std::string trackToken;
+    time_t time = 0;
+    bool isDataPresent = false;
+    bool isStartState = false;
+};
+
+struct VideoSegment {
+    std::string recordingToken;
+    std::string trackToken;
+    time_t start_time = 0;
+    time_t end_time = 0;
+};
+
+struct SDCardInformation {
+    std::string type;
+    uint64_t DataFrom = 0;
+    uint64_t DataUntil = 0;
+    int NumberRecordings = 0;
+
+    bool isSDSupport() const {
+        return DataFrom != 0 && DataUntil != 0 && NumberRecordings != 0;
+    }
+};
+
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
 
 class OnvifControl : public DeviceControl {
@@ -474,6 +514,23 @@ public:
      */
     bool Relay_SetOutputState(const std::string &relayToken, bool active);
 
+    /**
+     * Find recorded video segments within the specified time range.
+     * The returned segments are grouped by recording track and filtered
+     * by the minimum segment duration.
+    */
+    std::unordered_map<int, std::vector<VideoSegment>> findVideoSegments(time_t startTime, time_t endTime, const int &min_segment_sec);
+
+    /**
+     * Get the recording information retrieved from the camera.
+    */
+    std::vector<RecordingInformation> getRecordingInformation() { return _recordingInformations; }
+
+    /**
+     * Get the SD card information retrieved from the camera.
+    */
+    SDCardInformation getSDCardInfo()  { return _sdCardInfo; }
+
 private:
     void reportError();
 
@@ -542,6 +599,23 @@ private:
     */
     void saveProfileConfigToDB(const std::string& camera_id, const OnvifMediaProfile& mProfile);
 
+    std::string getReplayUri(const std::string& recordingToken);
+
+    void getRecordingSearchResults();
+
+    bool findEvents(time_t& startTime, time_t& endTime, const RecordingInformation &info, std::string& outSearchToken);
+
+    bool getEventSearchResults(const std::string& searchToken, const RecordingInformation &info, std::vector<TrackStateEvent>& outEvents);
+
+    void reconstructVideoSegments(const std::vector<TrackStateEvent>& events, const time_t& startTime, const time_t& endTime, const int &min_segment_sec, std::vector<VideoSegment>& outSegments);
+
+    void endSearch(const std::string& searchToken);
+
+    VideoEncoderConfig GetRecordingVideoEncoder(const std::string& recordingToken, const time_t& time);
+
+    void getRecordingSummary();
+
+    void getStorageConfiguration();
 private:
     // Device information
     OnvifDeviceInfo _deviceInfo;
@@ -573,6 +647,9 @@ private:
     };
     CamTimeInfo _camTimeInfo;
 
+    std::vector<RecordingInformation> _recordingInformations;
+
+    SDCardInformation _sdCardInfo;
 private:
     soap   *_m_soap = nullptr;  //Soap for onvif
     DeviceBindingProxy  *_proxyDevice  = nullptr;    //Device API
@@ -580,6 +657,9 @@ private:
     Media2BindingProxy   *_proxyMedia2   = nullptr;  //Media2 API
     ImagingBindingProxy *_proxyImaging = nullptr;    //Imaging API
     PTZBindingProxy     *_proxyPTZ     = nullptr;    //PTZ API
+    SearchBindingProxy   *_proxySearch   = nullptr;  //Search API
+    ReplayBindingProxy   *_proxyReplay   = nullptr;  //Replay API
+    RecordingBindingProxy   *_proxyRecording   = nullptr;  //Recording API
 
     std::string _strDeviceIp;
     std::string _strUsername;

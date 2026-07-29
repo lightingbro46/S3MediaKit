@@ -45,6 +45,7 @@ struct StreamOption {
     mediakit::ProtocolOption protocol;
     bool record_mp4   = false;
     int  rtp_type     = 0;
+    int  rtp_mode     = 0;
     int  media_port   = 0;
     std::string username;
     std::string password;
@@ -54,6 +55,7 @@ struct StreamOption {
         return tuple                   == o.tuple
             && record_mp4             == o.record_mp4
             && rtp_type               == o.rtp_type
+            && rtp_mode               == o.rtp_mode
             && media_port             == o.media_port
             && username               == o.username
             && password               == o.password

@@ -903,7 +903,7 @@ Không bắt buộc tham số.
 
 **GET / POST** `/media/mserver/storage/camera/timeline`
 
-API này mở rộng `/media/mserver/recordedTimePeriod` — trả về thêm thông tin tầng lưu trữ cho từng dải thời gian.
+API này mở rộng luồng timeline `/media/esc/recordedTimePeriod` — trả về thêm thông tin tầng lưu trữ cho từng dải thời gian.
 
 ### Request params
 

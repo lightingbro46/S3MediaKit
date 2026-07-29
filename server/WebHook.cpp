@@ -7,6 +7,7 @@
 #include "Common/MediaSource.h"
 #include "Http/HttpSession.h"
 #include "Http/HttpRequester.h"
+#include "Http/HttpDownloader.h"
 #include "Network/Session.h"
 #include "Rtsp/RtspSession.h"
 #include "Server/GlobalMonitor.h"
@@ -73,6 +74,7 @@ const string kOnSyncBookmarkDelete = HOOK_FIELD "on_sync_bookmark_delete";
 const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
 const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_check";
 const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
+const string kOnDownloadAudioFile = HOOK_FIELD "on_download_audio_file";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -120,6 +122,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
     mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
     mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
+    mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -2005,6 +2008,43 @@ void installWebHook() {
             DebugL << "Cluster across auth result: " << obj.toStyledString();
             invoker("");
         });
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDownloadAudioFile, [](BroadcastDownloadAudioFileArgs) {
+        GET_CONFIG(string, hook_download_audio_file, Hook::kOnDownloadAudioFile);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_api_url.empty() || hook_download_audio_file.empty()) {
+            invoker((StrPrinter << "hook_api_url or hook_download_audio_file is empty"), "");
+            return;
+        }
+        
+        if (audio_file_id.empty() || local_path.empty()) {
+            invoker((StrPrinter << "audio_file_id or local_path is empty"), "");
+            return;
+        }
+
+        auto url = hook_api_url + hook_download_audio_file + "/" + audio_file_id;
+        InfoL << "Start downloading file: " << url << " -> " << local_path;
+
+        auto downloader = std::make_shared<HttpDownloader>();
+        downloader->setOnResult([invoker, url] (const SockException& ex, const std::string& filePath) {
+            if (ex) {
+                invoker((StrPrinter << "download failed: " << url << " — " << ex.what()), "");
+                return;
+            }
+
+            uint64_t size = File::fileSize(filePath);
+            if (size == 0) {
+                invoker((StrPrinter << "downloaded file is empty: " << filePath), "");
+                return;
+            }
+
+            InfoL << "Download completed: " << filePath << " (" << size << " bytes)";
+            invoker("", filePath);
+        });
+
+        // Execute hook
+        downloader->startDownload(url, local_path);
     });
 
     // Report server restart

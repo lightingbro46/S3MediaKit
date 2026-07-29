@@ -2,6 +2,7 @@
 #define LOCAL_STATISTICRECORDER_H
 
 #include "Camera/CameraStatistic.h"
+#include "Speaker/SpeakerStatistic.h"
 
 namespace managerkit {
 
@@ -26,9 +27,15 @@ public:
 
     void loadSavedCameraStatistics(const std::function<void(CameraStatisticImp::Ptr &stats)> &invoker);
 
+    void loadSavedSpeakerStatistics(const std::function<void(SpeakerStatisticImp::Ptr &stats)> &invoker);
+
     CameraStatisticImp::Ptr getRecorder(const std::string &device_id, bool create_if_not_exist = true);
 
     bool removeRecorder(const std::string &device_id);
+
+    SpeakerStatisticImp::Ptr getSpeakerRecorder(const std::string &device_id, bool create_if_not_exist = true);
+
+    bool removeSpeakerRecorder(const std::string &device_id);
 
     void addArchiveSize(const std::string &device_id, const std::string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add = true);
 
@@ -69,10 +76,14 @@ private:
 
     CameraStatisticImp::Ptr addRecorder(const std::string &device_id);
 
+    SpeakerStatisticImp::Ptr addSpeakerRecorder(const std::string &device_id);
+
 private:
     std::mutex _mtx_stats;
     std::string _record_path;
+    std::string _speaker_path;
     std::unordered_map<std::string, CameraStatisticImp::Ptr> _cam_stats_map;
+    std::unordered_map<std::string, SpeakerStatisticImp::Ptr> _sp_stats_map;
 };
 
 } // namespace managerkit

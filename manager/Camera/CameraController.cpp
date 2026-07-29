@@ -1,6 +1,7 @@
 #include "CameraController.h"
 #include "Thread/WorkThreadPool.h"
 #include "server/WebApiErrCode.h"
+#include "SdCardSyncManager.h"
 #include "Util/onceToken.h"
 
 using namespace std;
@@ -89,6 +90,7 @@ void CameraController::setupController(const CameraOption &option) {
     _reverseTiltAxis  = option.reverseTiltAxis;
     _ptzMode          = option.ptzMode;
     _ptzSpeed         = option.ptzSpeed;
+    _sd_sync_config   = SdCardSyncConfig::from(option);
     _keepConfigProfileAndStream = option.keepConfigProfileAndStream;
 }
 
@@ -150,6 +152,7 @@ void CameraController::onManager() {
             caps->onvifProfile.relayOutputProfiles = onvif_ctr->getRelayOutputProfiles();
             caps->onvifProfile.audioOutputProfile  = onvif_ctr->getAudioOutputProfile();
             caps->onvifProfile.audioInputProfile   = onvif_ctr->getAudioInputProfile();
+            caps->supportsSdCardPlayback           = onvif_ctr->getSDCardInfo().isSDSupport();
             strong_self->onControllerReady(true, "connected", std::move(caps));
         } else {
             auto err_msg = onvif_ctr->getSoapErrMsg();
@@ -157,6 +160,10 @@ void CameraController::onManager() {
             strong_self->onControllerReady(false, err_msg, nullptr);
         }
     });
+
+    SdCardSyncManager::Instance().onManager(_tuple.device_id, _ctrl_option.username,
+                                            _ctrl_option.password, onvif_ctr,
+                                            _sd_sync_config, _ready.load());
 }
 
 // ── Imaging control (focus / iris) ───────────────────────────────────────────
@@ -601,6 +608,18 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
     // todo: add more ptz function from manufacturer sdk
     VideoEncoderConfig config;
     return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), config);
+}
+
+void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb) {
+    // Caller (GenericRtspCameraImp::getSDCardInfo) asserts isCurrentThread - no dispatch needed.
+    if (_onvif_ctr && _onvif_ctr->isConnected()) {
+        auto sdInfo = _onvif_ctr->getSDCardInfo();
+        cb(SockException(Err_success, "Get SD card info success", ApiErrCode::CODE_SUCCESS), sdInfo);
+        return;
+    }
+    SDCardInformation info;
+    cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), info);
+    return;
 }
 
 static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
