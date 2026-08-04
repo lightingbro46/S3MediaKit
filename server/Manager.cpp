@@ -19,8 +19,9 @@
 #include "Local/StatisticRecorder.h"
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
-#include "User/UserSessionCache.h"
+#include "User/UserAuthorManager.h"
 #include "Extension/SyncManager.h"
+#include "Transcode/OverlayPrivacyUtils.h"
 
 using namespace std;
 using namespace toolkit;
@@ -218,6 +219,84 @@ void installManagerHook () {
             }
         }
         invoker(duration, files);
+    });
+
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastMediaViewOverlay, [](BroadcastMediaViewOverlayArgs) {
+        Broadcast::ViewOverlayPolicy policy;
+        auto device_id = args.app;
+        GET_CONFIG(string, record_app, Record::kAppName);
+        if (args.app == record_app) {
+            device_id = split(args.stream, "/")[0];
+        }
+
+        auto device = DeviceSource::find(args.vhost, device_id);
+        if (!device) {
+            invoker(policy);
+            return;
+        }
+        auto weak_listener = device->getListener();
+        auto strong_listener = weak_listener.lock();
+        if (!strong_listener) {
+            invoker(policy);
+            return;
+        }
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (!impl) {
+            invoker(policy);
+            return;
+        }
+
+        const auto &option = impl->getCameraOption();
+        policy.watermark_enforce = option.enforceWatermarkOnView;
+        policy.watermark_template = option.watermarkTemplate;
+        policy.privacy_mask_enforce = option.enforcePrivacyMaskOnView;
+        policy.privacy_mask_regions = option.privacyMaskRegions;
+        policy.camera_name = option.name;
+
+        if (!policy.watermark_enforce && !policy.privacy_mask_enforce) {
+            invoker(policy);
+            return;
+        }
+
+        // Check user session and role to determine if watermark or privacy mask should be excluded
+        if (jwt_token.empty()) {
+            invoker(policy);
+            return;
+        }
+
+        auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
+        auto role_code = token_cache->getRoleCode();
+        auto overlay = token_cache->getOverlay();
+
+        if (overlay && option.enforceWatermarkOnView && !option.watermarkExcludedRoleIds.empty()) {
+            for (auto role : split(option.watermarkExcludedRoleIds, ",")) {
+                trim(role);
+                if (!role.empty() && role == role_code) {
+                    policy.watermark_excluded = true;
+                    break;
+                }
+            }
+        } else if (!overlay) {
+            policy.watermark_excluded = true;
+        } else {
+            policy.watermark_excluded = false;
+        }
+        
+        if (overlay && option.enforcePrivacyMaskOnView && !option.privacyMaskExcludedRoleIds.empty()) {
+            for (auto role : split(option.privacyMaskExcludedRoleIds, ",")) {
+                trim(role);
+                if (!role.empty() && role == role_code) {
+                    policy.privacy_mask_excluded = true;
+                    break;
+                }
+            }
+        } else if (!overlay) {
+            policy.privacy_mask_excluded = true;
+        } else {
+            policy.privacy_mask_excluded = false;
+        }
+
+        invoker(policy);
     });
 
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetRecordedMP4, [](BroadcastGetRecordedMP4Args) {

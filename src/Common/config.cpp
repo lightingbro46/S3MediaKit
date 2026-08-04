@@ -54,6 +54,7 @@ const string kBroadcastHttpAccess = "kBroadcastHttpAccess";
 const string kBroadcastOnGetRtspRealm = "kBroadcastOnGetRtspRealm";
 const string kBroadcastOnRtspAuth = "kBroadcastOnRtspAuth";
 const string kBroadcastMediaPlayed = "kBroadcastMediaPlayed";
+const string kBroadcastMediaViewOverlay = "kBroadcastMediaViewOverlay";
 const string kBroadcastMediaPublish = "kBroadcastMediaPublish";
 const string kBroadcastFlowReport = "kBroadcastFlowReport";
 const string kBroadcastReloadConfig = "kBroadcastReloadConfig";

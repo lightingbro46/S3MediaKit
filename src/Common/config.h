@@ -68,6 +68,24 @@ extern const std::string kBroadcastMediaPublish;
 // If err is empty, it means authentication is successful.
 using AuthInvoker = std::function<void(const std::string &err)>;
 
+// Result of the manager-side view overlay policy check.  The media layer only
+// consumes this value and never includes managerkit headers.
+struct ViewOverlayPolicy {
+    bool watermark_enforce = false;
+    bool watermark_excluded = false;
+    bool privacy_mask_enforce = false;
+    bool privacy_mask_excluded = false;
+    std::string watermark_template;
+    std::string privacy_mask_regions;
+    std::string username;
+    std::string camera_name;
+};
+
+using ViewOverlayPolicyInvoker = std::function<void(const ViewOverlayPolicy &policy)>;
+
+extern const std::string kBroadcastMediaViewOverlay;
+#define BroadcastMediaViewOverlayArgs const MediaInfo &args, const std::string &jwt_token, const Broadcast::ViewOverlayPolicyInvoker &invoker, SockInfo &sender
+
 // Broadcast for playing rtsp/rtmp/http-flv events. Control playback authentication through this event.
 extern const std::string kBroadcastMediaPlayed;
 #define BroadcastMediaPlayedArgs const MediaInfo &args, const Broadcast::AuthInvoker &invoker, SockInfo &sender

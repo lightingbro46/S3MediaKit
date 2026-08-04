@@ -72,6 +72,21 @@ public:
     std::string getUserName() { return _user_name; }
 
     /**
+     * get user role code in cache
+     */
+    std::string getRoleCode() { return _role_code; }
+
+    /**
+     * get user role name in cache
+     */
+    std::string getRoleName() { return _role_name; }
+
+    /**
+     * get user overlay
+     */
+    bool getOverlay() { return _overlay; }
+
+    /**
      * get project id in cache
      */
     std::string getProjectId() { return _project_id; }
@@ -115,6 +130,9 @@ private:
     bool _has_access = false;
     ClientOSInfo _client_os_info;
     std::string _client_ip;
+    std::string _role_code;
+    std::string _role_name;
+    bool _overlay = true;
 };
 
 } // namespace managerkit

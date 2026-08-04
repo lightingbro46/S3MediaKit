@@ -144,6 +144,11 @@ UserSessionCache::UserSessionCache(const string &token, const string &user_agent
     _expired_at = decoded_payload["exp"].asUInt64();
     _project_id = decoded_payload["project_id"].asString();
     _level = decoded_payload["level"].asInt();
+    _role_code = decoded_payload["role_code"].asString();
+    _role_name = decoded_payload["role_name"].asString();
+    if (decoded_payload.isMember("overlay") && !decoded_payload["overlay"].isNull()) {
+        _overlay = decoded_payload["overlay"].asBool();
+    }
     _session_id = decoded_payload["session_id"].asString();
     auto permission_str = decoded_payload["permissions"].asString();
     _permissions = split(permission_str, ",");
