@@ -102,6 +102,7 @@ const string kBroadcastSyncBookmarkThumbnail = "kBroadcastSyncBookmarkThumbnail"
 const string kBroadcastStreamSettingChange = "kBroadcastStreamSettingChange";
 const string kBroadcastClusterAcrossAccess = "kBroadcastClusterAcrossAccess";
 const string kBroadcastDownloadAudioFile = "kBroadcastDownloadAudioFile";
+const string kBroadcastDownloadOverlayImage = "kBroadcastDownloadOverlayImage";
 
 } // namespace Broadcast
 
@@ -185,6 +186,17 @@ const string kPostRecordMS = string(kFieldName) + "post_record_ms";
 const string kEnableGopCache = string(kFieldName) + "enable_gop_cache";
 const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
 
+const string kEnableTranscode = string(kFieldName) + "enable_transcode";
+const string kTranscodeDemand = string(kFieldName) + "transcode_demand";
+const string kTranscodeWidth = string(kFieldName) + "transcode_width";
+const string kTranscodeHeight = string(kFieldName) + "transcode_height";
+const string kTranscodeFps = string(kFieldName) + "transcode_fps";
+const string kTranscodeBitrate = string(kFieldName) + "transcode_bitrate";
+const string kTranscodeGop = string(kFieldName) + "transcode_gop";
+const string kTranscodeOverlayImage = string(kFieldName) + "transcode_overlay_image";
+const string kTranscodeOverlayX = string(kFieldName) + "transcode_overlay_x";
+const string kTranscodeOverlayY = string(kFieldName) + "transcode_overlay_y";
+
 static onceToken token([]() {
     mINI::Instance()[kModifyStamp] = (int)ProtocolOption::kModifyStampRelative;
     mINI::Instance()[kEnableAudio] = 1;
@@ -227,6 +239,17 @@ static onceToken token([]() {
 
     mINI::Instance()[kEnableGopCache] = 0;
     mINI::Instance()[kGopCacheSize] = 5;
+
+    mINI::Instance()[kEnableTranscode] = 0;
+    mINI::Instance()[kTranscodeDemand] = 1;
+    mINI::Instance()[kTranscodeWidth] = 0;
+    mINI::Instance()[kTranscodeHeight] = 0;
+    mINI::Instance()[kTranscodeFps] = 5;
+    mINI::Instance()[kTranscodeBitrate] = 0;
+    mINI::Instance()[kTranscodeGop] = 0;
+    mINI::Instance()[kTranscodeOverlayImage] = "";
+    mINI::Instance()[kTranscodeOverlayX] = 0;
+    mINI::Instance()[kTranscodeOverlayY] = 0;
 });
 } // !Protocol
 

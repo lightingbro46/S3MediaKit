@@ -553,6 +553,18 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
         option.sdCardSyncMinSegmentGapSec = cfg["minSegmentGapSec"].asInt();
         option.sdCardSyncRetryCount = cfg["retryCount"].asInt();
     }
+
+    if (data.isMember("privacyConfig") && !data["privacyConfig"].isNull()) {
+        const Json::Value &pc = data["privacyConfig"];
+
+        GET_OPTION_PROPERTY(option, enforcePrivacyMaskOnView, pc, enabled)
+        GET_OPTION_PROPERTY_AS_STRING(option, privacyMaskExcludedRoleIds, pc, excludedRoleIds)
+        GET_OPTION_PROPERTY_AS_STRING(option, privacyMaskRegions, pc, regions)
+    }
+
+    if (data.isMember("watermarkTemplateId") && !data["watermarkTemplateId"].isNull() ) {
+        GET_OPTION_PROPERTY(option, watermarkTemplateId, data, watermarkTemplateId)
+    }
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -627,6 +639,56 @@ static void fromJson(AudioFile &file, const Json::Value &data) {
     file.createdAt = data["createdAt"].asString();
     file.updatedAt = data["updatedAt"].asString();
     file.downloaded = false;
+}
+
+static void loadWatermarkTemplateFromJson(unordered_map<string, string> &ret, const Json::Value &data) {
+    ret.clear();
+    for (const auto &w : data) {
+        if (!w["id"].isNull() && !w["name"].isNull()) {
+            auto id = w["id"].asString();
+            auto name = w["name"].asString();
+            if (!id.empty()) {
+                try {
+                    ret[id] = StrJsonUtils::writeJsonString(w);
+                    DebugL << "Load watermark template from json: id=" << id << ", name=" << name;
+                } catch (const std::exception &e) {
+                    WarnL << "Failed to load watermark template from json: id=" << id << ", name=" << name << ", error=" << e.what();
+                }
+            }
+        }
+    }
+}
+
+static void prefetchWatermarkOverlayImages(const unordered_map<string, string> &watermark_templates) {
+    for (const auto &entry : watermark_templates) {
+        vector<OverlayComponent> components;
+        OverlayBuildOptions options;
+        const string template_id = entry.first;
+        OverlayPrivacyUtils::prepareComponents(entry.second, components, options,
+            [template_id](const string &err, const vector<OverlayComponent> &) {
+                if (!err.empty()) {
+                    WarnL << "Prefetch watermark overlay images failed, template_id="
+                            << template_id << ": " << err;
+                    return;
+                }
+                DebugL << "Prefetch watermark overlay images completed, template_id=" << template_id;
+            });
+    }
+}
+
+static void loadWatermarkTemplateFromMap(CameraOption &option,  const unordered_map<string, string> &watermark_templates) {
+    if (!option.watermarkTemplateId.empty()) {
+        auto it = watermark_templates.find(option.watermarkTemplateId);
+        if (it != watermark_templates.end()) {
+            option.watermarkTemplate = it->second;
+            option.watermarkExcludedRoleIds = "";
+            DebugL << "Load watermark template from map: id=" << option.watermarkTemplateId << ". Set enforceWatermarkOnView to true.";
+            option.enforceWatermarkOnView = true;
+        } else {
+            WarnL << "Watermark template not found for id=" << option.watermarkTemplateId << ". Reset enforceWatermarkOnView to false.";
+            option.enforceWatermarkOnView = false;
+        }
+    }
 }
 
 static void loadServerConfigFromJson(const Json::Value &data) {
@@ -798,6 +860,12 @@ void loadServerConfigJson(const Json::Value &data_api) {
         loadServerClusterFromJson(data["list_media_server"]);
     }
 
+    unordered_map<string, string> watermark_template_map;
+    if (data.isMember("watermark_configs") && data["watermark_configs"].isArray()) {
+        loadWatermarkTemplateFromJson(watermark_template_map, data["watermark_configs"]);
+        prefetchWatermarkOverlayImages(watermark_template_map);
+    }
+
     if (data.isMember("devices") && data["devices"].isArray()) {
         // get vector of current camera key 
         auto current_cameras = CameraManager::Instance().getCameraKeys();
@@ -808,6 +876,7 @@ void loadServerConfigJson(const Json::Value &data_api) {
             fromJson(tuple, camera);
             CameraOption option;
             fromJson(option, camera);
+            loadWatermarkTemplateFromMap(option, watermark_template_map);
             unordered_map<int, StreamTuple> stream_map;
             fromJson(stream_map, camera);
 
@@ -1431,6 +1500,15 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     val["enableMotion"]         = option.enableMotion;
     val["roiValue"]             = option.roiValue;
     val["motionDetectOnStream"] = option.motionDetectOnStream;
+
+    // View overlay policy
+    val["enforceWatermarkOnView"] = option.enforceWatermarkOnView;
+    val["watermarkTemplateId"] = option.watermarkTemplateId;
+    val["watermarkExcludedRoleIds"] = option.watermarkExcludedRoleIds;
+    val["watermarkTemplate"] = option.watermarkTemplate;
+    val["enforcePrivacyMaskOnView"] = option.enforcePrivacyMaskOnView;
+    val["privacyMaskExcludedRoleIds"] = option.privacyMaskExcludedRoleIds;
+    val["privacyMaskRegions"] = option.privacyMaskRegions;
 
     return val;
 }

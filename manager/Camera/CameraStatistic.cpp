@@ -510,6 +510,12 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.sdCardSyncAutoSyncEnabled = ret["sdCardSyncAutoSyncEnabled"].asBool();
     option.sdCardSyncMinSegmentGapSec = ret["sdCardSyncMinSegmentGapSec"].asInt();
     option.sdCardSyncRetryCount = ret["sdCardSyncRetryCount"].asInt();
+    option.enforceWatermarkOnView = ret["enforceWatermarkOnView"].asBool();
+    option.watermarkExcludedRoleIds = ret["watermarkExcludedRoleIds"].asString();
+    option.watermarkTemplate = ret["watermarkTemplate"].asString();
+    option.enforcePrivacyMaskOnView = ret["enforcePrivacyMaskOnView"].asBool();
+    option.privacyMaskExcludedRoleIds = ret["privacyMaskExcludedRoleIds"].asString();
+    option.privacyMaskRegions = ret["privacyMaskRegions"].asString();
     stats.option = option;
 
     // stream tuple map
@@ -628,6 +634,12 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["sdCardSyncAutoSyncEnabled"] = stats.option.sdCardSyncAutoSyncEnabled;
     root["sdCardSyncMinSegmentGapSec"] = stats.option.sdCardSyncMinSegmentGapSec;
     root["sdCardSyncRetryCount"] = stats.option.sdCardSyncRetryCount;
+    root["enforceWatermarkOnView"] = stats.option.enforceWatermarkOnView;
+    root["watermarkExcludedRoleIds"] = stats.option.watermarkExcludedRoleIds;
+    root["watermarkTemplate"] = stats.option.watermarkTemplate;
+    root["enforcePrivacyMaskOnView"] = stats.option.enforcePrivacyMaskOnView;
+    root["privacyMaskExcludedRoleIds"] = stats.option.privacyMaskExcludedRoleIds;
+    root["privacyMaskRegions"] = stats.option.privacyMaskRegions;
 
     // stream tuple map
     Json::Value streamUrls = Json::arrayValue;

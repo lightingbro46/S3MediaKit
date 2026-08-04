@@ -75,6 +75,7 @@ const string kOnSyncBookmarkThumbnail = HOOK_FIELD "on_sync_bookmark_thumbnail";
 const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_check";
 const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
 const string kOnDownloadAudioFile = HOOK_FIELD "on_download_audio_file";
+const string kOnDownloadOverlayImage = HOOK_FIELD "on_download_overlay_image";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -123,6 +124,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
     mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
     mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
+    mINI::Instance()[kOnDownloadOverlayImage] = "/api/media-server/watermark/assets";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -191,6 +193,54 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         // If an exception is still thrown, then re-throw the exception
         fun(Json::nullValue, errStr, should_retry);
     }
+}
+
+static string overlayImageExtension(const string &path) {
+    const string data = File::loadFile(path);
+    if (data.size() >= 8 && static_cast<unsigned char>(data[0]) == 0x89 &&
+        data.compare(1, 3, "PNG") == 0) {
+        return "png";
+    }
+    if (data.size() >= 3 && static_cast<unsigned char>(data[0]) == 0xff &&
+        static_cast<unsigned char>(data[1]) == 0xd8 &&
+        static_cast<unsigned char>(data[2]) == 0xff) {
+        return "jpg";
+    }
+    if (data.size() >= 6 && (data.compare(0, 6, "GIF87a") == 0 ||
+                             data.compare(0, 6, "GIF89a") == 0)) {
+        return "gif";
+    }
+    if (data.size() >= 12 && data.compare(0, 4, "RIFF") == 0 &&
+        data.compare(8, 4, "WEBP") == 0) {
+        return "webp";
+    }
+    return string();
+}
+
+static string updateOverlayImageExtension(const string &downloaded_path,
+                                          const string &requested_path) {
+    const string extension = overlayImageExtension(downloaded_path);
+    if (extension.empty()) {
+        return string();
+    }
+
+    string target = requested_path;
+    const string download_suffix = ".download";
+    if (target.size() >= download_suffix.size() &&
+        target.compare(target.size() - download_suffix.size(), download_suffix.size(), download_suffix) == 0) {
+        target.resize(target.size() - download_suffix.size());
+    }
+    target += "." + extension;
+    if (downloaded_path == target) {
+        return target;
+    }
+    if (File::fileExist(target)) {
+        File::delete_file(target, false, false);
+    }
+    if (rename(downloaded_path.data(), target.data()) != 0) {
+        return string();
+    }
+    return target;
 }
 
 string to_string(const Value &value) {
@@ -2024,18 +2074,18 @@ void installWebHook() {
         }
 
         auto url = hook_api_url + hook_download_audio_file + "/" + audio_file_id;
-        InfoL << "Start downloading file: " << url << " -> " << local_path;
+        InfoL << "Start downloading audio file: " << url << " -> " << local_path;
 
         auto downloader = std::make_shared<HttpDownloader>();
-        downloader->setOnResult([invoker, url] (const SockException& ex, const std::string& filePath) {
+        downloader->setOnResult([downloader, invoker, url, local_path] (const SockException& ex, const std::string& filePath) {
             if (ex) {
-                invoker((StrPrinter << "download failed: " << url << " — " << ex.what()), "");
+                invoker((StrPrinter << "download audio file failed: " << url << " — " << ex.what()), "");
                 return;
             }
 
             uint64_t size = File::fileSize(filePath);
             if (size == 0) {
-                invoker((StrPrinter << "downloaded file is empty: " << filePath), "");
+                invoker((StrPrinter << "downloaded audio file is empty: " << filePath), "");
                 return;
             }
 
@@ -2044,6 +2094,47 @@ void installWebHook() {
         });
 
         // Execute hook
+        downloader->startDownload(url, local_path);
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDownloadOverlayImage, [](BroadcastDownloadOverlayImageArgs) {
+        GET_CONFIG(string, hook_download_overlay_image, Hook::kOnDownloadOverlayImage);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_api_url.empty() || hook_download_overlay_image.empty()) {
+            invoker((StrPrinter << "hook_api_url or hook_on_download_overlay_image is empty"), "");
+            return;
+        }
+
+        if (overlay_file_id.empty() || local_path.empty()) {
+            invoker((StrPrinter << "overlay_file_id or local_path is empty"), "");
+            return;
+        }
+
+        auto url = hook_api_url + hook_download_overlay_image + "/" + overlay_file_id;
+        InfoL << "Start downloading overlay image: " << url << " -> " << local_path;
+
+        auto downloader = std::make_shared<HttpDownloader>();
+        downloader->setOnResult([downloader, invoker, url, local_path] (const SockException& ex, const std::string& filePath) {
+            if (ex) {
+                invoker((StrPrinter << "overlay image download failed: " << url << " — " << ex.what()), "");
+                return;
+            }
+
+            uint64_t size = File::fileSize(filePath);
+            if (size == 0) {
+                invoker((StrPrinter << "downloaded overlay image is empty: " << filePath), "");
+                return;
+            }
+
+            const string normalized_path = updateOverlayImageExtension(filePath, local_path);
+            if (normalized_path.empty()) {
+                invoker((StrPrinter << "unsupported overlay image format or rename failed: " << filePath), "");
+                return;
+            }
+
+            InfoL << "Overlay image download completed: " << normalized_path << " (" << size << " bytes)";
+            invoker("", normalized_path);
+        });
         downloader->startDownload(url, local_path);
     });
 

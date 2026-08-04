@@ -241,6 +241,27 @@ public:
     // Whether to generate motion MJPEG stream on demand (only create the live MJPEG source when a viewer connects)
     bool motion_demand;
 
+    // Whether to enable the on-demand transcode (decode+re-encode) video stream,
+    // published under a derived stream_id "<stream>.transcode" (schema fmp4).
+    bool enable_transcode;
+    // Whether the transcode stream is on-demand (only encode while a viewer is connected).
+    bool transcode_demand;
+    // Output width of the transcode stream, 0 = keep source width.
+    int transcode_width;
+    // Output height of the transcode stream, 0 = keep source height.
+    int transcode_height;
+    // Output frame rate of the transcode stream.
+    int transcode_fps;
+    // Output bitrate (bits/sec); 0 selects an automatic bitrate.
+    int transcode_bitrate;
+    // GOP size (frames) of the transcode stream, 0 = 2*fps.
+    int transcode_gop;
+    // Overlay image (PNG w/ alpha) applied to the transcode stream (privacy mask / watermark). Empty = disabled.
+    std::string transcode_overlay_image;
+    // Overlay image X/Y offset in pixels.
+    int transcode_overlay_x;
+    int transcode_overlay_y;
+
     // Pre-create raw frame GOP ring buffer so that makeRecorder() can backfill history
     // when recording starts (e.g. RecordLowResAndMotion stream switch).
     // Set to true for streams that may need a seamless recording hand-off.
@@ -291,6 +312,17 @@ public:
         GET_OPT_VALUE(pre_record_ms);
         GET_OPT_VALUE(post_record_ms);
         GET_OPT_VALUE(motion_demand);
+
+        GET_OPT_VALUE(enable_transcode);
+        GET_OPT_VALUE(transcode_demand);
+        GET_OPT_VALUE(transcode_width);
+        GET_OPT_VALUE(transcode_height);
+        GET_OPT_VALUE(transcode_fps);
+        GET_OPT_VALUE(transcode_bitrate);
+        GET_OPT_VALUE(transcode_gop);
+        GET_OPT_VALUE(transcode_overlay_image);
+        GET_OPT_VALUE(transcode_overlay_x);
+        GET_OPT_VALUE(transcode_overlay_y);
 
         GET_OPT_VALUE(enable_gop_cache);
         GET_OPT_VALUE(gop_cache_size);

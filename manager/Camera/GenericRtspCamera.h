@@ -136,6 +136,85 @@ public:
     int sdCardSyncMinSegmentGapSec = 0;
     int sdCardSyncRetryCount = 0;
 
+    // whether to enforce privacy mask, default false
+    bool enforcePrivacyMaskOnView = false;
+
+    // comma separated role ids, such as "1,2,3", which will be excluded from privacy mask
+    std::string privacyMaskExcludedRoleIds;
+
+    // privacy mask regions, format: json array, each element is a json object with fields: id, name, polygonMode, maskType, points, for example:
+    // [{
+    // "id": "region-1",
+    // "name": "Cashier",
+    // "polygonMode": true,
+    // "maskType": "BLUR",
+    // "points":[{"x": 0.15, "y": 0.2 }, {"x": 0.75, "y": 0.2 }, {"x": 0.75, "y": 0.8 }, {"x": 0.15, "y": 0.8 }]
+    // }]
+    std::string privacyMaskRegions;
+
+    // whether to enforce watermark, default false
+    bool enforceWatermarkOnView = false;
+
+    // watermark template id, default empty
+    std::string watermarkTemplateId;
+
+    // comma separated role codes, such as "1,2,3", excluded from watermark.
+    std::string watermarkExcludedRoleIds;
+
+    // serialized watermark template/components used by the view overlay policy.
+    // {
+    //     "id": "019fa180-b1e2-7000-a18a-504454a8da83",
+    //     "name": "Watermark nội bộ 1",
+    //     "description": "Template watermark dùng cho camera nội bộ",
+    //     "displayMode": "REPEATED",
+    //     "repeatEnabled": true,
+    //     "canvas":{
+    //     "width": 1280,
+    //     "height": 720
+    //     },
+    //     "components":[
+    //     {
+    //     "type": "TEXT",
+    //     "id": "txt_1",
+    //     "name": "Text",
+    //     "x": 610,
+    //     "y": 360,
+    //     "scale": 1.0,
+    //     "rotation": 0.0,
+    //     "opacity": 0.5,
+    //     "repeatEnabled": true,
+    //     "gapX": 320,
+    //     "gapY": 190,
+    //     "text": "Nội bộ",
+    //     "fontFamily": "Arial",
+    //     "fontSize": 34,
+    //     "fontWeight": 700,
+    //     "color": "#ffffff",
+    //     "zindex": 0
+    //     },
+    //     {
+    //     "type": "IMAGE",
+    //     "id": "img_1",
+    //     "name": "logo.png",
+    //     "x": 520,
+    //     "y": 300,
+    //     "scale": 1.0,
+    //     "rotation": 0.0,
+    //     "opacity": 0.5,
+    //     "repeatEnabled": false,
+    //     "gapX": 320,
+    //     "gapY": 190,
+    //     "imageId": "019fa180-7cdb-7000-874c-b510ca3511c0",
+    //     "width": 120,
+    //     "height": 120,
+    //     "preserveAspectRatio": "xMidYMid meet",
+    //     "zindex": 0
+    //     }
+    //     ],
+    //     "overlayAssetId": "019fa180-7cdb-7000-874c-b510ca3511c0"
+    // }
+    std::string watermarkTemplate;
+
     // Note: Add more options if needed and implement operator== to compare whether two options are equal
 
     bool operator==(const CameraOption& other) const{
@@ -182,7 +261,14 @@ public:
                sdCardSyncEnabled == other.sdCardSyncEnabled &&
                sdCardSyncAutoSyncEnabled == other.sdCardSyncAutoSyncEnabled &&
                sdCardSyncMinSegmentGapSec == other.sdCardSyncMinSegmentGapSec &&
-               sdCardSyncRetryCount == other.sdCardSyncRetryCount;
+               sdCardSyncRetryCount == other.sdCardSyncRetryCount &&
+               enforceWatermarkOnView == other.enforceWatermarkOnView &&
+               watermarkTemplateId == other.watermarkTemplateId &&
+               watermarkExcludedRoleIds == other.watermarkExcludedRoleIds &&
+               watermarkTemplate == other.watermarkTemplate &&
+               enforcePrivacyMaskOnView == other.enforcePrivacyMaskOnView &&
+               privacyMaskExcludedRoleIds == other.privacyMaskExcludedRoleIds &&
+               privacyMaskRegions == other.privacyMaskRegions;
     }
 
     bool operator!=(const CameraOption& other) const {

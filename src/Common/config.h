@@ -242,6 +242,9 @@ using DownloadFileInvoker = std::function<void(const std::string&, const std::st
 extern const std::string kBroadcastDownloadAudioFile;
 #define BroadcastDownloadAudioFileArgs const std::string &audio_file_id, const std::string &local_path, const Broadcast::DownloadFileInvoker &invoker
 
+extern const std::string kBroadcastDownloadOverlayImage;
+#define BroadcastDownloadOverlayImageArgs const std::string &overlay_file_id, const std::string &local_path, const Broadcast::DownloadFileInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
@@ -396,6 +399,27 @@ extern const std::string kPostRecordMS;
 extern const std::string kEnableGopCache;
 // GOP cache size, which is needed when GOP cache is enabled. The default value is 2, which can cache about 4 seconds of video stream (assuming 30fps).
 extern const std::string kGopCacheSize;
+
+// Whether to enable the on-demand transcode (decode+re-encode) video stream, published as a derived stream_id "<stream>.transcode" (schema fmp4)
+extern const std::string kEnableTranscode;
+// Whether the transcode stream is on-demand (only encode while a viewer is connected). Default: 1
+extern const std::string kTranscodeDemand;
+// Output width of the transcode stream, 0 = keep source width
+extern const std::string kTranscodeWidth;
+// Output height of the transcode stream, 0 = keep source height
+extern const std::string kTranscodeHeight;
+// Output frame rate of the transcode stream, default 25
+extern const std::string kTranscodeFps;
+// Output bitrate (bits/sec) of the transcode stream, 0 = encoder default
+extern const std::string kTranscodeBitrate;
+// GOP size (in frames) of the transcode stream, 0 = 2*fps
+extern const std::string kTranscodeGop;
+// Path to an overlay image (PNG with alpha) applied to the transcode stream for privacy mask / watermark. Empty = disabled
+extern const std::string kTranscodeOverlayImage;
+// X offset (pixels) of the overlay image
+extern const std::string kTranscodeOverlayX;
+// Y offset (pixels) of the overlay image
+extern const std::string kTranscodeOverlayY;
 } // !Protocol
 
 // //////////HTTP configuration///////////
