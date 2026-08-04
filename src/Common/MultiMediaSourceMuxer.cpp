@@ -224,7 +224,7 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
         _fmp4 = dynamic_pointer_cast<FMP4MediaSourceMuxer>(Recorder::createRecorder(Recorder::type_fmp4, _tuple, option));
     }
 #if defined(ENABLE_FFMPEG)
-    if (option.enable_motion) {
+    if (option.enable_motion || option.enable_transcode) {
         _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
     }
 #endif // ENABLE_FFMPEG
@@ -645,6 +645,25 @@ bool MultiMediaSourceMuxer::isMotionDetecting() {
     return false;
 #endif // ENABLE_FFMPEG && ENABLE_MOTION
 }
+
+#if defined(ENABLE_FFMPEG)
+MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const TranscodeProcessor::Config &cfg) {
+    CHECK(_poller->isCurrentThread(), "View overlay transcode must be created on the source poller");
+    if (!_stack) {
+        ProtocolOption option = _option;
+        option.enable_motion = false;
+        option.enable_transcode = false;
+        option.transcode_demand = true;
+        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
+        _stack->setListener(shared_from_this());
+        for (const auto &track : getTracks()) {
+            _stack->addTrack(track);
+        }
+        _stack->addTrackCompleted();
+    }
+    return _stack->ensureTranscode(cfg);
+}
+#endif // ENABLE_FFMPEG
 
 void MultiMediaSourceMuxer::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {
 #if defined(ENABLE_RTPPROXY)

@@ -4,6 +4,7 @@
 #if defined(ENABLE_FFMPEG)
 
 #include "Util/TimeTicker.h"
+#include "Util/util.h"
 #include "Common/MediaSink.h"
 
 #ifdef __cplusplus
@@ -27,6 +28,14 @@ extern "C" {
 #define FF_CODEC_VER_7_1 AV_VERSION_INT(61, 0, 0)
 
 namespace mediakit {
+
+/** Calculate automatic bitrate from output size, codec and frame rate. */
+int getDefaultTranscodeBitrate(CodecId codec, int width, int height, int fps);
+
+/** Resolve output dimensions and cap them at 1920x1080 while preserving aspect ratio. */
+void getTranscodeOutputSize(int source_width, int source_height,
+                            int requested_width, int requested_height,
+                            int &output_width, int &output_height);
 
 class FFmpegFrame {
 public:
@@ -133,6 +142,7 @@ private:
     std::shared_ptr<AVCodecContext> _context;
     FrameMerger _merger{FrameMerger::h264_prefix};
     toolkit::ResourcePool<FFmpegFrame> _frame_pool;
+    toolkit::ObjectStatistic<FFmpegDecoder> _statistic;
 };
 
 class FFmpegSws {
@@ -156,6 +166,55 @@ private:
     AVPixelFormat _src_format = AV_PIX_FMT_NONE;
     AVPixelFormat _target_format = AV_PIX_FMT_NONE;
     toolkit::ResourcePool<FFmpegFrame> _sws_frame_pool;
+};
+
+// Encode decoded FFmpegFrame(s) into a compressed elementary stream (default H.264
+// via libx264) and emit them as mediakit Frame::Ptr, ready to be muxed (e.g. into
+// an FMP4MediaSourceMuxer).  The encoder context is opened lazily on the first
+// input frame so the output resolution can default to the source resolution.
+class FFmpegEncoder {
+public:
+    using Ptr = std::shared_ptr<FFmpegEncoder>;
+    using onEnc = std::function<void(const Frame::Ptr &)>;
+
+    /**
+     * @param codec    Target codec (CodecH264 or CodecH265).
+     * @param width    Output width  (0 = keep source width).
+     * @param height   Output height (0 = keep source height).
+     * @param fps      Output frame rate (<=0 = 5).
+     * @param bitrate  Target bitrate in bits/sec (<=0 = pick a sane default).
+     * @param gop      Keyframe interval in frames (<=0 = 2*fps).
+     */
+    FFmpegEncoder(CodecId codec, int width = 0, int height = 0, int fps = 5, int bitrate = 0, int gop = 0);
+    ~FFmpegEncoder();
+
+    bool inputFrame(const FFmpegFrame::Ptr &frame);
+    void setOnEncode(onEnc cb);
+    void flush();
+    /** Force the next encoded frame to be an IDR keyframe (e.g. on viewer resume). */
+    void requestKeyFrame();
+    const AVCodecContext *getContext() const;
+    CodecId getCodecId() const { return _codec; }
+
+private:
+    bool openEncoder(const FFmpegFrame::Ptr &frame);
+    bool encodeFrame(AVFrame *frame);
+    void onEncode(AVPacket *pkt);
+
+private:
+    CodecId _codec;
+    int _width = 0;
+    int _height = 0;
+    int _fps = 5;
+    int _bitrate = 0;
+    int _gop = 0;
+    AVPixelFormat _enc_fmt = AV_PIX_FMT_YUV420P;
+    bool _request_idr = false;
+    int64_t _last_encoded_pts = AV_NOPTS_VALUE;
+    onEnc _cb;
+    std::shared_ptr<AVCodecContext> _context;
+    FFmpegSws::Ptr _sws;
+    toolkit::ObjectStatistic<FFmpegEncoder> _statistic;
 };
 
 class FFmpegUtils {

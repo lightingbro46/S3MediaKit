@@ -7,6 +7,12 @@
 #include "HttpConst.h"
 #include "Util/base64.h"
 #include "Util/SHA1.h"
+#include "Util/MD5.h"
+#if defined(ENABLE_FFMPEG)
+#include "Common/MultiMediaSourceMuxer.h"
+#include "Transcode/OverlayPrivacyUtils.h"
+#include "Transcode/TranscodeProcessor.h"
+#endif // ENABLE_FFMPEG
 
 using namespace std;
 using namespace toolkit;
@@ -349,8 +355,7 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
                 strong_self->sendNotFound(close_flag);
             } else {
                 strong_self->_is_live_stream = true;
-                // Trigger callback
-                cb(src);
+                strong_self->applyViewOverlayPolicy(src, cb);
             }
         });
     };
@@ -367,6 +372,139 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         invoker("");
     }
     return true;
+}
+
+void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const std::function<void(const MediaSource::Ptr &)> &cb) {
+    if (!source) {
+        cb(source);
+        return;
+    }
+    auto params = Parser::parseArgs(_media_info.params);
+    const string jwt_token = params.find("token") == params.end() ? "" : params["token"];
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+    Broadcast::ViewOverlayPolicyInvoker policy_cb = [weak_self, source, cb](const Broadcast::ViewOverlayPolicy &policy) {
+        auto self = weak_self.lock();
+        if (!self) return;
+        const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
+        const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+        bool use_transcode = false;
+#if defined(ENABLE_FFMPEG)
+        TranscodeRequest transcode_request;
+        std::string transcode_error;
+        ProtocolOption transcode_defaults;
+        if (!parseTranscodeRequest(self->_media_info.params, transcode_defaults, transcode_request, transcode_error)) {
+            self->sendResponse(400, true, nullptr, KeyValue(), make_shared<HttpStringBody>(transcode_error));
+            return;
+        }
+        use_transcode = transcode_request.enabled;
+#endif
+        if (!use_watermark && !use_privacy_mask && !use_transcode) {
+            cb(source);
+            return;
+        }
+#if defined(ENABLE_FFMPEG)
+        const CodecId transcode_codec = transcode_request.codec;
+        const int transcode_width = transcode_request.width;
+        const int transcode_height = transcode_request.height;
+        const int transcode_fps = transcode_request.fps;
+        const int transcode_bitrate = transcode_request.bitrate;
+        const int transcode_gop = transcode_request.gop;
+
+        vector<OverlayComponent> components;
+        OverlayBuildOptions overlay_options;
+        overlay_options.resolve_dynamic_tokens = false;
+        overlay_options.username = policy.username;
+        overlay_options.camera_name = policy.camera_name;
+        if (use_watermark && !OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
+            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
+            return;
+        }
+        std::string local_image_error;
+        if (use_watermark && !OverlayPrivacyUtils::resolveLocalImages(components, local_image_error)) {
+            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
+            return;
+        }
+        if (use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
+                                                                          overlay_options.privacy_masks,
+                                                                          overlay_options)) {
+            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Privacy mask configuration is invalid"));
+            return;
+        }
+        const string key = string(transcode_codec == CodecH265 ? "h265" : "h264") + "|" +
+                           to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
+                           to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
+                           policy.watermark_template + "|" + policy.privacy_mask_regions;
+        const string stream_suffix = ".transcode." + MD5(key).hexdigest();
+        DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
+        auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix,
+                                transcode_codec, transcode_width, transcode_height,
+                                transcode_fps, transcode_bitrate, transcode_gop](const vector<OverlayComponent> &prepared_components) {
+            auto self = weak_self.lock();
+            if (!self) return;
+            TranscodeProcessor::Config cfg;
+            cfg.codec = transcode_codec;
+            cfg.width = transcode_width;
+            cfg.height = transcode_height;
+            cfg.fps = transcode_fps;
+            cfg.bitrate = transcode_bitrate;
+            cfg.gop = transcode_gop;
+            cfg.stream_suffix = stream_suffix;
+            cfg.demand = true;
+            cfg.overlay_components = prepared_components;
+            cfg.overlay_options = overlay_options;
+            auto muxer = source->getMuxer();
+            if (!muxer) {
+                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("View overlay source is unavailable"));
+                return;
+            }
+            auto poller = muxer->getOwnerPoller(MediaSource::NullMediaSource());
+            poller->async([weak_self, muxer, cfg, cb]() mutable {
+                auto self = weak_self.lock();
+                if (!self) return;
+
+                auto on_overlay_ready = [weak_self, cb](const MediaSource::Ptr &derived) {
+                    auto self = weak_self.lock();
+                    if (!self) return;
+                    if (!derived) {
+                        self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("View overlay source is not ready"));
+                        return;
+                    }
+
+                    // Keep the response callback on the HTTP session poller.
+                    self->async([weak_self, derived, cb]() {
+                        auto self = weak_self.lock();
+                        if (self) cb(derived);
+                    }, false);
+                };
+
+                auto derived = muxer->ensureViewOverlayTranscode(cfg);
+                if (derived) {
+                    on_overlay_ready(derived);
+                    return;
+                }
+
+                // TranscodeProcessor is created before its first encoded keyframe
+                // is available. The fMP4 MediaSource is registered only after the
+                // init segment is generated, so wait for its registration event.
+                const MediaTuple &source_tuple = muxer->getMediaTuple();
+                MediaInfo overlay_info;
+                overlay_info.schema = FMP4_SCHEMA;
+                overlay_info.vhost = source_tuple.vhost;
+                overlay_info.app = source_tuple.app;
+                overlay_info.stream = source_tuple.stream + cfg.stream_suffix;
+                overlay_info.params = source_tuple.params;
+                MediaSource::findAsync(overlay_info, self, on_overlay_ready);
+            });
+        };
+        start_transcode(components);
+#else
+        self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
+#endif
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, _media_info, jwt_token, policy_cb, *this);
+    if (!flag) {
+        policy_cb(Broadcast::ViewOverlayPolicy());
+    }
 }
 
 // http-fmp4 link format: http://vhost-url:port/media/app/streamid.live.mp4?key1=value1&key2=value2
@@ -1219,76 +1357,85 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
             }
         }
 
-        auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(selected);
-        if (!fmp4_src) {
+        if (!selected) {
             sendNotFound(true);
             return;
         }
 
-        if (!fmp4_list) {
-            sendResponse(200, false, HttpFileManager::getContentType(".mp4").data(), KeyValue(), nullptr, true);
-        } else {
-            fmp4_list();
-        }
-
-        setSocketFlags();
-        onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
-
-        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-        auto end_dts        = std::make_shared<std::atomic<uint64_t>>(std::numeric_limits<uint64_t>::max());
-        auto stop_requested = std::make_shared<std::atomic<bool>>(false);
-
-        fmp4_src->pause(false);
-        _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
-        _fmp4_reader->setGetInfoCB([weak_self]() {
-            Any ret;
-            ret.set(static_pointer_cast<Session>(weak_self.lock()));
-            return ret;
-        });
-        _fmp4_reader->setDetachCB([weak_self]() {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) return;
-            strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
-        });
-        _fmp4_reader->setMessageCB([weak_self](const Any &data) {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) return;
-            if (data.is<std::string>()) {
-                auto &init_seg = data.get<std::string>();
-                if (!init_seg.empty()) {
-                    DebugL << "Received new init segment, length: " << init_seg.size();
-                    strong_self->onWrite(std::make_shared<BufferString>(init_seg), true);
-                }
+        auto serve_source = [this, fmp4_list, dur_sec](const MediaSource::Ptr &source) {
+            auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(source);
+            if (!fmp4_src) {
+                sendNotFound(true);
+                return;
             }
-        });
-        _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested]
-                                (const FMP4MediaSource::RingDataType &fmp4_list) {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) return;
-            const uint64_t dur_ms = dur_sec * 1000;
-            size_t i = 0;
-            auto size = fmp4_list->size();
-            fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) {
-                if (stop_requested->load(std::memory_order_acquire)) return;
-                if (dur_ms > 0) {
-                    uint64_t expected = std::numeric_limits<uint64_t>::max();
-                    uint64_t target_end = ts->time_stamp + dur_ms;
-                    if (end_dts->compare_exchange_strong(expected, target_end, std::memory_order_acq_rel)) {
-                        DebugL << "http-mp4 set duration limit, end_dts:" << target_end;
-                    }
-                    const uint64_t limit = end_dts->load(std::memory_order_acquire);
-                    if (ts->time_stamp > limit) {
-                        if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
-                            WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
-                            fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
-                            strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
-                        }
-                        return;
+
+            if (!fmp4_list) {
+                sendResponse(200, false, HttpFileManager::getContentType(".mp4").data(), KeyValue(), nullptr, true);
+            } else {
+                fmp4_list();
+            }
+
+            setSocketFlags();
+            onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
+
+            weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+            auto end_dts        = std::make_shared<std::atomic<uint64_t>>(std::numeric_limits<uint64_t>::max());
+            auto stop_requested = std::make_shared<std::atomic<bool>>(false);
+
+            fmp4_src->pause(false);
+            _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
+            _fmp4_reader->setGetInfoCB([weak_self]() {
+                Any ret;
+                ret.set(static_pointer_cast<Session>(weak_self.lock()));
+                return ret;
+            });
+            _fmp4_reader->setDetachCB([weak_self]() {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) return;
+                strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
+            });
+            _fmp4_reader->setMessageCB([weak_self](const Any &data) {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) return;
+                if (data.is<std::string>()) {
+                    auto &init_seg = data.get<std::string>();
+                    if (!init_seg.empty()) {
+                        DebugL << "Received new init segment, length: " << init_seg.size();
+                        strong_self->onWrite(std::make_shared<BufferString>(init_seg), true);
                     }
                 }
-                strong_self->onWrite(ts, ++i == size);
             });
-        });
+            _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested]
+                                    (const FMP4MediaSource::RingDataType &fmp4_list) {
+                auto strong_self = weak_self.lock();
+                if (!strong_self) return;
+                const uint64_t dur_ms = dur_sec * 1000;
+                size_t i = 0;
+                auto size = fmp4_list->size();
+                fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) {
+                    if (stop_requested->load(std::memory_order_acquire)) return;
+                    if (dur_ms > 0) {
+                        uint64_t expected = std::numeric_limits<uint64_t>::max();
+                        uint64_t target_end = ts->time_stamp + dur_ms;
+                        if (end_dts->compare_exchange_strong(expected, target_end, std::memory_order_acq_rel)) {
+                            DebugL << "http-mp4 set duration limit, end_dts:" << target_end;
+                        }
+                        const uint64_t limit = end_dts->load(std::memory_order_acquire);
+                        if (ts->time_stamp > limit) {
+                            if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
+                                WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
+                                fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
+                                strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
+                            }
+                            return;
+                        }
+                    }
+                    strong_self->onWrite(ts, ++i == size);
+                });
+            });
+        };
+
+        applyViewOverlayPolicy(selected, serve_source);
     });
 }
 

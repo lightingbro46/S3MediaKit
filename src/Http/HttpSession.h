@@ -122,6 +122,8 @@ private:
 
     // Set socket flag
     void setSocketFlags();
+    void applyViewOverlayPolicy(const MediaSource::Ptr &source,
+                                const std::function<void(const MediaSource::Ptr &)> &cb);
 
 protected:
     MediaInfo _media_info;

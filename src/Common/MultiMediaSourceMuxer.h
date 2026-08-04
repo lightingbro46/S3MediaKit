@@ -126,6 +126,10 @@ public:
      */
     bool isMotionDetecting();
 
+#if defined(ENABLE_FFMPEG)
+    MediaSource::Ptr ensureViewOverlayTranscode(const TranscodeProcessor::Config &cfg);
+#endif // ENABLE_FFMPEG
+
     /**
      *Start sending ps-rtp stream
      *@param cb startup success or failure callback

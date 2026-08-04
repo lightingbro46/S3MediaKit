@@ -8,6 +8,10 @@
 using namespace std;
 using namespace toolkit;
 
+namespace toolkit {
+    StatisticImp(mediakit::MotionProcessor)
+}
+
 namespace mediakit {
 
 MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask, bool enable_record, const string &record_stream_id, int interval_ms, bool use_y_channel) 

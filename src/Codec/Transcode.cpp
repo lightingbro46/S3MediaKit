@@ -6,13 +6,55 @@
 #include "Util/uv_errno.h"
 #include "Transcode.h"
 #include "Common/config.h"
+#include "Extension/Factory.h"
 
 #define MAX_DELAY_SECOND 3
 
 using namespace std;
 using namespace toolkit;
 
+namespace toolkit {
+    StatisticImp(mediakit::FFmpegDecoder)
+    StatisticImp(mediakit::FFmpegEncoder)
+}
+
 namespace mediakit {
+
+int getDefaultTranscodeBitrate(CodecId codec, int width, int height, int fps) {
+    const int target_width = width > 0 ? width : 1280;
+    const int target_height = height > 0 ? height : 720;
+    const int target_fps = fps > 0 ? fps : 5;
+    const int64_t pixels = static_cast<int64_t>(target_width) * target_height;
+    int64_t bitrate = 2500000LL * pixels / (1280LL * 720) * target_fps / 25;
+    if (codec == CodecH265) {
+        bitrate = bitrate * 65 / 100;
+    }
+    if (bitrate < 512000) {
+        bitrate = 512000;
+    } else if (bitrate > 8000000) {
+        bitrate = 8000000;
+    }
+    return static_cast<int>(((bitrate + 63999) / 64000) * 64000);
+}
+
+void getTranscodeOutputSize(int source_width, int source_height,
+                            int requested_width, int requested_height,
+                            int &output_width, int &output_height) {
+    source_width = std::max(2, source_width);
+    source_height = std::max(2, source_height);
+    output_width = requested_width > 0 ? requested_width : source_width;
+    output_height = requested_height > 0 ? requested_height : source_height;
+
+    if (requested_width > 0 && requested_height == 0) {
+        output_height = std::max(2, static_cast<int>(output_width * source_height / static_cast<double>(source_width)));
+    } else if (requested_width == 0 && requested_height > 0) {
+        output_width = std::max(2, static_cast<int>(output_height * source_width / static_cast<double>(source_height)));
+    }
+
+    const double scale = std::min(1.0, std::min(1920.0 / output_width, 1080.0 / output_height));
+    output_width = std::max(2, static_cast<int>(output_width * scale) & ~1);
+    output_height = std::max(2, static_cast<int>(output_height * scale) & ~1);
+}
 
 static string ffmpeg_err(int errnum) {
     char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -258,6 +300,12 @@ FFmpegFrame::Ptr FFmpegFrame::clone() const {
         auto ret = av_frame_get_buffer(new_frame->get(), 32); // 32-byte alignment
         if (ret < 0) {
             WarnL << "av_frame_get_buffer failed: " << ffmpeg_err(ret);
+            return nullptr;
+        }
+
+        ret = av_frame_copy_props(new_frame->get(), _frame.get());
+        if (ret < 0) {
+            WarnL << "av_frame_copy_properties failed: " << ffmpeg_err(ret);
             return nullptr;
         }
 
@@ -999,6 +1047,205 @@ std::tuple<bool, std::string> FFmpegUtils::drawGrid(const FFmpegFrame::Ptr &fram
     }
 
     return make_tuple<bool, std::string>(true, "");
+}
+
+//////////////////////////////////////// FFmpegEncoder ////////////////////////////////////////
+
+FFmpegEncoder::FFmpegEncoder(CodecId codec, int width, int height, int fps, int bitrate, int gop)
+    : _codec(codec), _width(width), _height(height), _fps(fps > 0 ? fps : 5), _bitrate(bitrate), _gop(gop) {
+    if (codec != CodecH264 && codec != CodecH265) {
+        throw std::invalid_argument("FFmpegEncoder only supports H264/H265");
+    }
+}
+
+FFmpegEncoder::~FFmpegEncoder() {
+    try {
+        flush();
+    } catch (std::exception &ex) {
+        WarnL << ex.what();
+    }
+}
+
+void FFmpegEncoder::setOnEncode(onEnc cb) {
+    _cb = std::move(cb);
+}
+
+const AVCodecContext *FFmpegEncoder::getContext() const {
+    return _context.get();
+}
+
+bool FFmpegEncoder::openEncoder(const FFmpegFrame::Ptr &frame) {
+    auto src = frame->get();
+    int out_w = 0;
+    int out_h = 0;
+    getTranscodeOutputSize(src->width, src->height, _width, _height, out_w, out_h);
+    // libx264/libx265 require even dimensions for YUV420P
+    out_w &= ~1;
+    out_h &= ~1;
+    if (out_w <= 0 || out_h <= 0) {
+        WarnL << "FFmpegEncoder: invalid output size " << out_w << "x" << out_h;
+        return false;
+    }
+    _width = out_w;
+    _height = out_h;
+
+    if (_bitrate <= 0) {
+        _bitrate = getDefaultTranscodeBitrate(_codec, _width, _height, _fps);
+    }
+
+    const char *codec_name = (_codec == CodecH264) ? "libx264" : "libx265";
+    const AVCodec *encoder = avcodec_find_encoder_by_name(codec_name);
+    if (!encoder) {
+        // Fallback to the built-in encoder id lookup
+        encoder = avcodec_find_encoder(_codec == CodecH264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC);
+    }
+    if (!encoder) {
+        WarnL << "FFmpegEncoder: encoder not found for " << codec_name;
+        return false;
+    }
+
+    _context.reset(avcodec_alloc_context3(encoder), [](AVCodecContext *ctx) { avcodec_free_context(&ctx); });
+    if (!_context) {
+        WarnL << "FFmpegEncoder: avcodec_alloc_context3 failed";
+        return false;
+    }
+
+    // Keep the encoder input format deterministic. FFmpegSws is only used
+    // when the decoder/overlay frame is not already YUV420P at the target
+    // dimensions.
+    _enc_fmt = AV_PIX_FMT_YUV420P;
+    _context->width = _width;
+    _context->height = _height;
+    _context->pix_fmt = _enc_fmt;
+    // Work in millisecond time base so we can feed frame dts/pts (already in ms).
+    _context->time_base = AVRational{ 1, 1000 };
+    _context->framerate = AVRational{ _fps, 1 };
+    _context->gop_size = (_gop > 0) ? _gop : (_fps * 2);
+    _context->max_b_frames = 0;
+    _context->bit_rate = _bitrate;
+    // Do NOT set AV_CODEC_FLAG_GLOBAL_HEADER: we want in-band SPS/PPS (Annex-B) so
+    // that H264Track/H265Track can auto-extract config from the keyframes.
+    AVDictionary *opts = nullptr;
+    av_dict_set(&opts, "preset", "veryfast", 0);
+    av_dict_set(&opts, "tune", "zerolatency", 0);
+    if (_codec == CodecH264) {
+        av_dict_set(&opts, "profile", "main", 0);
+    }
+
+    int ret = avcodec_open2(_context.get(), encoder, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        WarnL << "FFmpegEncoder: avcodec_open2 failed: " << ffmpeg_err(ret);
+        _context = nullptr;
+        return false;
+    }
+
+    InfoL << "FFmpegEncoder opened: " << codec_name << " " << _width << "x" << _height
+          << " @" << _fps << "fps, bitrate=" << _context->bit_rate;
+    return true;
+}
+
+bool FFmpegEncoder::inputFrame(const FFmpegFrame::Ptr &frame) {
+    if (!frame || !frame->get()) {
+        return false;
+    }
+    if (!_context && !openEncoder(frame)) {
+        return false;
+    }
+
+    auto input = frame->get();
+    if (input->pts != AV_NOPTS_VALUE && _last_encoded_pts != AV_NOPTS_VALUE) {
+        if (input->pts < _last_encoded_pts) {
+            WarnL << "FFmpegEncoder: dropping non-monotonic frame pts=" << input->pts << ", last=" << _last_encoded_pts;
+            return true;
+        }
+
+        // Frame-rate pacing is performed by TranscodeProcessor before the
+        // overlay graph. Do not apply a second interval filter here, otherwise
+        // frames near the boundary can be dropped twice and reduce output FPS.
+    }
+
+    auto src = frame->get();
+    FFmpegFrame::Ptr scaled = frame;
+    if (src->width != _width || src->height != _height || src->format != _enc_fmt) {
+        if (!_sws) {
+            _sws = std::make_shared<FFmpegSws>(_enc_fmt, _width, _height);
+        }
+        scaled = _sws->inputFrame(frame);
+        if (!scaled) {
+            return false;
+        }
+    } else {
+        // Decoder frames are obtained from a reusable ResourcePool. Keep an
+        // encoder-owned copy even when no conversion is needed.
+        scaled = frame->clone();
+        if (!scaled) {
+            return false;
+        }
+    }
+    const bool encoded = encodeFrame(scaled->get());
+    if (encoded && input->pts != AV_NOPTS_VALUE) {
+        _last_encoded_pts = input->pts;
+    }
+    return encoded;
+}
+
+bool FFmpegEncoder::encodeFrame(AVFrame *frame) {
+    if (frame) {
+        // Feed pts in ms (the source AVFrame carries a ms pts already).
+        frame->pict_type = _request_idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+        _request_idr = false;
+    }
+    int ret = avcodec_send_frame(_context.get(), frame);
+    if (ret < 0) {
+        WarnL << "FFmpegEncoder: avcodec_send_frame failed: " << ffmpeg_err(ret);
+        return false;
+    }
+    auto pkt = alloc_av_packet();
+    while (true) {
+        ret = avcodec_receive_packet(_context.get(), pkt.get());
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        }
+        if (ret < 0) {
+            WarnL << "FFmpegEncoder: avcodec_receive_packet failed: " << ffmpeg_err(ret);
+            return false;
+        }
+        onEncode(pkt.get());
+        av_packet_unref(pkt.get());
+    }
+    return true;
+}
+
+void FFmpegEncoder::onEncode(AVPacket *pkt) {
+    if (!_cb || !pkt->data || pkt->size <= 0) {
+        return;
+    }
+    int64_t dts = (pkt->dts == AV_NOPTS_VALUE) ? pkt->pts : pkt->dts;
+    int64_t pts = (pkt->pts == AV_NOPTS_VALUE) ? dts : pkt->pts;
+    if (dts < 0) {
+        dts = 0;
+    }
+    if (pts < 0) {
+        pts = dts;
+    }
+    // libx264/libx265 emit Annex-B (start-code prefixed) NALs in-band, which
+    // Factory::getFrameFromPtr expects for H264/H265.
+    auto out = Factory::getFrameFromPtr(_codec, reinterpret_cast<const char *>(pkt->data),
+                                        (size_t)pkt->size, (uint64_t)dts, (uint64_t)pts);
+    if (out) {
+        _cb(out);
+    }
+}
+
+void FFmpegEncoder::flush() {
+    if (_context) {
+        encodeFrame(nullptr);
+    }
+}
+
+void FFmpegEncoder::requestKeyFrame() {
+    _request_idr = true;
 }
 
 } // namespace mediakit

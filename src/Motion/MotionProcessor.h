@@ -9,6 +9,7 @@
 #include "MotionMjpegMediaSourceMuxer.h"
 #include "MotionMuxer.h"
 #include "Codec/Transcode.h"
+#include "Util/util.h"
 
 namespace mediakit {
 
@@ -77,6 +78,8 @@ private:
     // Weak reference to the MJPEG muxer created by MultiMediaSourceProcessor.
     // Null when motion_demand=false and no muxer was provided.
     std::weak_ptr<MotionMjpegMediaSourceMuxer> _mjpeg_muxer;
+
+    toolkit::ObjectStatistic<MotionProcessor> _statistic;
 };
 
 } // namespace mediakit
