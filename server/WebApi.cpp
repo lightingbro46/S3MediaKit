@@ -108,6 +108,7 @@ static onceToken token([]() {
     mINI::Instance()[kExtractRoot] = "./www/extract/";
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
     mINI::Instance()[kDownloadRoot] = "./www";
+    mINI::Instance()[kJsonNotFoundPrefixs] = "/media/mserver,/media/esc,/media/api";
 });
 } // namespace API
 

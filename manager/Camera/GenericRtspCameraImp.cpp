@@ -254,6 +254,7 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
         strong_statistic->addStreamStatistic(type, live, status, info);
     }
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
+#ifndef ENABLE_DEBUG
         // only emit event when stream status changed
         std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
         WorkThreadPool::Instance().getPoller()->async([weak_self]() {
@@ -264,6 +265,9 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
             auto &src = *strong_self->_src;
             NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, src);
         });
+#else
+    DebugL << "Sent stream ready event for camera " << _src->getUrl() << " live=" << live << ", status=" << status;
+#endif
     }
 }
 
@@ -293,6 +297,7 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         return;
     }
 
+#ifndef ENABLE_DEBUG
     std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
     WorkThreadPool::Instance().getPoller()->async([weak_self]() {
         auto strong_self = weak_self.lock();
@@ -306,6 +311,9 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
             NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, params.device_stats.device_caps, src);
         }
     });
+#else
+    DebugL << "Sent controller ready event for camera " << _src->getUrl() << " connect=" << connect << ", status=" << status;
+#endif
 }
 
 void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
