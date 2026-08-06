@@ -134,7 +134,7 @@ void GenericRtspCameraImp::setupScheduler() {
         }
         _scheduler.reset();
     }
-    _scheduler = RecordScheduler::create(_src->getDeviceTuple(), _option.recordSchedules, _poller);
+    _scheduler = RecordScheduler::create(_src->getDeviceTuple(), _option.enableRecord, _option.recordSchedules, _poller);
     _scheduler->setListener(shared_from_this());
 }
 

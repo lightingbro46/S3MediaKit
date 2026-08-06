@@ -63,7 +63,7 @@ void StreamSink::setupMonitor(int type, const StreamTuple &tuple, const CameraOp
     // GOP ring buffer: only primary needs it (pre-event backfill for startEventRecord).
     // Secondary uses setupRecord(type_mp4) for continuous recording which does not
     // require a ring reader, so enable_gop_cache=false saves memory on the secondary.
-    new_cfg.protocol.enable_gop_cache = (type == StreamType::PrimaryStream);
+    new_cfg.protocol.enable_gop_cache = record_mp4 && (type == StreamType::PrimaryStream);
     {
         GET_CONFIG(int, gop_cache_size, mediakit::Protocol::kGopCacheSize);
         new_cfg.protocol.gop_cache_size = gop_cache_size;

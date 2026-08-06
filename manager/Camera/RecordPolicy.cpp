@@ -132,15 +132,21 @@ unordered_map<std::string, RecordScheduleItem> RecordScheduler::parseRecordSched
     return ret;
 }
 
-RecordScheduler::Ptr RecordScheduler::create(const DeviceTuple &tuple, const std::string &schedule_str, const toolkit::EventPoller::Ptr &poller) {
-    auto scheduler = std::make_shared<RecordScheduler>(tuple, schedule_str, poller);
+RecordScheduler::Ptr RecordScheduler::create(const DeviceTuple &tuple, bool start, const std::string &schedule_str, const toolkit::EventPoller::Ptr &poller) {
+    auto scheduler = std::make_shared<RecordScheduler>(tuple, start, schedule_str, poller);
     scheduler->createTimer();
-    DebugL << "Created record scheduler for device: " << tuple.shortUrl() << ". Trigger after 1 second, then every 1 hour. Schedule profile: " << (schedule_str.empty() ? "empty" : "*******");
+    DebugL << "Created record scheduler for device: " << tuple.shortUrl() << ". Trigger after 1 second, then at each schedule hour boundary using a dynamic delay task. Schedule profile: " << (schedule_str.empty() ? "empty" : "*******");
     return scheduler;
 }
 
-RecordScheduler::RecordScheduler(const DeviceTuple &tuple, const std::string &profile, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _profile(profile), _poller(poller) {
-    _items = parseRecordScheduleStr(profile);
+RecordScheduler::RecordScheduler(const DeviceTuple &tuple, bool start, const std::string &profile, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _profile(profile), _poller(poller) {
+    auto items = parseRecordScheduleStr(profile);
+    for (const auto &item : items) {
+        if (item.second.day >= 0 && item.second.day < 7 && item.second.hour >= 0 && item.second.hour < 24) {
+            _items_by_hour[static_cast<size_t>(item.second.day * 24 + item.second.hour)] = item.second;
+        }
+    }
+    _running = start;
 }
 
 RecordScheduler::~RecordScheduler() {
@@ -152,64 +158,86 @@ void RecordScheduler::setListener(const std::shared_ptr<DeviceSourceEvent> &dele
     setDelegate(delegate);
 }
 
+static uint64_t getDelayToNextScheduleHour() {
+    time_t now = time(nullptr);
+    tm local_tm;
+#if defined(_WIN32)
+    localtime_s(&local_tm, &now);
+#else
+    localtime_r(&now, &local_tm);
+#endif
+    return static_cast<uint64_t>((59 - local_tm.tm_min) * 60 + (60 - local_tm.tm_sec)) * 1000;
+}
+
 void RecordScheduler::createTimer() {
     weak_ptr<RecordScheduler> weak_self = shared_from_this();
-    _timer = std::make_shared<Timer>(
-        1.0f,
-        [weak_self]() {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) {
-                return false;
-            }
-            auto time_now = time(nullptr);
-            auto it = strong_self->getRecordScheduledActive(time_now);
-            if (it != strong_self->_it) {
-                strong_self->onSchedulerChange(it->second);
-                strong_self->_it = it;
-            }
-            // todo: trigger onPollStreamStatus, onPollDeviceStatus 
-            return true;
-        },
-        _poller);
+    _delay_task = _poller->doDelayTask(1000, [weak_self]() -> uint64_t {
+        auto self = weak_self.lock();
+        if (!self || !self->_running) {
+            return 0;
+        }
+
+        try {
+            self->check(time(nullptr));
+            return getDelayToNextScheduleHour();
+        } catch (const std::exception &ex) {
+            ErrorL << "Exception occurred when checking record schedule for device " << self->_tuple.shortUrl() << ": " << ex.what();
+            return getDelayToNextScheduleHour();
+        }
+    });
+}
+
+void RecordScheduler::check(time_t time_now) {
+    if (!_running || !_poller) {
+        WarnL << "RecordScheduler is not running or poller is null, skipping check for device: " << _tuple.shortUrl();
+        return;
+    }
+
+    const int active_index = getRecordScheduledActive(time_now);
+    if (active_index != _active_index) {
+        auto item = _items_by_hour[static_cast<size_t>(active_index)];
+        onSchedulerChange(item);
+        _active_index = active_index;
+        _active_item = item;
+        _has_active_item = true;
+    }
 }
 
 void RecordScheduler::stopTimer() {
-    _timer.reset();
-    _items.clear();
-    _it = _items.end();
+    _running = false;
+    if (_delay_task) {
+        _delay_task->cancel();
+        _delay_task.reset();
+    }
+    _active_index = -1;
+    _has_active_item = false;
 }
 
 void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
-    auto _current_mode = _it == _items.end() ? RecordMode::NoRecord : _it->second.mode;
+    auto _current_mode = _has_active_item ? _active_item.mode : RecordMode::NoRecord;
     if (_current_mode != item.mode) {
         DebugL << "Recording mode of device: " << _tuple.shortUrl() << " changed to " << getRecordModeString(item.mode) << " (day=" << item.day << ", hour=" << item.hour << ")";
         auto event_active = _event_active;
         onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(item.mode), event_active);
     }
 
-    auto _current_fps = _it == _items.end() ? 0 : _it->second.fps;
-    auto _current_q = _it == _items.end() ? ImageQuality::Low : _it->second.q;
+    auto _current_fps = _has_active_item ? _active_item.fps : 0;
+    auto _current_q = _has_active_item ? _active_item.q : ImageQuality::Low;
     if (_current_fps != item.fps || _current_q != item.q) {
         // DebugL << "Recording quality of device: " << _tuple.shortUrl() << " changed to fps=" << item.fps << ", q=" << getImageQualityString(item.q) << " (day=" << item.day << ", hour=" << item.hour << ")";
         onImageQualityChange(DeviceSource::NullDeviceSource(), item.fps, static_cast<int>(item.q));
     }
 }
 
-RecordScheduler::RecordScheduleMap::iterator RecordScheduler::getRecordScheduledActive(time_t time) {
+int RecordScheduler::getRecordScheduledActive(time_t time) const {
     auto week_time = StrTimeUtils::getWeekTime(time);
-    string time_str = (StrPrinter << toRecordScheduleDay(week_time.day_of_week) << "," << week_time.hour);
-    auto it = _items.find(time_str);
-    if (it == _items.end()) {
-        // throw exception if no schedule found for current time, this should not happen because we fill in default schedule for all time in parseRecordScheduleStr
-        throw std::runtime_error("No record schedule found for current time: " + time_str);
-    }
-    return it;
+    return toRecordScheduleDay(week_time.day_of_week) * 24 + week_time.hour;
 }
 
 bool RecordScheduler::setupRecordEvent(RecordEventType type, bool start) {
     RecordMode mode = RecordMode::NoRecord;
-    if (_it != _items.end()) {
-        mode = _it->second.mode;
+    if (_has_active_item) {
+        mode = _active_item.mode;
     }
     _event_active = start;
 
