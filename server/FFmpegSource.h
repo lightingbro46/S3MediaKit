@@ -105,6 +105,12 @@ struct ExtractOptions {
     std::string description;
     std::string user_id;
     std::string username;
+    // Requesting user's JWT, used to resolve the camera's current watermark/privacy mask
+    // policy (kBroadcastMediaViewOverlay) and apply the same role-based exclusion rules.
+    std::string jwt_token;
+    // Burn an extra bottom-right text stamp (camera name + extracting VMS username) onto the
+    // extracted clip, independent of the camera's own watermark/privacy mask policy.
+    bool enable_source_stamp;
 };
 
 class FFmpegExtractor : public std::enable_shared_from_this<FFmpegExtractor> {
@@ -165,6 +171,8 @@ private:
     toolkit::EventPoller::Ptr _poller;
     std::string _src_path;
     std::string _save_path;
+    std::string _overlay_svg_path;
+    std::vector<std::string> _overlay_temp_paths;
     std::string _log_file;
     std::string _cmd;
     std::function<void()> _onClose;

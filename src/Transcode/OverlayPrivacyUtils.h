@@ -115,6 +115,27 @@ public:
     static std::string buildSvg(const std::vector<OverlayComponent> &components,
                                 const OverlayBuildOptions &options = OverlayBuildOptions());
 
+    /** Build a transparent SVG containing the configured privacy polygons. */
+    static std::string buildPrivacyMaskSvg(const std::vector<PrivacyMaskRegion> &masks,
+                                           int canvas_width, int canvas_height,
+                                           PrivacyMaskRegion::MaskType mask_type,
+                                           bool alpha_only);
+
+    /** Escape a path for use in an avfilter movie= option (backslash, colon, single-quote). */
+    static std::string escapeMoviePath(const std::string &path);
+
+    /**
+     * Build a real ffmpeg filter_complex chain that burns each privacy mask region into the video:
+     * drawbox for SOLID, crop+boxblur+overlay for BLUR, crop+downscale/upscale+overlay for PIXELATE.
+     * Regions are approximated by their polygon's bounding box since ffmpeg's rect filters can't
+     * clip to an arbitrary polygon. Writes the label of the final processed video stream to
+     * last_label ("0:v" unchanged when there is nothing to draw). Returns an empty string when
+     * masks is empty.
+     */
+    static std::string buildPrivacyMaskFilterComplex(const std::vector<PrivacyMaskRegion> &masks,
+                                                     int canvas_width, int canvas_height,
+                                                     std::string &last_label);
+
 };
 
 } // namespace mediakit

@@ -55,6 +55,7 @@ void registerExtractionApis() {
             auto user_id = allArgs["_user_id"];
             auto user_name = allArgs["_user_name"];
             auto jwt_token = allArgs["_jwt_token"];
+            bool enable_source_stamp = allArgs["stampSource"];
 
             if (!findDeviceSource(camera_id)) {
                 RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
@@ -67,7 +68,7 @@ void registerExtractionApis() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-            ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name };
+            ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name, jwt_token, enable_source_stamp };
 
             addFFmpegExtractor(tuple, options, token_cache, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
                 if (ex) {

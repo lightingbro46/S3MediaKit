@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 
@@ -415,6 +416,34 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
     return svg.str();
 }
 
+std::string OverlayPrivacyUtils::buildPrivacyMaskSvg(const std::vector<PrivacyMaskRegion> &masks,
+                                                      int canvas_width, int canvas_height,
+                                                      PrivacyMaskRegion::MaskType mask_type,
+                                                      bool alpha_only) {
+    const int width = std::max(1, canvas_width);
+    const int height = std::max(1, canvas_height);
+    std::ostringstream svg;
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width
+        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height << "\">\n";
+
+    for (size_t i = 0; i < masks.size(); ++i) {
+        const PrivacyMaskRegion &mask = masks[i];
+        if (mask.mask_type != mask_type || mask.points.size() < 3) {
+            continue;
+        }
+        svg << "<polygon points=\"";
+        for (size_t p = 0; p < mask.points.size(); ++p) {
+            if (p) svg << " ";
+            svg << number(mask.points[p].first) << "," << number(mask.points[p].second);
+        }
+        svg << "\" fill=\"" << (alpha_only ? "#ffffff" : escapeXml(mask.color))
+            << "\" fill-opacity=\"" << number(std::max(0.0, std::min(1.0, mask.opacity)))
+            << "\" fill-rule=\"nonzero\"/>\n";
+    }
+    svg << "</svg>\n";
+    return svg.str();
+}
+
 void OverlayPrivacyUtils::prepareComponents(const std::string &source,
                                             std::vector<OverlayComponent> &components,
                                             OverlayBuildOptions &options,
@@ -485,6 +514,131 @@ bool OverlayPrivacyUtils::resolveLocalImages(std::vector<OverlayComponent> &comp
 #endif
     }
     return true;
+}
+
+std::string OverlayPrivacyUtils::escapeMoviePath(const std::string &path) {
+    std::string out;
+    out.reserve(path.size() + 8);
+    for (char c : path) {
+        if (c == '\\' || c == ':' || c == '\'') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+namespace {
+
+std::string fracStr(double v) {
+    std::ostringstream o;
+    o << std::fixed << std::setprecision(6) << v;
+    return o.str();
+}
+
+// ffmpeg drawbox color syntax: 0xRRGGBB[@alpha].
+std::string colorToFFmpegColor(const std::string &hex, double opacity) {
+    std::string h = hex;
+    if (!h.empty() && h[0] == '#') {
+        h = h.substr(1);
+    }
+    if (h.size() != 6) {
+        h = "000000";
+    }
+    return "0x" + h + "@" + fracStr(std::max(0.0, std::min(1.0, opacity)));
+}
+
+// Axis-aligned bounding box of the mask polygon, as [0,1] fractions of the reference canvas.
+// Used because ffmpeg's crop/drawbox filters only operate on rectangles, not arbitrary polygons.
+bool maskBBoxFractions(const PrivacyMaskRegion &mask, int canvas_w, int canvas_h,
+                       double &xf, double &yf, double &wf, double &hf) {
+    if (mask.points.size() < 3) {
+        return false;
+    }
+    double min_x = mask.points[0].first, max_x = min_x;
+    double min_y = mask.points[0].second, max_y = min_y;
+    for (const auto &p : mask.points) {
+        min_x = std::min(min_x, p.first);
+        max_x = std::max(max_x, p.first);
+        min_y = std::min(min_y, p.second);
+        max_y = std::max(max_y, p.second);
+    }
+    min_x = std::max(0.0, std::min((double)canvas_w, min_x));
+    max_x = std::max(0.0, std::min((double)canvas_w, max_x));
+    min_y = std::max(0.0, std::min((double)canvas_h, min_y));
+    max_y = std::max(0.0, std::min((double)canvas_h, max_y));
+    if (max_x <= min_x || max_y <= min_y) {
+        return false;
+    }
+    xf = min_x / canvas_w;
+    yf = min_y / canvas_h;
+    wf = (max_x - min_x) / canvas_w;
+    hf = (max_y - min_y) / canvas_h;
+    return true;
+}
+
+} // namespace
+
+std::string OverlayPrivacyUtils::buildPrivacyMaskFilterComplex(const std::vector<PrivacyMaskRegion> &masks,
+                                                                int canvas_width, int canvas_height,
+                                                                std::string &last_label) {
+    std::vector<std::string> clauses;
+    std::string cur = "0:v";
+    int idx = 0;
+    for (const auto &mask : masks) {
+        double xf, yf, wf, hf;
+        if (!maskBBoxFractions(mask, canvas_width, canvas_height, xf, yf, wf, hf)) {
+            continue;
+        }
+        std::string next = "pm" + std::to_string(idx++);
+        if (mask.mask_type == PrivacyMaskRegion::SOLID) {
+            std::ostringstream expr;
+            expr << "[" << cur << "]drawbox=x='iw*" << fracStr(xf) << "':y='ih*" << fracStr(yf)
+                 << "':w='iw*" << fracStr(wf) << "':h='ih*" << fracStr(hf)
+                 << "':color=" << colorToFFmpegColor(mask.color, mask.opacity) << ":t=fill[" << next << "]";
+            clauses.push_back(expr.str());
+        } else {
+            // Split the running stream so the region can be cropped/processed independently, then
+            // overlaid back onto the untouched copy.
+            clauses.push_back("[" + cur + "]split=2[" + next + "_base][" + next + "_src]");
+
+            std::ostringstream proc;
+            proc << "[" << next << "_src]crop=w='iw*" << fracStr(wf) << "':h='ih*" << fracStr(hf)
+                 << "':x='iw*" << fracStr(xf) << "':y='ih*" << fracStr(yf) << "'";
+            if (mask.mask_type == PrivacyMaskRegion::BLUR) {
+                // TranscodeOverlay applies two radius-2 box passes. Use the equivalent
+                // FFmpeg settings instead of the stronger radius-12/power-2 blur.
+                proc << ",boxblur=luma_radius=2:luma_power=1:chroma_radius=2:chroma_power=1";
+            } else {
+                // Pixelate = area-average downscale to 12-pixel blocks, then nearest-neighbor upscale.
+                // This follows TranscodeOverlay's 12x12 luma blocks more closely than factor 16.
+                // The comma inside
+                // max(...) must reach ffmpeg's own filter-graph parser as a literal (not a filter-chain
+                // separator); our own command-line tokenizer (Process::run -> parse_shell_like) strips
+                // bare quote characters, so escape them with a backslash to survive as literal '...' quotes.
+                proc << ",scale=w=\\'max(1,trunc(iw/12))\\':h=\\'max(1,trunc(ih/12))\\':flags=area"
+                        ",scale=w=iw*12:h=ih*12:flags=neighbor";
+            }
+            proc << "[" << next << "_proc]";
+            clauses.push_back(proc.str());
+
+            std::ostringstream overlay;
+            overlay << "[" << next << "_base][" << next << "_proc]overlay=x='main_w*" << fracStr(xf)
+                    << "':y='main_h*" << fracStr(yf) << "'[" << next << "]";
+            clauses.push_back(overlay.str());
+        }
+        cur = next;
+    }
+    last_label = cur;
+    if (clauses.empty()) {
+        return "";
+    }
+    std::ostringstream out;
+    for (size_t i = 0; i < clauses.size(); ++i) {
+        if (i) out << ";";
+        out << clauses[i];
+    }
+    return out.str();
 }
 
 } // namespace mediakit
