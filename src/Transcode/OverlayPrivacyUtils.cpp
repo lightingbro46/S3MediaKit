@@ -3,6 +3,7 @@
 #include "Common/config.h"
 #include "Util/File.h"
 #include "Util/NoticeCenter.h"
+#include "Util/base64.h"
 #include "Util/logger.h"
 
 #include <algorithm>
@@ -150,7 +151,7 @@ bool resizeImageToPng(const std::string &source_path, const std::string &target_
 }
 #endif
 
-std::string imageHref(const OverlayComponent &component) {
+std::string resolveImagePath(const OverlayComponent &component) {
     if (!component.image_path.empty()) {
         return component.image_path.front() == '/' ? component.image_path :
                File::absolutePath(component.image_path, "");
@@ -164,6 +165,37 @@ std::string imageHref(const OverlayComponent &component) {
         return std::string();
     }
     return path.front() == '/' ? path : File::absolutePath(path, "");
+}
+
+std::string mimeTypeForPath(const std::string &path) {
+    const size_t dot = path.find_last_of('.');
+    std::string ext = dot == std::string::npos ? std::string() : path.substr(dot + 1);
+    for (size_t i = 0; i < ext.size(); ++i) {
+        ext[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(ext[i])));
+    }
+    if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
+    if (ext == "gif") return "image/gif";
+    if (ext == "webp") return "image/webp";
+    if (ext == "svg") return "image/svg+xml";
+    return "image/png";
+}
+
+// librsvg renders the SVG via rsvg_handle_new_from_data() without a base URI,
+// so it refuses to load external file references (including absolute paths)
+// as an SSRF/LFI sandboxing measure. Embedding the image bytes as a data URI
+// avoids external resource loading entirely, which is why raster images were
+// silently missing from the rendered overlay while text still worked.
+std::string imageHref(const OverlayComponent &component) {
+    const std::string path = resolveImagePath(component);
+    if (path.empty()) {
+        return std::string();
+    }
+    const std::string content = File::loadFile(path);
+    if (content.empty()) {
+        WarnL << "OverlayPrivacyUtils: cannot read overlay image: " << path;
+        return std::string();
+    }
+    return "data:" + mimeTypeForPath(path) + ";base64," + encodeBase64(content);
 }
 
 void prepareNextImage(const std::shared_ptr<ComponentsPrepareState> &state) {
@@ -297,12 +329,11 @@ bool OverlayPrivacyUtils::parsePrivacyMasks(const std::string &source,
         }
         if (mask.points.size() >= 3) masks.push_back(mask);
     }
-    DebugL << "Parsed privacy masks: total=" << masks.size();
+    TraceL << "Parsed privacy masks: total=" << masks.size();
     for (size_t i = 0; i < masks.size(); ++i) {
         const char *type = masks[i].mask_type == PrivacyMaskRegion::BLUR ? "BLUR" :
                            masks[i].mask_type == PrivacyMaskRegion::PIXELATE ? "PIXELATE" : "SOLID";
-        DebugL << "Privacy mask id=" << masks[i].id << ", type=" << type
-               << ", points=" << masks[i].points.size();
+        TraceL << "Privacy mask id=" << masks[i].id << ", type=" << type << ", points=" << masks[i].points.size();
     }
     return !masks.empty();
 }
@@ -324,23 +355,8 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
             << "\" fill=\"none\" stroke=\"" << escapeXml(options.border_color) << "\"/>\n";
     }
 
-    // Privacy masks are the base layer. Watermark text/images are emitted
-    // below and therefore remain visible when they overlap a solid mask.
-    for (size_t i = 0; i < options.privacy_masks.size(); ++i) {
-        const PrivacyMaskRegion &mask = options.privacy_masks[i];
-        if (mask.mask_type != PrivacyMaskRegion::SOLID) {
-            continue;
-        }
-        const double opacity = std::max(0.0, std::min(1.0, mask.opacity));
-        svg << "<polygon points=\"";
-        for (size_t j = 0; j < mask.points.size(); ++j) {
-            if (j) svg << " ";
-            svg << number(mask.points[j].first) << "," << number(mask.points[j].second);
-        }
-        svg << "\" fill=\"" << escapeXml(mask.color)
-            << "\" opacity=\"" << number(opacity) << "\"/>\n";
-    }
-
+    // Privacy masks are burned in separately (pixel processing for live transcode,
+    // ffmpeg filter_complex for extract) — this SVG only carries the watermark.
     svg << "<defs>\n";
     for (size_t i = 0; i < components.size(); ++i) {
         const OverlayComponent &component = components[i];

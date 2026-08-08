@@ -80,7 +80,9 @@ struct OverlayBuildOptions {
 };
 
 /**
- * C++11-only SVG builder for privacy masks and watermarks.
+ * C++11-only SVG builder for watermarks (buildSvg draws components only \u2014 privacy
+ * masks are burned in separately via pixel processing or ffmpeg filters, see
+ * buildPrivacyMaskFilterComplex and TranscodeOverlay::applyPrivacyMasks).
  *
  * The generated SVG is transparent by default and can be consumed by an
  * FFmpeg movie filter. This class intentionally has no Qt dependency.

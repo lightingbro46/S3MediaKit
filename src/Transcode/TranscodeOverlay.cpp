@@ -322,6 +322,8 @@ bool TranscodeOverlay::buildGraph(const FFmpegFrame::Ptr &frame) {
     }
 
     std::ostringstream graph;
+    // The SVG is authored in the camera overlay canvas. Scale it to exactly the decoded frame
+    // dimensions so canvas coordinates map across the complete video, including aspect-ratio changes.
     graph << "movie=" << escape_movie_path(_image_path) << ",loop=loop=-1:size=1:start=0,scale=" << _src_width << ":"
           << _src_height << ":flags=lanczos[wm];[in]format=yuv420p[base];[base][wm]overlay=x="
           << _x << ":y=" << _y << ":eof_action=repeat,format=yuv420p[out]";
