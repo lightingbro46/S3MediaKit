@@ -834,16 +834,13 @@ static void loadServerConfigFromJson(const Json::Value &data) {
 
     // monitor threshold config
 #define GET_THRESHOLD(type, name, warning_config, critical_config)                                                                                             \
-    GET_CONFIG(double, defaultLevelLow_##type, GlobalMonitorConfig::warning_config);                                                                            \
-    GET_CONFIG(double, defaultLevelMedium_##type, GlobalMonitorConfig::critical_config);                                                                         \
-    const Json::Value &thresholdConfig_##type = data["thresholdConfig"];                                                                                        \
-    double levelLow_##type = !thresholdConfig_##type[#name "_levelLow"].isNull()                                                                                \
-                                 ? thresholdConfig_##type[#name "_levelLow"].asDouble()                                                                         \
-                                 : defaultLevelLow_##type;                                                                                                       \
-    double levelMedium_##type = !thresholdConfig_##type[#name "_levelMedium"].isNull()                                                                          \
-                                    ? thresholdConfig_##type[#name "_levelMedium"].asDouble()                                                                   \
-                                    : defaultLevelMedium_##type;                                                                                                 \
+    GET_CONFIG(float, defaultLevelLow_##type, GlobalMonitorConfig::warning_config);                                                                            \
+    GET_CONFIG(float, defaultLevelMedium_##type, GlobalMonitorConfig::critical_config);                                                                        \
+    const Json::Value &thresholdConfig_##type = data["thresholdConfig"];                                                                                       \
+    float levelLow_##type = !data["thresholdConfig"].isNull() ? data["thresholdConfig"][#name "_levelLow"].asDouble() : defaultLevelLow_##type;                \
+    float levelMedium_##type = !data["thresholdConfig"].isNull() ? data["thresholdConfig"][#name "_levelMedium"].asDouble() : defaultLevelMedium_##type;       \
     GlobalMonitor::Instance().setThreshold(ResourceType::type, levelLow_##type, levelMedium_##type);
+    
     GET_THRESHOLD(CPU, CPU, kCpuWarningThreshold, kCpuCriticalThreshold);
     GET_THRESHOLD(MEMORY, RAM, kMemoryWarningThreshold, kMemoryCriticalThreshold);
     GET_THRESHOLD(HDD, STORAGE, kHddWarningThreshold, kHddCriticalThreshold);
