@@ -135,28 +135,28 @@ void GlobalMonitor::start() {
                     m.disks_json           = disks_val.toStyledString();
 
                     strong_self->_metrics_store->insertMetric(m);
-                    TraceL << "System metrics recorded at " << getTimeStr("%Y-%m-%d %H:%M:%S", time(nullptr));
+                    DebugL << "System metrics recorded at " << getTimeStr("%Y-%m-%d %H:%M:%S", time(nullptr));
                 }
                 // Update last metrics sample time
                 strong_self->_last_metrics_sample_time = time(nullptr);
                 
                 if (time(nullptr) - strong_self->_last_debug_log_time >= 300) {
                 // ── Periodic debug-log timer (300 s) ──────────────────────────
-                    DebugL << "OS CPU usage: " << format_float_2f(cpu_usage.usagePct) << "%";
-                    DebugL << "Process CPU usage: " << format_float_2f(cpu_usage.procUsagePct) << "%";
-                    DebugL << "OS Memory usage: " << format_float_2f(mem_usage.usagePct) << "%";
-                    DebugL << "Process Memory usage: " << format_float_2f(mem_usage.procUsagePct) << "%";
-                    DebugL << "Network usage:";
+                    InfoL << "OS CPU usage: " << format_float_2f(cpu_usage.usagePct) << "%";
+                    InfoL << "Process CPU usage: " << format_float_2f(cpu_usage.procUsagePct) << "%";
+                    InfoL << "OS Memory usage: " << format_float_2f(mem_usage.usagePct) << "%";
+                    InfoL << "Process Memory usage: " << format_float_2f(mem_usage.procUsagePct) << "%";
+                    InfoL << "Network usage:";
                     for (const auto &it : net_usage) {
-                        DebugL << "     " << it.name << " - in " << format_float_2f(it.rx_mbps) << " Mbps, out " << format_float_2f(it.tx_mbps) << " Mbps";
+                        InfoL << "     " << it.name << " - in " << format_float_2f(it.rx_mbps) << " Mbps, out " << format_float_2f(it.tx_mbps) << " Mbps";
                     }
-                    DebugL << "HDD usage:";
+                    InfoL << "HDD usage:";
                     for (const auto &it : hdd_usage) {
-                        DebugL << "     " << it.mount_point << " - total " << format_bytes_human_readable(it.total_bytes)
+                        InfoL << "     " << it.mount_point << " - total " << format_bytes_human_readable(it.total_bytes)
                                                             << ", used "  << format_bytes_human_readable(it.used_bytes)
                                                             << ", usage " << format_float_2f(it.usage_pct) << "%";
                     }
-                    DebugL << "Total Reader usage: " << live_count + playback_count;
+                    InfoL << "Total Reader usage: " << live_count + playback_count;
                     // Update last debug log time
                     strong_self->_last_debug_log_time = time(nullptr);
                 }
