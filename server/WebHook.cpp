@@ -157,14 +157,25 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
-    if (res.status() != "200") {
+    // Hook endpoints may return any successful 2xx status, including 204.
+    const string status = res.status();
+    if (status.size() != 3 || status[0] != '2') {
         auto errStr = StrPrinter << "[bad http status code]:" << res.status() << endl;
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
+
+    // Event/audit hooks commonly return no body. Do not try to parse an empty
+    // successful response as JSON.
+    string content = res.content();
+    trim(content);
+    if (content.empty()) {
+        fun(Json::nullValue, "", false);
+        return;
+    }
     Value result;
     try {
-        stringstream ss(res.content());
+        stringstream ss(content);
         ss >> result;
     } catch (std::exception &ex) {
         auto errStr = StrPrinter << "[parse json failed]:" << ex.what() << endl;
