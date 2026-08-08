@@ -637,7 +637,12 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
         const Json::Value &pc = data["privacyConfig"];
 
         GET_OPTION_PROPERTY(option, enforcePrivacyMaskOnView, pc, enabled)
-        GET_OPTION_PROPERTY_AS_STRING(option, privacyMaskExcludedRoleIds, pc, excludedRoleIds)
+        std::ostringstream ss;
+        for (const auto &roleId : pc["excludedRoleIds"]) {
+            ss << roleId.asString() << ",";
+        }
+        std::string excludedRoleIds = ss.str();
+        option.privacyMaskExcludedRoleIds = excludedRoleIds.empty() ? "" : excludedRoleIds.substr(0, excludedRoleIds.size() - 1);
         GET_OPTION_PROPERTY_AS_STRING(option, privacyMaskRegions, pc, regions)
     }
 
