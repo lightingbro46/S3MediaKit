@@ -515,6 +515,11 @@ static void reportServerStarted() {
         body["rtmpPort"] = static_cast<int>(mINI::Instance()["rtmp.port"]);
         body["httpPort"] = static_cast<int>(mINI::Instance()["http.port"]);
         body["httpsPort"] = static_cast<int>(mINI::Instance()["http.sslport"]);
+#ifdef ENABLE_TIER_STORAGE
+        body["enableTierStorage"] = true;
+#else
+        body["enableTierStorage"] = false;
+#endif // ENABLE_TIER_STORAGE
         // Execute hook
         do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) {
             if (err.empty()) {
