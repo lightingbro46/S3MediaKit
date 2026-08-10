@@ -199,6 +199,17 @@ bool MultiMediaSourceProcessor::isMotionDetectRunning() {
 #endif // ENABLE_MOTION
 }
 
+int MultiMediaSourceProcessor::readerCount() const {
+    int totalCount = 0;
+#if defined(ENABLE_MOTION)
+    totalCount += _mjpeg_muxer ? _mjpeg_muxer->readerCount() : 0;
+#endif // ENABLE_MOTION
+    for (const auto &transcode : snapshotTranscodes()) {
+        totalCount += transcode->totalReaderCount();
+    } 
+    return totalCount;
+}
+
 } // namespace mediakit
 
 #endif // ENABLE_FFMPEG

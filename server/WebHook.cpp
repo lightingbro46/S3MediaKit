@@ -1110,9 +1110,31 @@ void installWebHook() {
             record_stream = true;
         }
 
-        auto isStreamLimit = [invoker, device_id, record_stream]() {
+        auto params = Parser::parseArgs(args.params);
+        string jwt_token = params["token"];
+
+        bool transcode_stream = false;
+        bool use_transcode = false;
+        auto transcode_it = params.find("transcode");
+        if (transcode_it != params.end()) {
+            transcode_stream = transcode_it->second == "1" || transcode_it->second == "true";
+        }
+
+        if (!transcode_stream) {
+            Broadcast::ViewOverlayPolicyInvoker policy_cb = [&](const Broadcast::ViewOverlayPolicy &policy) {
+                const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
+                const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+
+                transcode_stream = use_watermark || use_privacy_mask;
+            };
+            NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, jwt_token, policy_cb, sender);
+        }
+        
+
+        auto isStreamLimit = [invoker, device_id, record_stream, transcode_stream]() {
+            auto resource_limit = GlobalMonitor::Instance().isReaderResourceLimit(transcode_stream);
             auto stream_limit = GlobalMonitor::Instance().isReaderCountLimit(device_id, record_stream);
-            invoker(stream_limit ? "MaxRequest" : "");
+            invoker(resource_limit ? "ResourceUnavailable" : (stream_limit ? "MaxRequest" : ""));
         };
 
         GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
@@ -1122,7 +1144,6 @@ void installWebHook() {
             return;
         }
 
-        auto params = Parser::parseArgs(args.params);
         if (!bypass_realms.empty() && bypass_realms.find(params["realm"]) != bypass_realms.end()) {
             // Bypass authentication realm, directly allow access, session do not record in database
             // todo: record user session with realm
@@ -1130,7 +1151,6 @@ void installWebHook() {
             return;
         }
 
-        string jwt_token = params["token"];
         if (jwt_token.empty()) {
             invoker("Unauthorized");
             return;

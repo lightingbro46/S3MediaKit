@@ -64,15 +64,25 @@ void GlobalMonitor::start() {
     }
 
     _cpu_monitor = std::make_shared<CpuMonitor>(_poller);
+    GET_CONFIG(float, default_warning_cpu_threshold, GlobalMonitorConfig::kCpuWarningThreshold)
+    GET_CONFIG(float, default_critical_cpu_threshold, GlobalMonitorConfig::kCpuCriticalThreshold)
+    _cpu_monitor->setThreshold(default_warning_cpu_threshold, default_critical_cpu_threshold);
     DebugL << "Start monitoring CPU usage";
 
     _mem_monitor = std::make_shared<MemoryMonitor>(_poller);
+    GET_CONFIG(float, default_warning_mem_threshold, GlobalMonitorConfig::kMemoryWarningThreshold)
+    GET_CONFIG(float, default_critical_mem_threshold, GlobalMonitorConfig::kMemoryCriticalThreshold)
+    _mem_monitor->setThreshold(default_warning_mem_threshold, default_critical_mem_threshold);
     DebugL << "Start monitoring Memory usage";
 
     _net_monitor = std::make_shared<NetworkMonitor>(_poller);
+    // Note: Do not set network threshold
     DebugL << "Start monitoring Network usage";
 
     _hdd_monitor = std::make_shared<HddMonitor>(_poller);
+    GET_CONFIG(float, default_warning_hdd_threshold, GlobalMonitorConfig::kHddWarningThreshold)
+    GET_CONFIG(float, default_critical_hdd_threshold, GlobalMonitorConfig::kHddCriticalThreshold)
+    _hdd_monitor->setThreshold(default_warning_hdd_threshold, default_critical_hdd_threshold);
     DebugL << "Start monitoring Hdd usage";
 
     _reader_monitor = std::make_shared<ReaderMonitor>(_poller);
@@ -320,9 +330,40 @@ void GlobalMonitor::setStreamReaderCount(const string &camera_id, const string &
     }
 }
 
+bool GlobalMonitor::isReaderResourceLimit(bool transcode_stream) {
+    const auto threshold_for = [transcode_stream](const std::pair<float, float> &threshold) {
+        // Transcoding needs more headroom, so reject at the warning level;
+        // ordinary playback is rejected only at the critical level.
+        return transcode_stream ? threshold.first : threshold.second;
+    };
+
+    if (_cpu_monitor) {
+        auto threshold = threshold_for(getThreshold(ResourceType::CPU));
+        auto usage = _cpu_monitor->getCurrentUsage().usagePct;
+        if (threshold > 0 && usage >= threshold) {
+            WarnL << "Reject reader because CPU usage " << usage << "% reached " << threshold
+                  << "% (transcode=" << transcode_stream << ")";
+            return true;
+        }
+    }
+
+    if (_mem_monitor) {
+        auto threshold = threshold_for(getThreshold(ResourceType::MEMORY));
+        auto usage = _mem_monitor->getCurrentUsage().usagePct;
+        if (threshold > 0 && usage >= threshold) {
+            WarnL << "Reject reader because memory usage " << usage << "% reached " << threshold
+                  << "% (transcode=" << transcode_stream << ")";
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool GlobalMonitor::isReaderCountLimit(const string &camera_id, bool record_stream) {
-    if (_reader_monitor)
-        return _reader_monitor->isReaderCountLimit(camera_id, record_stream);
+    if (_reader_monitor && _reader_monitor->isReaderCountLimit(camera_id, record_stream)) {
+        return true;
+    }
     return false;
 }
 

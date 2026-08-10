@@ -99,7 +99,7 @@ public:
     /** Feed an original audio frame for pass-through. */
     bool inputAudioFrame(const Frame::Ptr &frame);
 
-    bool isEnabled() const { return _muxer && _muxer->isEnabled(); }
+    int totalReaderCount() const;
 
     /** Number of live TranscodeProcessor instances (transcode stream count). */
     static size_t totalCount();

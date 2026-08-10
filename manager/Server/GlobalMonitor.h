@@ -69,6 +69,8 @@ public:
 
     bool isReaderCountLimit(const std::string &camera_id, bool record_stream = false);
 
+    bool isReaderResourceLimit(bool transcode_stream = false);
+
     ReaderCountInfoMap getReaderUsage();
 
     int getReaderTotalCount();

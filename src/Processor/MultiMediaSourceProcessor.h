@@ -42,6 +42,8 @@ public:
 
     void resetTracks() override;
 
+    int readerCount() const;
+
     bool isMotionDetectRunning();
 
 protected:

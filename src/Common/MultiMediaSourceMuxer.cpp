@@ -276,6 +276,7 @@ int MultiMediaSourceMuxer::totalReaderCount() const {
            (_mp4 ? _option.mp4_as_player : 0) +
            (_hls ? _hls->readerCount() : 0) +
            (_hls_fmp4 ? _hls_fmp4->readerCount() : 0) +
+           (_stack? _stack->readerCount() : 0) +
            (_ring ? _ring->readerCount() : 0);
 }
 

@@ -359,6 +359,9 @@ bool TranscodeProcessor::close(MediaSource &sender) {
     return ret;
 }
 
+int TranscodeProcessor::totalReaderCount() const {
+    return _muxer ? _muxer->totalReaderCount() : 0;
+}
 
 } // namespace mediakit
 

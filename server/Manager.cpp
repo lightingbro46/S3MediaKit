@@ -734,7 +734,7 @@ static void loadWatermarkTemplateFromJson(unordered_map<string, string> &ret, co
             if (!id.empty()) {
                 try {
                     ret[id] = StrJsonUtils::writeJsonString(w);
-                    DebugL << "Load watermark template from json: id=" << id << ", name=" << name;
+                    TraceL << "Load watermark template from json: id=" << id << ", name=" << name;
                 } catch (const std::exception &e) {
                     WarnL << "Failed to load watermark template from json: id=" << id << ", name=" << name << ", error=" << e.what();
                 }
@@ -755,7 +755,7 @@ static void prefetchWatermarkOverlayImages(const unordered_map<string, string> &
                             << template_id << ": " << err;
                     return;
                 }
-                DebugL << "Prefetch watermark overlay images completed, template_id=" << template_id;
+                TraceL << "Prefetch watermark overlay images completed, template_id=" << template_id;
             });
     }
 }
@@ -912,8 +912,7 @@ static void loadServerClusterFromJson(const Json::Value &data) {
     }
 
     SyncManager::Instance().setSingleNodeMode(ClusterManager::Instance().getMediaServerIds().size() == 1);
-
-    DebugL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
+    TraceL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
 }
 
 void loadServerConfigJson(const Json::Value &data_api) {

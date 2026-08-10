@@ -333,6 +333,10 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         }
 
         if (!err.empty()) {
+            if (err == "ResourceUnavailable") {
+                strong_self->sendResponse(503, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("503 Service Unavailable"));
+                return;
+            }
             if (err == "MaxRequest") {
                 // Too many connections
                 strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
@@ -1282,6 +1286,10 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
             return;
         }
         if (!err.empty()) {
+           if (err == "ResourceUnavailable") {
+                strong_self->sendResponse(503, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("503 Service Unavailable"));
+                return;
+            }
            if (err == "MaxRequest") {
                 // Too many connections
                 strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
