@@ -80,9 +80,9 @@ TEST(ReaderMonitorTest, TracksLiveAndRecordedReaders) {
     EXPECT_EQ(0, monitor.totalReaderCount("missing"));
     EXPECT_TRUE(monitor.getCurrentUsage().empty());
 
-    monitor.setStreamReaderCount("camera-a", 3, false);
-    monitor.setStreamReaderCount("camera-a", 2, true);
-    monitor.setStreamReaderCount("camera-b", 4, false);
+    monitor.setStreamReaderCount("camera-a", "camera-a|live:rtsp", 3);
+    monitor.setStreamReaderCount("camera-a", "camera-a|record:fmp4", 2);
+    monitor.setStreamReaderCount("camera-b", "camera-b|live:rtsp", 4);
     EXPECT_EQ(9, monitor.totalReaderCount());
     EXPECT_EQ(5, monitor.totalReaderCount("camera-a"));
     EXPECT_EQ(4, monitor.totalReaderCount("camera-b"));
@@ -91,9 +91,23 @@ TEST(ReaderMonitorTest, TracksLiveAndRecordedReaders) {
     EXPECT_EQ(3, usage["camera-a"].first);
     EXPECT_EQ(2, usage["camera-a"].second);
 
-    monitor.setStreamReaderCount("camera-a", 1, false);
+    // Repeated schema events are normalized to the same source key by
+    // GlobalMonitor. The snapshot must replace the old value instead of being
+    // added again.
+    monitor.setStreamReaderCount("camera-a", "camera-a|live:rtsp", 1);
     EXPECT_EQ(7, monitor.totalReaderCount());
     EXPECT_EQ(3, monitor.totalReaderCount("camera-a"));
+
+    // Different replay timestamps are different source instances and should
+    // both contribute to the camera's recorded reader count.
+    monitor.setStreamReaderCount("camera-a", "camera-a|record:camera/vod/100", 2);
+    monitor.setStreamReaderCount("camera-a", "camera-a|record:camera/vod/200", 1);
+    EXPECT_EQ(10, monitor.totalReaderCount());
+    EXPECT_EQ(6, monitor.totalReaderCount("camera-a"));
+
+    monitor.setStreamReaderCount("camera-a", "camera-a|record:camera/vod/100", 0);
+    EXPECT_EQ(8, monitor.totalReaderCount());
+    EXPECT_EQ(4, monitor.totalReaderCount("camera-a"));
 }
 
 TEST(ReaderMonitorTest, AppliesGlobalAndPerStreamThresholds) {
@@ -107,14 +121,14 @@ TEST(ReaderMonitorTest, AppliesGlobalAndPerStreamThresholds) {
     EXPECT_TRUE(monitor.isReaderCountAvailable("camera"));
     EXPECT_FALSE(monitor.isReaderCountLimit("camera"));
 
-    monitor.setStreamReaderCount("camera", 2);
+    monitor.setStreamReaderCount("camera", "camera|live:rtsp", 2);
     EXPECT_FALSE(monitor.isReaderCountAvailable("camera"));
     EXPECT_FALSE(monitor.isReaderCountLimit("camera"));
-    monitor.setStreamReaderCount("camera", 3);
+    monitor.setStreamReaderCount("camera", "camera|live:rtsp", 3);
     EXPECT_TRUE(monitor.isReaderCountLimit("camera"));
 
-    monitor.setStreamReaderCount("other", 3);
+    monitor.setStreamReaderCount("other", "other|live:rtsp", 3);
     EXPECT_FALSE(monitor.isReaderCountAvailable());
-    monitor.setStreamReaderCount("third", 1);
+    monitor.setStreamReaderCount("third", "third|live:rtsp", 1);
     EXPECT_TRUE(monitor.isReaderCountLimit("third"));
 }

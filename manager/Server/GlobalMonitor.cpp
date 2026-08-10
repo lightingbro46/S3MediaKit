@@ -314,9 +314,9 @@ void GlobalMonitor::setStreamReaderThreshold(int warning_threshold, int critical
     }
 }
 
-void GlobalMonitor::setStreamReaderCount(const string &camera_id, int reader_count, bool record_stream) {
+void GlobalMonitor::setStreamReaderCount(const string &camera_id, const string &source_id, int reader_count) {
     if (_reader_monitor) {
-        _reader_monitor->setStreamReaderCount(camera_id, reader_count, record_stream);
+        _reader_monitor->setStreamReaderCount(camera_id, source_id, reader_count);
     }
 }
 
@@ -695,6 +695,7 @@ static void* s_tag;
 static onceToken g_token(
 []() {
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastPlayerCountChanged, [](BroadcastPlayerCountChangedArgs) {
+        DebugL << "Player count changed: " << args.shortUrl() << ", size: " << count;
         auto device_id = args.app;
         bool record_stream = false;
         GET_CONFIG(string, app_name, Record::kAppName);
@@ -702,7 +703,14 @@ static onceToken g_token(
             device_id = split(args.stream, "/")[0];
             record_stream = true;
         }
-        GlobalMonitor::Instance().setStreamReaderCount(device_id, count, record_stream);
+        // The event count is already the total reader count of the source
+        // muxer across all protocols. Do not include a protocol/schema in the
+        // key, otherwise the same readers would be counted more than once.
+        // Replay sources may use a different timestamp in `stream`. Keep it
+        // in the key so concurrent replays remain separate, while
+        // ReaderMonitor aggregates all record sources by camera_id.
+        auto source_id = device_id + "|" + (record_stream ? "record:" : "live:") + args.shortUrl();
+        GlobalMonitor::Instance().setStreamReaderCount(device_id, source_id, count);
     });
 }, 
 []() {

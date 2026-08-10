@@ -20,7 +20,7 @@ public:
 
     ReaderCountInfoMap getCurrentUsage();
 
-    void setStreamReaderCount(const std::string &camera_id, int reader_count, bool record = false);
+    void setStreamReaderCount(const std::string &camera_id, const std::string &source_id, int reader_count);
 
     bool isReaderCountLimit(const std::string &camera_id, bool record = false);
 
@@ -37,6 +37,8 @@ public:
 private:
     void start() override;
 
+    ReaderCountInfoMap aggregateReaderCountsLocked() const;
+
     std::unordered_map<std::string, int> totalEachReaderCount();
 
     void emitStreamReaderAlert(const std::string &camera_id, int usage_count);
@@ -44,7 +46,11 @@ private:
 private:
     std::shared_ptr<std::atomic<bool>> _alive_flag;
     toolkit::Timer::Ptr _timer;
-    ReaderCountInfoMap _map_reader;
+    struct SourceReaderCount {
+        std::string camera_id;
+        int reader_count = 0;
+    };
+    std::unordered_map<std::string, SourceReaderCount> _source_reader;
     std::atomic<int> _total_reader {0};
     int _stream_reader_warning_threshold = -1;
     int _stream_reader_critical_threshold = -1;

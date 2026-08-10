@@ -65,7 +65,7 @@ public:
 
     void setStreamReaderThreshold(int warning_threshold = -1, int critical_threshold = -1);
     
-    void setStreamReaderCount(const std::string &camera_id, int reader_count, bool record_stream = false);
+    void setStreamReaderCount(const std::string &camera_id, const std::string &source_id, int reader_count);
 
     bool isReaderCountLimit(const std::string &camera_id, bool record_stream = false);
 
