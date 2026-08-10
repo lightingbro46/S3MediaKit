@@ -3,21 +3,20 @@
 
 #if defined(ENABLE_FFMPEG)
 
-#include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
 #include "Codec/Transcode.h"
 #include "Common/macros.h"
-#include "FMP4/FMP4MediaSourceMuxer.h"
 #include "TranscodeOverlay.h"
 #include "Common/MediaSink.h"
 #include "Common/MediaSource.h"
-#include "FMP4/FMP4MediaSourceMuxer.h"
-#include "TranscodeOverlay.h"
 #include "Util/util.h"
 
 namespace mediakit {
+
+class MultiMediaSourceMuxer;
 
 struct TranscodeRequest {
     bool enabled = false;
@@ -39,19 +38,18 @@ bool parseTranscodeRequest(const std::string &params,
  * TranscodeProcessor builds an on-demand, re-encoded video stream from the
  * decoded frames of an existing MediaSource.  It mirrors how http-mp4 obtains
  * its data (reads from a MediaSource) but re-encodes the pixels, optionally
- * applying an avfilter image overlay (privacy mask / watermark), and publishes
- * the result as a dedicated fMP4 source (schema fmp4) under a derived stream_id
- * `<stream>.transcode`, consumable via http-fmp4 / ws-fmp4.
+ * applying an image overlay (privacy mask / watermark), and publishes the
+ * result through the existing MultiMediaSourceMuxer under a derived stream_id.
  *
  * Pipeline (per decoded video frame):
  *   FFmpegFrame → TranscodeOverlay → FFmpegEncoder(H264) → Frame::Ptr
- *              → MediaSink (track-ready mgmt) → FMP4MediaSourceMuxer
+ *              → MediaSink (track-ready mgmt) → MultiMediaSourceMuxer
  *
- * Audio is passed through unchanged (no transcode) so the fMP4 stream keeps
- * the original audio track.
+ * Audio is passed through unchanged (no transcode).
  *
- * On-demand (transcode_demand=true): after the source is primed & registered,
- * the expensive overlay+encode step is skipped while no viewer is connected.
+ * On-demand (transcode_demand=true): encoding follows the muxer's demand gate;
+ * the derived source is closed by MediaSourceEvent after the no-reader delay,
+ * then the owning MultiMediaSourceProcessor removes this instance.
  *
  * Threading: inputVideoFrame()/inputAudioFrame() must be called from the single
  * decode thread (same as the shared FFmpegDecoder callback).
@@ -77,13 +75,17 @@ public:
         std::vector<OverlayComponent> overlay_components;
         OverlayBuildOptions overlay_options;
         std::string stream_suffix = ".transcode";
+        std::string output_schema;
     };
 
-    TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg);
+    TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg, const toolkit::EventPoller::Ptr &poller = nullptr);
     ~TranscodeProcessor() override;
 
     /** Wire the outer MediaSourceEvent listener; call after make_shared. */
     void setListener(const std::weak_ptr<MediaSourceEvent> &listener);
+
+    /** Called after the delayed output close has completed. */
+    void setOnClosed(const std::function<void(const Ptr &)> &callback);
 
     /** Register the original audio track for pass-through muxing. */
     void addAudioTrack(const Track::Ptr &track);
@@ -107,19 +109,28 @@ protected:
     bool onTrackReady(const Track::Ptr &track) override;
     void onAllTrackReady() override;
     bool onTrackFrame(const Frame::Ptr &frame) override;
+    void onReaderChanged(MediaSource &sender, int size) override;
+    bool close(MediaSource &sender) override;
 
 private:
+    void createMuxer();
+    void addTrackToMuxer(const Track::Ptr &track);
+    void completeMuxerTracks();
+
     MediaTuple _tuple;               // derived stream_id
+    ProtocolOption _option;
     Config _cfg;
+    toolkit::EventPoller::Ptr _poller;
     bool _have_audio = false;
-    bool _primed = false;            // source registered (init segment produced)
+    bool _primed = false;
     bool _last_enabled = false;
+    std::function<void(const Ptr &)> _on_closed;
     int64_t _last_overlay_input_pts = AV_NOPTS_VALUE;
     FFmpegSws::Ptr _pre_overlay_sws;
     int _pre_overlay_width = 0;
     int _pre_overlay_height = 0;
 
-    FMP4MediaSourceMuxer::Ptr _muxer;
+    std::shared_ptr<MultiMediaSourceMuxer> _muxer;
     FFmpegEncoder::Ptr _encoder;
     TranscodeOverlay::Ptr _overlay;
 

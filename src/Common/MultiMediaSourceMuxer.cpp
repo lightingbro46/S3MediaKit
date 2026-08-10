@@ -225,7 +225,7 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
     }
 #if defined(ENABLE_FFMPEG)
     if (option.enable_motion || option.enable_transcode) {
-        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
+        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option, _poller);
     }
 #endif // ENABLE_FFMPEG
 
@@ -648,13 +648,14 @@ bool MultiMediaSourceMuxer::isMotionDetecting() {
 
 #if defined(ENABLE_FFMPEG)
 MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const TranscodeProcessor::Config &cfg) {
-    CHECK(_poller->isCurrentThread(), "View overlay transcode must be created on the source poller");
+    auto owner_poller = getOwnerPoller(MediaSource::NullMediaSource());
+    CHECK(owner_poller && owner_poller->isCurrentThread(), "View overlay transcode must be created on the source poller");
     if (!_stack) {
         ProtocolOption option = _option;
         option.enable_motion = false;
         option.enable_transcode = false;
         option.transcode_demand = true;
-        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
+        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option, owner_poller);
         _stack->setListener(shared_from_this());
         for (const auto &track : getTracks()) {
             _stack->addTrack(track);

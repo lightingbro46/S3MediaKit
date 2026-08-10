@@ -409,6 +409,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const int transcode_fps = transcode_request.fps;
         const int transcode_bitrate = transcode_request.bitrate;
         const int transcode_gop = transcode_request.gop;
+        const string output_schema = self->_media_info.schema;
 
         vector<OverlayComponent> components;
         OverlayBuildOptions overlay_options;
@@ -436,7 +437,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                            policy.watermark_template + "|" + policy.privacy_mask_regions;
         const string stream_suffix = ".transcode." + MD5(key).hexdigest();
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
-        auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix,
+        auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
                                 transcode_fps, transcode_bitrate, transcode_gop](const vector<OverlayComponent> &prepared_components) {
             auto self = weak_self.lock();
@@ -449,6 +450,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
             cfg.bitrate = transcode_bitrate;
             cfg.gop = transcode_gop;
             cfg.stream_suffix = stream_suffix;
+            cfg.output_schema = output_schema;
             cfg.demand = true;
             cfg.overlay_components = prepared_components;
             cfg.overlay_options = overlay_options;
@@ -484,11 +486,10 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                 }
 
                 // TranscodeProcessor is created before its first encoded keyframe
-                // is available. The fMP4 MediaSource is registered only after the
-                // init segment is generated, so wait for its registration event.
+                // is available. Wait for the requested protocol source to register.
                 const MediaTuple &source_tuple = muxer->getMediaTuple();
                 MediaInfo overlay_info;
-                overlay_info.schema = FMP4_SCHEMA;
+                overlay_info.schema = cfg.output_schema;
                 overlay_info.vhost = source_tuple.vhost;
                 overlay_info.app = source_tuple.app;
                 overlay_info.stream = source_tuple.stream + cfg.stream_suffix;

@@ -10,6 +10,7 @@
 #endif // ENABLE_MOTION
 
 #include "Transcode/TranscodeProcessor.h"
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -23,7 +24,8 @@ class MultiMediaSourceProcessor
 public:
     using Ptr = std::shared_ptr<MultiMediaSourceProcessor>;
 
-    MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option);
+    MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option,
+                              const toolkit::EventPoller::Ptr &poller = nullptr);
 
     void setListener(const std::weak_ptr<MediaSourceEvent> &listener);
 
@@ -34,7 +36,7 @@ public:
     /** Create or reuse a transcode variant while sharing this processor's decoder. */
     MediaSource::Ptr ensureTranscode(const TranscodeProcessor::Config &cfg);
 
-    bool isTranscodeEnabled() const { return !_transcodes.empty(); }
+    bool isTranscodeEnabled() const;
 
     void addTrackCompleted() override;
 
@@ -48,6 +50,10 @@ protected:
 private:
     TranscodeProcessor::Ptr createTranscode(const TranscodeProcessor::Config &cfg);
 
+    /** Remove a closed transcode variant if it is still the mapped instance. */
+    void removeTranscode(const std::string &key, const TranscodeProcessor::Ptr &transcode);
+    std::vector<TranscodeProcessor::Ptr> snapshotTranscodes() const;
+
     MediaTuple _tuple;
     ProtocolOption _option;
     toolkit::EventPoller::Ptr _poller;
@@ -59,6 +65,7 @@ private:
 #endif // ENABLE_MOTION
 
     std::unordered_map<std::string, TranscodeProcessor::Ptr> _transcodes;
+    mutable std::mutex _mtx;
     std::vector<Track::Ptr> _audio_tracks;
     bool _tracks_completed = false;
 };

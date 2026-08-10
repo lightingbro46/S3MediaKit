@@ -3,6 +3,7 @@
 #include "TranscodeProcessor.h"
 #include "Extension/Factory.h"
 #include "Common/Parser.h"
+#include "Common/MultiMediaSourceMuxer.h"
 #include "Util/logger.h"
 
 #include <climits>
@@ -88,17 +89,17 @@ bool parseTranscodeRequest(const std::string &params,
     return true;
 }
 
-TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg)
-    : _tuple(tuple), _cfg(std::move(cfg)) {
+TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg,
+                                       const toolkit::EventPoller::Ptr &poller)
+    : _tuple(tuple), _option(option), _cfg(std::move(cfg)),
+      _poller(poller ? poller : EventPollerPool::Instance().getPoller()) {
     // Publish under a derived stream_id so the transcoded output never collides
     // with the original source (e.g. "cam1" -> "cam1.transcode").
     _tuple.stream += _cfg.stream_suffix;
 
-    // The dedicated fMP4 muxer carries its own demand flag mapped to fmp4_demand.
-    ProtocolOption fmp4_opt = option;
-    fmp4_opt.enable_fmp4 = true;
-    fmp4_opt.fmp4_demand = _cfg.demand;
-    _muxer = std::make_shared<FMP4MediaSourceMuxer>(_tuple, fmp4_opt);
+    // Create the muxer before the first encoded frame. Tracks are attached
+    // synchronously and completed on the muxer's owner poller.
+    createMuxer();
 
     _encoder = std::make_shared<FFmpegEncoder>(_cfg.codec, _cfg.width, _cfg.height, _cfg.fps, _cfg.bitrate, _cfg.gop);
     // NOTE: the encoder callback is invoked synchronously inside inputVideoFrame(),
@@ -127,6 +128,71 @@ TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOp
     }
 }
 
+void TranscodeProcessor::createMuxer() {
+    // Reuse the existing multi-protocol muxer. All configured output branches
+    // share this processor; no additional decode/overlay/encode pipeline is
+    // created for another protocol.
+    ProtocolOption output_option = _option;
+    output_option.enable_mp4 = false;
+    output_option.enable_gop_cache = false;
+    output_option.gop_cache_size = 0;
+    output_option.mp4_as_player = false;
+    output_option.add_mute_audio = false;
+    // Each protocol branch owns its demand gate. MediaSourceEvent owns the
+    // delayed lifecycle close of the whole MultiMediaSourceMuxer.
+    output_option.rtsp_demand = _cfg.demand;
+    output_option.rtmp_demand = _cfg.demand;
+    output_option.hls_demand = _cfg.demand;
+    output_option.ts_demand = _cfg.demand;
+    output_option.fmp4_demand = _cfg.demand;
+    output_option.auto_close = _cfg.demand;
+    output_option.enable_audio = true;
+    output_option.enable_transcode = false;
+    output_option.enable_motion = false;
+    _muxer = std::make_shared<MultiMediaSourceMuxer>(_tuple, 0.0f, output_option);
+}
+
+void TranscodeProcessor::addTrackToMuxer(const Track::Ptr &track) {
+    if (!_muxer || !track) {
+        return;
+    }
+
+    toolkit::EventPoller::Ptr owner_poller;
+    try {
+        owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
+    } catch (...) {
+        owner_poller = _poller;
+    }
+    auto muxer = _muxer;
+    if (owner_poller && !owner_poller->isCurrentThread()) {
+        owner_poller->sync([muxer, track]() {
+            muxer->addTrack(track);
+        });
+    } else {
+        muxer->addTrack(track);
+    }
+}
+
+void TranscodeProcessor::completeMuxerTracks() {
+    if (!_muxer) {
+        return;
+    }
+    toolkit::EventPoller::Ptr owner_poller;
+    try {
+        owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
+    } catch (...) {
+        owner_poller = _poller;
+    }
+    if (owner_poller && !owner_poller->isCurrentThread()) {
+        auto muxer = _muxer;
+        owner_poller->sync([muxer]() {
+            muxer->addTrackCompleted();
+        });
+    } else {
+        _muxer->addTrackCompleted();
+    }
+}
+
 TranscodeProcessor::~TranscodeProcessor() {
     try {
         if (_encoder) {
@@ -139,9 +205,23 @@ TranscodeProcessor::~TranscodeProcessor() {
 
 void TranscodeProcessor::setListener(const std::weak_ptr<MediaSourceEvent> &listener) {
     setDelegate(listener);
+    // The muxer is created in the constructor, but it can only wire its
+    // listener after shared_from_this() is valid.
     if (_muxer) {
-        _muxer->setListener(shared_from_this());
+        auto muxer = _muxer;
+        auto self = shared_from_this();
+        if (_poller->isCurrentThread()) {
+            muxer->setMediaListener(self);
+        } else {
+            _poller->sync([muxer, self]() {
+                muxer->setMediaListener(self);
+            });
+        }
     }
+}
+
+void TranscodeProcessor::setOnClosed(const std::function<void(const Ptr &)> &callback) {
+    _on_closed = callback;
 }
 
 void TranscodeProcessor::addAudioTrack(const Track::Ptr &track) {
@@ -161,11 +241,11 @@ bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
     if (!_encoder || !frame) {
         return false;
     }
-    // On-demand: once the source is registered, skip the costly overlay+encode
-    // while nobody is watching. Force an IDR when a viewer (re)connects so the
-    // client can start decoding immediately.
+    // Gate demand output through the muxer and force an IDR when the first
+    // reader becomes active (or reconnects). This makes the first delivered
+    // frame independently decodable.
     if (_primed && _cfg.demand) {
-        bool now_enabled = _muxer && _muxer->isEnabled();
+        const bool now_enabled = _muxer && _muxer->isEnabled();
         if (now_enabled && !_last_enabled) {
             _encoder->requestKeyFrame();
         }
@@ -227,20 +307,58 @@ size_t TranscodeProcessor::totalCount() {
 }
 
 bool TranscodeProcessor::onTrackReady(const Track::Ptr &track) {
-    return _muxer ? _muxer->addTrack(track) : false;
+    if (track) {
+        addTrackToMuxer(track);
+    }
+    return true;
 }
 
 void TranscodeProcessor::onAllTrackReady() {
-    if (_muxer) {
-        _muxer->addTrackCompleted();
-    }
+    completeMuxerTracks();
     _primed = true;
     InfoL << "Transcode stream ready: " << _tuple.shortUrl();
 }
 
 bool TranscodeProcessor::onTrackFrame(const Frame::Ptr &frame) {
-    return _muxer ? _muxer->inputFrame(frame) : false;
+    return _muxer && frame ? _muxer->inputFrame(frame) : false;
 }
+
+void TranscodeProcessor::onReaderChanged(MediaSource &sender, int size) {
+    TraceL << "Transcode reader state: " << _tuple.shortUrl() << ", readers=" << size;
+    MediaSourceEventInterceptor::onReaderChanged(sender, size);
+}
+
+bool TranscodeProcessor::close(MediaSource &sender) {
+    const bool ret = MediaSourceEventInterceptor::close(sender);
+    auto callback = std::move(_on_closed);
+    _on_closed = nullptr;
+    if (!callback) {
+        return ret;
+    }
+
+    // MultiMediaSourceMuxer clears all protocol branches after forwarding the
+    // close event. Defer the callback so totalReaderCount() observes the
+    // completed close, not the intermediate protocol state.
+    auto self = shared_from_this();
+    auto muxer = _muxer;
+    auto check_closed = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak_check_closed = check_closed;
+    *check_closed = [callback, self, muxer, weak_check_closed]() {
+        if (muxer && muxer->totalReaderCount()) {
+            WarnL << "Transcode close callback postponed: readers remain, stream="
+                  << self->_tuple.shortUrl();
+            auto check = weak_check_closed.lock();
+            if (check) {
+                self->_poller->async(*check, false);
+            }
+            return;
+        }
+        callback(self);
+    };
+    _poller->async(*check_closed, false);
+    return ret;
+}
+
 
 } // namespace mediakit
 

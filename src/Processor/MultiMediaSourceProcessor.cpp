@@ -7,8 +7,9 @@ using namespace std;
 
 namespace mediakit {
 
-MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option)
-    : _tuple(tuple), _option(option) {
+MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option, const toolkit::EventPoller::Ptr &poller)
+    : _tuple(tuple), _option(option),
+      _poller(poller ? poller : toolkit::EventPollerPool::Instance().getPoller()) {
 #if defined(ENABLE_MOTION)
     if (option.enable_motion) {
         GET_CONFIG(int, interval_ms, Motion::kIntervalMS);
@@ -42,7 +43,7 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
 }
 
 TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const TranscodeProcessor::Config &cfg) {
-    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, cfg);
+    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, cfg, _poller);
     for (const auto &track : _audio_tracks) {
         transcode->addAudioTrack(track);
     }
@@ -54,13 +55,22 @@ TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const Transco
 
 MediaSource::Ptr MultiMediaSourceProcessor::ensureTranscode(const TranscodeProcessor::Config &cfg) {
     const auto key = cfg.stream_suffix;
+    std::lock_guard<std::mutex> lock(_mtx);
     auto it = _transcodes.find(key);
     if (it == _transcodes.end()) {
         auto transcode = createTranscode(cfg);
         transcode->setListener(shared_from_this());
+
+        std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+        transcode->setOnClosed([weak_self, key](const TranscodeProcessor::Ptr &closed) {
+            auto self = weak_self.lock();
+            if (self) {
+                self->removeTranscode(key, closed);
+            }
+        });
         it = _transcodes.emplace(key, transcode).first;
     }
-    return MediaSource::find("", _tuple.vhost, _tuple.app, _tuple.stream + cfg.stream_suffix);
+    return MediaSource::find(cfg.output_schema, _tuple.vhost, _tuple.app, _tuple.stream + cfg.stream_suffix);
 }
 
 void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent> &listener) {
@@ -73,9 +83,36 @@ void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent
         _mjpeg_muxer->setListener(shared_from_this());
     }
 #endif // ENABLE_MOTION
-    for (const auto &entry : _transcodes) {
-        entry.second->setListener(shared_from_this());
+    std::vector<std::pair<std::string, TranscodeProcessor::Ptr>> transcodes;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        for (const auto &entry : _transcodes) {
+            transcodes.emplace_back(entry.first, entry.second);
+        }
     }
+    for (const auto &entry : transcodes) {
+        auto key = entry.first;
+        auto transcode = entry.second;
+        transcode->setListener(shared_from_this());
+
+        std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+        transcode->setOnClosed([weak_self, key](const TranscodeProcessor::Ptr &closed) {
+            auto self = weak_self.lock();
+            if (self) {
+                self->removeTranscode(key, closed);
+            }
+        });
+    }
+}
+
+void MultiMediaSourceProcessor::removeTranscode(const std::string &key, const TranscodeProcessor::Ptr &transcode) {
+    std::lock_guard<std::mutex> lock(_mtx);
+    auto it = _transcodes.find(key);
+    if (it == _transcodes.end() || it->second != transcode) {
+        return;
+    }
+    InfoL << "Remove closed transcode stream: " << key;
+    _transcodes.erase(it);
 }
 
 bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
@@ -84,9 +121,9 @@ bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
     if (track && track->getTrackType() == TrackAudio) {
         _audio_tracks.push_back(track);
     }
-    for (const auto &entry : _transcodes) {
-        if (track && track->getTrackType() == TrackAudio) {
-            entry.second->addAudioTrack(track);
+    if (track && track->getTrackType() == TrackAudio) {
+        for (const auto &transcode : snapshotTranscodes()) {
+            transcode->addAudioTrack(track);
         }
     }
     return ret;
@@ -97,8 +134,8 @@ bool MultiMediaSourceProcessor::inputFrame(const Frame::Ptr &frame) {
     // no decoder there, so forward them to the transcode stream as pass-through.
     bool ret = MediaSourceDecoder::inputFrame(frame);
     if (frame && frame->getTrackType() == TrackAudio) {
-        for (const auto &entry : _transcodes) {
-            entry.second->inputAudioFrame(frame);
+        for (const auto &transcode : snapshotTranscodes()) {
+            transcode->inputAudioFrame(frame);
         }
     }
     return ret;
@@ -111,8 +148,8 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
     }
 #endif // ENABLE_MOTION
     _tracks_completed = true;
-    for (const auto &entry : _transcodes) {
-        entry.second->finalizeTracks();
+    for (const auto &transcode : snapshotTranscodes()) {
+        transcode->finalizeTracks();
     }
 }
 
@@ -124,16 +161,34 @@ void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
         _motion->inputFrame(frame);
     }
 #endif // ENABLE_MOTION
-    for (const auto &entry : _transcodes) {
-        entry.second->inputVideoFrame(frame);
+    for (const auto &transcode : snapshotTranscodes()) {
+        transcode->inputVideoFrame(frame);
     }
 }
 
 void MultiMediaSourceProcessor::resetTracks() {
     MediaSourceDecoder::resetTracks();
     _audio_tracks.clear();
-    _transcodes.clear();
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        _transcodes.clear();
+    }
     _tracks_completed = false;
+}
+
+std::vector<TranscodeProcessor::Ptr> MultiMediaSourceProcessor::snapshotTranscodes() const {
+    std::vector<TranscodeProcessor::Ptr> ret;
+    std::lock_guard<std::mutex> lock(_mtx);
+    ret.reserve(_transcodes.size());
+    for (const auto &entry : _transcodes) {
+        ret.emplace_back(entry.second);
+    }
+    return ret;
+}
+
+bool MultiMediaSourceProcessor::isTranscodeEnabled() const {
+    std::lock_guard<std::mutex> lock(_mtx);
+    return !_transcodes.empty();
 }
 
 bool MultiMediaSourceProcessor::isMotionDetectRunning() {
