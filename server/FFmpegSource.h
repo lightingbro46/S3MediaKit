@@ -171,7 +171,6 @@ private:
     toolkit::EventPoller::Ptr _poller;
     std::string _src_path;
     std::string _save_path;
-    std::string _overlay_svg_path;
     std::vector<std::string> _overlay_temp_paths;
     std::string _log_file;
     std::string _cmd;

@@ -32,7 +32,7 @@ const string kCmd = FFmpeg_FIELD"cmd";
 const string kLog = FFmpeg_FIELD"log";
 const string kSnap = FFmpeg_FIELD"snap";
 const string kExtract = FFmpeg_FIELD"extract";
-const string kExtractWithOverlay = FFmpeg_FIELD"extract_with_overlay";
+const string kExtractOverlay = FFmpeg_FIELD"extract_overlay";
 const string kProbe = FFmpeg_FIELD"probe";
 const string kRestartSec = FFmpeg_FIELD"restart_sec";
 const string kDelayCloseSec = FFmpeg_FIELD"delay_close_sec";
@@ -55,7 +55,7 @@ onceToken token([]() {
     mINI::Instance()[kSnap] = "%s -i %s -ss %s -y -f mjpeg -frames:v 1 -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
-    mINI::Instance()[kExtractWithOverlay] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -filter_complex %s -map [v] -map 0:a? "
+    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -filter_complex %s -map [v] -map 0:a? "
                                             "-metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s "
                                             "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac %s";
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
@@ -826,7 +826,7 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
 void FFmpegExtractor::makeExtract(const string &key, const string &root_path, const onExtract &cb) {
     GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
     GET_CONFIG(string, ffmpeg_extract, FFmpeg::kExtract);
-    GET_CONFIG(string, ffmpeg_extract_with_overlay, FFmpeg::kExtractWithOverlay);
+    GET_CONFIG(string, ffmpeg_extract_overlay, FFmpeg::kExtractOverlay);
     GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
 
     uint32_t duration_start = 0;
@@ -860,7 +860,6 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     auto filter_complex = buildOverlayFilterComplex(_tuple, _options, overlay_svg_path,
                                                     video_width, video_height, temporary_paths);
     _overlay_temp_paths = temporary_paths;
-    _overlay_svg_path = filter_complex.empty() ? "" : overlay_svg_path;
 
     // Polygon alpha-mask graphs can exceed the legacy 2 KiB buffer. Truncating
     // the command cuts quoted metadata/output paths and breaks command parsing.
@@ -870,7 +869,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         // Camera has an enforced watermark/privacy mask policy: re-encode the video while
         // burning in the overlay instead of stream-copying it.
         command_length = snprintf(cmd, sizeof(cmd),
-            ffmpeg_extract_with_overlay.data(),
+            ffmpeg_extract_overlay.data(),
             File::absolutePath("", ffmpeg_bin).data(),
             _src_path.data(),
             format_duration_hms(duration_start).data(),
