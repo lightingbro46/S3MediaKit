@@ -253,7 +253,14 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
         if (data.is<mediakit::TranslationInfo>()) {
             info = &data.get<mediakit::TranslationInfo>();
         }
-        strong_statistic->addStreamStatistic(type, live, status, info);
+        std::string updated_status = status;
+        // if stream status is live and byte speed is too low, set to offline to avoid false positive
+        if (live && current_stream_live == live && info && info->byte_speed < 1024) {
+            WarnL << "Camera " << _src->getUrl() << " stream type "<< type << " status not changed and byte speed is too low (" << info->byte_speed << " B/s). Set stream status to offline";
+            live = false;
+            updated_status = "Byte speed too low, less than 1KB/s";
+        }
+        strong_statistic->addStreamStatistic(type, live, updated_status, info);
     }
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
 #ifndef ENABLE_DEBUG
