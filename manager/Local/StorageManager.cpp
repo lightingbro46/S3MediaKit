@@ -88,8 +88,12 @@ void StorageManager::cleanupTemporaryFiles() {
     cleanupFolder(parent_path);
     DebugL << "Cleanup FFmpeg log files";
 
-    cleanCrashFiles();
-    DebugL << "Cleanup crash files";
+    if (_next_cleanup_time != 0) {
+        // only cleanup crash file when the manager is running over next day,
+        // to avoid deleting files created after restarting
+        cleanCrashFiles();
+        DebugL << "Cleanup crash files";
+    }
 
     InfoL << "Remove temporary files. Finished. " << format_duration_verbose(_ticker.elapsedTime()) << " elapsed" ;
 
