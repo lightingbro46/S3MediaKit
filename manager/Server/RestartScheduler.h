@@ -49,7 +49,7 @@ private:
 
     mutable std::mutex   _mtx;
     RestartSchedulerConfig _cfg;
-    std::time_t          _last_restart { 0 };
+    std::atomic<uint64_t> _last_restart { 0 };
 };
 
 } // namespace managerkit

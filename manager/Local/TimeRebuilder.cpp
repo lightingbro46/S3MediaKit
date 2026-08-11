@@ -213,6 +213,10 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
 
     // step 1: delete old template file and create writer
     createTempFile();
+    if (!_writer) {
+        WarnL << "Failed to create TimeRecorder for tmp file: " << _full_path_tmp;
+        return 0;
+    }
     
     bool capture_started = false;
     uint64_t snapshot_size = 0;

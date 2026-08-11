@@ -137,7 +137,12 @@ UserSessionCache::UserSessionCache(const string &token, const string &user_agent
     }
 
     Json::Value decoded_payload;
-    UserSessionHelper::decodeJwtToken(decoded_payload, token);
+    if (!UserSessionHelper::decodeJwtToken(decoded_payload, token)) {
+        _has_access = false;
+        _created_at = time(nullptr);
+        _expired_at = _created_at + 600;
+        return;
+    }
     _user_id = decoded_payload["user_id"].asString();
     _user_name = decoded_payload["sub"].asString();
     _created_at = time(nullptr);

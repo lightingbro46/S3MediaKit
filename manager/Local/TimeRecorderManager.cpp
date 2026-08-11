@@ -80,6 +80,9 @@ TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id, Reco
             case RecorderType::LOCAL:       recorders = &_recorders;    break;
             case RecorderType::LOCAL_SD:    recorders = &_sd_recorders; break;
         }
+        if (recorders->find(device_id) != recorders->end()) {
+            recorders->erase(device_id);
+        }
         recorders->emplace(device_id, recorder);
     }
     return recorder;

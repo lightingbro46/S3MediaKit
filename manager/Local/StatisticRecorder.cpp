@@ -52,6 +52,9 @@ CameraStatisticImp::Ptr StatisticRecorder::addRecorder(const string &device_id) 
     });
     {
         std::lock_guard<std::mutex> lock(_mtx_stats);
+        if (_cam_stats_map.find(device_id) != _cam_stats_map.end()) {
+            _cam_stats_map.erase(device_id);
+        }
         _cam_stats_map.emplace(device_id, imp);
     }
     return imp;
