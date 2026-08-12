@@ -54,19 +54,34 @@ private:
 
     /** Remove a closed transcode variant if it is still the mapped instance. */
     void removeTranscode(const std::string &key, const TranscodeProcessor::Ptr &transcode);
+    void attachTranscodeReader(const std::string &key, const TranscodeProcessor::Ptr &transcode);
+    void attachMotionReader();
     std::vector<TranscodeProcessor::Ptr> snapshotTranscodes() const;
 
     MediaTuple _tuple;
     ProtocolOption _option;
     toolkit::EventPoller::Ptr _poller;
     std::unordered_map<int, std::weak_ptr<MultiMediaSourceMuxer>> _peer_muxers;
+    struct DecodedFrame {
+        enum Type {
+            Video,
+            Audio
+        } type = Video;
+
+        FFmpegFrame::Ptr video;
+        Frame::Ptr audio;
+    };
+    using RingType = toolkit::RingBuffer<DecodedFrame>;
 
 #if defined(ENABLE_MOTION)
     MotionProcessor::Ptr _motion;
     MotionMjpegMediaSourceMuxer::Ptr _mjpeg_muxer;
+    RingType::RingReader::Ptr _motion_reader;
 #endif // ENABLE_MOTION
 
     std::unordered_map<std::string, TranscodeProcessor::Ptr> _transcodes;
+    RingType::Ptr _ring;
+    std::unordered_map<std::string, RingType::RingReader::Ptr> _transcode_readers;
     mutable std::mutex _mtx;
     std::vector<Track::Ptr> _audio_tracks;
     bool _tracks_completed = false;

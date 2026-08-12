@@ -51,8 +51,8 @@ bool parseTranscodeRequest(const std::string &params,
  * the derived source is closed by MediaSourceEvent after the no-reader delay,
  * then the owning MultiMediaSourceProcessor removes this instance.
  *
- * Threading: inputVideoFrame()/inputAudioFrame() must be called from the single
- * decode thread (same as the shared FFmpegDecoder callback).
+ * Threading: inputVideoFrame() is called by the processor's video ring reader
+ * on its poller; inputAudioFrame() remains on the source processing thread.
  */
 class TranscodeProcessor
     : public MediaSink

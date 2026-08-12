@@ -11,6 +11,15 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
     : _tuple(tuple), _option(option),
       _poller(poller ? poller : toolkit::EventPollerPool::Instance().getPoller()) {
 #if defined(ENABLE_MOTION)
+    if (option.enable_motion || option.enable_transcode) {
+        _ring = std::make_shared<RingType>(512, nullptr, 1);
+    }
+#else
+    if (option.enable_transcode) {
+        _ring = std::make_shared<RingType>(512, nullptr, 1);
+    }
+#endif
+#if defined(ENABLE_MOTION)
     if (option.enable_motion) {
         GET_CONFIG(int, interval_ms, Motion::kIntervalMS);
         GET_CONFIG(bool, use_y_channel, Motion::kUseYChannel);
@@ -69,6 +78,7 @@ MediaSource::Ptr MultiMediaSourceProcessor::ensureTranscode(const TranscodeProce
             }
         });
         it = _transcodes.emplace(key, transcode).first;
+        attachTranscodeReader(key, transcode);
     }
     return MediaSource::find(cfg.output_schema, _tuple.vhost, _tuple.app, _tuple.stream + cfg.stream_suffix);
 }
@@ -81,6 +91,10 @@ void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent
     }
     if (_mjpeg_muxer) {
         _mjpeg_muxer->setListener(shared_from_this());
+    }
+    if (_motion) {
+        std::lock_guard<std::mutex> lock(_mtx);
+        attachMotionReader();
     }
 #endif // ENABLE_MOTION
     std::vector<std::pair<std::string, TranscodeProcessor::Ptr>> transcodes;
@@ -102,6 +116,10 @@ void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent
                 self->removeTranscode(key, closed);
             }
         });
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            attachTranscodeReader(key, transcode);
+        }
     }
 }
 
@@ -112,7 +130,62 @@ void MultiMediaSourceProcessor::removeTranscode(const std::string &key, const Tr
         return;
     }
     InfoL << "Remove closed transcode stream: " << key;
+    _transcode_readers.erase(key);
     _transcodes.erase(it);
+}
+
+void MultiMediaSourceProcessor::attachTranscodeReader(const std::string &key,
+                                                       const TranscodeProcessor::Ptr &transcode) {
+    if (!transcode || _transcode_readers.find(key) != _transcode_readers.end()) {
+        return;
+    }
+    if (!_ring) {
+        // One decoded GOP is enough to prime a newly-created transcode.
+        // This ring is independent from the output muxer's GOP cache.
+        _ring = std::make_shared<RingType>(512, nullptr, 1);
+    }
+
+    auto ring = _ring;
+    auto poller = _poller;
+    std::weak_ptr<TranscodeProcessor> weak_transcode = transcode;
+    RingType::RingReader::Ptr reader;
+    poller->sync([&]() {
+        reader = ring->attach(poller, true);
+        reader->setReadCB([weak_transcode](const DecodedFrame &input) {
+            auto strong_transcode = weak_transcode.lock();
+            if (!strong_transcode) {
+                return;
+            }
+            if (input.type == DecodedFrame::Video) {
+                strong_transcode->inputVideoFrame(input.video);
+            } else if (input.audio) {
+                strong_transcode->inputAudioFrame(input.audio);
+            }
+        });
+    });
+    _transcode_readers.emplace(key, reader);
+}
+
+void MultiMediaSourceProcessor::attachMotionReader() {
+    if (!_motion || _motion_reader) {
+        return;
+    }
+    if (!_ring) {
+        _ring = std::make_shared<RingType>(512, nullptr, 1);
+    }
+
+    auto ring = _ring;
+    auto poller = _poller;
+    std::weak_ptr<MotionProcessor> weak_motion = _motion;
+    poller->sync([&]() {
+        _motion_reader = ring->attach(poller, false);
+        _motion_reader->setReadCB([weak_motion](const DecodedFrame &input) {
+            auto motion = weak_motion.lock();
+            if (motion && input.type == DecodedFrame::Video && input.video) {
+                motion->inputFrame(input.video);
+            }
+        });
+    });
 }
 
 bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
@@ -130,12 +203,20 @@ bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
 }
 
 bool MultiMediaSourceProcessor::inputFrame(const Frame::Ptr &frame) {
-    // Base class decodes video frames (dispatched to onDecode). Audio frames have
-    // no decoder there, so forward them to the transcode stream as pass-through.
+    // Base class decodes video frames through onDecode(). Audio is passed through
+    // the same input ring so A/V delivery to each transcode stays serialized.
     bool ret = MediaSourceDecoder::inputFrame(frame);
     if (frame && frame->getTrackType() == TrackAudio) {
-        for (const auto &transcode : snapshotTranscodes()) {
-            transcode->inputAudioFrame(frame);
+        RingType::Ptr ring;
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            ring = _ring;
+        }
+        if (ring) {
+            DecodedFrame input;
+            input.type = DecodedFrame::Audio;
+            input.audio = frame;
+            ring->write(input, false);
         }
     }
     return ret;
@@ -155,14 +236,18 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
 
 void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
     TraceL << "Decoded frame dts: " << frame->get()->pkt_dts << ", pts: " << frame->get()->pts << ", size: " << frame->get()->pkt_size;
-    // Dispatch decoded frame to all tracks
-#if defined(ENABLE_MOTION)
-    if (_motion) {
-        _motion->inputFrame(frame);
+    // Dispatch the decoded frame once. Motion and transcode processors consume
+    // it through their own ring readers on the processor poller.
+    RingType::Ptr ring;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        ring = _ring;
     }
-#endif // ENABLE_MOTION
-    for (const auto &transcode : snapshotTranscodes()) {
-        transcode->inputVideoFrame(frame);
+    if (ring && frame) {
+        DecodedFrame input;
+        input.type = DecodedFrame::Video;
+        input.video = frame;
+        ring->write(input, frame->get() && frame->get()->key_frame > 0);
     }
 }
 
@@ -171,7 +256,14 @@ void MultiMediaSourceProcessor::resetTracks() {
     _audio_tracks.clear();
     {
         std::lock_guard<std::mutex> lock(_mtx);
+#if defined(ENABLE_MOTION)
+        _motion_reader.reset();
+#endif // ENABLE_MOTION
+        _transcode_readers.clear();
         _transcodes.clear();
+        if (_ring) {
+            _ring->clearCache();
+        }
     }
     _tracks_completed = false;
 }
