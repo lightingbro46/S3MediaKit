@@ -3,6 +3,7 @@
 ## Tài liệu tích hợp/API
 
 - [Luồng Playback](./playback-flow.md)
+- [Tích hợp Media: Live và Replay](./api-media-playback.md)
 - [Timeline & Thumbnail](./api-timeline-thumbnail.md)
 - [Bookmark](./api-bookmark.md)
 - [PTZ Preset](./api-ptz-preset.md)
