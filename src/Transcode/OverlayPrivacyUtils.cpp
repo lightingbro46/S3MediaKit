@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -29,7 +30,7 @@ const string kOverlayRoot = OVERLAY_FIELD "overlay_root";
 static onceToken token([]() {
     mINI::Instance()[kEnableWatermark] = true;
     mINI::Instance()[kEnablePrivacyMask] = true;
-    mINI::Instance()[kUseWatermarkAsset] = true;
+    mINI::Instance()[kUseWatermarkAsset] = false;
     mINI::Instance()[kOverlayRoot] = "./www/overlay/";
 });
 } // namespace OverlayPrivacyConfig
@@ -555,16 +556,22 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
                                            const OverlayBuildOptions &options) {
     const int canvas_width = std::max(1, options.canvas_width);
     const int canvas_height = std::max(1, options.canvas_height);
+    // The camera UI exports a 1280x720 canvas into a 1920x1080 viewBox.
+    // Keep the same 1.5 design scale so generated SVG coordinates match the
+    // prebuilt asset byte-for-byte in visual space.
+    const double design_scale = 1.5;
+    const double svg_width = canvas_width * design_scale;
+    const double svg_height = canvas_height * design_scale;
     std::ostringstream svg;
     svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" "
         << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
         << "width=\"" << canvas_width << "\" height=\"" << canvas_height
-        << "\" viewBox=\"0 0 " << canvas_width << " " << canvas_height << "\">\n";
+        << "\" viewBox=\"0 0 " << number(svg_width) << " " << number(svg_height) << "\">\n";
 
     if (options.include_background) {
-        svg << "<rect width=\"" << canvas_width << "\" height=\"" << canvas_height
+        svg << "<rect width=\"" << number(svg_width) << "\" height=\"" << number(svg_height)
             << "\" fill=\"" << escapeXml(options.background_color) << "\"/>\n"
-            << "<rect width=\"" << canvas_width << "\" height=\"" << canvas_height
+            << "<rect width=\"" << number(svg_width) << "\" height=\"" << number(svg_height)
             << "\" fill=\"none\" stroke=\"" << escapeXml(options.border_color) << "\"/>\n";
     }
 
@@ -580,17 +587,28 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
             if (options.resolve_dynamic_tokens) {
                 text = resolveTokens(text, options.username, options.camera_name);
             }
-            svg << "<text x=\"0\" y=\"0\" fill=\"" << escapeXml(component.color)
+            // Text and image components share the same center-based transform
+            // below. Keep the text origin at the center as well; without an
+            // explicit middle anchor, SVG renders x=0 as the left edge and
+            // shifts the whole text to the right by half its width.
+            // The reference foreignObject has x=-200 and width=400 in the
+            // 1920x1080 viewBox and uses normal left-aligned HTML text.
+            const double scaled_font_size = std::max(1, component.font_size) * design_scale;
+            // The reference foreignObject has a centered CSS line box. Native
+            // SVG text uses a font baseline, so lower it by roughly 0.35em
+            // to match the reference y/height box rendered by the browser.
+            svg << "<text x=\"-200\" y=\"" << number(scaled_font_size * 0.35)
+                << "\" text-anchor=\"start\" dominant-baseline=\"middle\" fill=\"" << escapeXml(component.color)
                 << "\" font-family=\"" << escapeXml(component.font_family)
-                << "\" font-size=\"" << std::max(1, component.font_size)
+                << "\" font-size=\"" << number(scaled_font_size)
                 << "\" font-weight=\"" << component.font_weight << "\">"
                 << escapeXml(text) << "</text>\n";
         } else {
             const std::string href = imageHref(component);
             svg << "<image href=\"" << escapeXml(href) << "\" xlink:href=\""
                 << escapeXml(href) << "\" x=\"0\" y=\"0\" width=\""
-                << std::max(1, component.width) << "\" height=\""
-                << std::max(1, component.height)
+                << number(std::max(1, component.width) * design_scale) << "\" height=\""
+                << number(std::max(1, component.height) * design_scale)
                 << "\" preserveAspectRatio=\"xMidYMid meet\"/>\n";
         }
         svg << "</g>\n";
@@ -601,26 +619,26 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
         const OverlayComponent &component = components[i];
         const int gap_x = std::max(1, component.gap_x);
         const int gap_y = std::max(1, component.gap_y);
-        const int columns = component.repeated ? canvas_width / gap_x + 3 : 0;
-        const int rows = component.repeated ? canvas_height / gap_y + 3 : 0;
+        // The camera UI repeats symmetrically around the configured element
+        // and keeps only the tiles needed to cover half of the canvas in each
+        // direction. The previous `canvas / gap + 3` generated too many
+        // tiles (and, for text, extra visible rows).
+        const int columns = component.repeated
+            ? static_cast<int>(std::ceil(static_cast<double>(canvas_width) / (2.0 * gap_x))) : 0;
+        const int rows = component.repeated
+            ? static_cast<int>(std::ceil(static_cast<double>(canvas_height) / (2.0 * gap_y))) : 0;
         const double opacity = std::max(0.0, std::min(1.0, component.opacity));
 
         for (int row = component.repeated ? -rows : 0; row <= (component.repeated ? rows : 0); ++row) {
             for (int column = component.repeated ? -columns : 0;
                  column <= (component.repeated ? columns : 0); ++column) {
-                const double offset_x = column * gap_x;
-                const double offset_y = row * gap_y;
-                const double center_x = component.type == OverlayComponent::IMAGE
-                    ? std::max(1, component.width) / 2.0
-                    : std::max(24, static_cast<int>(component.text.size() * std::max(1, component.font_size) * 0.6 + 8)) / 2.0;
-                const double center_y = component.type == OverlayComponent::IMAGE
-                    ? std::max(1, component.height) / 2.0
-                    : std::max(24, component.font_size + 8) / 2.0;
-                const std::string transform = "translate(" + number(component.x + offset_x) +
-                    " " + number(component.y + offset_y) + ") translate(" + number(center_x) +
-                    " " + number(center_y) + ") rotate(" + number(component.rotation) +
-                    ") scale(" + number(component.scale) + ") translate(" + number(-center_x) +
-                    " " + number(-center_y) + ")";
+                const double offset_x = column * gap_x * design_scale;
+                const double offset_y = row * gap_y * design_scale;
+                // component.x/y represent the component center. Keep the
+                // transform origin at that center for both text and images.
+                const std::string transform = "translate(" + number(component.x * design_scale + offset_x) +
+                    " " + number(component.y * design_scale + offset_y) + ") scale(" + number(component.scale) +
+                    ") rotate(" + number(component.rotation) + ")";
                 if (component.type == OverlayComponent::IMAGE) {
                     // Do not reference an image through <use>. FFmpeg's SVG
                     // renderer handles direct image nodes reliably, while an
@@ -628,8 +646,10 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
                     const std::string href = imageHref(component);
                     svg << "<image href=\"" << escapeXml(href)
                         << "\" xlink:href=\"" << escapeXml(href)
-                        << "\" x=\"0\" y=\"0\" width=\"" << std::max(1, component.width)
-                        << "\" height=\"" << std::max(1, component.height)
+                        << "\" x=\"" << number(-std::max(1, component.width) * design_scale / 2.0)
+                        << "\" y=\"" << number(-std::max(1, component.height) * design_scale / 2.0)
+                        << "\" width=\"" << number(std::max(1, component.width) * design_scale)
+                        << "\" height=\"" << number(std::max(1, component.height) * design_scale)
                         << "\" preserveAspectRatio=\"xMidYMid meet\" transform=\""
                         << transform << "\" opacity=\"" << number(opacity) << "\"/>\n";
                 } else {
