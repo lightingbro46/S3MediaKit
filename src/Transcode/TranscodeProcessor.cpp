@@ -325,11 +325,18 @@ bool TranscodeProcessor::onTrackFrame(const Frame::Ptr &frame) {
 
 void TranscodeProcessor::onReaderChanged(MediaSource &sender, int size) {
     TraceL << "Transcode reader state: " << _tuple.shortUrl() << ", readers=" << size;
-    MediaSourceEventInterceptor::onReaderChanged(sender, size);
+    // This is the lifecycle of the derived output source. Do not forward it
+    // to MultiMediaSourceProcessor, otherwise the no-reader timer can close
+    // the original media source as well.
+    MediaSourceEvent::onReaderChanged(sender, size);
 }
 
 bool TranscodeProcessor::close(MediaSource &sender) {
-    const bool ret = MediaSourceEventInterceptor::close(sender);
+    // Closing a derived output must not propagate to the shared source
+    // processor. MultiMediaSourceMuxer has already received this close event
+    // and will release its protocol branches; notify only the owner of this
+    // TranscodeProcessor after that cleanup has completed.
+    const bool ret = true;
     auto callback = std::move(_on_closed);
     _on_closed = nullptr;
     if (!callback) {
