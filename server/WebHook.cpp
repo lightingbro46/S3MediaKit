@@ -208,6 +208,12 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
 
 static string overlayImageExtension(const string &path) {
     const string data = File::loadFile(path);
+    string probe = data;
+    trim(probe);
+    if (probe.find("<svg") == 0 ||
+        (probe.find("<?xml") == 0 && probe.find("<svg") != string::npos)) {
+        return "svg";
+    }
     if (data.size() >= 8 && static_cast<unsigned char>(data[0]) == 0x89 &&
         data.compare(1, 3, "PNG") == 0) {
         return "png";
@@ -241,7 +247,11 @@ static string updateOverlayImageExtension(const string &downloaded_path,
         target.compare(target.size() - download_suffix.size(), download_suffix.size(), download_suffix) == 0) {
         target.resize(target.size() - download_suffix.size());
     }
-    target += "." + extension;
+    const string extension_suffix = "." + extension;
+    if (target.size() < extension_suffix.size() ||
+        target.compare(target.size() - extension_suffix.size(), extension_suffix.size(), extension_suffix) != 0) {
+        target += extension_suffix;
+    }
     if (downloaded_path == target) {
         return target;
     }

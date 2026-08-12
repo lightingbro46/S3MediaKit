@@ -109,7 +109,8 @@ TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOp
         MediaSink::inputFrame(frame);
     });
 
-    if (!_cfg.overlay_components.empty() || !_cfg.overlay_options.privacy_masks.empty()) {
+    if (!_cfg.overlay_components.empty() || !_cfg.overlay_options.privacy_masks.empty() ||
+        !_cfg.overlay_options.prebuilt_svg_path.empty()) {
         _overlay = std::make_shared<TranscodeOverlay>(_cfg.overlay_components, _cfg.overlay_options);
     } else if (!_cfg.overlay_image.empty()) {
         _overlay = std::make_shared<TranscodeOverlay>(_cfg.overlay_image, _cfg.overlay_x, _cfg.overlay_y);

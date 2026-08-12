@@ -737,6 +737,7 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
     const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
     const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
     const bool use_source_stamp = extract_options.enable_source_stamp;
+    GET_CONFIG(bool, use_watermark_asset, OverlayPrivacyConfig::kUseWatermarkAsset);
     if (!use_watermark && !use_privacy_mask && !use_source_stamp) {
         return "";
     }
@@ -746,7 +747,15 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
     options.resolve_dynamic_tokens = true;
     options.username = policy.username;
     options.camera_name = policy.camera_name;
-    if (use_watermark) {
+    std::string watermark_path;
+    if (use_watermark && use_watermark_asset) {
+        std::string watermark_error;
+        if (!OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, options,
+                                                        watermark_path, watermark_error)) {
+            WarnL << "Extract video: cannot resolve watermark SVG asset for " << tuple.app
+                  << ": " << watermark_error;
+        }
+    } else if (use_watermark) {
         if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, options)) {
             WarnL << "Extract video: watermark template is invalid, skip watermark overlay for " << tuple.app;
             components.clear();
@@ -781,7 +790,7 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
     if (use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions, privacy_masks, options)) {
         WarnL << "Extract video: privacy mask configuration is invalid, skip privacy mask overlay for " << tuple.app;
     }
-    if (components.empty() && privacy_masks.empty()) {
+    if (components.empty() && watermark_path.empty() && privacy_masks.empty()) {
         return "";
     }
 
@@ -790,21 +799,25 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
         privacy_masks, options.canvas_width, options.canvas_height,
         video_width, video_height, svg_path, temporary_paths, last_label);
 
-    if (components.empty()) {
+    if (components.empty() && watermark_path.empty()) {
         // Privacy masks only: alias the final processed stream to the [v] output label.
         return filter_complex + (filter_complex.empty() ? "" : ";") + "[" + last_label + "]null[v]";
     }
 
-    // The SVG now only carries the watermark; privacy masks are already burned in above.
-    auto svg = OverlayPrivacyUtils::buildSvg(components, options);
-    if (!File::saveFile(svg, svg_path)) {
-        WarnL << "Extract video: cannot save overlay svg to " << svg_path;
-        if (filter_complex.empty()) {
-            return "";
+    if (watermark_path.empty()) {
+        // The generated SVG now only carries the watermark; privacy masks are
+        // already burned in above.
+        auto svg = OverlayPrivacyUtils::buildSvg(components, options);
+        if (!File::saveFile(svg, svg_path)) {
+            WarnL << "Extract video: cannot save overlay svg to " << svg_path;
+            if (filter_complex.empty()) {
+                return "";
+            }
+            return filter_complex + ";[" + last_label + "]null[v]";
         }
-        return filter_complex + ";[" + last_label + "]null[v]";
+        watermark_path = svg_path;
+        temporary_paths.push_back(svg_path);
     }
-    temporary_paths.push_back(svg_path);
 
     // Scale the watermark SVG to exactly the video's resolution before overlaying it. The SVG
     // coordinates are defined in the camera's overlay canvas, so the canvas must cover the whole
@@ -814,7 +827,7 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
         return filter_complex + (filter_complex.empty() ? "" : ";") + "[" + last_label + "]null[v]";
     }
     std::ostringstream watermark_stage;
-    watermark_stage << "movie=" << OverlayPrivacyUtils::escapeMoviePath(svg_path)
+    watermark_stage << "movie=" << OverlayPrivacyUtils::escapeMoviePath(watermark_path)
                     << ",scale=" << video_width << ":" << video_height << ":flags=lanczos[wm];"
                     << "[" << last_label << "][wm]overlay=x=0:y=0:eof_action=repeat:format=auto,"
                     << "format=yuv420p[v]";

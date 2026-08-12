@@ -414,20 +414,30 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const int transcode_bitrate = transcode_request.bitrate;
         const int transcode_gop = transcode_request.gop;
         const string output_schema = self->_media_info.schema;
+        GET_CONFIG(bool, use_watermark_asset, OverlayPrivacyConfig::kUseWatermarkAsset);
 
         vector<OverlayComponent> components;
         OverlayBuildOptions overlay_options;
         overlay_options.resolve_dynamic_tokens = true;
         overlay_options.username = policy.username;
         overlay_options.camera_name = policy.camera_name;
-        if (use_watermark && !OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
-            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
-            return;
-        }
-        std::string local_image_error;
-        if (use_watermark && !OverlayPrivacyUtils::resolveLocalImages(components, local_image_error)) {
-            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
-            return;
+        if (use_watermark && use_watermark_asset) {
+            std::string watermark_asset_error;
+            if (!OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
+                                                            overlay_options.prebuilt_svg_path, watermark_asset_error)) {
+                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(watermark_asset_error));
+                return;
+            }
+        } else if (use_watermark) {
+            if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
+                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
+                return;
+            }
+            std::string local_image_error;
+            if (!OverlayPrivacyUtils::resolveLocalImages(components, local_image_error)) {
+                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
+                return;
+            }
         }
         if (use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
                                                                           overlay_options.privacy_masks,

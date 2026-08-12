@@ -62,8 +62,24 @@ TranscodeOverlay::TranscodeOverlay(std::string image_path, int x, int y)
 
 TranscodeOverlay::TranscodeOverlay(const std::vector<OverlayComponent> &components,
                                    const OverlayBuildOptions &options) {
-    if (components.empty() && options.privacy_masks.empty()) {
+    if (components.empty() && options.privacy_masks.empty() && options.prebuilt_svg_path.empty()) {
         WarnL << "TranscodeOverlay: no watermark components or privacy masks, overlay disabled";
+        return;
+    }
+
+    if (!options.prebuilt_svg_path.empty()) {
+        _image_path = options.prebuilt_svg_path;
+        _overlay_component_count = 1;
+        _privacy_mask_count = options.privacy_masks.size();
+        _privacy_masks = options.privacy_masks;
+        _overlay_canvas_width = std::max(1, options.canvas_width);
+        _overlay_canvas_height = std::max(1, options.canvas_height);
+        if (!File::fileExist(_image_path) || File::fileSize(_image_path) == 0) {
+            WarnL << "TranscodeOverlay: prebuilt watermark SVG not found: " << _image_path;
+            _image_path.clear();
+            return;
+        }
+        _valid = true;
         return;
     }
 

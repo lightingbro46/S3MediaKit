@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -22,11 +23,13 @@ namespace OverlayPrivacyConfig {
 
 const string kEnableWatermark = OVERLAY_FIELD "enable_watermark";
 const string kEnablePrivacyMask = OVERLAY_FIELD "enable_privacy_mask";
+const string kUseWatermarkAsset = OVERLAY_FIELD "use_watermark_asset";
 const string kOverlayRoot = OVERLAY_FIELD "overlay_root";
 
 static onceToken token([]() {
     mINI::Instance()[kEnableWatermark] = true;
     mINI::Instance()[kEnablePrivacyMask] = true;
+    mINI::Instance()[kUseWatermarkAsset] = true;
     mINI::Instance()[kOverlayRoot] = "./www/overlay/";
 });
 } // namespace OverlayPrivacyConfig
@@ -85,15 +88,101 @@ std::string resolveTokens(const std::string &source,
                           const std::string &camera_name) {
     std::string result;
     for (size_t i = 0; i < source.size();) {
-        if (source.compare(i, 12, "{{USERNAME}}") == 0) {
+        if (source.compare(i, 13, "{{USER_NAME}}") == 0) {
             result += username;
-            i += 12;
+            i += 13;
         } else if (source.compare(i, 15, "{{CAMERA_NAME}}") == 0) {
             result += camera_name;
             i += 15;
         } else {
             result += source[i++];
         }
+    }
+    return result;
+}
+
+std::string svgAttribute(const std::string &tag, const std::string &name) {
+    const std::string key = name + "=";
+    size_t pos = tag.find(key);
+    if (pos == std::string::npos) return std::string();
+    pos += key.size();
+    while (pos < tag.size() && std::isspace(static_cast<unsigned char>(tag[pos]))) ++pos;
+    if (pos >= tag.size()) return std::string();
+    const char quote = tag[pos] == '\'' || tag[pos] == '"' ? tag[pos++] : 0;
+    const size_t end = quote ? tag.find(quote, pos) : tag.find_first_of(" \t\r\n>", pos);
+    return tag.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+std::string svgStyle(const std::string &style, const std::string &name) {
+    const std::string key = name + ":";
+    size_t pos = style.find(key);
+    if (pos == std::string::npos) return std::string();
+    pos += key.size();
+    const size_t end = style.find(';', pos);
+    std::string value = style.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return first == std::string::npos ? std::string() : value.substr(first, last - first + 1);
+}
+
+// FFmpeg's librsvg decoder does not render HTML foreignObject nodes. Camera
+// watermark SVGs commonly use foreignObject/div for text, so convert those
+// nodes to native SVG text before passing the asset to the movie filter.
+std::string normalizeSvgText(const std::string &source) {
+    std::string result;
+    size_t cursor = 0;
+    while (cursor < source.size()) {
+        const size_t begin = source.find("<foreignObject", cursor);
+        if (begin == std::string::npos) {
+            result += source.substr(cursor);
+            break;
+        }
+        result += source.substr(cursor, begin - cursor);
+        const size_t open_end = source.find('>', begin);
+        const size_t close = open_end == std::string::npos ? std::string::npos : source.find("</foreignObject>", open_end + 1);
+        if (open_end == std::string::npos || close == std::string::npos) {
+            result += source.substr(begin);
+            break;
+        }
+
+        const std::string object_tag = source.substr(begin, open_end - begin + 1);
+        const size_t div_begin = source.find("<div", open_end + 1);
+        const size_t div_open_end = div_begin == std::string::npos ? std::string::npos : source.find('>', div_begin);
+        const size_t div_close = div_open_end == std::string::npos ? std::string::npos : source.find("</div>", div_open_end + 1);
+        if (div_begin == std::string::npos || div_open_end == std::string::npos || div_close == std::string::npos || div_close > close) {
+            result += source.substr(begin, close + 16 - begin);
+            cursor = close + 16;
+            continue;
+        }
+
+        const std::string style = svgAttribute(source.substr(div_begin, div_open_end - div_begin + 1), "style");
+        const std::string x = svgAttribute(object_tag, "x");
+        const std::string y = svgAttribute(object_tag, "y");
+        const std::string width = svgAttribute(object_tag, "width");
+        const std::string height = svgAttribute(object_tag, "height");
+        const std::string text = source.substr(div_open_end + 1, div_close - div_open_end - 1);
+        const std::string font_family = svgStyle(style, "font-family");
+        const std::string font_size = svgStyle(style, "font-size");
+        const std::string font_weight = svgStyle(style, "font-weight");
+        const std::string color = svgStyle(style, "color");
+
+        // foreignObject/div is vertically centered by the browser's CSS box
+        // model. SVG text uses a baseline, so place that baseline below the
+        // box center by roughly 0.35 em to preserve the original position.
+        const double font_size_value = std::atof(font_size.c_str());
+        // The original div is left-aligned inside the foreignObject. Using
+        // the box center here shifts the rendered text right by width / 2.
+        const double text_x = std::atof(x.c_str());
+        const double text_y = std::atof(y.c_str()) + std::atof(height.c_str()) / 2.0 + font_size_value * 0.35;
+        result += "<text x=\"" + number(text_x) +
+                  "\" y=\"" + number(text_y) +
+                  "\" text-anchor=\"start\" fill=\"" +
+                  escapeXml(color.empty() ? "#ffffff" : color) + "\"";
+        if (!font_family.empty()) result += " font-family=\"" + escapeXml(font_family) + "\"";
+        if (!font_size.empty()) result += " font-size=\"" + escapeXml(font_size) + "\"";
+        if (!font_weight.empty()) result += " font-weight=\"" + escapeXml(font_weight) + "\"";
+        result += ">" + text + "</text>";
+        cursor = close + 16;
     }
     return result;
 }
@@ -121,6 +210,11 @@ std::string findLocalImagePath(const std::string &overlay_root, const std::strin
         }
     }
     return std::string();
+}
+
+std::string findLocalSvgPath(const std::string &overlay_root, const std::string &asset_id) {
+    const std::string path = overlay_root + safeAssetName(asset_id) + ".svg";
+    return File::fileExist(path) && File::fileSize(path) > 0 ? path : std::string();
 }
 
 #if defined(ENABLE_FFMPEG)
@@ -291,6 +385,125 @@ bool OverlayPrivacyUtils::parseComponents(const std::string &source,
         components.push_back(component);
     }
     return !components.empty();
+}
+
+bool OverlayPrivacyUtils::parseWatermarkAssetId(const std::string &source,
+                                                std::string &asset_id) {
+    asset_id.clear();
+    if (source.empty()) {
+        return false;
+    }
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(source, root) || !root.isObject()) {
+        return false;
+    }
+    asset_id = root.get("overlayAssetId", "").asString();
+    return !asset_id.empty();
+}
+
+void OverlayPrivacyUtils::prepareWatermarkAsset(const std::string &source,
+                                                const WatermarkAssetPrepareInvoker &invoker) {
+    std::string asset_id;
+    if (!parseWatermarkAssetId(source, asset_id)) {
+        invoker("Watermark config does not contain overlayAssetId", "");
+        return;
+    }
+
+    GET_CONFIG(std::string, overlay_root, OverlayPrivacyConfig::kOverlayRoot);
+    if (overlay_root.empty() || !File::create_path(overlay_root, 0755)) {
+        invoker("Cannot create overlay root: " + overlay_root, "");
+        return;
+    }
+
+    const std::string cached_path = findLocalSvgPath(overlay_root, asset_id);
+    if (!cached_path.empty()) {
+        invoker("", cached_path);
+        return;
+    }
+
+    const std::string local_path = overlay_root + safeAssetName(asset_id) + ".svg.download";
+    Broadcast::DownloadFileInvoker download_invoker = [invoker, local_path, asset_id](const std::string &err, const std::string &path) {
+        if (!err.empty()) {
+            invoker(err, "");
+            return;
+        }
+        const std::string downloaded_path = path.empty() ? local_path : path;
+        if (!File::fileExist(downloaded_path) || File::fileSize(downloaded_path) == 0) {
+            invoker("Downloaded watermark SVG is empty: " + downloaded_path, "");
+            return;
+        }
+        const std::string svg_path = downloaded_path.size() >= 4 &&
+            downloaded_path.compare(downloaded_path.size() - 4, 4, ".svg") == 0
+            ? downloaded_path : local_path.substr(0, local_path.size() - 9);
+        if (svg_path != downloaded_path) {
+            if (File::fileExist(svg_path)) {
+                File::delete_file(svg_path, false, false);
+            }
+            if (std::rename(downloaded_path.c_str(), svg_path.c_str()) != 0) {
+                invoker("Cannot save watermark SVG asset: " + asset_id, "");
+                return;
+            }
+        }
+        invoker("", svg_path);
+    };
+
+    auto flag = NOTICE_EMIT(BroadcastDownloadOverlayImageArgs, Broadcast::kBroadcastDownloadOverlayImage,
+                            asset_id, local_path, download_invoker);
+    if (!flag) {
+        invoker("No listener for kBroadcastDownloadOverlayImage", "");
+    }
+}
+
+bool OverlayPrivacyUtils::resolveWatermarkAsset(const std::string &source,
+                                                OverlayBuildOptions &options,
+                                                std::string &resolved_path,
+                                                std::string &error) {
+    resolved_path.clear();
+    error.clear();
+    std::string asset_id;
+    if (!parseWatermarkAssetId(source, asset_id)) {
+        error = "Watermark config does not contain overlayAssetId";
+        return false;
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(source, root) || !root.isObject()) {
+        error = "Watermark template is invalid";
+        return false;
+    }
+    options.canvas_width = root.get("canvas", Json::Value()).get("width", options.canvas_width).asInt();
+    options.canvas_height = root.get("canvas", Json::Value()).get("height", options.canvas_height).asInt();
+
+    GET_CONFIG(std::string, overlay_root, OverlayPrivacyConfig::kOverlayRoot);
+    const std::string raw_path = findLocalSvgPath(overlay_root, asset_id);
+    if (raw_path.empty()) {
+        error = "Watermark SVG asset is not prefetched: " + asset_id;
+        return false;
+    }
+    const std::string raw_svg = File::loadFile(raw_path);
+    if (raw_svg.empty()) {
+        error = "Cannot read watermark SVG asset: " + raw_path;
+        return false;
+    }
+
+    const std::string normalized_svg = normalizeSvgText(raw_svg);
+    const std::string resolved_svg = options.resolve_dynamic_tokens
+        ? resolveTokens(normalized_svg, options.username, options.camera_name) : normalized_svg;
+    if (resolved_svg == raw_svg) {
+        resolved_path = raw_path;
+        return true;
+    }
+
+    const std::string suffix = safeAssetName(options.camera_name + "_" + options.username);
+    resolved_path = overlay_root + safeAssetName(asset_id) + ".resolved." + suffix + ".svg";
+    if (!File::saveFile(resolved_svg, resolved_path)) {
+        error = "Cannot save resolved watermark SVG: " + resolved_path;
+        resolved_path.clear();
+        return false;
+    }
+    return true;
 }
 
 bool OverlayPrivacyUtils::parsePrivacyMasks(const std::string &source,

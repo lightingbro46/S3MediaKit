@@ -10,6 +10,9 @@ namespace OverlayPrivacyConfig {
 extern const std::string kEnableWatermark;
 // Whether to enable privacy mask overlay on the video stream.
 extern const std::string kEnablePrivacyMask;
+// Use the SVG identified by watermark config's overlayAssetId instead of
+// generating an SVG from the components array.
+extern const std::string kUseWatermarkAsset;
 // Local directory used to cache downloaded watermark/image overlay assets.
 extern const std::string kOverlayRoot;
 
@@ -76,6 +79,9 @@ struct OverlayBuildOptions {
     std::string border_color = "#5e5e5e";
     std::string username;
     std::string camera_name;
+    // Resolved, locally cached SVG used when the watermark config contains
+    // overlayAssetId and overlay.use_watermark_asset is enabled.
+    std::string prebuilt_svg_path;
     std::vector<PrivacyMaskRegion> privacy_masks;
 };
 
@@ -109,6 +115,20 @@ public:
     static bool parseComponents(const std::string &source,
                                 std::vector<OverlayComponent> &components,
                                 OverlayBuildOptions &options);
+
+    static bool parseWatermarkAssetId(const std::string &source,
+                                      std::string &asset_id);
+
+    /** Download/cache the raw SVG asset identified by overlayAssetId. */
+    using WatermarkAssetPrepareInvoker = std::function<void(const std::string &, const std::string &)>;
+    static void prepareWatermarkAsset(const std::string &source,
+                                      const WatermarkAssetPrepareInvoker &invoker);
+
+    /** Resolve the cached SVG and substitute dynamic tokens for this camera. */
+    static bool resolveWatermarkAsset(const std::string &source,
+                                      OverlayBuildOptions &options,
+                                      std::string &resolved_path,
+                                      std::string &error);
 
     static bool parsePrivacyMasks(const std::string &source,
                                   std::vector<PrivacyMaskRegion> &masks,

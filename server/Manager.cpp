@@ -750,7 +750,22 @@ static void loadWatermarkTemplateFromJson(unordered_map<string, string> &ret, co
 }
 
 static void prefetchWatermarkOverlayImages(const unordered_map<string, string> &watermark_templates) {
+    GET_CONFIG(bool, use_watermark_asset, OverlayPrivacyConfig::kUseWatermarkAsset);
     for (const auto &entry : watermark_templates) {
+        if (use_watermark_asset) {
+            const string template_id = entry.first;
+            OverlayPrivacyUtils::prepareWatermarkAsset(entry.second,
+                [template_id](const string &err, const string &path) {
+                    if (!err.empty()) {
+                        WarnL << "Prefetch watermark SVG asset failed, template_id="
+                              << template_id << ": " << err;
+                        return;
+                    }
+                    TraceL << "Prefetch watermark SVG asset completed, template_id="
+                           << template_id << ": " << path;
+                });
+            continue;
+        }
         vector<OverlayComponent> components;
         OverlayBuildOptions options;
         const string template_id = entry.first;
