@@ -648,6 +648,12 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
 
     if (data.isMember("watermarkTemplateId") && !data["watermarkTemplateId"].isNull() ) {
         GET_OPTION_PROPERTY(option, watermarkTemplateId, data, watermarkTemplateId)
+        std::ostringstream ss;
+        for (const auto &roleId : data["watermarkExcludedRoleIds"]) {
+            ss << roleId.asString() << ",";
+        }
+        std::string excludedRoleIds = ss.str();
+        option.watermarkExcludedRoleIds = excludedRoleIds.empty() ? "" : excludedRoleIds.substr(0, excludedRoleIds.size() - 1);
     }
 }
 
