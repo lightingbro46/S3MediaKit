@@ -99,8 +99,16 @@ public:
     /** Feed an original audio frame for pass-through. */
     bool inputAudioFrame(const Frame::Ptr &frame);
 
+    /** Whether at least one derived output is active for its demand policy. */
+    bool isEnabled();
+    bool isOnDemand() const;
+
     int totalReaderCount() const;
 
+    /** Return origin metadata for the derived stream itself. */
+    MediaOriginType getOriginType(MediaSource &sender) const override;
+    std::string getOriginUrl(MediaSource &sender) const override;
+    toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
     /** Number of live TranscodeProcessor instances (transcode stream count). */
     static size_t totalCount();
 
@@ -124,6 +132,7 @@ private:
     bool _have_audio = false;
     bool _primed = false;
     bool _last_enabled = false;
+    bool _first_video = true;
     std::function<void(const Ptr &)> _on_closed;
     int64_t _last_overlay_input_pts = AV_NOPTS_VALUE;
     FFmpegSws::Ptr _pre_overlay_sws;

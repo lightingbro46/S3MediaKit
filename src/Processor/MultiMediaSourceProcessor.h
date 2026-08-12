@@ -36,6 +36,11 @@ public:
     /** Create or reuse a transcode variant while sharing this processor's decoder. */
     MediaSource::Ptr ensureTranscode(const TranscodeProcessor::Config &cfg);
 
+    /** Whether any motion/transcode output is active for its demand policy. */
+    bool isEnabled();
+    bool canClose() const;
+    void setOnIdle(const std::function<void()> &callback);
+
     bool isTranscodeEnabled() const;
 
     void addTrackCompleted() override;
@@ -48,6 +53,7 @@ public:
 
 protected:
     void onDecode(const FFmpegFrame::Ptr &frame) override;
+    void onReaderChanged(MediaSource &sender, int size) override;
 
 private:
     TranscodeProcessor::Ptr createTranscode(const TranscodeProcessor::Config &cfg);
@@ -61,6 +67,7 @@ private:
     MediaTuple _tuple;
     ProtocolOption _option;
     toolkit::EventPoller::Ptr _poller;
+    toolkit::EventPoller::Ptr _transcode_poller;
     std::unordered_map<int, std::weak_ptr<MultiMediaSourceMuxer>> _peer_muxers;
     struct DecodedFrame {
         enum Type {
@@ -77,6 +84,7 @@ private:
     MotionProcessor::Ptr _motion;
     MotionMjpegMediaSourceMuxer::Ptr _mjpeg_muxer;
     RingType::RingReader::Ptr _motion_reader;
+    toolkit::EventPoller::Ptr _motion_poller;
 #endif // ENABLE_MOTION
 
     std::unordered_map<std::string, TranscodeProcessor::Ptr> _transcodes;
@@ -85,6 +93,9 @@ private:
     mutable std::mutex _mtx;
     std::vector<Track::Ptr> _audio_tracks;
     bool _tracks_completed = false;
+    bool _source_on_demand = false;
+    std::function<void()> _on_idle;
+    toolkit::Timer::Ptr _idle_timer;
 };
 
 } // namespace mediakit

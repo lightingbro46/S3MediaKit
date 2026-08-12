@@ -92,7 +92,7 @@ bool parseTranscodeRequest(const std::string &params,
 TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg,
                                        const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _option(option), _cfg(std::move(cfg)),
-      _poller(poller ? poller : EventPollerPool::Instance().getPoller()) {
+      _poller(poller ? poller : EventPollerPool::Instance().getPoller(false)) {
     // Publish under a derived stream_id so the transcoded output never collides
     // with the original source (e.g. "cam1" -> "cam1.transcode").
     _tuple.stream += _cfg.stream_suffix;
@@ -150,7 +150,14 @@ void TranscodeProcessor::createMuxer() {
     output_option.enable_audio = true;
     output_option.enable_transcode = false;
     output_option.enable_motion = false;
-    _muxer = std::make_shared<MultiMediaSourceMuxer>(_tuple, 0.0f, output_option);
+    auto owner_poller = EventPollerPool::Instance().getPoller(false);
+    if (owner_poller && !owner_poller->isCurrentThread()) {
+        owner_poller->sync([this, output_option]() {
+            _muxer = std::make_shared<MultiMediaSourceMuxer>(_tuple, 0.0f, output_option);
+        });
+    } else {
+        _muxer = std::make_shared<MultiMediaSourceMuxer>(_tuple, 0.0f, output_option);
+    }
 }
 
 void TranscodeProcessor::addTrackToMuxer(const Track::Ptr &track) {
@@ -158,12 +165,7 @@ void TranscodeProcessor::addTrackToMuxer(const Track::Ptr &track) {
         return;
     }
 
-    toolkit::EventPoller::Ptr owner_poller;
-    try {
-        owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
-    } catch (...) {
-        owner_poller = _poller;
-    }
+    auto owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
     auto muxer = _muxer;
     if (owner_poller && !owner_poller->isCurrentThread()) {
         owner_poller->sync([muxer, track]() {
@@ -178,12 +180,7 @@ void TranscodeProcessor::completeMuxerTracks() {
     if (!_muxer) {
         return;
     }
-    toolkit::EventPoller::Ptr owner_poller;
-    try {
-        owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
-    } catch (...) {
-        owner_poller = _poller;
-    }
+    auto owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
     if (owner_poller && !owner_poller->isCurrentThread()) {
         auto muxer = _muxer;
         owner_poller->sync([muxer]() {
@@ -211,13 +208,10 @@ void TranscodeProcessor::setListener(const std::weak_ptr<MediaSourceEvent> &list
     if (_muxer) {
         auto muxer = _muxer;
         auto self = shared_from_this();
-        if (_poller->isCurrentThread()) {
+        auto owner_poller = _muxer->getOwnerPoller(MediaSource::NullMediaSource());
+        owner_poller->sync([muxer, self]() {
             muxer->setMediaListener(self);
-        } else {
-            _poller->sync([muxer, self]() {
-                muxer->setMediaListener(self);
-            });
-        }
+        });
     }
 }
 
@@ -227,6 +221,14 @@ void TranscodeProcessor::setOnClosed(const std::function<void(const Ptr &)> &cal
 
 void TranscodeProcessor::addAudioTrack(const Track::Ptr &track) {
     if (!track) {
+        return;
+    }
+    // The source muxer exposes its generated silent AAC track with index
+    // 0xffff, but no packet for that synthetic track travels through the
+    // shared input ring. Recreate the mute track locally from video frames
+    // instead of waiting forever for a packet that cannot arrive.
+    if (track->getTrackType() == TrackAudio && track->getIndex() == 0xFFFF) {
+        enableMuteAudio(true);
         return;
     }
     MediaSink::addTrack(track);
@@ -241,6 +243,13 @@ void TranscodeProcessor::finalizeTracks() {
 bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
     if (!_encoder || !frame) {
         return false;
+    }
+    // No GOP replay is used for a newly attached reader. Request an IDR before
+    // feeding its first frame so the derived stream can publish a decodable
+    // sequence immediately.
+    if (_first_video) {
+        _encoder->requestKeyFrame();
+        _first_video = false;
     }
     // Gate demand output through the muxer and force an IDR when the first
     // reader becomes active (or reconnects). This makes the first delivered
@@ -283,8 +292,7 @@ bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
                                                             output_width, output_height);
             _pre_overlay_width = output_width;
             _pre_overlay_height = output_height;
-            InfoL << "TranscodeProcessor: scale before overlay to "
-                  << output_width << "x" << output_height;
+            DebugL << "TranscodeProcessor: scale before overlay to " << output_width << "x" << output_height;
         }
         in = _pre_overlay_sws->inputFrame(frame);
         if (!in) {
@@ -301,6 +309,14 @@ bool TranscodeProcessor::inputAudioFrame(const Frame::Ptr &frame) {
         return false;
     }
     return MediaSink::inputFrame(frame);
+}
+
+bool TranscodeProcessor::isEnabled() {
+    return _muxer && _muxer->isEnabled();
+}
+
+bool TranscodeProcessor::isOnDemand() const {
+    return _cfg.demand;
 }
 
 size_t TranscodeProcessor::totalCount() {
@@ -326,10 +342,13 @@ bool TranscodeProcessor::onTrackFrame(const Frame::Ptr &frame) {
 
 void TranscodeProcessor::onReaderChanged(MediaSource &sender, int size) {
     TraceL << "Transcode reader state: " << _tuple.shortUrl() << ", readers=" << size;
-    // This is the lifecycle of the derived output source. Do not forward it
-    // to MultiMediaSourceProcessor, otherwise the no-reader timer can close
-    // the original media source as well.
+    // Keep the derived output timer local, then notify the owning processor so
+    // it can aggregate readers across all output schemas.
     MediaSourceEvent::onReaderChanged(sender, size);
+    auto listener = getDelegate();
+    if (listener) {
+        listener->onReaderChanged(sender, size);
+    }
 }
 
 bool TranscodeProcessor::close(MediaSource &sender) {
@@ -353,8 +372,7 @@ bool TranscodeProcessor::close(MediaSource &sender) {
     std::weak_ptr<std::function<void()>> weak_check_closed = check_closed;
     *check_closed = [callback, self, muxer, weak_check_closed]() {
         if (muxer && muxer->totalReaderCount()) {
-            WarnL << "Transcode close callback postponed: readers remain, stream="
-                  << self->_tuple.shortUrl();
+            WarnL << "Transcode close callback postponed: readers remain, stream=" << self->_tuple.shortUrl();
             auto check = weak_check_closed.lock();
             if (check) {
                 self->_poller->async(*check, false);
@@ -369,6 +387,21 @@ bool TranscodeProcessor::close(MediaSource &sender) {
 
 int TranscodeProcessor::totalReaderCount() const {
     return _muxer ? _muxer->totalReaderCount() : 0;
+}
+
+MediaOriginType TranscodeProcessor::getOriginType(MediaSource &sender) const {
+    // A transcode output is a derived source, not a new camera pull. Do not
+    // forward the origin type from the shared source processor.
+    return MediaOriginType::transcode;
+}
+
+std::string TranscodeProcessor::getOriginUrl(MediaSource &sender) const {
+    // Report the derived stream URL instead of the original camera URL.
+    return _tuple.shortUrl();
+}
+
+toolkit::EventPoller::Ptr TranscodeProcessor::getOwnerPoller(MediaSource &sender) {
+    return _poller;
 }
 
 } // namespace mediakit

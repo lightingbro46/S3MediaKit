@@ -9,7 +9,15 @@ namespace mediakit {
 
 MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option, const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _option(option),
-      _poller(poller ? poller : toolkit::EventPollerPool::Instance().getPoller()) {
+      _poller(poller ? poller : toolkit::EventPollerPool::Instance().getPoller(false)) {
+    // Keep source lifecycle callbacks on the source poller, but never run
+    // transcode or motion processing there. Both operations may perform
+    // expensive image/codec work and would otherwise starve RTP handling.
+    _transcode_poller = toolkit::EventPollerPool::Instance().getPoller(false);
+#if defined(ENABLE_MOTION)
+    _motion_poller = toolkit::EventPollerPool::Instance().getPoller(false);
+#endif // ENABLE_MOTION
+    _source_on_demand = option.auto_close;
 #if defined(ENABLE_MOTION)
     if (option.enable_motion || option.enable_transcode) {
         _ring = std::make_shared<RingType>(512, nullptr, 1);
@@ -52,7 +60,7 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
 }
 
 TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const TranscodeProcessor::Config &cfg) {
-    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, cfg, _poller);
+    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, cfg, _transcode_poller);
     for (const auto &track : _audio_tracks) {
         transcode->addAudioTrack(track);
     }
@@ -124,18 +132,27 @@ void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent
 }
 
 void MultiMediaSourceProcessor::removeTranscode(const std::string &key, const TranscodeProcessor::Ptr &transcode) {
-    std::lock_guard<std::mutex> lock(_mtx);
-    auto it = _transcodes.find(key);
-    if (it == _transcodes.end() || it->second != transcode) {
-        return;
+    std::function<void()> on_idle;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        auto it = _transcodes.find(key);
+        if (it == _transcodes.end() || it->second != transcode) {
+            WarnL << "Skip remove transcode: instance mismatch, key=" << key;
+            return;
+        }
+        DebugL << "Remove closed transcode stream: " << key;
+        _transcode_readers.erase(key);
+        _transcodes.erase(it);
     }
-    InfoL << "Remove closed transcode stream: " << key;
-    _transcode_readers.erase(key);
-    _transcodes.erase(it);
+    if (canClose()) {
+        on_idle = _on_idle;
+    }
+    if (on_idle) {
+        on_idle();
+    }
 }
 
-void MultiMediaSourceProcessor::attachTranscodeReader(const std::string &key,
-                                                       const TranscodeProcessor::Ptr &transcode) {
+void MultiMediaSourceProcessor::attachTranscodeReader(const std::string &key, const TranscodeProcessor::Ptr &transcode) {
     if (!transcode || _transcode_readers.find(key) != _transcode_readers.end()) {
         return;
     }
@@ -146,11 +163,14 @@ void MultiMediaSourceProcessor::attachTranscodeReader(const std::string &key,
     }
 
     auto ring = _ring;
-    auto poller = _poller;
+    auto poller = _transcode_poller;
     std::weak_ptr<TranscodeProcessor> weak_transcode = transcode;
     RingType::RingReader::Ptr reader;
     poller->sync([&]() {
-        reader = ring->attach(poller, true);
+        // Do not replay the cached GOP synchronously while the source poller
+        // is handling the HTTP request/RTP stream. The encoder will start from
+        // the next decoded frame on the dedicated transcode poller.
+        reader = ring->attach(poller, false);
         reader->setReadCB([weak_transcode](const DecodedFrame &input) {
             auto strong_transcode = weak_transcode.lock();
             if (!strong_transcode) {
@@ -175,7 +195,7 @@ void MultiMediaSourceProcessor::attachMotionReader() {
     }
 
     auto ring = _ring;
-    auto poller = _poller;
+    auto poller = _motion_poller;
     std::weak_ptr<MotionProcessor> weak_motion = _motion;
     poller->sync([&]() {
         _motion_reader = ring->attach(poller, false);
@@ -281,6 +301,79 @@ std::vector<TranscodeProcessor::Ptr> MultiMediaSourceProcessor::snapshotTranscod
 bool MultiMediaSourceProcessor::isTranscodeEnabled() const {
     std::lock_guard<std::mutex> lock(_mtx);
     return !_transcodes.empty();
+}
+
+bool MultiMediaSourceProcessor::isEnabled() {
+#if defined(ENABLE_MOTION)
+    if (_mjpeg_muxer && _mjpeg_muxer->isEnabled()) {
+        return true;
+    }
+#endif // ENABLE_MOTION
+    for (const auto &transcode : snapshotTranscodes()) {
+        if (transcode && transcode->isEnabled()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MultiMediaSourceProcessor::canClose() const {
+    if (readerCount() != 0) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        if (!_transcodes.empty()) {
+            return false;
+        }
+    }
+#if defined(ENABLE_MOTION)
+    if (_motion && (!_option.motion_demand || _option.record_motion)) {
+        return false;
+    }
+#endif // ENABLE_MOTION
+    for (const auto &transcode : snapshotTranscodes()) {
+        if (transcode && !transcode->isOnDemand()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void MultiMediaSourceProcessor::setOnIdle(const std::function<void()> &callback) {
+    _on_idle = callback;
+}
+
+void MultiMediaSourceProcessor::onReaderChanged(MediaSource &sender, int size) {
+    const int readers = readerCount();
+    DebugL << "Derived reader state: " << _tuple.shortUrl() << ", event_size=" << size << ", total_readers=" << readers;
+
+    if (readers > 0) {
+        _idle_timer = nullptr;
+    } else if (canClose() && !_idle_timer) {
+        GET_CONFIG(int, delay_ms, General::kStreamNoneReaderDelayMS);
+        std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+        _idle_timer = std::make_shared<toolkit::Timer>(delay_ms / 1000.0f, [weak_self]() {
+            auto self = weak_self.lock();
+            if (!self || self->readerCount() > 0) {
+                return false;
+            }
+            if (!self->canClose()) {
+                return true;
+            }
+            auto callback = self->_on_idle;
+            if (callback) {
+                callback();
+            }
+            return false;
+        }, _poller);
+    }
+
+    // A live source must not be closed because a derived output became idle.
+    // For an on-demand source, preserve the original source lifecycle policy.
+    if (_source_on_demand) {
+        MediaSourceEventInterceptor::onReaderChanged(sender, readers);
+    }
 }
 
 bool MultiMediaSourceProcessor::isMotionDetectRunning() {

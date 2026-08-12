@@ -26,7 +26,8 @@ enum class MediaOriginType : uint8_t {
     mp4_vod,
     device_chn,
     rtc_push,
-    srt_push
+    srt_push,
+    transcode
 };
 
 std::string getOriginTypeString(MediaOriginType type);

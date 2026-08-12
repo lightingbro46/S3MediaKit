@@ -225,7 +225,7 @@ MultiMediaSourceMuxer::MultiMediaSourceMuxer(const MediaTuple& tuple, float dur_
     }
 #if defined(ENABLE_FFMPEG)
     if (option.enable_motion || option.enable_transcode) {
-        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option, _poller);
+        _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option);
     }
 #endif // ENABLE_FFMPEG
 
@@ -260,6 +260,14 @@ void MultiMediaSourceMuxer::setMediaListener(const std::weak_ptr<MediaSourceEven
 #if defined(ENABLE_FFMPEG)
     if (_stack) {
         _stack->setListener(self);
+        std::weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
+        _stack->setOnIdle([weak_self]() {
+            auto self = weak_self.lock();
+            if (self && self->_stack && self->_stack->canClose()) {
+                InfoL << "Release idle derived processor: " << self->shortUrl();
+                self->_stack = nullptr;
+            }
+        });
     }
 #endif // ENABLE_FFMPEG
 }
@@ -658,6 +666,14 @@ MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const Transco
         option.transcode_demand = true;
         _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option, owner_poller);
         _stack->setListener(shared_from_this());
+        std::weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
+        _stack->setOnIdle([weak_self]() {
+            auto self = weak_self.lock();
+            if (self && self->_stack && self->_stack->canClose()) {
+                InfoL << "Release idle derived processor: " << self->shortUrl();
+                self->_stack = nullptr;
+            }
+        });
         for (const auto &track : getTracks()) {
             _stack->addTrack(track);
         }
@@ -1010,6 +1026,7 @@ bool MultiMediaSourceMuxer::isEnabled(){
                      (_ring ? (bool)_ring->readerCount() : false)  ||
                      (_hls ? _hls->isEnabled() : false) ||
                      (_hls_fmp4 ? _hls_fmp4->isEnabled() : false) ||
+                     (_stack ? _stack->isEnabled() : false) ||
                      _mp4;
 
         if (_is_enable) {

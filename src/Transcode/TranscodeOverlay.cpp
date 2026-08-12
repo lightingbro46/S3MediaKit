@@ -381,7 +381,7 @@ bool TranscodeOverlay::buildGraph(const FFmpegFrame::Ptr &frame) {
         return false;
     }
 
-    InfoL << "TranscodeOverlay ready: " << _image_path << " at (" << _x << "," << _y
+    DebugL << "TranscodeOverlay ready: " << _image_path << " at (" << _x << "," << _y
           << ") canvas " << _src_width << "x" << _src_height
           << ", watermark components=" << _overlay_component_count
           << ", privacy masks=" << _privacy_mask_count;
