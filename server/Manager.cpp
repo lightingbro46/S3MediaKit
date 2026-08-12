@@ -68,7 +68,9 @@ static onceToken token([]() {
 static void enforceStoragePolicy() {
     DebugL << "Storage manager has been started monitoring";
     StorageManager::Instance().start();
+#ifdef ENABLE_TIER_STORAGE
     TierStorageManager::Instance().start();
+#endif
 }
 
 static void loadSavedDeviceInfo() {
@@ -104,6 +106,7 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
     if (timefile_path.empty())
         return "";
 
+#ifdef ENABLE_TIER_STORAGE
     auto resolved = TierStorageManager::Instance().resolvePlaybackSegmentPath(
         block.app(),
         block.stream(),
@@ -129,6 +132,9 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
               << " message=" << resolved.message;
     }
     return "";
+#else
+    return timefile_path;
+#endif
 }
 #endif
 

@@ -1,6 +1,8 @@
 #ifndef STORAGE_STORAGEPOLICY_H
 #define STORAGE_STORAGEPOLICY_H
 
+#ifdef ENABLE_TIER_STORAGE
+
 #include <string>
 #include <vector>
 #include <json/json.h>
@@ -213,3 +215,5 @@ public:
 } // namespace managerkit
 
 #endif // STORAGE_STORAGEPOLICY_H
+
+#endif // ENABLE_TIER_STORAGE

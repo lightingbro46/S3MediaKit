@@ -691,14 +691,6 @@ extern const std::string kLimitPercentUsage;
 // When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. 
 // This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
 extern const std::string kRemovePercentExtra;
-// Legacy StorageManager record lifecycle. Set to 1 to fallback to old segment deletion/rebuild flow.
-extern const std::string kLegacyRecordCleanupEnabled;
-// Legacy StorageManager temporary file cleanup.
-extern const std::string kLegacyTempCleanupEnabled;
-// Legacy StorageManager user session cleanup.
-extern const std::string kLegacyUserSessionCleanupEnabled;
-// StorageManager listener for rebuild requests emitted by TierStorageManager.
-extern const std::string kLegacyTimefileRebuildEnabled;
 // Whether to enable restore on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 0 (disabled).
 extern const std::string kAutoRestoreOnRecordAccess;
 // Maximum number of concurrent restore operations on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 5.

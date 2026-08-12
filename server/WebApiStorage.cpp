@@ -32,6 +32,7 @@ using namespace toolkit;
 using namespace mediakit;
 using namespace managerkit;
 
+#ifdef ENABLE_TIER_STORAGE
 
 // ===================================================================
 // Policy tier config validation helper
@@ -1905,3 +1906,15 @@ void registerStorageApis() {
 }
 
 } // namespace managerkit
+
+#else
+
+namespace managerkit {
+
+void registerStorageApis() {
+    WarnL << "Storage tiering APIs are disabled because ENABLE_STORAGE_TIERING is not defined";
+}
+
+} // namespace managerkit
+
+#endif // ENABLE_STORAGE_TIERING

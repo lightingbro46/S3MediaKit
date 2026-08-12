@@ -1,6 +1,8 @@
 #ifndef STORAGE_POLICYASSIGNMENT_H
 #define STORAGE_POLICYASSIGNMENT_H
 
+#ifdef ENABLE_TIER_STORAGE
+
 #include <string>
 #include <vector>
 #include "DbStorage.h"
@@ -92,3 +94,5 @@ public:
 } // namespace managerkit
 
 #endif // STORAGE_POLICYASSIGNMENT_H
+
+#endif // ENABLE_TIER_STORAGE

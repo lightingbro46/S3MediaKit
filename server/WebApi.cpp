@@ -77,12 +77,14 @@
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionPeerAckLog.h"
 #include "Storage/MiscData.h"
+#ifdef ENABLE_TIER_STORAGE
 #include "Storage/StoragePool.h"
 #include "Storage/StoragePolicy.h"
 #include "Storage/PolicyAssignment.h"
 #include "Storage/TieringJob.h"
 #include "Storage/StorageTierExtra.h"
 #include "Local/TierStorageManager.h"
+#endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
 
 using namespace std;
@@ -813,6 +815,7 @@ void getThreadsLoad(TaskExecutorGetterImp &getter, API_ARGS_MAP_ASYNC) {
     });
 }
 
+#ifdef ENABLE_TIER_STORAGE
 static std::unordered_map<std::string, StoragePool> apiLoadStoragePoolMap() {
     StoragePoolImp imp;
     std::unordered_map<std::string, StoragePool> ret;
@@ -1250,6 +1253,8 @@ static Json::Value apiDashboardSummaryToJson() {
     data["alerts"] = alerts;
     return data;
 }
+
+#endif // ENABLE_TIER_STORAGE
 
 /**
  * Install api interface
@@ -3126,6 +3131,7 @@ void installWebApi() {
         });
     });
 
+#ifdef ENABLE_TIER_STORAGE
     api_regist("/media/api/storage/dashboard/detail", [](API_ARGS_JSON_ASYNC) {
         CHECK_SECRET();
         val["data"] = TierStorageManager::Instance().getDashboardDetail();
@@ -3727,6 +3733,7 @@ void installWebApi() {
         val["data"]["failed_ids"] = failed_arr;
         invoker(200, headerOut, val.toStyledString());
     });
+#endif // ENABLE_TIER_STORAGE
 
     // Configuration APIs
     managerkit::registerConfigurationApis();
@@ -3745,10 +3752,7 @@ void installWebApi() {
     // Monitor APIs
     managerkit::registerMonitorApis();
     // Storage tiering APIs
-    GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-    if (!legacy_record_cleanup_enabled) {
-        managerkit::registerStorageApis();
-    }
+    managerkit::registerStorageApis();
     // Historical sd card sync APIs
     managerkit::registerHistoricalSDCardSyncApis();
 }

@@ -21,6 +21,8 @@
 #include "TierStorageManager.h"
 #include "StorageManager.h"
 
+#ifdef ENABLE_TIER_STORAGE
+
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
@@ -508,11 +510,6 @@ void TierStorageManager::ensureSystemDefaultPolicy() {
 // Lifecycle
 // ===================================================================
 void TierStorageManager::start() {
-    GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-    if (legacy_record_cleanup_enabled) {
-        WarnL << "TierStorageManager disabled because legacy record cleanup is enabled";
-        return;
-    }
 
     if (_timer) {
         WarnL << "TierStorageManager already running. Ignore";
@@ -602,9 +599,6 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
                                                  int64_t start_time,
                                                  int64_t end_time,
                                                  int64_t file_size) {
-    GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-    if (legacy_record_cleanup_enabled)
-        return false;
 
     if (camera_id.empty() || stream_id.empty() || file_path.empty() || start_time <= 0) {
         WarnL << "Invalid hot segment parameters, camera=" << camera_id
@@ -1844,11 +1838,6 @@ CameraStorageSummary TierStorageManager::getCameraStorageSummary(const std::stri
 // Tiering engine
 // ===================================================================
 void TierStorageManager::runTieringCycle() {
-    GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-    if (legacy_record_cleanup_enabled) {
-        DebugL << "Skip TierStorageManager tiering cycle because legacy record cleanup is enabled";
-        return;
-    }
 
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
     WorkThreadPool::Instance().getPoller()->async([weak_self]() {
@@ -2651,9 +2640,6 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
 
 ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::string &file_path) {
     ColdAccessRestoreResult ret;
-    GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-    if (legacy_record_cleanup_enabled)
-        return ret;
 
     GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
     if (!auto_restore)
@@ -3221,3 +3207,5 @@ static onceToken g_token(
 });
 
 } // namespace managerkit
+
+#endif // ENABLE_TIER_STORAGE

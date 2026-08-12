@@ -3,7 +3,9 @@
 #include "Util/util.h"
 #include "Thread/WorkThreadPool.h"
 #include "Local/StatisticRecorder.h"
+#ifdef ENABLE_TIER_STORAGE
 #include "Local/TierStorageManager.h"
+#endif // ENABLE_TIER_STORAGE
 #include "Extension/Resource.h"
 
 using namespace std;
@@ -37,7 +39,9 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
         TraceL << "Camera manager has not been ready";
         return false;
     }
+#ifdef ENABLE_TIER_STORAGE
     option.recordRootPath = TierStorageManager::Instance().resolveCameraRecordRoot(tuple.device_id);
+#endif
 
     auto it = _gcImp.find(tuple.shortUrl());
     if  (it != _gcImp.end()) {
@@ -75,7 +79,9 @@ bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
     auto tuple = params.tuple;
     auto stream_map = params.stream_map;
     auto option = params.option;
+#ifdef ENABLE_TIER_STORAGE
     option.recordRootPath = TierStorageManager::Instance().resolveCameraRecordRoot(tuple.device_id);
+#endif
     auto it = _gcImp.find(tuple.shortUrl());
     if  (it != _gcImp.end()) {
         WarnL << "Camera " << tuple.shortUrl() << " already exist. Ignore add camera from statistics";

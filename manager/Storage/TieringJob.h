@@ -1,6 +1,8 @@
 #ifndef STORAGE_TIERINGJOB_H
 #define STORAGE_TIERINGJOB_H
 
+#ifdef ENABLE_TIER_STORAGE
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -1144,3 +1146,5 @@ public:
 } // namespace managerkit
 
 #endif // STORAGE_TIERINGJOB_H
+
+#endif // ENABLE_TIER_STORAGE
