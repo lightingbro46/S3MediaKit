@@ -417,7 +417,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
 
         vector<OverlayComponent> components;
         OverlayBuildOptions overlay_options;
-        overlay_options.resolve_dynamic_tokens = false;
+        overlay_options.resolve_dynamic_tokens = true;
         overlay_options.username = policy.username;
         overlay_options.camera_name = policy.camera_name;
         if (use_watermark && !OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {

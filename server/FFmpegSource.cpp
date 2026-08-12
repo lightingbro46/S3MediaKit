@@ -743,7 +743,7 @@ static std::string buildOverlayFilterComplex(const MediaTuple &tuple, const Extr
 
     vector<OverlayComponent> components;
     OverlayBuildOptions options;
-    options.resolve_dynamic_tokens = false;
+    options.resolve_dynamic_tokens = true;
     options.username = policy.username;
     options.camera_name = policy.camera_name;
     if (use_watermark) {
