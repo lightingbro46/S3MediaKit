@@ -30,7 +30,7 @@ const string kOverlayRoot = OVERLAY_FIELD "overlay_root";
 static onceToken token([]() {
     mINI::Instance()[kEnableWatermark] = true;
     mINI::Instance()[kEnablePrivacyMask] = true;
-    mINI::Instance()[kUseWatermarkAsset] = false;
+    mINI::Instance()[kUseWatermarkAsset] = true;
     mINI::Instance()[kOverlayRoot] = "./www/overlay/";
 });
 } // namespace OverlayPrivacyConfig
