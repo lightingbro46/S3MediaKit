@@ -1325,6 +1325,10 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
             data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
             data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
+            GET_CONFIG(bool, enablePrivacymaskSupport, OverlayPrivacyConfig::kEnablePrivacyMask)
+            data["enablePrivacyMaskSupport"] = enablePrivacymaskSupport;
+            GET_CONFIG(bool, enableWatermarkSupport, OverlayPrivacyConfig::kEnableWatermark)
+            data["enableWatermarkSupport"] = enableWatermarkSupport;
         }
 
         if (auto speakerImp = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
@@ -1350,6 +1354,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["enableAutoProfile"] = false;
             data["enableOnvifProfileConfig"] = false;
             data["supportsSdCardPlayback"] = false;
+            data["enablePrivacyMaskSupport"] = false;
+            data["enableWatermarkSupport"] = false;
             data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
         }
     }
