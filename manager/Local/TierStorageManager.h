@@ -1,3 +1,5 @@
+#ifdef ENABLE_TIER_STORAGE
+
 #ifndef LOCAL_TIERSTORAGEMANAGER_H
 #define LOCAL_TIERSTORAGEMANAGER_H
 
@@ -374,3 +376,5 @@ private:
 } // namespace managerkit
 
 #endif // LOCAL_TIERSTORAGEMANAGER_H
+
+#endif // ENABLE_TIER_STORAGE

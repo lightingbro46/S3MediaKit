@@ -36,6 +36,16 @@ void MigrationHistoryImp::migrate(const string &files_string) {
 
     for (auto it = files.begin(); it != files.end(); ++it) {
         auto file = *it;
+#ifndef ENABLE_TIER_STORAGE
+        // Tier storage migrations must not create tier-only tables when the
+        // feature is excluded from the binary. Keep them unapplied so they
+        // can be executed if a later build enables the feature.
+        auto filename = file.substr(file.find_last_of("/\\") + 1);
+        if (filename == "09_storage_tiering.sql" ||
+            filename == "11_storage_tiering_extra.sql") {
+            continue;
+        }
+#endif // ENABLE_TIER_STORAGE
         if (File::fileExist(file)) {
             try {
                 if (it == files.begin() && !exist_db) {

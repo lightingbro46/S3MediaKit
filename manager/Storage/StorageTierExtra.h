@@ -1,6 +1,8 @@
 #ifndef STORAGE_TIER_EXTRA_H
 #define STORAGE_TIER_EXTRA_H
 
+#ifdef ENABLE_TIER_STORAGE
+
 #include <ctime>
 #include <sstream>
 #include <string>
@@ -393,3 +395,5 @@ using ProtectedVideoImp = ProtectedVideoRepository;
 } // namespace managerkit
 
 #endif // STORAGE_TIER_EXTRA_H
+
+#endif // ENABLE_TIER_STORAGE

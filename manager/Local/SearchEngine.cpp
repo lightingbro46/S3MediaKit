@@ -8,8 +8,11 @@
 #include "Storage/BookmarkIndex.h"
 #include "Storage/Bookmark.h"
 #include "Storage/UserEntity.h"
+#ifdef ENABLE_TIER_STORAGE
 #include "Storage/StoragePool.h"
 #include "Storage/TieringJob.h"
+#endif // ENABLE_TIER_STORAGE
+
 #include "Server/ClusterManager.h"
 
 #include <algorithm>
@@ -26,6 +29,31 @@ using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
+
+#ifndef ENABLE_TIER_STORAGE
+static std::vector<TimeRange> splitRangeByTier(const std::string &,
+                                               const std::string &,
+                                               uint64_t start_time,
+                                               uint64_t end_time) {
+    std::vector<TimeRange> result;
+    if (start_time >= end_time)
+        return result;
+    TimeRange tr;
+    tr.startTime = start_time;
+    tr.duration = static_cast<uint32_t>(end_time - start_time);
+    tr.tier = "HOT";
+    tr.restoreRequired = false;
+    result.push_back(tr);
+    return result;
+}
+
+static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
+                                               const std::string &stream_id,
+                                               const TimeRange &range) {
+    return splitRangeByTier(camera_id, stream_id, range.startTime,
+                            range.startTime + range.duration);
+}
+#endif // ENABLE_TIER_STORAGE
 
 // ---------------------------------------------------------------------------
 // Internal helper: resolve owner peer from VmsResourceAssignment.
@@ -102,6 +130,7 @@ struct MotionPeriodEntry {
     uint64_t end;           // exclusive
 };
 
+#ifdef ENABLE_TIER_STORAGE
 static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
                                                const std::string &stream_id,
                                                uint64_t start_time,
@@ -192,6 +221,7 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
                             range.startTime,
                             range.startTime + range.duration);
 }
+#endif // ENABLE_TIER_STORAGE
 
 // Resolve overlaps (later startTime wins) then merge consecutive same-server/tier periods.
 static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {

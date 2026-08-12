@@ -568,11 +568,13 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
             StrJsonUtils::readJsonString(it["value"].asString(), motion_storage_json);
             stats.motion_stats = getMotionStorageStats(motion_storage_json);
         } else if (it["name"] == "tierStorageStats") {
+#ifdef ENABLE_TIER_STORAGE
             Json::Value tier_storage_json;
             StrJsonUtils::readJsonString(it["value"].asString(), tier_storage_json);
             stats.tier_storage_map[HotTier] = getTierStorageStats(tier_storage_json[HotTier]);
             stats.tier_storage_map[WarmTier] = getTierStorageStats(tier_storage_json[WarmTier]);
             stats.tier_storage_map[ColdTier] = getTierStorageStats(tier_storage_json[ColdTier]);
+#endif // ENABLE_TIER_STORAGE 
         }
     }
 
@@ -666,12 +668,13 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     Json::Value motion_storage_json = makeMotionStorageStatsJson(stats.motion_stats);
     params.append(makeJsonKeyValue("motionStorageStats", StrJsonUtils::writeJsonString(motion_storage_json)));
 
+#ifdef ENABLE_TIER_STORAGE
     Json::Value tier_storage_json = Json::arrayValue;
     tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, HotTier));
     tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, WarmTier));
     tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, ColdTier));
     params.append(makeJsonKeyValue("tierStorageStats", StrJsonUtils::writeJsonString(tier_storage_json)));
-
+#endif
     root["addParams"] = params;
 
     // created_at/updated_at
@@ -1020,6 +1023,7 @@ void CameraStatisticImp::addMotionKeepThreshold(bool start, uint64_t threshold) 
 }
 
 void CameraStatisticImp::addTierKeepThreshold(int tier_type, bool start, uint64_t threshold) {
+#ifdef ENABLE_TIER_STORAGE
     std::lock_guard<std::mutex> lck(_mtx);
     auto &tier_stats = tier_storage_map[tier_type];
     if (start) {
@@ -1030,6 +1034,9 @@ void CameraStatisticImp::addTierKeepThreshold(int tier_type, bool start, uint64_
         DebugL << "Camera " << tuple.shortUrl() << " set tier " << tierTypeToString(static_cast<TierType>(tier_type)) << " keep end threshold: " << threshold << " seconds";
     }
     save();
+#else
+    WarnL << "Tier storage is not enabled. Ignore add tier keep threshold.";
+#endif
 }
 
 void CameraStatisticImp::saveVideoEncoderConfig(const std::string token, const VideoEncoderConfig &config) {

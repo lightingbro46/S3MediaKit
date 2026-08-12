@@ -32,9 +32,7 @@ StorageManager::~StorageManager() {
 StorageManager::StorageManager(const EventPoller::Ptr &poller) {
     _poller = poller ? std::move(poller) : EventPollerPool::Instance().getPoller();
 
-    GET_CONFIG(bool, legacy_temp_cleanup_enabled, Storage::kLegacyTempCleanupEnabled);
-    if (legacy_temp_cleanup_enabled)
-        cleanupTemporaryFiles();
+    cleanupTemporaryFiles();
 }
 
 static void cleanupFolder(const string folder) {
@@ -449,16 +447,12 @@ void StorageManager::start() {
             if (!strong_self) {
                 return false;
             }
-            GET_CONFIG(bool, legacy_record_cleanup_enabled, Storage::kLegacyRecordCleanupEnabled);
-            GET_CONFIG(bool, legacy_user_session_cleanup_enabled, Storage::kLegacyUserSessionCleanupEnabled);
-            GET_CONFIG(bool, legacy_temp_cleanup_enabled, Storage::kLegacyTempCleanupEnabled);
 
-            if (legacy_record_cleanup_enabled)
-                strong_self->enforceStoragePolicy();
-            if (legacy_user_session_cleanup_enabled)
-                strong_self->removeExpiredUserSession();
-            if (legacy_temp_cleanup_enabled)
-                strong_self->cleanupTemporaryFiles();
+#ifndef ENABLE_TIER_STORAGE
+            strong_self->enforceStoragePolicy();
+#endif
+            strong_self->removeExpiredUserSession();
+            strong_self->cleanupTemporaryFiles();
             return true;
         },
         _poller);
@@ -469,9 +463,6 @@ void StorageManager::stop() {
 }
 
 void StorageManager::rebuildTimeFile(const std::string &camera_id, uint64_t threshold) {
-    GET_CONFIG(bool, legacy_timefile_rebuild_enabled, Storage::kLegacyTimefileRebuildEnabled);
-    if (!legacy_timefile_rebuild_enabled)
-        return;
     recreateCameraTimeFile(camera_id, threshold);
 }
 

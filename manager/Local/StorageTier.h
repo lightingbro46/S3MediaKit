@@ -1,3 +1,5 @@
+#ifdef ENABLE_TIER_STORAGE
+
 #ifndef LOCAL_STORAGETIER_H
 #define LOCAL_STORAGETIER_H
 
@@ -427,3 +429,5 @@ struct TimelineRange {
 } // namespace managerkit
 
 #endif // LOCAL_STORAGETIER_H
+
+#endif // ENABLE_TIER_STORAGE
