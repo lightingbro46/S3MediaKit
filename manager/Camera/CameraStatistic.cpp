@@ -103,6 +103,30 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
     return stats;
 }
 
+static Json::Value makeTransportStatsJson(const TransportStats &stats) {
+    Json::Value ret = Json::objectValue;
+    ret["liveTransports"] = Json::arrayValue;
+    for (const auto &transport : stats.liveTransports) {
+        ret["liveTransports"].append(transport);
+    }
+    ret["replayTransports"] = Json::arrayValue;
+    for (const auto &transport : stats.replayTransports) {
+        ret["replayTransports"].append(transport);
+    }
+    return ret;
+}
+
+static TransportStats getTransportStats(const Json::Value &data) {
+    TransportStats stats;
+    for (const auto &transport : data["liveTransports"]) {
+        stats.liveTransports.push_back(transport.asString());
+    }
+    for (const auto &transport : data["replayTransports"]) {
+        stats.replayTransports.push_back(transport.asString());
+    }
+    return stats;
+}
+
 // DeviceCapabilities
 static Json::Value makeOnvifPTZPresetMapJson(const OnvifPTZProfile::PTZPresetMap &preset_map) {
     Json::Value ret = Json::arrayValue;
@@ -567,6 +591,10 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
             Json::Value motion_storage_json;
             StrJsonUtils::readJsonString(it["value"].asString(), motion_storage_json);
             stats.motion_stats = getMotionStorageStats(motion_storage_json);
+        } else if (it["name"] == "transportStats") {
+            Json::Value transport_stats_json;
+            StrJsonUtils::readJsonString(it["value"].asString(), transport_stats_json);
+            stats.transport_stats = getTransportStats(transport_stats_json);
         } else if (it["name"] == "tierStorageStats") {
             Json::Value tier_storage_json;
             StrJsonUtils::readJsonString(it["value"].asString(), tier_storage_json);
@@ -666,6 +694,9 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     Json::Value motion_storage_json = makeMotionStorageStatsJson(stats.motion_stats);
     params.append(makeJsonKeyValue("motionStorageStats", StrJsonUtils::writeJsonString(motion_storage_json)));
 
+    Json::Value transport_stats_json = makeTransportStatsJson(stats.transport_stats);
+    params.append(makeJsonKeyValue("transportStats", StrJsonUtils::writeJsonString(transport_stats_json)));
+
     Json::Value tier_storage_json = Json::arrayValue;
     tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, HotTier));
     tier_storage_json.append(makeTierStorageStatsJson(stats.tier_storage_map, WarmTier));
@@ -711,6 +742,7 @@ void CameraStatisticImp::load() {
         bm = saved_stats.bm;
         storage_map = saved_stats.storage_map;
         sinfo_map = saved_stats.sinfo_map;
+        transport_stats = saved_stats.transport_stats;
         device_stats = saved_stats.device_stats;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
@@ -785,6 +817,12 @@ void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
         // Camera is inactive but enable failover, also need to release resource
         assignResource(false);
     }
+    save();
+}
+
+void CameraStatisticImp::setTransportStats(const TransportStats &input_stats) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    transport_stats = input_stats;
     save();
 }
 
@@ -1155,6 +1193,8 @@ struct ResourceAdapter<CameraStatistic> {
         mediaStreams[std::to_string(SecondaryStream)] = makeStreamStatisticJson(stats.sinfo_map, SecondaryStream);
         kvs.push_back(make("mediaStreams", StrJsonUtils::writeJsonString(mediaStreams)));
 
+        kvs.push_back(make("transportStats", StrJsonUtils::writeJsonString(makeTransportStatsJson(stats.transport_stats))));
+
         // ── storage info (synced so peers know where to pull) ──────────────
         Json::Value storage_info = Json::objectValue;
         auto bm_json = makeBookmarkStatsJson(stats.bm);
@@ -1308,6 +1348,10 @@ struct ResourceAdapter<CameraStatistic> {
                     StrJsonUtils::readJsonString(kv.value, mediaStreams_json);
                     stats.sinfo_map[PrimaryStream]   = getStreamStatistic(mediaStreams_json[std::to_string(PrimaryStream)]);
                     stats.sinfo_map[SecondaryStream] = getStreamStatistic(mediaStreams_json[std::to_string(SecondaryStream)]);
+                } else if (kv.name == "transportStats") {
+                    Json::Value transport_stats_json;
+                    StrJsonUtils::readJsonString(kv.value, transport_stats_json);
+                    stats.transport_stats = getTransportStats(transport_stats_json);
                 } else if (kv.name == "storageInfos") {
                     Json::Value storage_info_json;
                     StrJsonUtils::readJsonString(kv.value, storage_info_json);

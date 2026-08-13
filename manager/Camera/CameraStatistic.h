@@ -2,6 +2,7 @@
 #define CAMERA_CAMERASTATISTIC_H
 
 #include <mutex>
+#include <vector>
 #include "Local/FileRecorder.h"
 #include "GenericRtspCamera.h"
 #include "CameraController.h"
@@ -36,9 +37,6 @@ struct StreamStatistic {
     int sample_rate = 0;
     int channel_no = 0;
     int sample_bit = 0;
-    // bool transcoding_required = false;
-    // int encoder_index = -1;
-    // std::vector<std::string> transports;
 };
 
 struct DeviceStatistic {
@@ -59,6 +57,11 @@ struct TierStorageStats {
     uint64_t archiveEndTime = 0;
 };
 
+struct TransportStats {
+    std::vector<std::string> liveTransports;
+    std::vector<std::string> replayTransports;
+};
+
 struct CameraStatistic;
 class CameraStatisticHelper {
 public:
@@ -75,6 +78,7 @@ struct CameraStatistic {
     std::unordered_map<std::string, StreamStorageStats> storage_map;
     std::unordered_map<int, StreamStatistic> sinfo_map;
     MotionStorageStats motion_stats;
+    TransportStats transport_stats;
     std::unordered_map<int, TierStorageStats> tier_storage_map;
     DeviceStatistic device_stats;
     uint64_t created_at;
@@ -101,6 +105,8 @@ public:
     void setStreamTuples(const std::unordered_map<int, StreamTuple> &input_stream_map);
 
     void setCameraOption(const CameraOption &input_option);
+
+    void setTransportStats(const TransportStats &input_stats);
 
     std::string getStreamID(const int &stream_type);
 
