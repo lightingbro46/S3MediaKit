@@ -80,6 +80,8 @@ private:
 
     void stop();
 
+    void saveTransportsStats();
+
 private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;

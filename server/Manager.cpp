@@ -1302,60 +1302,72 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
     auto weak_listener = device->getListener();
     if (auto strong_listener = weak_listener.lock()) {
         if (auto cameraImp = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener)) {
-            auto option = cameraImp->getCameraOption();
-            data["deviceId"] = device->getDeviceTuple().device_id;
-            if (caps->isOnvifDevice) {
-                data["onvifDevice"] = true;
-                auto deviceInfo = caps->onvifProfile.deviceInfo;
-                data["manufacturer"] = deviceInfo.manufacturer;
-                data["model"] = deviceInfo.model;
-                data["serialNumber"] = deviceInfo.serialNumber;
-                data["firmwareVersion"] = deviceInfo.firmwareVersion;
-                data["hardwareId"] = deviceInfo.hardwareId;
-                data["macAddress"] = deviceInfo.macAddress;
-                data["hasWebPage"] = true;
-                data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort);
-                
-                Json::Value onvifProfileJson = Json::objectValue;
-                auto ptzProfile = caps->onvifProfile.ptzProfile;
-                onvifProfileJson["isPTZ"] = ptzProfile.isAbsMoveEnable || ptzProfile.isRelMoveEnable || ptzProfile.isConsMoveEnable;
-                onvifProfileJson["ptzControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
-                auto mediaProfiles = caps->onvifProfile.mediaProfiles;
-                onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
-                data["onvifProfiles"] = onvifProfileJson;
-            } else {
-                // note: keep manufacturer and model field if camera is added by user with ip
-                data["manufacturer"] = option.manufacturer.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.manufacturer;
-                data["model"] = option.model.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.model;
-                data["serialNumber"] = "";
-                data["firmwareVersion"] = "";
-                data["hardwareId"] = "";
-                data["macAddress"] = "";
-                data["hasWebPage"] = false;
-                data["webPage"] = "";
-                data["onvifDevice"] = false;
-                Json::Value onvifProfileJson = Json::objectValue;
-                onvifProfileJson["isPTZ"] = false;
-                onvifProfileJson["ptzControlMode"] = Json::arrayValue;
-                onvifProfileJson["profiles"] = Json::arrayValue;
-                data["onvifProfiles"] = onvifProfileJson;
-            }
+            auto stats_imp = cameraImp->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                auto option = params.option;
+                data["deviceId"] = device->getDeviceTuple().device_id;
+                if (caps->isOnvifDevice) {
+                    data["onvifDevice"] = true;
+                    auto deviceInfo = caps->onvifProfile.deviceInfo;
+                    data["manufacturer"] = deviceInfo.manufacturer;
+                    data["model"] = deviceInfo.model;
+                    data["serialNumber"] = deviceInfo.serialNumber;
+                    data["firmwareVersion"] = deviceInfo.firmwareVersion;
+                    data["hardwareId"] = deviceInfo.hardwareId;
+                    data["macAddress"] = deviceInfo.macAddress;
+                    data["hasWebPage"] = true;
+                    data["webPage"] = StrPrinter << "http://" << option.ip << ":" << (option.autoWebPort ? option.port : option.webPort);
+
+                    Json::Value onvifProfileJson = Json::objectValue;
+                    auto ptzProfile = caps->onvifProfile.ptzProfile;
+                    onvifProfileJson["isPTZ"] = ptzProfile.isAbsMoveEnable || ptzProfile.isRelMoveEnable || ptzProfile.isConsMoveEnable;
+                    onvifProfileJson["ptzControlMode"] = getPTZModeString(ptzProfile.isAbsMoveEnable, ptzProfile.isRelMoveEnable, ptzProfile.isConsMoveEnable);
+                    auto mediaProfiles = caps->onvifProfile.mediaProfiles;
+                    onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
+                    data["onvifProfiles"] = onvifProfileJson;
+                } else {
+                    // note: keep manufacturer and model field if camera is added by user with ip
+                    data["manufacturer"] = option.manufacturer.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.manufacturer;
+                    data["model"] = option.model.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.model;
+                    data["serialNumber"] = "";
+                    data["firmwareVersion"] = "";
+                    data["hardwareId"] = "";
+                    data["macAddress"] = "";
+                    data["hasWebPage"] = false;
+                    data["webPage"] = "";
+                    data["onvifDevice"] = false;
+                    Json::Value onvifProfileJson = Json::objectValue;
+                    onvifProfileJson["isPTZ"] = false;
+                    onvifProfileJson["ptzControlMode"] = Json::arrayValue;
+                    onvifProfileJson["profiles"] = Json::arrayValue;
+                    data["onvifProfiles"] = onvifProfileJson;
+                }
 #ifdef ENABLE_MOTION
-            GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
-            data["motionDetection"]["mediaSupport"] = enableMotion;
+                GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
+                data["motionDetection"]["mediaSupport"] = enableMotion;
 #else
-            data["motionDetection"]["mediaSupport"] = false;
+                data["motionDetection"]["mediaSupport"] = false;
 #endif
-            GET_CONFIG(bool, enableAutoProfile, General::kEnableAutoProfile);
-            data["enableAutoProfile"] = enableAutoProfile ? true : false;
-            // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
-            data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
-            data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
-            data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
-            GET_CONFIG(bool, enablePrivacymaskSupport, OverlayPrivacyConfig::kEnablePrivacyMask)
-            data["enablePrivacyMaskSupport"] = enablePrivacymaskSupport;
-            GET_CONFIG(bool, enableWatermarkSupport, OverlayPrivacyConfig::kEnableWatermark)
-            data["enableWatermarkSupport"] = enableWatermarkSupport;
+                GET_CONFIG(bool, enableAutoProfile, General::kEnableAutoProfile);
+                data["enableAutoProfile"] = enableAutoProfile ? true : false;
+                // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
+                data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
+                data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
+                data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
+                GET_CONFIG(bool, enablePrivacymaskSupport, OverlayPrivacyConfig::kEnablePrivacyMask)
+                data["enablePrivacyMaskSupport"] = enablePrivacymaskSupport;
+                GET_CONFIG(bool, enableWatermarkSupport, OverlayPrivacyConfig::kEnableWatermark)
+                data["enableWatermarkSupport"] = enableWatermarkSupport;
+                data["liveTransports"] = Json::arrayValue;
+                for (const auto &transport : params.transport_stats.liveTransports) {
+                    data["liveTransports"].append(transport);
+                }
+                data["replayTransports"] = Json::arrayValue;
+                for (const auto &transport : params.transport_stats.replayTransports) {
+                    data["replayTransports"].append(transport);
+                }
+            }
         }
 
         if (auto speakerImp = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
@@ -1687,6 +1699,15 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
                     item["controller"] = Json::nullValue;
                 }
                 item["options"] = makeCameraOptionJson(option);
+
+                item["liveTransports"] = Json::arrayValue;
+                for (const auto &transport : params.transport_stats.liveTransports) {
+                    item["liveTransports"].append(transport);
+                }
+                item["replayTransports"] = Json::arrayValue;
+                for (const auto &transport : params.transport_stats.replayTransports) {
+                    item["replayTransports"].append(transport);
+                }
 
                 // Get stream reader count
                 item["readerAvailableOnMServer"] = GlobalMonitor::Instance().isReaderCountAvailable();

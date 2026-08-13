@@ -123,6 +123,8 @@ void GenericRtspCameraImp::setupStreamSink() {
     }
 
     onAllStreamReady();
+
+    saveTransportsSupport();
 }
 
 void GenericRtspCameraImp::setupScheduler() {
@@ -436,6 +438,43 @@ void GenericRtspCameraImp::setSyncMode(bool enable) {
         return;
     }
     statistic->setSyncMode(enable);
+}
+
+static void appendTransportStats(TransportStats &stats, const ProtocolOption &option) {
+    std::vector<std::string> transports;
+    if (option.enable_fmp4) {
+        stats.liveTransports.push_back("HTTP-FMP4");
+        stats.replayTransports.push_back("WS-FMP4");
+        stats.replayTransports.push_back("HTTP-FMP4");
+        stats.replayTransports.push_back("WS-FMP4");
+    }
+    if (option.enable_hls) {
+        stats.liveTransports.push_back("HLS");
+        stats.replayTransports.push_back("HLS");
+    }
+    if (option.enable_hls_fmp4) {
+        stats.liveTransports.push_back("HLS-FMP4");
+        stats.replayTransports.push_back("HLS-FMP4");
+    }
+    if (option.enable_rtsp) {
+        stats.liveTransports.push_back("RTSP");
+        stats.replayTransports.push_back("RTSP");
+    }
+    if (option.enable_rtmp) {
+        stats.liveTransports.push_back("RTMP");
+        stats.replayTransports.push_back("RTMP");
+    }
+}
+
+void GenericRtspCameraImp::saveTransportsSupport() {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore save transports support request";
+        return;
+    }
+    TransportStats stats;
+    appendTransportStats(stats, ProtocolOption());
+    strong_statistic->setTransportStats(stats);
 }
 
 } // namespace managerkit
