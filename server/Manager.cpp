@@ -1700,15 +1700,6 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
                 }
                 item["options"] = makeCameraOptionJson(option);
 
-                item["liveTransports"] = Json::arrayValue;
-                for (const auto &transport : params.transport_stats.liveTransports) {
-                    item["liveTransports"].append(transport);
-                }
-                item["replayTransports"] = Json::arrayValue;
-                for (const auto &transport : params.transport_stats.replayTransports) {
-                    item["replayTransports"].append(transport);
-                }
-
                 // Get stream reader count
                 item["readerAvailableOnMServer"] = GlobalMonitor::Instance().isReaderCountAvailable();
                 item["readerAvailablePerCamera"] = GlobalMonitor::Instance().isReaderCountAvailable(params.tuple.device_id);

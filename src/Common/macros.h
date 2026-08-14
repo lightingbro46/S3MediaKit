@@ -67,7 +67,6 @@
 namespace mediakit {
 
 extern const char kServerName[];
-extern const char kServerVersion[];
 extern const char kServerShortName[];
 
 template <typename... ARGS>

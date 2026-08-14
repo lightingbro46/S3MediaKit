@@ -93,6 +93,9 @@ SpeakerStatisticImp::Ptr StatisticRecorder::addSpeakerRecorder(const string &dev
     });
     {
         std::lock_guard<std::mutex> lock(_mtx_stats);
+        if (_sp_stats_map.find(device_id) != _sp_stats_map.end()) {
+            _sp_stats_map.erase(device_id);
+        }
         _sp_stats_map.emplace(device_id, imp);
     }
     return imp;
