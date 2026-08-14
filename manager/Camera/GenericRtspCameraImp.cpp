@@ -129,8 +129,9 @@ void GenericRtspCameraImp::setupStreamSink() {
 
 void GenericRtspCameraImp::setupScheduler() {
     if (_scheduler) {
+        auto enabled = _scheduler->isEnabled();
         auto profile = _scheduler->getProfile();
-        if (profile == _option.recordSchedules) {
+        if (enabled == _option.enableRecord && profile == _option.recordSchedules) {
             DebugL << "Record scheduler for camera " << _src->getUrl() << " already setup with the same profile. Ignore setup scheduler request";
             return;
         }
