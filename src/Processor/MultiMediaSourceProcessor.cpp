@@ -1,11 +1,14 @@
 #if defined(ENABLE_FFMPEG)
 
 #include "MultiMediaSourceProcessor.h"
-#include "Common/MultiMediaSourceMuxer.h"
 
 using namespace std;
 
 namespace mediakit {
+
+namespace {
+const int kMuteAudioIndex = 0xFFFF;
+}
 
 MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option, const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _option(option),
@@ -60,11 +63,15 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
 }
 
 TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const TranscodeProcessor::Config &cfg) {
-    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, cfg, _transcode_poller);
-    for (const auto &track : _audio_tracks) {
-        transcode->addAudioTrack(track);
+    TranscodeProcessor::Config effective_cfg = cfg;
+    if (effective_cfg.source_fps <= 0.0) {
+        effective_cfg.source_fps = _source_video_fps;
     }
+    auto transcode = std::make_shared<TranscodeProcessor>(_tuple, _option, effective_cfg, _transcode_poller);
     if (_tracks_completed) {
+        if (_selected_audio_track) {
+            transcode->addAudioTrack(_selected_audio_track);
+        }
         transcode->finalizeTracks();
     }
     return transcode;
@@ -210,13 +217,36 @@ void MultiMediaSourceProcessor::attachMotionReader() {
 
 bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
     bool ret = MediaSourceDecoder::addTrack(track);
-    // Register the original audio track for pass-through muxing into the transcode stream.
-    if (track && track->getTrackType() == TrackAudio) {
-        _audio_tracks.push_back(track);
+    if (track && track->getTrackType() == TrackVideo) {
+        auto video_track = std::dynamic_pointer_cast<VideoTrack>(track);
+        if (video_track && video_track->getVideoFps() > 0.0f) {
+            const double source_fps = video_track->getVideoFps();
+            {
+                std::lock_guard<std::mutex> lock(_mtx);
+                _source_video_fps = source_fps;
+            }
+            for (const auto &transcode : snapshotTranscodes()) {
+                _transcode_poller->async([transcode, source_fps]() {
+                    transcode->setSourceFps(source_fps);
+                }, false);
+            }
+        }
     }
     if (track && track->getTrackType() == TrackAudio) {
-        for (const auto &transcode : snapshotTranscodes()) {
-            transcode->addAudioTrack(track);
+        const bool source_mute = track->getIndex() == kMuteAudioIndex;
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            const bool selected_is_mute = _selected_audio_track &&
+                                          _selected_audio_track->getIndex() == kMuteAudioIndex;
+            if (!_selected_audio_track || (!source_mute && selected_is_mute)) {
+                _selected_audio_track = track;
+                DebugL << "Select source " << (source_mute ? "mute" : "real")
+                       << " audio track index=" << track->getIndex() << " for transcode";
+            } else if (!source_mute && !selected_is_mute &&
+                       _selected_audio_track->getIndex() != track->getIndex()) {
+                WarnL << "Ignore additional real audio track index=" << track->getIndex()
+                      << ", selected index=" << _selected_audio_track->getIndex();
+            }
         }
     }
     return ret;
@@ -228,11 +258,17 @@ bool MultiMediaSourceProcessor::inputFrame(const Frame::Ptr &frame) {
     bool ret = MediaSourceDecoder::inputFrame(frame);
     if (frame && frame->getTrackType() == TrackAudio) {
         RingType::Ptr ring;
+        int selected_audio_index = -1;
         {
             std::lock_guard<std::mutex> lock(_mtx);
             ring = _ring;
+            if (_selected_audio_track) {
+                selected_audio_index = _selected_audio_track->getIndex();
+            }
         }
-        if (ring) {
+        // Forward exactly the selected source audio clock. This includes the
+        // source-generated mute track (0xffff) when no real audio exists.
+        if (ring && frame->getIndex() == selected_audio_index) {
             DecodedFrame input;
             input.type = DecodedFrame::Audio;
             input.audio = frame;
@@ -248,8 +284,16 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
         _motion->setMjpegMuxer(_mjpeg_muxer);
     }
 #endif // ENABLE_MOTION
-    _tracks_completed = true;
+    Track::Ptr selected_audio;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        _tracks_completed = true;
+        selected_audio = _selected_audio_track;
+    }
     for (const auto &transcode : snapshotTranscodes()) {
+        if (selected_audio) {
+            transcode->addAudioTrack(selected_audio);
+        }
         transcode->finalizeTracks();
     }
 }
@@ -273,9 +317,10 @@ void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
 
 void MultiMediaSourceProcessor::resetTracks() {
     MediaSourceDecoder::resetTracks();
-    _audio_tracks.clear();
     {
         std::lock_guard<std::mutex> lock(_mtx);
+        _selected_audio_track.reset();
+        _source_video_fps = 0.0;
 #if defined(ENABLE_MOTION)
         _motion_reader.reset();
 #endif // ENABLE_MOTION
@@ -296,11 +341,6 @@ std::vector<TranscodeProcessor::Ptr> MultiMediaSourceProcessor::snapshotTranscod
         ret.emplace_back(entry.second);
     }
     return ret;
-}
-
-bool MultiMediaSourceProcessor::isTranscodeEnabled() const {
-    std::lock_guard<std::mutex> lock(_mtx);
-    return !_transcodes.empty();
 }
 
 bool MultiMediaSourceProcessor::isEnabled() {
@@ -332,11 +372,6 @@ bool MultiMediaSourceProcessor::canClose() const {
         return false;
     }
 #endif // ENABLE_MOTION
-    for (const auto &transcode : snapshotTranscodes()) {
-        if (transcode && !transcode->isOnDemand()) {
-            return false;
-        }
-    }
     return true;
 }
 

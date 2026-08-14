@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include "Codec/Transcode.h"
@@ -50,12 +51,25 @@ private:
 
 private:
     struct CachedPrivacyMask {
+        struct PlaneCache {
+            int min_x = 0;
+            int min_y = 0;
+            int max_x = -1;
+            int max_y = -1;
+            std::vector<std::vector<std::pair<int, int> > > spans;
+            // Reused by BLUR and PIXELATE. Capacity is retained across frames.
+            std::vector<uint8_t> work;
+            std::vector<uint8_t> temp;
+        };
+
         PrivacyMaskRegion config;
         int min_x = 0;
         int min_y = 0;
         int max_x = 0;
         int max_y = 0;
-        std::vector<std::vector<std::pair<int, int> > > spans;
+        uint8_t fill[3] = {0, 128, 128};
+        uint8_t alpha = 255;
+        PlaneCache planes[3];
     };
 
     std::string _image_path;
@@ -74,6 +88,8 @@ private:
     std::vector<PrivacyMaskRegion> _privacy_masks;
     std::vector<CachedPrivacyMask> _cached_privacy_masks;
     FFmpegSws::Ptr _privacy_sws;
+    int _privacy_width = 0;
+    int _privacy_height = 0;
 
     AVFilterGraph *_graph = nullptr;
     AVFilterContext *_buffersrc_ctx = nullptr;

@@ -4,8 +4,10 @@
 #if defined(ENABLE_FFMPEG)
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Codec/Transcode.h"
 #include "Common/macros.h"
@@ -42,7 +44,8 @@ bool parseTranscodeRequest(const std::string &params,
  * result through the existing MultiMediaSourceMuxer under a derived stream_id.
  *
  * Pipeline (per decoded video frame):
- *   FFmpegFrame → TranscodeOverlay → FFmpegEncoder(H264) → Frame::Ptr
+ *   FFmpegFrame → FFmpegFrameRateFilter → TranscodeOverlay
+ *              → FFmpegEncoder(H264) → Frame::Ptr
  *              → MediaSink (track-ready mgmt) → MultiMediaSourceMuxer
  *
  * Audio is passed through unchanged (no transcode).
@@ -66,6 +69,7 @@ public:
         int width = 0;               // 0 = keep source width
         int height = 0;              // 0 = keep source height
         int fps = 5;
+        double source_fps = 0.0;     // 0 = unknown; use CFR filter
         int bitrate = 0;             // bits/sec, 0 = automatic
         int gop = 0;                 // frames, 0 = 2*fps
         bool demand = true;          // on-demand gating
@@ -87,7 +91,7 @@ public:
     /** Called after the delayed output close has completed. */
     void setOnClosed(const std::function<void(const Ptr &)> &callback);
 
-    /** Register the original audio track for pass-through muxing. */
+    /** Clone and register the selected source audio track for pass-through. */
     void addAudioTrack(const Track::Ptr &track);
 
     /** Signal that all upstream tracks have been announced. */
@@ -96,12 +100,14 @@ public:
     /** Feed a decoded video frame (from the shared FFmpegDecoder). */
     bool inputVideoFrame(const FFmpegFrame::Ptr &frame);
 
+    /** Update source FPS after the upstream VideoTrack becomes ready. */
+    void setSourceFps(double source_fps);
+
     /** Feed an original audio frame for pass-through. */
     bool inputAudioFrame(const Frame::Ptr &frame);
 
     /** Whether at least one derived output is active for its demand policy. */
     bool isEnabled();
-    bool isOnDemand() const;
 
     int totalReaderCount() const;
 
@@ -109,9 +115,6 @@ public:
     MediaOriginType getOriginType(MediaSource &sender) const override;
     std::string getOriginUrl(MediaSource &sender) const override;
     toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
-    /** Number of live TranscodeProcessor instances (transcode stream count). */
-    static size_t totalCount();
-
 protected:
     // MediaSink overrides
     bool onTrackReady(const Track::Ptr &track) override;
@@ -124,23 +127,26 @@ private:
     void createMuxer();
     void addTrackToMuxer(const Track::Ptr &track);
     void completeMuxerTracks();
+    bool processFilteredVideoFrame(const FFmpegFrame::Ptr &frame);
 
     MediaTuple _tuple;               // derived stream_id
     ProtocolOption _option;
     Config _cfg;
     toolkit::EventPoller::Ptr _poller;
     bool _have_audio = false;
+    int _audio_track_index = -1;
     bool _primed = false;
     bool _last_enabled = false;
     bool _first_video = true;
     std::function<void(const Ptr &)> _on_closed;
-    int64_t _last_overlay_input_pts = AV_NOPTS_VALUE;
+    int64_t _source_pts_base = AV_NOPTS_VALUE;
     FFmpegSws::Ptr _pre_overlay_sws;
     int _pre_overlay_width = 0;
     int _pre_overlay_height = 0;
 
     std::shared_ptr<MultiMediaSourceMuxer> _muxer;
     FFmpegEncoder::Ptr _encoder;
+    FFmpegFrameRateFilter::Ptr _frame_rate_filter;
     TranscodeOverlay::Ptr _overlay;
 
     toolkit::ObjectStatistic<TranscodeProcessor> _statistic;

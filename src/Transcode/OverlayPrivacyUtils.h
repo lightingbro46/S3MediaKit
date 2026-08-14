@@ -88,7 +88,7 @@ struct OverlayBuildOptions {
 /**
  * C++11-only SVG builder for watermarks (buildSvg draws components only \u2014 privacy
  * masks are burned in separately via pixel processing or ffmpeg filters, see
- * buildPrivacyMaskFilterComplex and TranscodeOverlay::applyPrivacyMasks).
+ * TranscodeOverlay::applyPrivacyMasks).
  *
  * The generated SVG is transparent by default and can be consumed by an
  * FFmpeg movie filter. This class intentionally has no Qt dependency.
@@ -145,18 +145,6 @@ public:
 
     /** Escape a path for use in an avfilter movie= option (backslash, colon, single-quote). */
     static std::string escapeMoviePath(const std::string &path);
-
-    /**
-     * Build a real ffmpeg filter_complex chain that burns each privacy mask region into the video:
-     * drawbox for SOLID, crop+boxblur+overlay for BLUR, crop+downscale/upscale+overlay for PIXELATE.
-     * Regions are approximated by their polygon's bounding box since ffmpeg's rect filters can't
-     * clip to an arbitrary polygon. Writes the label of the final processed video stream to
-     * last_label ("0:v" unchanged when there is nothing to draw). Returns an empty string when
-     * masks is empty.
-     */
-    static std::string buildPrivacyMaskFilterComplex(const std::vector<PrivacyMaskRegion> &masks,
-                                                     int canvas_width, int canvas_height,
-                                                     std::string &last_label);
 
 };
 

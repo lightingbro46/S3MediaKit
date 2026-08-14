@@ -16,7 +16,6 @@
 
 namespace mediakit {
 
-class MultiMediaSourceMuxer;
 class MultiMediaSourceProcessor
     : public MediaSourceDecoder
     , public MediaSourceEventInterceptor
@@ -40,8 +39,6 @@ public:
     bool isEnabled();
     bool canClose() const;
     void setOnIdle(const std::function<void()> &callback);
-
-    bool isTranscodeEnabled() const;
 
     void addTrackCompleted() override;
 
@@ -68,7 +65,6 @@ private:
     ProtocolOption _option;
     toolkit::EventPoller::Ptr _poller;
     toolkit::EventPoller::Ptr _transcode_poller;
-    std::unordered_map<int, std::weak_ptr<MultiMediaSourceMuxer>> _peer_muxers;
     struct DecodedFrame {
         enum Type {
             Video,
@@ -91,7 +87,11 @@ private:
     RingType::Ptr _ring;
     std::unordered_map<std::string, RingType::RingReader::Ptr> _transcode_readers;
     mutable std::mutex _mtx;
-    std::vector<Track::Ptr> _audio_tracks;
+    // Exactly one source audio track is selected for every derived transcode.
+    // A real track replaces the synthetic 0xffff fallback before tracks are
+    // finalized; TranscodeProcessor never creates another mute track.
+    Track::Ptr _selected_audio_track;
+    double _source_video_fps = 0.0;
     bool _tracks_completed = false;
     bool _source_on_demand = false;
     std::function<void()> _on_idle;

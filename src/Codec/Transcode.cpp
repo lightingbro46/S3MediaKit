@@ -8,6 +8,10 @@
 #include "Common/config.h"
 #include "Extension/Factory.h"
 
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
 #define MAX_DELAY_SECOND 3
 
 using namespace std;
@@ -810,6 +814,218 @@ FFmpegFrame::Ptr FFmpegSws::inputFrame(const FFmpegFrame::Ptr &frame, int &ret, 
     return nullptr;
 }
 
+//////////////////////////////// FFmpegFrameRateFilter ////////////////////////////////
+
+FFmpegFrameRateFilter::FFmpegFrameRateFilter(int target_fps, double source_fps)
+    : _target_fps(target_fps > 0 ? target_fps : 5),
+      _source_fps(source_fps > 0.0 ? source_fps : 0.0) {}
+
+FFmpegFrameRateFilter::~FFmpegFrameRateFilter() {
+    clearGraph();
+}
+
+bool FFmpegFrameRateFilter::isPassthrough() const {
+    return _source_fps > 0.0 && std::abs(_source_fps - _target_fps) <= 0.01;
+}
+
+void FFmpegFrameRateFilter::setSourceFps(double source_fps) {
+    source_fps = source_fps > 0.0 ? source_fps : 0.0;
+    if (std::abs(source_fps - _source_fps) < 0.01) {
+        return;
+    }
+    reset();
+    _source_fps = source_fps;
+}
+
+void FFmpegFrameRateFilter::clearGraph() {
+    if (_graph) {
+        avfilter_graph_free(&_graph);
+    }
+    _source = nullptr;
+    _sink = nullptr;
+    _graph_width = 0;
+    _graph_height = 0;
+    _graph_format = AV_PIX_FMT_NONE;
+    _sink_time_base = AVRational{ 1, 1000 };
+}
+
+void FFmpegFrameRateFilter::resetEpoch() {
+    _source_epoch_pts = AV_NOPTS_VALUE;
+    _last_source_pts = AV_NOPTS_VALUE;
+    if (_last_output_pts != AV_NOPTS_VALUE) {
+        _output_epoch_pts = _last_output_pts + std::max<int64_t>(1, 1000 / _target_fps);
+    }
+}
+
+void FFmpegFrameRateFilter::reset() {
+    clearGraph();
+    resetEpoch();
+}
+
+int64_t FFmpegFrameRateFilter::normalizeSourcePts(const AVFrame *frame) {
+    const int64_t fallback_interval = std::max<int64_t>(
+        1, static_cast<int64_t>(std::llround(1000.0 / (_source_fps > 0.0 ? _source_fps : _target_fps))));
+    int64_t source_pts = frame->pts;
+    if (source_pts == AV_NOPTS_VALUE) {
+        source_pts = _last_source_pts == AV_NOPTS_VALUE ? 0 : _last_source_pts + fallback_interval;
+    }
+
+    // A seek/reconnect starts a new source epoch, while the derived stream
+    // remains monotonic for already connected muxer readers.
+    if (_last_source_pts != AV_NOPTS_VALUE &&
+        (source_pts < _last_source_pts || source_pts - _last_source_pts > 3000)) {
+        reset();
+    }
+    if (_source_epoch_pts == AV_NOPTS_VALUE) {
+        _source_epoch_pts = source_pts;
+    }
+    _last_source_pts = source_pts;
+    return _output_epoch_pts + source_pts - _source_epoch_pts;
+}
+
+bool FFmpegFrameRateFilter::emitPassthrough(const FFmpegFrame::Ptr &frame, int64_t pts,
+                                                const onOutput &callback) {
+    AVFrame *copy = av_frame_clone(frame->get());
+    if (!copy) {
+        WarnL << "FFmpegFrameRateFilter: av_frame_clone failed";
+        return false;
+    }
+    copy->pts = pts;
+    copy->pkt_dts = pts;
+    auto output = std::make_shared<FFmpegFrame>(
+        std::shared_ptr<AVFrame>(copy, [](AVFrame *ptr) { av_frame_free(&ptr); }));
+    _last_output_pts = pts;
+    return callback ? callback(output) : true;
+}
+
+bool FFmpegFrameRateFilter::buildGraph(const AVFrame *frame) {
+    clearGraph();
+    _graph = avfilter_graph_alloc();
+    if (!_graph) {
+        WarnL << "FFmpegFrameRateFilter: avfilter_graph_alloc failed";
+        return false;
+    }
+
+    const AVFilter *buffer = avfilter_get_by_name("buffer");
+    const AVFilter *fps = avfilter_get_by_name("fps");
+    const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+    if (!buffer || !fps || !buffersink) {
+        WarnL << "FFmpegFrameRateFilter: required FFmpeg filters are unavailable";
+        clearGraph();
+        return false;
+    }
+
+    const AVRational sar = frame->sample_aspect_ratio.num > 0 && frame->sample_aspect_ratio.den > 0
+                               ? frame->sample_aspect_ratio
+                               : AVRational{ 1, 1 };
+    char source_args[512];
+    snprintf(source_args, sizeof(source_args),
+             "video_size=%dx%d:pix_fmt=%d:time_base=1/1000:pixel_aspect=%d/%d",
+             frame->width, frame->height, frame->format, sar.num, sar.den);
+    int ret = avfilter_graph_create_filter(&_source, buffer, "transcode_fps_in",
+                                           source_args, nullptr, _graph);
+    if (ret < 0) {
+        WarnL << "FFmpegFrameRateFilter: create buffer failed: " << ffmpeg_err(ret);
+        clearGraph();
+        return false;
+    }
+
+    AVFilterContext *fps_context = nullptr;
+    const std::string fps_args = StrPrinter << "fps=" << _target_fps << ":round=near:eof_action=pass";
+    ret = avfilter_graph_create_filter(&fps_context, fps, "transcode_fps",
+                                       fps_args.data(), nullptr, _graph);
+    if (ret < 0) {
+        WarnL << "FFmpegFrameRateFilter: create fps failed: " << ffmpeg_err(ret);
+        clearGraph();
+        return false;
+    }
+    ret = avfilter_graph_create_filter(&_sink, buffersink, "transcode_fps_out",
+                                       nullptr, nullptr, _graph);
+    if (ret < 0 || avfilter_link(_source, 0, fps_context, 0) < 0 ||
+        avfilter_link(fps_context, 0, _sink, 0) < 0 ||
+        (ret = avfilter_graph_config(_graph, nullptr)) < 0) {
+        WarnL << "FFmpegFrameRateFilter: configure graph failed: " << ffmpeg_err(ret);
+        clearGraph();
+        return false;
+    }
+
+    _sink_time_base = av_buffersink_get_time_base(_sink);
+    _graph_width = frame->width;
+    _graph_height = frame->height;
+    _graph_format = static_cast<AVPixelFormat>(frame->format);
+    InfoL << "FFmpegFrameRateFilter: CFR " << _source_fps << "fps -> "
+          << _target_fps << "fps, time_base=" << _sink_time_base.num << "/" << _sink_time_base.den;
+    return true;
+}
+
+bool FFmpegFrameRateFilter::drain(const onOutput &callback) {
+    bool success = true;
+    while (true) {
+        AVFrame *raw = av_frame_alloc();
+        if (!raw) {
+            return false;
+        }
+        const int ret = av_buffersink_get_frame(_sink, raw);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            av_frame_free(&raw);
+            break;
+        }
+        if (ret < 0) {
+            WarnL << "FFmpegFrameRateFilter: buffersink failed: " << ffmpeg_err(ret);
+            av_frame_free(&raw);
+            return false;
+        }
+
+        raw->pts = av_rescale_q(raw->pts, _sink_time_base, AVRational{ 1, 1000 });
+        raw->pkt_dts = raw->pts;
+        _last_output_pts = raw->pts;
+        auto output = std::make_shared<FFmpegFrame>(
+            std::shared_ptr<AVFrame>(raw, [](AVFrame *ptr) { av_frame_free(&ptr); }));
+        if (callback && !callback(output)) {
+            success = false;
+        }
+    }
+    return success;
+}
+
+bool FFmpegFrameRateFilter::inputFrame(const FFmpegFrame::Ptr &frame,
+                                           const onOutput &callback) {
+    if (!frame || !frame->get()) {
+        return false;
+    }
+    if (!isPassthrough() && _graph &&
+        (frame->get()->width != _graph_width || frame->get()->height != _graph_height ||
+         frame->get()->format != _graph_format)) {
+        reset();
+    }
+    const int64_t normalized_pts = normalizeSourcePts(frame->get());
+    if (isPassthrough()) {
+        return emitPassthrough(frame, normalized_pts, callback);
+    }
+
+    AVFrame *input = av_frame_clone(frame->get());
+    if (!input) {
+        return false;
+    }
+    input->pts = normalized_pts;
+    input->pkt_dts = normalized_pts;
+
+    if (!_graph) {
+        if (!buildGraph(input)) {
+            av_frame_free(&input);
+            return false;
+        }
+    }
+    const int ret = av_buffersrc_add_frame_flags(_source, input,
+                                                  AV_BUFFERSRC_FLAG_KEEP_REF);
+    av_frame_free(&input);
+    if (ret < 0) {
+        WarnL << "FFmpegFrameRateFilter: buffersrc failed: " << ffmpeg_err(ret);
+        return false;
+    }
+    return drain(callback);
+}
+
 std::tuple<bool, std::string> FFmpegUtils::saveFrame(const FFmpegFrame::Ptr &frame, const char *filename, AVPixelFormat fmt, int w, int h, const char *font_path) {
     std::shared_ptr<AVFilterGraph> _filter_graph;
     AVFilterContext *buffersrc_ctx = nullptr;
@@ -1070,10 +1286,6 @@ void FFmpegEncoder::setOnEncode(onEnc cb) {
     _cb = std::move(cb);
 }
 
-const AVCodecContext *FFmpegEncoder::getContext() const {
-    return _context.get();
-}
-
 bool FFmpegEncoder::openEncoder(const FFmpegFrame::Ptr &frame) {
     auto src = frame->get();
     int out_w = 0;
@@ -1149,14 +1361,20 @@ bool FFmpegEncoder::inputFrame(const FFmpegFrame::Ptr &frame) {
     if (!frame || !frame->get()) {
         return false;
     }
+    return inputFrame(frame, frame->get()->pts);
+}
+
+bool FFmpegEncoder::inputFrame(const FFmpegFrame::Ptr &frame, int64_t output_pts) {
+    if (!frame || !frame->get()) {
+        return false;
+    }
     if (!_context && !openEncoder(frame)) {
         return false;
     }
 
-    auto input = frame->get();
-    if (input->pts != AV_NOPTS_VALUE && _last_encoded_pts != AV_NOPTS_VALUE) {
-        if (input->pts < _last_encoded_pts) {
-            WarnL << "FFmpegEncoder: dropping non-monotonic frame pts=" << input->pts << ", last=" << _last_encoded_pts;
+    if (output_pts != AV_NOPTS_VALUE && _last_encoded_pts != AV_NOPTS_VALUE) {
+        if (output_pts < _last_encoded_pts) {
+            WarnL << "FFmpegEncoder: dropping non-monotonic frame pts=" << output_pts << ", last=" << _last_encoded_pts;
             return true;
         }
 
@@ -1183,9 +1401,15 @@ bool FFmpegEncoder::inputFrame(const FFmpegFrame::Ptr &frame) {
             return false;
         }
     }
+    if (output_pts != AV_NOPTS_VALUE) {
+        // scaled is either produced by FFmpegSws or cloned above. It is now
+        // owned by the encoder path and safe to retimestamp in place.
+        scaled->get()->pts = output_pts;
+        scaled->get()->pkt_dts = output_pts;
+    }
     const bool encoded = encodeFrame(scaled->get());
-    if (encoded && input->pts != AV_NOPTS_VALUE) {
-        _last_encoded_pts = input->pts;
+    if (encoded && output_pts != AV_NOPTS_VALUE) {
+        _last_encoded_pts = output_pts;
     }
     return encoded;
 }
