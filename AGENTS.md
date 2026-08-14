@@ -1,105 +1,84 @@
-# S3MediaKit – Agent Instructions
+# S3MediaKit agent guide
 
-S3MediaKit is a high-performance C++11 streaming media server (derived from ZLMediaKit). It supports RTSP/RTMP/HLS/WebRTC/GB28181 and more. A Go CGo binding and Android SDK are also provided.
+S3MediaKit is a C++11 streaming media server derived from ZLMediaKit. It provides RTSP, RTMP, HLS, WebRTC, GB28181, Go/CGo bindings, and an Android SDK.
 
-## Build
+## Operating rules
 
-> Full build guide: [docs/README.md](docs/README.md)
+- Read this file, the relevant `README`/docs, and the nearest applicable skill before changing code.
+- Inspect `git status --short` and existing diffs first. Preserve unrelated user changes.
+- Search before editing with `rg`/`rg --files`; prefer existing patterns and tests over invented abstractions.
+- Keep changes scoped to the request. Do not reformat or rewrite unrelated files.
+- Never expose secrets, tokens, private keys, or production data in code, logs, patches, or responses.
+- Do not run destructive Git/filesystem commands unless the user explicitly authorizes the exact target.
+- Do not claim completion without reporting what was checked and the result.
 
-### Prerequisites (Ubuntu 22.04+)
+## Language and compatibility
+
+- The project is C++11. Do not use C++14/17/20 features such as `std::optional`, `std::filesystem`, structured bindings, or `weak_from_this()`.
+- For asynchronous lifetime control, classes must use `std::enable_shared_from_this<T>` and C++11 code must use:
+
+  ```cpp
+  std::weak_ptr<MyClass> weak_self = shared_from_this();
+  auto self = weak_self.lock();
+  if (!self) return;
+  ```
+
+- Never capture raw `this` in timers, `doDelayTask`, poller tasks, or other callbacks. Singleton managers may call `ClassName::Instance()` inside the callback.
+- Prefer `std::shared_ptr`/`std::weak_ptr`; use the project's `Optional<T>` instead of `std::optional`.
+
+## Repository map
+
+| Path | Responsibility |
+|---|---|
+| `src/` | Core `mediakit` library and protocol/media pipeline |
+| `server/` | `MediaServer`, REST APIs, hooks, process lifecycle |
+| `manager/` | `managerkit`: cameras, storage, auth, sync, database entities |
+| `ext-codec/` | Optional codec implementations and codec plugins |
+| `api/` | Public C API headers and CGo-facing implementation |
+| `3rdpart/S3ToolKit/` | `toolkit`: pollers, timers, networking, logging, SQLite helpers |
+| `migration/` | Numbered SQLite migrations for ESC and MediaServer databases |
+| `tests/` | Unit, integration, and stand-alone test programs |
+| `conf/` | Runtime configuration and configuration documentation |
+| `docs/` | API and feature documentation, mainly Vietnamese |
+| `.agents/skills/` | Shared engineering lifecycle skills |
+| `.codex/skills/` | Shared Git safety and S3MediaKit-specific skills |
+
+## Build and validation
+
+Use the existing configured build when available:
+
 ```bash
-sudo apt-get install -y build-essential cmake git libssl-dev protobuf-compiler \
-    libprotobuf-dev libsqlite3-dev libcurl4-openssl-dev libsrtp2-dev gcc g++ gdb ffmpeg pkg-config
+cmake --build build -j2
 ```
 
-### ⚠️ AWS SDK must be built first if `ENABLE_AWS_SDK=ON`
-Install to `3rdpart/aws-sdk/bin/`. See [docs/README.md](docs/README.md#build-aws-sdk).
+For a fresh Debug build, AWS SDK must already be installed under `3rdpart/aws-sdk/bin/` when `ENABLE_AWS_SDK=ON`:
 
-### Configure & Build
 ```bash
-mkdir -p build && cd build
-
-# Debug (default)
-cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_AWS_SDK=ON
-
-# Release
-cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_WEBRTC=false -DENABLE_FFMPEG=false \
-         -DENABLE_TESTS=false -DENABLE_API=false -DENABLE_AWS_SDK=ON
-
-make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_AWS_SDK=ON
+cmake --build build -j"$(nproc)"
 ```
 
-Key CMake options: `ENABLE_AWS_SDK`, `ENABLE_WEBRTC`, `ENABLE_FFMPEG`, `ENABLE_MP4`, `ENABLE_HLS`, `ENABLE_SRT`, `ENABLE_MANAGER`, `ENABLE_MOTION`, `ENABLE_TESTS`, `ENABLE_API`.  
-`-DENABLE_DEBUG` is defined automatically in Debug builds.
+Choose focused tests when possible, then run the smallest relevant build or test target. Use `tests/README.md` and `docs/README.md` for project-specific setup.
 
-### Docker
-```bash
-sh build_docker_images.sh [-t build|push] [-m Debug|Release] [-v <version>]
-```
+## Project invariants
 
-## Project Layout
+- Namespaces: `toolkit`, `mediakit`, and `managerkit` have distinct responsibilities; do not duplicate protocol conversion in `ext-codec/` when it belongs in `src/`.
+- Singletons use `ClassName::Instance()`.
+- Config defaults are registered with `onceToken` and `mINI::Instance()`.
+- Database access uses `toolkit::SqlitePool`/manager repositories. Schema changes are new numbered files under the correct migration directory.
+- REST handlers use the existing `WebApi` macros and `ApiErrCode`; authentication and internal sync APIs have different trust boundaries.
+- `CMAKE_INCLUDE_CURRENT_DIR` is `OFF`; use explicit, correct includes.
 
-| Path | Purpose |
-|------|---------|
-| `src/` | Core mediakit library (`s3mediakit` static lib). Subdirs by protocol/feature: `Codec/`, `Http/`, `Rtsp/`, `Rtmp/`, `Rtp/`, `Record/`, `HLS/`, etc. |
-| `server/` | `MediaServer` executable – `WebApi*.cpp`, `WebHook.cpp`, `Manager.cpp` |
-| `manager/` | `managerkit` namespace – `Camera/`, `Storage/`, `Control/`, `User/`, `Local/`, `Server/`, `Common/` |
-| `ext-codec/` | Extended codec implementations (H264/H265/AAC/G711/OPUS/VP8/VP9/AV1/…) |
-| `ext-plugin/` | SDK plugin entry point |
-| `api/` | C API SDK (`mk_*.h` headers in `api/include/`) |
-| `3rdpart/` | Vendored libs: `S3ToolKit/`, `jsoncpp/`, `jwt-cpp/`, `media-server/`, `onvif/`, `aws-sdk/` |
-| `webrtc/` | WebRTC support (compiled with `ENABLE_WEBRTC`) |
-| `srt/` | SRT support (compiled with `ENABLE_SRT`) |
-| `golang/` | Go CGo bindings wrapping the C API |
-| `Android/` | Android Gradle project |
-| `migration/` | SQLite schema migration SQL files |
-| `conf/` | `config.ini` and runtime configuration |
-| `docs/` | API integration docs (Vietnamese) |
-| `tests/` | Stand-alone test/example executables |
+## Skill catalog
 
-## Namespaces & Key Abstractions
+The repository skill sources are under `.agents/skills/` and `.codex/skills/`. The directories are local/ignored by default; install or copy them to the Codex skills directory when sharing them across projects.
 
-- **`toolkit`** – from `3rdpart/S3ToolKit/`: event poller, thread pool, TCP/UDP server/client, timer (`toolkit::Timer::Ptr`), logger, INI config (`mINI::Instance()`), SQLite pool (`toolkit::SqlitePool`)
-- **`mediakit`** – core streaming logic, codec, protocol sessions
-- **`managerkit`** – camera management, storage tiering, user auth, sync
+- Shared lifecycle: `requirement-analysis`, `codebase-exploration`, `architecture-design`, `implementation-planning`, `implementation`, `test-design`, `code-review`, `bug-investigation`.
+- Shared safety: `shared-safe-git`.
+- S3MediaKit: `s3mediakit-development`, `s3mediakit-api`, `s3mediakit-database`, `s3mediakit-media-codec`.
 
-## Coding Conventions
+Load only the skill relevant to the task. Read its `references/` files only when the task enters that topic.
 
-- **C++11 only** – no `std::optional`, no `std::filesystem`, no structured bindings. Use the project's custom `Optional<T>` (defined in `manager/Storage/DbSchema.h`).
-- **No raw `this` in async callbacks** – always capture via `weak_from_this()` and lock before accessing members. See repo memory for threading pitfalls.
-- **Singletons** – use `ClassName::Instance()` pattern (not `getInstance()`).
-- **Smart pointers** – prefer `std::shared_ptr`/`std::weak_ptr`; type aliases as `using Ptr = std::shared_ptr<ClassName>`.
-- **`enable_shared_from_this`** – required for classes that schedule async tasks referencing `this`.
-- **Config keys** – declare with `onceToken` in the relevant namespace and register defaults via `mINI::Instance()[key] = default_value`.
-- **Database** – SQLite via `toolkit::SqlitePool`; schema changes go in `migration/updates/` as numbered SQL files and registered in `MigrationHistory`.
-- **HTTP API** – uses `CHECK_AUTH_TOKEN()` guard (JWT). Sync/internal APIs intentionally omit auth and must be network-isolated.
-- **Protocol conversion** – handled inside `src/`; do not duplicate codec logic in `ext-codec/`.
+## Completion report
 
-## Thread Safety Notes
-
-- Avoid capturing raw `this` in `doDelayTask`/timer callbacks in `manager/` and `server/`; use `weak_from_this()+lock()` before any member access.
-- Singleton managers with timers: prefer calling `Instance().method()` inside the lambda instead of capturing `this`.
-
-## API Docs
-
-- REST API & web hook reference: see `docs/` (Vietnamese)
-- Storage tiering: [docs/api-storage-tiering.md](docs/api-storage-tiering.md)
-- Multi-node DB sync: [docs/api-sync.md](docs/api-sync.md)
-- Bookmark: [docs/api-bookmark.md](docs/api-bookmark.md)
-- PTZ preset: [docs/api-ptz-preset.md](docs/api-ptz-preset.md)
-- Timeline thumbnail: [docs/api-timeline-thumbnail.md](docs/api-timeline-thumbnail.md)
-- Performance tuning: [conf/readme.md](conf/readme.md)
-
-## Deployment
-
-- Docker Compose: `docker-compose.yml` (image `3spro/3spro-mserver`)
-- K8s hints: [k8s_readme.md](k8s_readme.md)
-- Config override: mount custom `config.ini` into `/opt/media/conf/`
-- TLS cert: replace `tests/default.pem`
-
-## Common Pitfalls
-
-- **AWS SDK prerequisite**: build and install to `3rdpart/aws-sdk/bin/` before running CMake. Forgetting this causes missing library errors.
-- `CMAKE_INCLUDE_CURRENT_DIR` is `OFF` – do not rely on implicit current-directory includes.
-- `ENABLE_DEBUG` is auto-defined for Debug builds; do not define it manually.
-- Go bindings require the `mk_mediakit.h` C API headers and a built shared library.
+End implementation tasks with a concise summary of changed files, validation commands/results, known limitations, and remaining follow-up. For review tasks, report findings first, ordered by severity, with file/line evidence.
