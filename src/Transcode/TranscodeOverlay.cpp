@@ -130,9 +130,52 @@ YuvColor parseYuvColor(const std::string &value) {
             static_cast<uint8_t>(std::max(0.0, std::min(255.0, 128.0 + 0.5 * r - 0.419 * g - 0.081 * b)))};
 }
 
-uint8_t blendByte(uint8_t source, uint8_t replacement, double opacity) {
-    return static_cast<uint8_t>(std::max(0.0, std::min(255.0,
-        source * (1.0 - opacity) + replacement * opacity)));
+uint8_t blendByte(uint8_t source, uint8_t replacement, uint8_t alpha) {
+    if (alpha == 255) {
+        return replacement;
+    }
+    return static_cast<uint8_t>((source * (255 - alpha) + replacement * alpha + 127) / 255);
+}
+
+void boxBlurHorizontal(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst,
+                       int width, int height, int radius) {
+    dst.resize(src.size());
+    for (int y = 0; y < height; ++y) {
+        const int row = y * width;
+        int sum = 0;
+        int left = 0;
+        int right = std::min(width - 1, radius);
+        for (int x = left; x <= right; ++x) {
+            sum += src[row + x];
+        }
+        for (int x = 0; x < width; ++x) {
+            dst[row + x] = static_cast<uint8_t>(sum / (right - left + 1));
+            const int next_left = std::max(0, x + 1 - radius);
+            const int next_right = std::min(width - 1, x + 1 + radius);
+            while (left < next_left) sum -= src[row + left++];
+            while (right < next_right) sum += src[row + ++right];
+        }
+    }
+}
+
+void boxBlurVertical(const std::vector<uint8_t> &src, std::vector<uint8_t> &dst,
+                     int width, int height, int radius) {
+    dst.resize(src.size());
+    for (int x = 0; x < width; ++x) {
+        int sum = 0;
+        int top = 0;
+        int bottom = std::min(height - 1, radius);
+        for (int y = top; y <= bottom; ++y) {
+            sum += src[y * width + x];
+        }
+        for (int y = 0; y < height; ++y) {
+            dst[y * width + x] = static_cast<uint8_t>(sum / (bottom - top + 1));
+            const int next_top = std::max(0, y + 1 - radius);
+            const int next_bottom = std::min(height - 1, y + 1 + radius);
+            while (top < next_top) sum -= src[top++ * width + x];
+            while (bottom < next_bottom) sum += src[++bottom * width + x];
+        }
+    }
 }
 }
 
@@ -143,9 +186,12 @@ bool TranscodeOverlay::buildPrivacyMaskCache(int width, int height) {
     }
     for (size_t i = 0; i < _privacy_masks.size(); ++i) {
         const PrivacyMaskRegion &mask = _privacy_masks[i];
+        if (mask.points.size() < 3) {
+            continue;
+        }
         CachedPrivacyMask cached;
         cached.config = mask;
-        cached.spans.resize(height);
+        std::vector<std::vector<std::pair<int, int> > > luma_spans(height);
         for (size_t p = 0; p < mask.points.size(); ++p) {
             const double x = mask.points[p].first * width / _overlay_canvas_width;
             const double y = mask.points[p].second * height / _overlay_canvas_height;
@@ -180,10 +226,43 @@ bool TranscodeOverlay::buildPrivacyMaskCache(int width, int height) {
             for (size_t p = 0; p + 1 < intersections.size(); p += 2) {
                 const int left = std::max(0, static_cast<int>(std::ceil(intersections[p])));
                 const int right = std::min(width - 1, static_cast<int>(std::floor(intersections[p + 1])));
-                if (left <= right) cached.spans[y].push_back(std::make_pair(left, right));
+                if (left <= right) luma_spans[y].push_back(std::make_pair(left, right));
             }
         }
-        _cached_privacy_masks.push_back(cached);
+
+        const YuvColor color = parseYuvColor(mask.color);
+        cached.fill[0] = color.y;
+        cached.fill[1] = color.u;
+        cached.fill[2] = color.v;
+        cached.alpha = static_cast<uint8_t>(std::max(0.0, std::min(255.0,
+            std::max(0.0, std::min(1.0, mask.opacity)) * 255.0 + 0.5)));
+
+        const int plane_widths[3] = {width, (width + 1) / 2, (width + 1) / 2};
+        const int plane_heights[3] = {height, (height + 1) / 2, (height + 1) / 2};
+        for (int plane = 0; plane < 3; ++plane) {
+            const int scale = plane == 0 ? 1 : 2;
+            CachedPrivacyMask::PlaneCache &cache = cached.planes[plane];
+            cache.min_x = cached.min_x / scale;
+            cache.max_x = std::min(plane_widths[plane] - 1, cached.max_x / scale);
+            cache.min_y = cached.min_y / scale;
+            cache.max_y = std::min(plane_heights[plane] - 1, cached.max_y / scale);
+            if (cache.min_x > cache.max_x || cache.min_y > cache.max_y) {
+                continue;
+            }
+            cache.spans.resize(cache.max_y - cache.min_y + 1);
+            for (int y = cache.min_y; y <= cache.max_y; ++y) {
+                const int source_y = std::min(height - 1, y * scale);
+                std::vector<std::pair<int, int> > &row = cache.spans[y - cache.min_y];
+                for (size_t s = 0; s < luma_spans[source_y].size(); ++s) {
+                    const int left = std::max(cache.min_x, luma_spans[source_y][s].first / scale);
+                    const int right = std::min(cache.max_x, luma_spans[source_y][s].second / scale);
+                    if (left <= right) {
+                        row.push_back(std::make_pair(left, right));
+                    }
+                }
+            }
+        }
+        _cached_privacy_masks.emplace_back(std::move(cached));
     }
     return true;
 }
@@ -204,76 +283,98 @@ FFmpegFrame::Ptr TranscodeOverlay::applyPrivacyMasks(const FFmpegFrame::Ptr &fra
         }
         input = yuv_frame->get();
     }
-    if (_cached_privacy_masks.empty() || _src_width != input->width || _src_height != input->height) {
-        _src_width = input->width;
-        _src_height = input->height;
-        buildPrivacyMaskCache(_src_width, _src_height);
+    if (_cached_privacy_masks.empty() || _privacy_width != input->width || _privacy_height != input->height) {
+        _privacy_width = input->width;
+        _privacy_height = input->height;
+        buildPrivacyMaskCache(_privacy_width, _privacy_height);
     }
     FFmpegFrame::Ptr output = yuv_frame->clone();
     if (!output) return frame;
     AVFrame *dst = output->get();
-    const int widths[3] = {input->width, (input->width + 1) / 2, (input->width + 1) / 2};
-    const int heights[3] = {input->height, (input->height + 1) / 2, (input->height + 1) / 2};
     for (size_t m = 0; m < _cached_privacy_masks.size(); ++m) {
-        const CachedPrivacyMask &mask = _cached_privacy_masks[m];
-        const double opacity = std::max(0.0, std::min(1.0, mask.config.opacity));
-        const YuvColor color = parseYuvColor(mask.config.color);
-        const uint8_t fill[3] = {color.y, color.u, color.v};
+        CachedPrivacyMask &mask = _cached_privacy_masks[m];
         for (int plane = 0; plane < 3; ++plane) {
-            const int scale = plane == 0 ? 1 : 2;
-            const int min_y = mask.min_y / scale;
-            const int max_y = std::min(heights[plane] - 1, mask.max_y / scale);
-            const int min_x = mask.min_x / scale;
-            const int max_x = std::min(widths[plane] - 1, mask.max_x / scale);
+            CachedPrivacyMask::PlaneCache &cache = mask.planes[plane];
+            const int min_x = cache.min_x;
+            const int max_x = cache.max_x;
+            const int min_y = cache.min_y;
+            const int max_y = cache.max_y;
             if (min_x > max_x || min_y > max_y) continue;
-            std::vector<uint8_t> filtered((max_x - min_x + 1) * (max_y - min_y + 1));
-            for (int y = min_y; y <= max_y; ++y) {
-                const uint8_t *src = input->data[plane] + y * input->linesize[plane];
-                for (int x = min_x; x <= max_x; ++x) filtered[(y - min_y) * (max_x - min_x + 1) + x - min_x] = src[x];
-            }
+            const int rw = max_x - min_x + 1;
+            const int rh = max_y - min_y + 1;
+
             if (mask.config.mask_type == PrivacyMaskRegion::BLUR) {
-                std::vector<uint8_t> tmp = filtered;
-                const int rw = max_x - min_x + 1;
-                const int rh = max_y - min_y + 1;
-                for (int y = 0; y < rh; ++y) for (int x = 0; x < rw; ++x) {
-                    int sum = 0, count = 0;
-                    for (int k = -2; k <= 2; ++k) { int xx = x + k; if (xx >= 0 && xx < rw) { sum += filtered[y * rw + xx]; ++count; } }
-                    tmp[y * rw + x] = static_cast<uint8_t>(sum / count);
+                // Blur a low-resolution ROI and upscale by nearest sampling.
+                // In source-pixel space both luma and chroma use ~4x reduction.
+                const int downscale = plane == 0 ? 4 : 2;
+                const int low_w = (rw + downscale - 1) / downscale;
+                const int low_h = (rh + downscale - 1) / downscale;
+                cache.work.resize(low_w * low_h);
+                for (int ly = 0; ly < low_h; ++ly) {
+                    const int sy = std::min(max_y, min_y + ly * downscale + downscale / 2);
+                    const uint8_t *src = input->data[plane] + sy * input->linesize[plane];
+                    for (int lx = 0; lx < low_w; ++lx) {
+                        const int sx = std::min(max_x, min_x + lx * downscale + downscale / 2);
+                        cache.work[ly * low_w + lx] = src[sx];
+                    }
                 }
-                filtered.swap(tmp);
-                tmp = filtered;
-                const int rw2 = max_x - min_x + 1;
-                for (int y = 0; y < rh; ++y) for (int x = 0; x < rw2; ++x) {
-                    int sum = 0, count = 0;
-                    for (int k = -2; k <= 2; ++k) { int yy = y + k; if (yy >= 0 && yy < rh) { sum += filtered[yy * rw2 + x]; ++count; } }
-                    tmp[y * rw2 + x] = static_cast<uint8_t>(sum / count);
-                }
-                filtered.swap(tmp);
+                boxBlurHorizontal(cache.work, cache.temp, low_w, low_h, 2);
+                boxBlurVertical(cache.temp, cache.work, low_w, low_h, 2);
             } else if (mask.config.mask_type == PrivacyMaskRegion::PIXELATE) {
                 const int block = plane == 0 ? 12 : 6;
-                const int rw = max_x - min_x + 1;
-                const int rh = max_y - min_y + 1;
-                for (int by = 0; by < rh; by += block) for (int bx = 0; bx < rw; bx += block) {
-                    int sum = 0, count = 0;
-                    for (int yy = by; yy < std::min(rh, by + block); ++yy) for (int xx = bx; xx < std::min(rw, bx + block); ++xx) { sum += filtered[yy * rw + xx]; ++count; }
-                    const uint8_t value = static_cast<uint8_t>(sum / std::max(1, count));
-                    for (int yy = by; yy < std::min(rh, by + block); ++yy) for (int xx = bx; xx < std::min(rw, bx + block); ++xx) filtered[yy * rw + xx] = value;
+                const int blocks_x = (rw + block - 1) / block;
+                const int blocks_y = (rh + block - 1) / block;
+                cache.work.resize(blocks_x * blocks_y);
+                for (int by = 0; by < blocks_y; ++by) {
+                    const int y0 = min_y + by * block;
+                    const int y1 = std::min(max_y + 1, y0 + block);
+                    for (int bx = 0; bx < blocks_x; ++bx) {
+                        const int x0 = min_x + bx * block;
+                        const int x1 = std::min(max_x + 1, x0 + block);
+                        int sum = 0;
+                        int count = 0;
+                        for (int y = y0; y < y1; ++y) {
+                            const uint8_t *src = input->data[plane] + y * input->linesize[plane];
+                            for (int x = x0; x < x1; ++x) {
+                                sum += src[x];
+                                ++count;
+                            }
+                        }
+                        cache.work[by * blocks_x + bx] = static_cast<uint8_t>(sum / std::max(1, count));
+                    }
                 }
             }
+
             for (int y = min_y; y <= max_y; ++y) {
                 uint8_t *out = dst->data[plane] + y * dst->linesize[plane];
-                const int source_y = y * scale;
-                if (mask.config.mask_type == PrivacyMaskRegion::SOLID) {
-                    for (size_t s = 0; s < mask.spans[source_y].size(); ++s) {
-                        int left = mask.spans[source_y][s].first / scale;
-                        int right = mask.spans[source_y][s].second / scale;
-                        for (int x = std::max(min_x, left); x <= std::min(max_x, right); ++x) out[x] = blendByte(out[x], fill[plane], opacity);
-                    }
-                } else {
-                    for (size_t s = 0; s < mask.spans[source_y].size(); ++s) {
-                        int left = std::max(min_x, mask.spans[source_y][s].first / scale);
-                        int right = std::min(max_x, mask.spans[source_y][s].second / scale);
-                        for (int x = left; x <= right; ++x) out[x] = blendByte(out[x], filtered[(y - min_y) * (max_x - min_x + 1) + x - min_x], opacity);
+                const std::vector<std::pair<int, int> > &row = cache.spans[y - min_y];
+                for (size_t s = 0; s < row.size(); ++s) {
+                    const int left = row[s].first;
+                    const int right = row[s].second;
+                    if (mask.config.mask_type == PrivacyMaskRegion::SOLID) {
+                        if (mask.alpha == 255) {
+                            std::fill(out + left, out + right + 1, mask.fill[plane]);
+                        } else {
+                            for (int x = left; x <= right; ++x) {
+                                out[x] = blendByte(out[x], mask.fill[plane], mask.alpha);
+                            }
+                        }
+                    } else if (mask.config.mask_type == PrivacyMaskRegion::BLUR) {
+                        const int downscale = plane == 0 ? 4 : 2;
+                        const int low_w = (rw + downscale - 1) / downscale;
+                        const int ly = std::min((rh - 1) / downscale, (y - min_y) / downscale);
+                        for (int x = left; x <= right; ++x) {
+                            const int lx = std::min(low_w - 1, (x - min_x) / downscale);
+                            out[x] = blendByte(out[x], cache.work[ly * low_w + lx], mask.alpha);
+                        }
+                    } else {
+                        const int block = plane == 0 ? 12 : 6;
+                        const int blocks_x = (rw + block - 1) / block;
+                        const int by = (y - min_y) / block;
+                        for (int x = left; x <= right; ++x) {
+                            const int bx = (x - min_x) / block;
+                            out[x] = blendByte(out[x], cache.work[by * blocks_x + bx], mask.alpha);
+                        }
                     }
                 }
             }
@@ -340,9 +441,13 @@ bool TranscodeOverlay::buildGraph(const FFmpegFrame::Ptr &frame) {
     std::ostringstream graph;
     // The SVG is authored in the camera overlay canvas. Scale it to exactly the decoded frame
     // dimensions so canvas coordinates map across the complete video, including aspect-ratio changes.
-    graph << "movie=" << escape_movie_path(_image_path) << ",loop=loop=-1:size=1:start=0,scale=" << _src_width << ":"
+    // The watermark is static. Let movie decode exactly one SVG/image frame,
+    // scale it once, then let overlay repeat that last frame. Feeding the
+    // movie through loop caused SVG rasterization/scale work on every video
+    // frame and dominated the transcode cost.
+    graph << "movie=" << escape_movie_path(_image_path) << ",scale=" << _src_width << ":"
           << _src_height << ":flags=lanczos[wm];[in]format=yuv420p[base];[base][wm]overlay=x="
-          << _x << ":y=" << _y << ":eof_action=repeat,format=yuv420p[out]";
+          << _x << ":y=" << _y << ":eof_action=repeat:repeatlast=1:shortest=0,format=yuv420p[out]";
     const std::string desc = graph.str();
     DebugL << "TranscodeOverlay filter graph: " << desc;
 

@@ -562,6 +562,14 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
     const double design_scale = 1.5;
     const double svg_width = canvas_width * design_scale;
     const double svg_height = canvas_height * design_scale;
+    // Resolve and base64-encode each image once. Repeated watermarks may emit
+    // many direct <image> nodes, but they all reuse this already-built URI.
+    std::vector<std::string> image_hrefs(components.size());
+    for (size_t i = 0; i < components.size(); ++i) {
+        if (components[i].type == OverlayComponent::IMAGE) {
+            image_hrefs[i] = imageHref(components[i]);
+        }
+    }
     std::ostringstream svg;
     svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" "
         << "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
@@ -580,37 +588,29 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
     svg << "<defs>\n";
     for (size_t i = 0; i < components.size(); ++i) {
         const OverlayComponent &component = components[i];
+        // Image components are emitted directly below because librsvg can
+        // skip an image nested in <defs>/<use>. Do not duplicate their large
+        // data URI in an unused definition.
+        if (component.type == OverlayComponent::IMAGE) {
+            continue;
+        }
         const std::string id = definitionId(component, i);
         svg << "<g id=\"" << escapeXml(id) << "\">\n";
-        if (component.type == OverlayComponent::TEXT) {
-            std::string text = component.text;
-            if (options.resolve_dynamic_tokens) {
-                text = resolveTokens(text, options.username, options.camera_name);
-            }
-            // Text and image components share the same center-based transform
-            // below. Keep the text origin at the center as well; without an
-            // explicit middle anchor, SVG renders x=0 as the left edge and
-            // shifts the whole text to the right by half its width.
-            // The reference foreignObject has x=-200 and width=400 in the
-            // 1920x1080 viewBox and uses normal left-aligned HTML text.
-            const double scaled_font_size = std::max(1, component.font_size) * design_scale;
-            // The reference foreignObject has a centered CSS line box. Native
-            // SVG text uses a font baseline, so lower it by roughly 0.35em
-            // to match the reference y/height box rendered by the browser.
-            svg << "<text x=\"-200\" y=\"" << number(scaled_font_size * 0.35)
-                << "\" text-anchor=\"start\" dominant-baseline=\"middle\" fill=\"" << escapeXml(component.color)
-                << "\" font-family=\"" << escapeXml(component.font_family)
-                << "\" font-size=\"" << number(scaled_font_size)
-                << "\" font-weight=\"" << component.font_weight << "\">"
-                << escapeXml(text) << "</text>\n";
-        } else {
-            const std::string href = imageHref(component);
-            svg << "<image href=\"" << escapeXml(href) << "\" xlink:href=\""
-                << escapeXml(href) << "\" x=\"0\" y=\"0\" width=\""
-                << number(std::max(1, component.width) * design_scale) << "\" height=\""
-                << number(std::max(1, component.height) * design_scale)
-                << "\" preserveAspectRatio=\"xMidYMid meet\"/>\n";
+        std::string text = component.text;
+        if (options.resolve_dynamic_tokens) {
+            text = resolveTokens(text, options.username, options.camera_name);
         }
+        // Text and image components share the same center-based transform
+        // below. Keep the text origin at the center as well; without an
+        // explicit middle anchor, SVG renders x=0 as the left edge and
+        // shifts the whole text to the right by half its width.
+        const double scaled_font_size = std::max(1, component.font_size) * design_scale;
+        svg << "<text x=\"-200\" y=\"" << number(scaled_font_size * 0.35)
+            << "\" text-anchor=\"start\" dominant-baseline=\"middle\" fill=\"" << escapeXml(component.color)
+            << "\" font-family=\"" << escapeXml(component.font_family)
+            << "\" font-size=\"" << number(scaled_font_size)
+            << "\" font-weight=\"" << component.font_weight << "\">"
+            << escapeXml(text) << "</text>\n";
         svg << "</g>\n";
     }
     svg << "</defs>\n";
@@ -643,7 +643,7 @@ std::string OverlayPrivacyUtils::buildSvg(const std::vector<OverlayComponent> &c
                     // Do not reference an image through <use>. FFmpeg's SVG
                     // renderer handles direct image nodes reliably, while an
                     // image nested in <defs>/<use> may be silently skipped.
-                    const std::string href = imageHref(component);
+                    const std::string &href = image_hrefs[i];
                     svg << "<image href=\"" << escapeXml(href)
                         << "\" xlink:href=\"" << escapeXml(href)
                         << "\" x=\"" << number(-std::max(1, component.width) * design_scale / 2.0)
@@ -775,119 +775,6 @@ std::string OverlayPrivacyUtils::escapeMoviePath(const std::string &path) {
         out.push_back(c);
     }
     return out;
-}
-
-namespace {
-
-std::string fracStr(double v) {
-    std::ostringstream o;
-    o << std::fixed << std::setprecision(6) << v;
-    return o.str();
-}
-
-// ffmpeg drawbox color syntax: 0xRRGGBB[@alpha].
-std::string colorToFFmpegColor(const std::string &hex, double opacity) {
-    std::string h = hex;
-    if (!h.empty() && h[0] == '#') {
-        h = h.substr(1);
-    }
-    if (h.size() != 6) {
-        h = "000000";
-    }
-    return "0x" + h + "@" + fracStr(std::max(0.0, std::min(1.0, opacity)));
-}
-
-// Axis-aligned bounding box of the mask polygon, as [0,1] fractions of the reference canvas.
-// Used because ffmpeg's crop/drawbox filters only operate on rectangles, not arbitrary polygons.
-bool maskBBoxFractions(const PrivacyMaskRegion &mask, int canvas_w, int canvas_h,
-                       double &xf, double &yf, double &wf, double &hf) {
-    if (mask.points.size() < 3) {
-        return false;
-    }
-    double min_x = mask.points[0].first, max_x = min_x;
-    double min_y = mask.points[0].second, max_y = min_y;
-    for (const auto &p : mask.points) {
-        min_x = std::min(min_x, p.first);
-        max_x = std::max(max_x, p.first);
-        min_y = std::min(min_y, p.second);
-        max_y = std::max(max_y, p.second);
-    }
-    min_x = std::max(0.0, std::min((double)canvas_w, min_x));
-    max_x = std::max(0.0, std::min((double)canvas_w, max_x));
-    min_y = std::max(0.0, std::min((double)canvas_h, min_y));
-    max_y = std::max(0.0, std::min((double)canvas_h, max_y));
-    if (max_x <= min_x || max_y <= min_y) {
-        return false;
-    }
-    xf = min_x / canvas_w;
-    yf = min_y / canvas_h;
-    wf = (max_x - min_x) / canvas_w;
-    hf = (max_y - min_y) / canvas_h;
-    return true;
-}
-
-} // namespace
-
-std::string OverlayPrivacyUtils::buildPrivacyMaskFilterComplex(const std::vector<PrivacyMaskRegion> &masks,
-                                                                int canvas_width, int canvas_height,
-                                                                std::string &last_label) {
-    std::vector<std::string> clauses;
-    std::string cur = "0:v";
-    int idx = 0;
-    for (const auto &mask : masks) {
-        double xf, yf, wf, hf;
-        if (!maskBBoxFractions(mask, canvas_width, canvas_height, xf, yf, wf, hf)) {
-            continue;
-        }
-        std::string next = "pm" + std::to_string(idx++);
-        if (mask.mask_type == PrivacyMaskRegion::SOLID) {
-            std::ostringstream expr;
-            expr << "[" << cur << "]drawbox=x='iw*" << fracStr(xf) << "':y='ih*" << fracStr(yf)
-                 << "':w='iw*" << fracStr(wf) << "':h='ih*" << fracStr(hf)
-                 << "':color=" << colorToFFmpegColor(mask.color, mask.opacity) << ":t=fill[" << next << "]";
-            clauses.push_back(expr.str());
-        } else {
-            // Split the running stream so the region can be cropped/processed independently, then
-            // overlaid back onto the untouched copy.
-            clauses.push_back("[" + cur + "]split=2[" + next + "_base][" + next + "_src]");
-
-            std::ostringstream proc;
-            proc << "[" << next << "_src]crop=w='iw*" << fracStr(wf) << "':h='ih*" << fracStr(hf)
-                 << "':x='iw*" << fracStr(xf) << "':y='ih*" << fracStr(yf) << "'";
-            if (mask.mask_type == PrivacyMaskRegion::BLUR) {
-                // TranscodeOverlay applies two radius-2 box passes. Use the equivalent
-                // FFmpeg settings instead of the stronger radius-12/power-2 blur.
-                proc << ",boxblur=luma_radius=2:luma_power=1:chroma_radius=2:chroma_power=1";
-            } else {
-                // Pixelate = area-average downscale to 12-pixel blocks, then nearest-neighbor upscale.
-                // This follows TranscodeOverlay's 12x12 luma blocks more closely than factor 16.
-                // The comma inside
-                // max(...) must reach ffmpeg's own filter-graph parser as a literal (not a filter-chain
-                // separator); our own command-line tokenizer (Process::run -> parse_shell_like) strips
-                // bare quote characters, so escape them with a backslash to survive as literal '...' quotes.
-                proc << ",scale=w=\\'max(1,trunc(iw/12))\\':h=\\'max(1,trunc(ih/12))\\':flags=area"
-                        ",scale=w=iw*12:h=ih*12:flags=neighbor";
-            }
-            proc << "[" << next << "_proc]";
-            clauses.push_back(proc.str());
-
-            std::ostringstream overlay;
-            overlay << "[" << next << "_base][" << next << "_proc]overlay=x='main_w*" << fracStr(xf)
-                    << "':y='main_h*" << fracStr(yf) << "'[" << next << "]";
-            clauses.push_back(overlay.str());
-        }
-        cur = next;
-    }
-    last_label = cur;
-    if (clauses.empty()) {
-        return "";
-    }
-    std::ostringstream out;
-    for (size_t i = 0; i < clauses.size(); ++i) {
-        if (i) out << ";";
-        out << clauses[i];
-    }
-    return out.str();
 }
 
 } // namespace mediakit

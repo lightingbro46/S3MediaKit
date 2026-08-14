@@ -124,7 +124,7 @@ void CameraController::onManager() {
     }
     _last_reconnect_time = time(nullptr);
     auto onvif_ctr = _onvif_ctr;
-    auto weak_self = weak_from_this();
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
 
     // ONVIF connect() is a blocking SOAP/HTTP call — dispatch on WorkThreadPool,
     // not EventPollerPool, to avoid blocking stream I/O pollers.

@@ -98,7 +98,7 @@ void SpeakerController::onManager() {
     }
     _last_reconnect_time = time(nullptr);
     auto onvif_ctr = _onvif_ctr;
-    auto weak_self = weak_from_this();
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
 
     WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
         auto strong_self = weak_self.lock();

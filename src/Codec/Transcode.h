@@ -18,6 +18,7 @@ extern "C" {
 #include "libavutil/audio_fifo.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/frame.h"
+#include "libavutil/buffer.h"
 #include "libavfilter/avfilter.h"
 #include "libavfilter/buffersink.h"
 #include "libavfilter/buffersrc.h"
@@ -168,6 +169,51 @@ private:
     toolkit::ResourcePool<FFmpegFrame> _sws_frame_pool;
 };
 
+/**
+ * Redistribute decoded video frames onto a stable CFR timeline before any
+ * expensive scale/overlay work. When source and target rates match, frames are
+ * only rebased to a monotonic millisecond timeline. Otherwise FFmpeg's fps
+ * filter selects/drops/duplicates frames using source PTS and one-frame
+ * look-ahead, matching the timing model used by the ffmpeg command line.
+ */
+class FFmpegFrameRateFilter {
+public:
+    using Ptr = std::shared_ptr<FFmpegFrameRateFilter>;
+    using onOutput = std::function<bool(const FFmpegFrame::Ptr &frame)>;
+
+    explicit FFmpegFrameRateFilter(int target_fps, double source_fps = 0.0);
+    ~FFmpegFrameRateFilter();
+
+    bool inputFrame(const FFmpegFrame::Ptr &frame, const onOutput &callback);
+    void setSourceFps(double source_fps);
+    void reset();
+
+    bool isPassthrough() const;
+
+private:
+    bool buildGraph(const AVFrame *frame);
+    bool drain(const onOutput &callback);
+    bool emitPassthrough(const FFmpegFrame::Ptr &frame, int64_t pts, const onOutput &callback);
+    int64_t normalizeSourcePts(const AVFrame *frame);
+    void clearGraph();
+    void resetEpoch();
+
+private:
+    int _target_fps = 5;
+    double _source_fps = 0.0;
+    int _graph_width = 0;
+    int _graph_height = 0;
+    AVPixelFormat _graph_format = AV_PIX_FMT_NONE;
+    AVFilterGraph *_graph = nullptr;
+    AVFilterContext *_source = nullptr;
+    AVFilterContext *_sink = nullptr;
+    AVRational _sink_time_base = { 1, 1000 };
+    int64_t _source_epoch_pts = AV_NOPTS_VALUE;
+    int64_t _output_epoch_pts = 0;
+    int64_t _last_source_pts = AV_NOPTS_VALUE;
+    int64_t _last_output_pts = AV_NOPTS_VALUE;
+};
+
 // Encode decoded FFmpegFrame(s) into a compressed elementary stream (default H.264
 // via libx264) and emit them as mediakit Frame::Ptr, ready to be muxed (e.g. into
 // an FMP4MediaSourceMuxer).  The encoder context is opened lazily on the first
@@ -189,11 +235,14 @@ public:
     ~FFmpegEncoder();
 
     bool inputFrame(const FFmpegFrame::Ptr &frame);
+    // Encode using an explicit millisecond timeline. The timestamp is
+    // applied after the encoder-owned clone/scale so the decoder frame is
+    // never modified in place.
+    bool inputFrame(const FFmpegFrame::Ptr &frame, int64_t output_pts);
     void setOnEncode(onEnc cb);
     void flush();
     /** Force the next encoded frame to be an IDR keyframe (e.g. on viewer resume). */
     void requestKeyFrame();
-    const AVCodecContext *getContext() const;
     CodecId getCodecId() const { return _codec; }
 
 private:

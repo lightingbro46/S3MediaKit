@@ -8,6 +8,7 @@
 
 #include <climits>
 #include <cstdlib>
+#include <algorithm>
 #include <strings.h>
 
 using namespace std;
@@ -18,6 +19,10 @@ namespace toolkit {
 }
 
 namespace mediakit {
+
+namespace {
+const int kMuteAudioIndex = 0xFFFF;
+}
 
 bool parseTranscodeRequest(const std::string &params,
                            const ProtocolOption &defaults,
@@ -44,7 +49,7 @@ bool parseTranscodeRequest(const std::string &params,
     request.fps = defaults.transcode_fps > 0 ? defaults.transcode_fps : 5;
     request.gop = defaults.transcode_gop;
 
-    auto codec_it = args.find("transcode_vcodec");
+    auto codec_it = args.find("target_vcodec");
     if (codec_it != args.end() && !codec_it->second.empty()) {
         if (strcasecmp(codec_it->second.data(), "h264") == 0) {
             request.codec = CodecH264;
@@ -69,8 +74,8 @@ bool parseTranscodeRequest(const std::string &params,
         return static_cast<int>(value);
     };
 
-    request.width = get_int("transcode_width", request.width);
-    request.height = get_int("transcode_height", request.height);
+    request.width = get_int("target_width", request.width);
+    request.height = get_int("target_height", request.height);
     if (request.width > 0 && request.height > 0 &&
         (request.width > 1920 || request.height > 1080)) {
         const double scale = std::min(1920.0 / request.width, 1080.0 / request.height);
@@ -80,11 +85,20 @@ bool parseTranscodeRequest(const std::string &params,
         request.width = std::min(request.width, request.width > 0 ? 1920 : 0);
         request.height = std::min(request.height, request.height > 0 ? 1080 : 0);
     }
-    request.bitrate = get_int("transcode_bitrate", request.bitrate);
-    request.fps = get_int("transcode_fps", request.fps);
-    request.gop = get_int("transcode_gop", request.gop);
+    request.bitrate = get_int("target_bitrate", request.bitrate);
+    request.fps = get_int("target_fps", request.fps);
+    request.gop = get_int("target_gop", request.gop);
     if (request.fps <= 0) {
         request.fps = defaults.transcode_fps > 0 ? defaults.transcode_fps : 5;
+    } else {
+        // Limit the maximum FPS to 20 to avoid excessive CPU usage.
+        request.fps = std::min(request.fps, 25);
+    }
+    // Limit the GOP to a reasonable range based on the FPS.
+    if (request.gop <= 0) {
+        request.gop = std::max(5, std::min(request.fps * 2, request.fps * 4));
+    } else {
+        request.gop = std::max(request.gop, request.fps * 4);
     }
     return true;
 }
@@ -96,6 +110,7 @@ TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOp
     // Publish under a derived stream_id so the transcoded output never collides
     // with the original source (e.g. "cam1" -> "cam1.transcode").
     _tuple.stream += _cfg.stream_suffix;
+    _frame_rate_filter = std::make_shared<FFmpegFrameRateFilter>(_cfg.fps, _cfg.source_fps);
 
     // Create the muxer before the first encoded frame. Tracks are attached
     // synchronously and completed on the muxer's owner poller.
@@ -139,13 +154,14 @@ void TranscodeProcessor::createMuxer() {
     output_option.gop_cache_size = 0;
     output_option.mp4_as_player = false;
     output_option.add_mute_audio = false;
-    // Each protocol branch owns its demand gate. MediaSourceEvent owns the
-    // delayed lifecycle close of the whole MultiMediaSourceMuxer.
-    output_option.rtsp_demand = _cfg.demand;
-    output_option.rtmp_demand = _cfg.demand;
-    output_option.hls_demand = _cfg.demand;
-    output_option.ts_demand = _cfg.demand;
-    output_option.fmp4_demand = _cfg.demand;
+    output_option.modify_stamp = ProtocolOption::kModifyStampOff;
+    output_option.paced_sender_ms = 10;
+    // Forward the per-schema demand policy from the original MediaSource.
+    // Keep rtsp_demand, rtmp_demand, hls_demand, ts_demand and fmp4_demand
+    // from _option so each output schema follows the source configuration.
+    // The derived transcode stream has its own lifecycle policy: when it was
+    // created on demand, MediaSourceEvent must auto-close it after the last
+    // reader disappears and the configured no-reader delay expires.
     output_option.auto_close = _cfg.demand;
     output_option.enable_audio = true;
     output_option.enable_transcode = false;
@@ -220,22 +236,41 @@ void TranscodeProcessor::setOnClosed(const std::function<void(const Ptr &)> &cal
 }
 
 void TranscodeProcessor::addAudioTrack(const Track::Ptr &track) {
-    if (!track) {
+    if (!track || track->getTrackType() != TrackAudio) {
         return;
     }
-    // The source muxer exposes its generated silent AAC track with index
-    // 0xffff, but no packet for that synthetic track travels through the
-    // shared input ring. Recreate the mute track locally from video frames
-    // instead of waiting forever for a packet that cannot arrive.
-    if (track->getTrackType() == TrackAudio && track->getIndex() == 0xFFFF) {
-        enableMuteAudio(true);
+    if (_have_audio) {
+        if (_audio_track_index != track->getIndex()) {
+            WarnL << "Ignore additional transcode audio track index=" << track->getIndex()
+                  << ", selected index=" << _audio_track_index;
+        }
         return;
     }
-    MediaSink::addTrack(track);
+    if (isAllTrackReady()) {
+        WarnL << "Ignore late source audio track index=" << track->getIndex()
+              << ": transcode tracks are already finalized";
+        return;
+    }
+    // Source audio (including the source-generated mute track) is the only
+    // audio producer for this transcode output.
+    enableMuteAudio(false);
+    // Never attach this MediaSink as another delegate of the source Track.
+    // The cloned track is fed exclusively by inputAudioFrame() through the
+    // serialized transcode ring, preventing direct-source plus ring delivery.
+    auto output_track = track->clone();
+    if (!output_track) {
+        WarnL << "Failed to clone transcode audio track index=" << track->getIndex();
+        return;
+    }
+    MediaSink::addTrack(output_track);
     _have_audio = true;
+    _audio_track_index = track->getIndex();
 }
 
 void TranscodeProcessor::finalizeTracks() {
+    DebugL << "Finalize transcode source audio: "
+           << (_have_audio ? (_audio_track_index == kMuteAudioIndex ? "mute" : "real") : "none")
+           << ", index=" << _audio_track_index;
     setMaxTrackCount(_have_audio ? 2 : 1);
     MediaSink::addTrackCompleted();
 }
@@ -243,6 +278,12 @@ void TranscodeProcessor::finalizeTracks() {
 bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
     if (!_encoder || !frame) {
         return false;
+    }
+    const int64_t input_pts = frame->get()->pts;
+    if (input_pts != AV_NOPTS_VALUE) {
+        if (_source_pts_base == AV_NOPTS_VALUE) {
+            _source_pts_base = input_pts;
+        }
     }
     // No GOP replay is used for a newly attached reader. Request an IDR before
     // feeding its first frame so the derived stream can publish a decodable
@@ -257,6 +298,9 @@ bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
     if (_primed && _cfg.demand) {
         const bool now_enabled = _muxer && _muxer->isEnabled();
         if (now_enabled && !_last_enabled) {
+            // Do not replay a frame retained by the CFR look-ahead from the
+            // previous reader session.
+            _frame_rate_filter->reset();
             _encoder->requestKeyFrame();
         }
         _last_enabled = now_enabled;
@@ -265,21 +309,23 @@ bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
         }
     }
 
-    // Pace frames before the expensive overlay graph. FFmpegEncoder also
-    // guards its input rate, but doing the first gate here avoids decoding the
-    // overlay image and privacy filters for frames that cannot be encoded.
-    if (frame->get()->pts != AV_NOPTS_VALUE) {
-        const int output_fps = _cfg.fps > 0 ? _cfg.fps : 5;
-        const int64_t frame_interval_ms = std::max<int64_t>(1, 1000 / output_fps);
-        if (_last_overlay_input_pts != AV_NOPTS_VALUE) {
-            if (frame->get()->pts < _last_overlay_input_pts ||
-                frame->get()->pts - _last_overlay_input_pts < frame_interval_ms) {
-                return true;
-            }
-        }
-        _last_overlay_input_pts = frame->get()->pts;
-    }
+    return _frame_rate_filter->inputFrame(
+        frame, [this](const FFmpegFrame::Ptr &filtered) {
+            return processFilteredVideoFrame(filtered);
+        });
+}
 
+void TranscodeProcessor::setSourceFps(double source_fps) {
+    _cfg.source_fps = source_fps;
+    if (_frame_rate_filter) {
+        _frame_rate_filter->setSourceFps(source_fps);
+    }
+}
+
+bool TranscodeProcessor::processFilteredVideoFrame(const FFmpegFrame::Ptr &frame) {
+    if (!frame || !frame->get()) {
+        return false;
+    }
     FFmpegFrame::Ptr in = frame;
     if (_overlay && _overlay->valid()) {
         int output_width = 0;
@@ -301,26 +347,28 @@ bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
         }
         in = _overlay->inputFrame(in);
     }
-    return _encoder->inputFrame(in);
+    return _encoder->inputFrame(in, frame->get()->pts);
 }
 
 bool TranscodeProcessor::inputAudioFrame(const Frame::Ptr &frame) {
-    if (!frame) {
+    if (!frame || !_have_audio || frame->getIndex() != _audio_track_index ||
+        _source_pts_base == AV_NOPTS_VALUE) {
         return false;
     }
-    return MediaSink::inputFrame(frame);
+    // Keep pass-through audio on the same relative timeline as the first
+    // decoded video frame. FrameStamp only wraps the buffer; it does not copy
+    // the audio payload.
+    auto stamped = std::make_shared<FrameStamp>(frame);
+    const int64_t dts = static_cast<int64_t>(frame->dts()) - _source_pts_base;
+    const int64_t source_pts = frame->pts() ? static_cast<int64_t>(frame->pts())
+                                            : static_cast<int64_t>(frame->dts());
+    const int64_t pts = source_pts - _source_pts_base;
+    stamped->setStamp(std::max<int64_t>(0, dts), std::max<int64_t>(0, pts));
+    return MediaSink::inputFrame(stamped);
 }
 
 bool TranscodeProcessor::isEnabled() {
     return _muxer && _muxer->isEnabled();
-}
-
-bool TranscodeProcessor::isOnDemand() const {
-    return _cfg.demand;
-}
-
-size_t TranscodeProcessor::totalCount() {
-    return toolkit::ObjectStatistic<TranscodeProcessor>::count();
 }
 
 bool TranscodeProcessor::onTrackReady(const Track::Ptr &track) {
