@@ -166,7 +166,7 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
 
     if (new_peer) {
         auto origin_urls = buildOrginUrls(info);
-        auto weak_self = weak_from_this();
+        std::weak_ptr<ClusterManager> weak_self = shared_from_this();
         WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
             auto self = weak_self.lock();
             if (!self) {
@@ -252,7 +252,7 @@ void ClusterManager::loadSavedMediaServerInfo() {
         return;
     }
 
-    auto weak_self = weak_from_this();
+    std::weak_ptr<ClusterManager> weak_self = shared_from_this();
     WorkThreadPool::Instance().getPoller()->async([weak_self, list]() {
         auto self = weak_self.lock();
         if (!self) {
@@ -287,7 +287,7 @@ void ClusterManager::onManager() {
     for (const auto &item : peer_url_copy) {
         string id = item.first;
         string origin_urls = item.second;
-        auto weak_self = weak_from_this();
+        std::weak_ptr<ClusterManager> weak_self = shared_from_this();
         WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
             auto self = weak_self.lock();
             if (!self) {
