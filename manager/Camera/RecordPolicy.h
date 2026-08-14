@@ -76,6 +76,8 @@ public:
 
     static std::unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const std::string &str);
 
+    bool isEnabled() const { return _running.load(); }
+
 private:
     void check(time_t time_now);
 
