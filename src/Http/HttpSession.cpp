@@ -752,7 +752,92 @@ bool HttpSession::checkLiveStreamHls() {
 
     _media_info.protocol = overSsl() ? "https" : "http";
 
-    return true;
+#if defined(ENABLE_FFMPEG)
+    // Keep the normal HLS file-serving path unchanged. Only an explicit
+    // transcode request is intercepted here: create the derived HLS source and
+    // redirect the client to its playlist. The derived playlist and segments
+    // are then handled by the existing HLS/HttpFileManager path.
+    auto request_args = Parser::parseArgs(_parser.params());
+    auto transcode_it = request_args.find("transcode");
+    const bool transcode_requested = transcode_it != request_args.end() && !strcasecmp(transcode_it->second.data(), "true");
+    const bool is_playlist = end_with(_parser.url(), hls_suffix) || end_with(_parser.url(), hlsfmp4_suffix);
+    bool camera_overlay_requested = false;
+    if (is_playlist && !transcode_requested && _media_info.stream.find(".transcode.") == string::npos) {
+        const auto args = Parser::parseArgs(_media_info.params);
+        const auto token_it = args.find("token");
+        const string jwt_token = token_it == args.end() ? "" : token_it->second;
+        Broadcast::ViewOverlayPolicyInvoker policy_cb = [&camera_overlay_requested](const Broadcast::ViewOverlayPolicy &value) {
+            camera_overlay_requested =
+                (value.watermark_enforce && !value.watermark_excluded) ||
+                (value.privacy_mask_enforce && !value.privacy_mask_excluded);
+        };
+        NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay,
+                    _media_info, jwt_token, policy_cb, *this);
+        if (camera_overlay_requested) {
+            DebugL << "HLS view overlay policy requires derived transcode: " << _media_info.shortUrl();
+        }
+    }
+    const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
+    if (view_transcode_requested && is_playlist && _media_info.stream.find(".transcode.") == string::npos) {
+        MediaInfo source_info = _media_info;
+        if (end_with(source_info.stream, hlsfmp4_suffix)) {
+            source_info.stream.resize(source_info.stream.size() - hlsfmp4_suffix.size());
+        } else if (end_with(source_info.stream, hls_suffix)) {
+            source_info.stream.resize(source_info.stream.size() - hls_suffix.size());
+        }
+
+        const string request_url = _parser.url();
+        const string request_params = _parser.params();
+        const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        MediaSource::findAsync(source_info, static_pointer_cast<Session>(shared_from_this()),
+            [weak_self, source_info, request_url, request_params, close_flag](const MediaSource::Ptr &source) {
+                auto self = weak_self.lock();
+                if (!self) return;
+                if (!source) {
+                    self->sendNotFound(close_flag);
+                    return;
+                }
+
+                self->applyViewOverlayPolicy(source, [weak_self, source_info, request_url, request_params, close_flag](const MediaSource::Ptr &derived) {
+                    auto self = weak_self.lock();
+                    if (!self) return;
+                    self->async([weak_self, source_info, request_url, request_params, close_flag, derived]() {
+                        auto self = weak_self.lock();
+                        if (!self) return;
+                        if (!derived) {
+                            self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Transcoded HLS source is not ready"));
+                            return;
+                        }
+
+                        const string derived_stream = derived->getMediaTuple().stream;
+                        const string marker = "/" + source_info.stream + "/";
+                        const auto pos = request_url.find(marker);
+                        if (pos == string::npos || derived_stream.empty()) {
+                            self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
+                            return;
+                        }
+
+                        string location = request_url;
+                        location.replace(pos + 1, source_info.stream.size(), derived_stream);
+                        if (!request_params.empty()) {
+                            location += "?" + request_params;
+                        }
+                        KeyValue headers;
+                        headers["Location"] = location;
+                        headers["Cache-Control"] = "no-store";
+                        DebugL << "Redirecting HLS request to derived source: " << location;
+                        self->sendResponse(302, close_flag, nullptr, headers);
+                    }, false);
+                });
+            });
+        return true;
+    }
+#endif // ENABLE_FFMPEG
+
+    // No redirect was scheduled. Let the normal HttpFileManager HLS path
+    // serve the original playlist/segments.
+    return false;
 }
 
 void HttpSession::onHttpRequest_GET() {
@@ -809,6 +894,7 @@ void HttpSession::onHttpRequest_GET() {
 
     if (checkLiveStreamHls()) {
         // Intercept hls-ts, hls-fmp4 player
+        return;
     }
 
     bool bClose = !strcasecmp(_parser["Connection"].data(), "close");
