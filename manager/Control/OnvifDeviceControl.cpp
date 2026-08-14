@@ -565,7 +565,12 @@ bool OnvifControl::getMediaProfiles() {
             }
             if (!_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {                
                 TraceL << "Get video encoder configuration for token " << profile->token << ", configurations size = " << GetVideoConfigResponse.Configurations.size();
-                auto tokenConfig = GetVideoConfigResponse.Configurations[0];
+                if (GetVideoConfigResponse.Configurations.empty()) {
+                    WarnL << "No video encoder configuration returned for profile: " << profile->token;
+                    continue;
+                }
+
+                auto tokenConfig = GetVideoConfigResponse.Configurations.front();
                 if (!tokenConfig) {
                     continue;
                 }
@@ -600,11 +605,19 @@ bool OnvifControl::getMediaProfiles() {
                         continue;
                     }
                     VideoEncoderConfigOption cfg_option;
-                    for (size_t i = 0; i < Option->ResolutionsAvailable.size(); ++i)
-                    {
-                        tt__VideoResolution2* r = Option->ResolutionsAvailable[i];
-                        cfg_option.ResolutionsAvailable.push_back(std::make_pair(r->Width, r->Height));
+                    for (const auto *resolution : Option->ResolutionsAvailable) {
+                        if (!resolution) {
+                            continue;
+                        }
+                        cfg_option.ResolutionsAvailable.emplace_back(resolution->Width, resolution->Height);
                     }
+
+                    if (!Option->BitrateRange || !Option->QualityRange) {
+                        WarnL << "Incomplete video encoder options returned for profile: " << profile->token
+                              << ", encoding: " << Option->Encoding;
+                        continue;
+                    }
+
                     cfg_option.BitRateRange = bitrateRangeToString(Option->BitrateRange->Min, Option->BitrateRange->Max);
                     cfg_option.QualityRange = std::make_pair(Option->QualityRange->Min, Option->QualityRange->Max);
                     if (Option->FrameRatesSupported) {
@@ -705,6 +718,12 @@ bool OnvifControl::getMediaProfiles() {
                 reportError();
                 return false;
             }
+
+            if (!GetStreamUriResponse.MediaUri) {
+                WarnL << "No media URI returned for profile: " << profile->token;
+                continue;
+            }
+
             TraceL << "Uri: " << GetStreamUriResponse.MediaUri->Uri;
             _profile.url = GetStreamUriResponse.MediaUri->Uri;
             if (_profile.url.empty()) {
