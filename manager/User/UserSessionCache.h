@@ -2,6 +2,9 @@
 #define USER_USERSESSION_H
 
 #include <string>
+#include <memory>
+#include <vector>
+#include <ctime>
 #include <json/json.h>
 
 namespace managerkit {
@@ -49,7 +52,7 @@ class UserSessionCache {
 public:
     using Ptr = std::shared_ptr<UserSessionCache>;
 
-    UserSessionCache(const std::string &token, const std::string &user_agent = "", const std::string &client_ip = "");
+    UserSessionCache(const std::string &token, const std::string &user_agent = "", const std::string &client_ip = "", int max_elapsed = 600);
 
     /**
      * get created at timestamp, unit: second
@@ -60,6 +63,11 @@ public:
      * get expired at timestamp, unit: second
      */
     uint64_t getExpiredAt() { return _expired_at; }
+
+    /**
+     * get token in cache
+     */
+    const std::string &getToken() const { return _token; }
 
     /**
      * get user id in cache
@@ -111,6 +119,11 @@ public:
      */
     std::string getClientIp() { return _client_ip; }
 
+    /**
+     * get max elapsed time for this cache, unit: second
+     */
+    int getMaxElapsed() { return _max_elapsed; }
+
 private:
     /**
      *  save user session into database
@@ -121,7 +134,7 @@ private:
     std::string _user_id;
     std::string _user_name;
     uint64_t _created_at;
-    uint64_t _expired_at;
+    uint64_t _expired_at = 0;
     std::string _token;
     std::vector<std::string> _permissions;
     std::string _project_id;
@@ -133,6 +146,7 @@ private:
     std::string _role_code;
     std::string _role_name;
     bool _overlay = true;
+    int _max_elapsed = 600; // default max elapsed is 600 seconds
 };
 
 } // namespace managerkit

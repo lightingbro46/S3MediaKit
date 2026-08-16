@@ -127,12 +127,12 @@ ClientOSInfo parseUserAgent(const std::string& ua) {
     return info;
 }
 
-UserSessionCache::UserSessionCache(const string &token, const string &user_agent, const string &client_ip) : _token(token), _client_ip(client_ip) {
+UserSessionCache::UserSessionCache(const string &token, const string &user_agent, const string &client_ip, int max_elapsed) : _token(token), _client_ip(client_ip), _max_elapsed(max_elapsed) {
     if (!UserSessionHelper::verifyJwtToken(token)) {
         WarnL << "Invalid token: " << token;
         _has_access = false;
         _created_at = time(nullptr);
-        _expired_at = _created_at + 600;
+        _expired_at = _created_at + _max_elapsed;
         return;
     }
 
