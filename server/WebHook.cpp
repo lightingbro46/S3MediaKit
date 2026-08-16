@@ -1171,6 +1171,16 @@ void installWebHook() {
             return;
         }
 
+        weak_ptr<toolkit::Session> weak_session;
+        if (auto session = dynamic_cast<toolkit::Session *>(&sender)) {
+            weak_session = session->shared_from_this();
+        }
+        auto register_session = [jwt_token, device_id, weak_session]() {
+            if (!weak_session.expired()) {
+                UserAuthorManager::Instance().registerMediaSession(jwt_token, device_id, weak_session);
+            }
+        };
+
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, decodeBase64(params["user-agent"]), sender.get_peer_ip());
         if (!token_cache->hasProjectAccess()) {
             invoker("Unauthorized");
@@ -1192,6 +1202,7 @@ void installWebHook() {
         }
 
         if (permit == UserAuthorPermit::ACCEPT) {
+            register_session();
             isStreamLimit();
             return;
         }
@@ -1213,9 +1224,14 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker, isStreamLimit](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
             UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            !err.empty() ? invoker("Unauthorized") : isStreamLimit();
+            if (!err.empty()) {
+                invoker("Unauthorized");
+                return;
+            }
+            register_session();
+            isStreamLimit();
         });
     });
 
