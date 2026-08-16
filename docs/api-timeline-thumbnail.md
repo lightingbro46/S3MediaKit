@@ -110,6 +110,8 @@ const getTimeline = async (cameraId, startTime, endTime, jwtToken) => {
 
 Trả về ảnh JPEG được chụp từ file recording tại hoặc gần nhất với thời điểm `pos`. Server dùng FFmpeg để extract frame từ file MP4.
 
+Nếu camera được cấu hình watermark hoặc privacy mask, ảnh thumbnail sẽ được render theo chính sách của camera và role của JWT hiện tại. Chính sách này được áp dụng ở node đang sở hữu recording; client không thể tắt overlay bằng request.
+
 #### Request params
 
 | Tham số | Kiểu | Bắt buộc | Mô tả |
@@ -133,7 +135,7 @@ Trả về ảnh JPEG được chụp từ file recording tại hoặc gần nh�
 
 #### Cơ chế cache
 
-- Thumbnail được cache vào disk theo đường dẫn `{snapRoot}/{cameraId}/{streamId}/{pos_time}.jpeg`
+- Thumbnail được cache vào disk theo timestamp và chính sách overlay hiệu lực của request.
 - Cache hết hạn sau **60 giây**
 - Nếu cache còn hạn → trả về ngay, không gọi lại FFmpeg
 
