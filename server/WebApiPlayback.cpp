@@ -6,6 +6,8 @@
 #include "Manager.h"
 #include "Local/SearchEngine.h"
 #include "Util/base64.h"
+#include "Util/MD5.h"
+#include <sys/stat.h>
 
 using namespace std;
 using namespace toolkit;
@@ -131,9 +133,10 @@ void registerPlaybackApis() {
             uint64_t pos_time = 0;
             uint64_t diff_time = 0;
             if (query) {
-                if (pos_str == "latest") {
+                if (pos_str == "latest" || pos_str == "0") {
                     // todo: get latest jpeg record
-                    auto ret = findDeviceSource(tuple.app);
+                    auto ret = findDeviceSource(tuple.app, GENERIC_RTSP_CAMERA_SCHEMA);
+                    // auto ret = findDeviceSource(tuple.app);
                     if (ret) {
                         auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
                         if (ptr) {
@@ -186,51 +189,39 @@ void registerPlaybackApis() {
             GET_CONFIG(string, snap_root, API::kSnapRoot);
             int expire_sec = 60;
 
-            bool have_old_snap = false, res_old_snap = false;
             auto path = camera_id + "/" + stream_id;
             auto scan_path = File::absolutePath(path, snap_root) + "/";
-            string new_snap = StrPrinter << scan_path << pos_time << ".jpeg";
-
-            File::scanDir(scan_path, [&](const string &path, bool isDir) {
-                if (isDir || !end_with(path, ".jpeg")) {
-                    // Ignore folders or other types of files
-                    return true;
+            string filter_complex;
+            string policy_key;
+            vector<string> overlay_temp_paths;
+            const string overlay_prefix = StrPrinter << scan_path << pos_time << ".overlay";
+            if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
+                                                            filter_complex, overlay_temp_paths, policy_key)) {
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
                 }
-
-                // Find screenshot
-                auto tm = findSubString(path.data() + scan_path.size(), nullptr, ".jpeg");
-                if (atoll(tm.data()) + expire_sec < time(NULL)) {
-                    // Screenshot has expired, rename it so that it can be returned when requested again
-                    rename(path.data(), new_snap.data());
-                    have_old_snap = true;
-                    return true;
-                }
-
-                // Screenshot exists and has not expired, so return it
-                res_old_snap = true;
-                responseSnap(path, allArgs.parser.getHeader(), invoker);
-                // Interrupt traversal
-                return false;
-            });
-
-            if (res_old_snap) {
-                // Old screenshot has been replied
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to render thumbnail overlay");
                 return;
             }
 
-            // No screenshot or screenshot has expired
-            if (!have_old_snap) {
-                // No expired screenshot, generate an empty file, the purpose is to create the folder path by the way
-                // At the same time, prevent the FFmpeg process from being started multiple times by continuously trying to call this API during the FFmpeg screenshot generation process
-                auto file = File::create_file(new_snap, "wb");
-                if (file) {
-                    fclose(file);
+            const string cache_key = MD5(policy_key).hexdigest();
+            string new_snap = StrPrinter << scan_path << pos_time << "." << cache_key << ".jpeg";
+            if (File::fileExist(new_snap) && File::fileSize(new_snap) > 0) {
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
                 }
+                responseSnap(new_snap, allArgs.parser.getHeader(), invoker);
+                return;
+            }
+            File::delete_file(new_snap);
+            auto cache_file = File::create_file(new_snap, "wb");
+            if (cache_file) {
+                fclose(cache_file);
             }
 
             // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
             auto new_snap_tmp = new_snap + ".tmp";
-            FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, [invoker, allArgs, new_snap, new_snap_tmp](bool success, const string &err_msg) {
+            auto on_snap = [invoker, allArgs, new_snap, new_snap_tmp, overlay_temp_paths](bool success, const string &err_msg) {
                 if (!success) {
                     // Screenshot generation failed, there may be residual empty files
                     File::delete_file(new_snap_tmp);
@@ -239,8 +230,16 @@ void registerPlaybackApis() {
                     File::delete_file(new_snap);
                     rename(new_snap_tmp.data(), new_snap.data());
                 }
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
+                }
                 responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
-            });
+            };
+            if (filter_complex.empty()) {
+                FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, on_snap);
+            } else {
+                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 2, filter_complex, on_snap);
+            }
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);

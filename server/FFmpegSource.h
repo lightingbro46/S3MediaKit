@@ -4,10 +4,16 @@
 #include <mutex>
 #include <memory>
 #include <functional>
+#include <vector>
 #include "Process.h"
 #include "Util/TimeTicker.h"
+#include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "User/UserAuthorManager.h"
+
+namespace mediakit {
+struct PrivacyMaskRegion;
+}
 
 namespace FFmpeg {
     extern const std::string kSnap;
@@ -28,6 +34,12 @@ public:
      * @param cb Callback for whether the screenshot was generated successfully
      */
     static void makeSnap(bool async, const std::string &play_url, const std::string &save_path, uint64_t seek_time, float timeout_sec, const onSnap &cb);
+
+    // Create a JPEG through an optional filter_complex graph. The graph must
+    // expose its final video as [v]. The caller owns temporary overlay files.
+    static void makeSnapWithFilter(const std::string &play_url, const std::string &save_path,
+                                   uint64_t seek_time, float timeout_sec,
+                                   const std::string &filter_complex, const onSnap &cb);
 
 private:
     FFmpegSnap() = delete;
@@ -111,6 +123,34 @@ struct ExtractOptions {
     // Burn an extra bottom-right text stamp (camera name + extracting VMS username) onto the
     // extracted clip, independent of the camera's own watermark/privacy mask policy.
     bool enable_source_stamp;
+};
+
+// Builds the FFmpeg filter graph used by thumbnail and archived-video
+// extraction. The implementation remains in FFmpegSource.cpp; this declaration
+// allows the thumbnail API to use the same builder as FFmpegExtractor.
+class FFmpegOverlayFilter {
+public:
+    static bool buildThumbnailOverlay(const mediakit::MediaTuple &tuple, const std::string &jwt_token,
+                                      const std::string &path_prefix,
+                                      std::string &filter_complex,
+                                      std::vector<std::string> &temporary_paths,
+                                      std::string &policy_key);
+
+public:
+    static std::string build(const mediakit::MediaTuple &tuple,
+                             const mediakit::Broadcast::ViewOverlayPolicy &policy,
+                             const ExtractOptions &extract_options,
+                             const std::string &svg_path,
+                             std::vector<std::string> &temporary_paths,
+                             bool &overlay_required);
+
+private:
+    static std::string buildPrivacyMask(
+        const std::vector<mediakit::PrivacyMaskRegion> &masks,
+        int canvas_width, int canvas_height,
+        const std::string &path_prefix,
+        std::vector<std::string> &temporary_paths,
+        std::string &last_label, bool &success);
 };
 
 class FFmpegExtractor : public std::enable_shared_from_this<FFmpegExtractor> {
