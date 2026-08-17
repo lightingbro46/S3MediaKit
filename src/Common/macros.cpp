@@ -20,5 +20,6 @@ const char kServerName[] = "S3MediaKit(git hash:" COMMIT_HASH "/" COMMIT_TIME ",
 #endif
 
 const char kServerShortName[] =  "MediaServer-" RELEASE_VERSION "/" COMMIT_HASH;
+const char kServerVersion[] =  RELEASE_VERSION;
 
 }//namespace mediakit

@@ -20,7 +20,7 @@ void registerConfigurationApis() {
     api_regist("/media/mserver/description", [](API_ARGS_MAP) {
         Value info;
         info["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
-        info["version"] = kServerName;
+        info["version"] = kServerVersion;
         auto osinfo = GlobalMonitor::Instance().getOsInfo();
         info["osInfo"]["platform"] = osinfo.platform;
         info["osInfo"]["variant"] = osinfo.variant;

@@ -513,7 +513,7 @@ static void reportServerStarted() {
             body[pr.first] = (string &)pr.second;
         }
 #endif
-        body["version"] = kServerName;
+        body["version"] = kServerVersion;
         auto osinfo = GlobalMonitor::Instance().getOsInfo();
         body["osInfo"]["platform"] = osinfo.platform;
         body["osInfo"]["variant"] = osinfo.variant;
