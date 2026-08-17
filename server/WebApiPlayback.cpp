@@ -240,7 +240,7 @@ void registerPlaybackApis() {
             if (filter_complex.empty()) {
                 FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, on_snap);
             } else {
-                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 10, filter_complex, on_snap);
+                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 2, filter_complex, on_snap);
             }
         };
 
