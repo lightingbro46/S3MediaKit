@@ -136,30 +136,32 @@ void registerPlaybackApis() {
                 if (pos_str == "latest" || pos_str == "0") {
                     // todo: get latest jpeg record
                     auto ret = findDeviceSource(tuple.app, GENERIC_RTSP_CAMERA_SCHEMA);
-                    // auto ret = findDeviceSource(tuple.app);
                     if (ret) {
-                        auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(ret);
-                        if (ptr) {
-                            auto stats_imp = ptr->getCameraStatisticImp();
-                            if (stats_imp) {
-                                auto params = stats_imp->getParams();
-                                uint64_t last_archived_time = 0;
-                                if (!tuple.stream.empty() && params.storage_map.find(tuple.stream) != params.storage_map.end()) {
-                                    last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
-                                    
-                                } else if (tuple.stream.empty()) {
-                                    for (const auto &pr : params.storage_map) {
-                                        if (pr.second.archiveEndTime > last_archived_time) {
-                                            last_archived_time = pr.second.archiveEndTime;
+                        auto weak_listener = ret->getListener();
+                        if (auto listener = weak_listener.lock()) {
+                            auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(listener);
+                            if (ptr) {
+                                auto stats_imp = ptr->getCameraStatisticImp();
+                                if (stats_imp) {
+                                    auto params = stats_imp->getParams();
+                                    uint64_t last_archived_time = 0;
+                                    if (!tuple.stream.empty() && params.storage_map.find(tuple.stream) != params.storage_map.end()) {
+                                        last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
+                                        
+                                    } else if (tuple.stream.empty()) {
+                                        for (const auto &pr : params.storage_map) {
+                                            if (pr.second.archiveEndTime > last_archived_time) {
+                                                last_archived_time = pr.second.archiveEndTime;
+                                            }
                                         }
                                     }
-                                }
-                                if (last_archived_time > 0) {
-                                    auto block = query->getLastBlock(last_archived_time);
-                                    if (block) {
-                                        pos_time = block->start_time() + block->time_len() - 1;
-                                        diff_time = pos_time - block->start_time();
-                                        src_path = decodeBase64(block->file_path());
+                                    if (last_archived_time > 0) {
+                                        auto block = query->getLastBlock(last_archived_time);
+                                        if (block) {
+                                            pos_time = block->start_time() + block->time_len() - 10;
+                                            diff_time = pos_time - block->start_time();
+                                            src_path = decodeBase64(block->file_path());
+                                        }
                                     }
                                 }
                             }
@@ -238,7 +240,7 @@ void registerPlaybackApis() {
             if (filter_complex.empty()) {
                 FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, on_snap);
             } else {
-                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 2, filter_complex, on_snap);
+                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 10, filter_complex, on_snap);
             }
         };
 
