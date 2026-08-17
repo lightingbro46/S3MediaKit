@@ -54,7 +54,7 @@ onceToken token([]() {
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
     // mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s"; // backward compatibility, do not delete
     mINI::Instance()[kSnap] = "%s -i %s -ss %s -y -f mjpeg -frames:v 1 -an %s";
-    mINI::Instance()[kSnapOverlay] = "%s -i %s -ss %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
+    mINI::Instance()[kSnapOverlay] = "%s -ss %s -i %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
     mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -filter_complex %s -map [v] -map 0:a? "
@@ -479,8 +479,9 @@ void FFmpegSnap::makeSnapWithFilter(const string &play_url, const string &save_p
 
         char cmd[65536] = { 0 };
         int command_length = snprintf(cmd, sizeof(cmd), ffmpeg_snap_overlay.data(),
-                                      File::absolutePath("", ffmpeg_bin).data(), play_url.data(),
-                                      format_duration_hms(seek_time).data(), filter_complex.data(),
+                                      File::absolutePath("", ffmpeg_bin).data(), 
+                                      format_duration_hms(seek_time).data(),
+                                      play_url.data(), filter_complex.data(),
                                       save_path.data());
         if (command_length < 0 || static_cast<size_t>(command_length) >= sizeof(cmd)) {
             cb(false, "FFmpeg snapshot overlay command is too long");
