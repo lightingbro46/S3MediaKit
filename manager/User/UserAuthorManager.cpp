@@ -1,12 +1,13 @@
 #include "UserAuthorManager.h"
-#include "server/WebHook.h"
 #include "Common/config.h"
 #include "Network/Session.h"
 #include "Util/logger.h"
+#include "Util/NoticeCenter.h"
 #include <algorithm>
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
 namespace managerkit {
 
