@@ -1173,7 +1173,10 @@ void installWebHook() {
 
         weak_ptr<toolkit::Session> weak_session;
         if (auto session = dynamic_cast<toolkit::Session *>(&sender)) {
-            weak_session = session->shared_from_this();
+            auto session_ptr = std::dynamic_pointer_cast<toolkit::Session>(session->shared_from_this());
+            if (session_ptr) {
+                weak_session = session_ptr;
+            }
         }
         auto register_session = [jwt_token, device_id, weak_session]() {
             if (!weak_session.expired()) {
