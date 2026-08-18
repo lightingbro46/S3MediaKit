@@ -100,7 +100,7 @@ void registerExtractionApis() {
             return;
         }
 
-        val["data"]["progress"] = status.progress;
+        val["data"]["progress"] = std::round(status.progress * 100.0f) / 100.0f;
         val["data"]["ready"] = status.finished && status.success;
         invoker(202, headerOut, val.toStyledString());
     });

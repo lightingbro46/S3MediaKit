@@ -1142,7 +1142,7 @@ void installWebHook() {
 
                 transcode_stream = use_watermark || use_privacy_mask;
             };
-            NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, jwt_token, policy_cb, sender);
+            NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, false, jwt_token, policy_cb, sender);
         }
         
 

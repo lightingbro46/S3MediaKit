@@ -272,7 +272,7 @@ void installManagerHook () {
 
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
         auto role_code = token_cache->getRoleCode();
-        auto overlay = token_cache->getOverlay();
+        auto overlay = force_overlay || token_cache->getOverlay();
 
         if (overlay && option.enforceWatermarkOnView && !option.watermarkExcludedRoleIds.empty()) {
             for (auto role : split(option.watermarkExcludedRoleIds, ",")) {

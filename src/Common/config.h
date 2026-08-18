@@ -84,7 +84,7 @@ struct ViewOverlayPolicy {
 using ViewOverlayPolicyInvoker = std::function<void(const ViewOverlayPolicy &policy)>;
 
 extern const std::string kBroadcastMediaViewOverlay;
-#define BroadcastMediaViewOverlayArgs const MediaInfo &args, const std::string &jwt_token, const Broadcast::ViewOverlayPolicyInvoker &invoker, SockInfo &sender
+#define BroadcastMediaViewOverlayArgs const MediaInfo &args, const bool &force_overlay, const std::string &jwt_token, const Broadcast::ViewOverlayPolicyInvoker &invoker, SockInfo &sender
 
 // Broadcast for playing rtsp/rtmp/http-flv events. Control playback authentication through this event.
 extern const std::string kBroadcastMediaPlayed;

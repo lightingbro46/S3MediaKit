@@ -516,7 +516,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
 #endif
     };
-    auto flag = NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, _media_info, jwt_token, policy_cb, *this);
+    auto flag = NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, _media_info, false, jwt_token, policy_cb, *this);
     if (!flag) {
         policy_cb(Broadcast::ViewOverlayPolicy());
     }
@@ -682,11 +682,8 @@ bool HttpSession::checkLiveStreamHls() {
     string fmp4_suffix = ".mp4";
     auto it = _parser.getUrlArgs().find("schema");
     if (it != _parser.getUrlArgs().end()) {
-        if (strcasecmp(it->second.c_str(), HLS_SCHEMA)) {
-            // unsupported schema
-            return false;
-        }
-        if (strcasecmp(it->second.c_str(), HLS_FMP4_SCHEMA)) {
+        if (strcasecmp(it->second.c_str(), HLS_SCHEMA) &&
+            strcasecmp(it->second.c_str(), HLS_FMP4_SCHEMA)) {
             // unsupported schema
             return false;
         }
@@ -772,7 +769,7 @@ bool HttpSession::checkLiveStreamHls() {
                 (value.privacy_mask_enforce && !value.privacy_mask_excluded);
         };
         NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay,
-                    _media_info, jwt_token, policy_cb, *this);
+                    _media_info, false, jwt_token, policy_cb, *this);
         if (camera_overlay_requested) {
             DebugL << "HLS view overlay policy requires derived transcode: " << _media_info.shortUrl();
         }

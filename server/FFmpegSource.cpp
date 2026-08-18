@@ -846,7 +846,7 @@ static Broadcast::ViewOverlayPolicy resolveViewOverlayPolicy(const MediaTuple &t
         policy = value;
     };
     NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay,
-                media_info, jwt_token, invoker, sock_info);
+                media_info, true, jwt_token, invoker, sock_info);
     return policy;
 }
 
