@@ -3,6 +3,7 @@
 #ifdef ENABLE_MP4
 
 #include <map>
+#include <set>
 #include "MP4.h"
 #include "Extension/Track.h"
 #include "Util/ResourcePool.h"
@@ -137,6 +138,8 @@ private:
     std::map<uint64_t, MP4Demuxer::Ptr> _demuxers;
     bool _use_timeline = false;
     SegmentStats _stats;
+    std::set<std::pair<uint64_t, std::string>> _timeline_segments;
+    std::set<std::pair<uint64_t, std::string>> _consumed_timeline_segments;
 };
 
 }//namespace mediakit
