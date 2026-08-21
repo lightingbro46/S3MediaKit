@@ -1,0 +1,4 @@
+interface:
+  display_name: "S3MediaKit API"
+  short_description: "Implement authenticated MediaServer APIs"
+  default_prompt: "Use $s3mediakit-api to add or modify this S3MediaKit REST API endpoint."

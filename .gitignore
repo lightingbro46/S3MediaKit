@@ -37,8 +37,6 @@
 /.vs/
 /.vscode/
 /.idea/
-/.codex/
-/.agents/
 /c_wrapper/.idea/
 /release/
 /out/

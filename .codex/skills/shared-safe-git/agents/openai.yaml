@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shared Safe Git"
+  short_description: "Protect user changes and repository state"
+  default_prompt: "Use $shared-safe-git to make these repository changes without losing existing work."

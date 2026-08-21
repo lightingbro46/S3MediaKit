@@ -1,0 +1,4 @@
+interface:
+  display_name: "S3MediaKit Database"
+  short_description: "Create safe SQLite migrations and entities"
+  default_prompt: "Use $s3mediakit-database to change the S3MediaKit schema safely."

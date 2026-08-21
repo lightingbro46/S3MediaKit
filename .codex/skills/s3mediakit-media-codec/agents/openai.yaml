@@ -1,0 +1,4 @@
+interface:
+  display_name: "S3MediaKit Media Codec"
+  short_description: "Extend codecs and media pipelines"
+  default_prompt: "Use $s3mediakit-media-codec to implement this codec or media pipeline change."

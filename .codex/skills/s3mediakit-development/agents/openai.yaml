@@ -1,0 +1,4 @@
+interface:
+  display_name: "S3MediaKit Development"
+  short_description: "Navigate and change S3MediaKit safely"
+  default_prompt: "Use $s3mediakit-development to implement this S3MediaKit change with the project conventions."
