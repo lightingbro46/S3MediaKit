@@ -106,6 +106,9 @@ public:
     /** Feed an original audio frame for pass-through. */
     bool inputAudioFrame(const Frame::Ptr &frame);
 
+    /** Flush pending transcode output and close every derived output schema. */
+    void close();
+
     /** Whether at least one derived output is active for its demand policy. */
     bool isEnabled();
 
@@ -124,6 +127,7 @@ protected:
     bool close(MediaSource &sender) override;
 
 private:
+    void close_l();
     void createMuxer();
     void addTrackToMuxer(const Track::Ptr &track);
     void completeMuxerTracks();
@@ -138,6 +142,7 @@ private:
     bool _primed = false;
     bool _last_enabled = false;
     bool _first_video = true;
+    bool _closed = false;
     std::function<void(const Ptr &)> _on_closed;
     int64_t _source_pts_base = AV_NOPTS_VALUE;
     FFmpegSws::Ptr _pre_overlay_sws;
