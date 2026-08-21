@@ -365,6 +365,44 @@ Lấy danh sách tất cả tác vụ extract thuộc JWT token hiện tại.
 
 ---
 
+### 3.0 Kiểm tra dữ liệu trước khi Extract
+
+**GET** `/media/esc/extractArchived/previews`
+
+Kiểm tra khoảng thời gian có recording và tổng thời lượng thực tế có thể xuất, không tạo file và không chạy FFmpeg.
+
+#### Request params
+
+| Tham số | Kiểu | Bắt buộc | Mô tả |
+|---------|------|----------|-------|
+| `cameraId` | `string` | Có | ID camera |
+| `streamId` | `string` | Không | Stream cụ thể; bỏ trống để dùng stream có dữ liệu dài nhất |
+| `startTime` | `uint64` | Có | Unix timestamp bắt đầu |
+| `endTime` | `uint64` | Có | Unix timestamp kết thúc |
+
+#### Response thành công (`200`)
+
+```json
+{
+  "code": 0,
+  "msg": "",
+  "data": {
+    "hasData": true,
+    "availableDuration": 120,
+    "streamId": "main",
+    "streamName": "Main stream"
+  }
+}
+```
+
+`availableDuration` tính bằng giây, chỉ gồm phần giao với khoảng yêu cầu và không tính các khoảng trống giữa các recording block. Khi không có dữ liệu, API vẫn trả `200` với `hasData: false` và `availableDuration: 0`.
+
+`streamId` và `streamName` là stream có `availableDuration` lớn nhất, tức stream sẽ được dùng khi extract không chỉ định `streamId`. Khi không có dữ liệu hoặc không tìm thấy metadata tên stream, các field này là chuỗi rỗng.
+
+Khoảng thời gian phải thỏa `startTime < endTime`; nếu không, API trả lỗi `902009`.
+
+---
+
 ## Ví dụ hoàn chỉnh: Extract + Download
 
 ```js
