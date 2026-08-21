@@ -214,8 +214,9 @@ void RecordScheduler::stopTimer() {
 }
 
 void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
-    auto _current_mode = _has_active_item ? _active_item.mode : RecordMode::NoRecord;
-    if (_current_mode != item.mode) {
+    auto current_mode = _has_active_item ? _active_item.mode : RecordMode::NoRecord;
+    // If the recording mode has changed or there is no active item, notify the listener of the change 
+    if (current_mode != item.mode || !_has_active_item) {
         DebugL << "Recording mode of device: " << _tuple.shortUrl() << " changed to " << getRecordModeString(item.mode) << " (day=" << item.day << ", hour=" << item.hour << ")";
         auto event_active = _event_active;
         onRecordModeChange(DeviceSource::NullDeviceSource(), static_cast<int>(item.mode), event_active);
