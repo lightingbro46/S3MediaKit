@@ -1,15 +1,18 @@
 #include <gtest/gtest.h>
 
-#include "Local/StorageTier.h"
 #include "Storage/AuditLog.h"
 #include "Storage/Bookmark.h"
-#include "Storage/StoragePolicy.h"
 #include "Storage/TransactionPeerAckLog.h"
 #include "Storage/VmsResource.h"
 #include "Storage/VmsResourceStatus.h"
+#if defined(ENABLE_TIER_STORAGE)
+#include "Local/StorageTier.h"
+#include "Storage/StoragePolicy.h"
+#endif
 
 using namespace managerkit;
 
+#if defined(ENABLE_TIER_STORAGE)
 TEST(StorageTierTest, ConvertsEnumsAndReportsCapabilities) {
     EXPECT_EQ("HOT", tierTypeToString(HotTier));
     EXPECT_EQ(WarmTier, tierTypeFromString("WARM"));
@@ -52,6 +55,7 @@ TEST(StoragePolicyTest, RoundTripsNestedConfiguration) {
     EXPECT_EQ("p1", json["id"].asString());
     EXPECT_EQ(1U, json["tiers"].size());
 }
+#endif
 
 TEST(BookmarkTest, RoundTripsOptionalJsonAndEntityRows) {
     Bookmark bookmark;

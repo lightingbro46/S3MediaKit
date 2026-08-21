@@ -1,14 +1,16 @@
 #include <gtest/gtest.h>
 
 #include "Storage/BookmarkIndex.h"
-#include "Storage/StoragePool.h"
-#include "Storage/StorageTierExtra.h"
 #include "Storage/SystemMetrics.h"
-#include "Storage/TieringJob.h"
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionSequence.h"
 #include "Storage/VmsKvPair.h"
 #include "Storage/VmsResourceAssignment.h"
+#if defined(ENABLE_TIER_STORAGE)
+#include "Storage/StoragePool.h"
+#include "Storage/StorageTierExtra.h"
+#include "Storage/TieringJob.h"
+#endif
 
 using namespace managerkit;
 
@@ -68,6 +70,7 @@ TEST(StorageModelsTest, RoundTripsJsonModels) {
 }
 
 TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
+#if defined(ENABLE_TIER_STORAGE)
     TieringJob job;
     job.job_id = "job";
     job.camera_id = "camera";
@@ -90,6 +93,7 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     range.segment_count = 8;
     range.size_bytes = 4096;
     EXPECT_EQ(8, range.toJson()["segment_count"].asInt64());
+#endif
 
     SystemMetric metric;
     metric.id = 12;
@@ -105,6 +109,7 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
 
 TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<BookmarkIndex>("bookmark_index");
+#if defined(ENABLE_TIER_STORAGE)
     expectEntitySchema<TieringJob>("tiering_jobs");
     expectEntitySchema<SegmentTierRecord>("segment_tier_records");
     expectEntitySchema<SegmentTierRange>("segment_tier_ranges");
@@ -117,5 +122,6 @@ TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<VmsKvPair>("vms_kvpair");
     expectEntitySchema<VmsResourceAssignment>("vms_resource_assignment");
     expectEntitySchema<StoragePool>("storage_pools");
+#endif
     expectEntitySchema<SystemMetric>("system_metrics");
 }

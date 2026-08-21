@@ -70,3 +70,42 @@ target_sources(unit_storage PRIVATE manager/test_record_policy.cpp manager/test_
 target_link_libraries(unit_storage PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
 add_test(NAME unit.storage_all COMMAND unit_storage)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
+
+if(ENABLE_SERVER_LIB)
+  add_executable(unit_extract_preview server/test_extract_preview.cpp)
+  target_compile_options(unit_extract_preview PRIVATE ${COMPILE_OPTIONS_DEFAULT})
+  target_compile_definitions(unit_extract_preview PRIVATE ${MK_COMPILE_DEFINITIONS})
+  target_link_libraries(unit_extract_preview
+    PRIVATE
+      GTest::gtest
+      GTest::gtest_main)
+  if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    target_link_libraries(unit_extract_preview
+      PRIVATE
+        -Wl,--start-group
+        MediaServer
+        ${MK_LINK_LIBRARIES}
+        -Wl,--end-group)
+  else()
+    target_link_libraries(unit_extract_preview
+      PRIVATE
+        MediaServer
+        ${MK_LINK_LIBRARIES})
+  endif()
+  target_include_directories(unit_extract_preview PRIVATE
+    "${PROJECT_SOURCE_DIR}/manager"
+    "${PROJECT_SOURCE_DIR}/src"
+    "${PROJECT_SOURCE_DIR}/3rdpart/S3ToolKit/src"
+    "${PROJECT_SOURCE_DIR}/3rdpart/jsoncpp/include"
+    "${PROJECT_SOURCE_DIR}/server"
+    "${CMAKE_BINARY_DIR}/manager"
+    "${PROJECT_SOURCE_DIR}/3rdpart/onvif/core/include"
+    "${PROJECT_SOURCE_DIR}/3rdpart/onvif/core/include/gsoap")
+  gtest_discover_tests(unit_extract_preview
+    TEST_PREFIX "unit."
+    PROPERTIES
+      LABELS "unit"
+      TIMEOUT 15)
+  add_test(NAME unit.extract_preview_all COMMAND unit_extract_preview)
+  set_tests_properties(unit.extract_preview_all PROPERTIES LABELS unit TIMEOUT 15)
+endif()
