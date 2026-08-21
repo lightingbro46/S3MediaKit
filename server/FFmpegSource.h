@@ -158,6 +158,13 @@ public:
     using Ptr = std::shared_ptr<FFmpegExtractor>;
     using onExtract = std::function<void(const toolkit::SockException &ex)>;
 
+    struct PreviewInfo {
+        bool hasData = false;
+        uint64_t availableDuration = 0;
+        std::string streamId;
+        std::string streamName;
+    };
+
     struct Status {
         float progress = 0.0f;
         bool finished = false;
@@ -180,6 +187,9 @@ public:
     void setOnClose(const std::function<void()> &cb);
 
     void makeExtract(const std::string &key, const std::string &download_path, const onExtract &cb);
+
+    static PreviewInfo getExtractPreview(const std::string &camera_id, const std::string &stream_id,
+                                         uint64_t start_time, uint64_t end_time);
 
     const std::string& getFilename() const { return _options.filename; }
     const std::string& getSavePath() const { return _save_path; }

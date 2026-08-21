@@ -515,6 +515,57 @@ FFmpegExtractor::~FFmpegExtractor() {
     DebugL;
 }
 
+using TimeBlockCallback = function<void(const TimeBlock &block)>;
+
+static bool queryExtractTimeBlocks(const string &camera_id, const string &stream_id,
+                                   uint64_t start_time, uint64_t end_time,
+                                   const TimeBlockCallback &cb) {
+    try {
+        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+        auto query = make_shared<TimeQuery>(tuple);
+        query->getRecordedTimePeriod(start_time, end_time, [&cb](const vector<TimeBlock> &blocks) {
+            for (const auto &block : blocks) {
+                cb(block);
+            }
+        });
+        return true;
+    } catch (const exception &ex) {
+        WarnL << "TimeQuery init failed: " << ex.what();
+        return false;
+    }
+}
+
+static void addExtractTimeRange(unordered_map<string, vector<pair<uint64_t, uint64_t>>> &ranges,
+                                const TimeBlock &block, uint64_t start_time, uint64_t end_time) {
+    auto block_start = MAX(block.start_time(), start_time);
+    auto block_end = MIN(block.start_time() + block.time_len(), end_time);
+    if (block_start < block_end) {
+        ranges[block.stream()].push_back(make_pair(block_start, block_end));
+    }
+}
+
+static uint64_t getExtractStreamDuration(vector<pair<uint64_t, uint64_t>> &ranges) {
+    sort(ranges.begin(), ranges.end());
+    uint64_t duration = 0;
+    bool has_range = false;
+    uint64_t range_start = 0;
+    uint64_t range_end = 0;
+    for (const auto &range : ranges) {
+        if (!has_range) {
+            range_start = range.first;
+            range_end = range.second;
+            has_range = true;
+        } else if (range.first <= range_end) {
+            range_end = MAX(range_end, range.second);
+        } else {
+            duration += range_end - range_start;
+            range_start = range.first;
+            range_end = range.second;
+        }
+    }
+    return has_range ? duration + range_end - range_start : 0;
+}
+
 static void makeIndexFile(string &file_path, string &camera_id, string &stream_id, uint64_t start_time, uint64_t end_time,
         const function<void(const SockException &ex, uint32_t &duration_start, uint32_t &duration_end)> &cb) {
     uint32_t duration_start = 0;
@@ -532,47 +583,46 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
 
     struct FileIndexs {
         vector<string> file_path;
-        uint64_t dur_start;
-        uint64_t dur_end;
+        uint64_t dur_start = 0;
+        uint64_t dur_end = 0;
     };
     unordered_map<string, FileIndexs> file_indexs_map;
-    try {
-        MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-        auto query = std::make_shared<TimeQuery>(tuple);
-        query->getRecordedTimePeriod(start_time, end_time, [start_time, end_time, &file_indexs_map](const vector<TimeBlock> &ret) {
-            for (const auto &block : ret) {
-                auto stream_id = block.stream();
-                auto &file_indexs = file_indexs_map[stream_id];
-                uint64_t start_pos = block.start_time();
-                uint64_t end_pos = block.start_time() + block.time_len();
-                if (start_pos < start_time) {
-                    file_indexs.dur_start += start_time - start_pos;
-                    file_indexs.dur_end += file_indexs.dur_start;
-                    start_pos = start_time;
-                }
-                if (end_pos > end_time) {
-                    end_pos = end_time;
-                }
-                file_indexs.dur_end += end_pos - start_pos;
-                file_indexs.file_path.push_back(block.file_path());
-            }
-        });
-    } catch (const std::exception& ex) {
-        WarnL << "TimeQuery init failed: " << ex.what();
-    }
+    unordered_map<string, vector<pair<uint64_t, uint64_t>>> available_ranges;
+    queryExtractTimeBlocks(camera_id, stream_id, start_time, end_time, [&](const TimeBlock &block) {
+        auto stream = block.stream();
+        auto &file_indexs = file_indexs_map[stream];
+        uint64_t start_pos = block.start_time();
+        uint64_t end_pos = block.start_time() + block.time_len();
+        if (start_pos < start_time) {
+            file_indexs.dur_start += start_time - start_pos;
+            file_indexs.dur_end += file_indexs.dur_start;
+            start_pos = start_time;
+        }
+        if (end_pos > end_time) {
+            end_pos = end_time;
+        }
+        file_indexs.dur_end += end_pos - start_pos;
+        file_indexs.file_path.push_back(block.file_path());
+        addExtractTimeRange(available_ranges, block, start_time, end_time);
+    });
 
     uint64_t total_dur = 0;
     // Find the stream with the longest duration in the time period, and then extract the video based on this stream
     unordered_map<string, FileIndexs>::iterator file_indexs_it = file_indexs_map.end();
     for (auto it = file_indexs_map.begin(); it != file_indexs_map.end(); ++it) {
         auto &file_indexs = it->second;
-        if (file_indexs.dur_end - file_indexs.dur_start <= 0 || file_indexs.file_path.empty()) {
+        auto range_it = available_ranges.find(it->first);
+        if (range_it == available_ranges.end() || file_indexs.file_path.empty()) {
+            continue;
+        }
+        auto duration = getExtractStreamDuration(range_it->second);
+        if (duration == 0) {
             continue;
         }
 
-        if (total_dur == 0 || file_indexs.dur_end - file_indexs.dur_start > total_dur) {
+        if (total_dur == 0 || duration > total_dur) {
             file_indexs_it = it;
-            total_dur = file_indexs.dur_end - file_indexs.dur_start;
+            total_dur = duration;
         }
     }
 
@@ -586,6 +636,45 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
     }
     // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
     return cb(total_dur == 0 ? SockException(Err_other, "No data in time period", ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA) : SockException(), duration_start, duration_end);
+}
+
+FFmpegExtractor::PreviewInfo FFmpegExtractor::getExtractPreview(const string &camera_id,
+                                                                const string &stream_id,
+                                                                uint64_t start_time,
+                                                                uint64_t end_time) {
+    PreviewInfo result;
+    if (start_time >= end_time) {
+        return result;
+    }
+
+    unordered_map<string, vector<pair<uint64_t, uint64_t>>> available_ranges;
+    queryExtractTimeBlocks(camera_id, stream_id, start_time, end_time, [&](const TimeBlock &block) {
+        addExtractTimeRange(available_ranges, block, start_time, end_time);
+    });
+
+    string selected_stream_id;
+    for (auto &stream_ranges : available_ranges) {
+        auto duration = getExtractStreamDuration(stream_ranges.second);
+        if (duration > result.availableDuration) {
+            result.availableDuration = duration;
+            selected_stream_id = stream_ranges.first;
+        }
+    }
+    result.hasData = result.availableDuration > 0;
+    if (result.hasData) {
+        result.streamId = selected_stream_id;
+        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        if (recorder) {
+            auto params = recorder->getParams();
+            for (const auto &item : params.stream_map) {
+                if (item.second.stream_id == result.streamId) {
+                    result.streamName = item.second.name;
+                    break;
+                }
+            }
+        }
+    }
+    return result;
 }
 
 static std::string getFileExtension(const std::string &filename) {

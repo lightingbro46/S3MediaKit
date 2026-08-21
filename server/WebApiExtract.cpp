@@ -84,6 +84,38 @@ void registerExtractionApis() {
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
     });
 
+    api_regist("/media/esc/extractArchived/previews", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE);
+        CHECK_ARGS_("cameraId", "startTime", "endTime");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            auto camera_id = allArgs["cameraId"];
+            auto stream_id = allArgs["streamId"];
+            uint64_t start_time = allArgs["startTime"];
+            uint64_t end_time = allArgs["endTime"];
+
+            if (start_time >= end_time) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "Invalid time range");
+                return;
+            }
+
+            if (!findDeviceSource(camera_id)) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                return;
+            }
+
+            auto preview = FFmpegExtractor::getExtractPreview(camera_id, stream_id, start_time, end_time);
+            val["data"]["hasData"] = preview.hasData;
+            val["data"]["availableDuration"] = Json::UInt64(preview.availableDuration);
+            val["data"]["streamId"] = preview.streamId;
+            val["data"]["streamName"] = preview.streamName;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
+    });
+
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
         CHECK_USER_AUTHOR("key");
 
