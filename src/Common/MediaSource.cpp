@@ -356,7 +356,7 @@ static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, con
     MediaSource::Ptr ret;
     MediaSource::for_each_media([&](const MediaSource::Ptr &src) { ret = std::move(const_cast<MediaSource::Ptr &>(src)); }, schema, vhost, app, id);
 
-    if(!ret && from_mp4 && schema != HLS_SCHEMA){
+    if(!ret && from_mp4){
         // If the media source is not found, read mp4 to create one
         // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
         ret = MediaSource::createFromMP4(schema, vhost, app, id);
@@ -633,10 +633,18 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
     if (check_app && app != appName) {
         return nullptr;
     }
+    if (stream.find(TRANSCODE_SUFFIX) != string::npos) {
+        // A derived stream must be published by TranscodeProcessor. Creating it
+        // from the original MP4 path would bypass transcoding and overlays.
+        return nullptr;
+    }
 #ifdef ENABLE_MP4
     try {
         MediaTuple tuple = {vhost, app, stream, ""};
-        auto reader = std::make_shared<MP4Reader>(tuple, file_path);
+        ProtocolOption option;
+        option.enable_mp4 = false;
+        option.max_track = 16;
+        auto reader = std::make_shared<MP4Reader>(tuple, file_path, option);
         reader->startReadMP4();
         return MediaSource::find(schema, vhost, app, stream);
     } catch (std::exception &ex) {

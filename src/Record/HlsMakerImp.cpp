@@ -79,7 +79,11 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
         if (!delay || immediately) {
             clearHls(lst);
         } else {
-            _poller->doDelayTask(delay * 1000, [lst]() {
+            // Keep the finalized HLS source registered for exactly the same
+            // grace period as its files. Clients can reload the final playlist
+            // from memory, observe EXT-X-ENDLIST and fetch referenced segments.
+            auto media_src = eof ? _media_src : nullptr;
+            _poller->doDelayTask(delay * 1000, [lst, media_src]() {
                 clearHls(lst);
                 return 0;
             });

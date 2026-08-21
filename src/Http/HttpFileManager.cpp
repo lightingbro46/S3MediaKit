@@ -571,8 +571,8 @@ static string getFilePath(const Parser &parser,const MediaInfo &media_info, Sess
         if (!appName.empty()) {
             auto app_prefix = "/" + appName;
             if (start_with(url, app_prefix)) {
-                url.erase(0, url_prefix.size());
-                virtual_app += app_prefix;
+                url.erase(0, app_prefix.size());
+                virtual_app += virtual_app.empty() ? app_prefix.substr(1) : app_prefix;
             }
         }
         if (!virtual_app.empty()) {
