@@ -287,6 +287,18 @@ void MultiMediaSourceProcessor::attachMotionReader() {
 
 bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
     bool ret = MediaSourceDecoder::addTrack(track);
+    if (ret && track && track->getTrackType() == TrackVideo) {
+        auto it = _tracks.find(track->getIndex());
+        if (it != _tracks.end() && it->second.decoder) {
+            std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+            it->second.decoder->setOnDecode([weak_self](const FFmpegFrame::Ptr &frame) {
+                auto self = weak_self.lock();
+                if (self) {
+                    self->onDecode(frame);
+                }
+            });
+        }
+    }
     if (track && track->getTrackType() == TrackVideo) {
         auto video_track = std::dynamic_pointer_cast<VideoTrack>(track);
         if (video_track && video_track->getVideoFps() > 0.0f) {
