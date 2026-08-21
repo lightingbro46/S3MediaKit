@@ -1,6 +1,8 @@
 #if defined(ENABLE_FFMPEG)
 
 #include "MultiMediaSourceProcessor.h"
+#include "Thread/WorkThreadPool.h"
+#include <algorithm>
 
 using namespace std;
 
@@ -8,6 +10,8 @@ namespace mediakit {
 
 namespace {
 const int kMuteAudioIndex = 0xFFFF;
+const size_t kMaxTranscodeQueueSize = 24;
+const size_t kTranscodeDrainBatchSize = 4;
 }
 
 MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option, const toolkit::EventPoller::Ptr &poller)
@@ -16,17 +20,13 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
     // Keep source lifecycle callbacks on the source poller, but never run
     // transcode or motion processing there. Both operations may perform
     // expensive image/codec work and would otherwise starve RTP handling.
-    _transcode_poller = toolkit::EventPollerPool::Instance().getPoller(false);
+    _transcode_poller = toolkit::WorkThreadPool::Instance().getPoller();
 #if defined(ENABLE_MOTION)
     _motion_poller = toolkit::EventPollerPool::Instance().getPoller(false);
 #endif // ENABLE_MOTION
     _source_on_demand = option.auto_close;
 #if defined(ENABLE_MOTION)
-    if (option.enable_motion || option.enable_transcode) {
-        _ring = std::make_shared<RingType>(512, nullptr, 1);
-    }
-#else
-    if (option.enable_transcode) {
+    if (option.enable_motion) {
         _ring = std::make_shared<RingType>(512, nullptr, 1);
     }
 #endif
@@ -62,6 +62,16 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
     }
 }
 
+MultiMediaSourceProcessor::~MultiMediaSourceProcessor() {
+    try {
+        close();
+    } catch (const std::exception &ex) {
+        WarnL << "Close media source processor failed: " << ex.what();
+    } catch (...) {
+        WarnL << "Close media source processor failed with unknown exception";
+    }
+}
+
 TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const TranscodeProcessor::Config &cfg) {
     TranscodeProcessor::Config effective_cfg = cfg;
     if (effective_cfg.source_fps <= 0.0) {
@@ -80,6 +90,9 @@ TranscodeProcessor::Ptr MultiMediaSourceProcessor::createTranscode(const Transco
 MediaSource::Ptr MultiMediaSourceProcessor::ensureTranscode(const TranscodeProcessor::Config &cfg) {
     const auto key = cfg.stream_suffix;
     std::lock_guard<std::mutex> lock(_mtx);
+    if (_closing.load()) {
+        return nullptr;
+    }
     auto it = _transcodes.find(key);
     if (it == _transcodes.end()) {
         auto transcode = createTranscode(cfg);
@@ -93,7 +106,6 @@ MediaSource::Ptr MultiMediaSourceProcessor::ensureTranscode(const TranscodeProce
             }
         });
         it = _transcodes.emplace(key, transcode).first;
-        attachTranscodeReader(key, transcode);
     }
     return MediaSource::find(cfg.output_schema, _tuple.vhost, _tuple.app, _tuple.stream + cfg.stream_suffix);
 }
@@ -131,10 +143,6 @@ void MultiMediaSourceProcessor::setListener(const std::weak_ptr<MediaSourceEvent
                 self->removeTranscode(key, closed);
             }
         });
-        {
-            std::lock_guard<std::mutex> lock(_mtx);
-            attachTranscodeReader(key, transcode);
-        }
     }
 }
 
@@ -148,7 +156,6 @@ void MultiMediaSourceProcessor::removeTranscode(const std::string &key, const Tr
             return;
         }
         DebugL << "Remove closed transcode stream: " << key;
-        _transcode_readers.erase(key);
         _transcodes.erase(it);
     }
     if (canClose()) {
@@ -159,38 +166,101 @@ void MultiMediaSourceProcessor::removeTranscode(const std::string &key, const Tr
     }
 }
 
-void MultiMediaSourceProcessor::attachTranscodeReader(const std::string &key, const TranscodeProcessor::Ptr &transcode) {
-    if (!transcode || _transcode_readers.find(key) != _transcode_readers.end()) {
-        return;
-    }
-    if (!_ring) {
-        // One decoded GOP is enough to prime a newly-created transcode.
-        // This ring is independent from the output muxer's GOP cache.
-        _ring = std::make_shared<RingType>(512, nullptr, 1);
+void MultiMediaSourceProcessor::enqueueTranscodeFrame(DecodedFrame input) {
+    bool schedule_drain = false;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        if (_closing.load() || _transcodes.empty()) {
+            return;
+        }
+
+        if (_transcode_queue.size() >= kMaxTranscodeQueueSize) {
+            // Prefer dropping the oldest item of the same kind. This keeps
+            // audio and video bursts from evicting each other unnecessarily.
+            auto drop = std::find_if(_transcode_queue.begin(), _transcode_queue.end(),
+                                     [&input](const DecodedFrame &queued) {
+                                         return queued.type == input.type;
+                                     });
+            if (drop == _transcode_queue.end()) {
+                drop = _transcode_queue.begin();
+            }
+            _transcode_queue.erase(drop);
+            ++_transcode_dropped_frames;
+        }
+
+        _transcode_queue.emplace_back(std::move(input));
+        if (!_transcode_drain_scheduled) {
+            _transcode_drain_scheduled = true;
+            schedule_drain = true;
+        }
     }
 
-    auto ring = _ring;
-    auto poller = _transcode_poller;
-    std::weak_ptr<TranscodeProcessor> weak_transcode = transcode;
-    RingType::RingReader::Ptr reader;
-    poller->sync([&]() {
-        // Do not replay the cached GOP synchronously while the source poller
-        // is handling the HTTP request/RTP stream. The encoder will start from
-        // the next decoded frame on the dedicated transcode poller.
-        reader = ring->attach(poller, false);
-        reader->setReadCB([weak_transcode](const DecodedFrame &input) {
-            auto strong_transcode = weak_transcode.lock();
-            if (!strong_transcode) {
-                return;
+    if (schedule_drain) {
+        std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+        _transcode_poller->async([weak_self]() {
+            if (auto self = weak_self.lock()) {
+                self->drainTranscodeFrames();
+            }
+        }, false);
+    }
+}
+
+void MultiMediaSourceProcessor::drainTranscodeFrames() {
+    std::vector<DecodedFrame> batch;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        if (_closing.load()) {
+            _transcode_queue.clear();
+            _transcode_drain_scheduled = false;
+            return;
+        }
+
+        const size_t count = std::min(kTranscodeDrainBatchSize, _transcode_queue.size());
+        batch.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            batch.emplace_back(std::move(_transcode_queue.front()));
+            _transcode_queue.pop_front();
+        }
+    }
+
+    auto transcodes = snapshotTranscodes();
+    for (const auto &input : batch) {
+        if (_closing.load()) {
+            break;
+        }
+        for (const auto &transcode : transcodes) {
+            if (!transcode) {
+                continue;
             }
             if (input.type == DecodedFrame::Video) {
-                strong_transcode->inputVideoFrame(input.video);
+                transcode->inputVideoFrame(input.video);
             } else if (input.audio) {
-                strong_transcode->inputAudioFrame(input.audio);
+                transcode->inputAudioFrame(input.audio);
             }
-        });
-    });
-    _transcode_readers.emplace(key, reader);
+        }
+    }
+
+    bool schedule_next = false;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        if (_closing.load()) {
+            _transcode_queue.clear();
+            _transcode_drain_scheduled = false;
+        } else if (_transcode_queue.empty()) {
+            _transcode_drain_scheduled = false;
+        } else {
+            schedule_next = true;
+        }
+    }
+
+    if (schedule_next) {
+        std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+        _transcode_poller->async([weak_self]() {
+            if (auto self = weak_self.lock()) {
+                self->drainTranscodeFrames();
+            }
+        }, false);
+    }
 }
 
 void MultiMediaSourceProcessor::attachMotionReader() {
@@ -217,6 +287,18 @@ void MultiMediaSourceProcessor::attachMotionReader() {
 
 bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
     bool ret = MediaSourceDecoder::addTrack(track);
+    if (ret && track && track->getTrackType() == TrackVideo) {
+        auto it = _tracks.find(track->getIndex());
+        if (it != _tracks.end() && it->second.decoder) {
+            std::weak_ptr<MultiMediaSourceProcessor> weak_self = shared_from_this();
+            it->second.decoder->setOnDecode([weak_self](const FFmpegFrame::Ptr &frame) {
+                auto self = weak_self.lock();
+                if (self) {
+                    self->onDecode(frame);
+                }
+            });
+        }
+    }
     if (track && track->getTrackType() == TrackVideo) {
         auto video_track = std::dynamic_pointer_cast<VideoTrack>(track);
         if (video_track && video_track->getVideoFps() > 0.0f) {
@@ -253,26 +335,27 @@ bool MultiMediaSourceProcessor::addTrack(const Track::Ptr &track) {
 }
 
 bool MultiMediaSourceProcessor::inputFrame(const Frame::Ptr &frame) {
+    if (_closing.load()) {
+        return false;
+    }
     // Base class decodes video frames through onDecode(). Audio is passed through
-    // the same input ring so A/V delivery to each transcode stays serialized.
+    // the same bounded queue so A/V delivery to each transcode stays serialized.
     bool ret = MediaSourceDecoder::inputFrame(frame);
     if (frame && frame->getTrackType() == TrackAudio) {
-        RingType::Ptr ring;
         int selected_audio_index = -1;
         {
             std::lock_guard<std::mutex> lock(_mtx);
-            ring = _ring;
             if (_selected_audio_track) {
                 selected_audio_index = _selected_audio_track->getIndex();
             }
         }
         // Forward exactly the selected source audio clock. This includes the
         // source-generated mute track (0xffff) when no real audio exists.
-        if (ring && frame->getIndex() == selected_audio_index) {
+        if (frame->getIndex() == selected_audio_index) {
             DecodedFrame input;
             input.type = DecodedFrame::Audio;
             input.audio = frame;
-            ring->write(input, false);
+            enqueueTranscodeFrame(std::move(input));
         }
     }
     return ret;
@@ -299,18 +382,22 @@ void MultiMediaSourceProcessor::addTrackCompleted() {
 }
 
 void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
+    if (_closing.load() || !frame || !frame->get()) {
+        return;
+    }
     TraceL << "Decoded frame dts: " << frame->get()->pkt_dts << ", pts: " << frame->get()->pts << ", size: " << frame->get()->pkt_size;
-    // Dispatch the decoded frame once. Motion and transcode processors consume
-    // it through their own ring readers on the processor poller.
+    DecodedFrame input;
+    input.type = DecodedFrame::Video;
+    input.video = frame;
+    enqueueTranscodeFrame(input);
+
+    // Motion keeps its independent RingBuffer dispatch path.
     RingType::Ptr ring;
     {
         std::lock_guard<std::mutex> lock(_mtx);
         ring = _ring;
     }
-    if (ring && frame) {
-        DecodedFrame input;
-        input.type = DecodedFrame::Video;
-        input.video = frame;
+    if (ring) {
         ring->write(input, frame->get() && frame->get()->key_frame > 0);
     }
 }
@@ -324,13 +411,69 @@ void MultiMediaSourceProcessor::resetTracks() {
 #if defined(ENABLE_MOTION)
         _motion_reader.reset();
 #endif // ENABLE_MOTION
-        _transcode_readers.clear();
+        _transcode_queue.clear();
+        _transcode_dropped_frames = 0;
         _transcodes.clear();
         if (_ring) {
             _ring->clearCache();
         }
     }
     _tracks_completed = false;
+}
+
+void MultiMediaSourceProcessor::close() {
+    if (_closing.exchange(true)) {
+        return;
+    }
+    _idle_timer = nullptr;
+
+    size_t dropped_frames = 0;
+    std::vector<TranscodeProcessor::Ptr> transcodes;
+    {
+        std::lock_guard<std::mutex> lock(_mtx);
+        // Discard queued raw frames; scheduled drain callbacks only hold a
+        // weak reference and will observe an expired processor.
+        _transcode_queue.clear();
+        _transcode_drain_scheduled = false;
+        dropped_frames = _transcode_dropped_frames;
+        transcodes.reserve(_transcodes.size());
+        for (const auto &entry : _transcodes) {
+            transcodes.emplace_back(entry.second);
+        }
+        _transcodes.clear();
+        if (_ring) {
+            _ring->clearCache();
+        }
+        _ring = nullptr;
+#if defined(ENABLE_MOTION)
+        _motion_reader = nullptr;
+#endif // ENABLE_MOTION
+    }
+
+    if (dropped_frames) {
+        InfoL << "Transcode bounded queue dropped " << dropped_frames << " frame(s): " << _tuple.shortUrl();
+    }
+
+    // stopThread(true) drops pending decode tasks. Since create() routes
+    // this destructor to the source poller, destroying the decoder cannot
+    // attempt to join the current decoder thread.
+    MediaSourceDecoder::resetTracks();
+
+    // All transcodes share one worker poller. One priority barrier closes
+    // their derived muxers before destruction continues.
+    auto close_transcodes = [transcodes]() {
+        for (const auto &transcode : transcodes) {
+            if (transcode) {
+                transcode->setOnClosed(nullptr);
+                transcode->close();
+            }
+        }
+    };
+    if (_transcode_poller && !_transcode_poller->isCurrentThread()) {
+        _transcode_poller->sync_first(close_transcodes);
+    } else {
+        close_transcodes();
+    }
 }
 
 std::vector<TranscodeProcessor::Ptr> MultiMediaSourceProcessor::snapshotTranscodes() const {

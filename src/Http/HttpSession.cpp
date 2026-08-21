@@ -449,7 +449,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                            to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
                            to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
                            policy.watermark_template + "|" + policy.privacy_mask_regions;
-        const string stream_suffix = ".transcode." + MD5(key).hexdigest();
+        const string stream_suffix = TRANSCODE_SUFFIX + MD5(key).hexdigest();
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
         auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
@@ -680,6 +680,7 @@ bool HttpSession::checkLiveStreamHls() {
     string ts_suffix = ".ts";
     string hlsfmp4_suffix = "/hls.fmp4.m3u8";
     string fmp4_suffix = ".mp4";
+    string schema;
     auto it = _parser.getUrlArgs().find("schema");
     if (it != _parser.getUrlArgs().end()) {
         if (strcasecmp(it->second.c_str(), HLS_SCHEMA) &&
@@ -687,6 +688,7 @@ bool HttpSession::checkLiveStreamHls() {
             // unsupported schema
             return false;
         }
+        schema = it->second;
     } else {
         auto prefix_size = url_prefix.size();
         if (prefix_size > 0) {
@@ -701,6 +703,18 @@ bool HttpSession::checkLiveStreamHls() {
             // Suffix not found
             return false;
         }
+        if (end_with(url, hls_suffix) || end_with(url, ts_suffix)) {
+            schema = HLS_SCHEMA;
+            if (end_with(url, hls_suffix)) {
+                url.resize(url.size() - hls_suffix.size());
+            }
+        } else {
+            schema = HLS_FMP4_SCHEMA;
+            url.resize(url.size() - hlsfmp4_suffix.size());
+            if (end_with(url, hlsfmp4_suffix)) {
+                url.resize(url.size() - hlsfmp4_suffix.size());
+            }
+        }
     }
 
     GET_CONFIG(string, appName, Protocol::kAppName)
@@ -710,13 +724,6 @@ bool HttpSession::checkLiveStreamHls() {
             // Remove special prefix from url
             url.erase(0, app_prefix.size());
         }
-    }
-
-    string schema;
-    if (end_with(url, hls_suffix) || end_with(url, ts_suffix)) {
-        schema = HLS_SCHEMA;
-    } else {
-        schema = HLS_FMP4_SCHEMA;
     }
 
     // Url with parameters
@@ -759,7 +766,7 @@ bool HttpSession::checkLiveStreamHls() {
     const bool transcode_requested = transcode_it != request_args.end() && !strcasecmp(transcode_it->second.data(), "true");
     const bool is_playlist = end_with(_parser.url(), hls_suffix) || end_with(_parser.url(), hlsfmp4_suffix);
     bool camera_overlay_requested = false;
-    if (is_playlist && !transcode_requested && _media_info.stream.find(".transcode.") == string::npos) {
+    if (is_playlist && !transcode_requested && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         const auto args = Parser::parseArgs(_media_info.params);
         const auto token_it = args.find("token");
         const string jwt_token = token_it == args.end() ? "" : token_it->second;
@@ -775,14 +782,8 @@ bool HttpSession::checkLiveStreamHls() {
         }
     }
     const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
-    if (view_transcode_requested && is_playlist && _media_info.stream.find(".transcode.") == string::npos) {
+    if (view_transcode_requested && is_playlist && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         MediaInfo source_info = _media_info;
-        if (end_with(source_info.stream, hlsfmp4_suffix)) {
-            source_info.stream.resize(source_info.stream.size() - hlsfmp4_suffix.size());
-        } else if (end_with(source_info.stream, hls_suffix)) {
-            source_info.stream.resize(source_info.stream.size() - hls_suffix.size());
-        }
-
         const string request_url = _parser.url();
         const string request_params = _parser.params();
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
@@ -807,16 +808,16 @@ bool HttpSession::checkLiveStreamHls() {
                             return;
                         }
 
-                        const string derived_stream = derived->getMediaTuple().stream;
-                        const string marker = "/" + source_info.stream + "/";
-                        const auto pos = request_url.find(marker);
-                        if (pos == string::npos || derived_stream.empty()) {
+                        const auto &derived_tuple = derived->getMediaTuple();
+                        if (derived_tuple.app.empty() || derived_tuple.stream.empty()) {
                             self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
                             return;
                         }
 
                         string location = request_url;
-                        location.replace(pos + 1, source_info.stream.size(), derived_stream);
+                        const string marker = "/" + source_info.stream + "/";
+                        const auto pos = request_url.find(marker);
+                        location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
                         if (!request_params.empty()) {
                             location += "?" + request_params;
                         }

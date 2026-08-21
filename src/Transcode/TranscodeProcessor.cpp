@@ -209,9 +209,7 @@ void TranscodeProcessor::completeMuxerTracks() {
 
 TranscodeProcessor::~TranscodeProcessor() {
     try {
-        if (_encoder) {
-            _encoder->flush();
-        }
+        close();
     } catch (std::exception &ex) {
         WarnL << ex.what();
     }
@@ -276,7 +274,7 @@ void TranscodeProcessor::finalizeTracks() {
 }
 
 bool TranscodeProcessor::inputVideoFrame(const FFmpegFrame::Ptr &frame) {
-    if (!_encoder || !frame) {
+    if (_closed || !_encoder || !frame) {
         return false;
     }
     const int64_t input_pts = frame->get()->pts;
@@ -351,7 +349,7 @@ bool TranscodeProcessor::processFilteredVideoFrame(const FFmpegFrame::Ptr &frame
 }
 
 bool TranscodeProcessor::inputAudioFrame(const Frame::Ptr &frame) {
-    if (!frame || !_have_audio || frame->getIndex() != _audio_track_index ||
+    if (_closed || !frame || !_have_audio || frame->getIndex() != _audio_track_index ||
         _source_pts_base == AV_NOPTS_VALUE) {
         return false;
     }
@@ -365,6 +363,42 @@ bool TranscodeProcessor::inputAudioFrame(const Frame::Ptr &frame) {
     const int64_t pts = source_pts - _source_pts_base;
     stamped->setStamp(std::max<int64_t>(0, dts), std::max<int64_t>(0, pts));
     return MediaSink::inputFrame(stamped);
+}
+
+void TranscodeProcessor::close() {
+    auto poller = _poller;
+    if (poller && !poller->isCurrentThread()) {
+        poller->sync_first([this]() {
+            close_l();
+        });
+        return;
+    }
+    close_l();
+}
+
+void TranscodeProcessor::close_l() {
+    if (_closed) {
+        return;
+    }
+    _closed = true;
+    _on_closed = nullptr;
+    _frame_rate_filter = nullptr;
+    _encoder = nullptr;
+    if (_muxer) {
+        auto muxer = std::move(_muxer);
+        auto owner_poller = muxer->getOwnerPoller(MediaSource::NullMediaSource());
+        auto close_muxer = [muxer]() {
+            muxer->close(MediaSource::NullMediaSource());
+        };
+        if (owner_poller && !owner_poller->isCurrentThread()) {
+            owner_poller->sync_first(close_muxer);
+        } else {
+            close_muxer();
+        }
+    }
+
+    _overlay = nullptr;
+    _pre_overlay_sws = nullptr;
 }
 
 bool TranscodeProcessor::isEnabled() {

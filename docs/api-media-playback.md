@@ -151,9 +151,17 @@ Client xử lý dữ liệu fMP4 giống WS-MP4 trực tiếp. Khi người dùn
 
 ### 3.3. HLS và HLS fMP4 khi xem lại
 
-HLS (`hls.m3u8`) và HLS fMP4 (`hls.fmp4.m3u8`) là các endpoint phát trực tiếp của MediaSource. Chức năng xem lại recording hiện được cung cấp qua replay MP4 (`.live.mp4`/`.live2.mp4`), không phải bằng cách đổi `/media/live` thành `/media/record` rồi gắn `hls.m3u8`.
+HLS (`hls.m3u8`) và HLS fMP4 (`hls.fmp4.m3u8`) là các endpoint phát trực tiếp của MediaSource. Replay recording hỗ trợ HLS fMP4 on-demand theo URL riêng bên dưới; không dùng cách đổi trực tiếp URL `.live.mp4` thành `hls.m3u8`.
 
-Nếu cần HLS cho recording, ứng dụng phải có bước đóng gói/serve playlist recording riêng và player dùng URL playlist do bước đó tạo ra. Không dùng URL HLS trực tiếp để thay thế endpoint replay MP4.
+Replay HLS fMP4 on-demand dùng URL:
+
+```text
+/media/record/{cameraId}/{streamId}/vod/{stamp}/hls.fmp4.m3u8
+```
+
+Trong đó `{stamp}` là Unix timestamp giây tại điểm bắt đầu replay. Server đọc recording MP4 tương ứng, tạo một `HlsMediaSource` dùng chung cho các request đồng thời và dùng cùng sliding window với HLS live theo `hls.segNum`, `hls.segRetain`, `hls.deleteDelaySec`. Segment cũ không được giữ toàn bộ; source tự đóng/xoá khi replay không còn người xem. Seek được thực hiện bằng cách mở URL mới với `{stamp}` khác.
+
+URL trên dành cho replay single-stream đã biết chất lượng. Master playlist `quality=auto` cho nhiều stream sẽ được bổ sung ở bước tiếp theo; hiện vẫn dùng endpoint `.live2.mp4` cho trường hợp đó.
 
 ## 4. Hàm tạo URL
 

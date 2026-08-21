@@ -242,5 +242,20 @@ bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
     return MP4MuxerInterface::inputFrame(frame);
 }
 
+void MP4MuxerMemory::flush() {
+    MP4MuxerInterface::flush();
+
+    if (_init_segment.empty() || !_memory_file) {
+        return;
+    }
+    saveSegment();
+
+    auto data = _memory_file->getAndClearMemory();
+    if (!data.empty()) {
+        onSegmentData(std::move(data), _last_dst, _key_frame);
+        _key_frame = false;
+    }
+}
+
 } // namespace mediakit
 #endif // defined(ENABLE_MP4)

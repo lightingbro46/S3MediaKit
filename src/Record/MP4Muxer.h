@@ -134,6 +134,11 @@ public:
      */
     const std::string &getInitSegment();
 
+    /**
+     * Flush the current segment
+     */
+    void flush() override;
+
 protected:
     /**
      * Output fmp4 fragment callback function
@@ -166,7 +171,7 @@ public:
     bool addTrack(const Track::Ptr & track) override { return false; }
     bool inputFrame(const Frame::Ptr &frame) override { return false; }
     const std::string &getInitSegment() { static std::string kNull; return kNull; };
-
+    void flush() override {};
 protected:
     /**
      * Output fmp4 fragment callback function

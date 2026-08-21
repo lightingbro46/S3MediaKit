@@ -143,7 +143,7 @@ void registerControlApis() {
         }
 
         val["data"]["finished"] = status.finished;
-        val["data"]["progress"] = status.progress;
+        val["data"]["progress"] = sanitize_for_json(status.progress);
         val["data"]["devices"] = ret;
         invoker(200, headerOut, val.toStyledString());
     });

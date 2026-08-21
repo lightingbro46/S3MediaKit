@@ -234,6 +234,8 @@ void MultiMP4Demuxer::closeMP4() {
     _demuxers.clear();
     _it = _demuxers.end();
     _tracks.clear();
+    _timeline_segments.clear();
+    _consumed_timeline_segments.clear();
 }
 
 int64_t MultiMP4Demuxer::seekTo(int64_t stamp_ms) {
@@ -332,6 +334,9 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     MediaTuple tuple = { DEFAULT_VHOST, app, stream, "" };
     uint64_t start_time = stoll(suffix_path.data());
 
+    _timeline_segments.clear();
+    _consumed_timeline_segments.clear();
+
     auto total_duration = findSegmentDuration(tuple, start_time);
     int64_t offset = 0;
 
@@ -357,6 +362,16 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
 }
 
 int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_duration) {
+    if (first_segment) {
+        _consumed_timeline_segments.clear();
+    } else {
+        // Reaching this method during sequential reading means that every file
+        // in the current batch has reached EOF. Do not accept those files again
+        // when a second-granularity TimeQuery overlaps the previous block.
+        _consumed_timeline_segments.insert(_timeline_segments.begin(), _timeline_segments.end());
+    }
+    _timeline_segments.clear();
+
     // clear map
     if (_demuxers.size()) {
         _demuxers.clear();
@@ -377,24 +392,39 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
     }
     uint64_t offset = 0;
     uint64_t duration_ms = 0;
+    bool first_file = true;
     for (auto it = files.begin(); it != files.end(); ++it) {
-        if (it == files.begin()) {
+        const auto segment = std::make_pair(it->first, it->second);
+        if (_consumed_timeline_segments.count(segment)) {
+            continue;
+        }
+        if (first_file) {
             offset = (start_segment >= it->first) ? (start_segment - it->first) : 0;
             if (first_segment) {
                 _stats.first_time = it->first;
-            } else {    
+            } else {
                 duration_ms = (it->first - _stats.first_time) * 1000;
             }
-        } else if (it->first - start_segment >= max_duration) {
+            first_file = false;
+        } else if (it->first >= start_segment && it->first - start_segment >= max_duration) {
             break;
         }
         auto demuxer = std::make_shared<MP4Demuxer>();
         demuxer->openMP4(it->second);
         _demuxers.emplace(duration_ms, demuxer);
+        _timeline_segments.emplace(segment);
         duration_ms += demuxer->getDurationMS();
-        next_time = it->first + static_cast<uint64_t>(demuxer->getDurationMS() / 1000);
+        // TimeQuery uses second precision. Round the file duration up so a
+        // partial final second cannot select the same recording block again.
+        const auto duration_sec = (demuxer->getDurationMS() + 999) / 1000;
+        next_time = std::max(next_time, it->first + duration_sec);
     }
-    
+
+    if (_demuxers.empty()) {
+        // The query only returned blocks already consumed by the previous
+        // batch. Treat this as EOF instead of reopening a block at DTS zero.
+        return -1;
+    }
     _stats.next_time = next_time;
     return offset;
 }
@@ -404,6 +434,9 @@ int64_t MultiMP4Demuxer::seekToWithTimeline(int64_t stamp_ms) {
         return -1;
     }
     _stats.next_time = _stats.start_time + stamp_ms / 1000;
+    // Seeking starts a new traversal and may intentionally revisit a block.
+    _timeline_segments.clear();
+    _consumed_timeline_segments.clear();
     auto offset = findNextSegment();
     if (offset < 0) {
         return -1;

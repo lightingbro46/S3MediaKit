@@ -261,11 +261,19 @@ void MultiMediaSourceMuxer::setMediaListener(const std::weak_ptr<MediaSourceEven
     if (_stack) {
         _stack->setListener(self);
         std::weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
-        _stack->setOnIdle([weak_self]() {
-            auto self = weak_self.lock();
-            if (self && self->_stack && self->_stack->canClose()) {
-                InfoL << "Release idle derived processor: " << self->shortUrl();
-                self->_stack = nullptr;
+        auto owner_poller = getOwnerPoller(MediaSource::NullMediaSource());
+        _stack->setOnIdle([weak_self, owner_poller]() {
+            auto release = [weak_self]() {
+                auto self = weak_self.lock();
+                if (self && self->_stack && self->_stack->canClose()) {
+                    InfoL << "Release idle derived processor: " << self->shortUrl();
+                    self->_stack = nullptr;
+                }
+            };
+            if (owner_poller) {
+                owner_poller->async(release, false);
+            } else {
+                release();
             }
         });
     }
@@ -667,11 +675,18 @@ MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const Transco
         _stack = std::make_shared<MultiMediaSourceProcessor>(_tuple, option, owner_poller);
         _stack->setListener(shared_from_this());
         std::weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
-        _stack->setOnIdle([weak_self]() {
-            auto self = weak_self.lock();
-            if (self && self->_stack && self->_stack->canClose()) {
-                InfoL << "Release idle derived processor: " << self->shortUrl();
-                self->_stack = nullptr;
+        _stack->setOnIdle([weak_self, owner_poller]() {
+            auto release = [weak_self]() {
+                auto self = weak_self.lock();
+                if (self && self->_stack && self->_stack->canClose()) {
+                    InfoL << "Release idle derived processor: " << self->shortUrl();
+                    self->_stack = nullptr;
+                }
+            };
+            if (owner_poller) {
+                owner_poller->async(release, false);
+            } else {
+                release();
             }
         });
         for (const auto &track : getTracks()) {

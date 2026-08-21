@@ -100,9 +100,9 @@ void registerExtractionApis() {
             return;
         }
 
-        val["data"]["progress"] = std::round(status.progress * 100.0f) / 100.0f;
+        val["data"]["progress"] = sanitize_for_json(status.progress);
         val["data"]["ready"] = status.finished && status.success;
-        invoker(202, headerOut, val.toStyledString());
+        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
