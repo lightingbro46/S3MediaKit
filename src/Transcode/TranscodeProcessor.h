@@ -78,7 +78,7 @@ public:
         int overlay_y = 0;
         std::vector<OverlayComponent> overlay_components;
         OverlayBuildOptions overlay_options;
-        std::string stream_suffix = ".transcode";
+        std::string stream_suffix = TRANSCODE_SUFFIX;
         std::string output_schema;
     };
 

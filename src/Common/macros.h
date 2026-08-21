@@ -64,6 +64,9 @@
 #define VHOST_KEY "vhost"
 #define DEFAULT_VHOST "__defaultVhost__"
 
+#define TRANSCODE_SUFFIX ".transcode."
+#define RELAY_SUFFIX ".relay."
+
 namespace mediakit {
 
 extern const char kServerName[];

@@ -449,7 +449,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                            to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
                            to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
                            policy.watermark_template + "|" + policy.privacy_mask_regions;
-        const string stream_suffix = ".transcode." + MD5(key).hexdigest();
+        const string stream_suffix = TRANSCODE_SUFFIX + MD5(key).hexdigest();
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
         auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
@@ -762,7 +762,7 @@ bool HttpSession::checkLiveStreamHls() {
     const bool transcode_requested = transcode_it != request_args.end() && !strcasecmp(transcode_it->second.data(), "true");
     const bool is_playlist = end_with(_parser.url(), hls_suffix) || end_with(_parser.url(), hlsfmp4_suffix);
     bool camera_overlay_requested = false;
-    if (is_playlist && !transcode_requested && _media_info.stream.find(".transcode.") == string::npos) {
+    if (is_playlist && !transcode_requested && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         const auto args = Parser::parseArgs(_media_info.params);
         const auto token_it = args.find("token");
         const string jwt_token = token_it == args.end() ? "" : token_it->second;
@@ -778,7 +778,7 @@ bool HttpSession::checkLiveStreamHls() {
         }
     }
     const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
-    if (view_transcode_requested && is_playlist && _media_info.stream.find(".transcode.") == string::npos) {
+    if (view_transcode_requested && is_playlist && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         MediaInfo source_info = _media_info;
         if (end_with(source_info.stream, hlsfmp4_suffix)) {
             source_info.stream.resize(source_info.stream.size() - hlsfmp4_suffix.size());
