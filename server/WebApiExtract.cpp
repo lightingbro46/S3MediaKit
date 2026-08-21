@@ -100,9 +100,9 @@ void registerExtractionApis() {
             return;
         }
 
-        val["data"]["progress"] = status.progress;
+        val["data"]["progress"] = sanitize_for_json(status.progress);
         val["data"]["ready"] = status.finished && status.success;
-        invoker(202, headerOut, val.toStyledString());
+        invoker(200, headerOut, val.toStyledString());
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
