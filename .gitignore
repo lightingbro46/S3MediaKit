@@ -52,6 +52,7 @@
 /cmake-build-*
 /3rdpart/S3ToolKit/cmake-build-mq/
 /3rdpart/aws-sdk-cpp/
+/3rdpart/aws-sdk/
 vtscloud.vn
 api-config.json
 /tools/git-patch
