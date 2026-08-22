@@ -7,6 +7,7 @@
 #include "Util/mini.h"
 #include "Util/util.h"
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 
 #define COOKIE_DEFAULT_LIFE (7 * 24 * 60 * 60)
@@ -94,6 +95,7 @@ private:
     std::string _cookie_uuid;
     uint64_t _max_elapsed;
     toolkit::Ticker _ticker;
+    mutable std::mutex _ticker_mtx;
     toolkit::Any _attach;
     std::weak_ptr<HttpCookieManager> _manager;
 };
@@ -153,6 +155,15 @@ public:
         const std::string &cookie_name, const std::string &uid, uint64_t max_elapsed = COOKIE_DEFAULT_LIFE,
         toolkit::Any = toolkit::Any{},
         int max_client = 1);
+
+    /**
+     * Return the existing cookie for uid, or atomically create it when absent.
+     * This keeps concurrent requests for the same logical client attached to
+     * one cookie record.
+     */
+    HttpServerCookie::Ptr getOrAddCookie(
+        const std::string &cookie_name, const std::string &uid, uint64_t max_elapsed,
+        toolkit::Any attach, bool *created = nullptr);
 
     /**
      * Find cookie object by cookie random string

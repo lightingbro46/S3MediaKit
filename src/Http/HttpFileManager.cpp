@@ -4,6 +4,7 @@
 #include "Common/config.h"
 #include "Common/strCoding.h"
 #include "Record/HlsMediaSource.h"
+#include "HlsViewerSession.h"
 #include "HttpConst.h"
 #include "HttpSession.h"
 #include "HttpFileManager.h"
@@ -27,15 +28,40 @@ struct HttpCookieAttachment {
     bool _find_src = false;
     // MediaSource search timing
     Ticker _find_src_ticker;
+    // Explicit session_id requests can arrive on different HTTP pollers.
+    std::mutex _find_src_mtx;
     // Cookie effective scope, this cookie only takes effect for files under this directory
     string _path;
     // Last authentication failure information, empty means last authentication succeeded
     string _err_msg;
     // Other information during hls live broadcast, mainly used for player count and traffic count
     HlsCookieData::Ptr _hls_data;
+    // Explicit playback-instance identity. Empty means legacy cookie mode.
+    string _hls_session_id;
+    // A session may switch rendition inside the same camera, but must not be
+    // reused to bypass authorization for another camera.
+    string _hls_scope;
     // Whether the cookie is used in a secure context (HTTPS), used to determine whether to add "SameSite=None; Secure; HttpOnly" attributes to the cookie
     bool _is_secure = false;
 };
+
+static string getHlsScope(const MediaInfo &media_info) {
+    string camera_id = media_info.app;
+    string playback_type = "live";
+    GET_CONFIG(string, record_app, Record::kAppName);
+    if (media_info.app == record_app) {
+        playback_type = "record";
+        auto parts = split(media_info.stream, "/");
+        if (!parts.empty()) {
+            camera_id = parts[0];
+        }
+    }
+    return media_info.vhost + "|" + playback_type + "|" + camera_id;
+}
+
+static string getHlsViewerUid(const string &scope, const string &session_id) {
+    return scope + "|" + session_id;
+}
 
 const string &HttpFileManager::getContentType(const char *name) {
     return HttpConst::getHttpContentType(name);
@@ -278,8 +304,9 @@ static bool makeFolderMenu(const string &httpPath, const string &strFullPath, st
 static bool emitHlsPlayed(const Parser &parser, const MediaInfo &media_info, const HttpSession::HttpAccessPathInvoker &invoker,Session &sender){
     // The hls.m3u8 ending of the access, we convert it to the kBroadcastMediaPlayed event
     Broadcast::AuthInvoker auth_invoker = [invoker](const string &err) {
-        // The cookie validity period is kHlsCookieSecond
-        invoker(err, "", kHlsCookieSecond);
+        // The cookie validity period is kViewerTimeoutSec or kHlsCookieSecond
+        GET_CONFIG(uint32_t, viewer_timeout_sec, Hls::kViewerTimeoutSec);
+        invoker(err, "", viewer_timeout_sec > 0 ? viewer_timeout_sec : kHlsCookieSecond);
     };
     bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);
     if (!flag) {
@@ -299,15 +326,52 @@ static bool emitHlsPlayed(const Parser &parser, const MediaInfo &media_info, con
  */
 static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo &media_info, bool is_dir,
                           const function<void(const string &err_msg, const HttpServerCookie::Ptr &cookie)> &callback) {
+    bool is_hls = media_info.schema == HLS_SCHEMA || media_info.schema == HLS_FMP4_SCHEMA;
     // Get the user's unique id
     auto uid = parser.params();
     auto path = parser.url();
 
     // First get the cookie according to the cookie field in the http header
-    HttpServerCookie::Ptr cookie = HttpCookieManager::Instance().getCookie(kCookieName, parser.getHeader());
+    HttpServerCookie::Ptr header_cookie = HttpCookieManager::Instance().getCookie(kCookieName, parser.getHeader());
+    auto cookie = header_cookie;
+    string session_id;
+    string hls_scope;
     // Whether to update the cookie
     bool update_cookie = false;
-    if (!cookie && !uid.empty()) {
+    auto session_id_it = parser.getUrlArgs().find(HlsViewerSession::kSessionIdParam);
+    bool has_explicit_session_id = session_id_it != parser.getUrlArgs().end();
+
+    if (is_hls || has_explicit_session_id) {
+        hls_scope = getHlsScope(media_info);
+        string cookie_session_id;
+        if (header_cookie) {
+            auto &attach = header_cookie->getAttach<HttpCookieAttachment>();
+            if (attach._hls_data && attach._hls_scope == hls_scope &&
+                HlsViewerSession::isValidSessionId(attach._hls_session_id)) {
+                cookie_session_id = attach._hls_session_id;
+            }
+        }
+
+        auto identity = HlsViewerSession::resolve(parser, cookie_session_id);
+        if (identity.origin == HlsViewerSession::Identity::Invalid) {
+            callback("InvalidSession", nullptr);
+            return;
+        }
+        session_id = identity.session_id;
+        uid = getHlsViewerUid(hls_scope, session_id);
+        if (identity.origin == HlsViewerSession::Identity::Query) {
+            cookie = cookie_session_id == session_id ? header_cookie : HttpCookieManager::Instance().getCookieByUid(kCookieName, uid);
+        } else if (identity.origin == HlsViewerSession::Identity::Cookie) {
+            cookie = header_cookie;
+        } else {
+            cookie = nullptr;
+        }
+        if (!is_hls && !cookie) {
+            callback("ExpiredSession", nullptr);
+            return;
+        }
+        update_cookie = !!cookie;
+    } else if (!cookie && !uid.empty()) {
         // There is no cookie in the client request, then get the cookie according to the user id of the user
         cookie = HttpCookieManager::Instance().getCookieByUid(kCookieName, uid);
         update_cookie = true;
@@ -315,7 +379,9 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
 
     if (cookie) {
         auto& attach = cookie->getAttach<HttpCookieAttachment>();
-        if (path.find(attach._path) == 0) {
+        bool same_hls_session = !session_id.empty() && attach._hls_data && attach._hls_session_id == session_id;
+        bool same_hls_scope = same_hls_session && attach._hls_scope == hls_scope;
+        if (path.find(attach._path) == 0 || same_hls_scope) {
             // The last cookie is limited to this directory
             if (attach._err_msg.empty()) {
                 // Last authentication succeeded
@@ -327,6 +393,11 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
                 callback("", update_cookie ? cookie : nullptr);
                 return;
             }
+            if (!session_id.empty() && same_hls_scope) {
+                cookie->updateTime();
+                callback(attach._err_msg, cookie);
+                return;
+            }
             // Last authentication failed, but if the url parameter changes, then re-authenticate
             if (parser.params().empty() || parser.params() == cookie->getUid()) {
                 // The url parameter has not changed, or there is no url parameter at all, then determine that the current request is a duplicate request and has no access permission
@@ -335,16 +406,23 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
             }
         }
         // If the url parameter changes or is not limited to this directory, then the old cookie expires and re-authentication is required
-        HttpCookieManager::Instance().delCookie(cookie);
+        if (session_id.empty()) {
+            HttpCookieManager::Instance().delCookie(cookie);
+        }
+        cookie.reset();
     }
 
-    bool is_hls = media_info.schema == HLS_SCHEMA || media_info.schema == HLS_FMP4_SCHEMA;
+    if (!is_hls && !session_id.empty()) {
+        callback("ExpiredSession", nullptr);
+        return;
+    }
+
     bool is_secure = sender.overSsl();
 
     weak_ptr<Session> weak_session = static_pointer_cast<Session>(sender.shared_from_this());
 
     // This user has never obtained a cookie, at this time we broadcast whether to allow this user to access this http directory
-    HttpSession::HttpAccessPathInvoker accessPathInvoker = [callback, uid, path, is_dir, is_hls, media_info, weak_session, is_secure]
+    HttpSession::HttpAccessPathInvoker accessPathInvoker = [callback, uid, path, is_dir, is_hls, media_info, weak_session, is_secure, session_id, hls_scope]
             (const string &err_msg, const string &cookie_path_in, int life_second) {
         auto strong_session = weak_session.lock();
         if (!strong_session) {
@@ -368,11 +446,19 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
             attach->_is_secure = is_secure;
             if (is_hls) {
                 // hls related information
-                attach->_hls_data = std::make_shared<HlsCookieData>(media_info, strong_session);
+                attach->_hls_session_id = session_id;
+                attach->_hls_scope = hls_scope;
+                attach->_hls_data = std::make_shared<HlsCookieData>(media_info, strong_session, session_id);
             }
-           toolkit::Any any;
-           any.set(std::move(attach));
-           callback(err_msg, HttpCookieManager::Instance().addCookie(kCookieName, uid, life_second, std::move(any)));
+            toolkit::Any any;
+            any.set(std::move(attach));
+            if (is_hls) {
+                auto selected = HttpCookieManager::Instance().getOrAddCookie(kCookieName, uid, life_second, std::move(any));
+                auto &selected_attach = selected->getAttach<HttpCookieAttachment>();
+                callback(selected_attach._err_msg, selected);
+            } else {
+                callback(err_msg, HttpCookieManager::Instance().addCookie(kCookieName, uid, life_second, std::move(any)));
+            }
         } else {
             callback(err_msg, nullptr);
         }
@@ -455,6 +541,10 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
                 cb(429, "text/html", headerOut, std::make_shared<HttpStringBody>("429 Too Many Requests"));
                 return;
             }
+            if (err_msg == "InvalidSession" || err_msg == "ExpiredSession") {
+                cb(400, "text/html", headerOut, std::make_shared<HttpStringBody>("400 Bad Request"));
+                return;
+            }
             // File authentication failed
             cb(401, "text/html", headerOut, std::make_shared<HttpStringBody>(err_msg));
             return;
@@ -467,7 +557,7 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
                 httpHeader["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
             }
             HttpSession::HttpResponseInvoker invoker = [&](int code, const StrCaseMap &headerOut, const HttpBody::Ptr &body) {
-                if (cookie && body) {
+                if (cookie && body && code >= 200 && code < 300) {
                     auto& attach = cookie->getAttach<HttpCookieAttachment>();
                     if (attach._hls_data) {
                         attach._hls_data->addByteUsage(body->remainSize());
@@ -485,7 +575,18 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
                     break;
                 }
             }
-            invoker.responseFile(parser.getHeader(), httpHeader, file_content.empty() ? file_path : file_content, !is_hls && !is_forbid_cache, file_content.empty());
+            string response_content = file_content;
+            if (is_hls && cookie && response_content.empty() && File::fileExist(file_path)) {
+                response_content = File::loadFile(file_path);
+            }
+            if (is_hls && cookie && !response_content.empty()) {
+                auto &attach = cookie->getAttach<HttpCookieAttachment>();
+                if (!attach._hls_session_id.empty()) {
+                    response_content = HlsViewerSession::rewritePlaylist(response_content, attach._hls_session_id);
+                }
+            }
+            invoker.responseFile(parser.getHeader(), httpHeader, response_content.empty() ? file_path : response_content,
+                                 !is_hls && !is_forbid_cache, response_content.empty());
         };
 
         if (!is_hls || !cookie) {
@@ -499,12 +600,22 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
 
         auto &attach = cookie->getAttach<HttpCookieAttachment>();
         auto src = attach._hls_data->getMediaSource();
-        if (src) {
+        if (src && equalMediaTuple(src->getMediaTuple(), media_info)) {
             // Get the m3u8 index file directly from memory (instead of from the file system)
             response_file(cookie, cb, file_path, parser, src->getIndexFile());
             return;
         }
-        if (attach._find_src && attach._find_src_ticker.elapsedTime() < kFindSrcIntervalSecond * 1000) {
+        bool skip_find_src = false;
+        if (!src) {
+            std::lock_guard<std::mutex> lck(attach._find_src_mtx);
+            skip_find_src = attach._find_src &&
+                            attach._find_src_ticker.elapsedTime() < kFindSrcIntervalSecond * 1000;
+            if (!skip_find_src) {
+                attach._find_src = true;
+                attach._find_src_ticker.resetTime();
+            }
+        }
+        if (skip_find_src) {
             // MediaSource has been searched recently, in order to prevent frequent searches from occupying the global mutex, we try to return the hls index file directly from the disk
             response_file(cookie, cb, file_path, parser);
             return;
@@ -523,12 +634,6 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
             attach._hls_data->setMediaSource(hls);
             // Add the number of viewers of HlsMediaSource (HLS is generated on demand, so this can trigger the generation of HLS files)
             attach._hls_data->addByteUsage(0);
-            // Mark that MediaSource has been found
-            attach._find_src = true;
-
-            // Reset the MediaSource search timer
-            attach._find_src_ticker.resetTime();
-
             // The m3u8 file may not exist, wait for the m3u8 index file to be generated on demand
             hls->getIndexFile([response_file, file_path, cookie, cb, parser](const string &file) {
                 response_file(cookie, cb, file_path, parser, file);

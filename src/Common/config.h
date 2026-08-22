@@ -572,6 +572,8 @@ extern const std::string kBroadcastRecordTs;
 extern const std::string kDeleteDelaySec;
 // If set to 1, the length of the first slice is forced to be 1 GOP
 extern const std::string kFastRegister;
+// Maximum idle time of an HLS viewer session, in seconds
+extern const std::string kViewerTimeoutSec;
 } // namespace Hls
 
 // //////////Rtp proxy related configuration///////////

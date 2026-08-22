@@ -5,6 +5,7 @@
 #include "Common/strCoding.h"
 #include "HttpSession.h"
 #include "HttpConst.h"
+#include "HlsViewerSession.h"
 #include "Util/base64.h"
 #include "Util/SHA1.h"
 #include "Util/MD5.h"
@@ -1553,10 +1554,17 @@ bool HttpSession::checkLiveStreamHlsByApp() {
     if (end_with(base_url, kMasterSuffix)) {
         base_url.resize(base_url.size() - kMasterSuffix.size());
     }
+    auto identity = HlsViewerSession::resolve(_parser, "");
+    if (identity.origin == HlsViewerSession::Identity::Invalid) {
+        bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+        sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("Invalid session_id"));
+        return true;
+    }
+    auto session_id = identity.session_id;
 
     bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
     return checkLiveStreamByApp(HLS_SCHEMA, "/media", "/hls.master.m3u8",
-        [this, close_flag, base_url](const vector<MediaSource::Ptr> &list_src) {
+        [this, close_flag, base_url, session_id](const vector<MediaSource::Ptr> &list_src) {
             string playlist =
                 "#EXTM3U\r\n"
                 "#EXT-X-VERSION:3\r\n";
@@ -1603,7 +1611,8 @@ bool HttpSession::checkLiveStreamHlsByApp() {
                 }
 
                 playlist += "#EXT-X-STREAM-INF:" + attrs + "\r\n";
-                playlist += base_url + "/" + tuple.stream + "/hls.m3u8\r\n";
+                playlist += HlsViewerSession::appendSessionIdToUri(
+                    base_url + "/" + tuple.stream + "/hls.m3u8", session_id) + "\r\n";
             }
 
             KeyValue header;
