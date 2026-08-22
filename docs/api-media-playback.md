@@ -76,22 +76,28 @@ Sau khi WebSocket kết nối, dữ liệu nhận được là byte stream fMP4,
 HLS dùng playlist của đúng stream:
 
 ```text
-GET {BASE_URL}/media/live/{cameraId}/{streamId}/hls.m3u8
+GET {BASE_URL}/media/live/{cameraId}/{streamId}/hls.m3u8?session_id={SESSION_ID}
 ```
+
+Mỗi player nên tạo một `session_id` riêng có độ ngẫu nhiên cao (khuyến nghị UUID), giữ nguyên giá trị đó trong suốt một phiên xem và không dùng chung giữa các tab/player. Nếu client không truyền `session_id`, server tự sinh một giá trị cho phiên được nhận diện bằng cookie. Server đưa ID đã chọn vào URI của playlist con, init segment, key và media segment để nhiều HTTP connection của cùng player vẫn chỉ được tính là một người xem. Phiên sẽ hết hạn nếu không có request trong `hls.viewerTimeoutSec` (mặc định 60 giây).
+
+Server hỗ trợ đồng thời query `session_id` và cookie `S3_COOKIE`. Query ID có độ ưu tiên cao hơn cookie để các tab/player trong cùng trình duyệt vẫn được đếm riêng. Nếu URI con làm mất `session_id`, cookie được dùng làm fallback; ngược lại, nếu cookie bị chặn nhưng URI vẫn giữ ID thì server vẫn nhận diện được phiên. `session_id` có ký tự không hợp lệ hoặc dài quá 128 ký tự bị từ chối với HTTP 400.
 
 Nếu không biết trước `streamId`, dùng HLS master playlist:
 
 ```text
-GET {BASE_URL}/media/live/{cameraId}/hls.master.m3u8
+GET {BASE_URL}/media/live/{cameraId}/hls.master.m3u8?session_id={SESSION_ID}
 ```
 
-Master playlist liệt kê các stream con và player có thể tự chọn bitrate/chất lượng.
+Master playlist liệt kê các stream con và player có thể tự chọn bitrate/chất lượng. Nếu client không truyền `session_id` vào master playlist hoặc media playlist trực tiếp, server tự tạo một giá trị và gắn vào các URI con. Cookie-only vẫn tương thích, nhưng client nên truyền ID riêng cho từng player để đếm chính xác khi nhiều tab cùng phát một camera.
 
 Ví dụ với hls.js:
 
 ```js
+const sessionId = crypto.randomUUID(); // tạo một lần cho mỗi player
+const params = new URLSearchParams({ token, session_id: sessionId });
 const url = `${BASE_URL}/media/live/${encodeURIComponent(cameraId)}`
-  + `/${encodeURIComponent(streamId)}/hls.m3u8?token=${encodeURIComponent(token)}`;
+  + `/${encodeURIComponent(streamId)}/hls.m3u8?${params}`;
 
 if (Hls.isSupported()) {
   const hls = new Hls();
@@ -156,10 +162,10 @@ HLS (`hls.m3u8`) và HLS fMP4 (`hls.fmp4.m3u8`) là các endpoint phát trực t
 Replay HLS fMP4 on-demand dùng URL:
 
 ```text
-/media/record/{cameraId}/{streamId}/vod/{stamp}/hls.fmp4.m3u8
+/media/record/{cameraId}/{streamId}/vod/{stamp}/hls.fmp4.m3u8?session_id={SESSION_ID}
 ```
 
-Trong đó `{stamp}` là Unix timestamp giây tại điểm bắt đầu replay. Server đọc recording MP4 tương ứng, tạo một `HlsMediaSource` dùng chung cho các request đồng thời và dùng cùng sliding window với HLS live theo `hls.segNum`, `hls.segRetain`, `hls.deleteDelaySec`. Segment cũ không được giữ toàn bộ; source tự đóng/xoá khi replay không còn người xem. Seek được thực hiện bằng cách mở URL mới với `{stamp}` khác.
+Trong đó `{stamp}` là Unix timestamp giây tại điểm bắt đầu replay. Giữ nguyên `session_id` khi seek nếu vẫn là cùng player. Server đọc recording MP4 tương ứng, tạo một `HlsMediaSource` dùng chung cho các request đồng thời và dùng cùng sliding window với HLS live theo `hls.segNum`, `hls.segRetain`, `hls.deleteDelaySec`. Segment cũ không được giữ toàn bộ; source tự đóng/xoá khi replay không còn người xem. Seek được thực hiện bằng cách mở URL mới với `{stamp}` khác.
 
 URL trên dành cho replay single-stream đã biết chất lượng. Master playlist `quality=auto` cho nhiều stream sẽ được bổ sung ở bước tiếp theo; hiện vẫn dùng endpoint `.live2.mp4` cho trường hợp đó.
 
@@ -170,7 +176,7 @@ function toWsUrl(baseUrl) {
   return baseUrl.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
 }
 
-function liveUrl(baseUrl, cameraId, streamId, protocol, token) {
+function liveUrl(baseUrl, cameraId, streamId, protocol, token, sessionId) {
   const camera = encodeURIComponent(cameraId);
   const stream = encodeURIComponent(streamId);
   let url;
@@ -182,7 +188,12 @@ function liveUrl(baseUrl, cameraId, streamId, protocol, token) {
     const base = protocol === 'ws-mp4' ? toWsUrl(baseUrl) : baseUrl;
     url = `${base}/media/live/${camera}/${stream}.live.mp4`;
   }
-  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  const params = new URLSearchParams();
+  if (token) params.set('token', token);
+  if ((protocol === 'hls' || protocol === 'hls.fmp4') && sessionId) {
+    params.set('session_id', sessionId);
+  }
+  return params.size ? `${url}?${params}` : url;
 }
 
 function replayUrl(baseUrl, cameraId, streamId, stamp, ws, token) {
