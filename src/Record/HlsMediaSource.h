@@ -64,25 +64,28 @@ class HlsCookieData {
 public:
     using Ptr = std::shared_ptr<HlsCookieData>;
 
-    HlsCookieData(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session);
+    HlsCookieData(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, std::string session_id = "");
     ~HlsCookieData();
 
     void addByteUsage(size_t bytes);
     void setMediaSource(const HlsMediaSource::Ptr &src);
     HlsMediaSource::Ptr getMediaSource() const;
+    const std::string &getSessionId() const { return _session_id; }
 
 private:
     void addReaderCount();
+    void attachToSource(const HlsMediaSource::Ptr &src);
 
 private:
+    struct AttachmentState;
     std::atomic<uint64_t> _bytes { 0 };
     MediaInfo _info;
-    std::shared_ptr<bool> _added;
+    std::string _session_id;
     toolkit::Ticker _ticker;
-    std::weak_ptr<HlsMediaSource> _src;
     std::shared_ptr<toolkit::SockInfo> _sock_info;
     std::weak_ptr<toolkit::Session> _session;
-    HlsMediaSource::RingType::RingReader::Ptr _ring_reader;
+    std::shared_ptr<AttachmentState> _attachment;
+    mutable std::mutex _activity_mtx;
 };
 
 } // namespace mediakit

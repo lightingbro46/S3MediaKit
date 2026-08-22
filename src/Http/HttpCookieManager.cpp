@@ -44,10 +44,12 @@ const string &HttpServerCookie::getCookieName() const {
 }
 
 void HttpServerCookie::updateTime() {
+    lock_guard<mutex> lck(_ticker_mtx);
     _ticker.resetTime();
 }
 
 bool HttpServerCookie::isExpired() {
+    lock_guard<mutex> lck(_ticker_mtx);
     return _ticker.elapsedTime() > _max_elapsed * 1000;
 }
 
@@ -119,6 +121,21 @@ HttpServerCookie::Ptr HttpCookieManager::addCookie(const string &cookie_name, co
     // Save the new cookie under this account
     _map_cookie[cookie_name][cookie] = data;
     return data;
+}
+
+HttpServerCookie::Ptr HttpCookieManager::getOrAddCookie(const string &cookie_name, const string &uid, uint64_t max_elapsed, toolkit::Any attach, bool *created) {
+    lock_guard<recursive_mutex> lck(_mtx_cookie);
+    auto existing = getCookieByUid(cookie_name, uid);
+    if (existing) {
+        if (created) {
+            *created = false;
+        }
+        return existing;
+    }
+    if (created) {
+        *created = true;
+    }
+    return addCookie(cookie_name, uid, max_elapsed, std::move(attach));
 }
 
 HttpServerCookie::Ptr HttpCookieManager::getCookie(const string &cookie_name, const string &cookie) {

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "Http/HttpCookieManager.h"
 
@@ -91,4 +92,40 @@ TEST(HttpCookieManagerTest, ExpiresShortLivedCookieAndRefreshesTime) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     EXPECT_TRUE(cookie->isExpired());
     EXPECT_FALSE(manager.getCookie(name, cookie->getCookie()));
+}
+
+TEST(HttpCookieManagerTest, AtomicallyGetsOrAddsCookieForSameUid) {
+    auto &manager = HttpCookieManager::Instance();
+    const std::string name = "UNIT_GET_OR_ADD";
+    const std::string uid = "scope|viewer-concurrent";
+    const size_t thread_count = 8;
+    std::vector<HttpServerCookie::Ptr> cookies(thread_count);
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < thread_count; ++i) {
+        threads.emplace_back([&manager, &cookies, name, uid, i]() {
+            cookies[i] = manager.getOrAddCookie(name, uid, 60, toolkit::Any::make<size_t>(i));
+        });
+    }
+    for (auto &thread : threads) {
+        thread.join();
+    }
+
+    ASSERT_TRUE(cookies[0]);
+    for (size_t i = 1; i < cookies.size(); ++i) {
+        EXPECT_EQ(cookies[0], cookies[i]);
+    }
+    EXPECT_TRUE(manager.delCookie(cookies[0]));
+}
+
+TEST(HttpCookieManagerTest, KeepsScopedViewerUidsSeparate) {
+    auto &manager = HttpCookieManager::Instance();
+    const std::string name = "UNIT_SCOPED_VIEWERS";
+    auto first = manager.getOrAddCookie(name, "vhost|live|camera-a|viewer", 60, toolkit::Any{});
+    auto second = manager.getOrAddCookie(name, "vhost|live|camera-b|viewer", 60, toolkit::Any{});
+
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    EXPECT_NE(first, second);
+    EXPECT_TRUE(manager.delCookie(first));
+    EXPECT_TRUE(manager.delCookie(second));
 }

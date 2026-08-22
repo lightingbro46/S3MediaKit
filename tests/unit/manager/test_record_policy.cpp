@@ -70,16 +70,16 @@ TEST(RecordPolicyTest, ConvertsEnumsToStableStrings) {
 }
 
 TEST(RecordPolicyTest, DefaultsToNoRecordWithoutActiveTimerSlot) {
-    RecordScheduler scheduler(DeviceTuple{"vhost", "camera", "name"}, "", nullptr);
+    RecordScheduler scheduler(DeviceTuple{"vhost", "camera", "name"}, true, "", nullptr);
     EXPECT_EQ("", scheduler.getProfile());
     EXPECT_FALSE(scheduler.isEventActive());
     EXPECT_FALSE(scheduler.setupRecordEvent(RecordEventType::Motion, true));
     EXPECT_TRUE(scheduler.isEventActive());
     scheduler.stopTimer();
 
-    RecordScheduler malformed(DeviceTuple{"vhost", "bad", "name"}, "not-json", nullptr);
+    RecordScheduler malformed(DeviceTuple{"vhost", "bad", "name"}, true, "not-json", nullptr);
     EXPECT_FALSE(malformed.setupRecordEvent(RecordEventType::Motion, false));
-    RecordScheduler non_array(DeviceTuple{"vhost", "object", "name"}, "{}", nullptr);
+    RecordScheduler non_array(DeviceTuple{"vhost", "object", "name"}, true, "{}", nullptr);
     EXPECT_FALSE(non_array.setupRecordEvent(RecordEventType::Motion, true));
 }
 
