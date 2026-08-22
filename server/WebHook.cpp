@@ -1223,8 +1223,8 @@ void installWebHook() {
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
-            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            if (!err.empty()) {
+            const bool cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
+            if (!err.empty() || !cached) {
                 invoker("Unauthorized");
                 return;
             }
@@ -1242,7 +1242,7 @@ void installWebHook() {
         }
 
         auto permit =  UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
-        if (permit != UserAuthorPermit::UNKNOWN) {
+        if (!force_refresh && permit != UserAuthorPermit::UNKNOWN) {
             // User auth cache has still been expired. Check user permission
             invoker(permit == UserAuthorPermit::ACCEPT ? "" : "Unauthorized");
             return;
@@ -1266,9 +1266,12 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker](const Value &obj, const string &err) mutable {
-            UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            invoker(!err.empty() ? "Unauthorized" : "");
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, force_refresh, invoker](const Value &obj, const string &err) mutable {
+            bool cached = true;
+            if (!force_refresh || err.empty()) {
+                cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty(), 600, force_refresh);
+            }
+            invoker(err.empty() && cached ? "" : "Unauthorized");
         });
     });
 
