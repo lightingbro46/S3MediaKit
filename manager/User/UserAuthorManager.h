@@ -55,7 +55,8 @@ public:
     /**
      * Add user-resource author cache
      */
-    void addAuthorCache(const std::string &resource_id, const std::string &jwt_token, bool permit = false, uint64_t max_elapsed = 600);
+    bool addAuthorCache(const std::string &resource_id, const std::string &jwt_token, bool permit = false,
+                        uint64_t max_elapsed = 600, bool only_if_active = false);
 
     /**
      * Add cluster author cache

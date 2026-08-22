@@ -109,7 +109,10 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
                 stream.height = info.height;
                 stream.fps = info.fps;
                 stream.bitrate = info.bitrate;
-                stream.url = UriUtils::replaceCredentials(url, "", "");
+                // note: we don't replace the credentials in the url here, 
+                // because the user may want to use the credentials in the url to access the stream
+                // stream.url = UriUtils::replaceCredentials(url, "", "");
+                stream.url = url;
                 ret.profiles.push_back(stream);
                 cb(SockException(Err_success), ret);
             }

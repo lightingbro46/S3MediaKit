@@ -281,7 +281,7 @@ bool checkUserAuthor(const std::string &resource_id, const std::string &jwt_toke
         return auth_invoker("Empty token");                                                                                                                    \
     }                                                                                                                                                          \
     /* Broadcast to check device access authorization asynchronously */                                                                                        \
-    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, auth_invoker);                                 \
+    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, false, auth_invoker);                                 \
     if (!flag) {                                                                                                                                               \
         /* No one is listening to the event, directly reject */                                                                                                \
         auth_invoker("Unauthorized");                                                                                                                          \

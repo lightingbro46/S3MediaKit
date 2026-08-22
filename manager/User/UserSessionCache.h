@@ -46,13 +46,13 @@ struct ClientOSInfo {
 };
 
 /**
- * Authorization cache of user with device, default max elapsed is 60 seconds
+ * JWT-backed user session cache.
  */
 class UserSessionCache {
 public:
     using Ptr = std::shared_ptr<UserSessionCache>;
 
-    UserSessionCache(const std::string &token, const std::string &user_agent = "", const std::string &client_ip = "", int max_elapsed = 600);
+    UserSessionCache(const std::string &token, const std::string &user_agent = "", const std::string &client_ip = "");
 
     /**
      * get created at timestamp, unit: second
@@ -119,11 +119,6 @@ public:
      */
     std::string getClientIp() { return _client_ip; }
 
-    /**
-     * get max elapsed time for this cache, unit: second
-     */
-    int getMaxElapsed() { return _max_elapsed; }
-
 private:
     /**
      *  save user session into database
@@ -146,7 +141,6 @@ private:
     std::string _role_code;
     std::string _role_name;
     bool _overlay = true;
-    int _max_elapsed = 600; // default max elapsed is 600 seconds
 };
 
 } // namespace managerkit

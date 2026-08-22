@@ -11,6 +11,7 @@ using namespace mediakit;
 
 namespace managerkit {
 
+static const uint64_t kAuthorizationRefreshLeadTime = 60;
 INSTANCE_IMP(UserAuthorManager);
 
 UserAuthorManager::UserAuthorManager() {
@@ -32,8 +33,8 @@ UserAuthorManager::~UserAuthorManager() {
 void UserAuthorManager::onManager() {
     {
         lock_guard<recursive_mutex> lck(_mtx);
-        cleanExpiredAuthorCache();
         cleanExpiredTokenCache();
+        cleanExpiredAuthorCache();
         cleanExpiredClusterAuthorCache();
     }
     checkActiveTokenAuthorizations();
@@ -41,83 +42,99 @@ void UserAuthorManager::onManager() {
 
 void UserAuthorManager::registerMediaSession(const string &jwt_token, const string &device_id,
                                              const weak_ptr<toolkit::Session> &session) {
+    auto newSession = session.lock();
+    if (!newSession) {
+        return;
+    }
+
     lock_guard<recursive_mutex> lck(_mtx);
     auto &sessions = _map_token_sessions[jwt_token];
-    auto newSession = session.lock();
-    for (auto &item : sessions) {
-        auto existingSession = item.session.lock();
-        if (item.device_id == device_id && existingSession && existingSession == newSession) {
+    for (auto it = sessions.begin(); it != sessions.end();) {
+        auto existingSession = it->session.lock();
+        if (!existingSession) {
+            it = sessions.erase(it);
+            continue;
+        }
+        if (it->device_id == device_id && existingSession == newSession) {
             return;
         }
+        ++it;
     }
     sessions.push_back({device_id, session});
 }
 
 void UserAuthorManager::checkActiveTokenAuthorizations() {
-    vector<pair<string, string>> checks;
+    unordered_map<string, unordered_set<string>> checks;
     const auto now = static_cast<uint64_t>(time(nullptr));
     {
         lock_guard<recursive_mutex> lck(_mtx);
-        for (auto tokenIt = _map_token_sessions.begin(); tokenIt != _map_token_sessions.end(); ++tokenIt) {
+        for (auto tokenIt = _map_token_sessions.begin(); tokenIt != _map_token_sessions.end();) {
+            auto resourceIt = _map_token_resource.find(tokenIt->first);
+            auto tokenCacheIt = _map_token_cache.find(tokenIt->first);
+            const bool jwtNearExpiry = tokenCacheIt != _map_token_cache.end() &&
+                                       tokenCacheIt->second->getExpiredAt() <= now + kAuthorizationRefreshLeadTime;
+
             for (auto sessionIt = tokenIt->second.begin(); sessionIt != tokenIt->second.end();) {
                 if (sessionIt->session.expired()) {
                     sessionIt = tokenIt->second.erase(sessionIt);
                     continue;
                 }
-                auto resourceIt = _map_token_resource.find(tokenIt->first);
-                bool needsCheck = resourceIt == _map_token_resource.end();
-                if (!needsCheck) {
-                    auto deviceIt = resourceIt->second.find(sessionIt->device_id);
-                    needsCheck = deviceIt == resourceIt->second.end() || deviceIt->second.second <= now;
-                }
-                if (needsCheck) {
-                    checks.emplace_back(tokenIt->first, sessionIt->device_id);
+                if (!jwtNearExpiry) {
+                    if (resourceIt == _map_token_resource.end()) {
+                        checks[tokenIt->first].insert(sessionIt->device_id);
+                    } else {
+                        auto deviceIt = resourceIt->second.find(sessionIt->device_id);
+                        if (deviceIt == resourceIt->second.end() ||
+                            deviceIt->second.second <= now + kAuthorizationRefreshLeadTime) {
+                            checks[tokenIt->first].insert(sessionIt->device_id);
+                        }
+                    }
                 }
                 ++sessionIt;
             }
+            if (tokenIt->second.empty()) {
+                tokenIt = _map_token_sessions.erase(tokenIt);
+            } else {
+                ++tokenIt;
+            }
         }
     }
-    for (auto &item : checks) {
-        checkTokenDevice(item.first, item.second);
+    for (const auto &tokenChecks : checks) {
+        for (const auto &deviceId : tokenChecks.second) {
+            checkTokenDevice(tokenChecks.first, deviceId);
+        }
     }
 }
 
 void UserAuthorManager::checkTokenDevice(const string &jwt_token, const string &device_id) {
-    lock_guard<recursive_mutex> lck(_mtx);
     const string checkKey = jwt_token + ":" + device_id;
-    if (_token_checks.count(checkKey)) {
-        return;
+    {
+        lock_guard<recursive_mutex> lck(_mtx);
+        if (_token_checks.count(checkKey)) {
+            return;
+        }
+        auto tokenIt = _map_token_cache.find(jwt_token);
+        if (tokenIt == _map_token_cache.end()) {
+            revokeTokenDevice(jwt_token, device_id, "token cache unavailable");
+            return;
+        }
+        if (tokenIt->second->getExpiredAt() <= static_cast<uint64_t>(time(nullptr))) {
+            revokeToken(jwt_token, "access token expired");
+            return;
+        }
+        _token_checks.insert(checkKey);
     }
-    auto tokenIt = _map_token_cache.find(jwt_token);
-    if (tokenIt == _map_token_cache.end()) {
-        revokeTokenDevice(jwt_token, device_id, "token cache unavailable");
-        return;
-    }
-    if (tokenIt->second->getExpiredAt() <= static_cast<uint64_t>(time(nullptr))) {
-        revokeToken(jwt_token, "access token expired");
-        return;
-    }
-    _token_checks.insert(checkKey);
 
-    Broadcast::AuthInvoker invoker = [jwt_token, device_id, checkKey](const string &err) {
+    Broadcast::AuthInvoker invoker = [device_id, checkKey](const string &err) {
         auto &manager = UserAuthorManager::Instance();
         lock_guard<recursive_mutex> lck(manager._mtx);
         manager._token_checks.erase(checkKey);
         if (!err.empty()) {
-            manager.revokeTokenDevice(jwt_token, device_id, err);
-            return;
+            WarnL << "Refresh media authorization failed for device " << device_id << ": " << err;
         }
-        const auto now = static_cast<uint64_t>(time(nullptr));
-        auto tokenIt = manager._map_token_cache.find(jwt_token);
-        if (tokenIt == manager._map_token_cache.end()) {
-            return;
-        }
-        const auto expiredAt = tokenIt->second->getExpiredAt();
-        const auto maxElapsed = tokenIt->second->getMaxElapsed();
-        manager._map_token_resource[jwt_token][device_id] = make_pair(true, std::min(now + maxElapsed, expiredAt));
     };
 
-    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, invoker);
+    auto flag = NOTICE_EMIT(BroadcastDeviceAccessArgs, Broadcast::kBroadcastDeviceAccess, device_id, jwt_token, true, invoker);
     if (!flag) {
         invoker("No listener for device access authorization");
     }
@@ -135,8 +152,9 @@ void UserAuthorManager::revokeToken(const string &jwt_token, const string &reaso
     }
     _map_token_resource.erase(jwt_token);
     _map_token_cache.erase(jwt_token);
+    const string checkPrefix = jwt_token + ":";
     for (auto it = _token_checks.begin(); it != _token_checks.end();) {
-        if (it->compare(0, jwt_token.size(), jwt_token) == 0) {
+        if (it->compare(0, checkPrefix.size(), checkPrefix) == 0) {
             it = _token_checks.erase(it);
         } else {
             ++it;
@@ -147,6 +165,7 @@ void UserAuthorManager::revokeToken(const string &jwt_token, const string &reaso
 
 void UserAuthorManager::revokeTokenDevice(const string &jwt_token, const string &device_id,
                                           const string &reason) {
+    _token_checks.erase(jwt_token + ":" + device_id);
     auto sessionIt = _map_token_sessions.find(jwt_token);
     if (sessionIt != _map_token_sessions.end()) {
         for (auto it = sessionIt->second.begin(); it != sessionIt->second.end();) {
@@ -178,16 +197,16 @@ void UserAuthorManager::revokeTokenDevice(const string &jwt_token, const string 
 void UserAuthorManager::cleanExpiredAuthorCache() {
     const auto now = static_cast<uint64_t>(time(nullptr));
     // remove expired user-resource author cache
-    for (auto tokenIt = _map_token_resource.begin(); tokenIt != _map_token_resource.end(); ++tokenIt) {
-        auto &resourceMap = tokenIt->second;
-
-        for (auto resourceIt = resourceMap.begin(); resourceIt != resourceMap.end();) {
-            if (resourceIt->second.second < now) {
-                resourceIt = resourceMap.erase(resourceIt);
-            } else {
-                ++resourceIt;
+    vector<pair<string, string>> expired;
+    for (const auto &tokenResources : _map_token_resource) {
+        for (const auto &resource : tokenResources.second) {
+            if (resource.second.second <= now) {
+                expired.emplace_back(tokenResources.first, resource.first);
             }
         }
+    }
+    for (const auto &item : expired) {
+        revokeTokenDevice(item.first, item.second, "media authorization expired");
     }
 }
 
@@ -195,30 +214,13 @@ void UserAuthorManager::cleanExpiredTokenCache() {
     const auto now = static_cast<uint64_t>(time(nullptr));
     // remove expired token cache
     for (auto tokenIt = _map_token_cache.begin(); tokenIt != _map_token_cache.end();) {
-        if (tokenIt->second->getExpiredAt() < now) {
-            auto sessionIt = _map_token_sessions.find(tokenIt->first);
-            if (sessionIt != _map_token_sessions.end()) {
-                for (auto it = sessionIt->second.begin(); it != sessionIt->second.end();) {
-                    if (it->session.expired()) {
-                        it = sessionIt->second.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-                // Keep active sessions until the periodic remote authorization
-                // check decides whether the token must be revoked.
-                if (!sessionIt->second.empty()) {
-                    ++tokenIt;
-                    continue;
-                }
-            }
-            // remove all resource authorization related this token
-            _map_token_resource.erase(tokenIt->first);
-            _map_token_sessions.erase(tokenIt->first);
-            tokenIt = _map_token_cache.erase(tokenIt);
-        } else {
+        if (tokenIt->second->getExpiredAt() > now) {
             ++tokenIt;
+            continue;
         }
+        auto token = tokenIt->first;
+        ++tokenIt;
+        revokeToken(token, "access token expired");
     }
 }
 
@@ -248,13 +250,28 @@ UserAuthorPermit UserAuthorManager::getAuthorCache(const string &resource_id, co
     return UserAuthorPermit::UNKNOWN;
 }
 
-void UserAuthorManager::addAuthorCache(const string &resource_id, const string &jwt_token, bool permit, uint64_t max_elapsed) {
+bool UserAuthorManager::addAuthorCache(const string &resource_id, const string &jwt_token, bool permit,
+                                       uint64_t max_elapsed, bool only_if_active) {
     lock_guard<recursive_mutex> lck(_mtx);
 
     const auto now = static_cast<uint64_t>(time(nullptr));
     auto tokenIt = _map_token_cache.find(jwt_token);
-    const auto tokenExpiredAt = tokenIt == _map_token_cache.end() ? now + max_elapsed : tokenIt->second->getExpiredAt();
+    if (tokenIt == _map_token_cache.end() || tokenIt->second->getExpiredAt() <= now) {
+        return false;
+    }
+    if (only_if_active) {
+        auto resourceTokenIt = _map_token_resource.find(jwt_token);
+        if (resourceTokenIt == _map_token_resource.end()) {
+            return false;
+        }
+        auto resourceIt = resourceTokenIt->second.find(resource_id);
+        if (resourceIt == resourceTokenIt->second.end() || resourceIt->second.second <= now) {
+            return false;
+        }
+    }
+    const auto tokenExpiredAt = tokenIt->second->getExpiredAt();
     _map_token_resource[jwt_token][resource_id] = std::make_pair(permit, std::min(now + max_elapsed, tokenExpiredAt));
+    return true;
 }
 
 UserAuthorPermit UserAuthorManager::getClusterAuthorCache(const std::string &author_id, const std::string &secret_key) {

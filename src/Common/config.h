@@ -182,7 +182,7 @@ extern const std::string kBroadcastDeviceChanged;
 
 // Broadcast for accessing device data. Control device authentication through this event.
 extern const std::string kBroadcastDeviceAccess;
-#define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const Broadcast::AuthInvoker &invoker
+#define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const bool &force_refresh, const Broadcast::AuthInvoker &invoker
 
 // Broadcast for device capabilities changed event.
 extern const std::string kBroadcastDeviceCapsChanged;
