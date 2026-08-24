@@ -13,6 +13,7 @@
 #include "Storage/MiscData.h"
 #include "Local/StorageManager.h"
 #include "Local/TierStorageManager.h"
+#include "Local/ExtractJobManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
@@ -92,6 +93,14 @@ static void loadSavedMediaServerInfo() {
         ClusterManager::Instance().loadSavedMediaServerInfo();
         DebugL << "Sync manager has been started";
         SyncManager::Instance().start();
+        return 0;
+    });
+}
+
+static void restartActiveJobs() {
+    EventPollerPool::Instance().getPoller()->doDelayTask(60000, []() {
+        DebugL << "Extract job manager has been started restarting active jobs";
+        ExtractJobManager::Instance().start();
         return 0;
     });
 }
@@ -429,6 +438,8 @@ void installManagerHook () {
     loadSavedDeviceInfo();
 
     loadSavedMediaServerInfo();
+
+    restartActiveJobs();
 }
 
 static void releaseAllDevice() {
@@ -442,9 +453,15 @@ static void releaseSyncDatabase() {
     SyncManager::Instance().stop();
 }
 
+
+static void releaseActiveJobs() {
+    ExtractJobManager::Instance().stop();
+}
+
 void unInstallManagerHook() {
     releaseSyncDatabase();
     releaseAllDevice();
+    releaseActiveJobs();
 
     // sleep for 10 second before uninstall hook, to prevent resource release order errors
     sleep(10);

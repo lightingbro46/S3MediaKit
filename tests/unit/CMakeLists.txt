@@ -69,6 +69,10 @@ target_sources(unit_storage PRIVATE storage/test_storage_models.cpp)
 target_sources(unit_storage PRIVATE manager/test_record_policy.cpp manager/test_device_source.cpp manager/test_resource_monitor.cpp manager/test_time_file.cpp)
 target_link_libraries(unit_storage PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
 add_test(NAME unit.storage_all COMMAND unit_storage)
+
+add_s3_unit_test(unit_extract_job storage/test_extract_job.cpp)
+target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
+add_test(NAME unit.extract_job COMMAND unit_extract_job)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
 if(ENABLE_SERVER_LIB)

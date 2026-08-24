@@ -263,6 +263,16 @@ extern const std::string kBroadcastDownloadAudioFile;
 extern const std::string kBroadcastDownloadOverlayImage;
 #define BroadcastDownloadOverlayImageArgs const std::string &overlay_file_id, const std::string &local_path, const Broadcast::DownloadFileInvoker &invoker
 
+// Broadcast for uploading an extracted video to the URL supplied by VMS.
+using VideoExtractionUploadInvoker = std::function<void(const std::string &, int)>;
+extern const std::string kBroadcastVideoExtractionUpload;
+#define BroadcastVideoExtractionUploadArgs const std::string &local_path, const std::string &upload_url, const std::string &content_type, const float &timeout_sec, const Broadcast::VideoExtractionUploadInvoker &invoker
+
+// Broadcast for reporting a completed video extraction job to VMS.
+using VideoExtractionResultInvoker = std::function<void(const Json::Value &, const std::string &)>;
+extern const std::string kBroadcastVideoExtractionResult;
+#define BroadcastVideoExtractionResultArgs const Json::Value &body, const std::string &idempotency_key, const Broadcast::VideoExtractionResultInvoker &invoker
+
 #define ReloadConfigTag ((void *)(0xFF))
 #define RELOAD_KEY(arg, key)                                                                                           \
     do {                                                                                                               \
