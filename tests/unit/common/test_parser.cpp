@@ -33,6 +33,37 @@ TEST(ParserTest, ParsesRequestHeadersBodyAndArguments) {
     EXPECT_EQ("example.com", parser["host"]);
     EXPECT_EQ("body", parser.content());
     EXPECT_EQ("Camera", parser.getUrlArgs()["name"]);
+    EXPECT_EQ("/api/items?a=1&Name=Camera", parser.originalUrl());
+}
+
+TEST(ParserTest, MapsEffectivePathsToTrustedOriginalPrefix) {
+    const std::string raw =
+        "GET /media/live/camera/main/hls.m3u8?session_id=viewer HTTP/1.1\r\n"
+        "Host: example.com\r\n\r\n";
+    Parser parser;
+    parser.parse(raw.c_str(), raw.size());
+
+    ASSERT_TRUE(parser.setOriginalUrl("/media2/media/live/camera/main/hls.m3u8?session_id=viewer"));
+    EXPECT_EQ("/media2/media/live/camera/main/hls.m3u8?session_id=viewer", parser.originalUrl());
+    EXPECT_EQ("/media2/media/live/camera/main/", parser.toOriginalUrl("/media/live/camera/main/"));
+
+    parser.setUrl("/media/live/camera/main/index.html");
+    EXPECT_EQ("/media2/media/live/camera/main/hls.m3u8?session_id=viewer", parser.originalUrl());
+    EXPECT_EQ("/media2/media/live/camera/main/segment.ts", parser.toOriginalUrl("/media/live/camera/main/segment.ts"));
+}
+
+TEST(ParserTest, RejectsUnsafeOrUnrelatedOriginalUrls) {
+    const std::string raw = "GET /media/live/camera/main/hls.m3u8 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    Parser parser;
+    parser.parse(raw.c_str(), raw.size());
+
+    EXPECT_FALSE(parser.setOriginalUrl("//evil.example/media/live/camera/main/hls.m3u8"));
+    EXPECT_FALSE(parser.setOriginalUrl("https://evil.example/media/live/camera/main/hls.m3u8"));
+    EXPECT_FALSE(parser.setOriginalUrl("/media2/media/live/camera/main/hls.m3u8#fragment"));
+    EXPECT_FALSE(parser.setOriginalUrl("/media2\\media/live/camera/main/hls.m3u8"));
+    EXPECT_FALSE(parser.setOriginalUrl("/unrelated/path"));
+    EXPECT_EQ("/media/live/camera/main/hls.m3u8", parser.originalUrl());
+    EXPECT_EQ("/media/live/camera/main/", parser.toOriginalUrl("/media/live/camera/main/"));
 }
 
 TEST(ParserTest, ParsesResponseAndCanBeReused) {
