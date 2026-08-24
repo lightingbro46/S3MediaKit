@@ -286,6 +286,8 @@ Lấy danh sách tag được sử dụng nhiều nhất để gợi ý cho ngư
 
 Trả về ảnh JPEG được chụp tại thời điểm `start_time` của bookmark từ file recording tương ứng.
 
+Nếu camera được cấu hình watermark hoặc privacy mask, ảnh thumbnail sẽ được render theo chính sách của camera và role của JWT hiện tại, giống API thumbnail trong playback. Client không thể tắt overlay bằng request. Cache thumbnail được tách theo chính sách overlay hiệu lực để không dùng chung ảnh giữa các role có quyền hiển thị khác nhau.
+
 ### Request params
 
 | Tham số | Kiểu | Bắt buộc | Mô tả |

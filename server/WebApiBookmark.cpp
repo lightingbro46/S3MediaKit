@@ -5,6 +5,7 @@
 #include "Storage/Bookmark.h"
 #include "Manager.h"
 #include "Util/base64.h"
+#include "Util/MD5.h"
 #include "Http/HttpClient.h"
 
 using namespace std;
@@ -363,15 +364,64 @@ void registerBookmarkApis() {
             }
 
             GET_CONFIG(string, snap_root, API::kSnapRoot);
-            string snap_path = StrPrinter << File::absolutePath(camera_id + "/" + stream_id, snap_root) << "/" << start_time << ".jpeg";
+            auto scan_path = File::absolutePath(camera_id + "/" + stream_id, snap_root) + "/";
+            string filter_complex;
+            string policy_key;
+            vector<string> overlay_temp_paths;
+            const string overlay_prefix = StrPrinter << scan_path << start_time << ".bookmark.overlay";
+            if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
+                                                            filter_complex, overlay_temp_paths, policy_key)) {
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
+                }
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to render thumbnail overlay");
+                return;
+            }
 
-            FFmpegSnap::makeSnap(false, src_path, snap_path, diff_time, 2, [invoker, val, headerOut, snap_path](bool success, const string &err_msg) mutable {
+            const string cache_key = MD5(policy_key).hexdigest();
+            string snap_path = StrPrinter << scan_path << start_time << ".bookmark." << cache_key << ".jpeg";
+            if (File::fileExist(snap_path) && File::fileSize(snap_path) > 0) {
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
+                }
+                StrCaseMap response_headers;
+                response_headers["Content-Type"] = HttpFileManager::getContentType(".jpeg");
+                invoker.responseFile(allArgs.parser.getHeader(), response_headers, snap_path);
+                return;
+            }
+
+            File::delete_file(snap_path);
+            string snap_path_tmp = snap_path + ".tmp";
+            auto on_snap = [invoker, allArgs, val, headerOut, snap_path, snap_path_tmp, overlay_temp_paths](bool success, const string &err_msg) mutable {
                 if (!success) {
+                    File::delete_file(snap_path_tmp);
+                    for (const auto &temp_path : overlay_temp_paths) {
+                        File::delete_file(temp_path);
+                    }
                     RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, err_msg.data());
                     return;
                 }
-                invoker(200, StrCaseMap {}, snap_path);
-            });
+                File::delete_file(snap_path);
+                if (rename(snap_path_tmp.data(), snap_path.data()) != 0) {
+                    File::delete_file(snap_path_tmp);
+                    for (const auto &temp_path : overlay_temp_paths) {
+                        File::delete_file(temp_path);
+                    }
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to finalize thumbnail");
+                    return;
+                }
+                for (const auto &temp_path : overlay_temp_paths) {
+                    File::delete_file(temp_path);
+                }
+                StrCaseMap response_headers;
+                response_headers["Content-Type"] = HttpFileManager::getContentType(".jpeg");
+                invoker.responseFile(allArgs.parser.getHeader(), response_headers, snap_path);
+            };
+            if (filter_complex.empty()) {
+                FFmpegSnap::makeSnap(false, src_path, snap_path_tmp, diff_time, 2, on_snap);
+            } else {
+                FFmpegSnap::makeSnapWithFilter(src_path, snap_path_tmp, diff_time, 2, filter_complex, on_snap);
+            }
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, on_access);
