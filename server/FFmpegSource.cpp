@@ -1153,7 +1153,8 @@ float trackFFmpegProgress(const std::string &log_path, const float &total_durati
  * Check if the media is online regularly
  */
 void FFmpegExtractor::startTimer() {
-    uint64_t timeout_ms = _duration * 1000;
+    // The maximum timeout is 12 hours, and the minimum timeout is 10 times the duration of the extract stream
+    uint64_t timeout_ms = MIN(_duration * 1000 * 10, 12 * 3600 * 1000); 
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
     _timer = std::make_shared<Timer>(5.0f, [weakSelf, timeout_ms]() {
         auto strongSelf = weakSelf.lock();
