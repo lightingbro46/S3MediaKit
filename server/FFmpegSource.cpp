@@ -57,7 +57,7 @@ onceToken token([]() {
     mINI::Instance()[kSnapOverlay] = "%s -ss %s -i %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
-    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -ss %s -i %s -y -ss %s -t %s -filter_complex %s -map [v] -map 0:a? "
+    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -ss %s -i %s -y -t %s -filter_complex %s -map [v] -map 0:a? "
                                             "-metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s "
                                             "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac %s";
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
