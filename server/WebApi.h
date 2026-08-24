@@ -345,6 +345,20 @@ bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::
         auth_invoker("Unauthorized");                                                                                                                          \
     }
 
+#define CHECK_API_KEY()                                                                                                                                     \
+    GET_CONFIG(bool, _enable_authorize, Manager::kEnableAuthorize);                                                                                            \
+    bool enable_authorize = _enable_authorize;                                                                                                                 \
+    if (enable_authorize) {                                                                                                                                    \
+        do {                                                                                                                                                   \
+            CHECK_ARGS_("X-Secret-Key");                                                                                                                      \
+            string api_key = allArgs["X-Secret-Key"];                                                                                                    \
+            GET_CONFIG(string, api_secret, Manager::kApiSecret);                                                                                                         \
+            if (!api_secret.empty() && api_key != api_secret) {                                                                                                                       \
+                throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
+            }                                                                                                                                                  \
+        } while (false);                                                                                                                                       \
+    }
+
 void installWebApi();
 void unInstallWebApi();
 

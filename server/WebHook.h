@@ -43,6 +43,20 @@ void do_http_hook(const std::string &url, const ArgsType &body, const std::funct
 void do_http_hook(const std::string &url, const ArgsType &body, const HeaderType &header, const std::function<void(const Json::Value &, const std::string &)> &func = nullptr);
 
 /**
+ * Upload a local file using HTTP PUT.
+ * @param url Upload address
+ * @param local_path Local file path
+ * @param content_type Request Content-Type header
+ * @param timeout_sec Request timeout in seconds
+ * @param func Callback receiving error message and HTTP status code
+ */
+void upload_http_hook(const std::string &url,
+                      const std::string &local_path,
+                      const std::string &content_type,
+                      float timeout_sec,
+                      const std::function<void(const std::string &, int)> &func);
+
+/**
  * Trigger http GET hook request
  * @param url Request address
  * @param param Request parameter

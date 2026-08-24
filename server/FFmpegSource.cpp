@@ -57,7 +57,7 @@ onceToken token([]() {
     mINI::Instance()[kSnapOverlay] = "%s -ss %s -i %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
-    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -filter_complex %s -map [v] -map 0:a? "
+    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -ss %s -i %s -y -ss %s -t %s -filter_complex %s -map [v] -map 0:a? "
                                             "-metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s "
                                             "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac %s";
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
@@ -507,7 +507,7 @@ void FFmpegSnap::makeSnapWithFilter(const string &play_url, const string &save_p
 
 FFmpegExtractor::FFmpegExtractor(MediaTuple &tuple, ExtractOptions &options, int timeout_ms, toolkit::EventPoller::Ptr poller)
     : _tuple(tuple), _options(options), _timeout_ms(timeout_ms) {
-    _poller = _poller ? std::move(poller) : EventPollerPool::Instance().getPoller();
+    _poller = poller ? std::move(poller) : WorkThreadPool::Instance().getPoller();
     _created_at = time(nullptr);
 }
 
@@ -886,19 +886,28 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
 
     uint32_t duration_start = 0;
     uint32_t duration_end = 0;
+    SockException err;
     _src_path = File::absolutePath(key + ".txt", root_path);
     makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const SockException &ex, uint32_t &start, uint32_t &end) {
         if (ex) {
-            cb(ex);
+            err = ex;
             return;
         }
         _duration = end - start;
         duration_start = start;
         duration_end = end;
     });
+    if (err) {
+        completeOnce(false, err.what());
+        cb(err);
+        return;
+    }
     if (_duration == 0) {
         WarnL << "No data in time period: " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.start_time) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.end_time)
               << ", camera_id: " << _tuple.app << ", stream_id: " << _tuple.stream;
+        const SockException ex(Err_other, "No data in time period", ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA);
+        completeOnce(false, ex.what());
+        cb(ex);
         return;
     }
     auto save_format = getFileExtension(_options.filename);
@@ -916,6 +925,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     if (overlay_required && filter_complex.empty()) {
         const string err_msg = "Unable to render required watermark/privacy mask overlay";
         WarnL << "Extract video: " << err_msg << " for " << _tuple.app;
+        completeOnce(false, err_msg);
         cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         return;
     }
@@ -930,9 +940,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         command_length = snprintf(cmd, sizeof(cmd),
             ffmpeg_extract_overlay.data(),
             File::absolutePath("", ffmpeg_bin).data(),
-            _src_path.data(),
             format_duration_hms(duration_start).data(),
-            format_duration_hms(duration_end).data(),
+            _src_path.data(),
+            format_duration_hms(_duration).data(),
             filter_complex.data(),
             escape(_options.filename).data(),
             escape(_options.description + " -- By -- " + _options.username).data(),
@@ -962,10 +972,14 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     }
     if (command_length < 0 || static_cast<size_t>(command_length) >= sizeof(cmd)) {
         WarnL << "Extract video: generated FFmpeg command exceeds " << sizeof(cmd) - 1 << " bytes";
-        cb(SockException(Err_other, "FFmpeg extract command is too long"));
+        const string err_msg = "FFmpeg extract command is too long";
+        completeOnce(false, err_msg);
+        cb(SockException(Err_other, err_msg));
         return;
     }
-    _log_file = ffmpeg_log.empty() ? "" : File::absolutePath("", ffmpeg_log);
+    // Each extractor needs its own log. A shared ffmpeg.log makes progress and
+    // failure diagnostics race when multiple extracts run concurrently.
+    _log_file = ffmpeg_log.empty() ? "" : File::absolutePath(key + ".ffmpeg.log", root_path);
     _process.run(cmd, _log_file);
     _cmd = cmd;
     InfoL << cmd;
@@ -990,24 +1004,12 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         if (!success) {
             err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
         }
-        {
-            lock_guard<mutex> lock(strongSelf->_status_mtx);
-            strongSelf->_finished = true;
-            strongSelf->_success = success;
-            strongSelf->_err_msg = err_msg;
-            if (success) {
-                strongSelf->_progress = 100.0f;
-            }
-        }
+        strongSelf->completeOnce(success, err_msg);
         if (success) {
-            strongSelf->emitEvent(true);
             cb(SockException());
         } else {
-            strongSelf->emitEvent(false, err_msg);
             cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         }
-        // close after process finished
-        strongSelf->closeAfterDelaySec();
         return 0;
     });
 }
@@ -1064,7 +1066,7 @@ float trackFFmpegProgress(const std::string &log_path, const float &total_durati
 void FFmpegExtractor::startTimer() {
     uint64_t timeout_ms = _duration * 1000;
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
-    _timer = std::make_shared<Timer>(1.0f, [weakSelf, timeout_ms]() {
+    _timer = std::make_shared<Timer>(5.0f, [weakSelf, timeout_ms]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             // Self has been destroyed
@@ -1088,18 +1090,7 @@ void FFmpegExtractor::startTimer() {
             // ffmpeg is not online, check output file and set status
             bool success = strongSelf->_process.exit_code() == 0 && File::fileSize(strongSelf->_save_path);
             string err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
-            {
-                lock_guard<mutex> lock(strongSelf->_status_mtx);
-                strongSelf->_finished = true;
-                strongSelf->_success = success;
-                if (success) {
-                    strongSelf->_progress = 100.0f;
-                }
-                strongSelf->_err_msg = err_msg;
-            }
-            strongSelf->emitEvent(success, err_msg);
-            // close after process finished
-            strongSelf->closeAfterDelaySec();
+            strongSelf->completeOnce(success, err_msg);
             return false;
         }
     }, _poller);
@@ -1115,8 +1106,46 @@ FFmpegExtractor::Status FFmpegExtractor::status() const {
     return ret;
 }
 
-void FFmpegExtractor::setOnClose(const function<void()> &cb){
+void FFmpegExtractor::setOnClose(const OnClose &cb){
     _onClose = cb;
+}
+
+void FFmpegExtractor::setOnComplete(const OnComplete &cb) {
+    lock_guard<mutex> lock(_status_mtx);
+    _onComplete = cb;
+}
+
+void FFmpegExtractor::completeOnce(bool success, const string &err_msg) {
+    OnComplete on_complete;
+    Status snapshot;
+    uint64_t size_bytes = 0;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_complete_emitted) {
+            return;
+        }
+        _complete_emitted = true;
+        _finished = true;
+        _success = success;
+        _err_msg = err_msg;
+        if (success) {
+            _progress = 100.0f;
+        }
+        snapshot.progress = _progress;
+        snapshot.finished = _finished;
+        snapshot.success = _success;
+        snapshot.err_msg = _err_msg;
+        on_complete = _onComplete;
+        size_bytes = success ? File::fileSize(_save_path) : 0;
+    }
+
+    emitAuditEvent(success, err_msg);
+    if (on_complete) {
+        on_complete(snapshot, _save_path, _duration, size_bytes);
+    }
+    if (_auto_cleanup) {
+        closeAfterDelaySec();
+    }
 }
 
 void FFmpegExtractor::closeAfterDelaySec() {
@@ -1134,18 +1163,41 @@ void FFmpegExtractor::closeAfterDelaySec() {
 }
 
 bool FFmpegExtractor::close() {
-    if (_onClose) {
-        _onClose();
+    auto on_close = std::move(_onClose);
+    _onClose = nullptr;
+    if (on_close) {
+        on_close();
     }
-    File::delete_file(_src_path);
+    cleanupTemporaryFiles();
     File::delete_file(_save_path);
-    for (size_t i = 0; i < _overlay_temp_paths.size(); ++i) {
-        File::delete_file(_overlay_temp_paths[i]);
-    }
     return true;
 }
 
-void FFmpegExtractor::emitEvent(bool success, const string &err_msg) {
+void FFmpegExtractor:: cleanupTemporaryFiles() {
+    File::delete_file(_src_path);
+    if (!_log_file.empty()) {
+        File::delete_file(_log_file);
+    }
+    for (size_t i = 0; i < _overlay_temp_paths.size(); ++i) {
+        File::delete_file(_overlay_temp_paths[i]);
+    }
+}
+
+void FFmpegExtractor::cleanup() {
+    close();
+}
+
+void FFmpegExtractor::cancel() {
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        _onComplete = nullptr;
+    }
+    _timer.reset();
+    _process.kill(2000);
+    close();
+}
+
+void FFmpegExtractor::emitAuditEvent(bool success, const string &err_msg) {
     auto tuple = _tuple;
     auto options = _options;
     auto duration = _duration;

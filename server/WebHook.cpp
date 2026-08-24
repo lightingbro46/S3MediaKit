@@ -5,6 +5,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Common/config.h"
 #include "Common/MediaSource.h"
+#include "Http/HttpBody.h"
 #include "Http/HttpSession.h"
 #include "Http/HttpRequester.h"
 #include "Http/HttpDownloader.h"
@@ -76,6 +77,7 @@ const string kOnMediaServerHealthCheck = HOOK_FIELD "on_media_server_health_chec
 const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
 const string kOnDownloadAudioFile = HOOK_FIELD "on_download_audio_file";
 const string kOnDownloadOverlayImage = HOOK_FIELD "on_download_overlay_image";
+const string kOnVideoExtractionResult = HOOK_FIELD "on_video_extraction_result";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -125,6 +127,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
     mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
     mINI::Instance()[kOnDownloadOverlayImage] = "/api/media-server/watermark/assets";
+    mINI::Instance()[kOnVideoExtractionResult] = "/api/media-server/video-extractions/result";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -351,6 +354,49 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
 void do_http_hook(const string &url, const ArgsType &body, const HeaderType &header, const function<void(const Value &, const string &)> &func) {
     GET_CONFIG(uint32_t, hook_retry, Hook::kRetry);
     do_http_hook(url, body, header, func, hook_retry);
+}
+
+void upload_http_hook(const string &url,
+                      const string &local_path,
+                      const string &content_type,
+                      float timeout_sec,
+                      const function<void(const string &, int)> &func) {
+    if (local_path.empty() || url.empty()) {
+        if (func) {
+            func("Video extraction upload path or URL is empty", 0);
+        }
+        return;
+    }
+    if (!File::fileExist(local_path)) {
+        if (func) {
+            func("Extracted file is missing", 0);
+        }
+        return;
+    }
+
+    auto requester = std::make_shared<HttpRequester>();
+    requester->setMethod("PUT");
+    requester->setBody(std::make_shared<HttpFileBody>(local_path));
+    if (!content_type.empty()) {
+        requester->addHeader("Content-Type", content_type, true);
+    }
+    requester->startRequester(url, [requester, func](const SockException &ex, const Parser &response) mutable {
+        onceToken token(nullptr, [&requester]() mutable { requester.reset(); });
+        const string &status = response.status();
+        const int status_code = status.empty() ? 0 : atoi(status.c_str());
+        if (!func) {
+            return;
+        }
+        if (ex) {
+            func(ex.what(), status_code);
+            return;
+        }
+        if (status_code < 200 || status_code >= 300) {
+            func("Upload returned HTTP " + to_string(status_code), status_code);
+            return;
+        }
+        func("", status_code);
+    }, timeout_sec);
 }
 
 void do_http_hook(const string &url, const HttpArgs &param, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
@@ -1662,6 +1708,31 @@ void installWebHook() {
         body["threshold"] = sanitize_for_json(threshold);
         // Execute hook
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionResult, [](BroadcastVideoExtractionResultArgs) {
+        GET_CONFIG(string, hook_video_extraction_result, Hook::kOnVideoExtractionResult);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_video_extraction_result.empty() || hook_api_url.empty()) {
+            invoker(Json::nullValue, "Video extraction result hook is disabled or not configured");
+            return;
+        }
+
+        HeaderType header;
+        header.emplace("Idempotency-Key", idempotency_key);
+        const string url = hook_api_url + hook_video_extraction_result;
+        do_http_hook(url, body, header, [url, idempotency_key, invoker](const Value &obj, const string &err) {
+            if (err.empty()) {
+                TraceL << "hook " << url << " success, file_id=" << idempotency_key;
+            } else {
+                WarnL << "hook " << url << " failed, file_id=" << idempotency_key << ": " << err;
+            }
+            invoker(obj, err);
+        });
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionUpload, [](BroadcastVideoExtractionUploadArgs) {
+        upload_http_hook(upload_url, local_path, content_type, timeout_sec, invoker);
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastStreamReaderAlert, [](BroadcastStreamReaderAlertArgs) {

@@ -34,6 +34,7 @@ namespace managerkit {
     XX(CODE_INVALID_WATERMARK_PERCENT,      "Invalid watermark percent",        404,         902008) \
     XX(CODE_INVALID_TIME_RANGE,             "Invalid time range",               404,         902009) \
     XX(CODE_ENDPOINT_NOT_SUPPORTED,         "Endpoint not supported",           404,         902010) \
+    XX(CODE_METHOD_NOT_ALLOWED,             "Method not allowed",               405,         902011) \
     /* 903xxx - Timeline errors */                                                                   \
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         903001) \
     /* 904xxx - Thumbnail/snapshot errors */                                                         \
@@ -71,6 +72,8 @@ namespace managerkit {
     XX(CODE_EXTRACT_KEY_NOT_FOUND,          "Extract key not found",            404,         909001) \
     XX(CODE_EXTRACT_FAILED,                 "Extract video failed",             500,         909002) \
     XX(CODE_EXTRACT_SEGMENT_NO_DATA,        "Extract time has no data",         500,         909003) \
+    XX(CODE_EXTRACT_JOB_CONFLICT,           "Extract job payload conflicts with existing fileId", 409, 909004) \
+    XX(CODE_EXTRACT_JOB_CREATE_FAILED,      "Extract job creation failed",      500,         909005) \
     /* 910xxx - Scan errors */                                                                       \
     XX(CODE_SCAN_KEY_NOT_FOUND,             "Scan key not found",               404,         910001) \
     XX(CODE_SUBNETSCAN_FAILED,              "Scan device by ip range failed",   500,         910002) \

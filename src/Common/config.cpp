@@ -104,6 +104,8 @@ const string kBroadcastStreamSettingChange = "kBroadcastStreamSettingChange";
 const string kBroadcastClusterAcrossAccess = "kBroadcastClusterAcrossAccess";
 const string kBroadcastDownloadAudioFile = "kBroadcastDownloadAudioFile";
 const string kBroadcastDownloadOverlayImage = "kBroadcastDownloadOverlayImage";
+const string kBroadcastVideoExtractionUpload = "kBroadcastVideoExtractionUpload";
+const string kBroadcastVideoExtractionResult = "kBroadcastVideoExtractionResult";
 
 } // namespace Broadcast
 

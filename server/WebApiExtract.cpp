@@ -4,6 +4,7 @@
 #include "Common/config.h"
 #include "Util/MD5.h"
 #include "Manager.h"
+#include "Local/ExtractJobManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -150,6 +151,70 @@ void registerExtractionApis() {
             item["ready"] = status.finished && status.success;
             val["data"].append(item);
         });
+    });
+
+    api_regist("/media/esc/extractArchived/job", [](API_ARGS_JSON_ASYNC) {
+        CHECK_API_KEY();
+        CHECK_ARGS_("fileId", "cameraId", "startTime", "endTime", "uploadUrl", "format");
+
+        const Json::Value &request = allArgs.args;
+        if (!request.isObject() || !request["fileId"].isString() || !request["cameraId"].isString() ||
+            !request["startTime"].isIntegral() || !request["endTime"].isIntegral() ||
+            !request["uploadUrl"].isString() || !request["format"].isString() ||
+            (request.isMember("streamId") && !request["streamId"].isString())) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "Invalid extract job field types");
+            return;
+        }
+
+        ExtractJobSubmitRequest submit_request;
+        submit_request.file_id = request["fileId"].asString();
+        submit_request.camera_id = request["cameraId"].asString();
+        submit_request.stream_id = request.get("streamId", "").asString();
+        submit_request.start_time = request["startTime"].asInt64();
+        submit_request.end_time = request["endTime"].asInt64();
+        submit_request.upload_url = request["uploadUrl"].asString();
+        submit_request.format = request["format"].asString();
+
+        if (submit_request.file_id.empty() ||
+            submit_request.camera_id.empty() || submit_request.camera_id.size() > 256 ||
+            submit_request.stream_id.size() > 256 || submit_request.upload_url.size() > 8192) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "Invalid fileId, cameraId");
+            return;
+        }
+
+        GET_CONFIG(int, max_duration_sec, ExtractJobConfig::kMaxDurationSec);
+        const int64_t duration = submit_request.end_time - submit_request.start_time;
+        if (submit_request.start_time <= 0 || duration <= 0 || (max_duration_sec > 0 && duration > max_duration_sec)) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "Invalid time range");
+            return;
+        }
+        if (submit_request.format != "mp4" && submit_request.format != "mkv" && submit_request.format != "avi") {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_EXTENSION, "Only mp4, mkv, and avi formats are supported");
+            return;
+        }
+        if (!ExtractJobManager::isAllowedUploadUrl(submit_request.upload_url)) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "uploadUrl must be an allowed HTTPS URL without userinfo");
+            return;
+        }
+
+        if (!findDeviceSource(submit_request.camera_id, GENERIC_RTSP_CAMERA_SCHEMA)) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            return;
+        }
+
+        auto result = ExtractJobManager::Instance().submit(submit_request);
+        if (result.result == ExtractJobRepository::CreateResult::CONFLICT) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_JOB_CONFLICT, "fileId already exists with a different payload");
+            return;
+        }
+        if (result.result == ExtractJobRepository::CreateResult::FAILED) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_JOB_CREATE_FAILED, "Failed to persist extract job");
+            return;
+        }
+
+        val["data"]["fileId"] = result.job.file_id;
+        val["data"]["status"] = result.job.status;
+        invoker(202, headerOut, val.toStyledString());
     });
 
     DebugL << "Extraction APIs registered";

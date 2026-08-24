@@ -164,6 +164,11 @@ public:
         bool success = false;
         std::string err_msg;
     };
+    using OnClose = std::function<void()>;
+    using OnComplete = std::function<void(const Status &status,
+                                          const std::string &output_path,
+                                          uint64_t duration_seconds,
+                                          uint64_t size_bytes)>;
     
     FFmpegExtractor(mediakit::MediaTuple &tuple, ExtractOptions &options, int timeout_ms = 500, toolkit::EventPoller::Ptr poller = nullptr);
     ~FFmpegExtractor();
@@ -177,9 +182,16 @@ public:
     /**
      * Set the active close callback
      */
-    void setOnClose(const std::function<void()> &cb);
+    void setOnClose(const OnClose &cb);
+    void setOnComplete(const OnComplete &cb);
+    void setAutoCleanup(bool enabled) { _auto_cleanup = enabled; }
 
     void makeExtract(const std::string &key, const std::string &download_path, const onExtract &cb);
+    // Remove manifests/logs/overlay images while retaining the extracted media
+    // for a persistent upload retry.
+    void cleanupTemporaryFiles();
+    void cleanup();
+    void cancel();
 
     const std::string& getFilename() const { return _options.filename; }
     const std::string& getSavePath() const { return _save_path; }
@@ -200,7 +212,8 @@ private:
     // Close
     bool close();
     // Emit event to notify the result of the extract task
-    void emitEvent(bool success, const std::string &err_msg = "");
+    void emitAuditEvent(bool success, const std::string &err_msg = "");
+    void completeOnce(bool success, const std::string &err_msg = "");
 
 private:
     mediakit::MediaTuple _tuple;
@@ -214,13 +227,16 @@ private:
     std::vector<std::string> _overlay_temp_paths;
     std::string _log_file;
     std::string _cmd;
-    std::function<void()> _onClose;
+    OnClose _onClose;
+    OnComplete _onComplete;
     uint64_t _created_at;
     int _timeout_ms;
     uint32_t _duration = 0;
     float _progress = 0.0;
     bool _finished = false;
     bool _success = false;
+    bool _complete_emitted = false;
+    bool _auto_cleanup = true;
     std::string _err_msg;
     mutable std::mutex _status_mtx;
     managerkit::UserSessionCache::Ptr _session;
