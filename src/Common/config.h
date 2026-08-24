@@ -472,6 +472,10 @@ extern const std::string kDirMenu;
 extern const std::string kForbidCacheSuffix;
 // You can put the real client IP address before the HTTP proxy in the HTTP header: https://github.com/S3MediaKit/S3MediaKit/issues/1388
 extern const std::string kForwardedIpHeader;
+// Header containing the client-visible request target before reverse-proxy rewriting
+extern const std::string kOriginalUrlHeader;
+// IP ranges trusted to provide the original URL header
+extern const std::string kOriginalUrlTrustedProxy;
 // Whether to allow all cross-domain requests
 extern const std::string kAllowCrossDomains;
 // Whitelist of IP address ranges allowed to access HTTP API and HTTP file index. No restrictions are imposed when empty

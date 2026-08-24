@@ -82,6 +82,16 @@ public:
     // Reset url
     void setUrl(std::string url);
 
+    // Set the client-visible request target before reverse-proxy rewriting.
+    // Only prefix rewrites that preserve the effective path are accepted.
+    bool setOriginalUrl(std::string url);
+
+    // Get the immutable client-visible request target, including parameters.
+    const std::string &originalUrl() const;
+
+    // Map an effective absolute path back to the client-visible path.
+    std::string toOriginalUrl(const std::string &url) const;
+
     // Reset content
     void setContent(std::string content);
 
@@ -102,6 +112,8 @@ private:
     std::string _protocol;
     std::string _content;
     std::string _params;
+    std::string _original_url;
+    std::string _original_url_prefix;
     mutable StrCaseMap _headers;
     mutable StrCaseMap _url_args;
 };

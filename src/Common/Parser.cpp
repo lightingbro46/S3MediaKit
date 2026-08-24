@@ -1,5 +1,6 @@
 ﻿#include <cinttypes>
 #include "Parser.h"
+#include <cctype>
 #include "strCoding.h"
 #include "Util/base64.h"
 #include "Network/sockutil.h"
@@ -52,6 +53,7 @@ void Parser::parse(const char *buf, size_t size) {
             auto next_blank = strchr(blank + 1, ' ');
             CHECK(next_blank && next_blank < next_line);
             _url.assign(blank + 1, next_blank);
+            _original_url = _url;
             auto pos = _url.find('?');
             if (pos != string::npos) {
                 _params = _url.substr(pos + 1);
@@ -126,6 +128,8 @@ void Parser::clear() {
     _params.clear();
     _protocol.clear();
     _content.clear();
+    _original_url.clear();
+    _original_url_prefix.clear();
     _headers.clear();
     _url_args.clear();
 }
@@ -136,6 +140,37 @@ const string &Parser::params() const {
 
 void Parser::setUrl(string url) {
     _url = std::move(url);
+}
+
+bool Parser::setOriginalUrl(string url) {
+    auto query_pos = url.find('?');
+    auto path = url.substr(0, query_pos);
+    if (path.empty() || path[0] != '/' || (path.size() > 1 && path[1] == '/') || url.find('#') != string::npos ||
+        url.find('\\') != string::npos) {
+        return false;
+    }
+    for (auto ch : url) {
+        if (std::iscntrl(static_cast<unsigned char>(ch))) {
+            return false;
+        }
+    }
+    if (_url.empty() || path.size() < _url.size() || path.compare(path.size() - _url.size(), _url.size(), _url)) {
+        return false;
+    }
+    _original_url_prefix = path.substr(0, path.size() - _url.size());
+    _original_url = std::move(url);
+    return true;
+}
+
+const string &Parser::originalUrl() const {
+    return _original_url;
+}
+
+string Parser::toOriginalUrl(const string &url) const {
+    if (_original_url_prefix.empty() || url.empty() || url[0] != '/') {
+        return url;
+    }
+    return _original_url_prefix + url;
 }
 
 void Parser::setContent(string content) {

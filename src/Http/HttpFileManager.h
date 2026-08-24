@@ -57,6 +57,12 @@ public:
      */
     static bool isIPAllowed(const std::string &ip);
 
+    /**
+     * Whether this socket peer may provide the configured original URL header
+     * @param ip Supports ipv4 and ipv6
+     */
+    static bool isOriginalUrlTrustedProxy(const std::string &ip);
+
 private:
     HttpFileManager() = delete;
     ~HttpFileManager() = delete;

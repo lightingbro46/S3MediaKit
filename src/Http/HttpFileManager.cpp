@@ -45,6 +45,10 @@ struct HttpCookieAttachment {
     bool _is_secure = false;
 };
 
+static string getCookiePath(const Parser &parser, const HttpCookieAttachment &attachment) {
+    return parser.toOriginalUrl(attachment._path);
+}
+
 static string getHlsScope(const MediaInfo &media_info) {
     string app = media_info.app;
     string playback_type = "live";
@@ -128,48 +132,56 @@ static UInt128 get_ip_uint64(const std::string &ip) {
     return UInt128();
 }
 
-bool HttpFileManager::isIPAllowed(const std::string &ip) {
-    using IPRangs = std::vector<std::pair<UInt128 /*min_ip*/, UInt128 /*max_ip*/>>;
-    GET_CONFIG_FUNC(IPRangs, allow_ip_range, Http::kAllowIPRange, [](const string &str) -> IPRangs {
-        IPRangs ret;
-        auto vec = split(str, ",");
-        for (auto &item : vec) {
-            if (trim(item).empty()) {
-                continue;
-            }
-            auto range = split(item, "-");
-            if (range.size() == 2) {
-                auto ip_min = get_ip_uint64(trim(range[0]));
-                auto ip_max = get_ip_uint64(trim(range[1]));
-                if (ip_min && ip_max && ip_min.same_type(ip_max)) {
-                    ret.emplace_back(ip_min, ip_max);
-                } else {
-                    WarnL << "Invalid ip range or family: " << item;
-                }
-            } else if (range.size() == 1) {
-                auto ip = get_ip_uint64(trim(range[0]));
-                if (ip) {
-                    ret.emplace_back(ip, ip);
-                } else {
-                    WarnL << "Invalid ip: " << item;
-                }
-            } else {
-                WarnL << "Invalid ip range: " << item;
-            }
-        }
-        return ret;
-    });
+using IPRanges = std::vector<std::pair<UInt128 /*min_ip*/, UInt128 /*max_ip*/>>;
 
-    if (allow_ip_range.empty()) {
-        return true;
+static IPRanges parse_ip_ranges(const string &str) {
+    IPRanges ret;
+    auto vec = split(str, ",");
+    for (auto &item : vec) {
+        if (trim(item).empty()) {
+            continue;
+        }
+        auto range = split(item, "-");
+        if (range.size() == 2) {
+            auto ip_min = get_ip_uint64(trim(range[0]));
+            auto ip_max = get_ip_uint64(trim(range[1]));
+            if (ip_min && ip_max && ip_min.same_type(ip_max)) {
+                ret.emplace_back(ip_min, ip_max);
+            } else {
+                WarnL << "Invalid ip range or family: " << item;
+            }
+        } else if (range.size() == 1) {
+            auto ip = get_ip_uint64(trim(range[0]));
+            if (ip) {
+                ret.emplace_back(ip, ip);
+            } else {
+                WarnL << "Invalid ip: " << item;
+            }
+        } else {
+            WarnL << "Invalid ip range: " << item;
+        }
     }
+    return ret;
+}
+
+static bool is_ip_in_ranges(const string &ip, const IPRanges &ranges) {
     auto ip_int = get_ip_uint64(ip);
-    for (auto &range : allow_ip_range) {
+    for (auto &range : ranges) {
         if (ip_int.same_type(range.first) && ip_int >= range.first && ip_int <= range.second) {
             return true;
         }
     }
     return false;
+}
+
+bool HttpFileManager::isIPAllowed(const std::string &ip) {
+    GET_CONFIG_FUNC(IPRanges, allow_ip_range, Http::kAllowIPRange, parse_ip_ranges);
+    return allow_ip_range.empty() || is_ip_in_ranges(ip, allow_ip_range);
+}
+
+bool HttpFileManager::isOriginalUrlTrustedProxy(const std::string &ip) {
+    GET_CONFIG_FUNC(IPRanges, trusted_proxy, Http::kOriginalUrlTrustedProxy, parse_ip_ranges);
+    return !trusted_proxy.empty() && is_ip_in_ranges(ip, trusted_proxy);
 }
 
 static std::string fileName(const string &dir, const string &path) {
@@ -534,7 +546,7 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
             StrCaseMap headerOut;
             if (cookie) {
                 auto &att = cookie->getAttach<HttpCookieAttachment>();
-                headerOut["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
+                headerOut["Set-Cookie"] = cookie->getCookie(getCookiePath(parser, att), att._is_secure);
             }
             if (err_msg == "MaxRequest") {
                 // 429 Too Many Requests
@@ -554,7 +566,7 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
             StrCaseMap httpHeader;
             if (cookie) {
                 auto &att = cookie->getAttach<HttpCookieAttachment>();
-                httpHeader["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
+                httpHeader["Set-Cookie"] = cookie->getCookie(getCookiePath(parser, att), att._is_secure);
             }
             HttpSession::HttpResponseInvoker invoker = [&](int code, const StrCaseMap &headerOut, const HttpBody::Ptr &body) {
                 if (cookie && body && code >= 200 && code < 300) {
@@ -741,14 +753,14 @@ void HttpFileManager::onAccessPath(Session &sender, Parser &parser, MediaInfo &i
             return;
         }
         // Determine if there is permission to access this directory
-        canAccessPath(sender, parser, media_info, true, [strMenu, cb](const string &err_msg, const HttpServerCookie::Ptr &cookie) mutable{
+        canAccessPath(sender, parser, media_info, true, [strMenu, cb, parser](const string &err_msg, const HttpServerCookie::Ptr &cookie) mutable{
             if (!err_msg.empty()) {
                 strMenu = err_msg;
             }
             StrCaseMap headerOut;
             if (cookie) {
                 auto &att = cookie->getAttach<HttpCookieAttachment>();
-                headerOut["Set-Cookie"] = cookie->getCookie(att._path, att._is_secure);
+                headerOut["Set-Cookie"] = cookie->getCookie(getCookiePath(parser, att), att._is_secure);
             }
             cb(err_msg.empty() ? 200 : 401, "text/html", headerOut, std::make_shared<HttpStringBody>(strMenu));
         });

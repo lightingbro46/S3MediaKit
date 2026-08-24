@@ -64,6 +64,20 @@ ssize_t HttpSession::onRecvHeader(const char *header, size_t len) {
     CHECK(_parser.url()[0] == '/');
     _origin = _parser["Origin"];
 
+    GET_CONFIG(string, original_url_header, Http::kOriginalUrlHeader);
+    if (!original_url_header.empty() && HttpFileManager::isOriginalUrlTrustedProxy(Session::get_peer_ip())) {
+        auto range = _parser.getHeader().equal_range(original_url_header);
+        if (range.first != range.second) {
+            auto next = range.first;
+            ++next;
+            if (next != range.second) {
+                WarnP(this) << "Ignore duplicate original URL headers";
+            } else if (!_parser.setOriginalUrl(range.first->second)) {
+                WarnP(this) << "Ignore invalid original URL header";
+            }
+        }
+    }
+
     urlDecode(_parser);
     auto &cmd = _parser.method();
     auto it = s_func_map.find(cmd);
@@ -785,7 +799,7 @@ bool HttpSession::checkLiveStreamHls() {
     const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
     if (view_transcode_requested && is_playlist && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         MediaInfo source_info = _media_info;
-        const string request_url = _parser.url();
+        const string request_url = _parser.toOriginalUrl(_parser.url());
         const string request_params = _parser.params();
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
@@ -818,6 +832,10 @@ bool HttpSession::checkLiveStreamHls() {
                         string location = request_url;
                         const string marker = "/" + source_info.stream + "/";
                         const auto pos = request_url.find(marker);
+                        if (pos == string::npos) {
+                            self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
+                            return;
+                        }
                         location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
                         if (!request_params.empty()) {
                             location += "?" + request_params;
@@ -1549,7 +1567,7 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
 // Sub-stream entries use absolute paths: /media/{app}/{stream}/hls.m3u8
 bool HttpSession::checkLiveStreamHlsByApp() {
     // Capture base URL before checkLiveStreamByApp may alter _media_info
-    string base_url = _parser.url();
+    string base_url = _parser.toOriginalUrl(_parser.url());
     static const string kMasterSuffix = "/hls.master.m3u8";
     if (end_with(base_url, kMasterSuffix)) {
         base_url.resize(base_url.size() - kMasterSuffix.size());

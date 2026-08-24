@@ -269,6 +269,8 @@ const string kNotFound = HTTP_FIELD "notFound";
 const string kDirMenu = HTTP_FIELD "dirMenu";
 const string kForbidCacheSuffix = HTTP_FIELD "forbidCacheSuffix";
 const string kForwardedIpHeader = HTTP_FIELD "forwarded_ip_header";
+const string kOriginalUrlHeader = HTTP_FIELD "original_url_header";
+const string kOriginalUrlTrustedProxy = HTTP_FIELD "original_url_trusted_proxy";
 const string kAllowCrossDomains = HTTP_FIELD "allow_cross_domains";
 const string kAllowIPRange = HTTP_FIELD "allow_ip_range";
 
@@ -293,6 +295,8 @@ static onceToken token([]() {
                                              << endl;
     mINI::Instance()[kForbidCacheSuffix] = "";
     mINI::Instance()[kForwardedIpHeader] = "";
+    mINI::Instance()[kOriginalUrlHeader] = "";
+    mINI::Instance()[kOriginalUrlTrustedProxy] = "";
     mINI::Instance()[kAllowCrossDomains] = 1;
     mINI::Instance()[kAllowIPRange] = "::1,127.0.0.1,172.16.0.0-172.31.255.255,192.168.0.0-192.168.255.255,10.0.0.0-10.255.255.255";
 });
