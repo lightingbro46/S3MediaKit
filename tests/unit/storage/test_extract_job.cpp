@@ -42,3 +42,28 @@ TEST(ExtractJobTest, SerializesFailureCallbackContract) {
     EXPECT_EQ("No recording covers the requested interval", value["error"]["message"].asString());
     EXPECT_FALSE(value.isMember("file"));
 }
+
+TEST(ExtractJobTest, SerializesListItemDetails) {
+    ExtractJob job;
+    job.file_id = "clip-list";
+    job.camera_id = "cam-001";
+    job.stream_id = "main";
+    job.start_time = 1784253600;
+    job.end_time = 1784253615;
+    job.format = "mp4";
+    job.status = "FAILED";
+    job.error_code = "RECORDING_NOT_FOUND";
+    job.error_message = "No recording covers the requested interval";
+    job.created_at = 1784253601;
+    job.updated_at = 1784253723;
+    job.completed_at = 1784253723;
+
+    const Json::Value value = job.toJson();
+    EXPECT_EQ("clip-list", value["fileId"].asString());
+    EXPECT_EQ("cam-001", value["cameraId"].asString());
+    EXPECT_EQ(1784253600, value["startTime"].asInt64());
+    EXPECT_EQ(1784253601, value["createdAt"].asInt64());
+    EXPECT_EQ(1784253723, value["updatedAt"].asInt64());
+    EXPECT_EQ("RECORDING_NOT_FOUND", value["error"]["code"].asString());
+    EXPECT_FALSE(value.isMember("uploadUrl"));
+}

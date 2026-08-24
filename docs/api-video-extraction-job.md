@@ -41,6 +41,54 @@ Phản hồi thành công dùng HTTP `202 Accepted`:
 
 `fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung trả về job đã có; dùng cùng `fileId` với nội dung khác trả HTTP `409 Conflict`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
 
+## Liệt kê job
+
+```http
+GET /media/esc/extractArchived/job/list?camera_id=cam-001&start_time_from=1784250000&start_time_to=1784260000&page=0&size=20
+
+```
+
+Các bộ lọc đều không bắt buộc. `camera_id` được so khớp chính xác; `start_time_from` và `start_time_to` là epoch giây, được áp dụng inclusive lên thời điểm bắt đầu của job. Kết quả được sắp xếp theo `start_time` mới nhất trước. `page` bắt đầu từ 0, `size` mặc định là 20 và tối đa 100.
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "items": [
+      {
+        "fileId": "b0ca90e6-d938-4f25-9b78-1eda8b33feb7",
+        "cameraId": "cam-001",
+        "streamId": "main",
+        "startTime": 1784253600,
+        "endTime": 1784253615,
+        "format": "mp4",
+        "status": "SUCCESS",
+        "progressPercent": 100.0,
+        "callbackStatus": "DELIVERED",
+        "completedAt": 1784253723,
+        "createdAt": 1784253601,
+        "updatedAt": 1784253724,
+        "file": {
+          "sizeBytes": 5242880,
+          "durationSeconds": 15,
+          "contentType": "video/mp4"
+        }
+      }
+    ],
+    "page": 0,
+    "size": 20,
+    "statistics": {
+      "total": 12,
+      "success": 9,
+      "failed": 2
+    }
+  }
+}
+```
+
+Thống kê được tính trên toàn bộ tập dữ liệu sau khi áp dụng bộ lọc, không chỉ trên trang hiện tại. Vì các job đang xử lý không thuộc `SUCCESS` hoặc `FAILED`, `success + failed` có thể nhỏ hơn `total`.
+
 ## Upload file
 
 MediaServer thực hiện HTTP `PUT` nội dung file trực tiếp tới `uploadUrl`, đặt `Content-Type` tương ứng định dạng. Mọi mã HTTP 2xx là thành công. Lỗi mạng, 408, 429 và 5xx được retry theo cấu hình; lỗi 4xx khác kết thúc job với trạng thái `FAILED`.
