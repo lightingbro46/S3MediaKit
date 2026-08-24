@@ -222,3 +222,26 @@ function replayUrl(baseUrl, cameraId, streamId, stamp, ws, token) {
 - HLS không phát: kiểm tra player có hỗ trợ HLS/HLS fMP4 và URL playlist có thể truy cập từ trình duyệt.
 - WS-MP4 không phát: dùng `wss` khi trang chạy trên HTTPS và bảo đảm proxy hỗ trợ WebSocket upgrade.
 - Replay sai nội dung: không dùng `/media/live`; replay luôn phải bắt đầu bằng `/media/record` và app recording là `record`.
+
+## 7. Reverse proxy có rewrite prefix
+
+Khi Nginx bỏ một prefix trước khi chuyển request tới MediaServer, cấu hình Nginx ghi đè URI public ban đầu vào một header riêng:
+
+```nginx
+location /media2/ {
+    proxy_set_header X-Original-URI $request_uri;
+    proxy_pass http://media_server/;
+}
+```
+
+Chỉ bật header này cho địa chỉ proxy kết nối trực tiếp tới MediaServer:
+
+```ini
+[http]
+original_url_header=X-Original-URI
+original_url_trusted_proxy=127.0.0.1,10.0.0.10
+```
+
+`original_url_trusted_proxy` hỗ trợ IPv4, IPv6 và khoảng địa chỉ giống `allow_ip_range`. Danh sách rỗng không tin proxy nào. Nginx phải ghi đè `X-Original-URI`, không chuyển tiếp hoặc nối giá trị do client gửi. Không ghi toàn bộ header này vào log vì query string có thể chứa JWT.
+
+Phiên bản hiện tại hỗ trợ rewrite theo dạng thêm/bỏ prefix và giữ nguyên phần path nội bộ cùng query string. Ví dụ `/media2/media/...` được proxy thành `/media/...`; MediaServer vẫn route bằng `/media/...`, nhưng dùng `/media2/media/...` cho `Set-Cookie Path`, HLS redirect và URL con trong master playlist. Forwarded scheme/host và thuộc tính cookie `Secure` khi TLS kết thúc tại Nginx cần được cấu hình/xử lý riêng.
