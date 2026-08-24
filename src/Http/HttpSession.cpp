@@ -1557,7 +1557,7 @@ bool HttpSession::checkLiveStreamHlsByApp() {
     auto identity = HlsViewerSession::resolve(_parser, "");
     if (identity.origin == HlsViewerSession::Identity::Invalid) {
         bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
-        sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("Invalid session_id"));
+        sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("400 Bad Request"));
         return true;
     }
     auto session_id = identity.session_id;

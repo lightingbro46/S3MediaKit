@@ -46,17 +46,17 @@ struct HttpCookieAttachment {
 };
 
 static string getHlsScope(const MediaInfo &media_info) {
-    string camera_id = media_info.app;
+    string app = media_info.app;
     string playback_type = "live";
     GET_CONFIG(string, record_app, Record::kAppName);
     if (media_info.app == record_app) {
         playback_type = "record";
         auto parts = split(media_info.stream, "/");
         if (!parts.empty()) {
-            camera_id = parts[0];
+            app = parts[0];
         }
     }
-    return media_info.vhost + "|" + playback_type + "|" + camera_id;
+    return media_info.vhost + "|" + playback_type + "|" + app;
 }
 
 static string getHlsViewerUid(const string &scope, const string &session_id) {
