@@ -33,3 +33,9 @@ CREATE INDEX IF NOT EXISTS idx_extract_jobs_processing
 
 CREATE INDEX IF NOT EXISTS idx_extract_jobs_callback
     ON extract_jobs(callback_status, next_callback_at);
+
+CREATE INDEX IF NOT EXISTS idx_extract_jobs_start_time
+    ON extract_jobs(start_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_extract_jobs_camera_start_time
+    ON extract_jobs(camera_id, start_time DESC);

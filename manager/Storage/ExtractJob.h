@@ -1,6 +1,7 @@
 #ifndef S3MANAGERKIT_EXTRACT_JOB_H
 #define S3MANAGERKIT_EXTRACT_JOB_H
 
+#include <climits>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -91,6 +92,16 @@ struct ExtractJob {
         value["progressPercent"] = progress_percent;
         value["callbackStatus"] = callback_status;
         value["completedAt"] = static_cast<Json::Int64>(completed_at);
+        value["createdAt"] = static_cast<Json::Int64>(created_at);
+        value["updatedAt"] = static_cast<Json::Int64>(updated_at);
+        if (status == extractJobStatusToString(ExtractJobStatus::SUCCESS)) {
+            value["file"]["sizeBytes"] = static_cast<Json::Int64>(size_bytes);
+            value["file"]["durationSeconds"] = static_cast<Json::Int64>(duration_seconds);
+            value["file"]["contentType"] = content_type;
+        } else if (status == extractJobStatusToString(ExtractJobStatus::FAILED)) {
+            value["error"]["code"] = error_code;
+            value["error"]["message"] = error_message;
+        }
         return value;
     }
 
@@ -109,6 +120,12 @@ struct ExtractJob {
         }
         return value;
     }
+};
+
+struct ExtractJobStatistics {
+    int64_t total = 0;
+    int64_t success = 0;
+    int64_t failed = 0;
 };
 
 DECLARE_ENTITY(ExtractJob, "extract_jobs",
@@ -300,6 +317,54 @@ public:
             {std::to_string(now)}, "completed_at ASC", limit);
     }
 
+    std::vector<ExtractJob> list(const std::string &camera_id,
+                                 int64_t start_time_from,
+                                 int64_t start_time_to,
+                                 int page,
+                                 int size) {
+        std::string where;
+        std::vector<std::string> params;
+        buildListFilter(camera_id, start_time_from, start_time_to, where, params);
+        const int64_t calculated_offset = static_cast<int64_t>(page) * size;
+        const int offset = calculated_offset > INT_MAX ? INT_MAX : static_cast<int>(calculated_offset);
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<ExtractJob>::getColumns())
+                .from(EntityTraits<ExtractJob>::tableName())
+                .where(where, params)
+                .orderBy("start_time DESC, created_at DESC")
+                .limit(size)
+                .offset(offset));
+        std::vector<ExtractJob> result;
+        result.reserve(rows.size());
+        for (const auto &row : rows) {
+            result.push_back(EntityTraits<ExtractJob>::fromRow(row));
+        }
+        return result;
+    }
+
+    ExtractJobStatistics statistics(const std::string &camera_id,
+                                    int64_t start_time_from,
+                                    int64_t start_time_to) {
+        std::string where;
+        std::vector<std::string> params;
+        buildListFilter(camera_id, start_time_from, start_time_to, where, params);
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COUNT(*)",
+                         "COALESCE(SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END), 0)",
+                         "COALESCE(SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END), 0)"})
+                .from(EntityTraits<ExtractJob>::tableName())
+                .where(where, params));
+        ExtractJobStatistics result;
+        if (!rows.empty() && rows.front().size() >= 3) {
+            result.total = std::stoll(rows[0][0]);
+            result.success = std::stoll(rows[0][1]);
+            result.failed = std::stoll(rows[0][2]);
+        }
+        return result;
+    }
+
     void recoverInterrupted(int64_t now) {
         _executor->execDML(
             toolkit::QueryBuilder()
@@ -316,6 +381,26 @@ public:
     }
 
 private:
+    static void buildListFilter(const std::string &camera_id,
+                                int64_t start_time_from,
+                                int64_t start_time_to,
+                                std::string &where,
+                                std::vector<std::string> &params) {
+        where = "1=1";
+        if (!camera_id.empty()) {
+            where += " AND camera_id=?";
+            params.push_back(camera_id);
+        }
+        if (start_time_from > 0) {
+            where += " AND start_time>=?";
+            params.push_back(std::to_string(start_time_from));
+        }
+        if (start_time_to > 0) {
+            where += " AND start_time<=?";
+            params.push_back(std::to_string(start_time_to));
+        }
+    }
+
     std::vector<ExtractJob> queryWhere(const std::string &where,
                                        const std::vector<std::string> &params,
                                        const std::string &order,

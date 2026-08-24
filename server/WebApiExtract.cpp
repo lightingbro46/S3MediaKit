@@ -217,6 +217,41 @@ void registerExtractionApis() {
         invoker(202, headerOut, val.toStyledString());
     });
 
+    api_regist("/media/esc/extractArchived/job/list", [](API_ARGS_MAP) {
+        CHECK_AUTH_TOKEN();
+
+        const string camera_id = allArgs["camera_id"];
+        const int64_t start_time_from = allArgs["start_time_from"].empty() ? 0 : allArgs["start_time_from"].as<int64_t>();
+        const int64_t start_time_to = allArgs["start_time_to"].empty() ? 0 : allArgs["start_time_to"].as<int64_t>();
+        int page = allArgs["page"].empty() ? 0 : allArgs["page"].as<int>();
+        int size = allArgs["size"].empty() ? 20 : allArgs["size"].as<int>();
+        if (page < 0) {
+            page = 0;
+        }
+        if (size <= 0 || size > 100) {
+            size = 20;
+        }
+        if (start_time_from < 0 || start_time_to < 0 ||
+            (start_time_from > 0 && start_time_to > 0 && start_time_from > start_time_to)) {
+            throw InvalidArgsException("Invalid start_time range", ApiErrCode::CODE_INVALID_TIME_RANGE);
+        }
+
+        ExtractJobImp repository;
+        const auto jobs = repository.list(camera_id, start_time_from, start_time_to, page, size);
+        const auto statistics = repository.statistics(camera_id, start_time_from, start_time_to);
+
+        Json::Value items(Json::arrayValue);
+        for (const auto &job : jobs) {
+            items.append(job.toJson());
+        }
+        val["data"]["items"] = items;
+        val["data"]["page"] = page;
+        val["data"]["size"] = size;
+        val["data"]["statistics"]["total"] = static_cast<Json::Int64>(statistics.total);
+        val["data"]["statistics"]["success"] = static_cast<Json::Int64>(statistics.success);
+        val["data"]["statistics"]["failed"] = static_cast<Json::Int64>(statistics.failed);
+    });
+
     DebugL << "Extraction APIs registered";
 }
 
