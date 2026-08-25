@@ -206,6 +206,7 @@ public:
     const std::string& getFilename() const { return _options.filename; }
     const std::string& getSavePath() const { return _save_path; }
     const std::string& getCmd() const { return _cmd; }
+    const std::string& getCameraId() const { return _tuple.app; }
     Status status() const;
     float progress() const { return status().progress; }
     bool finished() const { return status().finished; }

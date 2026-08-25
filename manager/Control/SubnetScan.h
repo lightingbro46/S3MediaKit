@@ -75,6 +75,7 @@ public:
     float progress() const { return status().progress; }
     bool finished() const { return status().finished; }
     std::vector<DeviceScanResult> result() const { return status().result; }
+    void cancel();
 
 public:
     static void discovery_device(std::string &address, int &port, bool &defaultPort, 

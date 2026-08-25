@@ -100,7 +100,6 @@ void registerControlApis() {
         bool defaultPort = allArgs["defaultPort"];
         string username = allArgs["username"];
         string password = allArgs["password"];
-        string jwt_token = allArgs["_jwt_token"];
         
         if (!SockUtil::is_ipv4(startIp.data()) || !SockUtil::is_ipv4(endIp.data())) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_IP, "startIp or endIp must be a IPv4");
@@ -115,11 +114,10 @@ void registerControlApis() {
         option.username = username;
         option.password = password;
 
-        addSubnetScan(option, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
+        addSubnetScan(option, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
             if (ex) {
                 RETURN_API_RESPONSE(ApiErrCode::CODE_SUBNETSCAN_FAILED, ex.what());
             } else {
-                UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
                 val["data"]["key"] = key;
                 invoker(201, headerOut, val.toStyledString());
             }
@@ -127,7 +125,9 @@ void registerControlApis() {
     });
 
     api_regist("/media/mserver/device/subnetScan/progress", [](API_ARGS_MAP_ASYNC) {
-        CHECK_USER_AUTHOR("key");
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_ARGS_("key");
 
         std::string key = allArgs["key"];
         auto scanner = s_subnet_scan.find(key);
@@ -149,9 +149,17 @@ void registerControlApis() {
     });
 
     api_regist("/media/mserver/device/subnetScan/delete", [](API_ARGS_MAP) {
-        CHECK_USER_AUTHOR("key");
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_ARGS_("key");
 
-        val["data"]["flag"] = s_subnet_scan.erase(allArgs["key"]) == 1;
+        auto scanner = s_subnet_scan.find(allArgs["key"]);
+        if (!scanner) {
+            val["data"]["flag"] = false;
+            return;
+        }
+        scanner->cancel();
+        val["data"]["flag"] = true;
     });
 
     

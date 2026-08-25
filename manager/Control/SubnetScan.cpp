@@ -240,6 +240,14 @@ SubnetScan::Status SubnetScan::status() const {
     return ret;
 }
 
+void SubnetScan::cancel() {
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        _finished = true;
+    }
+    close();
+}
+
 void SubnetScan::closeAfterDelaySec() {
     GET_CONFIG(int, delay_close_sec, Searcher::kDelayCloseSec);
     weak_ptr<SubnetScan> weakSelf = shared_from_this();

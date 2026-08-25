@@ -71,11 +71,10 @@ void registerExtractionApis() {
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
             ExtractOptions options = { start_time, end_time, filename, description, user_id, user_name, jwt_token, enable_source_stamp };
 
-            addFFmpegExtractor(tuple, options, token_cache, [invoker, val, headerOut, jwt_token](const SockException &ex, const string &key) mutable {
+            addFFmpegExtractor(tuple, options, token_cache, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
                 if (ex) {
                     RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {
-                    UserAuthorManager::Instance().addAuthorCache(key, jwt_token, true, 600);
                     val["data"]["key"] = key;
                     invoker(201, headerOut, val.toStyledString());
                 }
@@ -118,24 +117,37 @@ void registerExtractionApis() {
     });
 
     api_regist("/media/esc/extractArchived/progress", [](API_ARGS_MAP_ASYNC) {
-        CHECK_USER_AUTHOR("key");
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE);
+        CHECK_ARGS_("key");
 
-        auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
+        const string key = allArgs["key"];
+        auto ffmpeg = s_ffmpeg_extractor.find(key);
         if (!ffmpeg) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
             return;
         }
 
-        auto status = ffmpeg->status();
-        if (status.finished && !status.success) {
-            auto err_detail = "Extract video failed: " + status.err_msg;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, err_detail.data());
-            return;
-        }
+        auto on_access = [key, val, invoker, headerOut]() mutable {
+            auto current = s_ffmpeg_extractor.find(key);
+            if (!current) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
+                return;
+            }
 
-        val["data"]["progress"] = sanitize_for_json(status.progress);
-        val["data"]["ready"] = status.finished && status.success;
-        invoker(200, headerOut, val.toStyledString());
+            auto status = current->status();
+            if (status.finished && !status.success) {
+                auto err_detail = "Extract video failed: " + status.err_msg;
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, err_detail.data());
+                return;
+            }
+
+            val["data"]["progress"] = sanitize_for_json(status.progress);
+            val["data"]["ready"] = status.finished && status.success;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(ffmpeg->getCameraId(), on_access);
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
@@ -162,10 +174,32 @@ void registerExtractionApis() {
         invoker.responseFile(allArgs.parser.getHeader(), res_header, save_path);
     });
 
-    api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP) {
-        CHECK_USER_AUTHOR("key");
+    api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE);
+        CHECK_ARGS_("key");
 
-        val["data"]["flag"] = s_ffmpeg_extractor.erase(allArgs["key"]) == 1;
+        const string key = allArgs["key"];
+        auto ffmpeg = s_ffmpeg_extractor.find(key);
+        if (!ffmpeg) {
+            val["data"]["flag"] = false;
+            invoker(200, headerOut, val.toStyledString());
+            return;
+        }
+
+        auto on_access = [key, val, invoker, headerOut]() mutable {
+            auto current = s_ffmpeg_extractor.find(key);
+            if (!current) {
+                val["data"]["flag"] = false;
+                invoker(200, headerOut, val.toStyledString());
+                return;
+            }
+            current->cancel();
+            val["data"]["flag"] = true;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(ffmpeg->getCameraId(), on_access);
     });
 
     api_regist("/media/esc/extractArchived/list", [](API_ARGS_MAP) {
