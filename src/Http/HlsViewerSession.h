@@ -6,6 +6,7 @@
 namespace mediakit {
 
 class Parser;
+class StrCaseMap;
 
 class HlsViewerSession {
 public:
@@ -28,6 +29,10 @@ public:
     static std::string createSessionId();
     static bool isValidSessionId(const std::string &session_id);
     static std::string appendSessionIdToUri(const std::string &uri, const std::string &session_id);
+    static std::string makePlaylistRedirectUrl(const std::string &public_path, const std::string &params,
+                                               const std::string &session_id);
+    static StrCaseMap makeHlsPlaylistRedirectHeader(const std::string &public_path, const std::string &params,
+                                                    const std::string &session_id);
     static std::string rewritePlaylist(const std::string &playlist, const std::string &session_id);
 };
 

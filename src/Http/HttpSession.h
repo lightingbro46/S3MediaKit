@@ -106,6 +106,7 @@ private:
     bool checkLiveStreamFMP4(const std::function<void()> &fmp4_list = nullptr);
     bool checkLiveStreamHls();
     bool checkLiveMotionStream();
+    void authorizeHlsRedirect(const std::function<void()> &on_authorized);
 
     bool checkLiveStreamByApp(const std::string &schema, const std::string &url_prefix, const std::string  &url_suffix, const std::function<void(const std::vector<MediaSource::Ptr> &)> &cb);
     bool checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_list = nullptr);
