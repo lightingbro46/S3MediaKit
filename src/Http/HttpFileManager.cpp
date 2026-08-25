@@ -565,7 +565,7 @@ static void accessFile(Session &sender, const Parser &parser, const MediaInfo &m
                 return;
             }
             if (err_msg == "InvalidSession" || err_msg == "ExpiredSession") {
-                cb(400, "text/html", headerOut, std::make_shared<HttpStringBody>("400 Bad Request"));
+                cb(400, "text/html", headerOut, std::make_shared<HttpStringBody>("400 Invalid Session"));
                 return;
             }
             // File authentication failed

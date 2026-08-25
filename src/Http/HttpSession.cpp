@@ -811,7 +811,7 @@ bool HttpSession::checkLiveStreamHls() {
         auto identity = HttpFileManager::resolveHlsViewerIdentity(_parser, _media_info);
         if (identity.origin == HlsViewerSession::Identity::Invalid) {
             bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
-            sendResponse(400, close_flag, "text/plain", KeyValue(), make_shared<HttpStringBody>("400 Bad Request"));
+            sendResponse(400, close_flag, "text/plain", KeyValue(), make_shared<HttpStringBody>("400 Invalid Session"));
             return true;
         }
         playlist_session_id = identity.session_id;
@@ -1696,7 +1696,7 @@ bool HttpSession::checkLiveStreamHlsByApp() {
     bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
     auto identity = HttpFileManager::resolveHlsViewerIdentity(_parser, _media_info);
     if (identity.origin == HlsViewerSession::Identity::Invalid) {
-        sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("400 Bad Request"));
+        sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("400 Invalid Session"));
         return true;
     }
     if (identity.origin != HlsViewerSession::Identity::Query) {
