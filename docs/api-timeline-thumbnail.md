@@ -283,6 +283,8 @@ sequenceDiagram
 
 **GET** `/media/esc/extractArchived/progress?key={key}`
 
+JWT gọi API không cần trùng với JWT đã tạo tác vụ. API cho phép truy cập khi JWT có quyền Extract (`1004`) và có quyền truy cập camera của tác vụ tại thời điểm kiểm tra.
+
 #### Response (`202 Accepted`)
 
 ```json
@@ -334,6 +336,8 @@ const downloadExtract = (key) => {
 **GET / DELETE** `/media/esc/extractArchived/delete?key={key}`
 
 Giải phóng tài nguyên và xóa file đã extract trên server.
+
+Điều kiện phân quyền giống API progress: JWT phải có quyền Extract (`1004`) và có quyền truy cập camera của tác vụ. Xóa tác vụ đang chạy sẽ dừng tiến trình extract.
 
 #### Response (`200`)
 
