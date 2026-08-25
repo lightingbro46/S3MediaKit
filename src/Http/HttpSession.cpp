@@ -688,6 +688,40 @@ bool HttpSession::checkLiveStreamFlv(const function<void()> &cb) {
     });
 }
 
+void HttpSession::authorizeHlsRedirect(const function<void()> &on_authorized) {
+    const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+    Broadcast::AuthInvoker invoker = [weak_self, close_flag, on_authorized](const string &err_msg) {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        self->async([weak_self, close_flag, on_authorized, err_msg]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (err_msg.empty()) {
+                on_authorized();
+                return;
+            }
+            if (err_msg == "ResourceUnavailable") {
+                self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("503 Service Unavailable"));
+                return;
+            }
+            if (err_msg == "MaxRequest") {
+                self->sendResponse(429, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            self->sendResponse(401, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>(err_msg));
+        }, false);
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, _media_info, invoker, *this);
+    if (!flag) {
+        invoker("");
+    }
+}
+
 bool HttpSession::checkLiveStreamHls() {
     std::string url = _parser.url();
     string url_prefix = "/media";
@@ -815,55 +849,70 @@ bool HttpSession::checkLiveStreamHls() {
         const string request_params = _parser.params();
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-        MediaSource::findAsync(source_info, static_pointer_cast<Session>(shared_from_this()),
-            [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &source) {
-                auto self = weak_self.lock();
-                if (!self) return;
-                if (!source) {
-                    self->sendNotFound(close_flag);
-                    return;
-                }
-
-                self->applyViewOverlayPolicy(source, [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &derived) {
+        authorizeHlsRedirect([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            MediaSource::findAsync(source_info, self,
+                [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &source) {
                     auto self = weak_self.lock();
                     if (!self) return;
-                    self->async([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag, derived]() {
+                    if (!source) {
+                        self->sendNotFound(close_flag);
+                        return;
+                    }
+
+                    self->applyViewOverlayPolicy(source, [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &derived) {
                         auto self = weak_self.lock();
                         if (!self) return;
-                        if (!derived) {
-                            self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Transcoded HLS source is not ready"));
-                            return;
-                        }
+                        self->async([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag, derived]() {
+                            auto self = weak_self.lock();
+                            if (!self) return;
+                            if (!derived) {
+                                self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Transcoded HLS source is not ready"));
+                                return;
+                            }
 
-                        const auto &derived_tuple = derived->getMediaTuple();
-                        if (derived_tuple.app.empty() || derived_tuple.stream.empty()) {
-                            self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
-                            return;
-                        }
+                            const auto &derived_tuple = derived->getMediaTuple();
+                            if (derived_tuple.app.empty() || derived_tuple.stream.empty()) {
+                                self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
+                                return;
+                            }
 
-                        string location = request_path;
-                        const string marker = "/" + source_info.stream + "/";
-                        const auto pos = request_path.find(marker);
-                        if (pos == string::npos) {
-                            self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
-                            return;
-                        }
-                        location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
-                        auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
-                            location, request_params, playlist_session_id);
-                        self->sendResponse(302, close_flag, nullptr, headers);
-                    }, false);
+                            string location = request_path;
+                            const string marker = "/" + source_info.stream + "/";
+                            const auto pos = request_path.find(marker);
+                            if (pos == string::npos) {
+                                self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
+                                return;
+                            }
+                            location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
+                            auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+                                location, request_params, playlist_session_id);
+                            self->sendResponse(302, close_flag, nullptr, headers);
+                        }, false);
+                    });
                 });
-            });
+        });
         return true;
     }
 #endif // ENABLE_FFMPEG
 
     if (needs_session_redirect) {
-        bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
-        auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
-            _parser.toOriginalUrl(_parser.url()), _parser.params(), playlist_session_id);
-        sendResponse(302, close_flag, nullptr, headers);
+        const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+        const string request_path = _parser.toOriginalUrl(_parser.url());
+        const string request_params = _parser.params();
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        authorizeHlsRedirect([weak_self, close_flag, request_path, request_params, playlist_session_id]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+                request_path, request_params, playlist_session_id);
+            self->sendResponse(302, close_flag, nullptr, headers);
+        });
         return true;
     }
 
@@ -1651,9 +1700,16 @@ bool HttpSession::checkLiveStreamHlsByApp() {
         return true;
     }
     if (identity.origin != HlsViewerSession::Identity::Query) {
-        auto redirect_headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
-            request_path, request_params, identity.session_id);
-        sendResponse(302, close_flag, nullptr, redirect_headers);
+        weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+        authorizeHlsRedirect([weak_self, close_flag, request_path, request_params, identity]() {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            auto redirect_headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+                request_path, request_params, identity.session_id);
+            self->sendResponse(302, close_flag, nullptr, redirect_headers);
+        });
         return true;
     }
 
