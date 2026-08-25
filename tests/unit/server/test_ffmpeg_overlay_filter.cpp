@@ -153,12 +153,13 @@ TEST_F(FFmpegOverlayFilterTest, KeepsColorPlanesForBlurPrivacyMask) {
     policy.privacy_mask_regions =
         "[{\"id\":\"door\",\"points\":[{\"x\":10,\"y\":10},{\"x\":200,\"y\":10},"
         "{\"x\":200,\"y\":120},{\"x\":10,\"y\":120}],"
-        "\"maskType\":\"blur\",\"blurRadius\":8}]";
+        "\"maskType\":\"blur\"}]";
 
     const std::string filter = buildFilter();
 
     ASSERT_FALSE(filter.empty());
-    EXPECT_NE(std::string::npos, filter.find("boxblur="));
+    EXPECT_NE(std::string::npos,
+              filter.find("boxblur=luma_radius=8:luma_power=2:chroma_radius=8:chroma_power=2"));
     EXPECT_NE(std::string::npos, filter.find("alphamerge[poly_pm0_processed_masked]"));
     EXPECT_NE(std::string::npos,
               filter.find("[poly_pm0_mask_base][poly_pm0_processed_masked]overlay="));
