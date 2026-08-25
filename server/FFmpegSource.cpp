@@ -901,26 +901,51 @@ std::string FFmpegOverlayFilter::build(const MediaTuple &tuple,
         return filter_complex + (filter_complex.empty() ? "" : ";") + "[" + last_label + "]null[v]";
     }
 
-    if (watermark_path.empty()) {
-        // The generated SVG now only carries the watermark; privacy masks are
-        // already burned in above.
+    std::vector<std::string> overlay_paths;
+    if (!watermark_path.empty()) {
+        overlay_paths.push_back(watermark_path);
+    }
+    if (!components.empty()) {
+        // When a prebuilt watermark asset is used, generated components still
+        // carry extraction-only overlays such as the source stamp. Render them
+        // separately so both SVGs can be chained into the FFmpeg graph.
         auto svg = OverlayPrivacyUtils::buildSvg(components, options);
         if (!File::create_path(svg_path, 0777) || !File::saveFile(svg, svg_path)) {
             WarnL << "FFmpeg overlay: cannot save overlay svg to " << svg_path;
             return "";
         }
-        watermark_path = svg_path;
+        overlay_paths.push_back(svg_path);
         temporary_paths.push_back(svg_path);
     }
 
-    std::ostringstream watermark_stage;
-    watermark_stage << "movie=" << OverlayPrivacyUtils::escapeMoviePath(watermark_path)
-                    << ",loop=loop=-1:size=1:start=0[wm_asset];"
-                    << "[wm_asset][" << last_label << "]"
-                    << "scale2ref[wm][wm_base];"
-                    << "[wm_base][wm]overlay=x=0:y=0:eof_action=repeat:format=auto,"
-                    << "format=yuv420p[v]";
-    return filter_complex + (filter_complex.empty() ? "" : ";") + watermark_stage.str();
+    std::ostringstream graph;
+    graph << filter_complex;
+    std::string current = last_label;
+    for (size_t i = 0; i < overlay_paths.size(); ++i) {
+        if (graph.tellp() > 0) {
+            graph << ";";
+        }
+        const std::string index = std::to_string(i);
+        const std::string asset_label = "wm" + index + "_asset";
+        const std::string overlay_label = "wm" + index;
+        const std::string base_label = "wm" + index + "_base";
+        const bool last_overlay = i + 1 == overlay_paths.size();
+        const std::string output_label = last_overlay ? "v" : "wm_stage" + index;
+
+        graph << "movie=" << OverlayPrivacyUtils::escapeMoviePath(overlay_paths[i])
+              << ",loop=loop=-1:size=1:start=0[" << asset_label << "];"
+              << "[" << asset_label << "][" << current << "]"
+              << "scale2ref[" << overlay_label << "][" << base_label << "];"
+              << "[" << base_label << "][" << overlay_label << "]"
+              << "overlay=x=0:y=0:eof_action=repeat:format=auto";
+        if (last_overlay) {
+            graph << ",format=yuv420p[v]";
+        } else {
+            graph << "[" << output_label << "]";
+        }
+        current = output_label;
+    }
+    return graph.str();
 }
 
 static Broadcast::ViewOverlayPolicy resolveViewOverlayPolicy(const MediaTuple &tuple,
@@ -1012,7 +1037,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     _overlay_temp_paths = temporary_paths;
 
     if (overlay_required && filter_complex.empty()) {
-        const string err_msg = "Unable to render required watermark/privacy mask overlay";
+        const string err_msg = "Unable to render required watermark/privacy mask/source stamp overlay";
         WarnL << "Extract video: " << err_msg << " for " << _tuple.app;
         completeOnce(false, err_msg);
         cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));

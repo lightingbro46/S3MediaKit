@@ -255,6 +255,7 @@ sequenceDiagram
 | `endTime` | `string/int64` | ✅ | Unix timestamp kết thúc |
 | `filename` | `string` | ✅ | Tên file đầu ra (phải có đuôi `.mp4`, `.mkv`, hoặc `.avi`) |
 | `description` | `string` | ❌ | Mô tả đoạn video |
+| `stampSource` | `bool` | ❌ | Mặc định `false`. Khi bật, ghi thêm dấu nguồn gồm tên camera và user thực hiện extract vào video. Dấu nguồn được áp dụng độc lập và có thể xuất hiện đồng thời với watermark/privacy mask của camera. |
 
 #### Response thành công (`201 Created`)
 
@@ -417,6 +418,7 @@ const createRes = await fetch('/media/esc/extractArchived/create', {
     endTime: 1717190120,
     filename: 'clip_20240601.mp4',
     description: 'Incident clip',
+    stampSource: true,
   }),
 });
 const { data: { key } } = await createRes.json();

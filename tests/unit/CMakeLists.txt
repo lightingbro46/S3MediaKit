@@ -77,7 +77,9 @@ add_test(NAME unit.extract_job COMMAND unit_extract_job)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
 if(ENABLE_SERVER_LIB)
-  add_executable(unit_extract_preview server/test_extract_preview.cpp)
+  add_executable(unit_extract_preview
+    server/test_extract_preview.cpp
+    server/test_ffmpeg_overlay_filter.cpp)
   target_compile_options(unit_extract_preview PRIVATE ${COMPILE_OPTIONS_DEFAULT})
   target_compile_definitions(unit_extract_preview PRIVATE ${MK_COMPILE_DEFINITIONS})
   target_link_libraries(unit_extract_preview
