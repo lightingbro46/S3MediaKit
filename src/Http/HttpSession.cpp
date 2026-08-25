@@ -770,6 +770,19 @@ bool HttpSession::checkLiveStreamHls() {
     }
 
     _media_info.protocol = overSsl() ? "https" : "http";
+    const bool is_playlist = end_with(_parser.url(), hls_suffix) || end_with(_parser.url(), hlsfmp4_suffix);
+    bool needs_session_redirect = false;
+    string playlist_session_id;
+    if (is_playlist) {
+        auto identity = HttpFileManager::resolveHlsViewerIdentity(_parser, _media_info);
+        if (identity.origin == HlsViewerSession::Identity::Invalid) {
+            bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+            sendResponse(400, close_flag, "text/plain", KeyValue(), make_shared<HttpStringBody>("400 Bad Request"));
+            return true;
+        }
+        playlist_session_id = identity.session_id;
+        needs_session_redirect = identity.origin != HlsViewerSession::Identity::Query;
+    }
 
 #if defined(ENABLE_FFMPEG)
     // Keep the normal HLS file-serving path unchanged. Only an explicit
@@ -779,7 +792,6 @@ bool HttpSession::checkLiveStreamHls() {
     auto request_args = Parser::parseArgs(_parser.params());
     auto transcode_it = request_args.find("transcode");
     const bool transcode_requested = transcode_it != request_args.end() && !strcasecmp(transcode_it->second.data(), "true");
-    const bool is_playlist = end_with(_parser.url(), hls_suffix) || end_with(_parser.url(), hlsfmp4_suffix);
     bool camera_overlay_requested = false;
     if (is_playlist && !transcode_requested && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         const auto args = Parser::parseArgs(_media_info.params);
@@ -799,12 +811,12 @@ bool HttpSession::checkLiveStreamHls() {
     const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
     if (view_transcode_requested && is_playlist && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
         MediaInfo source_info = _media_info;
-        const string request_url = _parser.toOriginalUrl(_parser.url());
+        const string request_path = _parser.toOriginalUrl(_parser.url());
         const string request_params = _parser.params();
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
         MediaSource::findAsync(source_info, static_pointer_cast<Session>(shared_from_this()),
-            [weak_self, source_info, request_url, request_params, close_flag](const MediaSource::Ptr &source) {
+            [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &source) {
                 auto self = weak_self.lock();
                 if (!self) return;
                 if (!source) {
@@ -812,10 +824,10 @@ bool HttpSession::checkLiveStreamHls() {
                     return;
                 }
 
-                self->applyViewOverlayPolicy(source, [weak_self, source_info, request_url, request_params, close_flag](const MediaSource::Ptr &derived) {
+                self->applyViewOverlayPolicy(source, [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &derived) {
                     auto self = weak_self.lock();
                     if (!self) return;
-                    self->async([weak_self, source_info, request_url, request_params, close_flag, derived]() {
+                    self->async([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag, derived]() {
                         auto self = weak_self.lock();
                         if (!self) return;
                         if (!derived) {
@@ -829,21 +841,16 @@ bool HttpSession::checkLiveStreamHls() {
                             return;
                         }
 
-                        string location = request_url;
+                        string location = request_path;
                         const string marker = "/" + source_info.stream + "/";
-                        const auto pos = request_url.find(marker);
+                        const auto pos = request_path.find(marker);
                         if (pos == string::npos) {
                             self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
                             return;
                         }
                         location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
-                        if (!request_params.empty()) {
-                            location += "?" + request_params;
-                        }
-                        KeyValue headers;
-                        headers["Location"] = location;
-                        headers["Cache-Control"] = "no-store";
-                        DebugL << "Redirecting HLS request to derived source: " << location;
+                        auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+                            location, request_params, playlist_session_id);
                         self->sendResponse(302, close_flag, nullptr, headers);
                     }, false);
                 });
@@ -851,6 +858,14 @@ bool HttpSession::checkLiveStreamHls() {
         return true;
     }
 #endif // ENABLE_FFMPEG
+
+    if (needs_session_redirect) {
+        bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+        auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+            _parser.toOriginalUrl(_parser.url()), _parser.params(), playlist_session_id);
+        sendResponse(302, close_flag, nullptr, headers);
+        return true;
+    }
 
     // No redirect was scheduled. Let the normal HttpFileManager HLS path
     // serve the original playlist/segments.
@@ -1566,77 +1581,180 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
 // Returns an HLS master playlist listing all sub-streams for the app.
 // Sub-stream entries use absolute paths: /media/{app}/{stream}/hls.m3u8
 bool HttpSession::checkLiveStreamHlsByApp() {
-    // Capture base URL before checkLiveStreamByApp may alter _media_info
-    string base_url = _parser.toOriginalUrl(_parser.url());
+    string url = _parser.url();
+    static const string kUrlPrefix = "/media";
     static const string kMasterSuffix = "/hls.master.m3u8";
+    auto schema_it = _parser.getUrlArgs().find("schema");
+    if (schema_it != _parser.getUrlArgs().end()) {
+        if (strcasecmp(schema_it->second.c_str(), HLS_SCHEMA)) {
+            return false;
+        }
+    } else {
+        if (url.size() < kUrlPrefix.size() || strncasecmp(url.data(), kUrlPrefix.data(), kUrlPrefix.size())) {
+            return false;
+        }
+        url.erase(0, kUrlPrefix.size());
+        if (url.size() < kMasterSuffix.size() ||
+            strcasecmp(url.data() + url.size() - kMasterSuffix.size(), kMasterSuffix.data())) {
+            return false;
+        }
+        url.erase(url.size() - kMasterSuffix.size());
+    }
+
+    GET_CONFIG(string, appName, Protocol::kAppName)
+    if (!appName.empty()) {
+        auto app_prefix = "/" + appName;
+        if (start_with(url, app_prefix)) {
+            url.erase(0, app_prefix.size());
+        }
+    }
+
+    string request_path = _parser.toOriginalUrl(_parser.url());
+    string base_url = request_path;
+    string request_params = _parser.params();
     if (end_with(base_url, kMasterSuffix)) {
         base_url.resize(base_url.size() - kMasterSuffix.size());
     }
-    auto identity = HlsViewerSession::resolve(_parser, "");
+
+    if (!request_params.empty()) {
+        url += "?" + request_params;
+    }
+
+    auto headers = _parser.getHeader();
+    if (!headers["Authorization"].empty() || !headers["authorization"].empty()) {
+        auto tmp = !headers["Authorization"].empty() ? headers["Authorization"] : headers["authorization"];
+        auto jwt_token = trim(findSubString(tmp.data(), "Bearer", nullptr));
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "token=" << jwt_token;
+    }
+    if (!headers["User-Agent"].empty()) {
+        url += url.find("?") == string::npos ? "?" : "&";
+        url += StrPrinter << "user-agent=" << encodeBase64(headers["User-Agent"]);
+    }
+
+    _media_info.parse(string(HLS_SCHEMA) + "://" + _parser["Host"] + url);
+    GET_CONFIG(string, record_app, Record::kAppName);
+    auto is_vod = _media_info.app == record_app;
+    if (_media_info.app.empty() || (is_vod && _media_info.stream.empty())) {
+        return false;
+    }
+    if (_is_websocket) {
+        _media_info.protocol = overSsl() ? "wss" : "ws";
+    } else {
+        _media_info.protocol = overSsl() ? "https" : "http";
+    }
+
+    bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+    auto identity = HttpFileManager::resolveHlsViewerIdentity(_parser, _media_info);
     if (identity.origin == HlsViewerSession::Identity::Invalid) {
-        bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
         sendResponse(400, close_flag, "text/plain", KeyValue(), std::make_shared<HttpStringBody>("400 Bad Request"));
         return true;
     }
-    auto session_id = identity.session_id;
+    if (identity.origin != HlsViewerSession::Identity::Query) {
+        auto redirect_headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+            request_path, request_params, identity.session_id);
+        sendResponse(302, close_flag, nullptr, redirect_headers);
+        return true;
+    }
 
-    bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
-    return checkLiveStreamByApp(HLS_SCHEMA, "/media", "/hls.master.m3u8",
-        [this, close_flag, base_url, session_id](const vector<MediaSource::Ptr> &list_src) {
-            string playlist =
-                "#EXTM3U\r\n"
-                "#EXT-X-VERSION:3\r\n";
+    string session_id = identity.session_id;
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+    auto on_sources = [weak_self, close_flag, base_url, session_id](const vector<MediaSource::Ptr> &list_src) {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        if (list_src.empty()) {
+            self->sendNotFound(close_flag);
+            return;
+        }
+        self->_is_live_stream = true;
 
-            for (const auto &src : list_src) {
-                const auto &tuple = src->getMediaTuple();
-                if (tuple.stream.empty()) continue;
+        string playlist =
+            "#EXTM3U\r\n"
+            "#EXT-X-VERSION:3\r\n";
 
-                // Parse quality params once
-                auto kv = Parser::parseArgs(tuple.params);
-                auto quality_it = kv.find("quality");
+        for (const auto &src : list_src) {
+            const auto &tuple = src->getMediaTuple();
+            if (tuple.stream.empty()) continue;
 
-                // Accumulate bandwidth from all tracks; pick resolution from video track only
-                int bandwidth = 0;
-                string resolution;
-                auto tracks = src->getTracks();
-                for (const auto &track : tracks) {
-                    int br = track->getBitRate();
-                    if (br > 0) {
-                        bandwidth += br;
+            // Parse quality params once
+            auto kv = Parser::parseArgs(tuple.params);
+            auto quality_it = kv.find("quality");
+
+            // Accumulate bandwidth from all tracks; pick resolution from video track only
+            int bandwidth = 0;
+            string resolution;
+            auto tracks = src->getTracks();
+            for (const auto &track : tracks) {
+                int br = track->getBitRate();
+                if (br > 0) {
+                    bandwidth += br;
+                }
+                if (track->getTrackType() == TrackVideo) {
+                    auto video_track = dynamic_pointer_cast<VideoTrack>(track);
+                    int w = video_track->getVideoWidth();
+                    int h =  video_track->getVideoHeight();
+                    if (w > 0 && h > 0) {
+                        resolution = to_string(w) + "x" + to_string(h);
                     }
-                    if (track->getTrackType() == TrackVideo) {
-                        auto video_track = dynamic_pointer_cast<VideoTrack>(track);
-                        int w = video_track->getVideoWidth();
-                        int h =  video_track->getVideoHeight();
-                        if (w > 0 && h > 0) {
-                            resolution = to_string(w) + "x" + to_string(h);
-                        }
-                    }
                 }
-
-                // Fallback bandwidth based on quality param
-                if (bandwidth <= 0) {
-                    bandwidth = (quality_it != kv.end() && quality_it->second == "lo") ? 512000 : 2000000;
-                }
-
-                string attrs = "BANDWIDTH=" + to_string(bandwidth);
-                if (!resolution.empty()) {
-                    attrs += ",RESOLUTION=" + resolution;
-                }
-                // Add human-readable NAME from quality param if available
-                if (quality_it != kv.end() && !quality_it->second.empty()) {
-                    attrs += ",NAME=\"" + quality_it->second + "\"";
-                }
-
-                playlist += "#EXT-X-STREAM-INF:" + attrs + "\r\n";
-                playlist += HlsViewerSession::appendSessionIdToUri(
-                    base_url + "/" + tuple.stream + "/hls.m3u8", session_id) + "\r\n";
             }
 
-            KeyValue header;
-            header["Cache-Control"] = "no-store";
-            sendResponse(200, close_flag, "application/vnd.apple.mpegurl", header, std::make_shared<HttpStringBody>(playlist));
-        });
+            // Fallback bandwidth based on quality param
+            if (bandwidth <= 0) {
+                bandwidth = (quality_it != kv.end() && quality_it->second == "lo") ? 512000 : 2000000;
+            }
+
+            string attrs = "BANDWIDTH=" + to_string(bandwidth);
+            if (!resolution.empty()) {
+                attrs += ",RESOLUTION=" + resolution;
+            }
+            // Add human-readable NAME from quality param if available
+            if (quality_it != kv.end() && !quality_it->second.empty()) {
+                attrs += ",NAME=\"" + quality_it->second + "\"";
+            }
+
+            playlist += "#EXT-X-STREAM-INF:" + attrs + "\r\n";
+            playlist += HlsViewerSession::appendSessionIdToUri(
+                base_url + "/" + tuple.stream + "/hls.m3u8", session_id) + "\r\n";
+        }
+
+        KeyValue header;
+        header["Cache-Control"] = "no-store";
+        self->sendResponse(200, close_flag, "application/vnd.apple.mpegurl", header, std::make_shared<HttpStringBody>(playlist));
+    };
+
+    auto on_res = [weak_self, close_flag, on_sources](const string &err) {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        if (!err.empty()) {
+            if (err == "ResourceUnavailable") {
+                self->sendResponse(503, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("503 Service Unavailable"));
+                return;
+            }
+            if (err == "MaxRequest") {
+                self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
+            return;
+        }
+        MediaSource::findAsyncByApp(self->_media_info, self, on_sources);
+    };
+
+    Broadcast::AuthInvoker invoker = [weak_self, on_res](const string &err) {
+        if (auto self = weak_self.lock()) {
+            self->async([on_res, err]() { on_res(err); }, false);
+        }
+    };
+    auto flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, _media_info, invoker, *this);
+    if (!flag) {
+        invoker("");
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------

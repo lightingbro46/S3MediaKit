@@ -3,6 +3,7 @@
 
 #include "HttpBody.h"
 #include "HttpCookie.h"
+#include "HlsViewerSession.h"
 #include "Common/Parser.h"
 #include "Network/Session.h"
 #include "Util/function_traits.h"
@@ -62,6 +63,8 @@ public:
      * @param ip Supports ipv4 and ipv6
      */
     static bool isOriginalUrlTrustedProxy(const std::string &ip);
+
+    static HlsViewerSession::Identity resolveHlsViewerIdentity(const Parser &parser, const MediaInfo &media_info);
 
 private:
     HttpFileManager() = delete;

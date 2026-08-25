@@ -67,6 +67,25 @@ static string getHlsViewerUid(const string &scope, const string &session_id) {
     return scope + "|" + session_id;
 }
 
+static string getHlsCookieSessionId(const string &hls_scope, const HttpServerCookie::Ptr &header_cookie) {
+    if (header_cookie) {
+        auto &attach = header_cookie->getAttach<HttpCookieAttachment>();
+        if (attach._hls_data && attach._hls_scope == hls_scope &&
+            HlsViewerSession::isValidSessionId(attach._hls_session_id)) {
+            return attach._hls_session_id;
+        }
+    }
+    return "";
+}
+
+HlsViewerSession::Identity HttpFileManager::resolveHlsViewerIdentity(const Parser &parser, const MediaInfo &media_info) {
+    if (parser.getUrlArgs().find(HlsViewerSession::kSessionIdParam) != parser.getUrlArgs().end()) {
+        return HlsViewerSession::resolve(parser, "");
+    }
+    auto header_cookie = HttpCookieManager::Instance().getCookie(kCookieName, parser.getHeader());
+    return HlsViewerSession::resolve(parser, getHlsCookieSessionId(getHlsScope(media_info), header_cookie));
+}
+
 const string &HttpFileManager::getContentType(const char *name) {
     return HttpConst::getHttpContentType(name);
 }
@@ -355,15 +374,7 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
 
     if (is_hls || has_explicit_session_id) {
         hls_scope = getHlsScope(media_info);
-        string cookie_session_id;
-        if (header_cookie) {
-            auto &attach = header_cookie->getAttach<HttpCookieAttachment>();
-            if (attach._hls_data && attach._hls_scope == hls_scope &&
-                HlsViewerSession::isValidSessionId(attach._hls_session_id)) {
-                cookie_session_id = attach._hls_session_id;
-            }
-        }
-
+        auto cookie_session_id = getHlsCookieSessionId(hls_scope, header_cookie);
         auto identity = HlsViewerSession::resolve(parser, cookie_session_id);
         if (identity.origin == HlsViewerSession::Identity::Invalid) {
             callback("InvalidSession", nullptr);
