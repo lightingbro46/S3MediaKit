@@ -79,7 +79,7 @@ HLS dùng playlist của đúng stream:
 GET {BASE_URL}/media/live/{cameraId}/{streamId}/hls.m3u8?session_id={SESSION_ID}
 ```
 
-Mỗi player nên tạo một `session_id` riêng có độ ngẫu nhiên cao (khuyến nghị UUID), giữ nguyên giá trị đó trong suốt một phiên xem và không dùng chung giữa các tab/player. Nếu client không truyền `session_id`, server tự sinh một giá trị cho phiên được nhận diện bằng cookie. Server đưa ID đã chọn vào URI của playlist con, init segment, key và media segment để nhiều HTTP connection của cùng player vẫn chỉ được tính là một người xem. Phiên sẽ hết hạn nếu không có request trong `hls.viewerTimeoutSec` (mặc định 60 giây).
+Mỗi player nên tạo một `session_id` riêng có độ ngẫu nhiên cao (khuyến nghị UUID), giữ nguyên giá trị đó trong suốt một phiên xem và không dùng chung giữa các tab/player. Nếu client không truyền `session_id`, server tái sử dụng session từ cookie đúng phạm vi camera hoặc tự sinh một giá trị, sau đó trả HTTP 302 đến chính playlist với `session_id` trong query. HLS.js và trình phát HLS native sẽ theo redirect rồi tiếp tục reload URL có session này. Server cũng đưa ID đã chọn vào URI của playlist con, init segment, key và media segment để nhiều HTTP connection của cùng player vẫn chỉ được tính là một người xem. Phiên sẽ hết hạn nếu không có request trong `hls.viewerTimeoutSec` (mặc định 60 giây).
 
 Server hỗ trợ đồng thời query `session_id` và cookie `S3_COOKIE`. Query ID có độ ưu tiên cao hơn cookie để các tab/player trong cùng trình duyệt vẫn được đếm riêng. Nếu URI con làm mất `session_id`, cookie được dùng làm fallback; ngược lại, nếu cookie bị chặn nhưng URI vẫn giữ ID thì server vẫn nhận diện được phiên. `session_id` có ký tự không hợp lệ hoặc dài quá 128 ký tự bị từ chối với HTTP 400.
 
@@ -89,7 +89,7 @@ Nếu không biết trước `streamId`, dùng HLS master playlist:
 GET {BASE_URL}/media/live/{cameraId}/hls.master.m3u8?session_id={SESSION_ID}
 ```
 
-Master playlist liệt kê các stream con và player có thể tự chọn bitrate/chất lượng. Nếu client không truyền `session_id` vào master playlist hoặc media playlist trực tiếp, server tự tạo một giá trị và gắn vào các URI con. Cookie-only vẫn tương thích, nhưng client nên truyền ID riêng cho từng player để đếm chính xác khi nhiều tab cùng phát một camera.
+Master playlist liệt kê các stream con và player có thể tự chọn bitrate/chất lượng. Nếu client không truyền `session_id` vào master playlist hoặc media playlist trực tiếp, server redirect đến URL có ID trước khi trả playlist. Các URI con dùng cùng ID. Redirect transcode cũng đi thẳng đến derived playlist có session để tránh thêm một vòng redirect. Cookie-only vẫn tương thích, nhưng client nên truyền ID riêng cho từng player để đếm chính xác khi nhiều tab cùng phát một camera.
 
 Ví dụ với hls.js:
 
