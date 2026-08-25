@@ -784,7 +784,6 @@ std::string FFmpegOverlayFilter::buildPrivacyMask(
                   << "[" << next << "_base][" << next << "_mask]"
                   << "overlay=x=0:y=0:eof_action=repeat:format=auto[" << next << "]";
         } else {
-            graph << "[" << next << "_asset]format=rgba,alphaextract[" << next << "_alpha_asset];";
             graph << "[" << current << "]split=2[" << next << "_base][" << next << "_src];";
             if (mask.mask_type == PrivacyMaskRegion::BLUR) {
                 graph << "[" << next << "_src]boxblur=luma_radius=2:luma_power=1:"
@@ -796,11 +795,14 @@ std::string FFmpegOverlayFilter::buildPrivacyMask(
             }
             graph << "[" << next << "_processed][" << next << "_base]"
                   << "scale2ref[" << next << "_processed_ref][" << next << "_base_ref];"
-                  << "[" << next << "_alpha_asset][" << next << "_base_ref]"
+                  << "[" << next << "_asset][" << next << "_base_ref]"
                   << "scale2ref[" << next << "_mask_scaled][" << next << "_mask_base];"
-                  << "[" << next << "_mask_scaled]format=gray[" << next << "_alpha];"
-                  << "[" << next << "_mask_base][" << next << "_processed_ref][" << next << "_alpha]"
-                  << "maskedmerge[" << next << "]";
+                  << "[" << next << "_mask_scaled]format=rgba,alphaextract[" << next << "_alpha];"
+                  << "[" << next << "_processed_ref]format=rgba[" << next << "_processed_rgba];"
+                  << "[" << next << "_processed_rgba][" << next << "_alpha]"
+                  << "alphamerge[" << next << "_processed_masked];"
+                  << "[" << next << "_mask_base][" << next << "_processed_masked]"
+                  << "overlay=x=0:y=0:eof_action=repeat:format=auto[" << next << "]";
         }
         current = next;
     }
@@ -814,7 +816,8 @@ std::string FFmpegOverlayFilter::buildPrivacyMask(
 
 // Build the camera's current watermark/privacy mask policy into a fixed-canvas
 // FFmpeg filter graph. SVG assets are scaled by scale2ref at runtime; blur and
-// pixelate use maskedmerge so polygon alpha masks remain precise. Returns an
+// pixelate use alpha-masked overlays so the color planes of the base stream are
+// preserved. Returns an
 // empty string when no overlay is required or a required asset cannot render.
 std::string FFmpegOverlayFilter::build(const MediaTuple &tuple,
                                        const Broadcast::ViewOverlayPolicy &policy,

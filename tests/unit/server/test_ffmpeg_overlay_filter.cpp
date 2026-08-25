@@ -148,4 +148,38 @@ TEST_F(FFmpegOverlayFilterTest, ChainsPrivacyMaskAssetAndSourceStamp) {
     EXPECT_EQ(1U, countOccurrences(filter, "[v]"));
 }
 
+TEST_F(FFmpegOverlayFilterTest, KeepsColorPlanesForBlurPrivacyMask) {
+    policy.privacy_mask_enforce = true;
+    policy.privacy_mask_regions =
+        "[{\"id\":\"door\",\"points\":[{\"x\":10,\"y\":10},{\"x\":200,\"y\":10},"
+        "{\"x\":200,\"y\":120},{\"x\":10,\"y\":120}],"
+        "\"maskType\":\"blur\",\"blurRadius\":8}]";
+
+    const std::string filter = buildFilter();
+
+    ASSERT_FALSE(filter.empty());
+    EXPECT_NE(std::string::npos, filter.find("boxblur="));
+    EXPECT_NE(std::string::npos, filter.find("alphamerge[poly_pm0_processed_masked]"));
+    EXPECT_NE(std::string::npos,
+              filter.find("[poly_pm0_mask_base][poly_pm0_processed_masked]overlay="));
+    EXPECT_EQ(std::string::npos, filter.find("maskedmerge"));
+}
+
+TEST_F(FFmpegOverlayFilterTest, KeepsColorPlanesForPixelatePrivacyMask) {
+    policy.privacy_mask_enforce = true;
+    policy.privacy_mask_regions =
+        "[{\"id\":\"door\",\"points\":[{\"x\":10,\"y\":10},{\"x\":200,\"y\":10},"
+        "{\"x\":200,\"y\":120},{\"x\":10,\"y\":120}],"
+        "\"maskType\":\"pixelate\",\"pixelSize\":12}]";
+
+    const std::string filter = buildFilter();
+
+    ASSERT_FALSE(filter.empty());
+    EXPECT_NE(std::string::npos, filter.find("flags=area"));
+    EXPECT_NE(std::string::npos, filter.find("alphamerge[poly_pm0_processed_masked]"));
+    EXPECT_NE(std::string::npos,
+              filter.find("[poly_pm0_mask_base][poly_pm0_processed_masked]overlay="));
+    EXPECT_EQ(std::string::npos, filter.find("maskedmerge"));
+}
+
 } // namespace
