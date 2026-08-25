@@ -525,6 +525,7 @@ bool OverlayPrivacyUtils::parsePrivacyMasks(const std::string &source,
         mask.id = item.get("id", "privacy_mask").asString();
         mask.color = item.get("color", "#000000").asString();
         mask.opacity = item.get("opacity", 1.0).asDouble();
+        mask.blur_radius = std::max(2, std::min(64, item.get("blurRadius", 8).asInt()));
         std::string mask_type = item.get("maskType", "SOLID").asString();
         for (size_t k = 0; k < mask_type.size(); ++k) {
             mask_type[k] = static_cast<char>(std::toupper(static_cast<unsigned char>(mask_type[k])));

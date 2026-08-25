@@ -68,6 +68,7 @@ struct PrivacyMaskRegion {
     std::string color = "#000000";
     double opacity = 1.0;
     MaskType mask_type = SOLID;
+    int blur_radius = 8;
 };
 
 struct OverlayBuildOptions {

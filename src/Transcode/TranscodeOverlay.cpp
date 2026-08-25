@@ -307,6 +307,7 @@ FFmpegFrame::Ptr TranscodeOverlay::applyPrivacyMasks(const FFmpegFrame::Ptr &fra
                 // Blur a low-resolution ROI and upscale by nearest sampling.
                 // In source-pixel space both luma and chroma use ~4x reduction.
                 const int downscale = plane == 0 ? 4 : 2;
+                const int low_radius = std::max(1, (mask.config.blur_radius + downscale - 1) / downscale);
                 const int low_w = (rw + downscale - 1) / downscale;
                 const int low_h = (rh + downscale - 1) / downscale;
                 cache.work.resize(low_w * low_h);
@@ -318,8 +319,8 @@ FFmpegFrame::Ptr TranscodeOverlay::applyPrivacyMasks(const FFmpegFrame::Ptr &fra
                         cache.work[ly * low_w + lx] = src[sx];
                     }
                 }
-                boxBlurHorizontal(cache.work, cache.temp, low_w, low_h, 2);
-                boxBlurVertical(cache.temp, cache.work, low_w, low_h, 2);
+                boxBlurHorizontal(cache.work, cache.temp, low_w, low_h, low_radius);
+                boxBlurVertical(cache.temp, cache.work, low_w, low_h, low_radius);
             } else if (mask.config.mask_type == PrivacyMaskRegion::PIXELATE) {
                 const int block = plane == 0 ? 12 : 6;
                 const int blocks_x = (rw + block - 1) / block;

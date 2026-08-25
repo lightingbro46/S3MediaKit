@@ -786,8 +786,9 @@ std::string FFmpegOverlayFilter::buildPrivacyMask(
         } else {
             graph << "[" << current << "]split=2[" << next << "_base][" << next << "_src];";
             if (mask.mask_type == PrivacyMaskRegion::BLUR) {
-                graph << "[" << next << "_src]boxblur=luma_radius=2:luma_power=1:"
-                      << "chroma_radius=2:chroma_power=1[" << next << "_processed];";
+                graph << "[" << next << "_src]boxblur=luma_radius=" << mask.blur_radius
+                      << ":luma_power=2:chroma_radius=" << mask.blur_radius
+                      << ":chroma_power=2[" << next << "_processed];";
             } else {
                 graph << "[" << next << "_src]scale=w=\\'max(1,trunc(iw/12))\\':"
                       << "h=\\'max(1,trunc(ih/12))\\':flags=area,"
