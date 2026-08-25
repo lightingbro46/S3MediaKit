@@ -94,6 +94,23 @@ string HlsViewerSession::appendSessionIdToUri(const string &uri, const string &s
     return path + '?' + updated_query + fragment;
 }
 
+string HlsViewerSession::makePlaylistRedirectUrl(const string &public_path, const string &params, const string &session_id) {
+    string url = public_path;
+    if (!params.empty()) {
+        url += url.find('?') == string::npos ? "?" : "&";
+        url += params;
+    }
+    return appendSessionIdToUri(url, session_id);
+}
+
+StrCaseMap HlsViewerSession::makeHlsPlaylistRedirectHeader(const string &public_path, const string &params,
+                                                           const string &session_id) {
+    StrCaseMap headers;
+    headers["Location"] = makePlaylistRedirectUrl(public_path, params, session_id);
+    headers["Cache-Control"] = "no-store";
+    return headers;
+}
+
 static string rewritePlaylistLine(const string &line, const string &session_id) {
     if (line.empty()) {
         return line;

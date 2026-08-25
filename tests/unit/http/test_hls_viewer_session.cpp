@@ -62,6 +62,36 @@ TEST(HlsViewerSessionTest, AddsOrReplacesSessionIdWithoutChangingFragment) {
               HlsViewerSession::appendSessionIdToUri("segment.ts?session_id=old&token=x", "viewer-1"));
 }
 
+TEST(HlsViewerSessionTest, BuildsRedirectUrlWithOriginalPrefixAndExistingParameters) {
+    const char request[] =
+        "GET /media/live/camera/main/hls.m3u8?token=secret&transcode=true HTTP/1.1\r\n"
+        "Host: example.com\r\n\r\n";
+    Parser parser;
+    parser.parse(request, sizeof(request) - 1);
+    ASSERT_TRUE(parser.setOriginalUrl("/media2/media/live/camera/main/hls.m3u8?token=secret&transcode=true"));
+
+    auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+        parser.toOriginalUrl(parser.url()), parser.params(), "viewer-1");
+    EXPECT_EQ("/media2/media/live/camera/main/hls.m3u8?token=secret&transcode=true&session_id=viewer-1",
+              headers["Location"]);
+    EXPECT_EQ("no-store", headers["Cache-Control"]);
+    EXPECT_EQ("/media2/media/live/camera/main_transcode/hls.m3u8?token=secret&transcode=true&session_id=viewer-1",
+              HlsViewerSession::makePlaylistRedirectUrl(
+                  parser.toOriginalUrl("/media/live/camera/main_transcode/hls.m3u8"), parser.params(), "viewer-1"));
+}
+
+TEST(HlsViewerSessionTest, ReplacesSessionIdWhenBuildingRedirectUrl) {
+    const char request[] =
+        "GET /media/live/camera/main/hls.m3u8?session_id=old&token=secret HTTP/1.1\r\n"
+        "Host: example.com\r\n\r\n";
+    Parser parser;
+    parser.parse(request, sizeof(request) - 1);
+
+    EXPECT_EQ("/media/live/camera/main/hls.m3u8?session_id=viewer-1&token=secret",
+              HlsViewerSession::makePlaylistRedirectUrl(
+                  parser.toOriginalUrl(parser.url()), parser.params(), "viewer-1"));
+}
+
 TEST(HlsViewerSessionTest, RewritesMediaAndMasterPlaylistUris) {
     const std::string playlist =
         "#EXTM3U\r\n"
