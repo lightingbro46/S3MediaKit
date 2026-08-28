@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tier Storage Testing"
+  short_description: "Run isolated tier-storage and MinIO tests"
+  default_prompt: "Use $tier-storage-testing to validate tier-storage changes against my local MinIO test endpoint."

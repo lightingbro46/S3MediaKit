@@ -87,7 +87,7 @@ TEST(RecordPolicyTest, AppliesCurrentScheduleAndMotionTransitions) {
     auto listener = std::make_shared<CapturingDeviceEvent>();
     auto poller = toolkit::EventPollerPool::Instance().getPoller();
     auto profile = currentSchedule(RecordMode::RecordOnlyMotion, 12, "H");
-    auto scheduler = RecordScheduler::create(DeviceTuple{"vhost", "camera-motion", "name"}, profile, poller);
+    auto scheduler = RecordScheduler::create(DeviceTuple{"vhost", "camera-motion", "name"}, true, profile, poller);
     scheduler->setListener(listener);
 
     ASSERT_TRUE(waitFor(listener->mode_calls, 1, 1800));

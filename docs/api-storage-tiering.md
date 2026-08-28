@@ -189,6 +189,10 @@ Required theo type:
 - `NAS`: `mount_path` hoặc `network_path`.
 - `MINIO`: `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key`.
 
+Với filesystem pool, `mount_path`/`network_path` là logical recorder root và
+không bao gồm `{Record::kAppName}`. Ví dụ gửi `/data`; backend ghi dữ liệu tier
+tại `/data/record` khi `Record::kAppName=record`.
+
 Response: `data.id` của pool mới.
 
 ### 2.4 Update pool
@@ -249,14 +253,26 @@ Param optional `include` là danh sách storage type backend chuyển cho `getAv
   "data": {
     "mount_point": [{
       "name": "/dev/sdb1",
-      "mount": "/data/record",
+      "mount": "/data",
+      "actual_mount": "/data/record",
+      "data_path": "/data/record",
+      "filesystem_type": "ext4",
+      "pool_type": "LOCAL_DISK",
+      "layout": "APP_DIRECTORY_MOUNT",
       "used": 100,
+      "free": 900,
       "total": 1000,
       "used_pct": 10.0
     }]
   }
 }
 ```
+
+`mount` là giá trị dùng để tạo pool. `actual_mount` là mount mà process nhìn
+thấy, còn `data_path` là đường backend dùng để ghi và gọi `statvfs`. Hai field
+này đặc biệt quan trọng với bind mount Docker dạng
+`/data/storage:/opt/media/bin/www/record`: API trả `mount=/opt/media/bin/www`,
+nhưng đo dung lượng trên `/opt/media/bin/www/record` để lấy đúng filesystem host.
 
 ## 3. Storage policy
 
@@ -503,7 +519,7 @@ NOT_FOUND/EXPIRED/DELETED/MISSING trả lần lượt `914016` hoặc `914017` v
 
 ### 6.2 Create restore job
 
-`POST /media/mserver/storage/restoreJob/create` — params; cần cả permission `150301` và `1003`; required `camera_id`, `start_time`, `end_time`; optional `target_tier` (default `HOT`), `reason`.
+`POST /media/mserver/storage/restoreJob/create` — params; cần cả permission `150301` và `1003`; required `camera_id`, `start_time`, `end_time`; optional `stream_id`, `target_tier` (chỉ hỗ trợ `HOT`), `reason`.
 
 ```json
 {
@@ -514,7 +530,7 @@ NOT_FOUND/EXPIRED/DELETED/MISSING trả lần lượt `914016` hoặc `914017` v
 }
 ```
 
-> Giới hạn hiện tại: endpoint chỉ insert row `PENDING`, không dispatch restore worker. Auto-restore trong resolver replay mới là luồng gọi worker; một job API-created `PENDING` overlap còn có thể khiến auto-restore coi job đã được queue. FE chưa nên dùng endpoint này như lệnh download.
+Endpoint tạo parent/child job bền vững và dispatch worker ngay. Số child chạy đồng thời bị giới hạn bởi `storage.auto_restore_max_concurrent`; job `RUNNING` được recovery về queue sau restart.
 
 ### 6.3 Restore job detail/list
 
@@ -586,7 +602,7 @@ Item alert: `id`, `level`, `type`, `pool_id`, `pool_name`, `message`, `created_a
 
 Item list gồm `segment_id` và `range_id` (cùng giá trị), camera/stream/time/tier/pool/count/size, `expired_at`, `protected`, `evidence` (hiện luôn `false`).
 
-Approve trả `approved_count` và chỉ update metadata status sang `DELETED`. Extend trả `extended_count` và chỉ update status về `AVAILABLE`; `extend_until` chưa được lưu.
+Approve chỉ trả thành công sau khi xóa vật lý toàn bộ range và enqueue cleanup timefile. Extend lưu `extend_until`/`reason` vào `segment_retention_overrides` rồi trả range về `AVAILABLE`.
 
 `project_id`, `reason` không được các handler này đọc.
 
@@ -624,13 +640,11 @@ camera/timeline
 
 Auto-restore chỉ chạy khi server bật `storage.auto_restore_on_record_access=1` và luồng replay truy vấn `TimeBlock`. FE có thể poll `restoreJob/list/detail` để quan sát job do backend tự tạo, sau đó retry playback.
 
-Không dùng `restoreJob/create` làm trigger production cho đến khi backend nối endpoint với worker.
+Có thể dùng `restoreJob/create` làm trigger chủ động và poll detail/list để theo dõi parent job.
 
 ## 13. Chức năng chưa có
 
 - Không có `/storage/policy/assignProject` hoặc `/storage/policy/assignGroup`.
 - Không có WebSocket/SSE `/ws/storage/events`; FE phải polling nếu cần realtime.
 - `playback/resolve` không trả `playback_url`.
-- `restoreJob/create` chưa dispatch restore worker.
-- `storage.auto_restore_max_concurrent` đã khai báo nhưng chưa được enforce.
 - HTTP static-file miss không có hook trả `202`; restore được kích hoạt trong resolver `TimeBlock` của replay MP4.
