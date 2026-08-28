@@ -145,9 +145,6 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
     for (const auto &r : ranges) {
         if (!stream_id.empty() && r.stream_id != stream_id)
             continue;
-        if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
-            r.status == segmentStatusToString(SegmentStatus::EXPIRED))
-            continue;
         if (r.end_time <= static_cast<int64_t>(start_time) ||
             r.start_time >= static_cast<int64_t>(end_time))
             continue;
@@ -202,7 +199,11 @@ static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
             continue;
         if (rs > cursor)
             append_piece(cursor, rs, "HOT", false);
-        append_piece(std::max(cursor, rs), re, r.tier, is_restore_required_pool(r.pool_id));
+        const bool terminal = r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+                              r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
+                              r.status == segmentStatusToString(SegmentStatus::MISSING);
+        if (!terminal)
+            append_piece(std::max(cursor, rs), re, r.tier, is_restore_required_pool(r.pool_id));
         cursor = re;
     }
     if (cursor < end_time)

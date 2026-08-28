@@ -87,7 +87,9 @@ static std::vector<DiskPartition> get_disk_partitions() {
             continue;
 
         uint64_t total = stat.f_blocks * stat.f_frsize;
-        uint64_t free = stat.f_bfree * stat.f_frsize;
+        // f_bavail is the capacity the MediaServer process can actually use;
+        // f_bfree may include filesystem-reserved blocks unavailable to it.
+        uint64_t free = stat.f_bavail * stat.f_frsize;
         uint64_t used = total - free;
 
         DiskPartition part;
@@ -122,7 +124,7 @@ static std::vector<DiskPartition> get_disk_partitions() {
         if (is_virtual_filesystem(fstype, mount_point)) continue;
 
         uint64_t total = mounts[i].f_blocks * mounts[i].f_bsize;
-        uint64_t free = mounts[i].f_bfree * mounts[i].f_bsize;
+        uint64_t free = mounts[i].f_bavail * mounts[i].f_bsize;
         uint64_t used = total - free;
 
         DiskPartition part;
@@ -192,7 +194,7 @@ static DiskStats get_disk_usage(const std::string& path) {
     }
 
     usage.total_bytes = static_cast<uint64_t>(stat.f_blocks) * stat.f_frsize;
-    usage.free_bytes  = static_cast<uint64_t>(stat.f_bfree) * stat.f_frsize;
+    usage.free_bytes  = static_cast<uint64_t>(stat.f_bavail) * stat.f_frsize;
     usage.used_bytes  = usage.total_bytes - usage.free_bytes;
     return usage;
 

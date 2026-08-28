@@ -3,6 +3,7 @@
 #ifndef LOCAL_TIERSTORAGEMANAGER_H
 #define LOCAL_TIERSTORAGEMANAGER_H
 
+#include <atomic>
 #include <string>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,30 @@ struct TierRangeSegmentFile {
     int64_t file_size = 0;
 };
 
+// A filesystem mount exposed as a storage-pool candidate. mount_path is the
+// logical recorder root persisted in StoragePool; actual_mount_path is the
+// mount visible to the process, and data_path is where tier segment data is
+// stored after applying Record::kAppName.
+struct StorageMountCandidate {
+    std::string device;
+    std::string mount_path;
+    std::string actual_mount_path;
+    std::string data_path;
+    std::string filesystem_type;
+    std::string pool_type;
+    std::string layout;
+    uint64_t total_bytes = 0;
+    uint64_t free_bytes = 0;
+    uint64_t used_bytes = 0;
+    float usage_pct = 0.0f;
+
+    Json::Value toJson() const;
+
+    static StorageMountCandidate fromDiskPartition(const DiskPartition &partition,
+                                                   const std::string &pool_type,
+                                                   const std::string &app_name);
+};
+
 // ===================================================================
 // TierStorageManager
 //
@@ -98,8 +123,15 @@ public:
     // Test connectivity to a pool (filesystem stat for LOCAL_DISK/NAS; HEAD request for object storage)
     bool testPoolConnection(const StoragePool &pool, std::string &out_message, int &out_latency_ms);
 
-    // Get available mount point for tier
-    std::vector<DiskPartition> getAvailableMountPoints(const std::string &include_types = "");
+    // Get available filesystem roots. Returned mount_path is the logical pool
+    // root and never includes the configured Record::kAppName suffix.
+    std::vector<StorageMountCandidate> getAvailableMountPoints(const std::string &include_types = "");
+
+    // Filesystem pools persist the logical recorder root. Tier storage reads
+    // and writes below the configured record application directory.
+    static std::string resolveFilePoolMountRoot(const StoragePool &pool);
+    static std::string resolveFilePoolDataRoot(const StoragePool &pool,
+                                               const std::string &app_name);
 
     // ------------------------------------------------------------------
     // Section 2 — Storage Policy APIs
@@ -200,6 +232,18 @@ public:
     // segment is tracked in a cold tier range.
     ColdAccessRestoreResult handleColdAccessByPath(const std::string &file_path);
 
+    ColdAccessRestoreResult requestRestoreSegment(const std::string &camera_id,
+                                                   const std::string &stream_id,
+                                                   int64_t segment_start_time,
+                                                   const std::string &timefile_path,
+                                                   const std::string &reason);
+
+    ColdAccessRestoreResult requestRestoreWindow(const std::string &camera_id,
+                                                  const std::string &stream_id,
+                                                  int64_t start_time,
+                                                  int64_t end_time,
+                                                  const std::string &reason);
+
     PlaybackPathResolveResult resolvePlaybackSegmentPath(const std::string &camera_id,
                                                          const std::string &stream_id,
                                                          int64_t segment_start_time,
@@ -219,6 +263,12 @@ public:
                           int64_t from_time = 0, int64_t to_time = 0);
 
     std::vector<RestoreJob> getRestoreJob(const std::string &job_id);
+
+    bool approveExpiredRange(const std::string &range_id);
+
+    bool extendRangeRetention(const std::string &range_id,
+                              int64_t extend_until,
+                              const std::string &reason);
 
     /**
      * Register a newly created HOT segment range (from record MP4) with the tiering engine.
@@ -272,7 +322,11 @@ private:
                                        SegmentTierRange &out_move_range);
 
     bool expireRangeBestEffort(const SegmentTierRange &range,
-                               const std::string &final_status = "EXPIRED");
+                               const std::string &final_status = "DELETED");
+
+    bool isRangeDeletionProtected(const SegmentTierRange &range) const;
+
+    void processMetadataCleanupJobs();
 
     std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
 
@@ -297,13 +351,11 @@ private:
     bool executeObjectStorageUpload(TieringJob &job,
                                      const StoragePool &dst_pool);
 
-    void executeRestoreSegment(const std::string &job_id,
-                               const std::string &camera_id,
-                               const std::string &stream_id,
-                               const std::string &segment_path,
-                               const StoragePool &source_pool,
-                               int64_t range_start,
-                               int64_t range_end);
+    void executeRestoreSegment(const RestoreJobSegment &segment);
+
+    void processRestoreJobs();
+
+    void updateRestoreParent(const std::string &job_id);
 
     // Pool health helpers
     StorageHealth computePoolHealth(const StoragePool &pool,
@@ -339,12 +391,19 @@ private:
 
     void refreshCamerasRecordRootForPolicy(const std::string &policy_id);
 
+    bool validatePolicyForExecution(const StoragePolicy &policy, std::string &error) const;
+
 private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr       _timer;
     toolkit::Ticker           _ticker;
+    std::atomic<bool>         _maintenance_running{false};
+    std::atomic<bool>         _stopping{false};
+    std::atomic<int>          _restore_inflight{0};
 
     mutable std::mutex        _pool_cache_mtx;
+    mutable std::mutex        _range_registration_mtx;
+    mutable std::mutex        _restore_dispatch_mtx;
     // In-memory cache of enabled pools (refreshed every tick)
     std::unordered_map<std::string, StoragePool> _pool_cache;
 

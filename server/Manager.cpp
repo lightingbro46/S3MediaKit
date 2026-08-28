@@ -126,7 +126,9 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
         return resolved.read_path;
 
     if (resolved.restore_required) {
-        auto restore = TierStorageManager::Instance().handleColdAccessByPath(timefile_path);
+        auto restore = TierStorageManager::Instance().requestRestoreSegment(
+            block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
+            timefile_path, "AUTO_RECORD_ACCESS");
         WarnL << "Recorded MP4 segment requires restore before playback, camera=" << block.app()
               << " stream=" << block.stream()
               << " start_time=" << block.start_time()

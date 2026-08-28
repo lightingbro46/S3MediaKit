@@ -4,12 +4,15 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include "Poller/EventPoller.h"
 #include "Poller/Timer.h"
 #include "Util/TimeTicker.h"
 #include "json/json.h"
 
 namespace managerkit {
+
+struct TimeBlockIdentity;
  
 class StorageManager : public std::enable_shared_from_this<StorageManager> {
 public:
@@ -29,6 +32,9 @@ public:
     Json::Value makeSystemStorageJson();
 
     void rebuildTimeFile(const std::string &camera_id, uint64_t threshold);
+
+    size_t removeCameraTimeBlocks(const std::string &camera_id,
+                                  const std::vector<TimeBlockIdentity> &blocks);
 
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);

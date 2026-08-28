@@ -7,6 +7,7 @@
 #include "Common/StrUtil.h"
 #include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/base64.h"
 
 using namespace std;
 using namespace toolkit;
@@ -193,21 +194,44 @@ static void commitArchivedChanges(CameraArchivedChanges &camera_changes) {
 }
 
 size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
-    Ticker ticket;
-    size_t removed_bytes = 0;
-    
-    auto keep_block = [&removed_bytes, &map](const TimeBlock &block) -> bool { 
+    auto keep_block = [&map](const TimeBlock &block) -> bool {
         string key = (StrPrinter << block.app() << "/" << block.stream()); 
         auto it = map.find(key);
-        if (it != map.end()) {
-            if (block.start_time() >= it->second) {
-                TraceL << "Keep time block: " << key << " " << block.start_time();
-                return true;
+        return it != map.end() && block.start_time() >= it->second;
+    };
+    return rebuildTimeLineWithPredicate(keep_block);
+}
+
+size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
+    auto keep_block = [&blocks](const TimeBlock &block) -> bool {
+        for (const auto &identity : blocks) {
+            if (identity.camera_id != block.app() ||
+                identity.stream_id != block.stream() ||
+                identity.start_time != block.start_time())
+                continue;
+            if (!identity.segment_path.empty() && !block.file_path().empty()) {
+                const string decoded = decodeBase64(block.file_path());
+                const string suffix = identity.segment_path + ".mp4";
+                if (decoded.size() < suffix.size() ||
+                    decoded.compare(decoded.size() - suffix.size(), suffix.size(), suffix) != 0)
+                    continue;
             }
+            return false;
         }
-        TraceL << "Remove time block: " << key << " " << block.start_time();
+        return true;
+    };
+    return rebuildTimeLineWithPredicate(keep_block);
+}
+
+size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(const TimeBlock &)> &keep_predicate) {
+    Ticker ticket;
+    size_t removed_bytes = 0;
+    auto keep_block = [&removed_bytes, &keep_predicate](const TimeBlock &block) -> bool {
+        if (keep_predicate(block))
+            return true;
         removed_bytes += block.file_size();
-        TraceL << "Increase: " << format_bytes_human_readable(block.file_size()) << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
+        TraceL << "Remove time block: " << block.app() << "/" << block.stream()
+               << " " << block.start_time();
         return false;
     };
 
@@ -488,6 +512,21 @@ size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
             total_removed_bytes += removed_bytes;
         } catch (std::exception &ex) {
             WarnL << ex.what();
+        }
+    }
+    return total_removed_bytes;
+}
+
+size_t MultiTimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
+    size_t total_removed_bytes = 0;
+    if (blocks.empty())
+        return 0;
+    for (const auto &it : _timefiles_map) {
+        try {
+            auto rebuilder = std::make_shared<TimeRebuilder>(it.second);
+            total_removed_bytes += rebuilder->removeTimeBlocks(blocks);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to selectively rebuild " << it.second << ": " << ex.what();
         }
     }
     return total_removed_bytes;

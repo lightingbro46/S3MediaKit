@@ -86,9 +86,15 @@ inline Json::Value poolTypeSupport(TierType t) {
     } else if (t == ColdTier) {
         v["LOCAL_DISK"] = false;
         v["NAS"]        = true;
+#ifdef ENABLE_AWS_SDK
         v["MINIO"]      = true;
+        v["S3"]         = true;
+        v["ARCHIVE"]    = true;
+#else
+        v["MINIO"]      = false;
         v["S3"]         = false;
         v["ARCHIVE"]    = false;
+#endif
     }
     return v;
 }

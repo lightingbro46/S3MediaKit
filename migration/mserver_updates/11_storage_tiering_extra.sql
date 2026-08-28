@@ -15,6 +15,64 @@ CREATE TABLE IF NOT EXISTS "restore_jobs" (
     "updated_at"      INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS "idx_restore_jobs_status_created"
+    ON "restore_jobs" ("status", "created_at");
+
+CREATE INDEX IF NOT EXISTS "idx_restore_jobs_camera_window"
+    ON "restore_jobs" ("camera_id", "start_time", "end_time", "updated_at" DESC);
+
+-- Durable per-segment restore work. Parent restore_jobs rows are summaries only.
+CREATE TABLE IF NOT EXISTS "restore_job_segments" (
+    "job_id"          TEXT    NOT NULL,
+    "camera_id"       TEXT    NOT NULL,
+    "stream_id"       TEXT    NOT NULL,
+    "range_id"        TEXT    NOT NULL,
+    "segment_path"    TEXT    NOT NULL,
+    "source_pool_id"  TEXT    NOT NULL,
+    "range_start"     INTEGER NOT NULL DEFAULT 0,
+    "range_end"       INTEGER NOT NULL DEFAULT 0,
+    "status"          TEXT    NOT NULL DEFAULT 'PENDING',
+    "total_bytes"     INTEGER NOT NULL DEFAULT 0,
+    "processed_bytes" INTEGER NOT NULL DEFAULT 0,
+    "error_message"   TEXT,
+    "created_at"      INTEGER NOT NULL DEFAULT 0,
+    "updated_at"      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY ("job_id", "stream_id", "segment_path")
+);
+
+CREATE INDEX IF NOT EXISTS "idx_restore_job_segments_status_created"
+    ON "restore_job_segments" ("status", "created_at");
+
+CREATE INDEX IF NOT EXISTS "idx_restore_job_segments_job"
+    ON "restore_job_segments" ("job_id", "status");
+
+-- Prevent the same physical segment from being restored by two active jobs.
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_restore_job_segments_active"
+    ON "restore_job_segments" ("camera_id", "stream_id", "segment_path")
+    WHERE "status" IN ('PENDING', 'RUNNING');
+
+-- Physical deletion and playback-metadata deletion are deliberately separated.
+CREATE TABLE IF NOT EXISTS "tier_metadata_cleanup_jobs" (
+    "range_id"      TEXT    NOT NULL PRIMARY KEY,
+    "camera_id"     TEXT    NOT NULL,
+    "status"        TEXT    NOT NULL DEFAULT 'PENDING',
+    "attempt_count" INTEGER NOT NULL DEFAULT 0,
+    "error_message" TEXT,
+    "created_at"    INTEGER NOT NULL DEFAULT 0,
+    "updated_at"    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS "idx_tier_metadata_cleanup_status"
+    ON "tier_metadata_cleanup_jobs" ("status", "updated_at");
+
+-- Operator retention extensions are durable and checked by every delete path.
+CREATE TABLE IF NOT EXISTS "segment_retention_overrides" (
+    "range_id"     TEXT    NOT NULL PRIMARY KEY,
+    "extend_until" INTEGER NOT NULL,
+    "reason"       TEXT,
+    "updated_at"   INTEGER NOT NULL DEFAULT 0
+);
+
 -- Storage Tiering: persisted alerts that can be acknowledged by operators
 CREATE TABLE IF NOT EXISTS "storage_alerts" (
     "id"           TEXT    NOT NULL PRIMARY KEY,
@@ -26,6 +84,12 @@ CREATE TABLE IF NOT EXISTS "storage_alerts" (
     "created_at"   INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS "idx_storage_alerts_filter_created"
+    ON "storage_alerts" ("level", "acknowledged", "created_at" DESC);
+
+CREATE INDEX IF NOT EXISTS "idx_storage_alerts_ack_created"
+    ON "storage_alerts" ("acknowledged", "created_at" DESC);
+
 -- Storage Tiering: protected/evidence/locked playback ranges
 CREATE TABLE IF NOT EXISTS "protected_videos" (
     "protected_id" TEXT    NOT NULL PRIMARY KEY,
@@ -36,3 +100,6 @@ CREATE TABLE IF NOT EXISTS "protected_videos" (
     "reason"       TEXT,
     "created_at"   INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS "idx_protected_videos_camera_window"
+    ON "protected_videos" ("camera_id", "start_time", "end_time");

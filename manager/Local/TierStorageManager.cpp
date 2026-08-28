@@ -15,6 +15,7 @@
 #include "Server/GlobalMonitor.h"
 #include "Local/StatisticRecorder.h"
 #include "Local/TimeQuery.h"
+#include "Local/TimeRebuilder.h"
 #include "Common/DeviceSource.h"
 #include "Storage/MiscData.h"
 
@@ -28,6 +29,83 @@ using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
+
+namespace {
+
+std::string normalizeStoragePath(const std::string &path) {
+    return TierFileStorageBase::normalizeBasePath(path);
+}
+
+std::string appendStoragePath(const std::string &root, const std::string &child) {
+    if (root.empty() || child.empty())
+        return normalizeStoragePath(root);
+    return File::absolutePath(child, root);
+}
+
+std::string configuredPoolDataRoot(const StoragePool &pool) {
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    return TierStorageManager::resolveFilePoolDataRoot(pool, app_name);
+}
+
+} // namespace
+
+Json::Value StorageMountCandidate::toJson() const {
+    Json::Value value;
+    value["name"] = device;
+    value["mount"] = mount_path;
+    value["actual_mount"] = actual_mount_path;
+    value["data_path"] = data_path;
+    value["filesystem_type"] = filesystem_type;
+    value["pool_type"] = pool_type;
+    value["layout"] = layout;
+    value["used"] = static_cast<Json::UInt64>(used_bytes);
+    value["free"] = static_cast<Json::UInt64>(free_bytes);
+    value["total"] = static_cast<Json::UInt64>(total_bytes);
+    value["used_pct"] = sanitize_for_json(usage_pct);
+    return value;
+}
+
+StorageMountCandidate StorageMountCandidate::fromDiskPartition(
+        const DiskPartition &partition,
+        const std::string &candidate_pool_type,
+        const std::string &app_name) {
+    StorageMountCandidate candidate;
+    candidate.device = partition.device;
+    candidate.actual_mount_path = normalizeStoragePath(partition.mount_point);
+    candidate.mount_path = candidate.actual_mount_path;
+    candidate.filesystem_type = partition.filesystem_type;
+    candidate.pool_type = candidate_pool_type;
+    candidate.layout = "DIRECT_ROOT";
+    candidate.total_bytes = partition.total_bytes;
+    candidate.free_bytes = partition.free_bytes;
+    candidate.used_bytes = partition.used_bytes;
+    candidate.usage_pct = partition.usage_pct;
+
+    if (!app_name.empty()) {
+        const std::string suffix = "/" + app_name;
+        if (candidate.actual_mount_path == suffix) {
+            candidate.mount_path = "/";
+            candidate.layout = "APP_DIRECTORY_MOUNT";
+        } else if (candidate.actual_mount_path.size() > suffix.size() &&
+                   candidate.actual_mount_path.compare(
+                       candidate.actual_mount_path.size() - suffix.size(),
+                       suffix.size(), suffix) == 0) {
+            candidate.mount_path.resize(candidate.mount_path.size() - suffix.size());
+            candidate.layout = "APP_DIRECTORY_MOUNT";
+        }
+    }
+    candidate.data_path = appendStoragePath(candidate.mount_path, app_name);
+    return candidate;
+}
+
+std::string TierStorageManager::resolveFilePoolMountRoot(const StoragePool &pool) {
+    return normalizeStoragePath(pool.mount_path.value_or(pool.network_path.value_or("")));
+}
+
+std::string TierStorageManager::resolveFilePoolDataRoot(const StoragePool &pool,
+                                                        const std::string &app_name) {
+    return appendStoragePath(resolveFilePoolMountRoot(pool), app_name);
+}
 
 INSTANCE_IMP(TierStorageManager)
 
@@ -143,7 +221,6 @@ static std::vector<DiskSegmentInfo> collectDiskSegmentsFromRoot(const std::strin
         if (start_time > 0 && seg_end < start_time)
             return true;
 
-        struct stat st{};
         DiskSegmentInfo item;
         item.camera_id = camera_id;
         item.stream_id = stream_id;
@@ -151,7 +228,7 @@ static std::vector<DiskSegmentInfo> collectDiskSegmentsFromRoot(const std::strin
         item.full_path = path;
         item.start_time = ts;
         item.end_time = seg_end;
-        item.file_size = (stat(path.c_str(), &st) == 0) ? static_cast<int64_t>(st.st_size) : 0;
+        item.file_size = static_cast<int64_t>(File::fileSize(path));
         ret.push_back(std::move(item));
         return true;
     }, false, true);
@@ -343,7 +420,7 @@ bool TierStorageManager::registerPoolFileStorage(const StoragePool &pool) {
         return false;
     }
 
-    std::string path = pool.mount_path.value_or(pool.network_path.value_or(""));
+    std::string path = configuredPoolDataRoot(pool);
     if (path.empty()) {
         WarnL << "registerPoolFileStorage: missing mount_path/network_path for pool " << pool.id;
         return false;
@@ -358,7 +435,21 @@ void TierStorageManager::unregisterPoolFileStorage(const std::string &pool_id) {
 }
 
 std::string TierStorageManager::getSystemDefaultHotPoolId() const {
-    return kDefaultHotPoolId;
+    StoragePoolImp imp;
+    auto fixed = imp.findByPoolId(kDefaultHotPoolId);
+    if (!fixed.empty() && fixed.front().enabled &&
+        fixed.front().tier == tierTypeToString(HotTier) &&
+        !poolTypeIsObjectStorage(fixed.front().type))
+        return fixed.front().id;
+    auto hot_pools = imp.queryAll(tierTypeToString(HotTier));
+    std::sort(hot_pools.begin(), hot_pools.end(), [](const StoragePool &a, const StoragePool &b) {
+        return a.id < b.id;
+    });
+    for (const auto &pool : hot_pools) {
+        if (pool.enabled && !poolTypeIsObjectStorage(pool.type))
+            return pool.id;
+    }
+    return "";
 }
 
 void TierStorageManager::ensureDefaultHotPool() {
@@ -368,7 +459,8 @@ void TierStorageManager::ensureDefaultHotPool() {
         WarnL << "Cannot create default HOT pool, kMP4SavePath is empty";
         return;
     }
-    std::string record_path = File::absolutePath(app_name, mp4_save_path);
+    std::string mount_root = File::absolutePath("", mp4_save_path);
+    std::string record_path = File::absolutePath(app_name, mount_root);
 
     string message;
     int latency_ms = 0;
@@ -391,24 +483,9 @@ void TierStorageManager::ensureDefaultHotPool() {
         auto_hot_critical_watermark = std::min(95, std::max(auto_hot_high_watermark + 1, 90));
 
     StoragePoolImp imp;
-    auto hot_pools = imp.queryAll(tierTypeToString(HotTier));
-    if (!hot_pools.empty()) {
-        InfoL << "HOT pool already configured, skip default HOT pool";
-        auto pool = hot_pools.front();
-        bool changed = false;
-        if (pool.name.empty()) {
-            pool.name = kDefaultHotPoolName;
-            changed = true;
-        }
-        if (pool.enabled == 0) {
-            pool.enabled = 1;
-            changed = true;
-        }
-        if (changed) {
-            pool.updated_at = static_cast<int64_t>(time(nullptr));
-            if (!imp.update(pool))
-                WarnL << "Failed to update system default pool";
-        }
+    const std::string selected_hot_pool = getSystemDefaultHotPoolId();
+    if (!selected_hot_pool.empty()) {
+        InfoL << "Use existing HOT pool as system default: " << selected_hot_pool;
         return;
     }
 
@@ -418,16 +495,16 @@ void TierStorageManager::ensureDefaultHotPool() {
         pool.name = kDefaultHotPoolName;
         pool.type = poolTypeToString(StoragePoolType::LOCAL_DISK);
         pool.tier = tierTypeToString(HotTier);
-        pool.mount_path = Optional<std::string>(record_path);
+        pool.mount_path = Optional<std::string>(mount_root);
         pool.enabled = 1;
         pool.health_check_enabled = 1;
         pool.high_watermark_percent = auto_hot_high_watermark;
         pool.critical_watermark_percent = auto_hot_critical_watermark;
         if (createPool(pool).empty()) {
-            WarnL << "Failed to create default HOT pool at " << record_path;
+            WarnL << "Failed to create default HOT pool at " << mount_root;
             return;
         }
-        InfoL << "Created default HOT pool " << pool.id << " path=" << record_path;
+        InfoL << "Created default HOT pool " << pool.id << " path=" << mount_root;
     }
 }
 
@@ -449,10 +526,17 @@ void TierStorageManager::ensureSystemDefaultPolicy() {
             policy.enabled = 1;
             changed = true;
         }
-        if (policy.allow_camera_override == 0) {
-            policy.allow_camera_override = 1;
-            changed = true;
+        const std::string hot_pool_id = getSystemDefaultHotPoolId();
+        auto tiers = policy.parsedTiers();
+        for (auto &tier : tiers) {
+            if (tier.tier == tierTypeToString(HotTier) && !hot_pool_id.empty() &&
+                tier.pool_id != hot_pool_id) {
+                tier.pool_id = hot_pool_id;
+                changed = true;
+            }
         }
+        if (changed)
+            policy.tiers_json = StoragePolicy::tiersToJson(tiers);
         if (changed) {
             policy.updated_at = static_cast<int64_t>(time(nullptr));
             if (!policy_imp.update(policy))
@@ -468,7 +552,7 @@ void TierStorageManager::ensureSystemDefaultPolicy() {
     StoragePool default_hot_pool;
     {
         StoragePoolImp pool_imp;
-        auto hot_pools = pool_imp.findByPoolId(kDefaultHotPoolId);
+        auto hot_pools = pool_imp.findByPoolId(getSystemDefaultHotPoolId());
         if (hot_pools.empty()) {
             WarnL << "Default HOT pool not found, cannot create system default policy";
             return;
@@ -516,6 +600,12 @@ void TierStorageManager::start() {
         return;
     }
 
+    _stopping = false;
+
+    // Jobs left RUNNING by a crash are safe to claim again from durable state.
+    TieringJobImp().recoverRunning();
+    RestoreJobSegmentImp().recoverRunning();
+
     // Refresh pool cache immediately on start
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
@@ -541,10 +631,7 @@ void TierStorageManager::start() {
         [weak_self]() -> bool {
             auto self = weak_self.lock();
             if (!self) return false;
-            self->checkAndRecordPoolHealth();
             self->runTieringCycle();
-            self->pruneOldMetrics();
-            self->cleanupRestoreTempFiles();
             return true;
         },
         _poller);
@@ -553,6 +640,7 @@ void TierStorageManager::start() {
 }
 
 void TierStorageManager::stop() {
+    _stopping = true;
     _timer.reset();
     InfoL << "TierStorageManager stopped";
 }
@@ -573,10 +661,9 @@ bool TierStorageManager::resolveHotPoolForPath(const std::string &file_path, Sto
             continue;
 
         std::vector<std::string> roots;
-        if (pool.mount_path.has_value())
-            roots.push_back(pool.mount_path.value());
-        if (pool.network_path.has_value())
-            roots.push_back(pool.network_path.value());
+        const std::string data_root = configuredPoolDataRoot(pool);
+        if (!data_root.empty())
+            roots.push_back(data_root);
 
         for (const auto &raw_root : roots) {
             std::string root = TierFileStorageBase::normalizeBasePath(raw_root);
@@ -622,16 +709,37 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     }
 
     if (file_size <= 0) {
-        struct stat st{};
-        if (stat(file_path.c_str(), &st) == 0)
-            file_size = static_cast<int64_t>(st.st_size);
+        file_size = static_cast<int64_t>(File::fileSize(file_path));
     }
 
     SegmentTierRangeImp range_imp;
+    SegmentTierImp segment_imp;
     std::string hot_tier = tierTypeToString(HotTier);
     std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
-    if (range_imp.hasCoveringRange(camera_id, stream_id, hot_tier, available, start_time, end_time))
+    std::lock_guard<std::mutex> registration_lk(_range_registration_mtx);
+    std::string segment_path;
+    if (!deriveSegmentPathFromFullPath(file_path, camera_id, stream_id, segment_path)) {
+        WarnL << "Cannot derive stable segment identity from " << file_path;
+        return false;
+    }
+    if (segment_imp.exists(camera_id, stream_id, segment_path))
         return true;
+
+    SegmentTierRecord record;
+    record.camera_id = camera_id;
+    record.stream_id = stream_id;
+    record.segment_path = segment_path;
+    record.tier = hot_tier;
+    record.pool_id = hot_pool.id;
+    record.status = available;
+    record.start_time = start_time;
+    record.end_time = end_time;
+    record.file_size = std::max<int64_t>(0, file_size);
+    record.created_at = static_cast<int64_t>(time(nullptr));
+    record.updated_at = record.created_at;
+
+    if (range_imp.hasCoveringRange(camera_id, stream_id, hot_tier, available, start_time, end_time))
+        return segment_imp.upsert(record);
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     SegmentTierRange range;
@@ -649,6 +757,8 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     range.updated_at = now;
 
     bool ok = range_imp.mergeOrInsert(range);
+    if (ok)
+        ok = segment_imp.upsert(record);
     if (ok) {
         DebugL << "Registered HOT segment range camera=" << camera_id
                << " stream=" << stream_id
@@ -771,7 +881,7 @@ void TierStorageManager::backfillHotRangesFromTimeFiles() {
         }
 
         state.cursor_time = chunk_end;
-        state.done = (scanned == 0) || state.cursor_time >= stable_end;
+        state.done = state.cursor_time >= stable_end;
         state.updated_at = now;
         state.scanned_blocks += scanned;
         state.registered_blocks += registered;
@@ -921,8 +1031,8 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
 
     std::string segment_path;
     if (!deriveSegmentPathFromFullPath(timefile_path, camera_id, stream_id, segment_path)) {
-        ret.ready = !timefile_path.empty();
-        ret.fallback = true;
+        ret.ready = !timefile_path.empty() && File::fileExist(timefile_path);
+        ret.fallback = ret.ready;
         ret.message = "Cannot derive segment path, fallback to timefile path";
         return ret;
     }
@@ -931,21 +1041,30 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
     auto ranges = range_imp.queryByCamera(camera_id, segment_start_time, segment_start_time + 1);
     SegmentTierRange matched;
     bool found = false;
+    bool terminal = false;
     for (const auto &r : ranges) {
         if (r.stream_id != stream_id)
             continue;
-        if (r.start_time <= segment_start_time && r.end_time > segment_start_time &&
-            r.status != segmentStatusToString(SegmentStatus::DELETED) &&
-            r.status != segmentStatusToString(SegmentStatus::EXPIRED) &&
-            r.status != segmentStatusToString(SegmentStatus::MISSING)) {
+        if (r.start_time <= segment_start_time && r.end_time > segment_start_time) {
             matched = r;
             found = true;
+            terminal = r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+                       r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
+                       r.status == segmentStatusToString(SegmentStatus::MISSING);
             break;
         }
     }
+    if (found && terminal) {
+        ret.read_path.clear();
+        ret.tier = matched.tier;
+        ret.pool_id = matched.pool_id;
+        ret.range_id = matched.range_id;
+        ret.message = "Segment tier range is terminal: " + matched.status;
+        return ret;
+    }
     if (!found) {
-        ret.ready = !timefile_path.empty();
-        ret.fallback = true;
+        ret.ready = !timefile_path.empty() && File::fileExist(timefile_path);
+        ret.fallback = ret.ready;
         ret.message = "No segment tier range found, fallback to timefile path";
         return ret;
     }
@@ -965,16 +1084,15 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
         }
     }
     if (!has_pool) {
-        ret.ready = !timefile_path.empty();
-        ret.fallback = true;
+        ret.ready = !timefile_path.empty() && File::fileExist(timefile_path);
+        ret.fallback = ret.ready;
         ret.message = "Segment pool not found, fallback to timefile path";
         return ret;
     }
 
     if (poolTypeIsObjectStorage(pool.type)) {
         auto restore_path = buildRestoreSegmentPath(camera_id, stream_id, segment_path);
-        struct stat st{};
-        if (::stat(restore_path.c_str(), &st) == 0) {
+        if (File::fileExist(restore_path)) {
             ret.read_path = restore_path;
             ret.ready = true;
             ret.restore_required = false;
@@ -990,8 +1108,8 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
 
     auto storage = fileStorageForPoolType(pool.type);
     if (!storage) {
-        ret.ready = !timefile_path.empty();
-        ret.fallback = true;
+        ret.ready = !timefile_path.empty() && File::fileExist(timefile_path);
+        ret.fallback = ret.ready;
         ret.message = "Unsupported file storage pool, fallback to timefile path";
         return ret;
     }
@@ -1001,10 +1119,14 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
 
     std::string storage_key = TierFileStorageBase::makeStorageKey(camera_id, stream_id, segment_path);
     std::string resolved_path = storage->resolvePath(pool.id, storage_key);
-    if (resolved_path.empty()) {
-        ret.ready = !timefile_path.empty();
-        ret.fallback = true;
-        ret.message = "Cannot resolve file storage path, fallback to timefile path";
+    if (resolved_path.empty() || !File::fileExist(resolved_path)) {
+        const bool original_exists = !timefile_path.empty() && File::fileExist(timefile_path);
+        ret.read_path = original_exists ? timefile_path : "";
+        ret.ready = original_exists;
+        ret.fallback = original_exists;
+        ret.message = original_exists
+            ? "Resolved tier path is missing, using existing timefile path"
+            : "Resolved tier path and timefile path are missing";
         return ret;
     }
     ret.read_path = resolved_path;
@@ -1136,6 +1258,12 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
 // Section 1 — Storage Pool APIs
 // ===================================================================
 std::string TierStorageManager::createPool(StoragePool pool) {
+#ifndef ENABLE_AWS_SDK
+    if (poolTypeIsObjectStorage(pool.type)) {
+        WarnL << "Object storage pool requires ENABLE_AWS_SDK";
+        return "";
+    }
+#endif
     if (pool.id.empty()) {
         pool.id = StrUUID::make_guid(8, "pool");
         DebugL << "Generated new pool id: " << pool.id;
@@ -1166,6 +1294,12 @@ std::string TierStorageManager::createPool(StoragePool pool) {
 }
 
 bool TierStorageManager::updatePool(const StoragePool &pool) {
+#ifndef ENABLE_AWS_SDK
+    if (poolTypeIsObjectStorage(pool.type)) {
+        WarnL << "Object storage pool requires ENABLE_AWS_SDK";
+        return false;
+    }
+#endif
     StoragePool updated = pool;
     updated.updated_at = static_cast<int64_t>(time(nullptr));
 
@@ -1203,7 +1337,7 @@ bool TierStorageManager::updatePool(const StoragePool &pool) {
 }
 
 bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_count, bool &out_is_default_hot_pool) {
-    out_is_default_hot_pool = (pool_id == kDefaultHotPoolId);
+    out_is_default_hot_pool = (pool_id == getSystemDefaultHotPoolId());
     if (out_is_default_hot_pool) {
         WarnL << "Cannot delete default HOT pool: " << pool_id;
         out_ref_count = 0;
@@ -1241,8 +1375,19 @@ std::vector<StoragePool> TierStorageManager::listPools(const std::string &tier,
                                                         const std::string &keyword) {
     StoragePoolImp imp;
     auto pools = imp.queryAll(tier, type, keyword);
-    // Enrich with live health stats
-    for (auto &p : pools) fillPoolRuntimeStats(p);
+    // HTTP/dashboard reads use the latest durable snapshot; live probes run only
+    // inside the maintenance worker or the explicit test-connection endpoint.
+    PoolMetricsImp metrics_imp;
+    for (auto &p : pools) {
+        const auto metric = metrics_imp.latestForPool(p.id);
+        if (metric.timestamp <= 0)
+            continue;
+        p.used_bytes = metric.used_bytes;
+        p.total_bytes = metric.total_bytes;
+        p.usage_pct = metric.usage_pct;
+        p.health_status = metric.health_status;
+        p.last_health_check = metric.timestamp;
+    }
     return pools;
 }
 
@@ -1274,7 +1419,7 @@ bool TierStorageManager::testPoolConnection(const StoragePool &pool, std::string
             out_latency_ms);
     }
 
-    std::string path = pool.mount_path.value_or(pool.network_path.value_or(""));
+    std::string path = configuredPoolDataRoot(pool);
     if (path.empty()) {
         out_message = "No mount_path or network_path configured";
         return false;
@@ -1287,7 +1432,7 @@ bool TierStorageManager::testPoolConnection(const StoragePool &pool, std::string
     return storage->testConnectionParams(path, out_message, out_latency_ms);
 }
 
-std::vector<DiskPartition> TierStorageManager::getAvailableMountPoints(const string &include_types) {
+std::vector<StorageMountCandidate> TierStorageManager::getAvailableMountPoints(const string &include_types) {
     auto parsed_types = split(include_types, ",");
     auto isIncluded = [&](const std::string &type) {
         if (include_types.empty()) return true;
@@ -1301,10 +1446,10 @@ std::vector<DiskPartition> TierStorageManager::getAvailableMountPoints(const str
     auto local_pools = listPools("", poolTypeToString(StoragePoolType::LOCAL_DISK));
     auto nas_pools = listPools("", poolTypeToString(StoragePoolType::NAS));
     
-    std::vector<DiskPartition> ret;
+    std::vector<StorageMountCandidate> ret;
     GET_CONFIG(string, db_path, Database::kDbSavePath);
     GET_CONFIG(string, app_name, Record::kAppName);
-    auto db_mount = File::absolutePath("" , db_path);
+    auto db_mount = GlobalMonitor::Instance().findMountPoint(File::absolutePath("", db_path));
     auto log_pattern = "/log";
     auto conf_pattern = "/conf";
 
@@ -1332,39 +1477,37 @@ std::vector<DiskPartition> TierStorageManager::getAvailableMountPoints(const str
             continue; // skip if the caller explicitly included this type
         }
 
-        auto mountpoint = File::absolutePath(app_name, hdd.mount_point);
+        const auto candidate = StorageMountCandidate::fromDiskPartition(
+            hdd, poolTypeToString(pool_type), app_name);
         string message;
         int latency_ms = 0;
-        if (!storage->testConnectionParams(mountpoint, message, latency_ms)) {
+        // Probe the existing mount itself. Probing candidate.data_path here
+        // would create the application directory as a side effect of a GET.
+        if (!storage->testConnectionParams(candidate.actual_mount_path, message, latency_ms)) {
             WarnL << "Mount point " << hdd.mount_point << " is not writable, error: " << message;
             continue;
         }
         DebugL << "Mount point " << hdd.mount_point << " is writable, latency: " << latency_ms << " ms";
 
         bool already_used = false;
+        auto poolUsesMount = [&](const StoragePool &pool) {
+            const std::string pool_root = resolveFilePoolMountRoot(pool);
+            if (pool_root.empty())
+                return false;
+            if (pool_root == candidate.mount_path)
+                return true;
+            const std::string pool_data_root = resolveFilePoolDataRoot(pool, app_name);
+            return GlobalMonitor::Instance().findMountPoint(pool_data_root) == candidate.actual_mount_path;
+        };
         for (const auto &pool : local_pools) {
-            std::string pool_path = pool.mount_path.value_or("");
-            if (!pool_path.empty() && pool_path == mountpoint) {
+            if (poolUsesMount(pool)) {
                 already_used = true;
                 break;
-            }
-            if (!pool_path.empty()) {
-                std::string mount_point_origin = GlobalMonitor::Instance().findMountPoint(pool_path);
-                if (mount_point_origin == hdd.mount_point) {
-                    already_used = true;
-                    break;
-                }
             }
         }
-        for (const auto &pool : nas_pools) {
-            std::string pool_path = pool.mount_path.value_or("");
-            if (!pool_path.empty() && pool_path == mountpoint) {
-                already_used = true;
-                break;
-            }
-            if (!pool_path.empty()) {
-                std::string mount_point_origin = GlobalMonitor::Instance().findMountPoint(pool_path);
-                if (mount_point_origin == hdd.mount_point) {
+        if (!already_used) {
+            for (const auto &pool : nas_pools) {
+                if (poolUsesMount(pool)) {
                     already_used = true;
                     break;
                 }
@@ -1372,9 +1515,7 @@ std::vector<DiskPartition> TierStorageManager::getAvailableMountPoints(const str
         }
         if (!already_used) {
             DebugL << "Available mount point: " << hdd.mount_point << " type=" << poolTypeToString(pool_type) << " fs=" << hdd.filesystem_type;
-            auto hdd_copy = hdd;
-            hdd_copy.mount_point = mountpoint;
-            ret.push_back(std::move(hdd_copy));
+            ret.push_back(candidate);
         }
     }
     return ret;
@@ -1384,6 +1525,11 @@ std::vector<DiskPartition> TierStorageManager::getAvailableMountPoints(const str
 // Section 2 — Storage Policy APIs
 // ===================================================================
 std::string TierStorageManager::createPolicy(StoragePolicy policy) {
+    std::string validation_error;
+    if (!validatePolicyForExecution(policy, validation_error)) {
+        WarnL << "Reject unsupported storage policy: " << validation_error;
+        return "";
+    }
     if (policy.id.empty())
         policy.id = StrUUID::make_guid(8, "pol");
     policy.created_at = static_cast<int64_t>(time(nullptr));
@@ -1403,6 +1549,11 @@ std::string TierStorageManager::createPolicy(StoragePolicy policy) {
 }
 
 bool TierStorageManager::updatePolicy(const StoragePolicy &policy) {
+    std::string validation_error;
+    if (!validatePolicyForExecution(policy, validation_error)) {
+        WarnL << "Reject unsupported storage policy update: " << validation_error;
+        return false;
+    }
     StoragePolicy updated = policy;
     updated.updated_at = static_cast<int64_t>(time(nullptr));
 
@@ -1416,6 +1567,49 @@ bool TierStorageManager::updatePolicy(const StoragePolicy &policy) {
         refreshCamerasRecordRootForPolicy(updated.id);
     }
     return ok;
+}
+
+bool TierStorageManager::validatePolicyForExecution(const StoragePolicy &policy,
+                                                     std::string &error) const {
+    bool has_hot = false;
+    for (const auto &tier : policy.parsedTiers()) {
+        if (!tier.enabled)
+            continue;
+        if (tier.tier == tierTypeToString(HotTier))
+            has_hot = true;
+        if (tierTypeFromString(tier.tier) == TierMax || tier.pool_id.empty()) {
+            error = "Enabled tier and pool_id are required";
+            return false;
+        }
+        if (tier.data_mode != tierDataModeToString(TierDataMode::FULL_VIDEO)) {
+            error = "Only FULL_VIDEO data_mode is implemented";
+            return false;
+        }
+        if (tier.priority != "NORMAL") {
+            error = "Only NORMAL tier priority is implemented";
+            return false;
+        }
+        if (tier.overflow_action == overflowActionToString(OverflowAction::STOP_RECORDING_AND_ALERT)) {
+            error = "STOP_RECORDING_AND_ALERT is not implemented";
+            return false;
+        }
+        StoragePool pool;
+        if (!getPoolById(tier.pool_id, pool) || !pool.enabled || pool.tier != tier.tier) {
+            error = "Tier pool is missing, disabled, or belongs to another tier: " + tier.pool_id;
+            return false;
+        }
+#ifndef ENABLE_AWS_SDK
+        if (poolTypeIsObjectStorage(pool.type)) {
+            error = "Object storage requires ENABLE_AWS_SDK";
+            return false;
+        }
+#endif
+    }
+    if (!has_hot) {
+        error = "An enabled HOT tier is required";
+        return false;
+    }
+    return true;
 }
 
 bool TierStorageManager::deletePolicy(const std::string &policy_id, int &out_camera_count, bool &out_is_system_default) {
@@ -1464,12 +1658,12 @@ std::string TierStorageManager::clonePolicy(const std::string &policy_id,
     cloned.created_at     = static_cast<int64_t>(time(nullptr));
     cloned.updated_at     = cloned.created_at;
 
-    StoragePolicyImp imp;
-    if (!imp.add(cloned)) {
+    std::string cloned_id = createPolicy(cloned);
+    if (cloned_id.empty()) {
         WarnL << "Failed to clone policy: " << policy_id;
         return "";
     }
-    return cloned.id;
+    return cloned_id;
 }
 
 // ===================================================================
@@ -1482,6 +1676,12 @@ bool TierStorageManager::assignPolicyToCamera(const std::string &camera_id,
     auto policies = getPolicy(policy_id);
     if (policies.empty()) {
         WarnL << "Policy not found: " << policy_id;
+        return false;
+    }
+    auto default_policies = getPolicy(getSystemDefaultPolicyId());
+    if (policy_id != getSystemDefaultPolicyId() && !default_policies.empty() &&
+        default_policies.front().allow_camera_override == 0) {
+        WarnL << "System default policy does not allow camera overrides";
         return false;
     }
 
@@ -1631,24 +1831,12 @@ bool TierStorageManager::resolveHotPoolRecordRoot(const StoragePool &pool, std::
         return false;
     }
 
-    std::string root = pool.mount_path.value_or("");
-    if (root.empty()) {
-        root = pool.network_path.value_or("");
-    }
+    std::string root = resolveFilePoolMountRoot(pool);
     if (root.empty()) {
         WarnL << "Cannot resolve record root, HOT pool has no filesystem path pool_id=" << pool.id;
         return false;
     }
 
-    GET_CONFIG(std::string, app_name, Record::kAppName);
-    while (root.size() > 1 && root.back() == '/') {
-        root.pop_back();
-    }
-    std::string suffix = "/" + app_name;
-    if (!app_name.empty() && root.size() > suffix.size() &&
-        root.compare(root.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        root.resize(root.size() - suffix.size());
-    }
     out_record_root = root;
     return !out_record_root.empty();
 }
@@ -1807,7 +1995,11 @@ CameraStorageSummary TierStorageManager::getCameraStorageSummary(const std::stri
 
     std::unordered_map<std::string, TierSummaryInfo> tier_map;
     for (const auto &r : ranges) {
-        auto &ti = tier_map[r.tier];
+        if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+            r.status == segmentStatusToString(SegmentStatus::MISSING))
+            continue;
+        const std::string summary_key = r.tier + "\n" + r.pool_id;
+        auto &ti = tier_map[summary_key];
         ti.tier = r.tier;
         ti.pool_id = r.pool_id;
         ti.used_bytes += r.size_bytes;
@@ -1825,7 +2017,7 @@ CameraStorageSummary TierStorageManager::getCameraStorageSummary(const std::stri
             summary.newest_time = r.end_time;
     }
 
-    if (!ranges.empty()) {
+    if (!tier_map.empty()) {
         for (auto &kv : tier_map)
             summary.tiers.push_back(std::move(kv.second));
         return summary;
@@ -1839,13 +2031,30 @@ CameraStorageSummary TierStorageManager::getCameraStorageSummary(const std::stri
 // ===================================================================
 void TierStorageManager::runTieringCycle() {
 
+    if (_stopping || _maintenance_running.exchange(true)) {
+        DebugL << "Skip overlapping tier storage maintenance cycle";
+        return;
+    }
+
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
     WorkThreadPool::Instance().getPoller()->async([weak_self]() {
         auto self = weak_self.lock();
         if (!self) return;
 
-        self->_ticker.resetTime();
-        InfoL << "Starting tiering cycle";
+        struct CycleGuard {
+            std::atomic<bool> &running;
+            explicit CycleGuard(std::atomic<bool> &flag) : running(flag) {}
+            ~CycleGuard() { running = false; }
+        } guard(self->_maintenance_running);
+
+        if (self->_stopping)
+            return;
+
+        try {
+            self->_ticker.resetTime();
+            InfoL << "Starting tiering cycle";
+
+            self->checkAndRecordPoolHealth();
 
         // Refresh pool cache
         {
@@ -1862,7 +2071,7 @@ void TierStorageManager::runTieringCycle() {
 
         // Execute pending jobs first (pick up where we left off)
         TieringJobImp job_imp;
-        auto pending = job_imp.findByStatus(jobStatusToString(JobStatus::PENDING));
+        auto pending = job_imp.claimPending();
         for (auto &job : pending) {
             self->executePendingJob(job);
         }
@@ -1889,7 +2098,16 @@ void TierStorageManager::runTieringCycle() {
             }
         }
 
-        InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
+            self->processMetadataCleanupJobs();
+            self->processRestoreJobs();
+            self->pruneOldMetrics();
+            self->cleanupRestoreTempFiles();
+            InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
+        } catch (const std::exception &ex) {
+            WarnL << "Tier storage maintenance cycle failed: " << ex.what();
+        } catch (...) {
+            WarnL << "Tier storage maintenance cycle failed with unknown error";
+        }
     });
 }
 
@@ -2142,15 +2360,12 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
 
     SegmentTierRangeImp range_imp;
     auto ranges = range_imp.queryByCamera(camera_id, 0, cutoff);
-    ProtectedVideoImp protected_imp;
-
     for (const auto &range : ranges) {
         if (range.end_time > cutoff)
             continue;
         if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE))
             continue;
-        if (delete_policy.skip_protected_video &&
-            protected_imp.overlaps(range.camera_id, range.start_time, range.end_time)) {
+        if (isRangeDeletionProtected(range)) {
             continue;
         }
 
@@ -2208,6 +2423,11 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
 
 bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
                                                const std::string &final_status) {
+    if (isRangeDeletionProtected(range)) {
+        InfoL << "Skip protected range deletion range=" << range.range_id
+              << " camera=" << range.camera_id;
+        return false;
+    }
     if (range.pool_id.empty()) {
         WarnL << "expireRangeBestEffort: range has empty pool_id, range=" << range.range_id
               << " camera=" << range.camera_id;
@@ -2231,7 +2451,12 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
     }
 
     auto segments = collectSegmentFilesForRange(range);
-    bool deleted_any = false;
+    if (segments.empty()) {
+        WarnL << "Refuse to finalize deletion because no exact segments were enumerated, range="
+              << range.range_id;
+        return false;
+    }
+    bool all_deleted = true;
 
     if (has_pool && poolTypeIsObjectStorage(pool.type)) {
         std::string base_path = pool.base_path.value_or("");
@@ -2240,8 +2465,9 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         for (const auto &seg : segments) {
             if (seg.stream_id != range.stream_id) continue;
             auto key = TierObjectStorage::makeS3Key(base_path, seg.camera_id, seg.stream_id, seg.segment_path);
-            if (_obj_storage.deleteSegment(pool.id, key))
-                deleted_any = true;
+            // S3 DeleteObject is idempotent; a false result means an actual I/O failure.
+            if (!_obj_storage.deleteSegment(pool.id, key))
+                all_deleted = false;
         }
     } else if (has_pool) {
         auto storage = fileStorageForPoolType(pool.type);
@@ -2254,16 +2480,75 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
             registerPoolFileStorage(pool);
         for (const auto &seg : segments) {
             if (seg.stream_id != range.stream_id) continue;
-            if (storage->deleteSegment(pool.id, seg.storage_key))
-                deleted_any = true;
+            // File backend treats ENOENT as success, making retries idempotent.
+            if (!storage->deleteSegment(pool.id, seg.storage_key))
+                all_deleted = false;
         }
     }
 
+    if (!all_deleted) {
+        StorageAlert alert;
+        alert.id = StrUUID::make_guid(8, "alert");
+        alert.level = "ERROR";
+        alert.type = "TIER_DELETE_FAILED";
+        alert.pool_id = range.pool_id;
+        alert.message = "Failed to delete every segment for range " + range.range_id;
+        alert.created_at = static_cast<int64_t>(time(nullptr));
+        StorageAlertImp().add(alert);
+        return false;
+    }
+
+    TierMetadataCleanupJobImp cleanup_imp;
+    return cleanup_imp.markRangeDeletedAndEnqueue(
+        range.range_id,
+        range.camera_id,
+        final_status.empty() ? segmentStatusToString(SegmentStatus::DELETED) : final_status);
+}
+
+bool TierStorageManager::isRangeDeletionProtected(const SegmentTierRange &range) const {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (SegmentRetentionOverrideImp().isActive(range.range_id, now))
+        return true;
+    return ProtectedVideoImp().overlaps(range.camera_id, range.start_time, range.end_time);
+}
+
+void TierStorageManager::processMetadataCleanupJobs() {
+    TierMetadataCleanupJobImp cleanup_imp;
     SegmentTierRangeImp range_imp;
-    range_imp.updateStatusByRangeId(range.range_id,
-                                    final_status.empty() ? segmentStatusToString(SegmentStatus::EXPIRED) : final_status);
-    notifyRebuildTimeFile(range.camera_id, static_cast<uint64_t>(range.end_time));
-    return deleted_any;
+    auto jobs = cleanup_imp.queryPending();
+    for (const auto &job : jobs) {
+        try {
+            auto ranges = range_imp.findByRangeIds({job.range_id});
+            if (ranges.empty()) {
+                cleanup_imp.updateResult(job.range_id, true);
+                continue;
+            }
+            const auto &range = ranges.front();
+            auto segments = collectSegmentFilesForRange(range);
+            std::vector<TimeBlockIdentity> identities;
+            for (const auto &segment : segments) {
+                TimeBlockIdentity identity;
+                identity.camera_id = segment.camera_id;
+                identity.stream_id = segment.stream_id;
+                identity.start_time = static_cast<uint64_t>(segment.start_time);
+                identity.segment_path = segment.segment_path;
+                identities.push_back(identity);
+            }
+            // Completion is verified in a later maintenance cycle. TimeRebuilder
+            // swaps files asynchronously after active readers drain, so marking
+            // this job DONE here would lose the durable retry point on a crash.
+            if (identities.empty()) {
+                cleanup_imp.updateResult(job.range_id, true);
+                continue;
+            }
+            StorageManager::Instance().removeCameraTimeBlocks(job.camera_id, identities);
+            cleanup_imp.updateResult(job.range_id, false, "Awaiting timefile swap verification");
+        } catch (const std::exception &ex) {
+            cleanup_imp.updateResult(job.range_id, false, ex.what());
+        } catch (...) {
+            cleanup_imp.updateResult(job.range_id, false, "Unknown metadata cleanup error");
+        }
+    }
 }
 
 void TierStorageManager::notifyRebuildTimeFile(const std::string &camera_id,
@@ -2346,8 +2631,15 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
                              -1, "Tiering job has empty source_pool_id or target_pool_id");
         return;
     }
-    job_imp.updateStatus(job.job_id, jobStatusToString(JobStatus::RUNNING));
-    job.status = jobStatusToString(JobStatus::RUNNING);
+    if (job.status == jobStatusToString(JobStatus::PENDING)) {
+        if (!job_imp.transitionStatus(job.job_id,
+                                      jobStatusToString(JobStatus::PENDING),
+                                      jobStatusToString(JobStatus::RUNNING)))
+            return;
+        job.status = jobStatusToString(JobStatus::RUNNING);
+    } else if (job.status != jobStatusToString(JobStatus::RUNNING)) {
+        return;
+    }
 
     StoragePool dst_pool;
     {
@@ -2384,7 +2676,7 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
         DebugL << "Tiering job done: " << job.job_id;
     } else {
         job_imp.updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED),
-                             job.bytes_moved, "Move failed");
+                             job.bytes_moved, job.error_message.value_or("Move failed"));
         WarnL << "Tiering job failed: " << job.job_id;
     }
 }
@@ -2400,7 +2692,7 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
         WarnL << job.error_message.value() << " job=" << job.job_id;
         return false;
     }
-    std::string dst_base = dst_pool.mount_path.value_or(dst_pool.network_path.value_or(""));
+    std::string dst_base = configuredPoolDataRoot(dst_pool);
     if (dst_base.empty()) {
         WarnL << "Destination pool has no mount_path: " << dst_pool.id;
         return false;
@@ -2416,7 +2708,7 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
         return false;
     }
 
-    std::string src_root = src_pool.mount_path.value_or(src_pool.network_path.value_or(""));
+    std::string src_root = configuredPoolDataRoot(src_pool);
     if (src_root.empty()) {
         job.error_message = "Source pool has no mount_path/network_path: " + job.source_pool_id;
         WarnL << job.error_message.value();
@@ -2540,13 +2832,11 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
               << " -> " << dst_path
               << " tier=" << dst_pool.tier;
     }
-    if (moved > 0)
-        notifyRebuildTimeFile(job.camera_id, static_cast<uint64_t>(job.segment_end_time));
     return moved > 0;
 }
 
 // ---------------------------------------------------------------------------
-// Object storage upload (MINIO / S3 / ARCHIVE) — stub
+// Object storage upload (MINIO / S3 / ARCHIVE)
 // ---------------------------------------------------------------------------
 bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
                                                      const StoragePool &dst_pool) {
@@ -2622,7 +2912,6 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
                 _obj_storage.deleteSegment(dst_pool.id, key);
             return false;
         }
-        notifyRebuildTimeFile(job.camera_id, static_cast<uint64_t>(job.segment_end_time));
     }
 
     for (auto &seg : segments) {
@@ -2652,6 +2941,20 @@ ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::st
     if (!parseRecordFilePath(file_path, camera_id, stream_id, segment_path, segment_start))
         return ret;
 
+    return requestRestoreSegment(camera_id, stream_id, segment_start, file_path, "AUTO_RECORD_ACCESS");
+}
+
+ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::string &camera_id,
+                                                                  const std::string &stream_id,
+                                                                  int64_t segment_start,
+                                                                  const std::string &timefile_path,
+                                                                  const std::string &reason) {
+    ColdAccessRestoreResult ret;
+    std::string segment_path;
+    if (camera_id.empty() || stream_id.empty() || segment_start <= 0 ||
+        !deriveSegmentPathFromFullPath(timefile_path, camera_id, stream_id, segment_path))
+        return ret;
+
     SegmentTierRangeImp range_imp;
     auto ranges = range_imp.queryByCamera(camera_id, segment_start, segment_start + 60);
     SegmentTierRange cold_range;
@@ -2659,8 +2962,7 @@ ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::st
     for (const auto &r : ranges) {
         if (r.stream_id == stream_id &&
             r.tier == tierTypeToString(ColdTier) &&
-            r.status != segmentStatusToString(SegmentStatus::DELETED) &&
-            r.status != segmentStatusToString(SegmentStatus::EXPIRED)) {
+            r.status == segmentStatusToString(SegmentStatus::AVAILABLE)) {
             cold_range = r;
             found = true;
             break;
@@ -2670,31 +2972,14 @@ ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::st
         return ret;
 
     RestoreJobImp restore_imp;
-    for (const auto &status : std::vector<std::string>{"PENDING", "RUNNING"}) {
-        auto jobs = restore_imp.query(camera_id, status, 0, 0, 0, 50);
-        for (const auto &j : jobs) {
-            if (j.start_time <= segment_start && j.end_time >= segment_start) {
-                ret.handled = true;
-                ret.job_id = j.job_id;
-                ret.status = j.status;
-                ret.message = "Restore job already queued";
-                return ret;
-            }
-        }
-    }
-
-    StoragePool source_pool;
-    {
-        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-        auto it = _pool_cache.find(cold_range.pool_id);
-        if (it == _pool_cache.end())
-            return ret;
-        source_pool = it->second;
-    }
-    if (!poolTypeIsObjectStorage(source_pool.type))
+    auto active = RestoreJobSegmentImp().queryActiveSegment(camera_id, stream_id, segment_path);
+    if (!active.empty()) {
+        ret.handled = true;
+        ret.job_id = active.front().job_id;
+        ret.status = active.front().status;
+        ret.message = "Restore segment already queued";
         return ret;
-    if (!_obj_storage.isRegistered(source_pool.id))
-        registerPoolObjStorage(source_pool);
+    }
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     RestoreJob job;
@@ -2707,100 +2992,237 @@ ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::st
     job.end_time = segment_start + 60;
     job.total_bytes = 0;
     job.processed_bytes = 0;
-    job.reason = Optional<std::string>("AUTO_RECORD_ACCESS");
+    job.reason = Optional<std::string>(reason);
     job.created_at = now;
     job.updated_at = now;
 
-    if (!restore_imp.add(job))
-        return ret;
-
     int64_t segment_end = segment_start + 60;
-    range_imp.splitWindowStatus(cold_range, segment_start, segment_end, segmentStatusToString(SegmentStatus::RESTORING));
+    RestoreJobSegment child;
+    child.job_id = job.job_id;
+    child.camera_id = camera_id;
+    child.stream_id = stream_id;
+    child.range_id = cold_range.range_id;
+    child.segment_path = segment_path;
+    child.source_pool_id = cold_range.pool_id;
+    child.range_start = segment_start;
+    child.range_end = segment_end;
+    child.status = "PENDING";
+    child.total_bytes = 0;
+    child.created_at = now;
+    child.updated_at = now;
 
-    weak_ptr<TierStorageManager> weak_self = shared_from_this();
-    std::string job_id = job.job_id;
-    int64_t range_start = segment_start;
-    int64_t range_end = segment_end;
-    WorkThreadPool::Instance().getPoller()->async([weak_self, job_id, camera_id, stream_id,
-                                                   segment_path, source_pool,
-                                                   range_start, range_end]() {
-        auto self = weak_self.lock();
-        if (!self) return;
-        self->executeRestoreSegment(job_id, camera_id, stream_id, segment_path,
-                                    source_pool, range_start, range_end);
-    });
+    try {
+        if (!restore_imp.addWithSegments(job, {child}))
+            return ret;
+    } catch (const std::exception &ex) {
+        WarnL << "Cannot enqueue restore segment: " << ex.what();
+        return ret;
+    }
 
     ret.handled = true;
     ret.job_id = job.job_id;
     ret.status = "PENDING";
     ret.message = "Segment is in COLD tier. Restore has been queued";
+    processRestoreJobs();
     return ret;
 }
 
-void TierStorageManager::executeRestoreSegment(const std::string &job_id,
-                                               const std::string &camera_id,
-                                               const std::string &stream_id,
-                                               const std::string &segment_path,
-                                               const StoragePool &source_pool,
-                                               int64_t range_start,
-                                               int64_t range_end) {
+ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::string &camera_id,
+                                                                 const std::string &stream_id,
+                                                                 int64_t start_time,
+                                                                 int64_t end_time,
+                                                                 const std::string &reason) {
+    ColdAccessRestoreResult ret;
+    if (camera_id.empty() || start_time <= 0 || end_time <= start_time)
+        return ret;
+
     RestoreJobImp restore_imp;
+
     SegmentTierRangeImp range_imp;
-    restore_imp.updateStatus(job_id, "RUNNING");
+    std::vector<RestoreJobSegment> children;
+    int64_t total_bytes = 0;
+    for (const auto &range : range_imp.queryByCamera(camera_id, start_time, end_time)) {
+        if ((!stream_id.empty() && range.stream_id != stream_id) ||
+            range.tier != tierTypeToString(ColdTier) ||
+            range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
+            range.pool_id.empty())
+            continue;
+        for (const auto &file : collectSegmentFilesForRange(range)) {
+            if (file.start_time < start_time || file.start_time >= end_time)
+                continue;
+            RestoreJobSegment child;
+            child.camera_id = camera_id;
+            child.stream_id = file.stream_id;
+            child.range_id = range.range_id;
+            child.segment_path = file.segment_path;
+            child.source_pool_id = range.pool_id;
+            child.range_start = file.start_time;
+            child.range_end = file.end_time;
+            child.status = "PENDING";
+            child.total_bytes = std::max<int64_t>(0, file.file_size);
+            child.created_at = static_cast<int64_t>(time(nullptr));
+            child.updated_at = child.created_at;
+            auto active = RestoreJobSegmentImp().queryActiveSegment(
+                child.camera_id, child.stream_id, child.segment_path);
+            if (!active.empty()) {
+                if (ret.job_id.empty()) {
+                    ret.job_id = active.front().job_id;
+                    ret.status = active.front().status;
+                }
+                continue;
+            }
+            total_bytes += child.total_bytes;
+            children.push_back(child);
+        }
+    }
+    if (children.empty()) {
+        if (!ret.job_id.empty()) {
+            ret.handled = true;
+            ret.message = "Requested restore segments are already queued";
+        }
+        return ret;
+    }
+
+    RestoreJob job;
+    job.job_id = StrUUID::make_guid(8, "rj");
+    job.camera_id = camera_id;
+    job.source_tier = tierTypeToString(ColdTier);
+    job.target_tier = tierTypeToString(HotTier);
+    job.status = "PENDING";
+    job.start_time = start_time;
+    job.end_time = end_time;
+    job.total_bytes = total_bytes;
+    job.reason = Optional<std::string>(reason);
+    job.created_at = static_cast<int64_t>(time(nullptr));
+    job.updated_at = job.created_at;
+    for (auto &child : children)
+        child.job_id = job.job_id;
+
+    try {
+        if (!restore_imp.addWithSegments(job, children))
+            return ret;
+    } catch (const std::exception &ex) {
+        WarnL << "Cannot enqueue restore window: " << ex.what();
+        return ret;
+    }
+    ret.handled = true;
+    ret.job_id = job.job_id;
+    ret.status = job.status;
+    ret.message = "Restore window queued";
+    processRestoreJobs();
+    return ret;
+}
+
+void TierStorageManager::processRestoreJobs() {
+    std::lock_guard<std::mutex> dispatch_lk(_restore_dispatch_mtx);
+    GET_CONFIG(int, max_concurrent, Storage::kAutoRestoreMaxConcurrent);
+    max_concurrent = std::max(1, max_concurrent);
+    const int capacity = max_concurrent - _restore_inflight.load();
+    if (capacity <= 0)
+        return;
+    auto children = RestoreJobSegmentImp().claimPending(capacity);
+    for (const auto &child : children) {
+        ++_restore_inflight;
+        RestoreJobImp().updateStatus(child.job_id, "RUNNING");
+        weak_ptr<TierStorageManager> weak_self = shared_from_this();
+        WorkThreadPool::Instance().getExecutor()->async([weak_self, child]() {
+            auto self = weak_self.lock();
+            if (!self) return;
+            {
+                struct RestoreGuard {
+                    std::atomic<int> &inflight;
+                    explicit RestoreGuard(std::atomic<int> &value) : inflight(value) {}
+                    ~RestoreGuard() { --inflight; }
+                } guard(self->_restore_inflight);
+                try {
+                    self->executeRestoreSegment(child);
+                } catch (const std::exception &ex) {
+                    RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, ex.what());
+                    self->updateRestoreParent(child.job_id);
+                } catch (...) {
+                    RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, "Unknown restore error");
+                    self->updateRestoreParent(child.job_id);
+                }
+            }
+            self->processRestoreJobs();
+        });
+    }
+}
+
+void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment) {
+    RestoreJobSegmentImp segment_imp;
+    StoragePool source_pool;
+    if (!getPoolById(segment.source_pool_id, source_pool) || !poolTypeIsObjectStorage(source_pool.type)) {
+        segment_imp.updateStatus(segment, "FAILED", 0, "Object storage pool is unavailable");
+        updateRestoreParent(segment.job_id);
+        return;
+    }
 
     if (!_obj_storage.isRegistered(source_pool.id) && !registerPoolObjStorage(source_pool)) {
-        restore_imp.updateStatus(job_id, "FAILED", -1, "Object storage pool is not registered");
-        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        segment_imp.updateStatus(segment, "FAILED", 0, "Object storage pool is not registered");
+        updateRestoreParent(segment.job_id);
         return;
     }
 
     std::string base_path = source_pool.base_path.value_or("");
-    std::string s3_key = TierObjectStorage::makeS3Key(base_path, camera_id, stream_id, segment_path);
-    std::string restore_path = buildRestoreSegmentPath(camera_id, stream_id, segment_path);
+    std::string s3_key = TierObjectStorage::makeS3Key(base_path, segment.camera_id, segment.stream_id, segment.segment_path);
+    std::string restore_path = buildRestoreSegmentPath(segment.camera_id, segment.stream_id, segment.segment_path);
     std::string restore_dir = restore_path.substr(0, restore_path.rfind('/'));
-    std::string tmp_path = restore_path + ".restore";
+    std::string tmp_path = restore_path + ".restore." + segment.job_id;
 
     std::string mkdir_err;
     if (!ensureDirectoryPath(restore_dir, S_IRWXO | S_IRWXG | S_IRWXU, mkdir_err)) {
-        restore_imp.updateStatus(job_id, "FAILED", -1, mkdir_err);
-        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        segment_imp.updateStatus(segment, "FAILED", 0, mkdir_err);
+        updateRestoreParent(segment.job_id);
         return;
     }
 
     struct stat st{};
     if (stat(restore_path.c_str(), &st) == 0) {
         int64_t restored_bytes = static_cast<int64_t>(st.st_size);
-        restore_imp.updateStatus(job_id, "DONE", restored_bytes);
-        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        segment_imp.updateStatus(segment, "DONE", restored_bytes);
+        updateRestoreParent(segment.job_id);
         return;
     }
 
     bool ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
     if (!ok) {
-        restore_imp.updateStatus(job_id, "FAILED", -1, "Download from object storage failed");
-        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        segment_imp.updateStatus(segment, "FAILED", 0, "Download from object storage failed");
+        updateRestoreParent(segment.job_id);
         ::unlink(tmp_path.c_str());
         return;
     }
 
     if (::rename(tmp_path.c_str(), restore_path.c_str()) != 0) {
         std::string err = std::string("Cannot move restored file: ") + strerror(errno);
-        restore_imp.updateStatus(job_id, "FAILED", -1, err);
-        range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                            segmentStatusToString(SegmentStatus::AVAILABLE));
+        segment_imp.updateStatus(segment, "FAILED", 0, err);
+        updateRestoreParent(segment.job_id);
         ::unlink(tmp_path.c_str());
         return;
     }
 
-    int64_t restored_bytes = (stat(restore_path.c_str(), &st) == 0) ? static_cast<int64_t>(st.st_size) : 0;
-    restore_imp.updateStatus(job_id, "DONE", restored_bytes);
-    range_imp.updateStatusByExactWindow(camera_id, stream_id, range_start, range_end,
-                                        segmentStatusToString(SegmentStatus::AVAILABLE));
+    int64_t restored_bytes = static_cast<int64_t>(File::fileSize(restore_path));
+    segment_imp.updateStatus(segment, "DONE", restored_bytes);
+    updateRestoreParent(segment.job_id);
     InfoL << "Restored segment to temp cache: " << restore_path;
+}
+
+void TierStorageManager::updateRestoreParent(const std::string &job_id) {
+    auto children = RestoreJobSegmentImp().queryByJob(job_id);
+    int64_t processed = 0;
+    bool active = false;
+    bool failed = false;
+    std::string error;
+    for (const auto &child : children) {
+        processed += child.processed_bytes;
+        active = active || child.status == "PENDING" || child.status == "RUNNING";
+        if (child.status == "FAILED") {
+            failed = true;
+            if (error.empty()) error = child.error_message.value_or("Restore segment failed");
+        }
+    }
+    const std::string status = active ? "RUNNING" : (failed ? "FAILED" : "DONE");
+    RestoreJobImp().updateStatus(job_id, status, processed, error);
 }
 
 // ===================================================================
@@ -2858,7 +3280,7 @@ void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
     }
 
     // Fallback: local disk stats from GlobalMonitor.
-    std::string path = pool.mount_path.value_or(pool.network_path.value_or(""));
+    std::string path = configuredPoolDataRoot(pool);
     if (path.empty()) return;
 
     auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
@@ -2945,7 +3367,13 @@ std::vector<TieringJob> TierStorageManager::getTieringJob(const std::string &job
 
 bool TierStorageManager::retryTieringJob(const std::string &job_id) {
     TieringJobImp imp;
-    return imp.updateStatus(job_id, "PENDING", 0);
+    auto jobs = imp.findByJobId(job_id);
+    if (jobs.empty()) return false;
+    const auto &status = jobs.front().status;
+    if (status != jobStatusToString(JobStatus::FAILED) &&
+        status != jobStatusToString(JobStatus::CANCELLED))
+        return false;
+    return imp.transitionStatus(job_id, status, jobStatusToString(JobStatus::PENDING), 0);
 }
 
 bool TierStorageManager::cancelTieringJob(const std::string &job_id) {
@@ -2953,11 +3381,11 @@ bool TierStorageManager::cancelTieringJob(const std::string &job_id) {
     auto jobs = imp.findByJobId(job_id);
     if (jobs.empty()) return false;
     const auto &j = jobs.front();
-    if (j.status == jobStatusToString(JobStatus::DONE) ||
-        j.status == jobStatusToString(JobStatus::FAILED) ||
-        j.status == jobStatusToString(JobStatus::CANCELLED))
+    if (j.status != jobStatusToString(JobStatus::PENDING))
         return false;
-    return imp.updateStatus(job_id, jobStatusToString(JobStatus::CANCELLED));
+    return imp.transitionStatus(job_id,
+                                jobStatusToString(JobStatus::PENDING),
+                                jobStatusToString(JobStatus::CANCELLED));
 }
 
 // ===================================================================
@@ -2982,6 +3410,31 @@ int TierStorageManager::countRestoreJobs(const std::string &camera_id,
 std::vector<RestoreJob> TierStorageManager::getRestoreJob(const std::string &job_id) {
     RestoreJobImp imp;
     return imp.findByJobId(job_id);
+}
+
+bool TierStorageManager::approveExpiredRange(const std::string &range_id) {
+    auto ranges = SegmentTierRangeImp().findByRangeIds({range_id});
+    if (ranges.empty() ||
+        ranges.front().status != segmentStatusToString(SegmentStatus::EXPIRED))
+        return false;
+    return expireRangeBestEffort(ranges.front(), segmentStatusToString(SegmentStatus::DELETED));
+}
+
+bool TierStorageManager::extendRangeRetention(const std::string &range_id,
+                                              int64_t extend_until,
+                                              const std::string &reason) {
+    if (range_id.empty() || extend_until <= static_cast<int64_t>(time(nullptr)))
+        return false;
+    auto ranges = SegmentTierRangeImp().findByRangeIds({range_id});
+    if (ranges.empty() || ranges.front().status == segmentStatusToString(SegmentStatus::DELETED) ||
+        ranges.front().status == segmentStatusToString(SegmentStatus::MISSING))
+        return false;
+    SegmentRetentionOverride item;
+    item.range_id = range_id;
+    item.extend_until = extend_until;
+    item.reason = Optional<std::string>(reason);
+    item.updated_at = static_cast<int64_t>(time(nullptr));
+    return SegmentRetentionOverrideImp().extendRange(item);
 }
 
 // ===================================================================
@@ -3138,29 +3591,16 @@ void TierStorageManager::cleanupRestoreTempFiles() {
 
     int deleted_count = 0;
     int expired_job_count = 0;
-    auto expired_jobs = restore_imp.queryExpiredDone(cutoff);
+    auto expired_jobs = restore_imp.queryExpiredTerminal(cutoff);
     for (const auto &job : expired_jobs) {
-        auto segments = collectSegmentFilesForWindow(job.camera_id, job.start_time, job.end_time);
+        auto segments = RestoreJobSegmentImp().queryByJob(job.job_id);
         for (const auto &seg : segments) {
             auto path = buildRestoreSegmentPath(seg.camera_id, seg.stream_id, seg.segment_path);
             if (::unlink(path.c_str()) == 0)
                 ++deleted_count;
-            std::string tmp_path = path + ".restore";
+            std::string tmp_path = path + ".restore." + job.job_id;
             if (::unlink(tmp_path.c_str()) == 0)
                 ++deleted_count;
-        }
-        if (segments.empty()) {
-            auto disk_segments = collectDiskSegmentsFromRoot(restore_root,
-                                                             job.camera_id,
-                                                             job.start_time,
-                                                             job.end_time);
-            for (const auto &seg : disk_segments) {
-                if (::unlink(seg.full_path.c_str()) == 0)
-                    ++deleted_count;
-                std::string tmp_path = seg.full_path + ".restore";
-                if (::unlink(tmp_path.c_str()) == 0)
-                    ++deleted_count;
-            }
         }
 
         // Mark the restore cache as expired so the same job is not processed
@@ -3171,7 +3611,7 @@ void TierStorageManager::cleanupRestoreTempFiles() {
 
     // Clean up abandoned partial downloads for failed/interrupted jobs.
     File::scanDir(restore_root, [&](const std::string &path, bool isDir) {
-        if (isDir || !end_with(path, ".restore"))
+        if (isDir || path.find(".restore.") == std::string::npos)
             return true;
         struct stat st{};
         if (stat(path.c_str(), &st) == 0 &&

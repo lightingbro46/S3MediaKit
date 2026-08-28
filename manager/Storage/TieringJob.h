@@ -289,11 +289,12 @@ public:
         return SqliteRepository<TieringJob>::findById(j);
     }
 
-    bool updateStatus(const std::string &job_id, const std::string &status,
-                      int64_t bytes_moved = -1, const std::string &error = "") {
+    bool updateStatusAt(const std::string &job_id, const std::string &status,
+                        int64_t updated_at,
+                        int64_t bytes_moved = -1, const std::string &error = "") {
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(static_cast<int64_t>(time(nullptr)))});
+        set.push_back({"updated_at", std::to_string(updated_at)});
         if (bytes_moved >= 0) set.push_back({"bytes_moved", std::to_string(bytes_moved)});
         if (!error.empty())   set.push_back({"error_message", error});
 
@@ -302,6 +303,64 @@ public:
             .set(set)
             .where("job_id = ?", {job_id});
         return _executor->execDML(q);
+    }
+
+    bool transitionStatusAt(const std::string &job_id,
+                            const std::string &from_status,
+                            const std::string &to_status,
+                            int64_t updated_at,
+                            int64_t bytes_moved = -1,
+                            const std::string &error = "") {
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"status", to_status});
+        set.push_back({"updated_at", std::to_string(updated_at)});
+        if (bytes_moved >= 0) set.push_back({"bytes_moved", std::to_string(bytes_moved)});
+        set.push_back({"error_message", error});
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<TieringJob>::tableName())
+                .set(set)
+                .where("job_id = ? AND status = ?", {job_id, from_status}));
+    }
+
+    std::vector<TieringJob> claimPendingAt(int limit, int64_t updated_at) {
+        auto txn = _executor->execTxn();
+        std::vector<TieringJob> claimed;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select(EntityTraits<TieringJob>::getColumns())
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("status = ?", {jobStatusToString(JobStatus::PENDING)})
+                .orderBy("created_at ASC")
+                .limit(limit));
+        for (const auto &row : rows) {
+            TieringJob job = EntityTraits<TieringJob>::fromRow(row);
+            if (_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .update(EntityTraits<TieringJob>::tableName())
+                        .set({{"status", jobStatusToString(JobStatus::RUNNING)},
+                              {"updated_at", std::to_string(updated_at)}})
+                        .where("job_id = ? AND status = ?",
+                               {job.job_id, jobStatusToString(JobStatus::PENDING)}))) {
+                job.status = jobStatusToString(JobStatus::RUNNING);
+                job.updated_at = updated_at;
+                claimed.push_back(job);
+            }
+        }
+        txn->commit();
+        return claimed;
+    }
+
+    void recoverRunningAt(int64_t updated_at) {
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<TieringJob>::tableName())
+                .set({{"status", jobStatusToString(JobStatus::PENDING)},
+                      {"updated_at", std::to_string(updated_at)},
+                      {"error_message", "Recovered after restart"}})
+                .where("status = ?", {jobStatusToString(JobStatus::RUNNING)}));
     }
 };
 
@@ -438,12 +497,10 @@ public:
         return save(rec, true);
     }
 
-    bool updateTier(const std::string &camera_id, const std::string &stream_id,
-                    const std::string &segment_path,
-                    const std::string &new_tier, const std::string &pool_id,
-                    const std::string &status) {
-        if (pool_id.empty())
-            return false;
+    bool updateTierAt(const std::string &camera_id, const std::string &stream_id,
+                      const std::string &segment_path,
+                      const std::string &new_tier, const std::string &pool_id,
+                      const std::string &status, int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
@@ -451,12 +508,11 @@ public:
         params.push_back(stream_id);
         params.push_back(segment_path);
 
-        int64_t now = static_cast<int64_t>(time(nullptr));
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"tier", new_tier});
         set.push_back({"pool_id", pool_id});
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(now)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRecord>::tableName())
             .set(set)
@@ -464,9 +520,9 @@ public:
         return _executor->execDML(q);
     }
 
-    bool updateStatus(const std::string &camera_id, const std::string &stream_id,
-                      const std::string &segment_path,
-                      const std::string &status) {
+    bool updateStatusAt(const std::string &camera_id, const std::string &stream_id,
+                        const std::string &segment_path,
+                        const std::string &status, int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
@@ -474,10 +530,9 @@ public:
         params.push_back(stream_id);
         params.push_back(segment_path);
 
-        int64_t now = static_cast<int64_t>(time(nullptr));
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(now)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRecord>::tableName())
             .set(set)
@@ -801,15 +856,9 @@ public:
         return !rows.empty();
     }
 
-    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = 90) {
-        if (range.pool_id.empty())
-            return false;
-        int64_t now = static_cast<int64_t>(time(nullptr));
-        if (range.created_at <= 0) range.created_at = now;
-        range.updated_at = now;
-        if (range.range_id.empty())
-            range.range_id = StrUUID::make_guid(8, "rng");
-
+    bool mergeNormalizedRange(const SegmentTierRange &range,
+                              int64_t merge_gap_seconds,
+                              int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND tier = ? AND status = ?";
@@ -823,78 +872,99 @@ public:
         params.push_back(std::to_string(range.start_time - merge_gap_seconds));
         params.push_back(std::to_string(range.end_time + merge_gap_seconds));
 
-        auto rows = _executor->executeRaw(
+        auto txn = _executor->execTxn();
+        auto rows = _executor->executeRawWithTxn(
+            txn,
             toolkit::QueryBuilder()
                 .select(EntityTraits<SegmentTierRange>::getColumns())
                 .from(EntityTraits<SegmentTierRange>::tableName())
                 .where(where.str(), params)
-                .orderBy("start_time DESC")
-                .limit(1));
+                .orderBy("start_time ASC"));
         if (rows.empty()) {
-            return save(range, true);
+            if (!saveWithTxn(range, txn, true))
+                return false;
+            txn->commit();
+            return true;
         }
 
         auto existing = EntityTraits<SegmentTierRange>::fromRow(rows[0]);
+        int64_t merged_start = range.start_time;
+        int64_t merged_end = range.end_time;
+        int64_t merged_count = std::max<int64_t>(1, range.segment_count);
+        int64_t merged_size = std::max<int64_t>(0, range.size_bytes);
+        for (const auto &row : rows) {
+            const auto item = EntityTraits<SegmentTierRange>::fromRow(row);
+            merged_start = std::min(merged_start, item.start_time);
+            merged_end = std::max(merged_end, item.end_time);
+            merged_count += std::max<int64_t>(0, item.segment_count);
+            merged_size += std::max<int64_t>(0, item.size_bytes);
+            if (item.range_id != existing.range_id &&
+                !_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
+                        .where("range_id = ?", {item.range_id})))
+                return false;
+        }
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
             .set({
-                {"start_time", std::to_string(std::min(existing.start_time, range.start_time))},
-                {"end_time", std::to_string(std::max(existing.end_time, range.end_time))},
-                {"segment_count", std::to_string(existing.segment_count + std::max<int64_t>(1, range.segment_count))},
-                {"size_bytes", std::to_string(existing.size_bytes + std::max<int64_t>(0, range.size_bytes))},
-                {"updated_at", std::to_string(now)}
+                {"start_time", std::to_string(merged_start)},
+                {"end_time", std::to_string(merged_end)},
+                {"segment_count", std::to_string(merged_count)},
+                {"size_bytes", std::to_string(merged_size)},
+                {"updated_at", std::to_string(updated_at)}
             })
             .where("range_id = ?", {existing.range_id});
-        return _executor->execDML(q);
+        if (!_executor->execDMLWithTxn(txn, q))
+            return false;
+        txn->commit();
+        return true;
     }
 
-    bool updateTierByWindow(const std::string &camera_id,
-                            int64_t start_time,
-                            int64_t end_time,
-                            const std::string &new_tier,
-                            const std::string &pool_id,
-                            const std::string &status) {
-        if (pool_id.empty())
-            return false;
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateTierByWindowAt(const std::string &camera_id,
+                              int64_t start_time,
+                              int64_t end_time,
+                              const std::string &new_tier,
+                              const std::string &pool_id,
+                              const std::string &status,
+                              int64_t updated_at) {
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
-            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(now)}})
+            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(updated_at)}})
             .where("camera_id = ? AND start_time >= ? AND end_time <= ?",
                    {camera_id, std::to_string(start_time), std::to_string(end_time)});
         return _executor->execDML(q);
     }
 
-    bool updateTierByRangeId(const std::string &range_id,
-                             const std::string &new_tier,
-                             const std::string &pool_id,
-                             const std::string &status) {
-        if (range_id.empty() || pool_id.empty())
-            return false;
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateTierByRangeIdAt(const std::string &range_id,
+                               const std::string &new_tier,
+                               const std::string &pool_id,
+                               const std::string &status,
+                               int64_t updated_at) {
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
-            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(now)}})
+            .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(updated_at)}})
             .where("range_id = ?", {range_id});
         return _executor->execDML(q);
     }
 
-    bool updateStatusByWindow(const std::string &camera_id,
-                              int64_t start_time,
-                              int64_t end_time,
-                              const std::string &status) {
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateStatusByWindowAt(const std::string &camera_id,
+                                int64_t start_time,
+                                int64_t end_time,
+                                const std::string &status,
+                                int64_t updated_at) {
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
-            .set({{"status", status}, {"updated_at", std::to_string(now)}})
+            .set({{"status", status}, {"updated_at", std::to_string(updated_at)}})
             .where("camera_id = ? AND start_time <= ? AND end_time >= ?",
                    {camera_id, std::to_string(end_time), std::to_string(start_time)});
         return _executor->execDML(q);
     }
 
-    bool updateStatusByRangeId(const std::string &range_id,
-                               const std::string &status) {
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateStatusByRangeIdAt(const std::string &range_id,
+                                 const std::string &status,
+                                 int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "range_id = ?";
@@ -902,7 +972,7 @@ public:
 
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(now)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
             .set(set)
@@ -912,16 +982,14 @@ public:
 
     bool updatePoolForTierIfMissing(const std::string &, const std::string &) { return false; }
 
-    bool updateTierByExactWindow(const std::string &camera_id,
-                                 const std::string &stream_id,
-                                 int64_t start_time,
-                                 int64_t end_time,
-                                 const std::string &new_tier,
-                                 const std::string &pool_id,
-                                 const std::string &status) {
-        if (pool_id.empty())
-            return false;
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateTierByExactWindowAt(const std::string &camera_id,
+                                   const std::string &stream_id,
+                                   int64_t start_time,
+                                   int64_t end_time,
+                                   const std::string &new_tier,
+                                   const std::string &pool_id,
+                                   const std::string &status,
+                                   int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?";
@@ -934,7 +1002,7 @@ public:
         set.push_back({"tier", new_tier});
         set.push_back({"pool_id", pool_id});
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(now)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
 
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
@@ -943,12 +1011,12 @@ public:
         return _executor->execDML(q);
     }
 
-    bool updateStatusByExactWindow(const std::string &camera_id,
-                                   const std::string &stream_id,
-                                   int64_t start_time,
-                                   int64_t end_time,
-                                   const std::string &status) {
-        int64_t now = static_cast<int64_t>(time(nullptr));
+    bool updateStatusByExactWindowAt(const std::string &camera_id,
+                                     const std::string &stream_id,
+                                     int64_t start_time,
+                                     int64_t end_time,
+                                     const std::string &status,
+                                     int64_t updated_at) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?";
@@ -959,61 +1027,14 @@ public:
 
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(now)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
 
         auto q = toolkit::QueryBuilder()
             .update(EntityTraits<SegmentTierRange>::tableName())
-            .set({{"status", status}, {"updated_at", std::to_string(now)}})
+            .set({{"status", status}, {"updated_at", std::to_string(updated_at)}})
             .where("camera_id = ? AND stream_id = ? AND start_time = ? AND end_time = ?",
                    {camera_id, stream_id, std::to_string(start_time), std::to_string(end_time)});
         return _executor->execDML(q);
-    }
-
-    bool splitWindowStatus(const SegmentTierRange &range,
-                           int64_t window_start,
-                           int64_t window_end,
-                           const std::string &status) {
-        if (window_start <= range.start_time && window_end >= range.end_time) {
-            return updateStatusByExactWindow(range.camera_id, range.stream_id,
-                                             range.start_time, range.end_time, status);
-        }
-
-        window_start = std::max(window_start, range.start_time);
-        window_end = std::min(window_end, range.end_time);
-        if (window_start >= window_end)
-            return false;
-
-        int64_t now = static_cast<int64_t>(time(nullptr));
-        int64_t avg_size = range.segment_count > 0 ? range.size_bytes / range.segment_count : 0;
-        auto make_piece = [&](int64_t start, int64_t end, const std::string &piece_status, bool keep_id) {
-            SegmentTierRange piece = range;
-            piece.range_id = keep_id ? range.range_id : ("rng-" + toolkit::format_guid(toolkit::strToLower(toolkit::makeRandStr(32))).substr(0, 8));
-            piece.start_time = start;
-            piece.end_time = end;
-            piece.status = piece_status;
-            piece.segment_count = std::max<int64_t>(1, (end - start + 59) / 60);
-            piece.size_bytes = avg_size > 0 ? avg_size * piece.segment_count : 0;
-            piece.updated_at = now;
-            return piece;
-        };
-
-        std::ostringstream where;
-        std::vector<std::string> params;
-        where << "range_id = ?";
-        params.push_back(range.range_id);
-
-        _executor->execDML(
-            toolkit::QueryBuilder()
-                .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
-                .where(where.str(), params));
-
-        bool ok = true;
-        if (range.start_time < window_start)
-            ok = save(make_piece(range.start_time, window_start, range.status, false), true) && ok;
-        ok = save(make_piece(window_start, window_end, status, true), true) && ok;
-        if (window_end < range.end_time)
-            ok = save(make_piece(window_end, range.end_time, range.status, false), true) && ok;
-        return ok;
     }
 
     bool replaceRangeWithPieces(const std::string &range_id,
@@ -1021,17 +1042,25 @@ public:
         if (range_id.empty() || pieces.empty())
             return false;
 
-        _executor->execDML(
-            toolkit::QueryBuilder()
-                .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
-                .where("range_id = ?", {range_id}));
-
-        bool ok = true;
         for (const auto &piece : pieces) {
             if (piece.range_id.empty() || piece.pool_id.empty())
                 return false;
-            ok = save(piece, true) && ok;
         }
+
+        auto txn = _executor->execTxn();
+        if (!_executor->execDMLWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
+                .where("range_id = ?", {range_id})))
+            return false;
+
+        bool ok = true;
+        for (const auto &piece : pieces) {
+            ok = saveWithTxn(piece, txn, true) && ok;
+        }
+        if (ok)
+            txn->commit();
         return ok;
     }
 
@@ -1124,18 +1153,165 @@ class TieringJobImp : public TieringJobRepository {
 public:
     using Ptr = std::shared_ptr<TieringJobImp>;
     bool add(const TieringJob &job) { return save(job, true); }
+
+    bool updateStatus(const std::string &job_id, const std::string &status,
+                      int64_t bytes_moved = -1, const std::string &error = "") {
+        return updateStatusAt(job_id, status, static_cast<int64_t>(time(nullptr)),
+                              bytes_moved, error);
+    }
+
+    bool transitionStatus(const std::string &job_id,
+                          const std::string &from_status,
+                          const std::string &to_status,
+                          int64_t bytes_moved = -1,
+                          const std::string &error = "") {
+        return transitionStatusAt(job_id, from_status, to_status,
+                                  static_cast<int64_t>(time(nullptr)),
+                                  bytes_moved, error);
+    }
+
+    std::vector<TieringJob> claimPending(int limit = 100) {
+        return claimPendingAt(limit, static_cast<int64_t>(time(nullptr)));
+    }
+
+    void recoverRunning() {
+        recoverRunningAt(static_cast<int64_t>(time(nullptr)));
+    }
 };
 
 class SegmentTierImp : public SegmentTierRepository {
 public:
     using Ptr = std::shared_ptr<SegmentTierImp>;
 
+    bool updateTier(const std::string &camera_id, const std::string &stream_id,
+                    const std::string &segment_path,
+                    const std::string &new_tier, const std::string &pool_id,
+                    const std::string &status) {
+        if (pool_id.empty())
+            return false;
+        return updateTierAt(camera_id, stream_id, segment_path, new_tier,
+                            pool_id, status, static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateStatus(const std::string &camera_id, const std::string &stream_id,
+                      const std::string &segment_path,
+                      const std::string &status) {
+        return updateStatusAt(camera_id, stream_id, segment_path, status,
+                              static_cast<int64_t>(time(nullptr)));
+    }
 };
 
 class SegmentTierRangeImp : public SegmentTierRangeRepository {
 public:
     using Ptr = std::shared_ptr<SegmentTierRangeImp>;
 
+    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = 90) {
+        if (range.pool_id.empty())
+            return false;
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        if (range.created_at <= 0)
+            range.created_at = now;
+        range.updated_at = now;
+        if (range.range_id.empty())
+            range.range_id = StrUUID::make_guid(8, "rng");
+        return mergeNormalizedRange(range, merge_gap_seconds, now);
+    }
+
+    bool updateTierByWindow(const std::string &camera_id, int64_t start_time,
+                            int64_t end_time, const std::string &new_tier,
+                            const std::string &pool_id, const std::string &status) {
+        if (pool_id.empty())
+            return false;
+        return updateTierByWindowAt(camera_id, start_time, end_time, new_tier,
+                                    pool_id, status, static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateTierByRangeId(const std::string &range_id,
+                             const std::string &new_tier,
+                             const std::string &pool_id,
+                             const std::string &status) {
+        if (range_id.empty() || pool_id.empty())
+            return false;
+        return updateTierByRangeIdAt(range_id, new_tier, pool_id, status,
+                                     static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateStatusByWindow(const std::string &camera_id, int64_t start_time,
+                              int64_t end_time, const std::string &status) {
+        return updateStatusByWindowAt(camera_id, start_time, end_time, status,
+                                      static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateStatusByRangeId(const std::string &range_id,
+                               const std::string &status) {
+        if (range_id.empty())
+            return false;
+        return updateStatusByRangeIdAt(range_id, status,
+                                       static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateTierByExactWindow(const std::string &camera_id,
+                                 const std::string &stream_id,
+                                 int64_t start_time, int64_t end_time,
+                                 const std::string &new_tier,
+                                 const std::string &pool_id,
+                                 const std::string &status) {
+        if (pool_id.empty())
+            return false;
+        return updateTierByExactWindowAt(camera_id, stream_id, start_time,
+                                         end_time, new_tier, pool_id, status,
+                                         static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateStatusByExactWindow(const std::string &camera_id,
+                                   const std::string &stream_id,
+                                   int64_t start_time, int64_t end_time,
+                                   const std::string &status) {
+        return updateStatusByExactWindowAt(camera_id, stream_id, start_time,
+                                           end_time, status,
+                                           static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool splitWindowStatus(const SegmentTierRange &range,
+                           int64_t window_start,
+                           int64_t window_end,
+                           const std::string &status) {
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        if (window_start <= range.start_time && window_end >= range.end_time) {
+            return updateStatusByExactWindowAt(range.camera_id, range.stream_id,
+                                               range.start_time, range.end_time,
+                                               status, now);
+        }
+
+        window_start = std::max(window_start, range.start_time);
+        window_end = std::min(window_end, range.end_time);
+        if (range.range_id.empty() || range.pool_id.empty() || window_start >= window_end)
+            return false;
+
+        const int64_t average_size = range.segment_count > 0
+                                         ? range.size_bytes / range.segment_count
+                                         : 0;
+        auto make_piece = [&](int64_t start, int64_t end,
+                              const std::string &piece_status, bool keep_id) {
+            SegmentTierRange piece = range;
+            piece.range_id = keep_id ? range.range_id : StrUUID::make_guid(8, "rng");
+            piece.start_time = start;
+            piece.end_time = end;
+            piece.status = piece_status;
+            piece.segment_count = std::max<int64_t>(1, (end - start + 59) / 60);
+            piece.size_bytes = average_size > 0 ? average_size * piece.segment_count : 0;
+            piece.updated_at = now;
+            return piece;
+        };
+
+        std::vector<SegmentTierRange> pieces;
+        if (range.start_time < window_start)
+            pieces.push_back(make_piece(range.start_time, window_start, range.status, false));
+        pieces.push_back(make_piece(window_start, window_end, status, true));
+        if (window_end < range.end_time)
+            pieces.push_back(make_piece(window_end, range.end_time, range.status, false));
+        return replaceRangeWithPieces(range.range_id, pieces);
+    }
 };
 
 class PoolMetricsImp : public PoolMetricsRepository {

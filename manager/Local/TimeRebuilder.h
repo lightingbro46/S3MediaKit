@@ -1,9 +1,17 @@
 #ifndef LOCAL_TIMEREBUILDER_H_
 #define LOCAL_TIMEREBUILDER_H_
 
+#include <functional>
 #include "TimeRecorderManager.h"
 
 namespace managerkit {
+
+struct TimeBlockIdentity {
+    std::string camera_id;
+    std::string stream_id;
+    uint64_t start_time = 0;
+    std::string segment_path;
+};
 
 class TimeRebuilder final {
 public:
@@ -24,6 +32,9 @@ public:
      */
     size_t rebuildTimeLineWithoutRecreate(const KeepTimeMap &map, bool is_boundary_file = false);
 
+    // Remove only the durable catalog entries whose exact identities are supplied.
+    size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
+
 private:
     /**
      * Create template file 
@@ -36,6 +47,8 @@ private:
     void closeTempFile();
 
     void closeTempFileAfterActiveSwap();
+
+    size_t rebuildTimeLineWithPredicate(const std::function<bool(const TimeBlock &)> &keep_block);
 
 private:
     TimeRecorder::Ptr _writer;
@@ -59,6 +72,8 @@ public:
      * Recreate time file according to keep time map
      */
     size_t rebuildTimeLine(const KeepTimeMap &map);
+
+    size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
 
 private:
     /**

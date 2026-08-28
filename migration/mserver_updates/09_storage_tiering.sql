@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS "storage_pools" (
     "base_path"                TEXT,
     "access_key"               TEXT,
     "secret_key_enc"           TEXT,
-    "mount_path"               TEXT,
-    "network_path"             TEXT,
+    "mount_path"               TEXT,    -- logical filesystem root; excludes Record::kAppName
+    "network_path"             TEXT,    -- logical mounted NAS root; excludes Record::kAppName
     "enabled"                  INTEGER NOT NULL DEFAULT 1,
     "health_check_enabled"     INTEGER NOT NULL DEFAULT 1,
     "high_watermark_percent"   INTEGER NOT NULL DEFAULT 85,
@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS "storage_pools" (
     "created_at"               INTEGER NOT NULL DEFAULT 0,
     "updated_at"               INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS "idx_storage_pools_tier_type_enabled"
+    ON "storage_pools" ("tier", "type", "enabled");
+
+CREATE INDEX IF NOT EXISTS "idx_storage_pools_type_enabled"
+    ON "storage_pools" ("type", "enabled");
 
 -- Storage Tiering: policy definitions (tier configs stored as JSON)
 CREATE TABLE IF NOT EXISTS "storage_policies" (
@@ -35,6 +41,12 @@ CREATE TABLE IF NOT EXISTS "storage_policies" (
     "updated_at"            INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS "idx_storage_policies_enabled_created"
+    ON "storage_policies" ("enabled", "created_at" DESC);
+
+CREATE INDEX IF NOT EXISTS "idx_storage_policies_created"
+    ON "storage_policies" ("created_at" DESC);
+
 -- Storage Tiering: camera-level policy assignments (override)
 CREATE TABLE IF NOT EXISTS "camera_policy_assignments" (
     "camera_id"       TEXT    NOT NULL PRIMARY KEY,
@@ -42,6 +54,9 @@ CREATE TABLE IF NOT EXISTS "camera_policy_assignments" (
     "override_reason" TEXT,
     "assigned_at"     INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS "idx_camera_policy_assignments_policy"
+    ON "camera_policy_assignments" ("policy_id");
 
 -- Storage Tiering: tiering job history
 CREATE TABLE IF NOT EXISTS "tiering_jobs" (
@@ -63,6 +78,12 @@ CREATE TABLE IF NOT EXISTS "tiering_jobs" (
     "updated_at"         INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE INDEX IF NOT EXISTS "idx_tiering_jobs_status_created"
+    ON "tiering_jobs" ("status", "created_at");
+
+CREATE INDEX IF NOT EXISTS "idx_tiering_jobs_camera_status_created"
+    ON "tiering_jobs" ("camera_id", "status", "created_at" DESC);
+
 -- Storage Tiering: per-segment tier tracking
 CREATE TABLE IF NOT EXISTS "segment_tier_records" (
     "camera_id"    TEXT    NOT NULL,
@@ -81,6 +102,12 @@ CREATE TABLE IF NOT EXISTS "segment_tier_records" (
 
 CREATE INDEX IF NOT EXISTS "idx_segment_tier_records_ttl"
     ON "segment_tier_records" ("updated_at");
+
+CREATE INDEX IF NOT EXISTS "idx_segment_tier_records_camera_time"
+    ON "segment_tier_records" ("camera_id", "stream_id", "start_time", "end_time");
+
+CREATE INDEX IF NOT EXISTS "idx_segment_tier_records_tier_age"
+    ON "segment_tier_records" ("tier", "status", "end_time");
 
 -- Storage Tiering: compact range tracking for large camera fleets.
 -- segment_tier_records is kept as a short-lived compatibility/detail table
