@@ -558,6 +558,10 @@ const string kTierRangeBackfillEnabled = STORAGE_FIELD "tier_range_backfill_enab
 const string kTierRangeBackfillDays = STORAGE_FIELD "tier_range_backfill_days";
 const string kTierRangeBackfillChunkSeconds = STORAGE_FIELD "tier_range_backfill_chunk_seconds";
 const string kTierRangeBackfillMaxCamerasPerCycle = STORAGE_FIELD "tier_range_backfill_max_cameras_per_cycle";
+const string kTierRangeBackfillDispatchIntervalSeconds = STORAGE_FIELD "tier_range_backfill_dispatch_interval_seconds";
+const string kTierRangeBackfillWorkBudgetMs = STORAGE_FIELD "tier_range_backfill_work_budget_ms";
+const string kTierRangeBackfillMaxAttempts = STORAGE_FIELD "tier_range_backfill_max_attempts";
+const string kTierRangeBackfillRetryBaseSeconds = STORAGE_FIELD "tier_range_backfill_retry_base_seconds";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -577,6 +581,10 @@ static onceToken token([]() {
     mINI::Instance()[kTierRangeBackfillDays] = 180;
     mINI::Instance()[kTierRangeBackfillChunkSeconds] = 24 * 3600;
     mINI::Instance()[kTierRangeBackfillMaxCamerasPerCycle] = 20;
+    mINI::Instance()[kTierRangeBackfillDispatchIntervalSeconds] = 1;
+    mINI::Instance()[kTierRangeBackfillWorkBudgetMs] = 2000;
+    mINI::Instance()[kTierRangeBackfillMaxAttempts] = 5;
+    mINI::Instance()[kTierRangeBackfillRetryBaseSeconds] = 30;
 });
 
 } // namespace Storage

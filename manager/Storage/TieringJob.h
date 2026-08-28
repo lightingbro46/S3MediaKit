@@ -411,6 +411,23 @@ public:
         return !rows.empty();
     }
 
+    bool existsWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                       const std::string &camera_id,
+                       const std::string &stream_id,
+                       const std::string &segment_path) {
+        if (!txn)
+            return false;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentTierRecord>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND segment_path = ?",
+                       {camera_id, stream_id, segment_path})
+                .limit(1));
+        return !rows.empty();
+    }
+
     std::vector<SegmentTierRecord> findByTierAndAge(const std::string &tier,
                                                      int64_t older_than_time) {
         std::ostringstream where;
@@ -483,7 +500,24 @@ public:
     bool upsert(const SegmentTierRecord &rec) {
         if (rec.pool_id.empty())
             return false;
-        // Delete any existing record then insert
+        auto txn = _executor->execTxn();
+        try {
+            if (!upsertWithTxn(rec, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
+    bool upsertWithTxn(const SegmentTierRecord &rec,
+                       const toolkit::SqliteTransaction::Ptr &txn) {
+        if (rec.pool_id.empty() || !txn)
+            return false;
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND segment_path = ?";
@@ -493,8 +527,8 @@ public:
         auto q = toolkit::QueryBuilder()
             .deleteFrom(EntityTraits<SegmentTierRecord>::tableName())
             .where(where.str(), params);
-        _executor->execDML(q);
-        return save(rec, true);
+        _executor->execDMLWithTxn(txn, q);
+        return saveWithTxn(rec, txn, true);
     }
 
     bool updateTierAt(const std::string &camera_id, const std::string &stream_id,
@@ -856,9 +890,71 @@ public:
         return !rows.empty();
     }
 
+    bool hasCoveringRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                                 const std::string &camera_id,
+                                 const std::string &stream_id,
+                                 const std::string &tier,
+                                 const std::string &status,
+                                 int64_t start_time,
+                                 int64_t end_time) {
+        if (!txn)
+            return false;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND tier = ? AND status = ? "
+                       "AND start_time <= ? AND end_time >= ?",
+                       {camera_id, stream_id, tier, status,
+                        std::to_string(start_time), std::to_string(end_time)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    bool hasAnyCoveringRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                                    const std::string &camera_id,
+                                    const std::string &stream_id,
+                                    int64_t start_time,
+                                    int64_t end_time) {
+        if (!txn)
+            return false;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND start_time <= ? AND end_time >= ?",
+                       {camera_id, stream_id, std::to_string(start_time),
+                        std::to_string(end_time)})
+                .limit(1));
+        return !rows.empty();
+    }
+
     bool mergeNormalizedRange(const SegmentTierRange &range,
                               int64_t merge_gap_seconds,
                               int64_t updated_at) {
+        auto txn = _executor->execTxn();
+        try {
+            if (!mergeNormalizedRangeWithTxn(range, merge_gap_seconds,
+                                             updated_at, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
+    bool mergeNormalizedRangeWithTxn(const SegmentTierRange &range,
+                                     int64_t merge_gap_seconds,
+                                     int64_t updated_at,
+                                     const toolkit::SqliteTransaction::Ptr &txn) {
+        if (range.pool_id.empty() || !txn)
+            return false;
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND tier = ? AND status = ?";
@@ -872,7 +968,6 @@ public:
         params.push_back(std::to_string(range.start_time - merge_gap_seconds));
         params.push_back(std::to_string(range.end_time + merge_gap_seconds));
 
-        auto txn = _executor->execTxn();
         auto rows = _executor->executeRawWithTxn(
             txn,
             toolkit::QueryBuilder()
@@ -880,12 +975,8 @@ public:
                 .from(EntityTraits<SegmentTierRange>::tableName())
                 .where(where.str(), params)
                 .orderBy("start_time ASC"));
-        if (rows.empty()) {
-            if (!saveWithTxn(range, txn, true))
-                return false;
-            txn->commit();
-            return true;
-        }
+        if (rows.empty())
+            return saveWithTxn(range, txn, true);
 
         auto existing = EntityTraits<SegmentTierRange>::fromRow(rows[0]);
         int64_t merged_start = range.start_time;
@@ -918,7 +1009,6 @@ public:
             .where("range_id = ?", {existing.range_id});
         if (!_executor->execDMLWithTxn(txn, q))
             return false;
-        txn->commit();
         return true;
     }
 

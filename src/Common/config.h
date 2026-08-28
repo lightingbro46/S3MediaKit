@@ -732,6 +732,14 @@ extern const std::string kTierRangeBackfillDays;
 extern const std::string kTierRangeBackfillChunkSeconds;
 // Maximum cameras processed by backfill on each tiering cycle.
 extern const std::string kTierRangeBackfillMaxCamerasPerCycle;
+// Interval between background backfill dispatch attempts.
+extern const std::string kTierRangeBackfillDispatchIntervalSeconds;
+// Maximum wall-clock time spent by one backfill dispatch.
+extern const std::string kTierRangeBackfillWorkBudgetMs;
+// Maximum consecutive attempts for one task cursor before marking it failed.
+extern const std::string kTierRangeBackfillMaxAttempts;
+// Base delay used by exponential retry backoff.
+extern const std::string kTierRangeBackfillRetryBaseSeconds;
 
 } // namespace Storage
 

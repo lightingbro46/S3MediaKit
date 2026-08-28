@@ -31,6 +31,7 @@
 #include "Storage/DbStorage.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/StorageTierExtra.h"
+#include "Storage/TierBackfillTask.h"
 #include "Storage/TieringJob.h"
 #include "Util/File.h"
 #include "Util/base64.h"
@@ -1133,6 +1134,168 @@ int scenarioMissingRestoreCacheRequiresRestore(const std::string &root) {
     return 0;
 }
 
+int scenarioBackfillAtomicIdempotent(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 3600;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string camera = "camera-backfill-idempotent";
+    const std::string stream = "main";
+    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 3600;
+    const int64_t middle = start + 60;
+    const int64_t end = middle + 60;
+    const std::string first_key = "2026-08-28_12-00-00";
+    const std::string second_key = "2026-08-28_12-01-00";
+    const std::string first_path = root + "/hot/record/" + camera + "/" +
+                                   stream + "/" + first_key + ".mp4";
+    const std::string second_path = root + "/hot/record/" + camera + "/" +
+                                    stream + "/" + second_key + ".mp4";
+    const std::string first_payload = "already-indexed";
+    const std::string second_payload = "durable-backfill";
+    writeFile(first_path, first_payload);
+    writeFile(second_path, second_payload);
+    writeTimeBlock(root, camera, stream, first_path, start, middle,
+                   static_cast<int64_t>(first_payload.size()));
+    writeTimeBlock(root, camera, stream, second_path, middle, end,
+                   static_cast<int64_t>(second_payload.size()));
+    require(manager.registerHotSegmentRange(
+                camera, stream, first_path, start, middle,
+                static_cast<int64_t>(first_payload.size())),
+            "Cannot seed partially indexed HOT metadata");
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = start;
+    desired.cutoff_time = end;
+    desired.cursor_time = start;
+    TierBackfillTask task = TierBackfillTaskImp().ensureTask(desired);
+    require(!task.task_id.empty(), "Cannot seed durable backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Backfill task did not complete");
+
+    auto records = SegmentTierRepository().findByCamera(camera);
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    const int64_t expected_size = static_cast<int64_t>(first_payload.size() +
+                                                        second_payload.size());
+    require(records.size() == 2 && records.front().segment_path == first_key &&
+                records.back().segment_path == second_key,
+            "Backfill did not preserve and complete partial segment metadata");
+    require(ranges.size() == 1 && ranges.front().segment_count == 2 &&
+                ranges.front().size_bytes == expected_size,
+            "Backfill inflated the partially indexed HOT range");
+
+    task = TierBackfillTaskImp().findByCameraId(camera).front();
+    task.cursor_time = start;
+    task.status = "PENDING";
+    task.completed_at = 0;
+    task.updated_at = static_cast<int64_t>(::time(nullptr));
+    require(TierBackfillTaskImp().updateDefinitionAt(task),
+            "Cannot replay completed backfill task");
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Replayed backfill task did not complete");
+
+    records = SegmentTierRepository().findByCamera(camera);
+    ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(records.size() == 2, "Backfill replay duplicated segment records");
+    require(ranges.size() == 1 && ranges.front().segment_count == 2 &&
+                ranges.front().size_bytes == expected_size,
+            "Backfill replay inflated normalized range counters");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
+int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 3600;
+    mINI::Instance()[Storage::kTierRangeBackfillRetryBaseSeconds] = 60;
+    mINI::Instance()[Storage::kTierRangeBackfillMaxAttempts] = 3;
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string camera = "camera-backfill-orphan";
+    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 3600;
+    const int64_t end = start + 60;
+    const std::string unmatched = root + "/unmapped/record/" + camera +
+                                  "/main/2026-08-28_12-01-00.mp4";
+    writeTimeBlock(root, camera, "main", unmatched, start, end, 128);
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = start;
+    desired.cutoff_time = end;
+    desired.cursor_time = start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed orphan backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "RETRY";
+    }, 5000), "Orphan backfill task did not enter RETRY");
+    auto rows = TierBackfillTaskImp().findByCameraId(camera);
+    require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
+                rows.front().orphan_blocks == 1 && !rows.front().last_error.empty(),
+            "Orphan retry advanced cursor or lost diagnostic counters");
+    require(SegmentTierRepository().findByCamera(camera).empty(),
+            "Orphan chunk partially committed segment metadata");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
+int scenarioBackfillMissingTimelineRetries(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillRetryBaseSeconds] = 60;
+    mINI::Instance()[Storage::kTierRangeBackfillMaxAttempts] = 3;
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string camera = "camera-backfill-no-timefile";
+    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 3600;
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = start;
+    desired.cutoff_time = start + 60;
+    desired.cursor_time = start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed missing-timeline backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "RETRY";
+    }, 5000), "Missing timeline did not move backfill task to RETRY");
+    auto rows = TierBackfillTaskImp().findByCameraId(camera);
+    require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
+                !rows.front().last_error.empty(),
+            "Missing timeline advanced cursor or lost constructor error");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
 int scenarioRecoveryPrepare(const std::string &root) {
     migrateDatabase(root);
     const int64_t now = static_cast<int64_t>(::time(nullptr));
@@ -1170,6 +1333,20 @@ int scenarioRecoveryPrepare(const std::string &root) {
     segment.updated_at = now;
     require(RestoreJobImp().addWithSegments(restore, {segment}),
             "Cannot seed RUNNING restore job segment");
+
+    TierBackfillTask backfill;
+    backfill.task_id = "recovery-backfill-task";
+    backfill.camera_id = "camera-recovery-backfill";
+    backfill.timeline_path = root + "/hot/record/camera-recovery-backfill";
+    backfill.window_start = now - 3600;
+    backfill.cutoff_time = now - 120;
+    backfill.cursor_time = backfill.window_start;
+    backfill.status = "RUNNING";
+    backfill.started_at = now;
+    backfill.created_at = now;
+    backfill.updated_at = now;
+    require(TierBackfillTaskImp().insertTask(backfill),
+            "Cannot seed RUNNING backfill task");
     return 0;
 }
 
@@ -1183,6 +1360,10 @@ int scenarioRecoveryVerify(const std::string &root) {
     auto segments = RestoreJobSegmentImp().queryByJob("recovery-restore-job");
     require(segments.size() == 1 && segments.front().status == "PENDING",
             "RUNNING restore segment was not recovered to PENDING");
+    auto backfill = TierBackfillTaskImp().findByTaskId("recovery-backfill-task");
+    require(backfill.size() == 1 && backfill.front().status == "PENDING" &&
+                backfill.front().cursor_time == backfill.front().window_start,
+            "RUNNING backfill task was not recovered without advancing cursor");
     manager.stop();
     return 0;
 }
@@ -1203,6 +1384,9 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "resolve-local-playback-paths") return scenarioResolveLocalPlaybackPaths(root);
         if (name == "reject-unreadable-playback-path") return scenarioRejectUnreadablePlaybackPath(root);
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
+        if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
+        if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
+        if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
         throw std::runtime_error("Unknown scenario: " + name);
@@ -1351,6 +1535,21 @@ TEST(TierStorageManagerIntegrationTest, RejectsUnreadablePlaybackFile) {
 TEST(TierStorageManagerIntegrationTest, RequiresRestoreWhenObjectCacheIsMissing) {
     TempRoot root;
     EXPECT_EQ(0, runChild("missing-restore-cache", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillsAtomicallyAndIdempotently) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-atomic-idempotent", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RetriesOrphanChunkWithoutAdvancingCursor) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-orphan-retry", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RetriesWhenCameraHasNoTimeFile) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-missing-timeline", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, RecoversRunningWorkAcrossFreshProcesses) {

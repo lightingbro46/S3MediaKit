@@ -18,6 +18,7 @@
 #include "Storage/StorageTierExtra.h"
 #include "Storage/PolicyAssignment.h"
 #include "Storage/TieringJob.h"
+#include "Storage/TierBackfillTask.h"
 #include "TierObjectStorage.h"
 #include "TierLocalDiskStorage.h"
 #include "TierNASStorage.h"
@@ -201,6 +202,9 @@ public:
     // Public so it can be triggered on demand (e.g. from tests)
     void runTieringCycle();
 
+    // Dispatch durable TimeFile-to-HOT metadata backfill work.
+    void runBackfillCycle();
+
     // Pool health check + metrics snapshot
     void checkAndRecordPoolHealth();
 
@@ -367,10 +371,13 @@ private:
     void pruneOldMetrics();
     void cleanupRestoreTempFiles();
 
-    // Historical bootstrap from timefile blocks to compact SegmentTierRange.
-    // This lets TierStorageManager take over media cleanup for old recordings
-    // created before tier ranges existed.
-    void backfillHotRangesFromTimeFiles();
+    bool syncBackfillTasks();
+
+    bool prepareBackfillChunk(const TierBackfillTask &task,
+                              TierBackfillChunk &chunk,
+                              std::string &error);
+
+    bool processBackfillTask(const TierBackfillTask &task);
 
     bool resolveHotPoolForPath(const std::string &file_path,
                                StoragePool &out_pool,
@@ -396,10 +403,14 @@ private:
 private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr       _timer;
+    toolkit::Timer::Ptr       _backfill_timer;
     toolkit::Ticker           _ticker;
+    toolkit::Ticker           _backfill_sync_ticker;
     std::atomic<bool>         _maintenance_running{false};
+    std::atomic<bool>         _backfill_running{false};
     std::atomic<bool>         _stopping{false};
     std::atomic<int>          _restore_inflight{0};
+    std::atomic<bool>         _backfill_tasks_initialized{false};
 
     mutable std::mutex        _pool_cache_mtx;
     mutable std::mutex        _range_registration_mtx;

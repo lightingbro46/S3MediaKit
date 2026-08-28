@@ -336,7 +336,9 @@ MP4Recorder close/rename segment
       size_bytes += file_size
 ```
 
-Định kỳ, `TierStorageManager::backfillHotRangesFromTimeFiles()` đọc timefile bằng `TimeQuery`, decode `TimeBlock.file_path`, resolve HOT pool và merge các HOT range bị thiếu. Backfill bị giới hạn bởi `storage.tier_range_backfill_enabled`, `storage.tier_range_backfill_days`, `storage.tier_range_backfill_chunk_seconds` và `storage.tier_range_backfill_max_cameras_per_cycle`.
+Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery`, decode `TimeBlock.file_path` và resolve HOT pool. Range, segment record và cursor task được commit trong cùng transaction. Vì vậy restart sẽ tiếp tục từ cursor đã commit, replay không nhân đôi metadata, chunk có orphan không tiến cursor và lỗi mở timefile được chuyển sang retry. Lỗi phát sinh bên trong `TimeQuery::getRecordedTimePeriod()` giữ cơ chế tương thích cũ: được xử lý ngầm và trả kết quả đã thu thập được.
+
+Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Task mới luôn bắt đầu từ cửa sổ cấu hình trong `tier_backfill_tasks`.
 
 ## 5. Luồng Chuyển Tầng
 
@@ -349,17 +351,16 @@ Luồng hiện tại theo code:
 1. Reset ticker và ghi log bắt đầu.
 2. Refresh `_pool_cache` từ `storage_pools`.
 3. Gọi `ensureSystemDefaultPolicy()` để đảm bảo policy `policy-system-default` tồn tại.
-4. Gọi `backfillHotRangesFromTimeFiles()` để bù HOT range còn thiếu từ timefile.
-5. Query `tiering_jobs` trạng thái `PENDING` và execute trước.
-6. Lấy danh sách camera có dữ liệu `AVAILABLE`:
+4. Query `tiering_jobs` trạng thái `PENDING` và execute trước. Backfill được dispatcher riêng xử lý nên không kéo dài cycle này.
+5. Lấy danh sách camera có dữ liệu `AVAILABLE`:
    - Từ `segment_tier_ranges.findDistinctAvailableCameras()`.
-7. Với từng camera:
+6. Với từng camera:
    - `getEffectivePolicy(camera_id)`.
    - Nếu có policy hiệu lực, chạy `processCameraTiering(camera_id, policy)`.
    - Chạy `processCameraPressureTiering(camera_id, policy)`.
    - Chạy `enforcePolicyDeleteRetention(camera_id, policy)`.
    - Chạy `enforceCameraArchiveRetention(camera_id, policy)`.
-8. Ghi log thời gian hoàn tất.
+7. Ghi log thời gian hoàn tất.
 
 ### 5.2 Move Theo Tuổi Dữ Liệu
 
@@ -864,6 +865,10 @@ storage.tier_range_backfill_enabled=1
 storage.tier_range_backfill_days=180
 storage.tier_range_backfill_chunk_seconds=86400
 storage.tier_range_backfill_max_cameras_per_cycle=20
+storage.tier_range_backfill_dispatch_interval_seconds=1
+storage.tier_range_backfill_work_budget_ms=2000
+storage.tier_range_backfill_max_attempts=5
+storage.tier_range_backfill_retry_base_seconds=30
 ```
 
 | Biến | Nơi dùng | Ghi chú |
@@ -874,10 +879,16 @@ storage.tier_range_backfill_max_cameras_per_cycle=20
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
 | `default_hot_*_watermark_percent` | `ensureDefaultHotPool()` | Watermark cho `pool-default-hot` |
 | `segment_record_ttl_seconds` | `pruneOldMetrics()` | Chỉ prune `segment_tier_records`, không prune range chính |
-| `tier_range_backfill_enabled` | `backfillHotRangesFromTimeFiles()` | Bật/tắt backfill |
-| `tier_range_backfill_days` | Backfill | Cửa sổ lịch sử |
-| `tier_range_backfill_chunk_seconds` | Backfill | Khoảng thời gian xử lý mỗi camera/cycle |
-| `tier_range_backfill_max_cameras_per_cycle` | Backfill | Giới hạn camera mỗi cycle |
+| `tier_range_backfill_enabled` | Backfill dispatcher | Bật/tắt durable backfill |
+| `tier_range_backfill_days` | Đồng bộ task | Cửa sổ lịch sử cố định khi tạo/reset task |
+| `tier_range_backfill_chunk_seconds` | Backfill worker | Khoảng timeline commit nguyên tử mỗi chunk |
+| `tier_range_backfill_max_cameras_per_cycle` | Backfill dispatcher | Số task tối đa mỗi lượt dispatch |
+| `tier_range_backfill_dispatch_interval_seconds` | Backfill timer | Chu kỳ đánh thức dispatcher |
+| `tier_range_backfill_work_budget_ms` | Backfill dispatcher | Time budget tối đa mỗi lượt |
+| `tier_range_backfill_max_attempts` | Backfill retry | Số lỗi tối đa trước khi chuyển `FAILED` |
+| `tier_range_backfill_retry_base_seconds` | Backfill retry | Backoff cơ sở, tăng theo lũy thừa hai |
+
+`tier_backfill_tasks` lưu cursor và các counter `scanned_blocks`, `registered_blocks`, `orphan_blocks`, `indexed_bytes`. Khi task `FAILED`, có thể đưa lại về hàng đợi qua `TierBackfillTaskImp::retryFailed(camera_id)` sau khi đã xử lý nguyên nhân orphan hoặc lỗi mở timefile.
 
 `segment_tier_ranges` là bảng metadata chính của luồng tiering nên không bị cleanup bằng TTL ngắn hạn. Chỉ các range `DELETED/EXPIRED` nên được cleanup bằng retention riêng sau khi không còn cần cho timeline, thống kê hoặc audit.
 

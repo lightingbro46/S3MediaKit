@@ -103,3 +103,28 @@ CREATE TABLE IF NOT EXISTS "protected_videos" (
 
 CREATE INDEX IF NOT EXISTS "idx_protected_videos_camera_window"
     ON "protected_videos" ("camera_id", "start_time", "end_time");
+
+-- Durable, node-local progress for historical TimeFile to HOT tier metadata backfill.
+CREATE TABLE IF NOT EXISTS "tier_backfill_tasks" (
+    "task_id"           TEXT    NOT NULL PRIMARY KEY,
+    "camera_id"         TEXT    NOT NULL UNIQUE,
+    "timeline_path"     TEXT    NOT NULL,
+    "window_start"      INTEGER NOT NULL DEFAULT 0,
+    "cutoff_time"       INTEGER NOT NULL DEFAULT 0,
+    "cursor_time"       INTEGER NOT NULL DEFAULT 0,
+    "status"            TEXT    NOT NULL DEFAULT 'PENDING',
+    "attempt_count"     INTEGER NOT NULL DEFAULT 0,
+    "next_retry_at"     INTEGER NOT NULL DEFAULT 0,
+    "last_error"        TEXT    NOT NULL DEFAULT '',
+    "scanned_blocks"    INTEGER NOT NULL DEFAULT 0,
+    "registered_blocks" INTEGER NOT NULL DEFAULT 0,
+    "orphan_blocks"     INTEGER NOT NULL DEFAULT 0,
+    "indexed_bytes"     INTEGER NOT NULL DEFAULT 0,
+    "started_at"        INTEGER NOT NULL DEFAULT 0,
+    "completed_at"      INTEGER NOT NULL DEFAULT 0,
+    "created_at"        INTEGER NOT NULL DEFAULT 0,
+    "updated_at"        INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS "idx_tier_backfill_tasks_status_retry"
+    ON "tier_backfill_tasks" ("status", "next_retry_at", "updated_at");

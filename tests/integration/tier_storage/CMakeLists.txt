@@ -65,6 +65,9 @@ foreach(manager_case
     ResolvesExistingEmptyAndSymlinkPlaybackFiles
     RejectsUnreadablePlaybackFile
     RequiresRestoreWhenObjectCacheIsMissing
+    BackfillsAtomicallyAndIdempotently
+    RetriesOrphanChunkWithoutAdvancingCursor
+    RetriesWhenCameraHasNoTimeFile
     RecoversRunningWorkAcrossFreshProcesses)
   add_test(
     NAME "integration.tier-manager.${manager_case}"

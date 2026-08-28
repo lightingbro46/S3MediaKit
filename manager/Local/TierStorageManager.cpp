@@ -1,6 +1,8 @@
 #include <ctime>
 #include <cstring>
 #include <cmath>
+#include <limits>
+#include <unordered_set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -17,7 +19,7 @@
 #include "Local/TimeQuery.h"
 #include "Local/TimeRebuilder.h"
 #include "Common/DeviceSource.h"
-#include "Storage/MiscData.h"
+#include "Storage/TierBackfillTask.h"
 
 #include "TierStorageManager.h"
 #include "StorageManager.h"
@@ -115,7 +117,6 @@ static const char kDefaultHotPoolId[] = "pool-default-hot";
 static const char kDefaultHotPoolName[] = "Default HOT Tier Storage";
 static const char kSystemDefaultPolicyId[] = "policy-system-default";
 static const char kSystemDefaultPolicyName[] = "System Default Policy";
-static const char kTierRangeBackfillStatePrefix[] = "TIER_RANGE_BACKFILL:";
 
 struct DiskSegmentInfo {
     std::string camera_id;
@@ -126,20 +127,6 @@ struct DiskSegmentInfo {
     int64_t end_time = 0;
     int64_t file_size = 0;
 };
-
-struct TierRangeBackfillState {
-    int64_t backfill_start = 0;
-    int64_t cursor_time = 0;
-    bool done = false;
-    int64_t updated_at = 0;
-    int64_t scanned_blocks = 0;
-    int64_t registered_blocks = 0;
-    int64_t orphan_blocks = 0;
-};
-
-static std::string tierRangeBackfillStateKey(const std::string &camera_id) {
-    return std::string(kTierRangeBackfillStatePrefix) + camera_id;
-}
 
 static std::vector<DeviceTuple> collectGenericRtspCameraSources() {
     std::vector<DeviceTuple> tuples;
@@ -152,37 +139,6 @@ static std::vector<DeviceTuple> collectGenericRtspCameraSources() {
     }, GENERIC_RTSP_CAMERA_SCHEMA);
 
     return tuples;
-}
-
-static TierRangeBackfillState parseTierRangeBackfillState(const std::string &value) {
-    TierRangeBackfillState state;
-    if (value.empty())
-        return state;
-
-    Json::Value root;
-    if (!StrJsonUtils::readJsonString(value, root) || !root.isObject())
-        return state;
-
-    state.backfill_start = root.get("backfill_start", 0).asInt64();
-    state.cursor_time = root.get("cursor_time", 0).asInt64();
-    state.done = root.get("done", false).asBool();
-    state.updated_at = root.get("updated_at", 0).asInt64();
-    state.scanned_blocks = root.get("scanned_blocks", 0).asInt64();
-    state.registered_blocks = root.get("registered_blocks", 0).asInt64();
-    state.orphan_blocks = root.get("orphan_blocks", 0).asInt64();
-    return state;
-}
-
-static std::string serializeTierRangeBackfillState(const TierRangeBackfillState &state) {
-    Json::Value root;
-    root["backfill_start"] = static_cast<Json::Int64>(state.backfill_start);
-    root["cursor_time"] = static_cast<Json::Int64>(state.cursor_time);
-    root["done"] = state.done;
-    root["updated_at"] = static_cast<Json::Int64>(state.updated_at);
-    root["scanned_blocks"] = static_cast<Json::Int64>(state.scanned_blocks);
-    root["registered_blocks"] = static_cast<Json::Int64>(state.registered_blocks);
-    root["orphan_blocks"] = static_cast<Json::Int64>(state.orphan_blocks);
-    return root.toStyledString();
 }
 
 static std::vector<DiskSegmentInfo> collectDiskSegmentsFromRoot(const std::string &record_root,
@@ -605,6 +561,7 @@ void TierStorageManager::start() {
     // Jobs left RUNNING by a crash are safe to claim again from durable state.
     TieringJobImp().recoverRunning();
     RestoreJobSegmentImp().recoverRunning();
+    TierBackfillTaskImp().recoverRunning();
 
     // Refresh pool cache immediately on start
     {
@@ -636,12 +593,31 @@ void TierStorageManager::start() {
         },
         _poller);
 
+    GET_CONFIG(float, backfill_dispatch_interval,
+               Storage::kTierRangeBackfillDispatchIntervalSeconds);
+    if (backfill_dispatch_interval <= 0)
+        backfill_dispatch_interval = 1.0f;
+    _backfill_tasks_initialized = false;
+    _backfill_sync_ticker.resetTime();
+    _backfill_timer = std::make_shared<Timer>(
+        backfill_dispatch_interval,
+        [weak_self]() -> bool {
+            auto self = weak_self.lock();
+            if (!self)
+                return false;
+            self->runBackfillCycle();
+            return true;
+        },
+        _poller);
+
     InfoL << "TierStorageManager started";
 }
 
 void TierStorageManager::stop() {
     _stopping = true;
     _timer.reset();
+    _backfill_timer.reset();
+    _backfill_tasks_initialized = false;
     InfoL << "TierStorageManager stopped";
 }
 
@@ -768,145 +744,263 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     return ok;
 }
 
-void TierStorageManager::backfillHotRangesFromTimeFiles() {
-#ifdef ENABLE_MP4
+bool TierStorageManager::syncBackfillTasks() {
     GET_CONFIG(bool, backfill_enabled, Storage::kTierRangeBackfillEnabled);
     if (!backfill_enabled)
-        return;
+        return true;
 
     GET_CONFIG(int64_t, backfill_days, Storage::kTierRangeBackfillDays);
-    GET_CONFIG(int64_t, chunk_seconds, Storage::kTierRangeBackfillChunkSeconds);
-    GET_CONFIG(int, max_cameras, Storage::kTierRangeBackfillMaxCamerasPerCycle);
-
     if (backfill_days <= 0)
-        return;
-    if (chunk_seconds <= 0)
-        chunk_seconds = 86400;
-    if (max_cameras <= 0)
-        max_cameras = 20;
+        return true;
 
     auto device_tuples = collectGenericRtspCameraSources();
     if (device_tuples.empty())
-        return;
+        return false;
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     int64_t backfill_start = now - backfill_days * 86400;
     int64_t stable_end = now - 120;
     if (stable_end <= backfill_start)
-        return;
+        return true;
 
-    MiscDataImp state_imp;
-    int processed_cameras = 0;
-    int total_registered = 0;
-    int total_orphan = 0;
+    GET_CONFIG(std::string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    std::string timeline_root = File::absolutePath(app_name, record_path);
+    TierBackfillTaskImp task_imp;
 
     for (const auto &tuple : device_tuples) {
         const auto &camera_id = tuple.device_id;
-        if (processed_cameras >= max_cameras)
-            break;
+        TierBackfillTask desired;
+        desired.camera_id = camera_id;
+        desired.timeline_path = timeline_root + "/" + camera_id;
+        desired.window_start = backfill_start;
+        desired.cutoff_time = stable_end;
+        desired.cursor_time = backfill_start;
 
-        auto key = tierRangeBackfillStateKey(camera_id);
-        TierRangeBackfillState state;
-        auto rows = state_imp.findByKey(key);
-        if (!rows.empty())
-            state = parseTierRangeBackfillState(rows.front().value);
+        if (task_imp.ensureTask(desired).task_id.empty())
+            WarnL << "Cannot ensure tier backfill task camera=" << camera_id;
+    }
+    return true;
+}
 
-        if (state.done && state.backfill_start > 0 && state.backfill_start <= backfill_start)
+bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
+                                              TierBackfillChunk &chunk,
+                                              std::string &error) {
+    GET_CONFIG(int64_t, chunk_seconds, Storage::kTierRangeBackfillChunkSeconds);
+    if (chunk_seconds <= 0)
+        chunk_seconds = 86400;
+
+    chunk = TierBackfillChunk();
+    chunk.start_time = task.cursor_time;
+    chunk.end_time = std::min<int64_t>(task.cursor_time + chunk_seconds,
+                                      task.cutoff_time);
+    error.clear();
+    if (chunk.end_time <= chunk.start_time)
+        return true;
+
+    MediaTuple tuple;
+    tuple.app = task.camera_id;
+    std::vector<TimeBlock> blocks;
+    try {
+        TimeQuery query(tuple, task.timeline_path, false);
+        query.getRecordedTimePeriod(
+            static_cast<uint64_t>(chunk.start_time),
+            static_cast<uint64_t>(chunk.end_time),
+            [&](std::vector<TimeBlock> &data) {
+                blocks = data;
+            });
+    } catch (const std::exception &ex) {
+        error = ex.what();
+        return false;
+    } catch (...) {
+        error = "Unknown timeline open error";
+        return false;
+    }
+
+    const std::string hot_tier = tierTypeToString(HotTier);
+    const std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
+    std::unordered_set<std::string> seen_segments;
+    for (const auto &block : blocks) {
+        ++chunk.scanned_blocks;
+        std::string full_path;
+        if (!block.file_path().empty())
+            full_path = decodeBase64(block.file_path());
+        if (full_path.empty() || block.stream().empty()) {
+            ++chunk.orphan_blocks;
+            if (error.empty())
+                error = "Timeline block has no usable stream or file path";
             continue;
-        if (state.done && (state.backfill_start == 0 || state.backfill_start > backfill_start)) {
-            state.done = false;
-            state.cursor_time = backfill_start;
         }
-        if (state.cursor_time <= 0 || state.cursor_time < backfill_start)
-            state.cursor_time = backfill_start;
-        if (state.backfill_start == 0 || state.backfill_start > backfill_start)
-            state.backfill_start = backfill_start;
-        if (state.cursor_time >= stable_end) {
-            state.done = true;
-            state.updated_at = now;
-            MiscData data{key, serializeTierRangeBackfillState(state)};
-            state_imp.add(data);
+
+        StoragePool hot_pool;
+        std::string hot_root;
+        if (!resolveHotPoolForPath(full_path, hot_pool, hot_root)) {
+            ++chunk.orphan_blocks;
+            if (error.empty())
+                error = "No HOT pool matches timeline path: " + full_path;
             continue;
         }
 
-        int64_t chunk_start = state.cursor_time;
-        int64_t chunk_end = std::min<int64_t>(chunk_start + chunk_seconds, stable_end);
-        int64_t scanned = 0;
-        int64_t registered = 0;
-        int64_t orphan = 0;
+        std::string segment_path;
+        if (!deriveSegmentPathFromFullPath(full_path, task.camera_id,
+                                           block.stream(), segment_path)) {
+            ++chunk.orphan_blocks;
+            if (error.empty())
+                error = "Cannot derive segment identity: " + full_path;
+            continue;
+        }
+        std::string identity = block.stream() + "\x1f" + segment_path;
+        if (!seen_segments.insert(identity).second)
+            continue;
+
+        int64_t block_start = static_cast<int64_t>(block.start_time());
+        int64_t block_end = block_start + std::max<int64_t>(
+            1, static_cast<int64_t>(block.time_len()));
+        uint64_t raw_size = block.file_size();
+        int64_t file_size = raw_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+            ? std::numeric_limits<int64_t>::max()
+            : static_cast<int64_t>(raw_size);
+        int64_t now = static_cast<int64_t>(time(nullptr));
+
+        SegmentTierRecord record;
+        record.camera_id = task.camera_id;
+        record.stream_id = block.stream();
+        record.segment_path = segment_path;
+        record.tier = hot_tier;
+        record.pool_id = hot_pool.id;
+        record.status = available;
+        record.start_time = block_start;
+        record.end_time = block_end;
+        record.file_size = std::max<int64_t>(0, file_size);
+        record.created_at = now;
+        record.updated_at = now;
+        chunk.records.push_back(record);
+        chunk.indexed_bytes += record.file_size;
+
+        SegmentTierRange range;
+        range.range_id = StrUUID::make_guid(8, "rng");
+        range.camera_id = record.camera_id;
+        range.stream_id = record.stream_id;
+        range.tier = record.tier;
+        range.pool_id = record.pool_id;
+        range.status = record.status;
+        range.start_time = record.start_time;
+        range.end_time = record.end_time;
+        range.segment_count = 1;
+        range.size_bytes = record.file_size;
+        range.created_at = now;
+        range.updated_at = now;
+        chunk.ranges.push_back(range);
+    }
+
+    chunk.registered_blocks = static_cast<int64_t>(chunk.records.size());
+    return chunk.orphan_blocks == 0;
+}
+
+bool TierStorageManager::processBackfillTask(const TierBackfillTask &task) {
+    TierBackfillTaskImp task_imp;
+    TierBackfillChunk chunk;
+    std::string error;
+    try {
+        if (!prepareBackfillChunk(task, chunk, error)) {
+            GET_CONFIG(int, max_attempts, Storage::kTierRangeBackfillMaxAttempts);
+            GET_CONFIG(int, retry_base_seconds, Storage::kTierRangeBackfillRetryBaseSeconds);
+            task_imp.markFailure(task, error, chunk.scanned_blocks,
+                                 chunk.orphan_blocks, max_attempts,
+                                 retry_base_seconds);
+            WarnL << "Tier backfill retry camera=" << task.camera_id
+                  << " cursor=" << task.cursor_time
+                  << " error=" << error;
+            return false;
+        }
+        if (!task_imp.commitChunk(task, chunk)) {
+            GET_CONFIG(int, max_attempts, Storage::kTierRangeBackfillMaxAttempts);
+            GET_CONFIG(int, retry_base_seconds, Storage::kTierRangeBackfillRetryBaseSeconds);
+            task_imp.markFailure(task, "Atomic backfill commit failed", 0, 0,
+                                 max_attempts, retry_base_seconds);
+            return false;
+        }
+        DebugL << "Tier backfill camera=" << task.camera_id
+               << " chunk=" << getTimeStr("%Y-%m-%d %H:%M:%S", chunk.start_time)
+               << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", chunk.end_time)
+               << " scanned=" << chunk.scanned_blocks
+               << " registered=" << chunk.registered_blocks
+               << " bytes=" << chunk.indexed_bytes;
+        return true;
+    } catch (const std::exception &ex) {
+        GET_CONFIG(int, max_attempts, Storage::kTierRangeBackfillMaxAttempts);
+        GET_CONFIG(int, retry_base_seconds, Storage::kTierRangeBackfillRetryBaseSeconds);
+        task_imp.markFailure(task, ex.what(), chunk.scanned_blocks,
+                             chunk.orphan_blocks, max_attempts,
+                             retry_base_seconds);
+        WarnL << "Tier backfill failed camera=" << task.camera_id
+              << " cursor=" << task.cursor_time << ": " << ex.what();
+    } catch (...) {
+        GET_CONFIG(int, max_attempts, Storage::kTierRangeBackfillMaxAttempts);
+        GET_CONFIG(int, retry_base_seconds, Storage::kTierRangeBackfillRetryBaseSeconds);
+        task_imp.markFailure(task, "Unknown backfill error", chunk.scanned_blocks,
+                             chunk.orphan_blocks, max_attempts,
+                             retry_base_seconds);
+        WarnL << "Tier backfill failed camera=" << task.camera_id
+              << " cursor=" << task.cursor_time;
+    }
+    return false;
+}
+
+void TierStorageManager::runBackfillCycle() {
+#ifdef ENABLE_MP4
+    GET_CONFIG(bool, backfill_enabled, Storage::kTierRangeBackfillEnabled);
+    if (!backfill_enabled || _stopping || _backfill_running.exchange(true))
+        return;
+
+    weak_ptr<TierStorageManager> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (!self)
+            return;
+        struct RunningGuard {
+            std::atomic<bool> &running;
+            explicit RunningGuard(std::atomic<bool> &value) : running(value) {}
+            ~RunningGuard() { running = false; }
+        } guard(self->_backfill_running);
+        if (self->_stopping)
+            return;
 
         try {
-            mediakit::MediaTuple tuple;
-            tuple.app = camera_id;
-            TimeQuery query(tuple);
-            query.getRecordedTimePeriod(static_cast<uint64_t>(chunk_start),
-                                        static_cast<uint64_t>(chunk_end),
-                                        [&](std::vector<TimeBlock> &blocks) {
-                for (const auto &block : blocks) {
-                    ++scanned;
-                    std::string full_path;
-                    if (!block.file_path().empty())
-                        full_path = decodeBase64(block.file_path());
-                    if (full_path.empty())
-                        continue;
+            bool initialized = self->_backfill_tasks_initialized.load();
+            if (!initialized || self->_backfill_sync_ticker.elapsedTime() >= 60000) {
+                self->_backfill_tasks_initialized = self->syncBackfillTasks();
+                self->_backfill_sync_ticker.resetTime();
+            }
 
-                    StoragePool hot_pool;
-                    std::string hot_root;
-                    if (!resolveHotPoolForPath(full_path, hot_pool, hot_root)) {
-                        ++orphan;
-                        continue;
-                    }
+            GET_CONFIG(int, max_tasks, Storage::kTierRangeBackfillMaxCamerasPerCycle);
+            GET_CONFIG(int64_t, work_budget_ms, Storage::kTierRangeBackfillWorkBudgetMs);
+            if (max_tasks <= 0)
+                max_tasks = 20;
+            if (work_budget_ms <= 0)
+                work_budget_ms = 2000;
 
-                    int64_t block_start = static_cast<int64_t>(block.start_time());
-                    int64_t block_end = block_start + std::max<int64_t>(1, static_cast<int64_t>(block.time_len()));
-                    if (registerHotSegmentRange(block.app(),
-                                                block.stream(),
-                                                full_path,
-                                                block_start,
-                                                block_end,
-                                                static_cast<int64_t>(block.file_size()))) {
-                        ++registered;
-                    }
-                }
-            });
+            Ticker budget;
+            int processed = 0;
+            TierBackfillTaskImp task_imp;
+            while (!self->_stopping && processed < max_tasks &&
+                   budget.elapsedTime() < static_cast<uint64_t>(work_budget_ms)) {
+                auto claimed = task_imp.claimNextDue();
+                if (claimed.empty())
+                    break;
+                self->processBackfillTask(claimed.front());
+                ++processed;
+            }
+            if (processed > 0) {
+                InfoL << "Tier backfill dispatch processed_tasks=" << processed
+                      << " elapsed=" << format_duration_verbose(budget.elapsedTime());
+            }
         } catch (const std::exception &ex) {
-            WarnL << "backfillHotRangesFromTimeFiles failed camera=" << camera_id
-                  << " chunk=" << chunk_start << "-" << chunk_end
-                  << ": " << ex.what();
-            continue;
+            WarnL << "Tier backfill dispatch failed: " << ex.what();
         } catch (...) {
-            WarnL << "backfillHotRangesFromTimeFiles failed camera=" << camera_id
-                  << " chunk=" << chunk_start << "-" << chunk_end;
-            continue;
+            WarnL << "Tier backfill dispatch failed";
         }
-
-        state.cursor_time = chunk_end;
-        state.done = state.cursor_time >= stable_end;
-        state.updated_at = now;
-        state.scanned_blocks += scanned;
-        state.registered_blocks += registered;
-        state.orphan_blocks += orphan;
-        MiscData data{key, serializeTierRangeBackfillState(state)};
-        state_imp.add(data);
-
-        ++processed_cameras;
-        total_registered += static_cast<int>(registered);
-        total_orphan += static_cast<int>(orphan);
-        DebugL << "Tier range backfill camera=" << camera_id
-               << " chunk=" << getTimeStr("%Y-%m-%d %H:%M:%S", chunk_start)
-               << " - " << getTimeStr("%Y-%m-%d %H:%M:%S", chunk_end)
-               << " scanned=" << scanned
-               << " registered=" << registered
-               << " orphan=" << orphan
-               << " empty_timeline=" << (scanned == 0)
-               << " done=" << state.done;
-    }
-
-    if (processed_cameras > 0) {
-        InfoL << "Tier range backfill cycle processed_cameras=" << processed_cameras
-              << " registered=" << total_registered
-              << " orphan=" << total_orphan;
-    }
+    });
 #endif
 }
 
@@ -2067,7 +2161,6 @@ void TierStorageManager::runTieringCycle() {
         }
 
         self->ensureSystemDefaultPolicy();
-        self->backfillHotRangesFromTimeFiles();
 
         // Execute pending jobs first (pick up where we left off)
         TieringJobImp job_imp;
