@@ -68,7 +68,11 @@ foreach(manager_case
     BackfillsAtomicallyAndIdempotently
     RetriesOrphanChunkWithoutAdvancingCursor
     RetriesWhenCameraHasNoTimeFile
-    RecoversRunningWorkAcrossFreshProcesses)
+    RecoversRunningWorkAcrossFreshProcesses
+    DeletesStableStaleTemporaryMp4FromHotPools
+    PreservesUnsafeTemporaryMp4Candidates
+    ReportsTemporaryMp4InDryRunWithoutDeleting
+    DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart)
   add_test(
     NAME "integration.tier-manager.${manager_case}"
     COMMAND integration_tier_storage_manager

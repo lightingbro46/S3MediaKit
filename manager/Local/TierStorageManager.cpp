@@ -618,6 +618,11 @@ void TierStorageManager::stop() {
     _timer.reset();
     _backfill_timer.reset();
     _backfill_tasks_initialized = false;
+    {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        _temporary_mp4_observations.clear();
+        _temporary_mp4_next_pool_index = 0;
+    }
     InfoL << "TierStorageManager stopped";
 }
 
@@ -2195,6 +2200,7 @@ void TierStorageManager::runTieringCycle() {
             self->processRestoreJobs();
             self->pruneOldMetrics();
             self->cleanupRestoreTempFiles();
+            self->cleanupOrphanTemporarySegments();
             InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
         } catch (const std::exception &ex) {
             WarnL << "Tier storage maintenance cycle failed: " << ex.what();
@@ -3718,6 +3724,257 @@ void TierStorageManager::cleanupRestoreTempFiles() {
         DebugL << "cleanupRestoreTempFiles: expired_jobs=" << expired_job_count
                << ", deleted_files=" << deleted_count
                << ", root=" << restore_root;
+    }
+}
+
+void TierStorageManager::cleanupOrphanTemporarySegments() {
+    GET_CONFIG(bool, cleanup_enabled, Storage::kTierTmpCleanupEnabled);
+    if (!cleanup_enabled) {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        _temporary_mp4_observations.clear();
+        _temporary_mp4_next_pool_index = 0;
+        return;
+    }
+
+    GET_CONFIG(bool, dry_run, Storage::kTierTmpCleanupDryRun);
+    GET_CONFIG(int64_t, stale_seconds, Storage::kTierTmpCleanupStaleSeconds);
+    GET_CONFIG(int, max_files_per_cycle, Storage::kTierTmpCleanupMaxFilesPerCycle);
+    GET_CONFIG(int64_t, work_budget_ms, Storage::kTierTmpCleanupWorkBudgetMs);
+    if (stale_seconds < 0) {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        _temporary_mp4_observations.clear();
+        _temporary_mp4_next_pool_index = 0;
+        return;
+    }
+    if (max_files_per_cycle <= 0)
+        max_files_per_cycle = 1000;
+    if (work_budget_ms <= 0)
+        work_budget_ms = 500;
+
+    std::vector<StoragePool> pools;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        pools.reserve(_pool_cache.size());
+        for (const auto &kv : _pool_cache) {
+            const auto &pool = kv.second;
+            if (pool.enabled &&
+                pool.tier == tierTypeToString(HotTier) &&
+                !poolTypeIsObjectStorage(pool.type)) {
+                pools.push_back(pool);
+            }
+        }
+    }
+
+    std::vector<std::string> roots;
+    roots.reserve(pools.size());
+    for (const auto &pool : pools) {
+        std::string root = normalizeStoragePath(configuredPoolDataRoot(pool));
+        struct stat root_stat{};
+        if (root.empty() || root == "/" ||
+            ::lstat(root.c_str(), &root_stat) != 0 ||
+            !S_ISDIR(root_stat.st_mode)) {
+            continue;
+        }
+        roots.push_back(root);
+    }
+    std::sort(roots.begin(), roots.end());
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+
+    std::unordered_map<std::string, TemporaryMp4Observation> previous_observations;
+    size_t start_pool_index = 0;
+    {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        previous_observations = _temporary_mp4_observations;
+        if (!roots.empty())
+            start_pool_index = _temporary_mp4_next_pool_index % roots.size();
+    }
+
+    if (roots.empty()) {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        _temporary_mp4_observations.clear();
+        _temporary_mp4_next_pool_index = 0;
+        return;
+    }
+
+    std::unordered_map<std::string, TemporaryMp4Observation> current_observations;
+    std::unordered_set<std::string> seen_candidates;
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    toolkit::Ticker cleanup_ticker;
+    size_t roots_scanned = 0;
+    size_t files_examined = 0;
+    size_t candidates_observed = 0;
+    size_t stable_candidates = 0;
+    size_t deleted_files = 0;
+    uint64_t deleted_bytes = 0;
+    size_t would_delete_files = 0;
+    size_t errors = 0;
+    bool budget_exhausted = false;
+
+    auto budgetExceeded = [&]() -> bool {
+        if (files_examined >= static_cast<size_t>(max_files_per_cycle) ||
+            cleanup_ticker.elapsedTime() >= static_cast<uint64_t>(work_budget_ms)) {
+            budget_exhausted = true;
+            return true;
+        }
+        return false;
+    };
+    auto baseName = [](const std::string &path) -> std::string {
+        auto slash = path.rfind('/');
+        return slash == std::string::npos ? path : path.substr(slash + 1);
+    };
+    auto makeObservation = [](const struct stat &st) -> TemporaryMp4Observation {
+        TemporaryMp4Observation observation;
+        observation.device = static_cast<uint64_t>(st.st_dev);
+        observation.inode = static_cast<uint64_t>(st.st_ino);
+        observation.size = static_cast<int64_t>(st.st_size);
+        observation.modified_at = static_cast<int64_t>(st.st_mtime);
+        return observation;
+    };
+
+    for (size_t root_offset = 0; root_offset < roots.size(); ++root_offset) {
+        if (budgetExceeded() || _stopping)
+            break;
+
+        const std::string &root = roots[(start_pool_index + root_offset) % roots.size()];
+        ++roots_scanned;
+        File::scanDir(root, [&](const std::string &camera_path, bool) {
+            if (budgetExceeded() || _stopping)
+                return false;
+            struct stat camera_stat{};
+            if (::lstat(camera_path.c_str(), &camera_stat) != 0) {
+                if (errno != ENOENT)
+                    ++errors;
+                return true;
+            }
+            if (!S_ISDIR(camera_stat.st_mode))
+                return true;
+
+            File::scanDir(camera_path, [&](const std::string &stream_path, bool) {
+                if (budgetExceeded() || _stopping)
+                    return false;
+                struct stat stream_stat{};
+                if (::lstat(stream_path.c_str(), &stream_stat) != 0) {
+                    if (errno != ENOENT)
+                        ++errors;
+                    return true;
+                }
+                if (!S_ISDIR(stream_stat.st_mode))
+                    return true;
+
+                File::scanDir(stream_path, [&](const std::string &date_path, bool) {
+                    if (budgetExceeded() || _stopping)
+                        return false;
+                    struct stat date_stat{};
+                    if (::lstat(date_path.c_str(), &date_stat) != 0) {
+                        if (errno != ENOENT)
+                            ++errors;
+                        return true;
+                    }
+                    if (!S_ISDIR(date_stat.st_mode))
+                        return true;
+
+                    const std::string date_name = baseName(date_path);
+                    if (StrTimeUtils::getTsFromDateStr(date_name) == 0)
+                        return true;
+
+                    File::scanDir(date_path, [&](const std::string &path, bool) {
+                        if (budgetExceeded() || _stopping)
+                            return false;
+
+                        struct stat file_stat{};
+                        if (::lstat(path.c_str(), &file_stat) != 0) {
+                            if (errno != ENOENT)
+                                ++errors;
+                            return true;
+                        }
+                        if (!S_ISREG(file_stat.st_mode))
+                            return true;
+
+                        ++files_examined;
+                        const std::string name = baseName(path);
+                        if (name.size() <= 5 || name.front() != '.' || !end_with(name, ".mp4"))
+                            return true;
+                        if (!pathStartsWithRoot(path, root))
+                            return true;
+
+                        std::string segment_name = name.substr(0, name.size() - 4);
+                        std::string segment_path = date_name + "/" + segment_name;
+                        uint64_t segment_time = StrTimeUtils::getTsFromDateTimeStr(segment_path);
+                        if (segment_time == 0)
+                            segment_time = StrTimeUtils::getTsFromDateTimeStr2(segment_path);
+                        if (segment_time == 0 ||
+                            static_cast<int64_t>(file_stat.st_mtime) > now - stale_seconds) {
+                            return true;
+                        }
+                        if (!seen_candidates.insert(path).second)
+                            return true;
+
+                        ++candidates_observed;
+                        TemporaryMp4Observation observation = makeObservation(file_stat);
+                        auto previous = previous_observations.find(path);
+                        if (previous == previous_observations.end() || !(previous->second == observation)) {
+                            current_observations[path] = observation;
+                            return true;
+                        }
+
+                        ++stable_candidates;
+                        struct stat verify_stat{};
+                        if (::lstat(path.c_str(), &verify_stat) != 0) {
+                            if (errno != ENOENT)
+                                ++errors;
+                            return true;
+                        }
+                        TemporaryMp4Observation verified = makeObservation(verify_stat);
+                        if (!S_ISREG(verify_stat.st_mode) || !(verified == observation) ||
+                            verified.modified_at > now - stale_seconds) {
+                            current_observations[path] = verified;
+                            return true;
+                        }
+
+                        if (dry_run) {
+                            ++would_delete_files;
+                            current_observations[path] = verified;
+                            return true;
+                        }
+
+                        if (::unlink(path.c_str()) == 0) {
+                            ++deleted_files;
+                            deleted_bytes += static_cast<uint64_t>(std::max<int64_t>(0, verified.size));
+                        } else if (errno != ENOENT) {
+                            ++errors;
+                            current_observations[path] = verified;
+                        }
+                        return true;
+                    }, false, true);
+                    return !budget_exhausted && !_stopping;
+                }, false, false);
+                return !budget_exhausted && !_stopping;
+            }, false, false);
+            return !budget_exhausted && !_stopping;
+        }, false, false);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
+        if (_stopping) {
+            _temporary_mp4_observations.clear();
+            _temporary_mp4_next_pool_index = 0;
+        } else {
+            _temporary_mp4_observations.swap(current_observations);
+            _temporary_mp4_next_pool_index = (start_pool_index + 1) % roots.size();
+        }
+    }
+
+    if (candidates_observed > 0 || deleted_files > 0 || would_delete_files > 0 || errors > 0) {
+        DebugL << "cleanupOrphanTemporarySegments: roots_scanned=" << roots_scanned
+               << ", files_examined=" << files_examined
+               << ", candidates_observed=" << candidates_observed
+               << ", stable_candidates=" << stable_candidates
+               << ", deleted_files=" << deleted_files
+               << ", deleted_bytes=" << deleted_bytes
+               << ", would_delete_files=" << would_delete_files
+               << ", errors=" << errors
+               << ", budget_exhausted=" << budget_exhausted;
     }
 }
 

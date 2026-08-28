@@ -737,6 +737,38 @@ Mỗi timer tick, `cleanupRestoreTempFiles()`:
 
 `EXPIRED` là status runtime thực tế của restore job sau cleanup, dù enum `JobStatus` dùng chung chưa khai báo giá trị này.
 
+### 8.9 Cleanup MP4 Tạm Không Có Trong TimeFile
+
+`MP4Recorder` ghi segment đang mở bằng tên ẩn `.{filename}.mp4` và chỉ rename sang tên chính thức sau khi đóng file thành công. Nếu tiến trình dừng bất thường, file tạm có thể còn lại nhưng không xuất hiện trong TimeFile, vì vậy backfill và retention dựa trên tier metadata không nhìn thấy file này.
+
+Mỗi maintenance cycle, `cleanupOrphanTemporarySegments()` scan trực tiếp các file-backed HOT pool đang bật:
+
+```text
+{pool-data-root}/{camera}/{stream}/{YYYY-MM-DD}/.{segment}.mp4
+```
+
+Quy tắc an toàn:
+
+1. Chỉ xét regular file có basename bắt đầu bằng `.`, kết thúc bằng `.mp4` và parse được timestamp segment.
+2. Không đi theo symlink directory và không xóa symlink file.
+3. File phải cũ hơn `storage.tier_tmp_cleanup_stale_seconds`.
+4. File chỉ được xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime.
+5. Ngay trước `unlink`, trạng thái file được kiểm tra lại bằng `lstat`.
+6. MP4 bình thường không bị xóa chỉ vì thiếu TimeFile.
+7. File tạm không được thêm vào `segment_tier_records`, `segment_tier_ranges`, không move và không upload sang tier khác.
+
+Các cấu hình:
+
+| Key | Mặc định | Ý nghĩa |
+|---|---:|---|
+| `storage.tier_tmp_cleanup_enabled` | `1` | Bật pass phát hiện MP4 tạm trong HOT filesystem pool |
+| `storage.tier_tmp_cleanup_dry_run` | `1` | Chỉ đếm/log `would_delete`, chưa xóa file |
+| `storage.tier_tmp_cleanup_stale_seconds` | `86400` | Tuổi tối thiểu của file trước khi bắt đầu quan sát cleanup |
+| `storage.tier_tmp_cleanup_max_files_per_cycle` | `1000` | Số regular file tối đa được kiểm tra trong một pass |
+| `storage.tier_tmp_cleanup_work_budget_ms` | `500` | Ngân sách thời gian tối đa của một pass |
+
+Rollout nên giữ `dry_run=1` ít nhất hai maintenance cycle để kiểm tra counter `would_delete_files`, sau đó đặt `dry_run=0` để xóa thật. Có thể rollback ngay bằng `tier_tmp_cleanup_enabled=0`; cơ chế này không có schema hoặc metadata cần rollback.
+
 ## 9. Luồng Restore Tích Hợp Với API
 
 ### 9.1 API Resolve Và Quan Sát Job

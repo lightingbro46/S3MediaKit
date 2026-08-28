@@ -740,6 +740,16 @@ extern const std::string kTierRangeBackfillWorkBudgetMs;
 extern const std::string kTierRangeBackfillMaxAttempts;
 // Base delay used by exponential retry backoff.
 extern const std::string kTierRangeBackfillRetryBaseSeconds;
+// Enable cleanup of abandoned hidden MP4 recorder files in file-backed HOT pools.
+extern const std::string kTierTmpCleanupEnabled;
+// Report stable stale temporary MP4 files without deleting them.
+extern const std::string kTierTmpCleanupDryRun;
+// Minimum temporary MP4 age in seconds before it can be observed for cleanup.
+extern const std::string kTierTmpCleanupStaleSeconds;
+// Maximum regular files inspected by one temporary MP4 cleanup pass.
+extern const std::string kTierTmpCleanupMaxFilesPerCycle;
+// Maximum wall-clock time spent by one temporary MP4 cleanup pass.
+extern const std::string kTierTmpCleanupWorkBudgetMs;
 
 } // namespace Storage
 

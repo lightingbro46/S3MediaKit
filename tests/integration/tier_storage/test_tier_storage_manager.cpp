@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <utime.h>
 #include <unistd.h>
 #include <ftw.h>
 
@@ -98,6 +99,7 @@ void configureProcess(const std::string &root) {
     mINI::Instance()[Record::kAppName] = "record";
     mINI::Instance()[Storage::kRestoreSavePath] = root + "/restore";
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 0;
+    mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 0;
 }
 
 void migrateDatabase(const std::string &root) {
@@ -122,6 +124,21 @@ void writeFile(const std::string &path, const std::string &payload) {
     require(output.good(), "Cannot create segment: " + path);
     output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
     require(output.good(), "Cannot write segment: " + path);
+}
+
+void setFileModifiedTime(const std::string &path, time_t modified_at) {
+    struct utimbuf times{};
+    times.actime = modified_at;
+    times.modtime = modified_at;
+    require(::utime(path.c_str(), &times) == 0, "Cannot update file timestamp: " + path);
+}
+
+void configureTemporaryMp4Cleanup(bool dry_run) {
+    mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 1;
+    mINI::Instance()[Storage::kTierTmpCleanupDryRun] = dry_run ? 1 : 0;
+    mINI::Instance()[Storage::kTierTmpCleanupStaleSeconds] = 3600;
+    mINI::Instance()[Storage::kTierTmpCleanupMaxFilesPerCycle] = 1000;
+    mINI::Instance()[Storage::kTierTmpCleanupWorkBudgetMs] = 5000;
 }
 
 void writeTimeBlockAt(const std::string &record_app_path,
@@ -1368,6 +1385,156 @@ int scenarioRecoveryVerify(const std::string &root) {
     return 0;
 }
 
+void runTemporaryMp4CleanupPass(TierStorageManager &manager) {
+    // Pool metrics use a (pool_id, epoch-second) primary key. Production
+    // maintenance runs every five minutes, so keep test-triggered cycles on
+    // distinct seconds as well.
+    const time_t current_second = ::time(nullptr);
+    while (::time(nullptr) == current_second)
+        ::usleep(1000);
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+}
+
+int scenarioTemporaryMp4CleanupStableStale(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    StoragePool second_hot = makeHotPool(root, "tmp-cleanup-hot-two", "hot-two");
+    require(manager.createPool(second_hot) == second_hot.id,
+            "Cannot create second HOT pool for temporary cleanup");
+
+    const std::string first = root +
+        "/hot/record/camera-tmp/main/2026-08-20/.2026-08-20-12-00-00-0.mp4";
+    const std::string second = root +
+        "/hot-two/record/camera-tmp-two/main/2026-08-20/.2026-08-20-12-01-00-0.mp4";
+    writeFile(first, "abandoned-temporary-one");
+    writeFile(second, "abandoned-temporary-two");
+    const time_t stale_time = ::time(nullptr) - 7200;
+    setFileModifiedTime(first, stale_time);
+    setFileModifiedTime(second, stale_time);
+
+    runTemporaryMp4CleanupPass(manager);
+    require(File::fileExist(first) && File::fileExist(second),
+            "Temporary MP4 was deleted on its first observation");
+
+    runTemporaryMp4CleanupPass(manager);
+    require(!File::fileExist(first) && !File::fileExist(second),
+            "Stable stale temporary MP4 was not deleted from every HOT pool");
+    require(SegmentTierRepository().findByCamera("camera-tmp").empty() &&
+                SegmentTierRepository().findByCamera("camera-tmp-two").empty(),
+            "Temporary MP4 cleanup created segment tier metadata");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTemporaryMp4CleanupPreservesUnsafe(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string date_root = root + "/hot/record/camera-safe/main/2026-08-20";
+    const std::string changing = date_root + "/.2026-08-20-13-00-00-0.mp4";
+    const std::string fresh = date_root + "/.2026-08-20-13-01-00-0.mp4";
+    const std::string normal = date_root + "/2026-08-20-13-02-00-0.mp4";
+    const std::string malformed = date_root + "/.not-a-segment.mp4";
+    const std::string symlink_target = root + "/symlink-target.mp4";
+    const std::string symlink_path = date_root + "/.2026-08-20-13-03-00-0.mp4";
+    writeFile(changing, "initial");
+    writeFile(fresh, "active-temporary");
+    writeFile(normal, "normal-without-timefile");
+    writeFile(malformed, "malformed-hidden-mp4");
+    writeFile(symlink_target, "symlink-target");
+    require(::symlink(symlink_target.c_str(), symlink_path.c_str()) == 0,
+            "Cannot create temporary MP4 symlink");
+
+    const std::string external_date = root + "/external-date";
+    const std::string external_file = external_date + "/.2026-08-21-14-00-00-0.mp4";
+    writeFile(external_file, "outside-directory-symlink");
+    const std::string linked_date = root + "/hot/record/camera-safe/main/2026-08-21";
+    require(::symlink(external_date.c_str(), linked_date.c_str()) == 0,
+            "Cannot create date directory symlink");
+
+    const time_t stale_time = ::time(nullptr) - 7200;
+    setFileModifiedTime(changing, stale_time);
+    setFileModifiedTime(normal, stale_time);
+    setFileModifiedTime(malformed, stale_time);
+    setFileModifiedTime(symlink_target, stale_time);
+    setFileModifiedTime(external_file, stale_time);
+
+    runTemporaryMp4CleanupPass(manager);
+    writeFile(changing, "changed-between-observations");
+    runTemporaryMp4CleanupPass(manager);
+
+    require(File::fileExist(changing), "Changing temporary MP4 was deleted");
+    require(File::fileExist(fresh), "Fresh temporary MP4 was deleted");
+    require(File::fileExist(normal), "Normal MP4 missing from TimeFile was deleted");
+    require(File::fileExist(malformed), "Malformed hidden MP4 was deleted");
+    require(File::fileExist(symlink_path) && File::fileExist(symlink_target),
+            "Temporary MP4 symlink or its target was deleted");
+    require(File::fileExist(external_file), "Date directory symlink was followed");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTemporaryMp4CleanupDryRun(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(true);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string path = root +
+        "/hot/record/camera-dry-run/main/2026-08-20/.2026-08-20-15-00-00-0.mp4";
+    writeFile(path, "dry-run-temporary");
+    setFileModifiedTime(path, ::time(nullptr) - 7200);
+    runTemporaryMp4CleanupPass(manager);
+    runTemporaryMp4CleanupPass(manager);
+    require(File::fileExist(path), "Dry-run deleted a temporary MP4");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTemporaryMp4CleanupRestartPrepare(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string path = root +
+        "/hot/record/camera-restart/main/2026-08-20/.2026-08-20-16-00-00-0.mp4";
+    writeFile(path, "restart-temporary");
+    setFileModifiedTime(path, ::time(nullptr) - 7200);
+    runTemporaryMp4CleanupPass(manager);
+    require(File::fileExist(path), "First process deleted temporary MP4 after one observation");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTemporaryMp4CleanupRestartVerify(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string path = root +
+        "/hot/record/camera-restart/main/2026-08-20/.2026-08-20-16-00-00-0.mp4";
+    require(File::fileExist(path), "Restart fixture is missing");
+    runTemporaryMp4CleanupPass(manager);
+    require(File::fileExist(path), "Fresh process reused an observation from the previous process");
+    runTemporaryMp4CleanupPass(manager);
+    require(!File::fileExist(path), "Fresh process did not delete after its second observation");
+
+    manager.stop();
+    return 0;
+}
+
 int runScenario(const std::string &name, const std::string &root) {
     try {
         if (name == "register-idempotent") return scenarioRegisterIdempotent(root);
@@ -1389,6 +1556,11 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
+        if (name == "tmp-cleanup-stable-stale") return scenarioTemporaryMp4CleanupStableStale(root);
+        if (name == "tmp-cleanup-preserves-unsafe") return scenarioTemporaryMp4CleanupPreservesUnsafe(root);
+        if (name == "tmp-cleanup-dry-run") return scenarioTemporaryMp4CleanupDryRun(root);
+        if (name == "tmp-cleanup-restart-prepare") return scenarioTemporaryMp4CleanupRestartPrepare(root);
+        if (name == "tmp-cleanup-restart-verify") return scenarioTemporaryMp4CleanupRestartVerify(root);
         throw std::runtime_error("Unknown scenario: " + name);
     } catch (const std::exception &ex) {
         std::fprintf(stderr, "TierStorageManager scenario '%s' failed: %s\n", name.c_str(), ex.what());
@@ -1556,6 +1728,27 @@ TEST(TierStorageManagerIntegrationTest, RecoversRunningWorkAcrossFreshProcesses)
     TempRoot root;
     ASSERT_EQ(0, runChild("recovery-prepare", root.path));
     EXPECT_EQ(0, runChild("recovery-verify", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DeletesStableStaleTemporaryMp4FromHotPools) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("tmp-cleanup-stable-stale", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PreservesUnsafeTemporaryMp4Candidates) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("tmp-cleanup-preserves-unsafe", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReportsTemporaryMp4InDryRunWithoutDeleting) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("tmp-cleanup-dry-run", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart) {
+    TempRoot root;
+    ASSERT_EQ(0, runChild("tmp-cleanup-restart-prepare", root.path));
+    EXPECT_EQ(0, runChild("tmp-cleanup-restart-verify", root.path));
 }
 
 int main(int argc, char **argv) {

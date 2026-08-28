@@ -370,6 +370,7 @@ private:
     // Maintenance
     void pruneOldMetrics();
     void cleanupRestoreTempFiles();
+    void cleanupOrphanTemporarySegments();
 
     bool syncBackfillTasks();
 
@@ -401,6 +402,20 @@ private:
     bool validatePolicyForExecution(const StoragePolicy &policy, std::string &error) const;
 
 private:
+    struct TemporaryMp4Observation {
+        uint64_t device = 0;
+        uint64_t inode = 0;
+        int64_t size = 0;
+        int64_t modified_at = 0;
+
+        bool operator==(const TemporaryMp4Observation &other) const {
+            return device == other.device &&
+                   inode == other.inode &&
+                   size == other.size &&
+                   modified_at == other.modified_at;
+        }
+    };
+
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr       _timer;
     toolkit::Timer::Ptr       _backfill_timer;
@@ -415,8 +430,11 @@ private:
     mutable std::mutex        _pool_cache_mtx;
     mutable std::mutex        _range_registration_mtx;
     mutable std::mutex        _restore_dispatch_mtx;
+    mutable std::mutex        _temporary_mp4_observations_mtx;
     // In-memory cache of enabled pools (refreshed every tick)
     std::unordered_map<std::string, StoragePool> _pool_cache;
+    std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
+    size_t _temporary_mp4_next_pool_index = 0;
 
     // System default policy id (fixed built-in policy)
     mutable std::mutex _default_policy_mtx;

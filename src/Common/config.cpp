@@ -562,6 +562,11 @@ const string kTierRangeBackfillDispatchIntervalSeconds = STORAGE_FIELD "tier_ran
 const string kTierRangeBackfillWorkBudgetMs = STORAGE_FIELD "tier_range_backfill_work_budget_ms";
 const string kTierRangeBackfillMaxAttempts = STORAGE_FIELD "tier_range_backfill_max_attempts";
 const string kTierRangeBackfillRetryBaseSeconds = STORAGE_FIELD "tier_range_backfill_retry_base_seconds";
+const string kTierTmpCleanupEnabled = STORAGE_FIELD "tier_tmp_cleanup_enabled";
+const string kTierTmpCleanupDryRun = STORAGE_FIELD "tier_tmp_cleanup_dry_run";
+const string kTierTmpCleanupStaleSeconds = STORAGE_FIELD "tier_tmp_cleanup_stale_seconds";
+const string kTierTmpCleanupMaxFilesPerCycle = STORAGE_FIELD "tier_tmp_cleanup_max_files_per_cycle";
+const string kTierTmpCleanupWorkBudgetMs = STORAGE_FIELD "tier_tmp_cleanup_work_budget_ms";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -585,6 +590,11 @@ static onceToken token([]() {
     mINI::Instance()[kTierRangeBackfillWorkBudgetMs] = 2000;
     mINI::Instance()[kTierRangeBackfillMaxAttempts] = 5;
     mINI::Instance()[kTierRangeBackfillRetryBaseSeconds] = 30;
+    mINI::Instance()[kTierTmpCleanupEnabled] = 1;
+    mINI::Instance()[kTierTmpCleanupDryRun] = 1;
+    mINI::Instance()[kTierTmpCleanupStaleSeconds] = 86400;
+    mINI::Instance()[kTierTmpCleanupMaxFilesPerCycle] = 1000;
+    mINI::Instance()[kTierTmpCleanupWorkBudgetMs] = 500;
 });
 
 } // namespace Storage
