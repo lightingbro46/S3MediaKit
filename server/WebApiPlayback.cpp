@@ -30,6 +30,7 @@ void registerPlaybackApis() {
             int period_type = allArgs["periodType"];
             int detail = allArgs["detail"];
             bool include_motion = allArgs["motion"];
+            bool include_status = allArgs["statusGaps"];
             string jwt_token = allArgs["_jwt_token"];
             bool edge = allArgs["edge"];
 
@@ -42,7 +43,7 @@ void registerPlaybackApis() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, jwt_token, edge, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
+            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, include_status, jwt_token, edge, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
                 if (ex) {
                     RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 } else {

@@ -2025,6 +2025,7 @@ void installWebHook() {
         params["periodType"] = to_string(period_type);
         params["detail"]     = to_string(detail);
         params["motion"]     = to_string(include_motion);
+        params["statusGaps"] = to_string(include_status);
 
         HeaderType headers;
         if (!jwt_token.empty()) {

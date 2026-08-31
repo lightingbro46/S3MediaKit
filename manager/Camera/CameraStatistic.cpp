@@ -1,7 +1,6 @@
 #include "CameraStatistic.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
-#include "SdCardSyncManager.h"
 #include "Local/TierStorageManager.h"
 #include "Extension/Resource.h"
 
@@ -937,9 +936,18 @@ CameraStatistic CameraStatisticImp::getParams() {
 }
 
 void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string status, const TranslationInfo *info_) {
-    std::lock_guard<std::mutex> lck(_mtx);
-    if (sinfo_map.find(stream_type) != sinfo_map.end()) {
+    bool save_status_history = false;
+    std::string stream_id;
+    std::string stream_url;
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        if (sinfo_map.find(stream_type) == sinfo_map.end()) {
+            WarnL << "Camera " << tuple.shortUrl() << " do not have stream type: " << stream_type << ". Ignore add stream statistic";
+            return;
+        }
         auto &sinfo = sinfo_map[stream_type];
+        save_status_history = _status_history_initialized_streams.emplace(stream_type).second ||
+                              sinfo.live != live || (!live && sinfo.status != status);
         if (!sinfo.last_change_status || sinfo.live != live) {
             sinfo.last_change_status = time(nullptr);
         }
@@ -972,8 +980,14 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
         DebugL << "Stream " << stream_map[stream_type].shortUrl() << " statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
         save();
         syncResourceStatus();
-    } else {
-        WarnL << "Camera " << tuple.shortUrl() << " do not have stream type: " << stream_type << ". Ignore add stream statistic";
+        auto stream_it = stream_map.find(stream_type);
+        if (stream_it != stream_map.end() && !stream_it->second.empty()) {
+            stream_id = stream_it->second.stream_id;
+            stream_url = stream_it->second.shortUrl();
+        }
+    }
+    if (save_status_history) {
+        saveStreamStatusHistory(stream_id, stream_url, live, status);
     }
 }
 
@@ -998,19 +1012,29 @@ void CameraStatisticImp::remove(bool failover_active) {
 }
 
 void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, const DeviceCapabilities *device_caps) {
-    std::lock_guard<std::mutex> lck(_mtx);
-    device_stats.connect = connect;
-    device_stats.status = status;
-    if (device_caps) {
-        device_stats.device_caps = *device_caps;
+    bool save_status_history = false;
+    std::string device_id;
+    std::string device_url;
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        save_status_history = !_device_status_history_initialized || device_stats.connect != connect ||
+                              (!connect && device_stats.status != status);
+        _device_status_history_initialized = true;
+        device_stats.connect = connect;
+        device_stats.status = status;
+        if (device_caps) {
+            device_stats.device_caps = *device_caps;
+        }
+        device_id = tuple.device_id;
+        device_url = tuple.shortUrl();
+        DebugL << "Device " << device_url << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
+               << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
+               << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();
+        save();
     }
-
-    SdCardSyncManager::Instance().onDeviceStateChanged(tuple.device_id, connect);
-
-    DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
-           << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
-           << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();
-    save();
+    if (save_status_history) {
+        saveDeviceStatusHistory(device_id, device_url, connect, status);
+    }
 }
 
 void CameraStatisticImp::addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add) {
@@ -1494,6 +1518,34 @@ void CameraStatisticImp::setSyncMode(bool enable) {
     std::lock_guard<std::mutex> lck(_mtx);
     _sync_mode = enable;
     DebugL << "Set sync mode for camera " << tuple.shortUrl() << " to " << (_sync_mode ? "enabled" : "disabled");
+}
+
+void CameraStatisticImp::saveStreamStatusHistory(const std::string &stream_id, const std::string &stream_url,
+                                                 bool connect, const std::string &reason) {
+    if (stream_id.empty()) {
+        WarnL << "Cannot save local status history for an empty stream id";
+        return;
+    }
+    const bool saved = connect
+        ? ResourceStatusManager::Instance().onReconnected(stream_id, time(nullptr))
+        : ResourceStatusManager::Instance().onDisconnected(stream_id, reason, time(nullptr));
+    if (saved) {
+        DebugL << "Saved local resource status for stream " << stream_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+    } else {
+        WarnL << "Failed to save local resource status for stream " << stream_url;
+    }
+}
+
+void CameraStatisticImp::saveDeviceStatusHistory(const std::string &device_id, const std::string &device_url,
+                                                 bool connect, const std::string &reason) {
+    const bool saved = connect
+        ? ResourceStatusManager::Instance().onReconnected(device_id, time(nullptr))
+        : ResourceStatusManager::Instance().onDisconnected(device_id, reason, time(nullptr));
+    if (saved) {
+        DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+    } else {
+        WarnL << "Failed to save local resource status for camera " << device_url;
+    }
 }
 
 } // namespace managerkit

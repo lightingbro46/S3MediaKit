@@ -47,11 +47,4 @@ void MediaPlayer::setOnCreateSocket(Socket::onCreateSocket cb){
     _on_create_socket = std::move(cb);
 }
 
-float MediaPlayer::getProgress() const {
-    if (_delegate) {
-        return _delegate->getProgress();
-    }
-    return 0.0f;
-}
-
 } /* namespace mediakit */

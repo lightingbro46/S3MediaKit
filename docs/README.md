@@ -8,6 +8,7 @@
 - [Bookmark](./api-bookmark.md)
 - [PTZ Preset](./api-ptz-preset.md)
 - [Sync DB](./api-sync.md)
+- [Luồng đồng bộ dữ liệu thẻ nhớ SD](./sd-card-sync-flow.md)
 - [Storage Tiering](./api-storage-tiering.md)
 - [Kiểm thử tích hợp Storage Tiering với Codex agent](./tier-storage-integration-testing.md)
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)

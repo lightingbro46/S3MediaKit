@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include <vector>
+#include <unordered_set>
 #include "Local/FileRecorder.h"
 #include "GenericRtspCamera.h"
 #include "CameraController.h"
@@ -154,6 +155,12 @@ private:
 
     void syncResourceStatus();
 
+    void saveDeviceStatusHistory(const std::string &device_id, const std::string &device_url,
+                                 bool connect, const std::string &reason);
+
+    void saveStreamStatusHistory(const std::string &stream_id, const std::string &stream_url,
+                                 bool connect, const std::string &reason);
+
 private:
     std::mutex _mtx;
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
@@ -161,6 +168,8 @@ private:
     int _sync_interval_sec = 30;
     bool _sync_mode = false;
     uint64_t _last_sync_time = 0;
+    std::unordered_set<int> _status_history_initialized_streams;
+    bool _device_status_history_initialized = false;
 };
 
 } // namespace managerkit

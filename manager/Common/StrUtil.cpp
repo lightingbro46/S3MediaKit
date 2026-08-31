@@ -308,4 +308,21 @@ std::string StrUUID::make_guid(int size, const std::string &prefix, const std::s
     return ret;
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+StrCaseMap StrMediaUtils::parse(const std::string &params) {
+    return Parser::parseArgs(params);
+}
+
+std::string StrMediaUtils::make(const StrCaseMap &params) {
+    std::string ret;
+    for (auto it = params.begin(); it != params.end(); ++it) {
+        if (it != params.begin()) {
+            ret += "&";
+        }
+        ret += it->first + "=" + it->second;
+    }
+    return ret;
+}
+
 } // namespace managerkit

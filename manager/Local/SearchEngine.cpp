@@ -592,6 +592,136 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             }
         }
     }
+
+    // ── statusGaps ──────────────────────────────────────────────────────────
+    // Status gaps are local to the node that detected them. Preserve and
+    // merge them while aggregating timeline responses from multiple nodes.
+    if (src.isMember("statusGaps")) {
+        if (period_type == 0) {
+            if (!dst.isMember("statusGaps") || !dst["statusGaps"].isArray())
+                dst["statusGaps"] = Json::arrayValue;
+            if (src["statusGaps"].isArray()) {
+                for (const auto &gap : src["statusGaps"]) dst["statusGaps"].append(gap);
+            }
+        } else {
+            if (!dst.isMember("statusGaps") || !dst["statusGaps"].isArray())
+                dst["statusGaps"] = Json::arrayValue;
+            if (src["statusGaps"].isArray()) {
+                for (const auto &src_stream : src["statusGaps"]) {
+                    const string sid = src_stream["streamId"].asString();
+                    Value *dst_stream = nullptr;
+                    for (auto &stream : dst["statusGaps"]) {
+                        if (stream["streamId"].asString() == sid) {
+                            dst_stream = &stream;
+                            break;
+                        }
+                    }
+                    if (!dst_stream) {
+                        dst["statusGaps"].append(src_stream);
+                        continue;
+                    }
+                    if (period_type == 1 && src_stream["periods"].isArray()) {
+                        if (!(*dst_stream)["periods"].isArray()) (*dst_stream)["periods"] = Json::arrayValue;
+                        for (const auto &gap : src_stream["periods"]) (*dst_stream)["periods"].append(gap);
+                    } else if (period_type == 2 && src_stream["dates"].isObject()) {
+                        if (!(*dst_stream)["dates"].isObject()) (*dst_stream)["dates"] = Json::objectValue;
+                        for (const auto &date : src_stream["dates"].getMemberNames()) {
+                            if (!(*dst_stream)["dates"].isMember(date)) (*dst_stream)["dates"][date] = src_stream["dates"][date];
+                            else {
+                                for (Json::ArrayIndex h = 0; h < src_stream["dates"][date].size(); ++h) {
+                                    if (!src_stream["dates"][date][h].isArray()) continue;
+                                    if (!(*dst_stream)["dates"][date].isArray()) (*dst_stream)["dates"][date] = Json::arrayValue;
+                                    while ((*dst_stream)["dates"][date].size() <= h) (*dst_stream)["dates"][date].append(Json::arrayValue);
+                                    for (const auto &gap : src_stream["dates"][date][h]) (*dst_stream)["dates"][date][h].append(gap);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Normalize status gaps using the same interval pattern as recorded
+    // periods: sort, resolve overlap, then coalesce adjacent ranges having
+    // the same status and reason.
+    auto normalizeStatusGapArray = [](Json::Value &arr, const char *length_key) {
+        if (!arr.isArray()) return;
+        struct Gap { uint64_t start = 0, end = 0; std::string stream_id, status, reason; };
+        std::vector<Gap> input;
+        for (const auto &item : arr) {
+            if (!item.isObject()) continue;
+            Gap gap;
+            gap.start = item["startTime"].asUInt64();
+            gap.end = gap.start + item[length_key].asUInt64();
+            gap.stream_id = item["streamId"].asString();
+            gap.status = item["status"].asString();
+            gap.reason = item["reason"].asString();
+            if (gap.start < gap.end) input.push_back(gap);
+        }
+        std::sort(input.begin(), input.end(), [](const Gap &a, const Gap &b) {
+            if (a.stream_id != b.stream_id) return a.stream_id < b.stream_id;
+            return a.start != b.start ? a.start < b.start : a.end < b.end;
+        });
+
+        std::vector<Gap> normalized;
+        for (const auto &current : input) {
+            if (!normalized.empty() && current.stream_id == normalized.back().stream_id &&
+                current.start < normalized.back().end) {
+                // Keep the later interval's status/reason in the overlap,
+                // matching resolvePeriods' later-period-wins rule.
+                if (current.end >= normalized.back().end) {
+                    normalized.back().end = current.start;
+                    if (normalized.back().start >= normalized.back().end) normalized.pop_back();
+                } else {
+                    Gap tail = normalized.back();
+                    tail.start = current.end;
+                    normalized.back().end = current.start;
+                    if (normalized.back().start >= normalized.back().end) normalized.pop_back();
+                    normalized.push_back(current);
+                    if (tail.start < tail.end) normalized.push_back(tail);
+                    continue;
+                }
+            }
+            if (!normalized.empty() && normalized.back().stream_id == current.stream_id &&
+                normalized.back().end == current.start &&
+                normalized.back().status == current.status &&
+                normalized.back().reason == current.reason) {
+                normalized.back().end = current.end;
+            } else {
+                normalized.push_back(current);
+            }
+        }
+
+        arr = Json::arrayValue;
+        for (const auto &gap : normalized) {
+            Json::Value item;
+            item["startTime"] = (Json::UInt64)gap.start;
+            item[length_key] = (Json::UInt64)(gap.end - gap.start);
+            if (!gap.stream_id.empty()) item["streamId"] = gap.stream_id;
+            item["status"] = gap.status;
+            item["reason"] = gap.reason;
+            arr.append(item);
+        }
+    };
+
+    if (dst.isMember("statusGaps") && dst["statusGaps"].isArray()) {
+        if (period_type == 0) {
+            normalizeStatusGapArray(dst["statusGaps"], "duration");
+        } else {
+            for (auto &stream : dst["statusGaps"]) {
+                if (period_type == 1 && stream["periods"].isArray()) {
+                    normalizeStatusGapArray(stream["periods"], "duration");
+                } else if (period_type == 2 && stream["dates"].isObject()) {
+                    for (const auto &date : stream["dates"].getMemberNames()) {
+                        for (auto &hour : stream["dates"][date]) {
+                            normalizeStatusGapArray(hour, "duration");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +730,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
 static void findTimePeriodLocal(
     const MediaTuple &tuple,
     uint64_t start_time, uint64_t end_time,
-    int period_type, int detail, bool include_motion,
+    int period_type, int detail, bool include_motion, bool include_status,
     const function<void(const SockException &, const Value &)> &cb)
 {
     DebugL << "Find time period for device: " << tuple.shortUrl() << ". Time range: [" << getTimeStr("%Y-%m-%d %H:%M:%S", start_time) 
@@ -649,10 +779,15 @@ static void findTimePeriodLocal(
                             result["motionPeriods"].append(period);
                         }
                     });
-                } catch (...) {}
+                } catch (const std::exception &ex) {
+                    WarnL << "Motion query failed: " << ex.what();
+                }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
 #endif // ENABLE_MOTION
+            }
+            if (include_status) {
+                WarnL << "Status gaps are only supported in detail=1 mode for period_type=1. Ignoring include_status=true.";
             }
         } else {
             result["cameraId"] = tuple.app;
@@ -693,10 +828,37 @@ static void findTimePeriodLocal(
                             result["motionPeriods"].append(period);
                         }
                     });
-                } catch (...) {}
+                } catch (const std::exception &ex) {
+                    WarnL << "Motion query failed: " << ex.what();
+                }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
 #endif // ENABLE_MOTION
+            }
+            if (include_status) {
+                result["statusGaps"] = arrayValue;
+                try {
+                    StatusGapSearch sgs(tuple);
+                    sgs.getRecordedStatusGaps(start_time, end_time,
+                        [&](unordered_map<string, vector<StatusGap>> &ret) {
+                            for (const auto &it_stream : ret) {
+                                Value stream;
+                                stream["streamId"] = it_stream.first;
+                                stream["periods"] = arrayValue;
+                                for (const auto &p : it_stream.second) {
+                                    Value period;
+                                    period["startTime"] = (Json::UInt64)p.startTime;
+                                    period["duration"] = p.duration;
+                                    period["status"] = "OFFLINE";
+                                    period["reason"] = p.reason;
+                                    stream["periods"].append(period);
+                                }
+                                result["statusGaps"].append(stream);
+                            }
+                        });
+                } catch (const std::exception &ex) {
+                    WarnL << "Status gap query failed: " << ex.what();
+                }
             }
         }
     } else if (period_type == 2) {
@@ -734,10 +896,15 @@ static void findTimePeriodLocal(
                                 }
                             }
                         });
-                } catch (...) {}
+                } catch (const std::exception &ex) {
+                    WarnL << "Motion query failed: " << ex.what();
+                }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
 #endif // ENABLE_MOTION
+            }
+            if (include_status) {
+                WarnL << "Status gaps are only supported in detail=1 mode for period_type=2. Ignoring include_status=true.";
             }
         } else {
             result["cameraId"] = tuple.app;
@@ -804,10 +971,49 @@ static void findTimePeriodLocal(
                                 result["motionPeriods"][date_str] = date;
                             }
                         });
-                } catch (...) {}
+                } catch (const std::exception &ex) {
+                    WarnL << "Motion query failed: " << ex.what();
+                }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
 #endif // ENABLE_MOTION
+            }
+            if (include_status) {
+                result["statusGaps"] = arrayValue;
+                try {
+                    StatusGapSearch sgs(tuple);
+                    sgs.getRecordedStatusGaps(start_time, end_time,
+                        [&](unordered_map<string, unordered_map<string, unordered_map<int, vector<StatusGap>>>> &ret) {
+                            for (auto const &it_stream : ret) {
+                                Value stream;
+                                stream["streamId"] = it_stream.first;
+                                for (auto const &it_date : it_stream.second) {
+                                    const string &date_str = it_date.first;
+                                    const auto &hour_map = it_date.second;
+                                    Value date;
+                                    for (int i = 0; i < 24; i++) {
+                                        Value hour = arrayValue;
+                                        auto it_hour = hour_map.find(i);
+                                        if (it_hour != hour_map.end()) {
+                                            for (auto const &p : it_hour->second) {
+                                                Value period;
+                                                period["startTime"] = (Json::UInt64)p.startTime;
+                                                period["duration"] = p.duration;
+                                                period["status"] = "OFFLINE";
+                                                period["reason"] = p.reason;
+                                                hour.append(period);
+                                            }
+                                        }
+                                        date.append(hour);
+                                    }
+                                    stream["dates"][date_str] = date;
+                                }
+                                result["statusGaps"].append(stream);
+                            }
+                        });
+                } catch (const std::exception &ex) {
+                    WarnL << "Status gap query failed: " << ex.what();
+                }
             }
         }
     } else if (period_type == 0) {
@@ -845,10 +1051,31 @@ static void findTimePeriodLocal(
                         result["motionPeriods"].append(period);
                     }
                 });
-            } catch (...) {}
+            } catch (const std::exception &ex) {
+                WarnL << "Motion query failed: " << ex.what();
+            }
 #else
             WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
 #endif // ENABLE_MOTION
+        }
+        if (include_status) {
+            result["statusGaps"] = arrayValue;
+            try {
+                StatusGapSearch sgs(tuple);
+                sgs.getRecordedStatusGaps(start_time, end_time, [&](vector<StatusGap> &ret) {
+                    for (auto const &p : ret) {
+                        Value period;
+                        period["startTime"] = (Json::UInt64)p.startTime;
+                        period["duration"] = p.duration;
+                        period["streamId"] = p.stream_id;
+                        period["status"] = "OFFLINE";
+                        period["reason"] = p.reason;
+                        result["statusGaps"].append(period);
+                    }
+                });
+            } catch (const std::exception &ex) {
+                WarnL << "Status gap query failed: " << ex.what();
+            }
         }
     }
 
@@ -867,7 +1094,7 @@ static void findTimePeriodLocal(
 void SearchEngine::findTimePeriod(
     const MediaTuple &tuple,
     uint64_t start_time, uint64_t end_time,
-    int period_type, int detail, bool include_motion,
+    int period_type, int detail, bool include_motion, bool include_status,
     const string &jwt_token,
     bool edge,
     const function<void(const SockException &, const Value &)> &cb)
@@ -923,7 +1150,7 @@ void SearchEngine::findTimePeriod(
     (*merged)["cameraId"] = tuple.app;
 
     for (const auto &lr : local_ranges) {
-        findTimePeriodLocal(tuple, lr.first, lr.second, period_type, detail, include_motion,
+        findTimePeriodLocal(tuple, lr.first, lr.second, period_type, detail, include_motion, include_status,
             [&](const SockException &ex, const Value &data) {
                 if (!ex) {
                     mergeTimePeriodResult(*merged, data, period_type, detail);
@@ -980,7 +1207,7 @@ void SearchEngine::findTimePeriod(
                 };
 
             auto flag = NOTICE_EMIT(BroadcastSyncTimelineArgs, Broadcast::kBroadcastSyncTimeline,
-                base_url, tuple.app, sr_start, sr_end, period_type, detail, include_motion, jwt_token, res_invoker);
+                base_url, tuple.app, sr_start, sr_end, period_type, detail, include_motion, include_status, jwt_token, res_invoker);
             // If no webhook listener is installed yet, fire the invoker ourselves
             // so pending is decremented and cb is eventually called.
             if (!flag) {

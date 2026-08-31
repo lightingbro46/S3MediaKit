@@ -37,6 +37,7 @@ protected:
     virtual void onRecvRTP(RtpPacket::Ptr rtp, const SdpTrack::Ptr &track) = 0;
     uint32_t getProgressMilliSecond() const;
     void seekToMilliSecond(uint32_t ms);
+    bool hasPlaybackRange() const;
 
     /**
      * Callback for receiving a complete rtsp packet, including sdp and other content data
@@ -136,7 +137,7 @@ private:
     std::string _control_url;
 protected:   
     Rtsp::eRtpType _rtp_type = Rtsp::RTP_TCP;
-    Rtsp::eRtpMode _rtp_mode = Rtsp::Live;
+    // Playback range, if >0, start playback from this position (ms) instead of live. Relative to the first frame timestamp, not the wall clock time.
     uint32_t _seek_from_ms = 0;
     uint32_t _seek_to_ms = 0;
 

@@ -45,21 +45,24 @@ struct StreamOption {
     mediakit::ProtocolOption protocol;
     bool record_mp4   = false;
     int  rtp_type     = 0;
-    int  rtp_mode     = 0;
     int  media_port   = 0;
     std::string username;
     std::string password;
     float timeout_sec = 0.0f;
+    // If >0, start playback from this position (ms) instead of live. It is epoch timestamp, used for make filename of mp4 recording 
+    uint64_t start_pos_ms = 0;
+    uint64_t end_pos_ms = 0;
 
     bool operator==(const StreamOption &o) const {
         return tuple                   == o.tuple
             && record_mp4             == o.record_mp4
             && rtp_type               == o.rtp_type
-            && rtp_mode               == o.rtp_mode
             && media_port             == o.media_port
             && username               == o.username
             && password               == o.password
             && protocol.mp4_save_path == o.protocol.mp4_save_path
+            && start_pos_ms           == o.start_pos_ms
+            && end_pos_ms             == o.end_pos_ms
             && protocol.enable_audio  == o.protocol.enable_audio
             && protocol.enable_motion == o.protocol.enable_motion
             && protocol.roi_mask      == o.protocol.roi_mask

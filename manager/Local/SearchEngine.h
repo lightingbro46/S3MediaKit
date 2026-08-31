@@ -9,6 +9,7 @@
 #ifdef ENABLE_MOTION
 #include "MotionSearch.h"
 #endif // ENABLE_MOTION
+#include "StatusGapSearch.h"
 
 namespace managerkit {
 
@@ -31,6 +32,7 @@ public:
      *                       2 = calendar (date → hours bitmap)
      * @param detail         0 = summary  1 = per-stream detail (type 1 & 2 only)
      * @param include_motion When true, adds "motionPeriods" key to the result.
+     * @param include_status When true, adds "statusGaps" key to the result.
      * @param jwt_token      JWT bearer token forwarded to remote peers for auth.
      * @param edge           When true, query only the local node (no remote calls).
      * @param cb             Invoked once with (SockException, merged Json::Value).
@@ -38,7 +40,7 @@ public:
     static void findTimePeriod(
         const mediakit::MediaTuple &tuple,
         uint64_t start_time, uint64_t end_time,
-        int period_type, int detail, bool include_motion,
+        int period_type, int detail, bool include_motion, bool include_status,
         const std::string &jwt_token,
         bool edge,
         const std::function<void(const toolkit::SockException &, const Json::Value &)> &cb);

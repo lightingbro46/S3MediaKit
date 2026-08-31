@@ -1,7 +1,7 @@
 #include "CameraController.h"
 #include "Thread/WorkThreadPool.h"
 #include "server/WebApiErrCode.h"
-#include "SdCardSyncManager.h"
+#include "Local/MediaGapFillManager.h"
 #include "Util/onceToken.h"
 
 using namespace std;
@@ -42,6 +42,12 @@ void CameraController::setupController(const CameraOption &option) {
 
     if (_onvif_ctr) {
         if (ControllerOption::from(option) == _ctrl_option) {
+            const auto sync_config = SdCardSyncConfig::from(option);
+            const bool sync_config_changed =
+                sync_config.sdCardSyncEnabled != _sd_sync_config.sdCardSyncEnabled ||
+                sync_config.sdCardSyncAutoSyncEnabled != _sd_sync_config.sdCardSyncAutoSyncEnabled ||
+                sync_config.sdCardSyncMinSegmentGapSec != _sd_sync_config.sdCardSyncMinSegmentGapSec ||
+                sync_config.sdCardSyncRetryCount != _sd_sync_config.sdCardSyncRetryCount;
             // Connection unchanged — update PTZ settings in-place, no reconnect needed
             _enablePTZControl = option.enablePTZControl;
             _reversePanAxis   = option.reversePanAxis;
@@ -49,10 +55,19 @@ void CameraController::setupController(const CameraOption &option) {
             _ptzMode          = option.ptzMode;
             _ptzSpeed         = option.ptzSpeed;
             _keepConfigProfileAndStream = option.keepConfigProfileAndStream;
+            _sd_sync_config = sync_config;
+            if (sync_config_changed) {
+                MediaGapFillManager::Instance().onManager(
+                    _tuple.device_id, _ctrl_option.username, _ctrl_option.password,
+                    _onvif_ctr, _sd_sync_config, _ready.load());
+            }
             DebugL << "Controller of device: " << _tuple.shortUrl() << " connection unchanged, updated PTZ settings in-place";
             return;
         }
         DebugL << "Controller of device: " << _tuple.shortUrl() << " connection changed, recreating controller";
+        MediaGapFillManager::Instance().onManager(
+            _tuple.device_id, std::string(), std::string(), nullptr,
+            _sd_sync_config, false);
         _onvif_ctr.reset();
         _ready = false;
     }
@@ -98,6 +113,9 @@ void CameraController::stopController() {
     CHECK(_poller->isCurrentThread(), "stopController must be called on the owner poller");
 
     onControllerReady(false, "Stop", nullptr);
+    MediaGapFillManager::Instance().onManager(
+        _tuple.device_id, std::string(), std::string(), nullptr,
+        _sd_sync_config, false);
     
     _timer_ctr.reset();
     _onvif_ctr.reset();
@@ -153,6 +171,12 @@ void CameraController::onManager() {
             caps->onvifProfile.audioOutputProfile  = onvif_ctr->getAudioOutputProfile();
             caps->onvifProfile.audioInputProfile   = onvif_ctr->getAudioInputProfile();
             caps->supportsSdCardPlayback           = onvif_ctr->getSDCardInfo().isSDSupport();
+            // Register/refresh the provider before publishing the connected event.
+            // The event closes the device gap and immediately triggers discovery.
+            MediaGapFillManager::Instance().onManager(
+                tuple.device_id, strong_self->_ctrl_option.username,
+                strong_self->_ctrl_option.password, onvif_ctr,
+                strong_self->_sd_sync_config, true);
             strong_self->onControllerReady(true, "connected", std::move(caps));
         } else {
             auto err_msg = onvif_ctr->getSoapErrMsg();
@@ -160,10 +184,6 @@ void CameraController::onManager() {
             strong_self->onControllerReady(false, err_msg, nullptr);
         }
     });
-
-    SdCardSyncManager::Instance().onManager(_tuple.device_id, _ctrl_option.username,
-                                            _ctrl_option.password, onvif_ctr,
-                                            _sd_sync_config, _ready.load());
 }
 
 // ── Imaging control (focus / iris) ───────────────────────────────────────────

@@ -20,6 +20,30 @@ namespace mediakit {
 enum PlayType { type_play = 0, type_pause, type_seek, type_speed };
 enum class BeatType : uint32_t { both = 0, rtcp, cmd  };
 
+static string parsePlaybackRange(const string &url, uint32_t &start_ms, uint32_t &end_ms) {
+    start_ms = 0;
+    end_ms = 0;
+
+    auto start_pos = url.find("&starttime=");
+    if (start_pos == string::npos) {
+        return url;
+    }
+
+    auto start_value = start_pos + strlen("&starttime=");
+    auto start_end = url.find('&', start_value);
+    auto end_pos = url.find("&endtime=", start_value);
+    if (start_end == string::npos || end_pos == string::npos) {
+        throw invalid_argument("missing endtime in RTSP playback range");
+    }
+
+    start_ms = stoul(url.substr(start_value, start_end - start_value));
+    end_ms = stoul(url.substr(end_pos + strlen("&endtime=")));
+    if (end_ms <= start_ms) {
+        throw invalid_argument("invalid RTSP playback range");
+    }
+    return url.substr(0, start_pos);
+}
+
 RtspPlayer::RtspPlayer(const EventPoller::Ptr &poller)
     : TcpClient(poller) {}
 
@@ -58,7 +82,7 @@ void RtspPlayer::teardown() {
 void RtspPlayer::play(const string &strUrl) {
     RtspUrl url;
     try {
-        url.parse(strUrl, _seek_from_ms, _seek_to_ms);
+        url.parse(parsePlaybackRange(strUrl, _seek_from_ms, _seek_to_ms));
     } catch (std::exception &ex) {
         onPlayResult_l(SockException(Err_other, StrPrinter << "illegal rtsp url:" << ex.what()), false);
         return;
@@ -79,7 +103,6 @@ void RtspPlayer::play(const string &strUrl) {
     _beat_type = (*this)[Client::kRtspBeatType].as<int>();
     _beat_interval_ms = (*this)[Client::kBeatIntervalMS].as<int>();
     _speed = (*this)[Client::kRtspSpeed].as<float>();
-    _rtp_mode = (Rtsp::eRtpMode)(int)(*this)[Client::kRtpMode];
     TraceL << url._url << " " << (url._user.size() ? url._user : "null") << " " << (url._passwd.size() ? url._passwd : "null") << " " << _rtp_type;
 
     weak_ptr<RtspPlayer> weak_self = static_pointer_cast<RtspPlayer>(shared_from_this());
@@ -431,7 +454,7 @@ void RtspPlayer::sendPause(int type, uint32_t seekMS, uint32_t seekToMS) {
         case type_play:
         case type_seek:
         {
-            if (seekToMS != 0 && _rtp_mode == Rtsp::Replay) {
+            if (seekToMS > seekMS) {
                 sendRtspRequest("PLAY", _control_url, { "Range", StrPrinter << "npt=" << setiosflags(ios::fixed) << setprecision(2) << seekMS / 1000.0 << "-" << setiosflags(ios::fixed) << setprecision(2) << seekToMS / 1000.0 });
             } else {
                 sendRtspRequest("PLAY", _control_url, { "Range", StrPrinter << "npt=" << setiosflags(ios::fixed) << setprecision(2) << seekMS / 1000.0 << "-" });
@@ -447,7 +470,15 @@ void RtspPlayer::sendPause(int type, uint32_t seekMS, uint32_t seekToMS) {
 }
 
 void RtspPlayer::pause(bool bPause) {
-    sendPause(bPause ? type_pause : type_seek, getProgressMilliSecond());
+    if (bPause) {
+        sendPause(type_pause, 0);
+        return;
+    }
+    auto seek_ms = getProgressMilliSecond();
+    if (hasPlaybackRange()) {
+        seek_ms += _seek_from_ms;
+    }
+    sendPause(type_seek, seek_ms, _seek_to_ms);
 }
 
 void RtspPlayer::speed(float speed) {
@@ -579,7 +610,7 @@ uint32_t RtspPlayer::getProgressMilliSecond() const {
 }
 
 void RtspPlayer::seekToMilliSecond(uint32_t ms) {
-    sendPause(type_seek, ms);
+    sendPause(type_seek, ms, _seek_to_ms);
 }
 
 void RtspPlayer::sendRtspRequest(const string &cmd, const string &url, const std::initializer_list<string> &header) {
@@ -819,9 +850,16 @@ size_t RtspPlayer::getRecvTotalBytes() {
     return ret;
 }
 
+bool RtspPlayer::hasPlaybackRange() const {
+    return _seek_to_ms > _seek_from_ms;
+}
+
 ///////////////////////////////////////////////////
 // RtspPlayerImp
 float RtspPlayerImp::getDuration() const {
+    if (hasPlaybackRange()) {
+        return (_seek_to_ms - _seek_from_ms) / 1000.0f;
+    }
     return _demuxer ? _demuxer->getDuration() : 0;
 }
 

@@ -143,7 +143,13 @@ void StreamSource::createPlayer() {
         return;
     }
 
-    string params = "quality=" + string((_type == StreamType::PrimaryStream) ? "hi" : "lo");
+    StrCaseMap params_map;
+    params_map.emplace("quality", (_type == StreamType::PrimaryStream) ? "hi" : "lo");
+    if (_option.start_pos_ms > 0) {
+        params_map.emplace("start_time_ms", std::to_string(_option.start_pos_ms));
+        params_map.emplace("continuous", "1");
+    }
+    string params = StrMediaUtils::make(params_map);
     MediaTuple tuple(DEFAULT_VHOST, _option.tuple.device_id, _option.tuple.stream_id, params);
 
     weak_ptr<StreamSource> weak_self = shared_from_this();
@@ -160,7 +166,6 @@ void StreamSource::createPlayer() {
         }
 
         (*player)[Client::kRtpType] = strong_self->_option.rtp_type;
-        (*player)[Client::kRtpMode] = strong_self->_option.rtp_mode;
 
         if (strong_self->_option.timeout_sec > 0.1f) {
             // Play handshake timeout

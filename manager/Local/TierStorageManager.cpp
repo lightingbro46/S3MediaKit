@@ -3986,7 +3986,8 @@ static onceToken g_token(
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
         int64_t start_time = static_cast<int64_t>(info.start_time);
         int64_t end_time = start_time + std::max<int64_t>(1, static_cast<int64_t>(std::round(info.time_len)));
-        TierStorageManager::Instance().registerHotSegmentRange(info.app, info.stream, info.file_path, start_time, end_time, static_cast<int64_t>(info.file_size));
+        auto origin_stream = StrMediaUtils::originStream(info.stream);
+        TierStorageManager::Instance().registerHotSegmentRange(info.app, origin_stream, info.file_path, start_time, end_time, static_cast<int64_t>(info.file_size));
     });
 #endif
 },

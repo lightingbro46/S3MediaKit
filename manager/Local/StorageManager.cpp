@@ -482,7 +482,7 @@ size_t StorageManager::removeCameraTimeBlocks(const std::string &camera_id,
         WarnL << "Skip selective timefile cleanup, camera path not found: " << camera_path;
         return 0;
     }
-    MultiTimeRebuilder rebuilder(camera_path, true);
+    MultiTimeRebuilder rebuilder(camera_path);
     return rebuilder.removeTimeBlocks(blocks);
 }
 

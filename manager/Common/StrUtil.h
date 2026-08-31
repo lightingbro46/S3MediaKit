@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <json/json.h>
+#include "Common/Parser.h"
 
 namespace managerkit {
 
@@ -69,6 +70,44 @@ public:
 class StrUUID {
 public:
     static std::string make_guid(int size = 32, const std::string &prefix = "", const std::string &suffix = "");
+};
+
+namespace StreamVariant {
+static const char *const Transcode = ".transcode";
+static const char *const Relay = ".relay";
+} // namespace StreamVariant
+
+class StrMediaUtils {
+public:
+    static mediakit::StrCaseMap parse(const std::string &params);
+
+    static std::string make(const mediakit::StrCaseMap &params);
+
+    static bool isRelayStream(const std::string &stream) {
+        return !stream.empty() && toolkit::end_with(stream, StreamVariant::Relay);
+    }
+
+    static bool isTranscodeStream(const std::string &stream) {
+        return !stream.empty() && toolkit::end_with(stream, StreamVariant::Transcode);
+    }
+
+    static std::string makeRelayStream(const std::string &stream) {
+        return isRelayStream(stream) ? stream : (stream + StreamVariant::Relay);
+    }
+
+    static std::string makeTranscodeStream(const std::string &stream) {
+        return isTranscodeStream(stream) ? stream : (stream + StreamVariant::Transcode);
+    }
+
+    static std::string originStream(const std::string &stream) {
+        if (isRelayStream(stream)) {
+            return stream.substr(0, stream.size() - std::string(StreamVariant::Relay).size());
+        } 
+        if (isTranscodeStream(stream)) {
+            return stream.substr(0, stream.size() - std::string(StreamVariant::Transcode).size());
+        }
+        return stream;
+    }
 };
 
 } // namespace managerkit
