@@ -71,7 +71,9 @@ foreach(manager_case
     RecoversRunningWorkAcrossFreshProcesses
     DeletesStableStaleTemporaryMp4FromHotPools
     PreservesUnsafeTemporaryMp4Candidates
+    DeletesCompletedMp4OnlyWhenMatchingTimeBlockIsMissing
     ReportsTemporaryMp4InDryRunWithoutDeleting
+    UsesSmallerHotOrCameraRetentionForCleanup
     DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart)
   add_test(
     NAME "integration.tier-manager.${manager_case}"

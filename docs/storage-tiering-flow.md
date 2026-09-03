@@ -737,25 +737,28 @@ Mỗi timer tick, `cleanupRestoreTempFiles()`:
 
 `EXPIRED` là status runtime thực tế của restore job sau cleanup, dù enum `JobStatus` dùng chung chưa khai báo giá trị này.
 
-### 8.9 Cleanup MP4 Tạm Không Có Trong TimeFile
+### 8.9 Cleanup MP4 Không Có Trong TimeFile
 
 `MP4Recorder` ghi segment đang mở bằng tên ẩn `.{filename}.mp4` và chỉ rename sang tên chính thức sau khi đóng file thành công. Nếu tiến trình dừng bất thường, file tạm có thể còn lại nhưng không xuất hiện trong TimeFile, vì vậy backfill và retention dựa trên tier metadata không nhìn thấy file này.
 
-Mỗi maintenance cycle, `cleanupOrphanTemporarySegments()` scan trực tiếp các file-backed HOT pool đang bật:
+Mỗi maintenance cycle, `cleanupOrphanTemporarySegments()` scan trực tiếp các file-backed HOT pool đang bật để dọn cả file tạm và MP4 hoàn chỉnh không có TimeBlock:
 
 ```text
-{pool-data-root}/{camera}/{stream}/{YYYY-MM-DD}/.{segment}.mp4
+{pool-data-root}/{camera}/{stream}/{YYYY-MM-DD}/[.]{segment}.mp4
 ```
 
 Quy tắc an toàn:
 
-1. Chỉ xét regular file có basename bắt đầu bằng `.`, kết thúc bằng `.mp4` và parse được timestamp segment.
+1. Chỉ xét regular file kết thúc bằng `.mp4` và parse được timestamp segment; tên bắt đầu bằng `.` được phân loại là file tạm.
 2. Không đi theo symlink directory và không xóa symlink file.
-3. File phải cũ hơn `storage.tier_tmp_cleanup_stale_seconds`.
-4. File chỉ được xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime.
-5. Ngay trước `unlink`, trạng thái file được kiểm tra lại bằng `lstat`.
-6. MP4 bình thường không bị xóa chỉ vì thiếu TimeFile.
-7. File tạm không được thêm vào `segment_tier_records`, `segment_tier_ranges`, không move và không upload sang tier khác.
+3. Ngưỡng cleanup của camera là thời điểm hiện tại trừ retention nhỏ hơn giữa `HOT.retain_until_days` và `keepArchivedMaxFor` khi camera cấu hình giá trị này thủ công (`keepArchivedMaxForAuto=false`, giá trị lớn hơn 0). Khi không có statistic camera, chỉ dùng retention HOT của policy hiệu lực. Policy bị tắt hoặc không có HOT tier hợp lệ thì bỏ qua camera.
+4. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
+5. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
+6. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup mở đúng TimeFile ngày `{MP4SavePath}/{app}/{camera}/{YYYY-MM-DD}.s3db` bằng `TimeQuery`, truy vấn một khoảng gộp cho nhóm camera/stream/ngày và giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment.
+7. Nếu TimeFile ngày không tồn tại/không phải regular file, hoặc constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
+8. Ngay trước `unlink`, cleanup kiểm tra lại file bằng `lstat`; với MP4 hoàn chỉnh còn xác nhận device, inode, size và mtime của TimeFile chưa thay đổi để tránh race với block được ghi muộn.
+9. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
+10. File được cleanup không được thêm vào `segment_tier_records`, `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
 
 Các cấu hình:
 
@@ -763,7 +766,6 @@ Các cấu hình:
 |---|---:|---|
 | `storage.tier_tmp_cleanup_enabled` | `1` | Bật pass phát hiện MP4 tạm trong HOT filesystem pool |
 | `storage.tier_tmp_cleanup_dry_run` | `1` | Chỉ đếm/log `would_delete`, chưa xóa file |
-| `storage.tier_tmp_cleanup_stale_seconds` | `86400` | Tuổi tối thiểu của file trước khi bắt đầu quan sát cleanup |
 | `storage.tier_tmp_cleanup_max_files_per_cycle` | `1000` | Số regular file tối đa được kiểm tra trong một pass |
 | `storage.tier_tmp_cleanup_work_budget_ms` | `500` | Ngân sách thời gian tối đa của một pass |
 

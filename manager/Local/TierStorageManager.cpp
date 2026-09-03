@@ -253,6 +253,48 @@ static bool deriveSegmentPathFromFullPath(const std::string &full_path,
     return !segment_path.empty();
 }
 
+struct TimelineFileSnapshot {
+    uint64_t device = 0;
+    uint64_t inode = 0;
+    int64_t size = 0;
+    int64_t modified_at = 0;
+};
+
+static bool sameTimelineFile(const struct stat &st,
+                             const TimelineFileSnapshot &snapshot) {
+    return static_cast<uint64_t>(st.st_dev) == snapshot.device &&
+           static_cast<uint64_t>(st.st_ino) == snapshot.inode &&
+           static_cast<int64_t>(st.st_size) == snapshot.size &&
+           static_cast<int64_t>(st.st_mtime) == snapshot.modified_at;
+}
+
+static std::string getDailyTimelinePath(const std::string &camera_id,
+                                        const std::string &date_name) {
+    GET_CONFIG(std::string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    return File::absolutePath(app_name, record_path) + "/" + camera_id +
+           "/" + date_name + ".s3db";
+}
+
+static bool captureTimelineSnapshot(const std::string &timeline_path,
+                                    TimelineFileSnapshot &snapshot) {
+    struct stat st{};
+    if (::lstat(timeline_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    snapshot.device = static_cast<uint64_t>(st.st_dev);
+    snapshot.inode = static_cast<uint64_t>(st.st_ino);
+    snapshot.size = static_cast<int64_t>(st.st_size);
+    snapshot.modified_at = static_cast<int64_t>(st.st_mtime);
+    return true;
+}
+
+static bool timelineSnapshotUnchanged(const std::string &timeline_path,
+                                      const TimelineFileSnapshot &snapshot) {
+    struct stat st{};
+    return ::lstat(timeline_path.c_str(), &st) == 0 &&
+           S_ISREG(st.st_mode) && sameTimelineFile(st, snapshot);
+}
+
 static std::string getRestoreRootPath() {
     GET_CONFIG(std::string, restore_save_path, Storage::kRestoreSavePath);
     return File::absolutePath("", restore_save_path);
@@ -3733,19 +3775,13 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
         std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
         _temporary_mp4_observations.clear();
         _temporary_mp4_next_pool_index = 0;
+        _temporary_mp4_next_camera_index = 0;
         return;
     }
 
     GET_CONFIG(bool, dry_run, Storage::kTierTmpCleanupDryRun);
-    GET_CONFIG(int64_t, stale_seconds, Storage::kTierTmpCleanupStaleSeconds);
     GET_CONFIG(int, max_files_per_cycle, Storage::kTierTmpCleanupMaxFilesPerCycle);
     GET_CONFIG(int64_t, work_budget_ms, Storage::kTierTmpCleanupWorkBudgetMs);
-    if (stale_seconds < 0) {
-        std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
-        _temporary_mp4_observations.clear();
-        _temporary_mp4_next_pool_index = 0;
-        return;
-    }
     if (max_files_per_cycle <= 0)
         max_files_per_cycle = 1000;
     if (work_budget_ms <= 0)
@@ -3782,33 +3818,46 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
 
     std::unordered_map<std::string, TemporaryMp4Observation> previous_observations;
     size_t start_pool_index = 0;
+    size_t start_camera_index = 0;
     {
         std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
         previous_observations = _temporary_mp4_observations;
         if (!roots.empty())
             start_pool_index = _temporary_mp4_next_pool_index % roots.size();
+        start_camera_index = _temporary_mp4_next_camera_index;
     }
 
     if (roots.empty()) {
         std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
         _temporary_mp4_observations.clear();
         _temporary_mp4_next_pool_index = 0;
+        _temporary_mp4_next_camera_index = 0;
         return;
     }
 
     std::unordered_map<std::string, TemporaryMp4Observation> current_observations;
     std::unordered_set<std::string> seen_candidates;
     const int64_t now = static_cast<int64_t>(time(nullptr));
+    struct CameraCleanupRetention {
+        bool valid = false;
+        uint64_t cutoff_date = 0;
+    };
+    std::unordered_map<std::string, CameraCleanupRetention> retention_cache;
     toolkit::Ticker cleanup_ticker;
     size_t roots_scanned = 0;
     size_t files_examined = 0;
     size_t candidates_observed = 0;
+    size_t temporary_candidates = 0;
+    size_t completed_orphan_candidates = 0;
+    size_t timeline_groups_read = 0;
+    size_t timeline_groups_skipped = 0;
     size_t stable_candidates = 0;
     size_t deleted_files = 0;
     uint64_t deleted_bytes = 0;
     size_t would_delete_files = 0;
     size_t errors = 0;
     bool budget_exhausted = false;
+    size_t max_camera_count = 0;
 
     auto budgetExceeded = [&]() -> bool {
         if (files_examined >= static_cast<size_t>(max_files_per_cycle) ||
@@ -3830,6 +3879,53 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
         observation.modified_at = static_cast<int64_t>(st.st_mtime);
         return observation;
     };
+    auto getCleanupRetention = [&](const std::string &camera_id) -> CameraCleanupRetention {
+        auto cached = retention_cache.find(camera_id);
+        if (cached != retention_cache.end())
+            return cached->second;
+
+        CameraCleanupRetention result;
+        auto effective = getEffectivePolicy(camera_id);
+        auto policies = getPolicy(effective.policy_id);
+        if (policies.empty() || policies.front().enabled == 0) {
+            retention_cache[camera_id] = result;
+            return result;
+        }
+
+        const std::string hot_tier = tierTypeToString(HotTier);
+        for (const auto &tier : policies.front().parsedTiers()) {
+            if (!tier.enabled || tier.tier != hot_tier)
+                continue;
+            if (tier.pool_id.empty() || tier.retain_until_days < 0)
+                break;
+            StoragePool policy_hot_pool;
+            if (!getPoolById(tier.pool_id, policy_hot_pool) ||
+                policy_hot_pool.enabled == 0 ||
+                policy_hot_pool.tier != hot_tier ||
+                poolTypeIsObjectStorage(policy_hot_pool.type)) {
+                break;
+            }
+
+            uint64_t retention_seconds = static_cast<uint64_t>(tier.retain_until_days) * 86400ULL;
+            auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+            if (recorder) {
+                auto params = recorder->getParams();
+                if (!params.option.keepArchivedMaxForAuto &&
+                    params.option.keepArchivedMaxFor > 0) {
+                    retention_seconds = std::min<uint64_t>(
+                        retention_seconds, params.option.keepArchivedMaxFor);
+                }
+            }
+
+            result.valid = true;
+            if (retention_seconds < static_cast<uint64_t>(now)) {
+                result.cutoff_date = StampUtils::getStartOfDay(static_cast<uint64_t>(now) - retention_seconds);
+            }
+            break;
+        }
+        retention_cache[camera_id] = result;
+        return result;
+    };
 
     for (size_t root_offset = 0; root_offset < roots.size(); ++root_offset) {
         if (budgetExceeded() || _stopping)
@@ -3837,17 +3933,30 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
 
         const std::string &root = roots[(start_pool_index + root_offset) % roots.size()];
         ++roots_scanned;
+        std::vector<std::string> camera_paths;
         File::scanDir(root, [&](const std::string &camera_path, bool) {
-            if (budgetExceeded() || _stopping)
-                return false;
             struct stat camera_stat{};
             if (::lstat(camera_path.c_str(), &camera_stat) != 0) {
                 if (errno != ENOENT)
                     ++errors;
                 return true;
             }
-            if (!S_ISDIR(camera_stat.st_mode))
-                return true;
+            if (S_ISDIR(camera_stat.st_mode))
+                camera_paths.push_back(camera_path);
+            return true;
+        }, false, false);
+        std::sort(camera_paths.begin(), camera_paths.end());
+        max_camera_count = std::max(max_camera_count, camera_paths.size());
+
+        for (size_t camera_offset = 0; camera_offset < camera_paths.size(); ++camera_offset) {
+            if (budgetExceeded() || _stopping)
+                break;
+            const std::string &camera_path = camera_paths[
+                (start_camera_index + camera_offset) % camera_paths.size()];
+            const std::string camera_id = baseName(camera_path);
+            const CameraCleanupRetention retention = getCleanupRetention(camera_id);
+            if (!retention.valid)
+                continue;
 
             File::scanDir(camera_path, [&](const std::string &stream_path, bool) {
                 if (budgetExceeded() || _stopping)
@@ -3860,6 +3969,8 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                 }
                 if (!S_ISDIR(stream_stat.st_mode))
                     return true;
+                const std::string stream_id = baseName(stream_path);
+                const std::string origin_stream = StrMediaUtils::originStream(stream_id);
 
                 File::scanDir(stream_path, [&](const std::string &date_path, bool) {
                     if (budgetExceeded() || _stopping)
@@ -3874,8 +3985,18 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                         return true;
 
                     const std::string date_name = baseName(date_path);
-                    if (StrTimeUtils::getTsFromDateStr(date_name) == 0)
+                    const uint64_t date_start = StrTimeUtils::getTsFromDateStr(date_name);
+                    if (date_start == 0 ||
+                        date_start >= retention.cutoff_date)
                         return true;
+
+                    struct CompletedCandidate {
+                        std::string path;
+                        std::string segment_path;
+                        uint64_t segment_time = 0;
+                        TemporaryMp4Observation observation;
+                    };
+                    std::vector<CompletedCandidate> completed_candidates;
 
                     File::scanDir(date_path, [&](const std::string &path, bool) {
                         if (budgetExceeded() || _stopping)
@@ -3892,24 +4013,35 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
 
                         ++files_examined;
                         const std::string name = baseName(path);
-                        if (name.size() <= 5 || name.front() != '.' || !end_with(name, ".mp4"))
+                        if (name.size() <= 4 || !end_with(name, ".mp4"))
                             return true;
                         if (!pathStartsWithRoot(path, root))
                             return true;
 
+                        const bool is_temporary = name.front() == '.';
                         std::string segment_name = name.substr(0, name.size() - 4);
                         std::string segment_path = date_name + "/" + segment_name;
                         uint64_t segment_time = StrTimeUtils::getTsFromDateTimeStr(segment_path);
                         if (segment_time == 0)
                             segment_time = StrTimeUtils::getTsFromDateTimeStr2(segment_path);
-                        if (segment_time == 0 ||
-                            static_cast<int64_t>(file_stat.st_mtime) > now - stale_seconds) {
+                        if (segment_time == 0) {
                             return true;
                         }
+
+                        if (!is_temporary) {
+                            CompletedCandidate candidate;
+                            candidate.path = path;
+                            candidate.segment_path = segment_path;
+                            candidate.segment_time = segment_time;
+                            candidate.observation = makeObservation(file_stat);
+                            completed_candidates.push_back(candidate);
+                            return true;
+                        }
+
                         if (!seen_candidates.insert(path).second)
                             return true;
-
                         ++candidates_observed;
+                        ++temporary_candidates;
                         TemporaryMp4Observation observation = makeObservation(file_stat);
                         auto previous = previous_observations.find(path);
                         if (previous == previous_observations.end() || !(previous->second == observation)) {
@@ -3925,8 +4057,7 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                             return true;
                         }
                         TemporaryMp4Observation verified = makeObservation(verify_stat);
-                        if (!S_ISREG(verify_stat.st_mode) || !(verified == observation) ||
-                            verified.modified_at > now - stale_seconds) {
+                        if (!S_ISREG(verify_stat.st_mode) || !(verified == observation)) {
                             current_observations[path] = verified;
                             return true;
                         }
@@ -3946,12 +4077,116 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                         }
                         return true;
                     }, false, true);
+
+                    if (completed_candidates.empty())
+                        return !budget_exhausted && !_stopping;
+
+                    const std::string timeline_path = getDailyTimelinePath(camera_id, date_name);
+                    TimelineFileSnapshot timeline_snapshot;
+                    if (!captureTimelineSnapshot(timeline_path, timeline_snapshot)) {
+                        ++timeline_groups_skipped;
+                        return !budget_exhausted && !_stopping;
+                    }
+
+                    uint64_t query_start = completed_candidates.front().segment_time;
+                    uint64_t query_end = query_start;
+                    for (const auto &candidate : completed_candidates) {
+                        query_start = std::min(query_start, candidate.segment_time);
+                        query_end = std::max(query_end, candidate.segment_time);
+                    }
+                    if (query_end < std::numeric_limits<uint64_t>::max())
+                        ++query_end;
+
+                    std::vector<TimeBlock> blocks;
+                    try {
+                        MediaTuple tuple;
+                        tuple.app = camera_id;
+                        tuple.stream = stream_id;
+                        TimeQuery query(tuple, timeline_path, false);
+                        query.getRecordedTimePeriod(
+                            query_start, query_end,
+                            [&](std::vector<TimeBlock> &data) {
+                                blocks = data;
+                            });
+                        ++timeline_groups_read;
+                    } catch (const std::exception &ex) {
+                        ++timeline_groups_skipped;
+                        ++errors;
+                        WarnL << "Skip completed MP4 cleanup, cannot open TimeFile: path="
+                              << timeline_path << ", error=" << ex.what();
+                        return !budget_exhausted && !_stopping;
+                    } catch (...) {
+                        ++timeline_groups_skipped;
+                        ++errors;
+                        WarnL << "Skip completed MP4 cleanup, cannot open TimeFile: path="
+                              << timeline_path << ", unknown error";
+                        return !budget_exhausted && !_stopping;
+                    }
+
+                    std::unordered_set<std::string> referenced_full_paths;
+                    std::unordered_set<std::string> referenced_identities;
+                    for (const auto &block : blocks) {
+                        if (block.file_path().empty())
+                            continue;
+                        const std::string full_path = decodeBase64(block.file_path());
+                        if (full_path.empty())
+                            continue;
+                        referenced_full_paths.insert(full_path);
+                        std::string referenced_segment;
+                        if (deriveSegmentPathFromFullPath(full_path, camera_id,
+                                                          block.stream(), referenced_segment)) {
+                            referenced_identities.insert(
+                                StrMediaUtils::originStream(block.stream()) + "\x1f" +
+                                referenced_segment);
+                        }
+                    }
+
+                    bool timeline_changed = false;
+                    for (const auto &candidate : completed_candidates) {
+                        const std::string identity = origin_stream + "\x1f" + candidate.segment_path;
+                        if (referenced_full_paths.count(candidate.path) != 0 ||
+                            referenced_identities.count(identity) != 0) {
+                            continue;
+                        }
+
+                        ++candidates_observed;
+                        ++completed_orphan_candidates;
+                        if (timeline_changed ||
+                            !timelineSnapshotUnchanged(timeline_path, timeline_snapshot)) {
+                            timeline_changed = true;
+                            ++timeline_groups_skipped;
+                            break;
+                        }
+
+                        struct stat verify_stat{};
+                        if (::lstat(candidate.path.c_str(), &verify_stat) != 0) {
+                            if (errno != ENOENT)
+                                ++errors;
+                            continue;
+                        }
+                        const TemporaryMp4Observation verified = makeObservation(verify_stat);
+                        if (!S_ISREG(verify_stat.st_mode) ||
+                            !(verified == candidate.observation)) {
+                            continue;
+                        }
+
+                        if (dry_run) {
+                            ++would_delete_files;
+                            continue;
+                        }
+                        if (::unlink(candidate.path.c_str()) == 0) {
+                            ++deleted_files;
+                            deleted_bytes += static_cast<uint64_t>(
+                                std::max<int64_t>(0, verified.size));
+                        } else if (errno != ENOENT) {
+                            ++errors;
+                        }
+                    }
                     return !budget_exhausted && !_stopping;
                 }, false, false);
                 return !budget_exhausted && !_stopping;
             }, false, false);
-            return !budget_exhausted && !_stopping;
-        }, false, false);
+        }
     }
 
     {
@@ -3959,9 +4194,21 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
         if (_stopping) {
             _temporary_mp4_observations.clear();
             _temporary_mp4_next_pool_index = 0;
+            _temporary_mp4_next_camera_index = 0;
         } else {
+            if (budget_exhausted) {
+                for (const auto &entry : previous_observations) {
+                    const std::string name = baseName(entry.first);
+                    if (!name.empty() && name.front() == '.' &&
+                        seen_candidates.count(entry.first) == 0) {
+                        current_observations.emplace(entry.first, entry.second);
+                    }
+                }
+            }
             _temporary_mp4_observations.swap(current_observations);
             _temporary_mp4_next_pool_index = (start_pool_index + 1) % roots.size();
+            _temporary_mp4_next_camera_index = max_camera_count == 0
+                ? 0 : (start_camera_index + 1) % max_camera_count;
         }
     }
 
@@ -3969,6 +4216,10 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
         DebugL << "cleanupOrphanTemporarySegments: roots_scanned=" << roots_scanned
                << ", files_examined=" << files_examined
                << ", candidates_observed=" << candidates_observed
+               << ", temporary_candidates=" << temporary_candidates
+               << ", completed_orphan_candidates=" << completed_orphan_candidates
+               << ", timeline_groups_read=" << timeline_groups_read
+               << ", timeline_groups_skipped=" << timeline_groups_skipped
                << ", stable_candidates=" << stable_candidates
                << ", deleted_files=" << deleted_files
                << ", deleted_bytes=" << deleted_bytes

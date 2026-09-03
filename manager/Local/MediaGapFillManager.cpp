@@ -219,9 +219,7 @@ std::string appendRtspRange(const MediaGapFillRequest &request) {
 }
 
 std::string relayStream(const std::string &stream_id) {
-    return StrMediaUtils::isRelayStream(stream_id)
-        ? stream_id
-        : StrMediaUtils::makeRelayStream(stream_id);
+    return StrMediaUtils::isRelayStream(stream_id) ? stream_id : StrMediaUtils::makeRelayStream(stream_id);
 }
 
 } // namespace

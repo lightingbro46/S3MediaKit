@@ -29,6 +29,7 @@
 #include "Local/StatisticRecorder.h"
 #include "Local/TierStorageManager.h"
 #include "Local/TimeMuxer.h"
+#include "Local/TimeQuery.h"
 #include "Storage/DbStorage.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/StorageTierExtra.h"
@@ -136,7 +137,6 @@ void setFileModifiedTime(const std::string &path, time_t modified_at) {
 void configureTemporaryMp4Cleanup(bool dry_run) {
     mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 1;
     mINI::Instance()[Storage::kTierTmpCleanupDryRun] = dry_run ? 1 : 0;
-    mINI::Instance()[Storage::kTierTmpCleanupStaleSeconds] = 3600;
     mINI::Instance()[Storage::kTierTmpCleanupMaxFilesPerCycle] = 1000;
     mINI::Instance()[Storage::kTierTmpCleanupWorkBudgetMs] = 5000;
 }
@@ -174,6 +174,29 @@ void writeTimeBlock(const std::string &root,
                      start, end, size);
 }
 
+void writeDailyTimeBlock(const std::string &root,
+                         const std::string &camera,
+                         const std::string &stream,
+                         const std::string &date,
+                         const std::string &segment_path,
+                         int64_t start,
+                         int64_t end,
+                         int64_t size) {
+    const std::string camera_dir = root + "/hot/record/" + camera;
+    makeDirectory(camera_dir);
+    TimeMuxer muxer;
+    muxer.openFile(camera_dir + "/" + date + ".s3db");
+    TimeBlock block;
+    block.set_app(camera);
+    block.set_stream(stream);
+    block.set_start_time(static_cast<uint64_t>(start));
+    block.set_time_len(static_cast<uint32_t>(end - start));
+    block.set_file_size(static_cast<uint64_t>(size));
+    block.set_file_path(encodeBase64(segment_path));
+    require(muxer.inputBlock(block), "Cannot write daily time block");
+    muxer.closeFile();
+}
+
 StoragePool makeNasPool(const std::string &root) {
     makeDirectory(root + "/nas/record");
     StoragePool pool;
@@ -203,12 +226,13 @@ StoragePool makeHotPool(const std::string &root,
 }
 
 StoragePolicy makeHotOnlyPolicy(const std::string &hot_pool_id,
-                                const std::string &policy_id) {
+                                const std::string &policy_id,
+                                int retain_until_days = 3650) {
     PolicyTierConfig hot;
     hot.tier = tierTypeToString(HotTier);
     hot.enabled = true;
     hot.pool_id = hot_pool_id;
-    hot.retain_until_days = 3650;
+    hot.retain_until_days = retain_until_days;
     hot.overflow_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
 
     StoragePolicy policy;
@@ -878,7 +902,7 @@ int scenarioSearchEngineReflectsTierMetadata(const std::string &root) {
         bool called = false;
         MediaTuple tuple(DEFAULT_VHOST, fixture.camera, fixture.stream, "");
         SearchEngine::findTimePeriod(
-            tuple, fixture.start, fixture.end, 0, 0, false, "", true,
+            tuple, fixture.start, fixture.end, 0, 0, false, false, "", true,
             [&](const SockException &ex, const Json::Value &data) {
                 require(!ex, "SearchEngine returned an error");
                 result = data;
@@ -1407,9 +1431,9 @@ int scenarioTemporaryMp4CleanupStableStale(const std::string &root) {
             "Cannot create second HOT pool for temporary cleanup");
 
     const std::string first = root +
-        "/hot/record/camera-tmp/main/2026-08-20/.2026-08-20-12-00-00-0.mp4";
+        "/hot/record/camera-tmp/main/2020-01-02/.2020-01-02-12-00-00-0.mp4";
     const std::string second = root +
-        "/hot-two/record/camera-tmp-two/main/2026-08-20/.2026-08-20-12-01-00-0.mp4";
+        "/hot-two/record/camera-tmp-two/main/2020-01-02/.2020-01-02-12-01-00-0.mp4";
     writeFile(first, "abandoned-temporary-one");
     writeFile(second, "abandoned-temporary-two");
     const time_t stale_time = ::time(nullptr) - 7200;
@@ -1437,31 +1461,33 @@ int scenarioTemporaryMp4CleanupPreservesUnsafe(const std::string &root) {
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
 
-    const std::string date_root = root + "/hot/record/camera-safe/main/2026-08-20";
-    const std::string changing = date_root + "/.2026-08-20-13-00-00-0.mp4";
-    const std::string fresh = date_root + "/.2026-08-20-13-01-00-0.mp4";
-    const std::string normal = date_root + "/2026-08-20-13-02-00-0.mp4";
+    const std::string date_root = root + "/hot/record/camera-safe/main/2020-01-02";
+    const std::string changing = date_root + "/.2020-01-02-13-00-00-0.mp4";
+    const std::string current_date = getTimeStr("%Y-%m-%d");
+    const std::string current_segment = getTimeStr("%Y-%m-%d-%H-%M-%S");
+    const std::string recent_root = root + "/hot/record/camera-safe/main/" + current_date;
+    const std::string fresh = recent_root + "/." + current_segment + "-0.mp4";
+    const std::string fresh_normal = recent_root + "/" + current_segment + "-1.mp4";
     const std::string malformed = date_root + "/.not-a-segment.mp4";
     const std::string symlink_target = root + "/symlink-target.mp4";
-    const std::string symlink_path = date_root + "/.2026-08-20-13-03-00-0.mp4";
+    const std::string symlink_path = date_root + "/.2020-01-02-13-03-00-0.mp4";
     writeFile(changing, "initial");
     writeFile(fresh, "active-temporary");
-    writeFile(normal, "normal-without-timefile");
+    writeFile(fresh_normal, "fresh-normal-without-timefile");
     writeFile(malformed, "malformed-hidden-mp4");
     writeFile(symlink_target, "symlink-target");
     require(::symlink(symlink_target.c_str(), symlink_path.c_str()) == 0,
             "Cannot create temporary MP4 symlink");
 
     const std::string external_date = root + "/external-date";
-    const std::string external_file = external_date + "/.2026-08-21-14-00-00-0.mp4";
+    const std::string external_file = external_date + "/.2020-01-03-14-00-00-0.mp4";
     writeFile(external_file, "outside-directory-symlink");
-    const std::string linked_date = root + "/hot/record/camera-safe/main/2026-08-21";
+    const std::string linked_date = root + "/hot/record/camera-safe/main/2020-01-03";
     require(::symlink(external_date.c_str(), linked_date.c_str()) == 0,
             "Cannot create date directory symlink");
 
     const time_t stale_time = ::time(nullptr) - 7200;
     setFileModifiedTime(changing, stale_time);
-    setFileModifiedTime(normal, stale_time);
     setFileModifiedTime(malformed, stale_time);
     setFileModifiedTime(symlink_target, stale_time);
     setFileModifiedTime(external_file, stale_time);
@@ -1471,12 +1497,77 @@ int scenarioTemporaryMp4CleanupPreservesUnsafe(const std::string &root) {
     runTemporaryMp4CleanupPass(manager);
 
     require(File::fileExist(changing), "Changing temporary MP4 was deleted");
-    require(File::fileExist(fresh), "Fresh temporary MP4 was deleted");
-    require(File::fileExist(normal), "Normal MP4 missing from TimeFile was deleted");
+    require(File::fileExist(fresh), "Temporary MP4 inside retention was deleted");
+    require(File::fileExist(fresh_normal), "Completed MP4 inside retention was deleted");
     require(File::fileExist(malformed), "Malformed hidden MP4 was deleted");
     require(File::fileExist(symlink_path) && File::fileExist(symlink_target),
             "Temporary MP4 symlink or its target was deleted");
     require(File::fileExist(external_file), "Date directory symlink was followed");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioCompletedMp4Cleanup(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string date = "2020-01-02";
+    const std::string missing_timefile = root +
+        "/hot/record/camera-missing-timefile/main/" + date + "/2020-01-02-13-59-00-0.mp4";
+    const std::string orphan = root +
+        "/hot/record/camera-completed/main/" + date + "/2020-01-02-14-00-00-0.mp4";
+    const std::string referenced = root +
+        "/hot/record/camera-completed/main/" + date + "/2020-01-02-14-01-00-0.mp4";
+    const std::string relay_referenced = root +
+        "/hot/record/camera-completed/main.relay.fixture/" + date +
+        "/2020-01-02-14-02-00-0.mp4";
+    writeFile(missing_timefile, "completed-without-timefile");
+    writeFile(orphan, "completed-without-timeblock");
+    writeFile(referenced, "completed-with-timeblock");
+    writeFile(relay_referenced, "completed-relay-with-timeblock");
+
+    const int64_t referenced_start = static_cast<int64_t>(
+        StrTimeUtils::getTsFromDateTimeStr2(date + "/2020-01-02-14-01-00-0"));
+    writeDailyTimeBlock(root, "camera-completed", "main", date, referenced,
+                        referenced_start, referenced_start + 60,
+                        static_cast<int64_t>(std::strlen("completed-with-timeblock")));
+    const int64_t relay_start = static_cast<int64_t>(
+        StrTimeUtils::getTsFromDateTimeStr2(date + "/2020-01-02-14-02-00-0"));
+    writeDailyTimeBlock(root, "camera-completed", "main.relay.fixture", date,
+                        relay_referenced, relay_start, relay_start + 60,
+                        static_cast<int64_t>(std::strlen("completed-relay-with-timeblock")));
+    {
+        MediaTuple tuple;
+        tuple.app = "camera-completed";
+        tuple.stream = "main";
+        std::vector<TimeBlock> seeded_blocks;
+        TimeQuery query(tuple,
+                        root + "/hot/record/camera-completed/" + date + ".s3db",
+                        false);
+        query.getRecordedTimePeriod(
+            static_cast<uint64_t>(referenced_start - 60),
+            static_cast<uint64_t>(referenced_start + 60),
+            [&](std::vector<TimeBlock> &data) { seeded_blocks = data; });
+        require(seeded_blocks.size() == 1 &&
+                    decodeBase64(seeded_blocks.front().file_path()) == referenced,
+                "Daily TimeFile fixture cannot be queried by TimeQuery");
+    }
+
+    runTemporaryMp4CleanupPass(manager);
+
+    require(!File::fileExist(orphan),
+            "Completed MP4 without a matching TimeBlock was not deleted immediately");
+    require(File::fileExist(referenced),
+            "Completed MP4 referenced by the daily TimeFile was deleted");
+    require(File::fileExist(relay_referenced),
+            "Completed relay MP4 referenced by the daily TimeFile was deleted");
+    require(File::fileExist(missing_timefile),
+            "Completed MP4 was deleted when its daily TimeFile was missing");
+    require(SegmentTierRepository().findByCamera("camera-completed").empty(),
+            "Completed orphan cleanup created segment tier metadata");
 
     manager.stop();
     return 0;
@@ -1489,12 +1580,85 @@ int scenarioTemporaryMp4CleanupDryRun(const std::string &root) {
     manager.start();
 
     const std::string path = root +
-        "/hot/record/camera-dry-run/main/2026-08-20/.2026-08-20-15-00-00-0.mp4";
+        "/hot/record/camera-dry-run/main/2020-01-02/.2020-01-02-15-00-00-0.mp4";
+    const std::string completed_path = root +
+        "/hot/record/camera-dry-run/main/2020-01-02/2020-01-02-15-01-00-0.mp4";
+    const std::string different_path = root +
+        "/hot/record/camera-dry-run/main/2020-01-02/2020-01-02-15-01-00-1.mp4";
     writeFile(path, "dry-run-temporary");
-    setFileModifiedTime(path, ::time(nullptr) - 7200);
+    writeFile(completed_path, "dry-run-completed-orphan");
+    const int64_t completed_start = static_cast<int64_t>(
+        StrTimeUtils::getTsFromDateTimeStr2("2020-01-02/2020-01-02-15-01-00-0"));
+    writeDailyTimeBlock(root, "camera-dry-run", "main", "2020-01-02",
+                        different_path, completed_start, completed_start + 60, 1);
     runTemporaryMp4CleanupPass(manager);
     runTemporaryMp4CleanupPass(manager);
     require(File::fileExist(path), "Dry-run deleted a temporary MP4");
+    require(File::fileExist(completed_path), "Dry-run deleted a completed orphan MP4");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTemporaryMp4CleanupRetention(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    const std::string camera_limit = "camera-cleanup-camera-limit";
+    StoragePolicy long_policy = makeHotOnlyPolicy(
+        hot_pools.front().id, "cleanup-long-hot-retention", 3650);
+    require(manager.createPolicy(long_policy) == long_policy.id,
+            "Cannot create long HOT-retention cleanup policy");
+    require(manager.assignPolicyToCamera(camera_limit, long_policy.id, "cleanup retention test"),
+            "Cannot assign long HOT-retention cleanup policy");
+    auto camera_recorder = StatisticRecorder::Instance().getRecorder(camera_limit, true);
+    require(camera_recorder != nullptr, "Cannot create camera statistics for cleanup test");
+    CameraOption camera_option;
+    camera_option.keepArchivedMaxForAuto = false;
+    camera_option.keepArchivedMaxFor = 1;
+    camera_recorder->setCameraOption(camera_option);
+
+    const std::string policy_limit = "camera-cleanup-policy-limit";
+    StoragePolicy short_policy = makeHotOnlyPolicy(
+        hot_pools.front().id, "cleanup-short-hot-retention", 30);
+    require(manager.createPolicy(short_policy) == short_policy.id,
+            "Cannot create short HOT-retention cleanup policy");
+    require(manager.assignPolicyToCamera(policy_limit, short_policy.id, "cleanup retention test"),
+            "Cannot assign short HOT-retention cleanup policy");
+    auto policy_recorder = StatisticRecorder::Instance().getRecorder(policy_limit, true);
+    require(policy_recorder != nullptr, "Cannot create policy-limit camera statistics");
+    CameraOption long_camera_option;
+    long_camera_option.keepArchivedMaxForAuto = false;
+    long_camera_option.keepArchivedMaxFor = 3650ULL * 86400ULL;
+    policy_recorder->setCameraOption(long_camera_option);
+
+    const std::string camera_limited_path = root + "/hot/record/" + camera_limit +
+        "/main/2020-01-02/.2020-01-02-17-00-00-0.mp4";
+    const std::string cutoff_date = getTimeStr("%Y-%m-%d");
+    const std::string cutoff_segment = getTimeStr("%Y-%m-%d-%H-%M-%S");
+    const std::string boundary_path = root + "/hot/record/" + camera_limit +
+        "/main/" + cutoff_date + "/." + cutoff_segment + "-0.mp4";
+    const std::string policy_limited_path = root + "/hot/record/" + policy_limit +
+        "/main/2020-01-02/.2020-01-02-17-01-00-0.mp4";
+    writeFile(camera_limited_path, "camera-retention-wins");
+    writeFile(boundary_path, "cutoff-date-is-not-scanned");
+    writeFile(policy_limited_path, "policy-retention-wins");
+
+    runTemporaryMp4CleanupPass(manager);
+    require(File::fileExist(camera_limited_path) && File::fileExist(policy_limited_path),
+            "Retention cleanup deleted a temporary MP4 on first observation");
+    runTemporaryMp4CleanupPass(manager);
+    require(!File::fileExist(camera_limited_path),
+            "Camera keepArchivedMaxFor was not used as the smaller retention");
+    require(!File::fileExist(policy_limited_path),
+            "HOT retain_until_days was not used as the smaller retention");
+    require(File::fileExist(boundary_path),
+            "Temporary MP4 in the cutoff date folder was scanned and deleted");
 
     manager.stop();
     return 0;
@@ -1507,7 +1671,7 @@ int scenarioTemporaryMp4CleanupRestartPrepare(const std::string &root) {
     manager.start();
 
     const std::string path = root +
-        "/hot/record/camera-restart/main/2026-08-20/.2026-08-20-16-00-00-0.mp4";
+        "/hot/record/camera-restart/main/2020-01-02/.2020-01-02-16-00-00-0.mp4";
     writeFile(path, "restart-temporary");
     setFileModifiedTime(path, ::time(nullptr) - 7200);
     runTemporaryMp4CleanupPass(manager);
@@ -1524,7 +1688,7 @@ int scenarioTemporaryMp4CleanupRestartVerify(const std::string &root) {
     manager.start();
 
     const std::string path = root +
-        "/hot/record/camera-restart/main/2026-08-20/.2026-08-20-16-00-00-0.mp4";
+        "/hot/record/camera-restart/main/2020-01-02/.2020-01-02-16-00-00-0.mp4";
     require(File::fileExist(path), "Restart fixture is missing");
     runTemporaryMp4CleanupPass(manager);
     require(File::fileExist(path), "Fresh process reused an observation from the previous process");
@@ -1558,7 +1722,9 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
         if (name == "tmp-cleanup-stable-stale") return scenarioTemporaryMp4CleanupStableStale(root);
         if (name == "tmp-cleanup-preserves-unsafe") return scenarioTemporaryMp4CleanupPreservesUnsafe(root);
+        if (name == "completed-cleanup") return scenarioCompletedMp4Cleanup(root);
         if (name == "tmp-cleanup-dry-run") return scenarioTemporaryMp4CleanupDryRun(root);
+        if (name == "tmp-cleanup-retention") return scenarioTemporaryMp4CleanupRetention(root);
         if (name == "tmp-cleanup-restart-prepare") return scenarioTemporaryMp4CleanupRestartPrepare(root);
         if (name == "tmp-cleanup-restart-verify") return scenarioTemporaryMp4CleanupRestartVerify(root);
         throw std::runtime_error("Unknown scenario: " + name);
@@ -1590,6 +1756,14 @@ public:
 };
 
 } // namespace
+
+TEST(StreamVariantTest, NormalizesRelayAndTranscodeSuffixPayloads) {
+    EXPECT_EQ("main", StrMediaUtils::originStream("main.transcode.fixture"));
+    EXPECT_EQ("main", StrMediaUtils::originStream("main.relay.fixture"));
+    EXPECT_EQ("main", StrMediaUtils::originStream("main"));
+    EXPECT_FALSE(StrMediaUtils::isTranscodeStream("main.transcoder.fixture"));
+    EXPECT_FALSE(StrMediaUtils::isRelayStream("main.relayed.fixture"));
+}
 
 TEST(TierStorageManagerIntegrationTest, MapsAppDirectoryBindMountToLogicalPoolRoot) {
     DiskPartition direct;
@@ -1740,9 +1914,19 @@ TEST(TierStorageManagerIntegrationTest, PreservesUnsafeTemporaryMp4Candidates) {
     EXPECT_EQ(0, runChild("tmp-cleanup-preserves-unsafe", root.path));
 }
 
+TEST(TierStorageManagerIntegrationTest, DeletesCompletedMp4OnlyWhenMatchingTimeBlockIsMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("completed-cleanup", root.path));
+}
+
 TEST(TierStorageManagerIntegrationTest, ReportsTemporaryMp4InDryRunWithoutDeleting) {
     TempRoot root;
     EXPECT_EQ(0, runChild("tmp-cleanup-dry-run", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, UsesSmallerHotOrCameraRetentionForCleanup) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("tmp-cleanup-retention", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart) {

@@ -435,6 +435,7 @@ private:
     std::unordered_map<std::string, StoragePool> _pool_cache;
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
+    size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)
     mutable std::mutex _default_policy_mtx;
