@@ -335,10 +335,10 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         vector<TimeBlock> result;
         try {
             query(start_time, end_time, [&](const TimeBlock &block) {
-                result.push_back(block); 
+                result.push_back(block);
             });
         } catch (...) {}
-        
+
         cb(result);
 }
 

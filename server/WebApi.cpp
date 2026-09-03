@@ -1033,6 +1033,11 @@ static bool apiValidateStoragePolicy(const StoragePolicy &policy, std::string &e
     auto pool_map = apiLoadStoragePoolMap();
     for (const auto &tier : tiers) {
         if (!tier.enabled) continue;
+        if (tier.data_mode != "FULL_VIDEO" || tier.priority != "NORMAL" ||
+            tier.overflow_action == "STOP_RECORDING_AND_ALERT") {
+            err = "Only FULL_VIDEO, NORMAL priority and executable overflow actions are supported";
+            return false;
+        }
         max_retain_days = std::max(max_retain_days, tier.retain_until_days);
         if (tier.tier == "HOT") hot_enabled = true;
         if (tier.pool_id.empty()) {
@@ -1044,6 +1049,12 @@ static bool apiValidateStoragePolicy(const StoragePolicy &policy, std::string &e
             err = "pool_id must exist and be enabled: " + tier.pool_id;
             return false;
         }
+#ifndef ENABLE_AWS_SDK
+        if (poolTypeIsObjectStorage(it->second.type)) {
+            err = "Object storage requires ENABLE_AWS_SDK";
+            return false;
+        }
+#endif
         if (it->second.tier != tier.tier) {
             err = "pool_id " + tier.pool_id + " belongs to " + it->second.tier +
                   " tier, expected " + tier.tier;

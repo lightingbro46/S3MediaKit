@@ -9,6 +9,7 @@
 #include "Storage/VmsKvPair.h"
 #include "Storage/VmsResourceAssignment.h"
 #include "Storage/LocalResource.h"
+#include "Storage/LocalResourceStatusGap.h"
 
 namespace managerkit {
 
@@ -223,6 +224,34 @@ private:
 
     std::string _self_node_id;
     std::string _self_db_guid;
+};
+
+class ResourceStatusManager {
+public:
+    static ResourceStatusManager &Instance();
+
+    ~ResourceStatusManager();
+    
+    bool onDisconnected(const std::string &resource_id, const std::string &reason, uint64_t disconnect_time);
+
+    bool onReconnected(const std::string &resource_id, uint64_t reconnect_time);
+
+    std::vector<LocalResourceStatusGap> getResourceStatusGaps(const std::string &resource_id, uint64_t start_time, uint64_t end_time);
+
+    std::vector<LocalResourceStatusGap> getResourceStatusGaps(const std::vector<std::string> &resource_ids, uint64_t start_time, uint64_t end_time);
+
+    bool removeResourceStatusGaps(const std::string &resource_id, uint64_t threshold_time);
+
+private:
+    ResourceStatusManager();
+
+    void cleanupExpiredGaps(uint64_t now);
+
+private:
+    std::mutex _mtx;
+    std::shared_ptr<LocalResourceStatusGapImp> _gap_imp;
+    uint64_t _last_cleanup_time = 0;
+    uint64_t _retention_seconds = 30ULL * 24 * 3600;
 };
 
 } // namespace managerkit

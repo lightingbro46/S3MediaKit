@@ -126,7 +126,9 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
         return resolved.read_path;
 
     if (resolved.restore_required) {
-        auto restore = TierStorageManager::Instance().handleColdAccessByPath(timefile_path);
+        auto restore = TierStorageManager::Instance().requestRestoreSegment(
+            block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
+            timefile_path, "AUTO_RECORD_ACCESS");
         WarnL << "Recorded MP4 segment requires restore before playback, camera=" << block.app()
               << " stream=" << block.stream()
               << " start_time=" << block.start_time()
@@ -153,10 +155,10 @@ void installManagerHook () {
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
         DebugL << "Record mp4 file " << info.app << "/" << info.stream << "/" << info.start_time << "/" << info.time_len << "/" << info.file_path;
         TimeBlock block;
-        const bool isReplay = start_with(info.app, kReplayPrefix);
-        std::string app = isReplay ? info.app.substr(kReplayPrefix.size()) : info.app;
-        block.set_app(app);
-        block.set_stream(info.stream);
+        string originStream = StrMediaUtils::originStream(info.stream);
+        bool isReplay = StrMediaUtils::isRelayStream(info.stream);
+        block.set_app(info.app);
+        block.set_stream(originStream);
         block.set_start_time(info.start_time);
         block.set_time_len(round(info.time_len));
         block.set_file_size(info.file_size);
@@ -166,7 +168,7 @@ void installManagerHook () {
 
         auto ret = TimeRecorderManager::Instance().addBlock(block);
         if (ret) {
-            StatisticRecorder::Instance().addArchiveSize(block.app(), block.stream(), 1, block.file_size(), block.start_time(), block.start_time() + block.time_len(), true);
+            StatisticRecorder::Instance().addArchiveSize(info.app, originStream, 1, info.file_size, info.start_time, info.start_time + info.time_len, true);
         }
     });
 

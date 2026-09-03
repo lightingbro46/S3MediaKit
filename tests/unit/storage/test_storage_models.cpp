@@ -115,6 +115,13 @@ TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<SegmentTierRange>("segment_tier_ranges");
     expectEntitySchema<PoolMetrics>("pool_metrics");
     expectEntitySchema<RestoreJob>("restore_jobs");
+    expectEntitySchema<RestoreJobSegment>("restore_job_segments");
+    const std::vector<std::string> restore_segment_key = {
+        "job_id", "stream_id", "segment_path"};
+    EXPECT_EQ(restore_segment_key,
+              EntityTraits<RestoreJobSegment>::getPrimaryKey());
+    expectEntitySchema<TierMetadataCleanupJob>("tier_metadata_cleanup_jobs");
+    expectEntitySchema<SegmentRetentionOverride>("segment_retention_overrides");
     expectEntitySchema<StorageAlert>("storage_alerts");
     expectEntitySchema<ProtectedVideo>("protected_videos");
     expectEntitySchema<TransactionLog>("transaction_log");

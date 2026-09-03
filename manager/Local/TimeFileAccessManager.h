@@ -26,6 +26,7 @@ private:
 
     std::shared_ptr<struct TimeFileAccessState> getState(const std::string &file);
     void releaseRead(const std::shared_ptr<struct TimeFileAccessState> &state, const std::string &file);
+    void tryFinalizeSwap(const std::string &file, const std::function<void()> &cb, uint64_t attempts);
 
 private:
     std::mutex _mutex;

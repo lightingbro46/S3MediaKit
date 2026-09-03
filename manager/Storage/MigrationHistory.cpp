@@ -1,16 +1,21 @@
 #include <algorithm>
 #include "Common/macros.h"
+#include "Common/config.h"
 #include "Util/File.h"
 #include "Util/QueryBuilder.h"
 #include "MigrationHistory.h"
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
 
 namespace managerkit {
 
 MigrationHistoryImp::~MigrationHistoryImp() {
-    // removeFile(_folder_path);
+    GET_CONFIG(bool, keep_migration_sql_files, Database::kKeepMigrationSqlFiles);
+    if (!keep_migration_sql_files) {
+        removeFile(_folder_path);
+    }
 }
 
 void MigrationHistoryImp::migrate(const string &files_string) {

@@ -499,12 +499,6 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
         throw std::invalid_argument("Only mp4 recording is supported for event record");
     }
 
-    auto recorder = std::static_pointer_cast<MP4Recorder>(Recorder::createRecorder(type, getMediaTuple(), _option));
-    for (auto &track : getTracks()) {
-        recorder->addTrack(track);
-    }
-    recorder->addTrackCompleted();
-
     // ── Replay GOP history (pre-event backfill) ──────────────────────────────
     std::list<Frame::Ptr> history;
     _ring->flushGop([&](const Frame::Ptr &frame) { history.emplace_back(frame); });
@@ -541,11 +535,22 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
                   << ", forward_time_ms: " << forward_time_ms
                   << " (" << (forward_time_ms == 0 ? "infinite" : "fixed") << ")"
                   << ", first_frame_wall: " << first_frame_time;
-            // Set first file name to reflect earliest frame, not current time.
-            recorder->setNextFileTime(first_frame_time);
-            for (auto &frame : history) {
-                recorder->inputFrame(frame);
-            }
+        }
+    }
+
+    auto tuple = getMediaTuple();
+    if (first_frame_time > 0) {
+        // Set first file name to reflect earliest frame, not current time.
+        tuple.params = StrPrinter << "start_time_ms=" << (first_frame_time * 1000);
+    }
+    auto recorder = std::static_pointer_cast<MP4Recorder>(Recorder::createRecorder(type, tuple, _option));
+    for (auto &track : getTracks()) {
+        recorder->addTrack(track);
+    }
+    recorder->addTrackCompleted();
+    if (!history.empty()) {
+        for (auto &frame : history) {
+            recorder->inputFrame(frame);
         }
     }
 
@@ -563,7 +568,6 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
 
     // ── Forward ring reader ──────────────────────────────────────────────────
     bool is_live_stream = _dur_sec < 0.01;
-    auto tuple = getMediaTuple();
     auto reader = _ring->attach(getOwnerPoller(MediaSource::NullMediaSource()), false);
     reader->setReadCB([recorder, session, reader, is_live_stream, tuple](const Frame::Ptr &frame) mutable {
         session->last_dts.store(frame->dts(), std::memory_order_relaxed);
@@ -1052,15 +1056,6 @@ bool MultiMediaSourceMuxer::isEnabled(){
         }
     }
     return _is_enable;
-}
-
-void MultiMediaSourceMuxer::setRecorderTimeFileReplay(const time_t time) {
-    if (_mp4) {
-        auto d = std::dynamic_pointer_cast<MP4Recorder>(_mp4);
-        if (d) {
-            d->setNextFileTime(time);
-        }
-    }
 }
 
 }//namespace mediakit

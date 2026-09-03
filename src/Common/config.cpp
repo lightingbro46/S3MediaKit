@@ -468,7 +468,6 @@ static onceToken token([]() {
 namespace Client {
 const string kNetAdapter = "net_adapter";
 const string kRtpType = "rtp_type";
-const string kRtpMode = "rtp_mode";
 const string kRtspBeatType = "rtsp_beat_type";
 const string kRtspUser = "rtsp_user";
 const string kRtspPwd = "rtsp_pwd";
@@ -558,6 +557,14 @@ const string kTierRangeBackfillEnabled = STORAGE_FIELD "tier_range_backfill_enab
 const string kTierRangeBackfillDays = STORAGE_FIELD "tier_range_backfill_days";
 const string kTierRangeBackfillChunkSeconds = STORAGE_FIELD "tier_range_backfill_chunk_seconds";
 const string kTierRangeBackfillMaxCamerasPerCycle = STORAGE_FIELD "tier_range_backfill_max_cameras_per_cycle";
+const string kTierRangeBackfillDispatchIntervalSeconds = STORAGE_FIELD "tier_range_backfill_dispatch_interval_seconds";
+const string kTierRangeBackfillWorkBudgetMs = STORAGE_FIELD "tier_range_backfill_work_budget_ms";
+const string kTierRangeBackfillMaxAttempts = STORAGE_FIELD "tier_range_backfill_max_attempts";
+const string kTierRangeBackfillRetryBaseSeconds = STORAGE_FIELD "tier_range_backfill_retry_base_seconds";
+const string kTierTmpCleanupEnabled = STORAGE_FIELD "tier_tmp_cleanup_enabled";
+const string kTierTmpCleanupDryRun = STORAGE_FIELD "tier_tmp_cleanup_dry_run";
+const string kTierTmpCleanupMaxFilesPerCycle = STORAGE_FIELD "tier_tmp_cleanup_max_files_per_cycle";
+const string kTierTmpCleanupWorkBudgetMs = STORAGE_FIELD "tier_tmp_cleanup_work_budget_ms";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -577,6 +584,14 @@ static onceToken token([]() {
     mINI::Instance()[kTierRangeBackfillDays] = 180;
     mINI::Instance()[kTierRangeBackfillChunkSeconds] = 24 * 3600;
     mINI::Instance()[kTierRangeBackfillMaxCamerasPerCycle] = 20;
+    mINI::Instance()[kTierRangeBackfillDispatchIntervalSeconds] = 1;
+    mINI::Instance()[kTierRangeBackfillWorkBudgetMs] = 2000;
+    mINI::Instance()[kTierRangeBackfillMaxAttempts] = 5;
+    mINI::Instance()[kTierRangeBackfillRetryBaseSeconds] = 30;
+    mINI::Instance()[kTierTmpCleanupEnabled] = 1;
+    mINI::Instance()[kTierTmpCleanupDryRun] = 1;
+    mINI::Instance()[kTierTmpCleanupMaxFilesPerCycle] = 1000;
+    mINI::Instance()[kTierTmpCleanupWorkBudgetMs] = 500;
 });
 
 } // namespace Storage

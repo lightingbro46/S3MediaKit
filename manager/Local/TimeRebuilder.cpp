@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <vector>
 #include "TimeRebuilder.h"
+#include "TimeFileDirtyTracker.h"
 #include "Common/Parser.h"
 #include "TimeDemuxer.h"
 #include "TimeFileAccessManager.h"
 #include "Common/StrUtil.h"
 #include "Local/StatisticRecorder.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/base64.h"
 
 using namespace std;
 using namespace toolkit;
@@ -34,15 +36,17 @@ void TimeRebuilder::createTempFile() {
     string temp_filename = "." + filename;
     _full_path_tmp = parent_path + temp_filename;
     _full_path = _src_path;
+    _device_path = parent_path;
 
-    // determine whether the source time file is in use
-    string current_time_str = getTimeStr("%Y-%m-%d");
-    _in_use = filename.find(current_time_str) != string::npos;
-    if (_in_use) {
-        TraceL << "Time file " << _src_path << " is in use";
-        _recorder = getTimeRecorder(parent_path);
-    }
-    
+    // Capture the dirty version before reading so the simple swap can detect any block
+    // written to the source file while the rebuild is running.
+    _dirty_version_at_start = TimeFileDirtyTracker::Instance().currentVersion(_device_path, _src_path);
+
+    // The recorder of this device tells us dynamically whether the file is currently
+    // being appended to (live or SD-card import). This replaces the old date-based
+    // "in use" heuristic: any file with an open muxer needs the mirrored swap path.
+    _recorder = getTimeRecorder(parent_path);
+
     // delete tmp file
     if (File::fileExist(_full_path_tmp)) {
         TraceL << "Remove old template file: " << _full_path_tmp;
@@ -100,9 +104,23 @@ void TimeRebuilder::closeTempFile() {
     auto full_path_tmp = _full_path_tmp;;
     auto full_path = _full_path;
     auto src_path = _src_path;
+    auto device_path = _device_path;
+    auto version_at_start = _dirty_version_at_start;
     TimeFileAccessManager::Instance().beginPendingSwap(full_path);
-    WorkThreadPool::Instance().getExecutor()->async([full_path_tmp, full_path, src_path]() {
-        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path]() {
+    WorkThreadPool::Instance().getExecutor()->async([full_path_tmp, full_path, src_path, device_path, version_at_start]() {
+        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path, device_path, version_at_start]() {
+            // Abort the destructive swap if the source file was written to while we were
+            // rebuilding it (e.g. SD-card import re-opened this past-date file). Deleting
+            // the source now would drop those blocks; keep it dirty for the next cycle.
+            uint64_t current_version = TimeFileDirtyTracker::Instance().currentVersion(device_path, src_path);
+            if (current_version != version_at_start) {
+                WarnL << "Source time file changed during rebuild, discard temp file: " << src_path;
+                if (!full_path_tmp.empty()) {
+                    deleteTimeFile(full_path_tmp);
+                    deleteMakerFile(full_path_tmp);
+                }
+                return;
+            }
             if (!src_path.empty()) {
                 deleteTimeFile(src_path);
                 deleteMakerFile(src_path);
@@ -193,21 +211,44 @@ static void commitArchivedChanges(CameraArchivedChanges &camera_changes) {
 }
 
 size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
-    Ticker ticket;
-    size_t removed_bytes = 0;
-    
-    auto keep_block = [&removed_bytes, &map](const TimeBlock &block) -> bool { 
+    auto keep_block = [&map](const TimeBlock &block) -> bool {
         string key = (StrPrinter << block.app() << "/" << block.stream()); 
         auto it = map.find(key);
-        if (it != map.end()) {
-            if (block.start_time() >= it->second) {
-                TraceL << "Keep time block: " << key << " " << block.start_time();
-                return true;
+        return it != map.end() && block.start_time() >= it->second;
+    };
+    return rebuildTimeLineWithPredicate(keep_block);
+}
+
+size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
+    auto keep_block = [&blocks](const TimeBlock &block) -> bool {
+        for (const auto &identity : blocks) {
+            if (identity.camera_id != block.app() ||
+                identity.stream_id != block.stream() ||
+                identity.start_time != block.start_time())
+                continue;
+            if (!identity.segment_path.empty() && !block.file_path().empty()) {
+                const string decoded = decodeBase64(block.file_path());
+                const string suffix = identity.segment_path + ".mp4";
+                if (decoded.size() < suffix.size() ||
+                    decoded.compare(decoded.size() - suffix.size(), suffix.size(), suffix) != 0)
+                    continue;
             }
+            return false;
         }
-        TraceL << "Remove time block: " << key << " " << block.start_time();
+        return true;
+    };
+    return rebuildTimeLineWithPredicate(keep_block);
+}
+
+size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(const TimeBlock &)> &keep_predicate) {
+    Ticker ticket;
+    size_t removed_bytes = 0;
+    auto keep_block = [&removed_bytes, &keep_predicate](const TimeBlock &block) -> bool {
+        if (keep_predicate(block))
+            return true;
         removed_bytes += block.file_size();
-        TraceL << "Increase: " << format_bytes_human_readable(block.file_size()) << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
+        TraceL << "Remove time block: " << block.app() << "/" << block.stream()
+               << " " << block.start_time();
         return false;
     };
 
@@ -218,15 +259,15 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
         return 0;
     }
     
+
+    // step 2: if the file is currently being appended to (live or SD-card import),
+    // start capturing new blocks and freeze the read snapshot. This is decided
+    // dynamically by the recorder, not by the file date.
     bool capture_started = false;
     uint64_t snapshot_size = 0;
-    if (_in_use) {
-        // step 2: start recording time block to both old file and memory, and freeze the read snapshot.
-        capture_started = _recorder && _recorder->beginRebuildCapture(_src_path, snapshot_size);
-        if (!capture_started) {
-            _in_use = false;
-            TraceL << "Time file is not active in recorder, rebuild as inactive file: " << _src_path;
-        }
+    capture_started = _recorder && _recorder->beginRebuildCapture(_src_path, snapshot_size);
+    if (!capture_started) {
+        TraceL << "Time file is not active in recorder, rebuild as inactive file: " << _src_path;
     }
 
     CameraArchivedChanges tmp_changes;
@@ -262,10 +303,11 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
         _writer->inputBlock(block);
     }
 
-    if (_in_use) {
+    if (capture_started) {
         // step 4: drain captured blocks to tmp and mirror future live blocks to tmp until rename is safe.
         auto writeMemoryBlock = [&](const string &buf) {
             auto demuxer = std::make_shared<TimeMemoryDemuxer>(buf);
+            vector<TimeBlock> captured_blocks;
             bool eof = false;
             while (!eof) {
                 TimeBlock block;
@@ -274,10 +316,16 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
                     break;
                 }
                 if (keep_block(block)) {
-                    _writer->inputBlock(block);
+                    captured_blocks.emplace_back(std::move(block));
                 } else {
                     addTempArchivedChanges(tmp_changes, block);
                 }
+            }
+            stable_sort(captured_blocks.begin(), captured_blocks.end(), [](const TimeBlock &a, const TimeBlock &b) {
+                return a.start_time() < b.start_time();
+            });
+            for (const auto &block : captured_blocks) {
+                _writer->inputBlock(block);
             }
         };
 
@@ -300,97 +348,9 @@ size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     return removed_bytes;    
 }
 
-std::unordered_map<std::string, StreamStorageStats> getArchivedTimeRange(const string &device_path) {
-    auto record_path = File::parentDir(device_path);
-    auto device_id = findSubString(device_path.data() + record_path.size(), nullptr, "/");
-    auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
-    return recorder ? recorder->getParams().storage_map : std::unordered_map<std::string, StreamStorageStats>();
-}
-
-/**
- * Remove expired time file according to threshold, if the time file is newer than threshold, it will be kept.
- * The time file is determined by the timestamp in the filename, which is in format "YYYY-MM-DD.s3db".
- */
-static void removeExpiredTimeFile(const string &path) {
-    if (end_with(path, ".s3db")) {
-        TraceL << "Remove expired time file: " << path;
-        File::delete_file(path);
-        string maker_path = path;
-        replace(maker_path, ".s3db", ".idx");
-        File::delete_file(maker_path);
-    }
-}
-
-size_t TimeRebuilder::rebuildTimeLineWithoutRecreate(const KeepTimeMap &map, bool is_boundary_file) {
-    Ticker ticket;
-    size_t removed_bytes = 0;
-    
-    auto keep_block = [&removed_bytes, &map](const TimeBlock &block) -> bool { 
-        string key = (StrPrinter << block.app() << "/" << block.stream()); 
-        auto it = map.find(key);
-        if (it != map.end()) {
-            if (block.start_time() >= it->second) {
-                TraceL << "Keep time block: " << key << " " << block.start_time();
-                return true;
-            }
-        }
-        TraceL << "Remove time block: " << key << " " << block.start_time();
-        removed_bytes += block.file_size();
-        TraceL << "Increase: " << format_bytes_human_readable(block.file_size()) << ". Removed bytes: " << format_bytes_human_readable(removed_bytes);
-        return false;
-    };
-
-    // step 1: get archived time range for each stream from statistic recorder
-    auto device_path = File::parentDir(_src_path);
-    auto storage_map = getArchivedTimeRange(device_path);
-
-    CameraArchivedChanges tmp_changes;
-    {
-        // step 2: read all block in current file to caculate archived changes
-        auto demuxer = make_shared<TimeDemuxer>();
-        demuxer->openFile(_src_path);
-        bool eof = false;
-        while (!eof) {
-            TimeBlock block;
-            demuxer->readBlock(block, eof);
-            if (eof) {
-                break;
-            }
-
-            auto it_storage = storage_map.find(block.stream());
-            if (it_storage != storage_map.end()) {
-                auto &stats = it_storage->second;
-                if (block.start_time() < stats.archiveStartTime) {
-                    // The block is out of archived time range, ignore it directly without checking with keep time map, because the block must be expired
-                    TraceL << "Time block is out of archived time range, ignore it directly: " << block.app() << "/" << block.stream() << " " << block.start_time() 
-                        << ". Archived time range: [" << stats.archiveStartTime << ", " << stats.archiveEndTime << "]";
-                    continue;
-                }
-            }
-
-            if (!keep_block(block)) {
-                addTempArchivedChanges(tmp_changes, block);
-            }
-        }
-    }
-
-    // step 3: remove expired file, not include boundary file
-    if (!is_boundary_file) {
-        removeExpiredTimeFile(_src_path);
-    }
-
-    // step 4: close file and rename filename
-    commitArchivedChanges(tmp_changes);
-
-    TraceL << "Recreated time file: " << _src_path << ". Removed bytes: " << format_bytes_human_readable(removed_bytes)
-           << ". Elapsed: " << format_duration_verbose(ticket.elapsedTime());
-
-    return removed_bytes;    
-}
-
 //////////////////////////////MultiTimeRebuilder////////////////////////////////
 
-MultiTimeRebuilder::MultiTimeRebuilder(const std::string &src_path, bool recreate_file_mode) : _src_path(src_path), _recreate_file_mode(recreate_file_mode) {
+MultiTimeRebuilder::MultiTimeRebuilder(const std::string &src_path) : _src_path(src_path) {
     openTimeFiles(src_path);
 }
 
@@ -430,31 +390,6 @@ static uint64_t findMinKeepTime(const string &src_path, const TimeRebuilder::Kee
     return min_keep_time;
 }
 
-static uint64_t findMaxKeepTime(const string &src_path, const TimeRebuilder::KeepTimeMap &map) {
-    uint64_t max_keep_time = 0;
-    auto record_path = File::parentDir(src_path);
-    auto device_id = findSubString(src_path.data() + record_path.size(), nullptr, nullptr);
-
-    File::scanDir(src_path, [&](const string &path, bool isDir) {
-        if (isDir) {
-            auto stream_id = findSubString(path.data() + src_path.size(), "/", nullptr);
-            string key = (StrPrinter << device_id << "/" << stream_id);
-            auto it = map.find(key);
-            if (it != map.end()) {
-                if (max_keep_time == 0 || max_keep_time > it->second) {
-                    max_keep_time = it->second;
-                }
-            }
-        }
-        return true;
-    }, true);
-
-    if (max_keep_time == 0) {
-        max_keep_time = time(nullptr);
-    }
-    return max_keep_time;
-}
-
 size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     size_t total_removed_bytes = 0;
     if (_timefiles_map.empty()) {
@@ -462,32 +397,57 @@ size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
         return total_removed_bytes;
     }
 
-    auto min_keep_time = findMinKeepTime(_src_path, map);;
-    TraceL << "Only rebuild time file under : " << getTimeStr("%Y-%m-%d %H:%M:%S", min_keep_time);
+    // The latest keep threshold among all streams: files starting after it hold only
+    // blocks that must be kept, so they never need trimming for expiry.
+    auto latest_keep_time = findMinKeepTime(_src_path, map);
+    TraceL << "Rebuild time files older than: " << getTimeStr("%Y-%m-%d %H:%M:%S", latest_keep_time);
+
+    // Snapshot the set of files that changed since the last rebuild.
+    auto dirty_entries = TimeFileDirtyTracker::Instance().snapshot(_src_path);
+    std::unordered_map<std::string, uint64_t> dirty_versions;
+    for (const auto &entry : dirty_entries) {
+        dirty_versions.emplace(entry.file_path, entry.version);
+    }
 
     for (const auto &it : _timefiles_map) {
         const auto &stamp = it.first;
         const auto &timefile = it.second;
 
-        if (stamp >= min_keep_time) {
+        auto dirty_it = dirty_versions.find(timefile);
+        bool is_dirty = dirty_it != dirty_versions.end();
+        bool has_expirable = stamp < latest_keep_time;
+
+        // Skip files that are entirely within the keep window and were not modified.
+        if (!is_dirty && !has_expirable) {
             TraceL << "Skip rebuild time file: " << timefile;
             continue;
         }
 
         try {
-            TraceL << "Rebuild time file: " << timefile;
+            TraceL << "Rebuild time file: " << timefile << (is_dirty ? " (dirty)" : "");
             auto rebuilder = std::make_shared<TimeRebuilder>(timefile);
-            size_t removed_bytes = 0;
-            if (_recreate_file_mode) {
-                removed_bytes = rebuilder->rebuildTimeLine(map);
-            } else {
-                auto max_keep_time = findMaxKeepTime(_src_path, map);
-                bool boudary_file = stamp >= StampUtils::getStartOfDay(max_keep_time);
-                removed_bytes = rebuilder->rebuildTimeLineWithoutRecreate(map, boudary_file);
+            total_removed_bytes += rebuilder->rebuildTimeLine(map);
+            if (is_dirty) {
+                // Clear the dirty mark only when no new block was written during the rebuild.
+                TimeFileDirtyTracker::Instance().clearIfUnchanged(_src_path, timefile, dirty_it->second);
             }
-            total_removed_bytes += removed_bytes;
         } catch (std::exception &ex) {
             WarnL << ex.what();
+        }
+    }
+    return total_removed_bytes;
+}
+
+size_t MultiTimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
+    size_t total_removed_bytes = 0;
+    if (blocks.empty())
+        return 0;
+    for (const auto &it : _timefiles_map) {
+        try {
+            auto rebuilder = std::make_shared<TimeRebuilder>(it.second);
+            total_removed_bytes += rebuilder->removeTimeBlocks(blocks);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to selectively rebuild " << it.second << ": " << ex.what();
         }
     }
     return total_removed_bytes;

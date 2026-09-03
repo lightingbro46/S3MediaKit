@@ -22,7 +22,15 @@ TEST(StorageTierTest, ConvertsEnumsAndReportsCapabilities) {
     EXPECT_TRUE(poolTypeIsObjectStorage("ARCHIVE"));
     EXPECT_FALSE(poolTypeIsObjectStorage("NAS"));
     EXPECT_TRUE(poolTypeSupport(HotTier)["LOCAL_DISK"].asBool());
+#if defined(ENABLE_AWS_SDK)
     EXPECT_TRUE(poolTypeSupport(ColdTier)["MINIO"].asBool());
+    EXPECT_TRUE(poolTypeSupport(ColdTier)["S3"].asBool());
+    EXPECT_TRUE(poolTypeSupport(ColdTier)["ARCHIVE"].asBool());
+#else
+    EXPECT_FALSE(poolTypeSupport(ColdTier)["MINIO"].asBool());
+    EXPECT_FALSE(poolTypeSupport(ColdTier)["S3"].asBool());
+    EXPECT_FALSE(poolTypeSupport(ColdTier)["ARCHIVE"].asBool());
+#endif
     EXPECT_EQ("CRITICAL", healthToString(StorageHealth::CRITICAL));
     EXPECT_EQ("SNAPSHOT_ONLY", tierDataModeToString(TierDataMode::SNAPSHOT_ONLY));
     EXPECT_EQ("DELETE_OLDEST", overflowActionToString(OverflowAction::DELETE_OLDEST));

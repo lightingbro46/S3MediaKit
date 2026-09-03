@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
 
 #include "Local/TimeFile.h"
 #include "Local/TimeMaker.h"
@@ -64,8 +66,15 @@ TEST(TimeFileDiskTest, ReadsWritesFlushesAndRejectsBadPath) {
     file->closeFile();
     std::remove(path.c_str());
 
+    char invalid_parent[] = "/tmp/s3mediakit-invalid-time-parent-XXXXXX";
+    int invalid_parent_fd = ::mkstemp(invalid_parent);
+    ASSERT_NE(-1, invalid_parent_fd);
+    EXPECT_EQ(0, ::close(invalid_parent_fd));
+
     auto invalid = std::make_shared<TimeFileDisk>();
-    EXPECT_THROW(invalid->openFile("/nonexistent-s3-time-dir/index", "wb"), std::runtime_error);
+    const std::string invalid_path = std::string(invalid_parent) + "/index";
+    EXPECT_THROW(invalid->openFile(invalid_path.c_str(), "wb"), std::runtime_error);
+    EXPECT_EQ(0, std::remove(invalid_parent));
 }
 
 TEST(TimeMakerTest, CreatesMinuteIndexAndTracksOffsets) {

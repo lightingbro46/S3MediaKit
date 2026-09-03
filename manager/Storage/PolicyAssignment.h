@@ -48,6 +48,27 @@ public:
         return SqliteRepository<CameraPolicyAssignment>::removeById(a);
     }
 
+    bool replaceByCameraId(const CameraPolicyAssignment &assignment) {
+        auto txn = _executor->execTxn();
+        try {
+            // A first assignment legitimately deletes zero rows. The executor
+            // reports that as false, so this delete is intentionally best-effort;
+            // an actual SQL failure still throws and rolls back the transaction.
+            _executor->execDMLWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .deleteFrom(EntityTraits<CameraPolicyAssignment>::tableName())
+                    .where("camera_id = ?", {assignment.camera_id}));
+            if (!saveWithTxn(assignment, txn, true))
+                return false;
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
     std::vector<std::string> findCamerasByPolicyId(const std::string &policy_id) {
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
@@ -80,10 +101,12 @@ class PolicyAssignmentImp : public PolicyAssignmentRepository {
 public:
     using Ptr = std::shared_ptr<PolicyAssignmentImp>;
 
-    bool assign(const CameraPolicyAssignment &a) {
-        // upsert: remove existing then insert
-        deleteByCameraId(a.camera_id);
-        return save(a, true);
+    bool assign(CameraPolicyAssignment a) {
+        if (a.camera_id.empty() || a.policy_id.empty())
+            return false;
+        if (a.assigned_at <= 0)
+            a.assigned_at = static_cast<int64_t>(time(nullptr));
+        return replaceByCameraId(a);
     }
 
     bool remove(const std::string &camera_id) {

@@ -22,13 +22,8 @@ public:
     }
 
     float getProgress() const override {
-        if (_rtp_mode == Rtsp::Replay) {
-            uint32_t dur = _seek_to_ms - _seek_from_ms;
-            return (dur != 0) ? static_cast<float>(getProgressMilliSecond()) / dur : 0.0f;
-        } else {
-            if (getDuration() > 0) {
-                return getProgressMilliSecond() / (getDuration() * 1000);
-            }
+        if (getDuration() > 0) {
+            return getProgressMilliSecond() / (getDuration() * 1000);
         }
         return PlayerBase::getProgress();
     }
@@ -42,12 +37,14 @@ public:
 
     void seekTo(float fProgress) override {
         fProgress = MAX(float(0), MIN(fProgress, float(1.0)));
-        seekToMilliSecond((uint32_t) (fProgress * getDuration() * 1000));
+        auto start_ms = hasPlaybackRange() ? _seek_from_ms : 0;
+        seekToMilliSecond(start_ms + static_cast<uint32_t>(fProgress * getDuration() * 1000));
     }
 
     void seekTo(uint32_t seekPos) override {
         uint32_t pos = MAX(float(0), MIN(seekPos, getDuration())) * 1000;
-        seekToMilliSecond(pos);
+        auto start_ms = hasPlaybackRange() ? _seek_from_ms : 0;
+        seekToMilliSecond(start_ms + pos);
     }
 
     float getDuration() const override;

@@ -3,7 +3,7 @@
 #include "Util/logger.h"
 
 #include "Camera/GenericRtspCameraImp.h"
-#include "Camera/SdCardSyncManager.h"
+#include "Local/MediaGapFillManager.h"
 #include "Manager.h"
 
 using namespace std;
@@ -39,7 +39,7 @@ void registerHistoricalSDCardSyncApis() {
                                 val["data"]["DataFrom"] = info.DataFrom;
                                 val["data"]["DataUntil"] = info.DataUntil;
                                 val["data"]["NumberRecordings"] = info.NumberRecordings;
-                                auto gap_data = SdCardSyncManager::Instance().makeRemainingSegmentsJson(deviceId);
+                                auto gap_data = MediaGapFillManager::Instance().makeRemainingSegmentsJson(deviceId);
                                 val["data"]["gap"]["data"] = gap_data;
                                 val["data"]["gap"]["size"] = gap_data.size();
                                 val["data"]["SDSupport"] = info.isSDSupport();
@@ -76,8 +76,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().makeDisconnectSessionsJson(deviceId);
+                        val["data"] = MediaGapFillManager::Instance().makeDisconnectSessionsJson(deviceId);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
@@ -110,8 +109,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().makeDisconnectSessionJson(deviceId, session_id);
+                        val["data"] = MediaGapFillManager::Instance().makeDisconnectSessionJson(deviceId, session_id);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
@@ -150,8 +148,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().resetFailedSession(deviceId, session_id);
+                        val["data"] = MediaGapFillManager::Instance().resetFailedSession(deviceId, session_id);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
@@ -192,8 +189,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().resetFailedSegment(deviceId, session_id, stream_id, segment_index);
+                        val["data"] = MediaGapFillManager::Instance().resetFailedSegment(deviceId, session_id, stream_id, segment_index);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
@@ -231,8 +227,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().stopSession(deviceId);
+                        val["data"] = MediaGapFillManager::Instance().stopSession(deviceId);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
@@ -272,8 +267,7 @@ void registerHistoricalSDCardSyncApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
                     if (impl) {
-                        // TODO: Implement SD card synchronization logic in GenericRtspCameraImp
-                        val["data"] = SdCardSyncManager::Instance().stopSegment(deviceId, stream_id, segment_index);
+                        val["data"] = MediaGapFillManager::Instance().stopSegment(deviceId, stream_id, segment_index);
                         invoker(200, headerOut, val.toStyledString());
                     } else {
                         RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");

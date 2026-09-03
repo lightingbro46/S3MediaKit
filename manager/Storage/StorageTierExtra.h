@@ -47,6 +47,77 @@ DECLARE_ENTITY(RestoreJob, "restore_jobs",
     &RestoreJob::updated_at,      "updated_at"
 )
 
+struct RestoreJobSegment {
+    std::string job_id;
+    std::string camera_id;
+    std::string stream_id;
+    std::string range_id;
+    std::string segment_path;
+    std::string source_pool_id;
+    int64_t range_start = 0;
+    int64_t range_end = 0;
+    std::string status;
+    int64_t total_bytes = 0;
+    int64_t processed_bytes = 0;
+    Optional<std::string> error_message;
+    int64_t created_at = 0;
+    int64_t updated_at = 0;
+};
+
+DECLARE_ENTITY(RestoreJobSegment, "restore_job_segments",
+    MAKE_PK("job_id", "stream_id", "segment_path"),
+    &RestoreJobSegment::job_id,          "job_id",
+    &RestoreJobSegment::camera_id,       "camera_id",
+    &RestoreJobSegment::stream_id,       "stream_id",
+    &RestoreJobSegment::range_id,        "range_id",
+    &RestoreJobSegment::segment_path,    "segment_path",
+    &RestoreJobSegment::source_pool_id,  "source_pool_id",
+    &RestoreJobSegment::range_start,     "range_start",
+    &RestoreJobSegment::range_end,       "range_end",
+    &RestoreJobSegment::status,          "status",
+    &RestoreJobSegment::total_bytes,     "total_bytes",
+    &RestoreJobSegment::processed_bytes, "processed_bytes",
+    &RestoreJobSegment::error_message,   "error_message",
+    &RestoreJobSegment::created_at,      "created_at",
+    &RestoreJobSegment::updated_at,      "updated_at"
+)
+
+struct TierMetadataCleanupJob {
+    std::string range_id;
+    std::string camera_id;
+    std::string status;
+    int attempt_count = 0;
+    Optional<std::string> error_message;
+    int64_t created_at = 0;
+    int64_t updated_at = 0;
+};
+
+DECLARE_ENTITY(TierMetadataCleanupJob, "tier_metadata_cleanup_jobs",
+    {"range_id"},
+    &TierMetadataCleanupJob::range_id,      "range_id",
+    &TierMetadataCleanupJob::camera_id,     "camera_id",
+    &TierMetadataCleanupJob::status,        "status",
+    &TierMetadataCleanupJob::attempt_count, "attempt_count",
+    &TierMetadataCleanupJob::error_message, "error_message",
+    &TierMetadataCleanupJob::created_at,    "created_at",
+    &TierMetadataCleanupJob::updated_at,    "updated_at"
+)
+
+struct SegmentRetentionOverride {
+    std::string range_id;
+    int64_t extend_until = 0;
+    Optional<std::string> reason;
+    int64_t updated_at = 0;
+};
+
+DECLARE_ENTITY(SegmentRetentionOverride, "segment_retention_overrides",
+    {"range_id"},
+    &SegmentRetentionOverride::range_id,     "range_id",
+    &SegmentRetentionOverride::extend_until, "extend_until",
+    &SegmentRetentionOverride::reason,       "reason",
+    &SegmentRetentionOverride::updated_at,   "updated_at"
+)
+
 struct StorageAlert {
     std::string id;
     std::string level;
@@ -159,14 +230,14 @@ public:
         return rows.empty() || rows[0].empty() ? 0 : std::stoi(rows[0][0]);
     }
 
-    std::vector<RestoreJob> queryExpiredDone(int64_t cutoff_updated_at,
-                                             int size = 100) {
+    std::vector<RestoreJob> queryExpiredTerminal(int64_t cutoff_updated_at,
+                                                 int size = 100) {
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select(EntityTraits<RestoreJob>::getColumns())
                 .from(EntityTraits<RestoreJob>::tableName())
-                .where("status = ? AND updated_at > 0 AND updated_at <= ?",
-                       {"DONE", std::to_string(cutoff_updated_at)})
+                .where("status IN (?, ?, ?) AND updated_at > 0 AND updated_at <= ?",
+                       {"DONE", "FAILED", "CANCELLED", std::to_string(cutoff_updated_at)})
                 .orderBy("updated_at ASC")
                 .limit(size));
 
@@ -201,13 +272,14 @@ public:
         return ret;
     }
 
-    bool updateStatus(const std::string &job_id,
-                      const std::string &status,
-                      int64_t processed_bytes = -1,
-                      const std::string &error = "") {
+    bool updateStatusAt(const std::string &job_id,
+                        const std::string &status,
+                        int64_t updated_at,
+                        int64_t processed_bytes = -1,
+                        const std::string &error = "") {
         std::vector<std::pair<std::string, std::string>> set;
         set.push_back({"status", status});
-        set.push_back({"updated_at", std::to_string(static_cast<int64_t>(time(nullptr)))});
+        set.push_back({"updated_at", std::to_string(updated_at)});
         if (processed_bytes >= 0)
             set.push_back({"processed_bytes", std::to_string(processed_bytes)});
         if (!error.empty())
@@ -218,6 +290,32 @@ public:
                 .update(EntityTraits<RestoreJob>::tableName())
                 .set(set)
                 .where("job_id = ?", {job_id}));
+    }
+
+    bool addWithSegments(const RestoreJob &job,
+                         const std::vector<RestoreJobSegment> &segments) {
+        auto txn = _executor->execTxn();
+        try {
+            if (!saveWithTxn(job, txn, true))
+                return false;
+            for (const auto &segment : segments) {
+                const auto columns = EntityTraits<RestoreJobSegment>::getColumns();
+                const auto values = EntityTraits<RestoreJobSegment>::getValues(segment);
+                std::vector<std::pair<std::string, std::string>> assignments;
+                for (size_t i = 0; i < columns.size(); ++i)
+                    assignments.push_back(std::make_pair(columns[i], values[i]));
+                auto query = toolkit::QueryBuilder()
+                    .insertInto(EntityTraits<RestoreJobSegment>::tableName())
+                    .values(assignments);
+                if (!_executor->execDMLWithTxn(txn, query))
+                    return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
     }
 
 private:
@@ -231,6 +329,214 @@ private:
         where << clause;
         params.push_back(value);
         has = true;
+    }
+};
+
+class RestoreJobSegmentRepository : public SqliteRepository<RestoreJobSegment> {
+public:
+    RestoreJobSegmentRepository() : SqliteRepository<RestoreJobSegment>(Database::kMediaServerDb) {}
+
+    std::vector<RestoreJobSegment> queryByJob(const std::string &job_id) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<RestoreJobSegment>::getColumns())
+                .from(EntityTraits<RestoreJobSegment>::tableName())
+                .where("job_id = ?", {job_id})
+                .orderBy("range_start ASC"));
+        std::vector<RestoreJobSegment> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJobSegment>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<RestoreJobSegment> queryActiveSegment(const std::string &camera_id,
+                                                      const std::string &stream_id,
+                                                      const std::string &segment_path) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<RestoreJobSegment>::getColumns())
+                .from(EntityTraits<RestoreJobSegment>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND segment_path = ? "
+                       "AND status IN (?, ?)",
+                       {camera_id, stream_id, segment_path, "PENDING", "RUNNING"})
+                .limit(1));
+        std::vector<RestoreJobSegment> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJobSegment>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<RestoreJobSegment> claimPendingAt(int limit, int64_t updated_at) {
+        std::vector<RestoreJobSegment> claimed;
+        auto txn = _executor->execTxn();
+        try {
+            auto rows = _executor->executeRawWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .select(EntityTraits<RestoreJobSegment>::getColumns())
+                    .from(EntityTraits<RestoreJobSegment>::tableName())
+                    .where("status = ?", {"PENDING"})
+                    .orderBy("created_at ASC")
+                    .limit(limit));
+            for (const auto &row : rows) {
+                RestoreJobSegment item = EntityTraits<RestoreJobSegment>::fromRow(row);
+                bool ok = _executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .update(EntityTraits<RestoreJobSegment>::tableName())
+                        .set({{"status", "RUNNING"}, {"updated_at", std::to_string(updated_at)}})
+                        .where("job_id = ? AND stream_id = ? AND segment_path = ? AND status = ?",
+                               {item.job_id, item.stream_id, item.segment_path, "PENDING"}));
+                if (ok) {
+                    item.status = "RUNNING";
+                    item.updated_at = updated_at;
+                    claimed.push_back(item);
+                }
+            }
+            txn->commit();
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+        return claimed;
+    }
+
+    bool updateStatusAt(const RestoreJobSegment &segment,
+                        const std::string &status,
+                        int64_t processed_bytes,
+                        int64_t updated_at,
+                        const std::string &error = "") {
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"status", status});
+        set.push_back({"processed_bytes", std::to_string(processed_bytes)});
+        set.push_back({"updated_at", std::to_string(updated_at)});
+        set.push_back({"error_message", error});
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<RestoreJobSegment>::tableName())
+                .set(set)
+                .where("job_id = ? AND stream_id = ? AND segment_path = ?",
+                       {segment.job_id, segment.stream_id, segment.segment_path}));
+    }
+
+    void recoverRunningAt(int64_t updated_at) {
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<RestoreJobSegment>::tableName())
+                .set({{"status", "PENDING"}, {"updated_at", std::to_string(updated_at)}})
+                .where("status = ?", {"RUNNING"}));
+    }
+};
+
+class TierMetadataCleanupJobRepository : public SqliteRepository<TierMetadataCleanupJob> {
+public:
+    TierMetadataCleanupJobRepository() : SqliteRepository<TierMetadataCleanupJob>(Database::kMediaServerDb) {}
+
+    bool add(const TierMetadataCleanupJob &job) { return save(job, true); }
+
+    bool markRangeDeletedAndInsert(const TierMetadataCleanupJob &job,
+                                   const std::string &final_status) {
+        auto txn = _executor->execTxn();
+        if (!_executor->execDMLWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .update("segment_tier_ranges")
+                    .set({{"status", final_status}, {"updated_at", std::to_string(job.updated_at)}})
+                    .where("range_id = ?", {job.range_id})))
+            return false;
+        if (!saveWithTxn(job, txn, true))
+            return false;
+        txn->commit();
+        return true;
+    }
+
+    std::vector<TierMetadataCleanupJob> queryPending(int limit = 100) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<TierMetadataCleanupJob>::getColumns())
+                .from(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .where("status = ?", {"PENDING"})
+                .orderBy("updated_at ASC")
+                .limit(limit));
+        std::vector<TierMetadataCleanupJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<TierMetadataCleanupJob>::fromRow(row));
+        return ret;
+    }
+
+    bool updateResultAt(const std::string &range_id,
+                        const std::string &status,
+                        int64_t updated_at,
+                        const std::string &error = "") {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"attempt_count"})
+                .from(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .where("range_id = ?", {range_id})
+                .limit(1));
+        int attempts = rows.empty() || rows[0].empty() ? 1 : std::stoi(rows[0][0]) + 1;
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .set({{"status", status},
+                      {"attempt_count", std::to_string(attempts)},
+                      {"error_message", error},
+                      {"updated_at", std::to_string(updated_at)}})
+                .where("range_id = ?", {range_id}));
+    }
+};
+
+class SegmentRetentionOverrideRepository : public SqliteRepository<SegmentRetentionOverride> {
+public:
+    SegmentRetentionOverrideRepository() : SqliteRepository<SegmentRetentionOverride>(Database::kMediaServerDb) {}
+
+    bool saveOrUpdate(const SegmentRetentionOverride &item) {
+        auto existing = findByRange(item.range_id);
+        return existing.empty() ? save(item, true) : updateById(item);
+    }
+
+    bool persistAndReactivateRange(const SegmentRetentionOverride &item) {
+        auto txn = _executor->execTxn();
+        auto existing = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentRetentionOverride>::tableName())
+                .where("range_id = ?", {item.range_id})
+                .limit(1));
+        bool ok = false;
+        if (existing.empty()) {
+            ok = saveWithTxn(item, txn, true);
+        } else {
+            ok = updateByIdWithTxn(item, txn);
+        }
+        if (!ok)
+            return false;
+        if (!_executor->execDMLWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .update("segment_tier_ranges")
+                    .set({{"status", "AVAILABLE"}, {"updated_at", std::to_string(item.updated_at)}})
+                    .where("range_id = ?", {item.range_id})))
+            return false;
+        txn->commit();
+        return true;
+    }
+
+    std::vector<SegmentRetentionOverride> findByRange(const std::string &range_id) {
+        SegmentRetentionOverride item;
+        item.range_id = range_id;
+        return SqliteRepository<SegmentRetentionOverride>::findById(item);
+    }
+
+    bool isActive(const std::string &range_id, int64_t now) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentRetentionOverride>::tableName())
+                .where("range_id = ? AND extend_until > ?", {range_id, std::to_string(now)})
+                .limit(1));
+        return !rows.empty();
     }
 };
 
@@ -388,9 +694,93 @@ private:
     }
 };
 
-using RestoreJobImp = RestoreJobRepository;
-using StorageAlertImp = StorageAlertRepository;
-using ProtectedVideoImp = ProtectedVideoRepository;
+class RestoreJobImp : public RestoreJobRepository {
+public:
+    using Ptr = std::shared_ptr<RestoreJobImp>;
+
+    bool updateStatus(const std::string &job_id,
+                      const std::string &status,
+                      int64_t processed_bytes = -1,
+                      const std::string &error = "") {
+        return updateStatusAt(job_id, status, static_cast<int64_t>(time(nullptr)),
+                              processed_bytes, error);
+    }
+};
+
+class RestoreJobSegmentImp : public RestoreJobSegmentRepository {
+public:
+    using Ptr = std::shared_ptr<RestoreJobSegmentImp>;
+
+    std::vector<RestoreJobSegment> claimPending(int limit) {
+        return claimPendingAt(limit, static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateStatus(const RestoreJobSegment &segment,
+                      const std::string &status,
+                      int64_t processed_bytes,
+                      const std::string &error = "") {
+        return updateStatusAt(segment, status, processed_bytes,
+                              static_cast<int64_t>(time(nullptr)), error);
+    }
+
+    void recoverRunning() {
+        recoverRunningAt(static_cast<int64_t>(time(nullptr)));
+    }
+};
+
+class TierMetadataCleanupJobImp : public TierMetadataCleanupJobRepository {
+public:
+    using Ptr = std::shared_ptr<TierMetadataCleanupJobImp>;
+
+    bool markRangeDeletedAndEnqueue(const std::string &range_id,
+                                    const std::string &camera_id,
+                                    const std::string &final_status) {
+        if (range_id.empty() || camera_id.empty())
+            return false;
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        TierMetadataCleanupJob job;
+        job.range_id = range_id;
+        job.camera_id = camera_id;
+        job.status = "PENDING";
+        job.created_at = now;
+        job.updated_at = now;
+        return markRangeDeletedAndInsert(job, final_status);
+    }
+
+    bool updateResult(const std::string &range_id,
+                      bool done,
+                      const std::string &error = "") {
+        return updateResultAt(range_id, done ? "DONE" : "PENDING",
+                              static_cast<int64_t>(time(nullptr)), error);
+    }
+};
+
+class SegmentRetentionOverrideImp : public SegmentRetentionOverrideRepository {
+public:
+    using Ptr = std::shared_ptr<SegmentRetentionOverrideImp>;
+
+    bool upsert(const SegmentRetentionOverride &item) {
+        if (item.range_id.empty() || item.extend_until <= 0)
+            return false;
+        return saveOrUpdate(item);
+    }
+
+    bool extendRange(const SegmentRetentionOverride &item) {
+        if (item.range_id.empty() || item.extend_until <= 0)
+            return false;
+        return persistAndReactivateRange(item);
+    }
+};
+
+class StorageAlertImp : public StorageAlertRepository {
+public:
+    using Ptr = std::shared_ptr<StorageAlertImp>;
+};
+
+class ProtectedVideoImp : public ProtectedVideoRepository {
+public:
+    using Ptr = std::shared_ptr<ProtectedVideoImp>;
+};
 
 } // namespace managerkit
 

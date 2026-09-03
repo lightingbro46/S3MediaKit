@@ -7,6 +7,14 @@ description: "Use when changing S3MediaKit SQLite schemas, numbered migrations, 
 
 Inspect `manager/Storage`, `manager/Extension/SyncManager.cpp`, and both migration directories before changing persistence.
 
+## Persistence boundary
+
+- `*Repository` classes are database adapters only: parameterized queries, row mapping, CRUD primitives, and atomic DB transactions.
+- `*Imp` classes own input validation, normalization/defaults, timestamps and generated IDs, JSON/domain parsing, calculations, and state-transition decisions, then call Repository methods with persistence-ready data.
+- Manager/service classes own cross-component orchestration, runtime caches, external I/O, and policy decisions requiring other services.
+- Production callers use `*Imp`, not `*Repository`. Direct Repository construction is reserved for Repository-level tests and persistence infrastructure.
+- Do not use `using FooImp = FooRepository`; define a real Imp class even when its initial facade is small, so domain behavior has one stable home.
+
 ## Migration workflow
 
 1. Choose the database: ESC uses `migration/updates/` and `Database::kEdgeStorageControllerDb`; MediaServer uses `migration/mserver_updates/` and `Database::kMediaServerDb`.
@@ -15,6 +23,6 @@ Inspect `manager/Storage`, `manager/Extension/SyncManager.cpp`, and both migrati
 4. Preserve existing data. Do not drop a live data table; use `ALTER TABLE` or rename/copy/drop with a complete data-preserving plan.
 5. If a table maps to C++, update the entity macro, repository, JSON conversion, and transaction paths consistently.
 6. If the table is replicated, implement/register `TableSyncHandler`; only ESC tables participate in the existing cluster sync design.
-7. Validate ordering, SQL syntax, rerun behavior, old-data preservation, indexes/triggers, and the owning C++ target.
+7. Validate ordering, SQL syntax, rerun behavior, old-data preservation, indexes/triggers, Repository/Imp boundaries, and the owning C++ target.
 
-See [storage-conventions.md](references/storage-conventions.md) for schema and sync details.
+See [storage-conventions.md](references/storage-conventions.md) for schema, Repository/Imp classification, integrity-risk review, and sync details.

@@ -470,6 +470,22 @@ void StorageManager::rebuildTimeFile(const std::string &camera_id, uint64_t thre
     recreateCameraTimeFile(camera_id, threshold);
 }
 
+size_t StorageManager::removeCameraTimeBlocks(const std::string &camera_id,
+                                              const std::vector<TimeBlockIdentity> &blocks) {
+    if (camera_id.empty() || blocks.empty())
+        return 0;
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    const string record_path = File::absolutePath(app_name, mp4_save_path);
+    const string camera_path = record_path + "/" + camera_id;
+    if (!File::is_dir(camera_path)) {
+        WarnL << "Skip selective timefile cleanup, camera path not found: " << camera_path;
+        return 0;
+    }
+    MultiTimeRebuilder rebuilder(camera_path);
+    return rebuilder.removeTimeBlocks(blocks);
+}
+
 string StorageManager::getMainStorageMountPoint() {
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, app_name, Record::kAppName);

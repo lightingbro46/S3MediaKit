@@ -35,6 +35,8 @@ extern const std::string kBatchLimit;
 extern const std::string kGossipFanout;
 // Number of transactions to keep in the transaction log for gossip synchronization.
 extern const std::string kTransactionLogKeepLast;
+// Whether to keep migration SQL files after execution, default is false (do not keep)
+extern const std::string kKeepMigrationSqlFiles;
 } // namespace Database
 
 namespace managerkit {

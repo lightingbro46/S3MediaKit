@@ -246,6 +246,11 @@ static bool validatePolicyByDocRules(const StoragePolicy &policy, std::string &e
 
     for (const auto &tier : tiers) {
         if (!tier.enabled) continue;
+        if (tier.data_mode != "FULL_VIDEO" || tier.priority != "NORMAL" ||
+            tier.overflow_action == "STOP_RECORDING_AND_ALERT") {
+            err = "Only FULL_VIDEO, NORMAL priority and executable overflow actions are supported";
+            return false;
+        }
         max_retain_days = std::max(max_retain_days, tier.retain_until_days);
         if (tier.tier == "HOT") {
             hot_found = true;
@@ -260,6 +265,12 @@ static bool validatePolicyByDocRules(const StoragePolicy &policy, std::string &e
             err = "pool_id must exist and be enabled: " + tier.pool_id;
             return false;
         }
+#ifndef ENABLE_AWS_SDK
+        if (poolTypeIsObjectStorage(pit->second.type)) {
+            err = "Object storage requires ENABLE_AWS_SDK";
+            return false;
+        }
+#endif
         if (pit->second.tier != tier.tier) {
             err = "pool_id " + tier.pool_id + " belongs to " + pit->second.tier +
                   " tier, expected " + tier.tier;
@@ -1445,6 +1456,7 @@ void registerStorageApis() {
         CHECK_ARGS_("camera_id", "start_time", "end_time");
 
         string camera_id = allArgs["camera_id"];
+        string stream_id = allArgs["stream_id"];
         int64_t start_time = allArgs["start_time"];
         int64_t end_time = allArgs["end_time"];
         string target_tier = allArgs["target_tier"];
@@ -1452,6 +1464,10 @@ void registerStorageApis() {
 
         if (target_tier.empty()) {
             target_tier = "HOT";
+        }
+        if (target_tier != "HOT") {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "Only HOT restore target is supported");
+            return;
         }
         if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
@@ -1464,46 +1480,16 @@ void registerStorageApis() {
             return;
         }
 
-        int64_t total_bytes = 0;
-        std::string source_tier = "COLD";
-        SegmentTierRangeImp range_imp;
-        bool found_cold = false;
-        for (const auto &r : range_imp.queryByCamera(camera_id, start_time, end_time)) {
-            if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
-                r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
-                r.status == segmentStatusToString(SegmentStatus::MISSING)) {
-                continue;
-            }
-            total_bytes += std::max<int64_t>(0, r.size_bytes);
-            if (!found_cold || r.tier == tierTypeToString(ColdTier)) {
-                source_tier = r.tier;
-                found_cold = r.tier == tierTypeToString(ColdTier);
-            }
-        }
-
-        RestoreJob job;
-        job.job_id = StrUUID::make_guid(8, "rj");
-        job.camera_id = camera_id;
-        job.source_tier = source_tier;
-        job.target_tier = target_tier.empty() ? "HOT" : target_tier;
-        job.status = "PENDING";
-        job.start_time = start_time;
-        job.end_time = end_time;
-        job.total_bytes = total_bytes;
-        job.processed_bytes = 0;
-        job.reason = Optional<std::string>(reason);
-        job.created_at = static_cast<int64_t>(time(nullptr));
-        job.updated_at = job.created_at;
-
-        RestoreJobImp imp;
-        if (!imp.add(job)) {
+        auto restore = TierStorageManager::Instance().requestRestoreWindow(
+            camera_id, stream_id, start_time, end_time, reason.empty() ? "MANUAL" : reason);
+        if (!restore.handled) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED, "Failed to create restore job");
             return;
         }
 
         Json::Value data;
-        data["job_id"] = job.job_id;
-        data["status"] = job.status;
+        data["job_id"] = restore.job_id;
+        data["status"] = restore.status;
         val["data"] = data;
         invoker(200, headerOut, val.toStyledString());
     });
@@ -1730,13 +1716,12 @@ void registerStorageApis() {
             return;
         }
 
-        SegmentTierRangeImp imp;
         int approved = 0;
         for (const auto &idv : range_ids) {
             std::string range_id = idv.asString();
             if (range_id.empty())
                 continue;
-            if (imp.updateStatusByRangeId(range_id, segmentStatusToString(SegmentStatus::DELETED)))
+            if (TierStorageManager::Instance().approveExpiredRange(range_id))
                 ++approved;
         }
 
@@ -1765,14 +1750,13 @@ void registerStorageApis() {
             return;
         }
 
-        SegmentTierRangeImp imp;
+        std::string reason = allArgs["reason"];
         int extended = 0;
         for (const auto &idv : range_ids) {
             std::string range_id = idv.asString();
             if (range_id.empty())
                 continue;
-            (void)extend_until;
-            if (imp.updateStatusByRangeId(range_id, segmentStatusToString(SegmentStatus::AVAILABLE)))
+            if (TierStorageManager::Instance().extendRangeRetention(range_id, extend_until, reason))
                 ++extended;
         }
 

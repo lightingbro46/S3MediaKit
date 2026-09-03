@@ -129,13 +129,14 @@ Các luồng tiering, timeline, summary, playback và restore phải lấy `segm
    - Move LOCAL/NAS và object storage đều cập nhật range theo cùng nguyên tắc này.
 
 3. **Luồng expire/delete**
-   - `MARK_EXPIRED_WAIT_APPROVAL`, camera maximum retention và một số pressure path chuyển range sang `EXPIRED`.
-   - Automatic delete/`DELETE_OLDEST` xóa file/object best-effort rồi chuyển range sang `DELETED`.
-   - Cả hai nhóm dùng `updateStatusByRangeId(...)` và có thể phát rebuild-timefile notification.
+   - `MARK_EXPIRED_WAIT_APPROVAL` chuyển range sang `EXPIRED` nhưng chưa xóa file.
+   - Automatic delete/`DELETE_OLDEST` chỉ chuyển range sang `DELETED` khi mọi file/object đã xóa thành công.
+   - Sau đó `tier_metadata_cleanup_jobs` xóa đúng các `TimeBlock` tương ứng; move giữa tier không xóa timefile.
+   - `protected_videos` và `segment_retention_overrides` được kiểm tra tập trung trước mọi đường xóa.
 
 4. **Luồng restore COLD**
-   - Khi truy cập segment COLD, backend dùng `splitWindowStatus(...)` để tách phần segment cần restore ra khỏi range lớn và đặt status `RESTORING`.
-   - Khi restore xong về cache, backend gọi `updateStatusByExactWindow(...)` trả status về `AVAILABLE`; tier/pool vẫn là COLD vì file restore chỉ nằm trong cache tạm.
+   - `restore_jobs` là parent summary; `restore_job_segments` lưu từng segment cần tải và trạng thái bền vững.
+   - Trạng thái restore không sửa `segment_tier_ranges`; tier/pool vẫn là COLD vì file restore chỉ nằm trong cache tạm.
 
 ### 2.5 TierStorageManager
 
@@ -183,12 +184,15 @@ Các bảng job/trạng thái hỗ trợ:
 
 - `tiering_jobs`: di chuyển segment giữa tier.
 - `restore_jobs`: theo dõi restore segment từ COLD về restore cache tạm.
+- `restore_job_segments`: hàng đợi restore từng segment, có startup recovery và bounded concurrency.
+- `tier_metadata_cleanup_jobs`: outbox cleanup timefile sau khi xóa vật lý.
+- `segment_retention_overrides`: thời hạn gia hạn retention do operator đặt.
 - `storage_alerts`: cảnh báo storage.
 - `protected_videos`: đoạn video được bảo vệ/evidence/locked.
 
 `tiering_jobs` lưu `job_id`, camera/stream/range, source/target tier, source/target pool, status, segment time window, `bytes_total`, `bytes_moved`, `error_message`, `created_at`, `updated_at`.
 
-`restore_jobs` lưu `job_id`, `camera_id`, source/target tier, status, restore time window, `total_bytes`, `processed_bytes`, `reason`, `error_message`, `created_at`, `updated_at`. Job auto-restore dùng `reason=AUTO_RECORD_ACCESS`.
+`restore_jobs` lưu summary parent. Mỗi child trong `restore_job_segments` giữ stream, range, segment path, source pool, bytes và lỗi riêng. Job auto-restore dùng `reason=AUTO_RECORD_ACCESS`.
 
 ## 3. Luồng Cấu Hình
 
@@ -208,7 +212,13 @@ Backend kiểm tra:
 - `MINIO` cần `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key`.
 - `high_watermark_percent < critical_watermark_percent`.
 
-Type/tier còn phải khớp ma trận `pool/options`; `S3` và `ARCHIVE` hiện bị validation từ chối.
+`mount_path`/`network_path` của filesystem pool lưu logical recorder root, không
+chứa `Record::kAppName`. `TierStorageManager::resolveFilePoolDataRoot()` nối app
+directory trước khi register backend, kiểm tra kết nối, tiering hoặc đo dung
+lượng. Nhờ đó bind mount trực tiếp vào `.../record` vẫn có thể cấu hình pool bằng
+root cha mà không làm lệch đường ghi của Recorder.
+
+Type/tier còn phải khớp ma trận `pool/options`; object storage chỉ được chấp nhận khi build có `ENABLE_AWS_SDK`.
 
 Sau khi tạo pool, `TierStorageManager` register pool vào backend tương ứng:
 
@@ -266,7 +276,10 @@ name      = System Default
 source    = SYSTEM_DEFAULT
 ```
 
-Policy này trỏ vào HOT pool mặc định có id `pool-default-hot`. Nếu chưa có HOT pool, backend tạo HOT pool mặc định từ `{Protocol::kMP4SavePath}/{Record::kAppName}` trước, sau đó tạo policy default.
+Policy này trỏ vào HOT pool mặc định có id `pool-default-hot`. Nếu chưa có HOT
+pool, backend lưu `Protocol::kMP4SavePath` làm logical root; effective data root
+là `{Protocol::kMP4SavePath}/{Record::kAppName}`. Sau đó backend tạo policy
+default.
 
 Khi gọi `/media/mserver/storage/policy/removeCamera`, backend chỉ xóa camera-level override trong `camera_policy_assignments`. Camera không được assign cứng về default; `getEffectivePolicy(camera_id)` tự fallback về `policy-system-default`.
 
@@ -323,7 +336,9 @@ MP4Recorder close/rename segment
       size_bytes += file_size
 ```
 
-Định kỳ, `TierStorageManager::backfillHotRangesFromTimeFiles()` đọc timefile bằng `TimeQuery`, decode `TimeBlock.file_path`, resolve HOT pool và merge các HOT range bị thiếu. Backfill bị giới hạn bởi `storage.tier_range_backfill_enabled`, `storage.tier_range_backfill_days`, `storage.tier_range_backfill_chunk_seconds` và `storage.tier_range_backfill_max_cameras_per_cycle`.
+Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery`, decode `TimeBlock.file_path` và resolve HOT pool. Range, segment record và cursor task được commit trong cùng transaction. Vì vậy restart sẽ tiếp tục từ cursor đã commit, replay không nhân đôi metadata, chunk có orphan không tiến cursor và lỗi mở timefile được chuyển sang retry. Lỗi phát sinh bên trong `TimeQuery::getRecordedTimePeriod()` giữ cơ chế tương thích cũ: được xử lý ngầm và trả kết quả đã thu thập được.
+
+Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Task mới luôn bắt đầu từ cửa sổ cấu hình trong `tier_backfill_tasks`.
 
 ## 5. Luồng Chuyển Tầng
 
@@ -336,17 +351,16 @@ Luồng hiện tại theo code:
 1. Reset ticker và ghi log bắt đầu.
 2. Refresh `_pool_cache` từ `storage_pools`.
 3. Gọi `ensureSystemDefaultPolicy()` để đảm bảo policy `policy-system-default` tồn tại.
-4. Gọi `backfillHotRangesFromTimeFiles()` để bù HOT range còn thiếu từ timefile.
-5. Query `tiering_jobs` trạng thái `PENDING` và execute trước.
-6. Lấy danh sách camera có dữ liệu `AVAILABLE`:
+4. Query `tiering_jobs` trạng thái `PENDING` và execute trước. Backfill được dispatcher riêng xử lý nên không kéo dài cycle này.
+5. Lấy danh sách camera có dữ liệu `AVAILABLE`:
    - Từ `segment_tier_ranges.findDistinctAvailableCameras()`.
-7. Với từng camera:
+6. Với từng camera:
    - `getEffectivePolicy(camera_id)`.
    - Nếu có policy hiệu lực, chạy `processCameraTiering(camera_id, policy)`.
    - Chạy `processCameraPressureTiering(camera_id, policy)`.
    - Chạy `enforcePolicyDeleteRetention(camera_id, policy)`.
    - Chạy `enforceCameraArchiveRetention(camera_id, policy)`.
-8. Ghi log thời gian hoàn tất.
+7. Ghi log thời gian hoàn tất.
 
 ### 5.2 Move Theo Tuổi Dữ Liệu
 
@@ -485,7 +499,7 @@ FE gọi:
 GET/POST /media/mserver/storage/camera/summary
 ```
 
-Backend aggregate theo tier từ `segment_tier_ranges`.
+Backend aggregate theo cặp tier/pool từ `segment_tier_ranges`, bỏ `DELETED` và `MISSING`.
 
 ## 7. Luồng Playback Hiện Tại
 
@@ -633,9 +647,9 @@ Nếu có job:
 - Trả lại `job_id` và status hiện tại.
 - Không dispatch thêm worker.
 
-Lưu ý: một job `PENDING` do API `restoreJob/create` tạo cũng thỏa điều kiện này, dù API đó chưa dispatch worker. Đây là giới hạn quan trọng của code hiện tại.
+Job API và job auto-restore đều đi qua cùng durable child queue; unique active index ngăn hai job tải đồng thời cùng một segment.
 
-### 8.4 Tạo Job Và Split Range
+### 8.4 Tạo Parent/Child Job
 
 Nếu chưa có job overlap:
 
@@ -649,24 +663,14 @@ end_time     = segment_start + 60
 reason       = AUTO_RECORD_ACCESS
 ```
 
-Backend gọi:
-
-```cpp
-range_imp.splitWindowStatus(
-    cold_range,
-    segment_start,
-    segment_start + 60,
-    SegmentStatus::RESTORING);
-```
-
-Range lớn được tách thành `before / requested window / after`; chỉ window 60 giây cần tải được đặt `RESTORING`.
+Backend insert atomic một `restore_jobs` parent và một hay nhiều `restore_job_segments` child. Range COLD không bị split hoặc đổi status.
 
 ### 8.5 Thread Và Lifetime
 
 Restore không chạy trên EventPoller/HTTP thread. Backend capture `weak_ptr<TierStorageManager>` rồi dispatch sang:
 
 ```cpp
-WorkThreadPool::Instance().getPoller()->async(...);
+WorkThreadPool::Instance().getExecutor()->async(...);
 ```
 
 Worker lock weak pointer trước khi gọi `executeRestoreSegment(...)`, tránh giữ manager sống cưỡng bức hoặc capture raw `this`.
@@ -676,27 +680,27 @@ Worker lock weak pointer trước khi gọi `executeRestoreSegment(...)`, tránh
 Luồng thực thi:
 
 ```text
-update RestoreJob RUNNING
+claim RestoreJobSegment PENDING -> RUNNING
   -> đảm bảo source object pool đã register
   -> key = makeS3Key(base_path, camera_id, stream_id, segment_path)
   -> restore_path = buildRestoreSegmentPath(...)
   -> tạo restore directory
   -> nếu restore_path đã tồn tại:
-       update DONE bằng file size
-       range RESTORING -> AVAILABLE
+       update child DONE bằng file size
+       tổng hợp trạng thái/progress parent
        return
-  -> download object vào <restore_path>.restore
+  -> download object vào <restore_path>.restore.<job_id>
   -> rename atomic sang <restore_path>
   -> stat file lấy processed_bytes
-  -> update RestoreJob DONE
-  -> range RESTORING -> AVAILABLE
+  -> update child DONE
+  -> tổng hợp trạng thái/progress parent
 ```
 
 Khi register/download/mkdir/rename lỗi:
 
-- Job chuyển `FAILED` và ghi `error_message`.
-- Exact range window được trả về `AVAILABLE` để có thể retry.
-- Partial file `.restore` được xóa ở các nhánh download/rename thất bại.
+- Child chuyển `FAILED`, parent được tổng hợp thành `FAILED` và ghi `error_message`.
+- Range COLD vẫn giữ `AVAILABLE` vì trạng thái restore thuộc durable child queue.
+- Partial file `.restore.<job_id>` được xóa ở các nhánh download/rename thất bại.
 - Code hiện không chuyển range sang `MISSING` khi object download thất bại.
 
 ### 8.7 Object Key Và Restore Path
@@ -733,6 +737,40 @@ Mỗi timer tick, `cleanupRestoreTempFiles()`:
 
 `EXPIRED` là status runtime thực tế của restore job sau cleanup, dù enum `JobStatus` dùng chung chưa khai báo giá trị này.
 
+### 8.9 Cleanup MP4 Không Có Trong TimeFile
+
+`MP4Recorder` ghi segment đang mở bằng tên ẩn `.{filename}.mp4` và chỉ rename sang tên chính thức sau khi đóng file thành công. Nếu tiến trình dừng bất thường, file tạm có thể còn lại nhưng không xuất hiện trong TimeFile, vì vậy backfill và retention dựa trên tier metadata không nhìn thấy file này.
+
+Mỗi maintenance cycle, `cleanupOrphanTemporarySegments()` scan trực tiếp các file-backed HOT pool đang bật để dọn cả file tạm và MP4 hoàn chỉnh không có TimeBlock:
+
+```text
+{pool-data-root}/{camera}/{stream}/{YYYY-MM-DD}/[.]{segment}.mp4
+```
+
+Quy tắc an toàn:
+
+1. Chỉ xét regular file kết thúc bằng `.mp4` và parse được timestamp segment; tên bắt đầu bằng `.` được phân loại là file tạm.
+2. Không đi theo symlink directory và không xóa symlink file.
+3. Ngưỡng cleanup của camera là thời điểm hiện tại trừ retention nhỏ hơn giữa `HOT.retain_until_days` và `keepArchivedMaxFor` khi camera cấu hình giá trị này thủ công (`keepArchivedMaxForAuto=false`, giá trị lớn hơn 0). Khi không có statistic camera, chỉ dùng retention HOT của policy hiệu lực. Policy bị tắt hoặc không có HOT tier hợp lệ thì bỏ qua camera.
+4. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
+5. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
+6. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup mở đúng TimeFile ngày `{MP4SavePath}/{app}/{camera}/{YYYY-MM-DD}.s3db` bằng `TimeQuery`, truy vấn một khoảng gộp cho nhóm camera/stream/ngày và giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment.
+7. Nếu TimeFile ngày không tồn tại/không phải regular file, hoặc constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
+8. Ngay trước `unlink`, cleanup kiểm tra lại file bằng `lstat`; với MP4 hoàn chỉnh còn xác nhận device, inode, size và mtime của TimeFile chưa thay đổi để tránh race với block được ghi muộn.
+9. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
+10. File được cleanup không được thêm vào `segment_tier_records`, `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
+
+Các cấu hình:
+
+| Key | Mặc định | Ý nghĩa |
+|---|---:|---|
+| `storage.tier_tmp_cleanup_enabled` | `1` | Bật pass phát hiện MP4 tạm trong HOT filesystem pool |
+| `storage.tier_tmp_cleanup_dry_run` | `1` | Chỉ đếm/log `would_delete`, chưa xóa file |
+| `storage.tier_tmp_cleanup_max_files_per_cycle` | `1000` | Số regular file tối đa được kiểm tra trong một pass |
+| `storage.tier_tmp_cleanup_work_budget_ms` | `500` | Ngân sách thời gian tối đa của một pass |
+
+Rollout nên giữ `dry_run=1` ít nhất hai maintenance cycle để kiểm tra counter `would_delete_files`, sau đó đặt `dry_run=0` để xóa thật. Có thể rollback ngay bằng `tier_tmp_cleanup_enabled=0`; cơ chế này không có schema hoặc metadata cần rollback.
+
 ## 9. Luồng Restore Tích Hợp Với API
 
 ### 9.1 API Resolve Và Quan Sát Job
@@ -756,23 +794,17 @@ BE -> resolve cache path khi job DONE và file cache còn TTL
 
 Các endpoint restore job yêu cầu đồng thời permission playback `1003` và read MediaServer `150301`.
 
-### 9.2 Giới Hạn Của `restoreJob/create`
+### 9.2 Hành Vi Của `restoreJob/create`
 
 `POST /media/mserver/storage/restoreJob/create` hiện:
 
 - Validate camera/time window.
-- Tổng hợp `total_bytes` từ range.
-- Insert row `PENDING`.
+- Resolve các segment COLD/AVAILABLE chính xác từ timefile.
+- Insert atomic parent `restore_jobs` và các child `restore_job_segments`.
+- Dispatch các child theo giới hạn `storage.auto_restore_max_concurrent`.
 - Trả `job_id`.
 
-Endpoint chưa:
-
-- Chọn từng object segment.
-- Split range sang `RESTORING`.
-- Dispatch `executeRestoreSegment()`.
-- Có scheduler riêng để consume restore job `PENDING`.
-
-Vì vậy FE không nên dùng endpoint này như lệnh download production. Job `PENDING` do API tạo còn có thể chặn auto-restore tạo/dispatch job mới cho cùng window.
+Manual restore và auto-restore dùng chung durable queue. Partial unique index trên segment ngăn hai job active cùng tải một object.
 
 ### 9.3 Không Có HTTP Static-File Hook
 
@@ -790,7 +822,7 @@ Nếu bổ sung direct-file restore sau này, cần thiết kế mapping URL -> 
 
 ```text
 AVAILABLE  : có thể phát hoặc restore
-RESTORING  : đang restore từ COLD
+RESTORING  : giá trị legacy; restore mới được biểu diễn ở `restore_job_segments`
 EXPIRED    : hết hạn, chờ duyệt xóa
 DELETED    : đã xóa
 MISSING    : metadata còn nhưng file/object mất
@@ -867,24 +899,34 @@ storage.tier_range_backfill_enabled=1
 storage.tier_range_backfill_days=180
 storage.tier_range_backfill_chunk_seconds=86400
 storage.tier_range_backfill_max_cameras_per_cycle=20
+storage.tier_range_backfill_dispatch_interval_seconds=1
+storage.tier_range_backfill_work_budget_ms=2000
+storage.tier_range_backfill_max_attempts=5
+storage.tier_range_backfill_retry_base_seconds=30
 ```
 
 | Biến | Nơi dùng | Ghi chú |
 |------|----------|---------|
 | `auto_restore_on_record_access` | `handleColdAccessByPath()` | Phải bật mới tạo auto-restore job |
-| `auto_restore_max_concurrent` | Chưa được worker đọc | Đã khai báo nhưng chưa enforce concurrency |
+| `auto_restore_max_concurrent` | `processRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
-| `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa cache/job `DONE` cũ |
+| `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
 | `default_hot_*_watermark_percent` | `ensureDefaultHotPool()` | Watermark cho `pool-default-hot` |
 | `segment_record_ttl_seconds` | `pruneOldMetrics()` | Chỉ prune `segment_tier_records`, không prune range chính |
-| `tier_range_backfill_enabled` | `backfillHotRangesFromTimeFiles()` | Bật/tắt backfill |
-| `tier_range_backfill_days` | Backfill | Cửa sổ lịch sử |
-| `tier_range_backfill_chunk_seconds` | Backfill | Khoảng thời gian xử lý mỗi camera/cycle |
-| `tier_range_backfill_max_cameras_per_cycle` | Backfill | Giới hạn camera mỗi cycle |
+| `tier_range_backfill_enabled` | Backfill dispatcher | Bật/tắt durable backfill |
+| `tier_range_backfill_days` | Đồng bộ task | Cửa sổ lịch sử cố định khi tạo/reset task |
+| `tier_range_backfill_chunk_seconds` | Backfill worker | Khoảng timeline commit nguyên tử mỗi chunk |
+| `tier_range_backfill_max_cameras_per_cycle` | Backfill dispatcher | Số task tối đa mỗi lượt dispatch |
+| `tier_range_backfill_dispatch_interval_seconds` | Backfill timer | Chu kỳ đánh thức dispatcher |
+| `tier_range_backfill_work_budget_ms` | Backfill dispatcher | Time budget tối đa mỗi lượt |
+| `tier_range_backfill_max_attempts` | Backfill retry | Số lỗi tối đa trước khi chuyển `FAILED` |
+| `tier_range_backfill_retry_base_seconds` | Backfill retry | Backoff cơ sở, tăng theo lũy thừa hai |
+
+`tier_backfill_tasks` lưu cursor và các counter `scanned_blocks`, `registered_blocks`, `orphan_blocks`, `indexed_bytes`. Khi task `FAILED`, có thể đưa lại về hàng đợi qua `TierBackfillTaskImp::retryFailed(camera_id)` sau khi đã xử lý nguyên nhân orphan hoặc lỗi mở timefile.
 
 `segment_tier_ranges` là bảng metadata chính của luồng tiering nên không bị cleanup bằng TTL ngắn hạn. Chỉ các range `DELETED/EXPIRED` nên được cleanup bằng retention riêng sau khi không còn cần cho timeline, thống kê hoặc audit.
 
-`storage.restore_save_path` là thư mục restore cache tạm. `storage.restore_ttl_seconds` được áp dụng thông qua `restore_jobs`: job `DONE` quá TTL sẽ được đánh dấu `EXPIRED` sau khi xóa file cache tương ứng.
+`storage.restore_save_path` là thư mục restore cache tạm. `storage.restore_ttl_seconds` được áp dụng thông qua `restore_jobs`: job terminal quá TTL sẽ được đánh dấu `EXPIRED` sau khi xóa exact child cache tương ứng.
 
 ### 12.2 TierStorageManager API Nội Bộ
 
@@ -910,9 +952,9 @@ file_path -> segment identity
   -> query SegmentTierRange by camera_id, stream_id, timestamp
   -> if not found: handled=false
   -> if tier != COLD: handled=false
-  -> if status RESTORING: handled=true, return existing job
-  -> create restore job
-  -> enqueue restore worker
+  -> nếu đã có child PENDING/RUNNING cùng segment: return existing job
+  -> atomic create parent + child
+  -> scheduler claim child theo concurrency limit
   -> handled=true
 ```
 
@@ -941,42 +983,37 @@ return "";
 
 ```cpp
 void TierStorageManager::executeRestoreSegment(...) {
-    restore_imp.updateStatus(job_id, "RUNNING");
+    child_imp.claimPending(job_id, stream_id, segment_path);
 
     pool = source_pool_from_cold_range.pool_id
     key = TierObjectStorage::makeS3Key(pool.base_path, camera_id, stream_id, segment_path)
     restore_path = storage.restore_save_path + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4"
-    local_tmp = restore_path + ".restore"
+    local_tmp = restore_path + ".restore." + job_id
 
     ok = objectStorage.downloadSegment(pool.id, key, local_tmp)
     if (!ok) fail
 
     rename(local_tmp, restore_path)
-    restore_imp.updateStatus(job_id, "DONE", restored_bytes)
-    range_imp.updateStatusByExactWindow(camera_id, stream_id,
-                                        range_start, range_end,
-                                        "AVAILABLE")
+    child_imp.updateResult(job_id, stream_id, segment_path,
+                           "DONE", restored_bytes)
+    aggregateParentRestoreJob(job_id)
 }
 ```
 
 ## 13. Rủi Ro Và Lưu Ý
 
-- Download đã được dispatch sang `WorkThreadPool`, không block EventPoller; tuy nhiên `auto_restore_max_concurrent` chưa được enforce nên vẫn có rủi ro bão I/O.
-- Auto-restore đã chống job `PENDING/RUNNING` overlap, nhưng job `PENDING` do API tạo có thể chặn worker mà không bao giờ được consume.
+- Download được dispatch sang `WorkThreadPool`, không block EventPoller và được giới hạn bởi `storage.auto_restore_max_concurrent`.
+- Manual restore và auto-restore đều được scheduler consume; active child trùng segment bị unique index từ chối.
 - Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; job đã cleanup chuyển sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
-- Khi object MinIO mất, job chuyển `FAILED` nhưng range được trả về `AVAILABLE`, chưa chuyển `MISSING`.
+- Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
-- Nếu DB có HOT pool custom nhưng thiếu `pool-default-hot`, system default policy mới có thể không được tạo.
+- Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
 
 ## 14. Phần Còn Thiếu Theo Code Hiện Tại
 
-1. Nối `restoreJob/create` với worker hoặc bổ sung scheduler consume job `PENDING`.
-2. Enforce `storage.auto_restore_max_concurrent` và bổ sung queue/backpressure.
-3. Quyết định có hỗ trợ direct HTTP static-file restore hay chỉ giữ resolver `TimeBlock`; nếu hỗ trợ cần contract HTTP mới.
-4. Bổ sung checksum/size verification và chuyển range sang `MISSING` khi object thực sự không còn.
-5. Sửa parser record path để hỗ trợ camera record root do policy điều phối.
-6. Sửa bootstrap default policy khi chỉ có HOT pool custom.
-7. Hoàn thiện semantics `expiredSegment/approve`/`extend`: xóa file vật lý và lưu `extend_until` nếu đó là yêu cầu sản phẩm.
-8. Bổ sung metrics/alert cho restore throughput, failure và queue depth; các metric dashboard placeholder hiện vẫn là `0`.
+1. Quyết định có hỗ trợ direct HTTP static-file restore hay chỉ giữ resolver `TimeBlock`; nếu hỗ trợ cần contract HTTP mới.
+2. Bổ sung checksum/size verification và chuyển range sang `MISSING` khi object thực sự không còn.
+3. Sửa parser record path để hỗ trợ camera record root do policy điều phối.
+4. Bổ sung metrics/alert cho restore throughput, failure và queue depth; các metric dashboard placeholder hiện vẫn là `0`.

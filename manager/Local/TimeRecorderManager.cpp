@@ -1,4 +1,5 @@
 #include "TimeRecorderManager.h"
+#include "TimeFileDirtyTracker.h"
 #include "Common/config.h"
 
 using namespace std;
@@ -16,12 +17,18 @@ static onceToken token(
 
 INSTANCE_IMP(TimeRecorderManager)
 
-TimeRecorderManager::TimeRecorderManager() {}
+TimeRecorderManager::TimeRecorderManager() {
+    // Restore the persisted dirty-file set so a restart does not lose track of files
+    // that still need to be rebuilt.
+    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
+    GET_CONFIG(string, appName, Record::kAppName);
+    auto record_path = File::absolutePath(appName, recordPath);
+    TimeFileDirtyTracker::Instance().loadFromDisk(record_path);
+}
 
 TimeRecorderManager::~TimeRecorderManager() {
     std::lock_guard<std::mutex> lock(_mutex);
     _recorders.clear();
-    _sd_recorders.clear();
 }
 
 bool TimeRecorderManager::addBlock(const TimeBlock &block) {
@@ -31,37 +38,24 @@ bool TimeRecorderManager::addBlock(const TimeBlock &block) {
         return false;
     }
 
-    auto type = block.is_replay() ? RecorderType::LOCAL_SD : RecorderType::LOCAL;
-
-    TimeRecorder::Ptr recorder = getRecorder(device_id, type);
-    auto next_open_time = recorder->getNextOpenTime();
-    if (next_open_time > 0 && next_open_time <= block.start_time()) {
-        // Create new time file if needed
-        recorder = addRecorder(device_id);
-    }
+    TimeRecorder::Ptr recorder = getRecorder(device_id);
 
     // Input time block
-    if (type == RecorderType::LOCAL_SD) return recorder->inputSDBlock(block);
     return recorder->inputBlock(block);
 }
 
-TimeRecorder::Ptr TimeRecorderManager::getRecorder(const string &device_id, RecorderType type) {
+TimeRecorder::Ptr TimeRecorderManager::getRecorder(const string &device_id) {
     CHECK(!device_id.empty());
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        std::unordered_map<std::string, TimeRecorder::Ptr>* recorders = nullptr;
-        switch (type) {
-            case RecorderType::LOCAL:       recorders = &_recorders;    break;
-            case RecorderType::LOCAL_SD:    recorders = &_sd_recorders; break;
-        }
-        auto it = recorders->find(device_id);
-        if (it != recorders->end())
+        auto it = _recorders.find(device_id);
+        if (it != _recorders.end())
             return it->second;
     }
     return addRecorder(device_id);
 }
 
-TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id, RecorderType type) {
+TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id) {
     GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
     GET_CONFIG(string, appName, Record::kAppName);
     auto record_path = File::absolutePath(appName, recordPath);
@@ -75,30 +69,20 @@ TimeRecorder::Ptr TimeRecorderManager::addRecorder(const string &device_id, Reco
     TraceL << "Created TimeRecorder for device: " << device_id;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        std::unordered_map<std::string, TimeRecorder::Ptr>* recorders = nullptr;
-        switch (type) {
-            case RecorderType::LOCAL:       recorders = &_recorders;    break;
-            case RecorderType::LOCAL_SD:    recorders = &_sd_recorders; break;
+        if (_recorders.find(device_id) != _recorders.end()) {
+            _recorders.erase(device_id);
         }
-        if (recorders->find(device_id) != recorders->end()) {
-            recorders->erase(device_id);
-        }
-        recorders->emplace(device_id, recorder);
+        _recorders.emplace(device_id, recorder);
     }
     return recorder;
 }
 
-bool TimeRecorderManager::removeRecorder(const string &device_id, RecorderType type) {
+bool TimeRecorderManager::removeRecorder(const string &device_id) {
     TimeRecorder::Ptr recorder;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        std::unordered_map<std::string, TimeRecorder::Ptr>* recorders = nullptr;
-        switch (type) {
-            case RecorderType::LOCAL:       recorders = &_recorders;    break;
-            case RecorderType::LOCAL_SD:    recorders = &_sd_recorders; break;
-        }
-        auto it = recorders->find(device_id);
-        if (it == recorders->end()) {
+        auto it = _recorders.find(device_id);
+        if (it == _recorders.end()) {
             return false;
         }
         recorder = it->second;
@@ -106,12 +90,7 @@ bool TimeRecorderManager::removeRecorder(const string &device_id, RecorderType t
     // todo:  remove files associated with this time recorder
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        std::unordered_map<std::string, TimeRecorder::Ptr>* recorders = nullptr;
-        switch (type) {
-            case RecorderType::LOCAL:       recorders = &_recorders;  break;
-            case RecorderType::LOCAL_SD:    recorders = &_sd_recorders;     break;
-        }
-        recorders->erase(device_id);
+        _recorders.erase(device_id);
     }
     TraceL << "Removed TimeRecorder for device: " << device_id;
     return true;

@@ -234,7 +234,7 @@ extern const std::string kBroadcastSyncBookmarkIndex;
 #define BroadcastSyncBookmarkIndexArgs const std::string &origin_urls, const std::vector<std::string> &bm_ids, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
 
 extern const std::string kBroadcastSyncTimeline;
-#define BroadcastSyncTimelineArgs const std::string &origin_urls, const std::string &camera_id, const uint64_t &start_time, const uint64_t &end_time, const int &period_type, const int &detail, const bool &include_motion, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
+#define BroadcastSyncTimelineArgs const std::string &origin_urls, const std::string &camera_id, const uint64_t &start_time, const uint64_t &end_time, const int &period_type, const int &detail, const bool &include_motion, const bool &include_status, const std::string &jwt_token, const Broadcast::OnResInvoker &invoker
 
 extern const std::string kBroadcastSyncThumbnail;
 #define BroadcastSyncThumbnailArgs const std::string &origin_urls, const std::string &camera_id, const std::string &stream_id, const std::string &pos_time, const std::string &jwt_token, const mediakit::HttpSession::HttpResponseInvoker &invoker
@@ -629,8 +629,6 @@ extern const std::string kNetAdapter;
 // Set rtp transport type, options are 0 (tcp, default), 1 (udp), 2 (multicast)
 // Set method: player[PlayerBase::kRtpType] = 0/1/2;
 extern const std::string kRtpType;
-// Set method: player[PlayerBase::kRtpMode] = 0/1 (0-live, 1-replay);
-extern const std::string kRtpMode;
 // Whether the RTSP player sends signaling heartbeat or RTCP heartbeat, options are 0 (both), 1 (RTCP heartbeat), 2 (signaling heartbeat)
 // Set method: player[PlayerBase::kRtspBeatType] = 0/1/2;
 extern const std::string kRtspBeatType;
@@ -732,6 +730,22 @@ extern const std::string kTierRangeBackfillDays;
 extern const std::string kTierRangeBackfillChunkSeconds;
 // Maximum cameras processed by backfill on each tiering cycle.
 extern const std::string kTierRangeBackfillMaxCamerasPerCycle;
+// Interval between background backfill dispatch attempts.
+extern const std::string kTierRangeBackfillDispatchIntervalSeconds;
+// Maximum wall-clock time spent by one backfill dispatch.
+extern const std::string kTierRangeBackfillWorkBudgetMs;
+// Maximum consecutive attempts for one task cursor before marking it failed.
+extern const std::string kTierRangeBackfillMaxAttempts;
+// Base delay used by exponential retry backoff.
+extern const std::string kTierRangeBackfillRetryBaseSeconds;
+// Enable cleanup of abandoned hidden MP4 recorder files in file-backed HOT pools.
+extern const std::string kTierTmpCleanupEnabled;
+// Report stable stale temporary MP4 files without deleting them.
+extern const std::string kTierTmpCleanupDryRun;
+// Maximum regular files inspected by one temporary MP4 cleanup pass.
+extern const std::string kTierTmpCleanupMaxFilesPerCycle;
+// Maximum wall-clock time spent by one temporary MP4 cleanup pass.
+extern const std::string kTierTmpCleanupWorkBudgetMs;
 
 } // namespace Storage
 

@@ -207,9 +207,37 @@ class StoragePolicyImp : public StoragePolicyRepository {
 public:
     using Ptr = std::shared_ptr<StoragePolicyImp>;
 
-    bool add(const StoragePolicy &policy)    { return save(policy, true); }
-    bool update(const StoragePolicy &policy) { return updateById(policy); }
+    bool add(StoragePolicy policy) {
+        if (!normalize(policy, true))
+            return false;
+        return save(policy, true);
+    }
+
+    bool update(StoragePolicy policy) {
+        if (!normalize(policy, false))
+            return false;
+        return updateById(policy);
+    }
+
     bool remove(const std::string &id)       { return deleteByPolicyId(id); }
+
+private:
+    static bool normalize(StoragePolicy &policy, bool creating) {
+        if (policy.id.empty() || policy.name.empty())
+            return false;
+        if (policy.tiers_json.empty())
+            policy.tiers_json = "[]";
+        if (policy.delete_policy_json.empty())
+            policy.delete_policy_json = "{}";
+        if (policy.advanced_rules_json.empty())
+            policy.advanced_rules_json = "{}";
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        if (creating && policy.created_at <= 0)
+            policy.created_at = now;
+        if (policy.updated_at <= 0)
+            policy.updated_at = now;
+        return true;
+    }
 };
 
 } // namespace managerkit

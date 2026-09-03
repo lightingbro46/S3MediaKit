@@ -39,14 +39,6 @@ public:
      */
     bool addTrack(const Track::Ptr & track) override;
 
-    /**
-     * Override the wall-clock time used to name the very next file created.
-     * Pass 0 to clear the override (use current time).
-     * Useful for event records that include backfilled GOP history so that
-     * the first file name reflects the actual content start time.
-     */
-    void setNextFileTime(time_t t) { _next_file_time = t; }
-
 private:
     void createFile();
     void closeFile();
@@ -55,8 +47,14 @@ private:
 private:
     bool _have_video = false;
     size_t _max_second;
-    time_t _next_file_time = 0; // 0 = use ::time(NULL)
-    time_t _next_replay_file_time_offset = 0;
+    /**
+     * Override the wall-clock time used to name the very next file created.
+     * Pass 0 to clear the override (use current time).
+     * Useful for event records that include backfilled GOP history so that
+     * the first file name reflects the actual content start time.
+     */
+    time_t _next_file_time_ms = 0; // 0 = use ::time(NULL)
+    bool _continuous_file_time = false; // true = next file time is continuous from previous file, false = next file time is wall-clock time
     DeltaStamp _delta_stamp[TrackMax];
     std::atomic<uint64_t> _file_index { 0 };
     std::string _full_path_tmp;

@@ -26,6 +26,8 @@ struct StoragePool {
     Optional<std::string> base_path;
     Optional<std::string> access_key;
     Optional<std::string> secret_key_enc;    // stored encrypted (or as-is for now)
+    // Logical filesystem roots. They exclude Record::kAppName; tier storage
+    // resolves the effective data directory before performing filesystem I/O.
     Optional<std::string> mount_path;
     Optional<std::string> network_path;
     int     enabled                    = 1;
@@ -147,23 +149,18 @@ public:
         return SqliteRepository<StoragePool>::removeById(p);
     }
 
-    // Count how many policies reference this pool (for delete guard)
-    int countPolicyReferences(const std::string &pool_id) {
-        auto sql = "SELECT COUNT(*) FROM storage_policies WHERE tiers_json LIKE ?";
-        auto rows = _executor->executeRaw(std::string(sql));
-        // Simple scan approach: load all policies and check JSON
-        // (policy count is small, this is acceptable)
-        auto qRows = _executor->executeRaw(
+    std::vector<std::string> findPolicyTierConfigs() {
+        auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select({"tiers_json"})
-                .from("storage_policies")
-                .where("enabled = ?", {"1"}));
-        int count = 0;
-        for (const auto &row : qRows) {
-            if (!row.empty() && row[0].find(pool_id) != std::string::npos)
-                ++count;
+                .from("storage_policies"));
+        std::vector<std::string> configs;
+        configs.reserve(rows.size());
+        for (const auto &row : rows) {
+            if (!row.empty())
+                configs.push_back(row[0]);
         }
-        return count;
+        return configs;
     }
 };
 
@@ -177,6 +174,26 @@ public:
     bool add(const StoragePool &pool)     { return save(pool, /*include_id=*/true); }
     bool update(const StoragePool &pool)  { return updateById(pool); }
     bool remove(const std::string &id)    { return deleteByPoolId(id); }
+
+    // Policy JSON is domain data. Repository only loads the stored payload;
+    // the facade parses it and performs exact pool-id matching.
+    int countPolicyReferences(const std::string &pool_id) {
+        int count = 0;
+        const auto configs = findPolicyTierConfigs();
+        for (const auto &config : configs) {
+            Json::Value tiers;
+            Json::Reader reader;
+            if (!reader.parse(config, tiers) || !tiers.isArray())
+                continue;
+            for (Json::ArrayIndex i = 0; i < tiers.size(); ++i) {
+                if (tiers[i].isObject() && tiers[i]["pool_id"].asString() == pool_id) {
+                    ++count;
+                    break;
+                }
+            }
+        }
+        return count;
+    }
 };
 
 } // namespace managerkit

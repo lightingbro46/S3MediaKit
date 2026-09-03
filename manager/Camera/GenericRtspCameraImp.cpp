@@ -2,6 +2,7 @@
 #include "server/WebApiErrCode.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
+#include "Local/MediaGapFillManager.h"
 
 using namespace std;
 using namespace toolkit;
@@ -298,6 +299,8 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         caps = &data.get<DeviceCapabilities>();
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
+
+    MediaGapFillManager::Instance().onDeviceStateChanged(old_params.tuple.device_id, connect);
 
     // Emit only on status change (false → true or true → false) or when caps actually changed
     bool is_first_time = _src && (time(nullptr) - _src->getCreateStamp() < 300);

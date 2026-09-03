@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include "Util/File.h"
 #include "Common/config.h"
+#include "Common/Parser.h"
 #include "MP4Recorder.h"
 #include "Thread/WorkThreadPool.h"
 #include "MP4Muxer.h"
@@ -16,6 +17,13 @@ MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max
     // ///record Business Logic//////
     static_cast<MediaTuple &>(_info) = tuple;
     _info.folder = path;
+    auto params = Parser::parseArgs(tuple.params);
+    if (params.find("start_time_ms") != params.end()) {
+        _next_file_time_ms = (time_t)atoi(params["start_time_ms"].data());
+    }
+    if (params.find("continuous") != params.end()) {
+        _continuous_file_time = (bool)atoi(params["continuous"].data());
+    }
     GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
     _max_second = max_second ? max_second : s_max_second;
 }
@@ -30,20 +38,16 @@ MP4Recorder::~MP4Recorder() {
 }
 
 void MP4Recorder::createFile() {
+    if (_continuous_file_time && _muxer) {
+        _next_file_time_ms += _muxer->getDuration();
+    }
     closeFile();
-    time_t file_time = 0;
-    const bool is_replay = start_with(_info.app, kReplayPrefix);
-    if (is_replay && _next_file_time != 0) { // replay mode
-        file_time = _next_file_time + (_next_replay_file_time_offset == 0 ? 0 : (::time(NULL) - _next_replay_file_time_offset));
-        _next_file_time = file_time;
-        _next_replay_file_time_offset = ::time(NULL);
-        size_t pos = _info.folder.find(kReplayPrefix);
-        if (pos != std::string::npos) {
-            _info.folder.erase(pos, kReplayPrefix.size());
-        }
+    time_t file_time;
+    if (_continuous_file_time) {
+        file_time = static_cast<time_t>(_next_file_time_ms / 1000);
     } else {
-        file_time = (_next_file_time != 0) ? _next_file_time : ::time(NULL);
-        _next_file_time = 0; // consume override
+        file_time = (_next_file_time_ms != 0) ? static_cast<time_t>(_next_file_time_ms / 1000) : ::time(NULL);
+        _next_file_time_ms = 0; // consume override
     }
 
     auto date = getTimeStr("%Y-%m-%d", file_time);
@@ -56,8 +60,7 @@ void MP4Recorder::createFile() {
     _info.file_name = file_name;
     _info.file_path = full_path;
     GET_CONFIG(string, appName, Record::kAppName);
-    std::string app = is_replay ? _info.app.substr(kReplayPrefix.size()) : _info.app;
-    _info.url = appName + "/" + app + "/" + _info.stream + "/" + date + "/" + file_name;
+    _info.url = appName + "/" + _info.app + "/" + _info.stream + "/" + date + "/" + file_name;
 
     try {
         _muxer = std::make_shared<MP4Muxer>();
