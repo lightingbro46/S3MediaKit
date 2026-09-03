@@ -87,7 +87,7 @@ const string kRetryDelay = HOOK_FIELD "retry_delay";
 
 static onceToken token([]() {
     mINI::Instance()[kEnable] = true;
-    mINI::Instance()[kTimeoutSec] = 3;
+    mINI::Instance()[kTimeoutSec] = 10;
     // Default hook address is set to empty, using default behavior (e.g. no authentication)
     mINI::Instance()[kOnPublish] = "";
     mINI::Instance()[kOnPlay] = "/api/camera/check-camera-of-user";
@@ -628,6 +628,7 @@ static void reportServerExited() {
 
 // Server keep-alive timer
 static Timer::Ptr g_keepalive_timer;
+static atomic<bool> s_report_keepalive { false };
 static void reportServerKeepalive() {
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
     GET_CONFIG(string, hook_server_keepalive, Hook::kOnServerKeepalive);
@@ -652,6 +653,11 @@ static void reportServerKeepalive() {
             do_http_hook(hook_server_keepalive, body, nullptr);
         });
 #endif
+        if (s_report_keepalive.load()) {
+            WarnL << "Server has reported keepalive. Ignore";
+            return true;
+        }
+        s_report_keepalive = true;
         ArgsType body;
         // Execute hook
         do_http_hook(hook_api_url + hook_server_keepalive, body, [](const Value &obj, const string &err) {
@@ -662,6 +668,7 @@ static void reportServerKeepalive() {
                 TraceL << "hook " << hook_api_url + hook_server_keepalive << " failed:" << err;
                 WarnL << "Report server keepalive failed:" << err;
             }
+            s_report_keepalive = false;
         });
         return true;
     }, nullptr);
