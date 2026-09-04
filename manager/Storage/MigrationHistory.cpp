@@ -14,7 +14,10 @@ namespace managerkit {
 MigrationHistoryImp::~MigrationHistoryImp() {
     GET_CONFIG(bool, keep_migration_sql_files, Database::kKeepMigrationSqlFiles);
     if (!keep_migration_sql_files) {
+        WarnL << "Deleting migration sql files in folder: " << _folder_path;
         removeFile(_folder_path);
+    } else {
+        DebugL << "Keep migration sql files in folder: " << _folder_path;
     }
 }
 

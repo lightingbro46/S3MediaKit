@@ -6,6 +6,7 @@
 #include <algorithm>
 #include "Util/logger.h"
 #include "Util/util.h"
+#include "Common/macros.h"
 
 using namespace std;
 using namespace toolkit;
@@ -323,6 +324,34 @@ std::string StrMediaUtils::make(const StrCaseMap &params) {
         ret += it->first + "=" + it->second;
     }
     return ret;
+}
+
+bool StrMediaUtils::isRelayStream(const std::string &stream) {
+    return !stream.empty() && (stream.find(RELAY_SUFFIX) != std::string::npos);
+}
+
+bool StrMediaUtils::isTranscodeStream(const std::string &stream) {
+    return !stream.empty() && (stream.find(TRANSCODE_SUFFIX) != std::string::npos);
+}
+
+std::string StrMediaUtils::makeRelayStream(const std::string &stream, const std::string &suffix_id) {
+    return isRelayStream(stream) ? stream : (stream + RELAY_SUFFIX + suffix_id);
+}
+
+std::string StrMediaUtils::makeTranscodeStream(const std::string &stream, const std::string &suffix_id) {
+    return isTranscodeStream(stream) ? stream : (stream + TRANSCODE_SUFFIX + suffix_id);
+}
+
+std::string StrMediaUtils::originStream(const std::string &stream) {
+    if (isRelayStream(stream)) {
+        auto pos = stream.find(RELAY_SUFFIX);
+        return stream.substr(0, pos);
+    } 
+    if (isTranscodeStream(stream)) {
+        auto pos = stream.find(TRANSCODE_SUFFIX);
+        return stream.substr(0, pos);
+    }
+    return stream;
 }
 
 } // namespace managerkit

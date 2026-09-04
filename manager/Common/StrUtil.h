@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 #include <json/json.h>
-#include "Common/macros.h"
 #include "Common/Parser.h"
 
 namespace managerkit {
@@ -79,33 +78,15 @@ public:
 
     static std::string make(const mediakit::StrCaseMap &params);
 
-    static bool isRelayStream(const std::string &stream) {
-        return !stream.empty() && (stream.find(RELAY_SUFFIX) != std::string::npos);
-    }
+    static bool isRelayStream(const std::string &stream);
 
-    static bool isTranscodeStream(const std::string &stream) {
-        return !stream.empty() && (stream.find(TRANSCODE_SUFFIX) != std::string::npos);
-    }
+    static bool isTranscodeStream(const std::string &stream);
 
-    static std::string makeRelayStream(const std::string &stream, const std::string &suffix_id = "") {
-        return isRelayStream(stream) ? stream : (stream + RELAY_SUFFIX + suffix_id);
-    }
+    static std::string makeRelayStream(const std::string &stream, const std::string &suffix_id = "");
 
-    static std::string makeTranscodeStream(const std::string &stream, const std::string &suffix_id = "") {
-        return isTranscodeStream(stream) ? stream : (stream + TRANSCODE_SUFFIX + suffix_id);
-    }
+    static std::string makeTranscodeStream(const std::string &stream, const std::string &suffix_id = "");
 
-    static std::string originStream(const std::string &stream) {
-        if (isRelayStream(stream)) {
-            auto pos = stream.find(RELAY_SUFFIX);
-            return stream.substr(0, pos);
-        } 
-        if (isTranscodeStream(stream)) {
-            auto pos = stream.find(TRANSCODE_SUFFIX);
-            return stream.substr(0, pos);
-        }
-        return stream;
-    }
+    static std::string originStream(const std::string &stream);
 };
 
 } // namespace managerkit
