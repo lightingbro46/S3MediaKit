@@ -437,6 +437,8 @@ int start_main(int argc,char *argv[]) {
         uint16_t srtPort = mINI::Instance()[SRT::kPort];
 #endif //defined(ENABLE_SRT)
 
+        installGlobalMonitor();
+        InfoL << "The global monitor interface has been started";
         // Execute migrating database before running other
         migrateDatabase();
         InfoL << "Migrating database has been executed";
@@ -446,8 +448,6 @@ int start_main(int argc,char *argv[]) {
         InfoL << "The http hook interface has been started";
         installManagerHook();
         InfoL << "The manager hook interface has been started";
-        installGlobalMonitor();
-        InfoL << "The global monitor interface has been started";
 
         try {
             // rtsp server, default port 554
