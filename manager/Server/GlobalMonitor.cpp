@@ -23,6 +23,8 @@ namespace GlobalMonitorConfig {
 #define GM_FIELD "globalmonitor."
 const string kMetricsRetentionDays    = GM_FIELD "metrics_retention_days";
 const string kMetricsSampleIntervalSec = GM_FIELD "metrics_sample_interval_sec";
+const string kMountRefreshIntervalSec = GM_FIELD "mount_refresh_interval_seconds";
+const string kMountSnapshotStaleAfterSec = GM_FIELD "mount_snapshot_stale_after_seconds";
 const string kMaxAvailableDevicesByHardware = GM_FIELD "max_available_devices_by_hardware";
 const string kCpuWarningThreshold      = GM_FIELD "cpu_warning_threshold";
 const string kCpuCriticalThreshold     = GM_FIELD "cpu_critical_threshold";
@@ -34,6 +36,8 @@ const string kHddCriticalThreshold     = GM_FIELD "hdd_critical_threshold";
 static onceToken token([]() {
     mINI::Instance()[kMetricsRetentionDays]     = 30;
     mINI::Instance()[kMetricsSampleIntervalSec] = 10;
+    mINI::Instance()[kMountRefreshIntervalSec] = 10;
+    mINI::Instance()[kMountSnapshotStaleAfterSec] = 30;
     mINI::Instance()[kMaxAvailableDevicesByHardware] = 0;
     mINI::Instance()[kCpuWarningThreshold]      = 80.0;
     mINI::Instance()[kCpuCriticalThreshold]     = 90.0;
@@ -79,7 +83,12 @@ void GlobalMonitor::start() {
     // Note: Do not set network threshold
     DebugL << "Start monitoring Network usage";
 
-    _hdd_monitor = std::make_shared<HddMonitor>(_poller);
+    GET_CONFIG(float, mount_refresh_interval_sec, GlobalMonitorConfig::kMountRefreshIntervalSec)
+    if (mount_refresh_interval_sec <= 0) {
+        mount_refresh_interval_sec = 10.0f;
+    }
+    _hdd_monitor = std::make_shared<HddMonitor>(_poller, mount_refresh_interval_sec);
+    _hdd_monitor->start();
     GET_CONFIG(float, default_warning_hdd_threshold, GlobalMonitorConfig::kHddWarningThreshold)
     GET_CONFIG(float, default_critical_hdd_threshold, GlobalMonitorConfig::kHddCriticalThreshold)
     _hdd_monitor->setThreshold(default_warning_hdd_threshold, default_critical_hdd_threshold);
@@ -219,7 +228,30 @@ vector<NetInterfaceInfo> GlobalMonitor::getNetUsage() {
 }
 
 vector<DiskPartition> GlobalMonitor::getHddUsage() {
-    return _hdd_monitor->getCurrentUsage();
+    return getHddSnapshot(false).partitions;
+}
+
+DiskSnapshot GlobalMonitor::getHddSnapshot(bool refresh_if_stale) {
+    if (!_hdd_monitor) {
+        return DiskSnapshot();
+    }
+    auto snapshot = _hdd_monitor->getSnapshot();
+    if (!refresh_if_stale) {
+        return snapshot;
+    }
+    GET_CONFIG(int64_t, stale_after_sec, GlobalMonitorConfig::kMountSnapshotStaleAfterSec)
+    if (stale_after_sec <= 0) {
+        stale_after_sec = 30;
+    }
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (!snapshot.valid || snapshot.refreshed_at <= 0 ||
+        now - snapshot.refreshed_at > stale_after_sec) {
+        if (!_hdd_monitor->refreshNow()) {
+            return DiskSnapshot();
+        }
+        snapshot = _hdd_monitor->getSnapshot();
+    }
+    return snapshot;
 }
 
 ReaderCountInfoMap GlobalMonitor::getReaderUsage() {
@@ -696,39 +728,33 @@ Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to
 }
 
 string GlobalMonitor::findMountPoint(const string& path) {
-    auto hdd_usage = getHddUsage();
-    string best_match;
-    for (const auto& disk : hdd_usage) {
-        string mp = disk.mount_point;
-        if (start_with(path, mp)) { // path starts with mp
-            if (best_match.empty() || mp.size() > best_match.size()) {
-                best_match = mp;
-            }
-        }
-    }
-    TraceL << "Found mountpoint: " << best_match;
-    return best_match;
+    DiskPartition partition;
+    const bool found = findMountPointInfo(path, partition, false);
+    TraceL << "Found mountpoint: " << (found ? partition.mount_point : "");
+    return found ? partition.mount_point : "";
+}
+
+bool GlobalMonitor::findMountPointInfo(const string &path,
+                                       DiskPartition &out_partition,
+                                       bool refresh_if_stale) {
+    return HddMonitor::findMountPoint(
+        getHddSnapshot(refresh_if_stale), path, out_partition);
 }
 
 bool GlobalMonitor::findMountPointUsage(const std::string& path, float &usage_pct, size_t &used_bytes, size_t &total_bytes) {
     usage_pct = 0.0f;
     used_bytes = 0;
     total_bytes = 0;
-    auto hdd_usage = getHddUsage();
-    string best_match;
-    for (const auto& disk : hdd_usage) {
-        string mp = disk.mount_point;
-        if (start_with(path, mp)) { // path starts with mp
-            if (best_match.empty() || mp.size() > best_match.size()) {
-                best_match = mp;
-                usage_pct = disk.usage_pct;
-                used_bytes = disk.used_bytes;
-                total_bytes = disk.total_bytes;
-            }
-        }
+    DiskPartition partition;
+    if (!findMountPointInfo(path, partition, false)) {
+        TraceL << "Found mountpoint: ";
+        return false;
     }
-    TraceL << "Found mountpoint: " << best_match;
-    return !best_match.empty();
+    usage_pct = partition.usage_pct;
+    used_bytes = partition.used_bytes;
+    total_bytes = partition.total_bytes;
+    TraceL << "Found mountpoint: " << partition.mount_point;
+    return true;
 }
 
 static void* s_tag;

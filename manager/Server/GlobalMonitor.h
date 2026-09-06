@@ -25,6 +25,10 @@ namespace GlobalMonitorConfig {
 extern const std::string kMetricsRetentionDays;
 // How often (seconds) to collect and store a metric sample (default 10)
 extern const std::string kMetricsSampleIntervalSec;
+// How often the process mount inventory is refreshed (default 10 seconds).
+extern const std::string kMountRefreshIntervalSec;
+// Maximum cached mount snapshot age before an on-demand refresh (default 30 seconds).
+extern const std::string kMountSnapshotStaleAfterSec;
 // Maximum number of camera devices the server hardware can handle, based on CPU cores, RAM and NIC speed (default 0)
 extern const std::string kMaxAvailableDevicesByHardware;
 // Default warning/critical thresholds used when the management API omits them
@@ -54,6 +58,8 @@ public:
     std::vector<NetInterfaceInfo> getNetUsage();
 
     std::vector<DiskPartition> getHddUsage();
+
+    DiskSnapshot getHddSnapshot(bool refresh_if_stale = false);
 
     std::string getLocalIps();
 
@@ -113,6 +119,10 @@ public:
      * @return Mount point (e.g. "/mnt/storage1") or empty string if not found.
      */
     std::string findMountPoint(const std::string& path);
+
+    bool findMountPointInfo(const std::string &path,
+                            DiskPartition &out_partition,
+                            bool refresh_if_stale = true);
 
     /**
      * Find the mount point for a given path and return its usage statistics.

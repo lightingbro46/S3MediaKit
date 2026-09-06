@@ -95,12 +95,18 @@ void configureProcess(const std::string &root) {
     mINI::Instance()[Database::kDbSavePath] = root + "/db";
     mINI::Instance()[Database::kESCMigrationSavePath] = TIER_TEST_ESC_MIGRATION_DIR;
     mINI::Instance()[Database::kMServerMigrationSavePath] = TIER_TEST_MIGRATION_DIR;
+    mINI::Instance()[Database::kKeepMigrationSqlFiles] = true;
     mINI::Instance()[General::kMediaServerId] = "tier-manager-test";
     mINI::Instance()[Protocol::kMP4SavePath] = root + "/hot";
     mINI::Instance()[Record::kAppName] = "record";
     mINI::Instance()[Storage::kRestoreSavePath] = root + "/restore";
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 0;
     mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 0;
+    mINI::Instance()[Storage::kPoolHealthCheckIntervalSeconds] = 3600;
+    mINI::Instance()[Storage::kPoolHealthFailureThreshold] = 2;
+    mINI::Instance()[Storage::kPoolHealthRecoveryThreshold] = 2;
+    mINI::Instance()[Storage::kPoolHealthStaleAfterSeconds] = 90;
+    mINI::Instance()[Storage::kPoolHealthMetricSnapshotIntervalSeconds] = 300;
 }
 
 void migrateDatabase(const std::string &root) {
@@ -796,9 +802,11 @@ int scenarioProtectedRetention(const std::string &root) {
     require(manager.extendRangeRetention(range_id, now + 86400, "integration test"),
             "Cannot extend range retention");
     manager.runTieringCycle();
+    PoolHealthInfo health;
     require(waitUntil([&]() {
-        return PoolMetricsImp().latestForPool(hot_pools.front().id).timestamp > 0;
-    }, 5000), "Protected retention cycle did not complete health snapshot");
+        return manager.getPoolHealth(hot_pools.front().id, health) &&
+               health.health_status != healthToString(StorageHealth::UNKNOWN);
+    }, 5000), "Protected retention cycle did not complete runtime health check");
     drainWorkThreadPool();
     require(File::fileExist(fixture.source_path), "Protected range was physically deleted");
     auto current = SegmentTierRangeImp().findByRangeIds({range_id});
@@ -1170,6 +1178,84 @@ int scenarioMissingRestoreCacheRequiresRestore(const std::string &root) {
                 result.read_path.empty() && result.tier == tierTypeToString(ColdTier) &&
                 result.pool_id == cold_pool.id && result.range_id == range.range_id,
             "Missing object restore cache did not request restore");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioTracksPoolHealthAndBlocksPlayback(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    const std::string pool_root = root + "/health-pool";
+    makeDirectory(pool_root + "/record");
+    StoragePool pool;
+    pool.id = "health-local-pool";
+    pool.name = "Health local pool";
+    pool.type = poolTypeToString(StoragePoolType::LOCAL_DISK);
+    pool.tier = tierTypeToString(WarmTier);
+    pool.mount_path = Optional<std::string>(pool_root);
+    pool.enabled = 1;
+    pool.health_check_enabled = 1;
+    require(manager.createPool(pool) == pool.id, "Cannot create health-check pool");
+    drainWorkThreadPool();
+
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(manager.getPoolHealth(pool.id, health) &&
+                health.health_status != healthToString(StorageHealth::UNKNOWN) &&
+                health.health_status != healthToString(StorageHealth::OFFLINE),
+            "Successful initial probe did not mark pool online");
+
+    removeTree(pool_root);
+    manager.checkAndRecordPoolHealth();
+    require(manager.getPoolHealth(pool.id, health) &&
+                health.health_status != healthToString(StorageHealth::OFFLINE),
+            "Pool became offline before reaching the failure threshold");
+    manager.checkAndRecordPoolHealth();
+    require(manager.getPoolHealth(pool.id, health) &&
+                health.health_status == healthToString(StorageHealth::OFFLINE) &&
+                !manager.isPoolAvailableForPlayback(pool, nullptr),
+            "Pool was not marked offline after consecutive failures");
+
+    const std::string camera = "camera-offline-playback";
+    const std::string stream = "main";
+    const std::string segment_path = "2026-09-05/10-00-00";
+    const std::string full_path = pool_root + "/record/" + camera + "/" + stream +
+                                  "/" + segment_path + ".mp4";
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRange range;
+    range.range_id = "range-offline-playback";
+    range.camera_id = camera;
+    range.stream_id = stream;
+    range.tier = pool.tier;
+    range.pool_id = pool.id;
+    range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    range.start_time = now - 10;
+    range.end_time = now + 10;
+    range.segment_count = 1;
+    range.size_bytes = 128;
+    require(SegmentTierRangeImp().mergeOrInsert(range), "Cannot seed offline playback range");
+
+    const PlaybackPathResolveResult unavailable =
+        manager.resolvePlaybackSegmentPath(camera, stream, now, full_path);
+    require(!unavailable.ready && unavailable.storage_unavailable &&
+                !unavailable.restore_required && unavailable.read_path.empty() &&
+                unavailable.pool_health_status == healthToString(StorageHealth::OFFLINE),
+            "Playback resolver did not report the offline storage pool");
+
+    makeDirectory(pool_root + "/record");
+    manager.checkAndRecordPoolHealth();
+    require(manager.getPoolHealth(pool.id, health) &&
+                health.health_status == healthToString(StorageHealth::OFFLINE),
+            "Pool recovered before reaching the success threshold");
+    manager.checkAndRecordPoolHealth();
+    require(manager.getPoolHealth(pool.id, health) &&
+                health.health_status != healthToString(StorageHealth::OFFLINE) &&
+                manager.isPoolAvailableForPlayback(pool, nullptr),
+            "Pool did not recover after consecutive successful probes");
 
     manager.stop();
     return 0;
@@ -1715,6 +1801,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "resolve-local-playback-paths") return scenarioResolveLocalPlaybackPaths(root);
         if (name == "reject-unreadable-playback-path") return scenarioRejectUnreadablePlaybackPath(root);
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
+        if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
         if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
@@ -1881,6 +1968,11 @@ TEST(TierStorageManagerIntegrationTest, RejectsUnreadablePlaybackFile) {
 TEST(TierStorageManagerIntegrationTest, RequiresRestoreWhenObjectCacheIsMissing) {
     TempRoot root;
     EXPECT_EQ(0, runChild("missing-restore-cache", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOffline) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pool-health-playback", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, BackfillsAtomicallyAndIdempotently) {

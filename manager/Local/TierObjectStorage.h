@@ -177,17 +177,21 @@ private:
     // One entry per registered pool
     struct PoolEntry {
         std::string pool_id;
+        std::string type;
         std::string endpoint;
         std::string bucket;
         std::string base_path;
         std::string access_key;
         std::shared_ptr<Aws::S3::S3Client> client;
+        std::shared_ptr<Aws::S3::S3Client> health_client;
     };
 
     std::shared_ptr<Aws::S3::S3Client>
     buildClient(const std::string &endpoint,
                 const std::string &access_key,
-                const std::string &secret_key) const;
+                const std::string &secret_key,
+                long request_timeout_ms = 60000,
+                long max_retries = 3) const;
 
     bool ensureBucketExists(const PoolEntry &entry);
 

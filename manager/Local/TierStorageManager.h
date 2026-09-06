@@ -4,6 +4,7 @@
 #define LOCAL_TIERSTORAGEMANAGER_H
 
 #include <atomic>
+#include <condition_variable>
 #include <string>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,8 @@ struct PlaybackPathResolveResult {
     bool restore_required = false;
     bool ready = false;
     bool fallback = false;
+    bool storage_unavailable = false;
+    std::string pool_health_status;
     std::string message;
 };
 
@@ -207,6 +210,16 @@ public:
 
     // Pool health check + metrics snapshot
     void checkAndRecordPoolHealth();
+
+    // Dispatch a lightweight pool-health cycle independently from tiering.
+    void runPoolHealthCycle();
+
+    // Latest in-memory pool health snapshot. Returns false for an unknown pool.
+    bool getPoolHealth(const std::string &pool_id, PoolHealthInfo &out_health) const;
+
+    // Health gate used by playback. Disabled health checks preserve legacy behavior.
+    bool isPoolAvailableForPlayback(const StoragePool &pool,
+                                    PoolHealthInfo *out_health = nullptr) const;
 
     // Dashboard: aggregate summary across all tiers/pools
     Json::Value getDashboardSummary();
@@ -402,6 +415,17 @@ private:
     bool validatePolicyForExecution(const StoragePolicy &policy, std::string &error) const;
 
 private:
+    struct PoolHealthRuntimeState {
+        PoolHealthInfo info;
+        int64_t last_metric_at = 0;
+    };
+
+    struct HealthCycleState {
+        std::mutex mutex;
+        std::condition_variable completed;
+        bool running = false;
+    };
+
     struct TemporaryMp4Observation {
         uint64_t device = 0;
         uint64_t inode = 0;
@@ -419,6 +443,7 @@ private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr       _timer;
     toolkit::Timer::Ptr       _backfill_timer;
+    toolkit::Timer::Ptr       _health_timer;
     toolkit::Ticker           _ticker;
     toolkit::Ticker           _backfill_sync_ticker;
     std::atomic<bool>         _maintenance_running{false};
@@ -428,11 +453,14 @@ private:
     std::atomic<bool>         _backfill_tasks_initialized{false};
 
     mutable std::mutex        _pool_cache_mtx;
+    mutable std::mutex        _pool_health_mtx;
     mutable std::mutex        _range_registration_mtx;
     mutable std::mutex        _restore_dispatch_mtx;
     mutable std::mutex        _temporary_mp4_observations_mtx;
     // In-memory cache of enabled pools (refreshed every tick)
     std::unordered_map<std::string, StoragePool> _pool_cache;
+    std::unordered_map<std::string, PoolHealthRuntimeState> _pool_health_cache;
+    std::shared_ptr<HealthCycleState> _health_cycle_state = std::make_shared<HealthCycleState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
     size_t _temporary_mp4_next_camera_index = 0;
@@ -460,6 +488,9 @@ private:
     void unregisterPoolFileStorage(const std::string &pool_id);
     TierFileStorageBase *fileStorageForPoolType(const std::string &type);
     const TierFileStorageBase *fileStorageForPoolType(const std::string &type) const;
+
+    bool probePoolRuntimeStats(StoragePool &pool, std::string &out_message);
+    void mergePoolRuntimeStats(StoragePool &pool) const;
 };
 
 } // namespace managerkit

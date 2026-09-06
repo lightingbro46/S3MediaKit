@@ -1192,7 +1192,23 @@ class PoolMetricsRepository : public SqliteRepository<PoolMetrics> {
 public:
     PoolMetricsRepository() : SqliteRepository<PoolMetrics>(Database::kMediaServerDb) {}
 
-    bool record(const PoolMetrics &m) { return save(m, true); }
+    bool record(const PoolMetrics &m) {
+        const auto latest = latestForPool(m.pool_id);
+        if (latest.timestamp == m.timestamp) {
+            return _executor->execDML(
+                toolkit::QueryBuilder()
+                    .update(EntityTraits<PoolMetrics>::tableName())
+                    .set({
+                        {"used_bytes", std::to_string(m.used_bytes)},
+                        {"total_bytes", std::to_string(m.total_bytes)},
+                        {"usage_pct", serialize_sql_value(m.usage_pct)},
+                        {"health_status", m.health_status}
+                    })
+                    .where("pool_id = ? AND timestamp = ?",
+                           {m.pool_id, std::to_string(m.timestamp)}));
+        }
+        return save(m, true);
+    }
 
     std::vector<PoolMetrics> findByPool(const std::string &pool_id,
                                         int64_t from_time, int64_t to_time,

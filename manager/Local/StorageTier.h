@@ -103,6 +103,7 @@ inline Json::Value poolTypeSupport(TierType t) {
 // Pool / tier health
 // ===================================================================
 enum class StorageHealth {
+    UNKNOWN,
     OK,
     WARNING,
     HIGH,
@@ -112,12 +113,13 @@ enum class StorageHealth {
 
 inline std::string healthToString(StorageHealth h) {
     switch (h) {
+        case StorageHealth::UNKNOWN:  return "UNKNOWN";
         case StorageHealth::OK:       return "OK";
         case StorageHealth::WARNING:  return "WARNING";
         case StorageHealth::HIGH:     return "HIGH";
         case StorageHealth::CRITICAL: return "CRITICAL";
         case StorageHealth::OFFLINE:  return "OFFLINE";
-        default:                      return "OK";
+        default:                      return "UNKNOWN";
     }
 }
 
@@ -385,11 +387,16 @@ inline PolicyAdvancedRules getSystemDefaultPolicyAdvancedRules() {
 // ===================================================================
 struct PoolHealthInfo {
     std::string pool_id;
-    std::string health_status;   // OK | WARNING | HIGH | CRITICAL | OFFLINE
+    std::string health_status;   // UNKNOWN | OK | WARNING | HIGH | CRITICAL | OFFLINE
     int64_t     used_bytes  = 0;
     int64_t     total_bytes = 0;
     float       usage_pct   = 0.0f;
     int64_t     timestamp   = 0;
+    int64_t     last_success_at = 0;
+    int         consecutive_failures = 0;
+    int         consecutive_successes = 0;
+    bool        stale = true;
+    std::string message;
 };
 
 struct EffectivePolicyResult {

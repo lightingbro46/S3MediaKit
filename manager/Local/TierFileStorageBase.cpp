@@ -4,6 +4,8 @@
 #include "Util/logger.h"
 #include "Util/TimeTicker.h"
 #include "Common/config.h"
+#include "StorageTier.h"
+#include "Server/GlobalMonitor.h"
 
 #include <cerrno>
 #include <cstring>
@@ -116,7 +118,8 @@ bool TierFileStorageBase::ensureDirectory(const std::string &dir) const {
 
 bool TierFileStorageBase::registerPool(const std::string &pool_id,
                                        const std::string &type,
-                                       const std::string &base_path) {
+                                       const std::string &base_path,
+                                       const std::string &expected_mount_path) {
     if (pool_id.empty()) {
         WarnL << storageName() << "::registerPool: pool_id is empty";
         return false;
@@ -134,6 +137,26 @@ bool TierFileStorageBase::registerPool(const std::string &pool_id,
     entry.pool_id = pool_id;
     entry.type = type;
     entry.base_path = normalized;
+    if (type == poolTypeToString(StoragePoolType::NAS) && !expected_mount_path.empty()) {
+        DiskPartition partition;
+        if (!GlobalMonitor::Instance().findMountPointInfo(normalized, partition, true)) {
+            WarnL << storageName() << "::registerPool: mount snapshot is unavailable pool=" << pool_id;
+            return false;
+        }
+        const std::string expected = normalizeBasePath(expected_mount_path);
+        if (partition.mount_point != expected && partition.mount_point != normalized) {
+            WarnL << storageName() << "::registerPool: configured NAS path is not mounted pool="
+                  << pool_id << " expected=" << expected << " actual=" << partition.mount_point;
+            return false;
+        }
+        if (partition.read_only) {
+            WarnL << storageName() << "::registerPool: NAS mount is read-only pool=" << pool_id;
+            return false;
+        }
+        entry.mount_point = partition.mount_point;
+        entry.mount_device = partition.device;
+        entry.mount_filesystem_type = partition.filesystem_type;
+    }
 
     {
         std::lock_guard<std::mutex> lk(_mtx);
@@ -315,6 +338,17 @@ TierPoolStats TierFileStorageBase::getPoolStats(const std::string &pool_id) cons
     PoolEntry entry;
     if (!getPoolEntry(pool_id, entry))
         return stats;
+
+    if (entry.type == poolTypeToString(StoragePoolType::NAS) && !entry.mount_point.empty()) {
+        DiskPartition partition;
+        if (!GlobalMonitor::Instance().findMountPointInfo(entry.base_path, partition, true) ||
+            partition.mount_point != entry.mount_point ||
+            partition.device != entry.mount_device ||
+            partition.filesystem_type != entry.mount_filesystem_type ||
+            partition.read_only) {
+            return stats;
+        }
+    }
 
     struct statvfs vfs{};
     if (::statvfs(entry.base_path.c_str(), &vfs) != 0)

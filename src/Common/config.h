@@ -746,6 +746,16 @@ extern const std::string kTierTmpCleanupDryRun;
 extern const std::string kTierTmpCleanupMaxFilesPerCycle;
 // Maximum wall-clock time spent by one temporary MP4 cleanup pass.
 extern const std::string kTierTmpCleanupWorkBudgetMs;
+// Interval between lightweight storage-pool health probes. Default: 30 seconds.
+extern const std::string kPoolHealthCheckIntervalSeconds;
+// Consecutive failed probes required before an online pool becomes OFFLINE.
+extern const std::string kPoolHealthFailureThreshold;
+// Consecutive successful probes required before an OFFLINE pool recovers.
+extern const std::string kPoolHealthRecoveryThreshold;
+// Maximum age of a health snapshot before playback treats it as unavailable.
+extern const std::string kPoolHealthStaleAfterSeconds;
+// Maximum interval between durable pool metric snapshots when state is stable.
+extern const std::string kPoolHealthMetricSnapshotIntervalSeconds;
 
 } // namespace Storage
 

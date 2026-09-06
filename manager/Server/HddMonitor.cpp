@@ -10,17 +10,12 @@
 #endif
 
 #include "HddMonitor.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace managerkit {
-
-struct DiskStats {
-    int64_t total_bytes = 0;
-    uint64_t free_bytes = 0;
-    uint64_t used_bytes = 0;
-};
 
 #if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
 
@@ -36,7 +31,7 @@ static bool is_read_only(const std::string& options) {
     return false;  // không rõ → mặc định là ghi được
 }
 
-static bool is_virtual_filesystem(const std::string& fstype, const std::string& mount_point, const std::string& options = "") {
+static bool is_virtual_filesystem(const std::string& fstype, const std::string& mount_point) {
     static const std::set<std::string> virtual_fs = {
         "tmpfs", "proc", "sysfs", "devtmpfs", "devpts", "cgroup", "overlay",
         "squashfs", "rpc_pipefs", "securityfs", "pstore", "debugfs",
@@ -45,6 +40,13 @@ static bool is_virtual_filesystem(const std::string& fstype, const std::string& 
 
     // loại hệ thống file ảo
     if (virtual_fs.count(fstype)) return true;
+
+    // Network mounts are storage candidates even when mounted below a path
+    // normally hidden from the system-resource dashboard. Keep read-only
+    // mounts too so consumers can detect a writable mount becoming read-only.
+    DiskPartition partition;
+    partition.filesystem_type = fstype;
+    if (partition.isNetworkFileSystem()) return false;
 
     // bỏ qua cả /snap, /run, /var/lib/docker, v.v.
     // mount point hệ thống
@@ -57,10 +59,6 @@ static bool is_virtual_filesystem(const std::string& fstype, const std::string& 
             return true;
     }
 
-    // tùy chọn readonly
-    if (!options.empty() && is_read_only(options))
-        return true;
-
     return false;
 }
 
@@ -68,10 +66,9 @@ static bool is_virtual_filesystem(const std::string& fstype, const std::string& 
 
 #if defined(__linux__) || defined(__ANDROID__)
 
-static std::vector<DiskPartition> get_disk_partitions() {
-    std::vector<DiskPartition> result;
+static bool get_disk_partitions(std::vector<DiskPartition> &result) {
     FILE* mtab = setmntent("/etc/mtab", "r");
-    if (!mtab) return result;
+    if (!mtab) return false;
 
     struct mntent* ent;
     while ((ent = getmntent(mtab)) != nullptr) {
@@ -80,7 +77,7 @@ static std::vector<DiskPartition> get_disk_partitions() {
         std::string mount_point = ent->mnt_dir;
         std::string opts = ent->mnt_opts;
 
-        if (is_virtual_filesystem(fstype, mount_point, opts)) continue;
+        if (is_virtual_filesystem(fstype, mount_point)) continue;
 
         struct statvfs stat;
         if (statvfs(mount_point.c_str(), &stat) != 0)
@@ -96,30 +93,29 @@ static std::vector<DiskPartition> get_disk_partitions() {
         part.device = ent->mnt_fsname;
         part.mount_point = mount_point;
         part.filesystem_type = fstype;
+        part.read_only = is_read_only(opts);
         part.total_bytes = total;
         part.free_bytes = free;
         part.used_bytes = used;
+        part.usage_pct = total == 0 ? 0.0f : 100.0f * static_cast<float>(used) / static_cast<float>(total);
 
         result.push_back(part);
     }
 
     endmntent(mtab);
-    return result;
+    return true;
 }
 
 #elif defined(__APPLE__)
 
-static std::vector<DiskPartition> get_disk_partitions() {
-    std::vector<DiskPartition> result;
+static bool get_disk_partitions(std::vector<DiskPartition> &result) {
     struct statfs* mounts;
     int count = getmntinfo(&mounts, MNT_NOWAIT);
-    if (count == 0) return result;
+    if (count == 0) return false;
 
     for (int i = 0; i < count; ++i) {
         std::string fstype = mounts[i].f_fstypename;
         std::string mount_point = mounts[i].f_mntonname;
-
-        if ((mounts[i].f_flags & MNT_RDONLY) != 0) continue;
 
         if (is_virtual_filesystem(fstype, mount_point)) continue;
 
@@ -131,20 +127,21 @@ static std::vector<DiskPartition> get_disk_partitions() {
         part.device = mounts[i].f_mntfromname;
         part.mount_point = mount_point;
         part.filesystem_type = fstype;
+        part.read_only = (mounts[i].f_flags & MNT_RDONLY) != 0;
         part.total_bytes = total;
         part.free_bytes = free;
         part.used_bytes = used;
+        part.usage_pct = total == 0 ? 0.0f : 100.0f * static_cast<float>(used) / static_cast<float>(total);
 
         result.push_back(part);
     }
 
-    return result;
+    return true;
 }
 
 #elif defined(_WIN32)
 
-static std::vector<DiskPartition> get_disk_partitions() {
-    std::vector<DiskPartition> result;
+static bool get_disk_partitions(std::vector<DiskPartition> &result) {
 
     DWORD size = GetLogicalDriveStringsA(0, nullptr);
     std::vector<char> buffer(size + 1);
@@ -157,16 +154,16 @@ static std::vector<DiskPartition> get_disk_partitions() {
         if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE)
             continue;
 
-        // Bỏ qua ổ có dung lượng nhỏ hơn 100MB (likely system)
-        if (total_bytes.QuadPart < 100ull * 1024 * 1024)
-            continue;
-
         char fs_name[32];
         if (!GetVolumeInformationA(drive.c_str(), nullptr, 0, nullptr, nullptr, nullptr, fs_name, sizeof(fs_name)))
             continue;
 
         ULARGE_INTEGER free_bytes, total_bytes, total_free;
         if (!GetDiskFreeSpaceExA(drive.c_str(), &free_bytes, &total_bytes, &total_free))
+            continue;
+
+        // Bỏ qua ổ có dung lượng nhỏ hơn 100MB (likely system)
+        if (total_bytes.QuadPart < 100ull * 1024 * 1024)
             continue;
 
         DiskPartition part;
@@ -176,81 +173,139 @@ static std::vector<DiskPartition> get_disk_partitions() {
         part.total_bytes = total_bytes.QuadPart;
         part.free_bytes = total_free.QuadPart;
         part.used_bytes = total_bytes.QuadPart - total_free.QuadPart;
+        part.usage_pct = total_bytes.QuadPart == 0 ? 0.0f
+            : 100.0f * static_cast<float>(part.used_bytes) / static_cast<float>(part.total_bytes);
 
         result.push_back(part);
     }
 
-    return result;
+    return true;
 }
-#endif
-
-static DiskStats get_disk_usage(const std::string& path) {
-    DiskStats usage;
-
-#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
-    struct statvfs stat;
-    if (statvfs(path.c_str(), &stat) != 0) {
-        return usage;  // lỗi → trả 0
-    }
-
-    usage.total_bytes = static_cast<uint64_t>(stat.f_blocks) * stat.f_frsize;
-    usage.free_bytes  = static_cast<uint64_t>(stat.f_bavail) * stat.f_frsize;
-    usage.used_bytes  = usage.total_bytes - usage.free_bytes;
-    return usage;
-
-#elif defined(_WIN32)
-    ULARGE_INTEGER free_bytes_available, total_bytes, total_free_bytes;
-    if (!GetDiskFreeSpaceExA(path.c_str(), &free_bytes_available, &total_bytes, &total_free_bytes)) {
-        return usage;  // lỗi → trả 0
-    }
-
-    usage.total_bytes = total_bytes.QuadPart;
-    usage.free_bytes  = total_free_bytes.QuadPart;
-    usage.used_bytes  = usage.total_bytes - usage.free_bytes;
-    return usage;
-
 #else
-    return usage;  // nền tảng không hỗ trợ
+static bool get_disk_partitions(std::vector<DiskPartition> &) {
+    return false;
+}
 #endif
+
+HddMonitor::HddMonitor(EventPoller::Ptr poller,
+                       float refresh_interval_sec,
+                       const PartitionProvider &provider)
+    : ResourceMonitor(ResourceType::HDD, poller),
+      _refresh_interval_sec(refresh_interval_sec > 0 ? refresh_interval_sec : 10.0f),
+      _provider(provider ? provider : get_disk_partitions) {
 }
 
-void HddCollector::collect() {
-    DiskStats usage = get_disk_usage(_info.name);
-    _info.total_bytes = usage.total_bytes;
-    _info.free_bytes = usage.free_bytes;
-    _info.used_bytes = usage.used_bytes;
-    _info.usage_pct = _info.total_bytes == 0 ? 0.0 : (100.0 * (float)_info.used_bytes / _info.total_bytes);
-
-    onCollect(_info);
+HddMonitor::~HddMonitor() {
+    _stopping = true;
+    _refresh_timer.reset();
 }
 
 void HddMonitor::start() {
-    auto disks = get_disk_partitions();
-    for (const auto &d : disks) {
-        auto collector = std::make_shared<HddCollector>(d.mount_point, _poller);
-        auto alive = _monitor_alive;
-        collector->setOnCollect([this, alive](DiskUsage &info) {
-            if (!alive->load(std::memory_order_acquire)) return;
-            lock_guard<mutex> lck(_mtx);
-            _map_result[info.name].total_bytes = info.total_bytes;
-            _map_result[info.name].free_bytes = info.free_bytes;
-            _map_result[info.name].used_bytes = info.used_bytes;
-            _map_result[info.name].usage_pct = info.usage_pct;
-            emitSystemAlert(info.usage_pct);
-        });
-
-        _map_collector[d.mount_point] = collector;
-        _map_result[d.mount_point] = d;
+    if (_refresh_timer) {
+        return;
     }
+    refreshNow();
+    weak_ptr<HddMonitor> weak_self = shared_from_this();
+    _refresh_timer = std::make_shared<Timer>(
+        _refresh_interval_sec,
+        [weak_self]() {
+            auto self = weak_self.lock();
+            if (!self || self->_stopping) {
+                return false;
+            }
+            self->dispatchRefresh();
+            return true;
+        },
+        _poller);
+}
+
+void HddMonitor::dispatchRefresh() {
+    if (_stopping || _refresh_running.exchange(true)) {
+        return;
+    }
+    weak_ptr<HddMonitor> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        struct RefreshGuard {
+            std::atomic<bool> &running;
+            explicit RefreshGuard(std::atomic<bool> &flag) : running(flag) {}
+            ~RefreshGuard() { running = false; }
+        } guard(self->_refresh_running);
+        if (!self->_stopping) {
+            self->refreshNow();
+        }
+    });
+}
+
+bool HddMonitor::refreshNow() {
+    std::lock_guard<std::mutex> refresh_lock(_refresh_mtx);
+    std::vector<DiskPartition> partitions;
+    if (!_provider(partitions)) {
+        WarnL << "Failed to refresh disk mount snapshot";
+        return false;
+    }
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    for (auto &partition : partitions) {
+        while (partition.mount_point.size() > 1 && partition.mount_point.back() == '/') {
+            partition.mount_point.pop_back();
+        }
+        partition.last_seen_at = now;
+    }
+
+    {
+        lock_guard<mutex> lck(_mtx);
+        DiskSnapshot next;
+        next.partitions.swap(partitions);
+        next.refreshed_at = now;
+        next.generation = _snapshot.generation + 1;
+        next.valid = true;
+        _snapshot = next;
+    }
+
+    const auto snapshot = getSnapshot();
+    for (const auto &partition : snapshot.partitions) {
+        emitSystemAlert(partition.usage_pct);
+    }
+    return true;
+}
+
+DiskSnapshot HddMonitor::getSnapshot() {
+    lock_guard<mutex> lck(_mtx);
+    return _snapshot;
 }
 
 vector<DiskPartition> HddMonitor::getCurrentUsage() {
-    lock_guard<mutex> lck(_mtx);
-    vector<DiskPartition> ret;
-    for (const auto &it : _map_result) {
-        ret.push_back(it.second);
+    return getSnapshot().partitions;
+}
+
+bool HddMonitor::findMountPoint(const DiskSnapshot &snapshot,
+                                const std::string &path,
+                                DiskPartition &out_partition) {
+    if (!snapshot.valid || path.empty()) {
+        return false;
     }
-    return ret;
+    bool found = false;
+    for (const auto &partition : snapshot.partitions) {
+        const std::string &mount_point = partition.mount_point;
+        if (mount_point.empty()) {
+            continue;
+        }
+        const bool belongs = mount_point == "/"
+            ? path[0] == '/'
+            : path == mount_point ||
+              (path.size() > mount_point.size() &&
+               path.compare(0, mount_point.size(), mount_point) == 0 &&
+               path[mount_point.size()] == '/');
+        if (belongs && (!found || mount_point.size() > out_partition.mount_point.size())) {
+            out_partition = partition;
+            found = true;
+        }
+    }
+    return found;
 }
 
 } // namespace managerkit

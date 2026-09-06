@@ -12,6 +12,7 @@
  */
 
 #include <algorithm>
+#include <set>
 
 #include "Manager.h"
 #include "WebApi.h"
@@ -1389,6 +1390,22 @@ void registerStorageApis() {
             return;
         }
 
+        for (const auto &r : matched) {
+            if (pool_map.find(r.pool_id) == pool_map.end()) {
+                Json::Value data;
+                data["status"] = "POOL_NOT_FOUND";
+                data["tier"] = r.tier;
+                data["pool_id"] = r.pool_id;
+                data["restore_required"] = false;
+                data["job_created"] = false;
+                data["protocol"] = protocol;
+                val["data"] = data;
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND,
+                                    "Storage pool referenced by segment metadata was not found");
+                return;
+            }
+        }
+
         RestoreJobImp restore_imp;
         auto jobs = restore_imp.queryOverlapping(camera_id, start_time, end_time, 20);
         const RestoreJob *covering_done = nullptr;
@@ -1407,6 +1424,49 @@ void registerStorageApis() {
                  j.status == jobStatusToString(JobStatus::RUNNING))) {
                 active_job = &j;
             }
+        }
+
+        Json::Value unavailable_pools = Json::arrayValue;
+        Json::Value unavailable_pool_ids = Json::arrayValue;
+        std::set<std::string> checked_pool_ids;
+        bool has_unknown_pool = false;
+        for (const auto &r : matched) {
+            if (!checked_pool_ids.insert(r.pool_id).second)
+                continue;
+            const auto pool_it = pool_map.find(r.pool_id);
+            const StoragePool &pool = pool_it->second;
+            if (covering_done && poolTypeIsObjectStorage(pool.type))
+                continue;
+
+            PoolHealthInfo health;
+            if (TierStorageManager::Instance().isPoolAvailableForPlayback(pool, &health))
+                continue;
+
+            Json::Value item;
+            item["pool_id"] = r.pool_id;
+            item["health_status"] = health.health_status;
+            item["last_health_check"] = static_cast<Json::Int64>(health.timestamp);
+            unavailable_pools.append(item);
+            unavailable_pool_ids.append(r.pool_id);
+            if (health.stale || health.health_status == healthToString(StorageHealth::UNKNOWN))
+                has_unknown_pool = true;
+        }
+
+        if (!unavailable_pools.empty()) {
+            Json::Value data;
+            data["status"] = has_unknown_pool ? "STORAGE_STATUS_UNKNOWN" : "STORAGE_OFFLINE";
+            data["tier"] = tier;
+            data["restore_required"] = false;
+            data["job_created"] = false;
+            data["retryable"] = true;
+            data["offline_pool_ids"] = unavailable_pool_ids;
+            data["pools"] = unavailable_pools;
+            data["protocol"] = protocol;
+            val["data"] = data;
+            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_OFFLINE,
+                                has_unknown_pool ? "Storage pool health status is unknown or stale"
+                                                 : "Storage pool is offline");
+            return;
         }
 
         if (restore_required && !covering_done) {

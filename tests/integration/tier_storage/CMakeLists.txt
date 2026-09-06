@@ -65,6 +65,7 @@ foreach(manager_case
     ResolvesExistingEmptyAndSymlinkPlaybackFiles
     RejectsUnreadablePlaybackFile
     RequiresRestoreWhenObjectCacheIsMissing
+    TracksPoolHealthAndBlocksPlaybackWhenOffline
     BackfillsAtomicallyAndIdempotently
     RetriesOrphanChunkWithoutAdvancingCursor
     RetriesWhenCameraHasNoTimeFile

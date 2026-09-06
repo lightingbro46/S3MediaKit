@@ -99,7 +99,7 @@ namespace managerkit {
     XX(CODE_STORAGE_POOL_NOT_FOUND,         "Storage pool not found",          404,         914001) \
     XX(CODE_STORAGE_POLICY_NOT_FOUND,       "Storage policy not found",        404,         914002) \
     XX(CODE_STORAGE_POOL_IN_USE,            "Storage pool in use",             404,         914003) \
-    XX(CODE_STORAGE_POOL_OFFLINE,           "Storage pool offline",            404,         914004) \
+    XX(CODE_STORAGE_POOL_OFFLINE,           "Storage pool offline",            503,         914004) \
     XX(CODE_STORAGE_POOL_CONN_FAILED,       "Storage pool connection failed",  404,         914005) \
     XX(CODE_STORAGE_POLICY_IN_USE,          "Storage policy in use",           404,         914006) \
     XX(CODE_STORAGE_POLICY_INVALID,         "Storage policy invalid",          404,         914007) \

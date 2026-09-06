@@ -565,6 +565,11 @@ const string kTierTmpCleanupEnabled = STORAGE_FIELD "tier_tmp_cleanup_enabled";
 const string kTierTmpCleanupDryRun = STORAGE_FIELD "tier_tmp_cleanup_dry_run";
 const string kTierTmpCleanupMaxFilesPerCycle = STORAGE_FIELD "tier_tmp_cleanup_max_files_per_cycle";
 const string kTierTmpCleanupWorkBudgetMs = STORAGE_FIELD "tier_tmp_cleanup_work_budget_ms";
+const string kPoolHealthCheckIntervalSeconds = STORAGE_FIELD "pool_health_check_interval_seconds";
+const string kPoolHealthFailureThreshold = STORAGE_FIELD "pool_health_failure_threshold";
+const string kPoolHealthRecoveryThreshold = STORAGE_FIELD "pool_health_recovery_threshold";
+const string kPoolHealthStaleAfterSeconds = STORAGE_FIELD "pool_health_stale_after_seconds";
+const string kPoolHealthMetricSnapshotIntervalSeconds = STORAGE_FIELD "pool_health_metric_snapshot_interval_seconds";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -592,6 +597,11 @@ static onceToken token([]() {
     mINI::Instance()[kTierTmpCleanupDryRun] = 1;
     mINI::Instance()[kTierTmpCleanupMaxFilesPerCycle] = 1000;
     mINI::Instance()[kTierTmpCleanupWorkBudgetMs] = 500;
+    mINI::Instance()[kPoolHealthCheckIntervalSeconds] = 30;
+    mINI::Instance()[kPoolHealthFailureThreshold] = 2;
+    mINI::Instance()[kPoolHealthRecoveryThreshold] = 2;
+    mINI::Instance()[kPoolHealthStaleAfterSeconds] = 90;
+    mINI::Instance()[kPoolHealthMetricSnapshotIntervalSeconds] = 300;
 });
 
 } // namespace Storage

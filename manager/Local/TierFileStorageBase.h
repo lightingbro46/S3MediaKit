@@ -18,7 +18,8 @@ public:
 
     bool registerPool(const std::string &pool_id,
                       const std::string &type,
-                      const std::string &base_path);
+                      const std::string &base_path,
+                      const std::string &expected_mount_path = "");
 
     void unregisterPool(const std::string &pool_id);
 
@@ -62,6 +63,9 @@ protected:
         std::string pool_id;
         std::string type;
         std::string base_path;
+        std::string mount_point;
+        std::string mount_device;
+        std::string mount_filesystem_type;
     };
 
     virtual const char *storageName() const = 0;

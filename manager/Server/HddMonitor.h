@@ -3,7 +3,9 @@
 
 #include <string>
 #include <memory>
+#include <functional>
 #include <unordered_map>
+#include <vector>
 #include "json/json.h"
 #include "ResourceMonitor.h"
 #include "Util/TimeTicker.h"
@@ -27,11 +29,16 @@ struct DiskPartition {
     uint64_t free_bytes = 0;
     uint64_t used_bytes = 0;
     float usage_pct = 0.0f;
+    bool read_only = false;
+    int64_t last_seen_at = 0;
 
     Json::Value toJson() const {
         Json::Value dv;
         dv["name"]      = device;
         dv["mount"]     = mount_point;
+        dv["filesystem_type"] = filesystem_type;
+        dv["read_only"] = read_only;
+        dv["last_seen_at"] = static_cast<Json::Int64>(last_seen_at);
         dv["used"]      = (Json::UInt64)used_bytes;
         dv["total"]     = (Json::UInt64)total_bytes;
         dv["used_pct"]  = sanitize_for_json(usage_pct);
@@ -47,36 +54,47 @@ struct DiskPartition {
     }
 };
 
-class HddCollector : public MetricCollector<DiskUsage> {
-public:
-    using Ptr = std::shared_ptr<HddCollector>;
-    HddCollector(const std::string &name, toolkit::EventPoller::Ptr poller) 
-        : MetricCollector(poller) {
-        _info.name = name;
-    }
-
-private:
-    void collect() override;
-
-private:
-    DiskUsage _info;
+struct DiskSnapshot {
+    std::vector<DiskPartition> partitions;
+    int64_t refreshed_at = 0;
+    uint64_t generation = 0;
+    bool valid = false;
 };
 
-class HddMonitor : public ResourceMonitor {
+class HddMonitor : public ResourceMonitor,
+                   public std::enable_shared_from_this<HddMonitor> {
 public:
     using Ptr = std::shared_ptr<HddMonitor>;
-    HddMonitor(toolkit::EventPoller::Ptr poller) : ResourceMonitor(ResourceType::HDD, poller) {
-        start();
-    }
+    using PartitionProvider = std::function<bool(std::vector<DiskPartition> &)>;
+
+    explicit HddMonitor(toolkit::EventPoller::Ptr poller,
+                        float refresh_interval_sec = 10.0f,
+                        const PartitionProvider &provider = PartitionProvider());
+    ~HddMonitor() override;
+
+    void start() override;
+
+    bool refreshNow();
+
+    DiskSnapshot getSnapshot();
 
     std::vector<DiskPartition> getCurrentUsage();
 
-private:
-    void start() override;
+    static bool findMountPoint(const DiskSnapshot &snapshot,
+                               const std::string &path,
+                               DiskPartition &out_partition);
 
 private:
-    std::unordered_map<std::string, HddCollector::Ptr> _map_collector;
-    std::unordered_map<std::string, DiskPartition> _map_result;
+    void dispatchRefresh();
+
+private:
+    float _refresh_interval_sec = 10.0f;
+    PartitionProvider _provider;
+    toolkit::Timer::Ptr _refresh_timer;
+    std::mutex _refresh_mtx;
+    DiskSnapshot _snapshot;
+    std::atomic<bool> _refresh_running{false};
+    std::atomic<bool> _stopping{false};
 };
 
 } // namespace managerkit

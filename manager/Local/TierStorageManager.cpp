@@ -424,7 +424,11 @@ bool TierStorageManager::registerPoolFileStorage(const StoragePool &pool) {
         return false;
     }
 
-    return storage->registerPool(pool.id, pool.type, path);
+    const std::string expected_mount =
+        pool.type == poolTypeToString(StoragePoolType::NAS) && pool.health_check_enabled
+            ? resolveFilePoolMountRoot(pool)
+            : "";
+    return storage->registerPool(pool.id, pool.type, path, expected_mount);
 }
 
 void TierStorageManager::unregisterPoolFileStorage(const std::string &pool_id) {
@@ -623,6 +627,20 @@ void TierStorageManager::start() {
     ensureDefaultHotPool();
     ensureSystemDefaultPolicy();
 
+    {
+        StoragePoolImp imp;
+        std::lock_guard<std::mutex> lk(_pool_health_mtx);
+        _pool_health_cache.clear();
+        for (const auto &p : imp.queryAll()) {
+            if (!p.enabled || !p.health_check_enabled)
+                continue;
+            auto &state = _pool_health_cache[p.id];
+            state.info.pool_id = p.id;
+            state.info.health_status = healthToString(StorageHealth::UNKNOWN);
+            state.info.stale = true;
+        }
+    }
+
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
     // Run every 5 minutes (300 s)
     _timer = std::make_shared<Timer>(
@@ -652,6 +670,21 @@ void TierStorageManager::start() {
         },
         _poller);
 
+    GET_CONFIG(float, health_interval, Storage::kPoolHealthCheckIntervalSeconds);
+    if (health_interval <= 0)
+        health_interval = 30.0f;
+    _health_timer = std::make_shared<Timer>(
+        health_interval,
+        [weak_self]() -> bool {
+            auto self = weak_self.lock();
+            if (!self)
+                return false;
+            self->runPoolHealthCycle();
+            return true;
+        },
+        _poller);
+    runPoolHealthCycle();
+
     InfoL << "TierStorageManager started";
 }
 
@@ -659,6 +692,12 @@ void TierStorageManager::stop() {
     _stopping = true;
     _timer.reset();
     _backfill_timer.reset();
+    _health_timer.reset();
+    {
+        std::unique_lock<std::mutex> lk(_health_cycle_state->mutex);
+        while (_health_cycle_state->running)
+            _health_cycle_state->completed.wait(lk);
+    }
     _backfill_tasks_initialized = false;
     {
         std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
@@ -1239,11 +1278,32 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
             ret.restore_required = false;
             ret.message = "Resolved to restore cache";
         } else {
+            PoolHealthInfo health;
+            if (!isPoolAvailableForPlayback(pool, &health)) {
+                ret.read_path.clear();
+                ret.ready = false;
+                ret.restore_required = false;
+                ret.storage_unavailable = true;
+                ret.pool_health_status = health.health_status;
+                ret.message = "Object storage pool is unavailable: " + health.health_status;
+                return ret;
+            }
             ret.read_path.clear();
             ret.ready = false;
             ret.restore_required = true;
             ret.message = "Segment is in object storage and restore cache is not ready";
         }
+        return ret;
+    }
+
+    PoolHealthInfo health;
+    if (!isPoolAvailableForPlayback(pool, &health)) {
+        ret.read_path.clear();
+        ret.ready = false;
+        ret.fallback = false;
+        ret.storage_unavailable = true;
+        ret.pool_health_status = health.health_status;
+        ret.message = "Filesystem storage pool is unavailable: " + health.health_status;
         return ret;
     }
 
@@ -1422,6 +1482,13 @@ std::string TierStorageManager::createPool(StoragePool pool) {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         _pool_cache[pool.id] = pool;
     }
+    {
+        std::lock_guard<std::mutex> lk(_pool_health_mtx);
+        auto &state = _pool_health_cache[pool.id];
+        state = PoolHealthRuntimeState();
+        state.info.pool_id = pool.id;
+        state.info.health_status = healthToString(StorageHealth::UNKNOWN);
+    }
 
     if (pool.enabled) {
         if (poolTypeIsObjectStorage(pool.type))
@@ -1429,6 +1496,9 @@ std::string TierStorageManager::createPool(StoragePool pool) {
         else
             registerPoolFileStorage(pool);
     }
+
+    if (_health_timer)
+        runPoolHealthCycle();
 
     InfoL << "Created storage pool: " << pool.id << " (" << pool.name << ")";
     return pool.id;
@@ -1460,6 +1530,13 @@ bool TierStorageManager::updatePool(const StoragePool &pool) {
             it->second = updated;
         }
     }
+    {
+        std::lock_guard<std::mutex> lk(_pool_health_mtx);
+        auto &state = _pool_health_cache[updated.id];
+        state = PoolHealthRuntimeState();
+        state.info.pool_id = updated.id;
+        state.info.health_status = healthToString(StorageHealth::UNKNOWN);
+    }
 
     // Re-register with the matching storage helper (credentials/path may have changed)
     if (updated.enabled) {
@@ -1474,6 +1551,8 @@ bool TierStorageManager::updatePool(const StoragePool &pool) {
         unregisterPoolObjStorage(updated.id);
         unregisterPoolFileStorage(updated.id);
     }
+    if (_health_timer)
+        runPoolHealthCycle();
     return true;
 }
 
@@ -1506,6 +1585,10 @@ bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_cou
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         _pool_cache.erase(pool_id);
     }
+    {
+        std::lock_guard<std::mutex> lk(_pool_health_mtx);
+        _pool_health_cache.erase(pool_id);
+    }
     unregisterPoolObjStorage(pool_id);
     unregisterPoolFileStorage(pool_id);
     return true;
@@ -1516,18 +1599,8 @@ std::vector<StoragePool> TierStorageManager::listPools(const std::string &tier,
                                                         const std::string &keyword) {
     StoragePoolImp imp;
     auto pools = imp.queryAll(tier, type, keyword);
-    // HTTP/dashboard reads use the latest durable snapshot; live probes run only
-    // inside the maintenance worker or the explicit test-connection endpoint.
-    PoolMetricsImp metrics_imp;
     for (auto &p : pools) {
-        const auto metric = metrics_imp.latestForPool(p.id);
-        if (metric.timestamp <= 0)
-            continue;
-        p.used_bytes = metric.used_bytes;
-        p.total_bytes = metric.total_bytes;
-        p.usage_pct = metric.usage_pct;
-        p.health_status = metric.health_status;
-        p.last_health_check = metric.timestamp;
+        mergePoolRuntimeStats(p);
     }
     return pools;
 }
@@ -1535,7 +1608,7 @@ std::vector<StoragePool> TierStorageManager::listPools(const std::string &tier,
 std::vector<StoragePool> TierStorageManager::getPool(const std::string &pool_id) {
     StoragePoolImp imp;
     auto pools = imp.findByPoolId(pool_id);
-    for (auto &p : pools) fillPoolRuntimeStats(p);
+    for (auto &p : pools) mergePoolRuntimeStats(p);
     return pools;
 }
 
@@ -2194,8 +2267,6 @@ void TierStorageManager::runTieringCycle() {
         try {
             self->_ticker.resetTime();
             InfoL << "Starting tiering cycle";
-
-            self->checkAndRecordPoolHealth();
 
         // Refresh pool cache
         {
@@ -3369,13 +3440,13 @@ void TierStorageManager::updateRestoreParent(const std::string &job_id) {
 // ===================================================================
 // Pool health monitoring
 // ===================================================================
-void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
+bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &out_message) {
+    pool.last_health_check = static_cast<int64_t>(time(nullptr));
     if (poolTypeIsObjectStorage(pool.type)) {
-        // Try live Prometheus scrape / S3 HEAD first
+        if (!_obj_storage.isRegistered(pool.id) && pool.enabled)
+            registerPoolObjStorage(pool);
         if (_obj_storage.isRegistered(pool.id)) {
             auto stats = _obj_storage.getPoolStats(pool.id);
-            pool.last_health_check = static_cast<int64_t>(time(nullptr));
-
             if (stats.is_online) {
                 pool.used_bytes  = static_cast<int64_t>(stats.used_bytes);
                 pool.total_bytes = static_cast<int64_t>(stats.total_bytes);
@@ -3384,28 +3455,19 @@ void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
                       / static_cast<float>(stats.total_bytes)
                     : 0.f;
                 pool.health_status = healthToString(computePoolHealth(pool, pool.usage_pct));
-                return;
+                out_message = "Object storage probe succeeded";
+                return true;
             }
-            // Client registered but offline
-            pool.health_status = healthToString(StorageHealth::OFFLINE);
-            return;
+            out_message = "Object storage connectivity probe failed";
+        } else {
+            out_message = "Object storage client is not registered";
         }
-
-        // Pool not yet registered (e.g. disabled) — fall back to last DB record
-        PoolMetricsImp metrics_imp;
-        auto m = metrics_imp.latestForPool(pool.id);
-        pool.used_bytes        = m.used_bytes;
-        pool.total_bytes       = m.total_bytes;
-        pool.usage_pct         = m.usage_pct;
-        pool.health_status     = m.health_status.empty()
-                                   ? healthToString(StorageHealth::OK)
-                                   : m.health_status;
-        pool.last_health_check = m.timestamp;
-        return;
+        pool.health_status = healthToString(StorageHealth::OFFLINE);
+        return false;
     }
 
     auto file_storage = fileStorageForPoolType(pool.type);
-    if (file_storage && !file_storage->isRegistered(pool.id))
+    if (file_storage && !file_storage->isRegistered(pool.id) && pool.enabled)
         registerPoolFileStorage(pool);
     auto file_stats = file_storage ? file_storage->getPoolStats(pool.id) : TierPoolStats();
     if (file_stats.is_online) {
@@ -3416,27 +3478,19 @@ void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
               / static_cast<float>(file_stats.total_bytes)
             : 0.f;
         pool.health_status = healthToString(computePoolHealth(pool, pool.usage_pct));
-        pool.last_health_check = static_cast<int64_t>(time(nullptr));
-        return;
-    }
-
-    // Fallback: local disk stats from GlobalMonitor.
-    std::string path = configuredPoolDataRoot(pool);
-    if (path.empty()) return;
-
-    auto hdd_usage = GlobalMonitor::Instance().getHddUsage();
-    for (const auto &disk : hdd_usage) {
-        if (toolkit::start_with(path, disk.mount_point)) {
-            pool.used_bytes    = static_cast<int64_t>(disk.used_bytes);
-            pool.total_bytes   = static_cast<int64_t>(disk.total_bytes);
-            pool.usage_pct     = disk.usage_pct;
-            auto health = computePoolHealth(pool, disk.usage_pct);
-            pool.health_status = healthToString(health);
-            pool.last_health_check = static_cast<int64_t>(time(nullptr));
-            return;
-        }
+        out_message = "Filesystem storage probe succeeded";
+        return true;
     }
     pool.health_status = healthToString(StorageHealth::OFFLINE);
+    out_message = file_storage
+        ? "Filesystem storage probe failed"
+        : "Unsupported filesystem storage type";
+    return false;
+}
+
+void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
+    std::string message;
+    probePoolRuntimeStats(pool, message);
 }
 
 StorageHealth TierStorageManager::computePoolHealth(const StoragePool &pool,
@@ -3454,31 +3508,185 @@ void TierStorageManager::checkAndRecordPoolHealth() {
     StoragePoolImp pool_imp;
     PoolMetricsImp metrics_imp;
 
+    GET_CONFIG(int, failure_threshold, Storage::kPoolHealthFailureThreshold);
+    GET_CONFIG(int, recovery_threshold, Storage::kPoolHealthRecoveryThreshold);
+    GET_CONFIG(int64_t, metric_interval, Storage::kPoolHealthMetricSnapshotIntervalSeconds);
+    if (failure_threshold <= 0) failure_threshold = 2;
+    if (recovery_threshold <= 0) recovery_threshold = 2;
+    if (metric_interval <= 0) metric_interval = 300;
+
     auto all_pools = pool_imp.queryAll("", "", "");
     int64_t now = static_cast<int64_t>(time(nullptr));
 
     for (auto &p : all_pools) {
+        if (_stopping) break;
         if (!p.enabled || !p.health_check_enabled) continue;
-        fillPoolRuntimeStats(p);
+        std::string probe_message;
+        const bool online = probePoolRuntimeStats(p, probe_message);
+        if (_stopping) break;
 
-        PoolMetrics m;
-        m.pool_id       = p.id;
-        m.timestamp     = now;
-        m.used_bytes    = p.used_bytes;
-        m.total_bytes   = p.total_bytes;
-        m.usage_pct     = p.usage_pct;
-        m.health_status = p.health_status;
-        metrics_imp.record(m);
-
-        // Refresh cache entry
+        PoolHealthInfo snapshot;
+        bool write_metric = false;
         {
-            std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-            auto it = _pool_cache.find(p.id);
-            if (it != _pool_cache.end()) it->second = p;
+            std::lock_guard<std::mutex> lk(_pool_health_mtx);
+            auto &state = _pool_health_cache[p.id];
+            const std::string previous = state.info.health_status.empty()
+                ? healthToString(StorageHealth::UNKNOWN)
+                : state.info.health_status;
+            state.info.pool_id = p.id;
+            state.info.timestamp = now;
+            state.info.message = probe_message;
+            state.info.stale = false;
+
+            if (online) {
+                state.info.consecutive_failures = 0;
+                ++state.info.consecutive_successes;
+                state.info.last_success_at = now;
+                state.info.used_bytes = p.used_bytes;
+                state.info.total_bytes = p.total_bytes;
+                state.info.usage_pct = p.usage_pct;
+                if (previous != healthToString(StorageHealth::OFFLINE) ||
+                    state.info.consecutive_successes >= recovery_threshold) {
+                    state.info.health_status = p.health_status;
+                } else {
+                    state.info.health_status = previous;
+                }
+            } else {
+                state.info.consecutive_successes = 0;
+                ++state.info.consecutive_failures;
+                if (state.info.consecutive_failures >= failure_threshold)
+                    state.info.health_status = healthToString(StorageHealth::OFFLINE);
+                else
+                    state.info.health_status = previous;
+            }
+
+            const bool changed = previous != state.info.health_status;
+            const bool first_observation = state.last_metric_at <= 0;
+            write_metric = !first_observation &&
+                           (changed || now - state.last_metric_at >= metric_interval);
+            if (first_observation)
+                state.last_metric_at = now;
+            if (write_metric)
+                state.last_metric_at = now;
+            snapshot = state.info;
         }
 
-        DebugL << "Pool health: " << p.id << " [" << p.tier << "] " << p.health_status << " " << p.usage_pct << "%";
+        if (write_metric) {
+            PoolMetrics m;
+            m.pool_id       = snapshot.pool_id;
+            m.timestamp     = now;
+            m.used_bytes    = snapshot.used_bytes;
+            m.total_bytes   = snapshot.total_bytes;
+            m.usage_pct     = snapshot.usage_pct;
+            m.health_status = snapshot.health_status;
+            if (!metrics_imp.record(m))
+                WarnL << "Failed to record pool health metric for " << m.pool_id;
+        }
+
+        DebugL << "Pool health: " << p.id << " [" << p.tier << "] "
+               << snapshot.health_status << " " << snapshot.usage_pct << "%";
     }
+}
+
+void TierStorageManager::runPoolHealthCycle() {
+    auto cycle_state = _health_cycle_state;
+    {
+        std::lock_guard<std::mutex> lk(cycle_state->mutex);
+        if (_stopping || cycle_state->running) {
+            DebugL << "Skip overlapping storage pool health cycle";
+            return;
+        }
+        cycle_state->running = true;
+    }
+
+    weak_ptr<TierStorageManager> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self, cycle_state]() {
+        struct HealthGuard {
+            std::shared_ptr<HealthCycleState> state;
+            explicit HealthGuard(const std::shared_ptr<HealthCycleState> &value) : state(value) {}
+            ~HealthGuard() {
+                std::lock_guard<std::mutex> lk(state->mutex);
+                state->running = false;
+                state->completed.notify_all();
+            }
+        } guard(cycle_state);
+        auto self = weak_self.lock();
+        if (!self)
+            return;
+        if (self->_stopping)
+            return;
+        try {
+            self->checkAndRecordPoolHealth();
+        } catch (const std::exception &ex) {
+            WarnL << "Storage pool health cycle failed: " << ex.what();
+        } catch (...) {
+            WarnL << "Storage pool health cycle failed with unknown error";
+        }
+    });
+}
+
+bool TierStorageManager::getPoolHealth(const std::string &pool_id,
+                                       PoolHealthInfo &out_health) const {
+    {
+        std::lock_guard<std::mutex> lk(_pool_health_mtx);
+        auto it = _pool_health_cache.find(pool_id);
+        if (it == _pool_health_cache.end())
+            return false;
+        out_health = it->second.info;
+    }
+    GET_CONFIG(int64_t, stale_after, Storage::kPoolHealthStaleAfterSeconds);
+    if (stale_after <= 0) stale_after = 90;
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    out_health.stale = out_health.timestamp <= 0 || now - out_health.timestamp > stale_after;
+    return true;
+}
+
+bool TierStorageManager::isPoolAvailableForPlayback(const StoragePool &pool,
+                                                     PoolHealthInfo *out_health) const {
+    PoolHealthInfo health;
+    health.pool_id = pool.id;
+    if (!pool.health_check_enabled) {
+        health.health_status = pool.health_status.empty()
+            ? healthToString(StorageHealth::UNKNOWN) : pool.health_status;
+        health.stale = false;
+        if (out_health) *out_health = health;
+        return true;
+    }
+    if (!pool.enabled) {
+        health.health_status = healthToString(StorageHealth::OFFLINE);
+        health.message = "Storage pool is disabled";
+        health.stale = false;
+        if (out_health) *out_health = health;
+        return false;
+    }
+    if (!getPoolHealth(pool.id, health)) {
+        health.health_status = healthToString(StorageHealth::UNKNOWN);
+        health.stale = true;
+        health.message = "Storage pool has not been checked";
+    }
+    if (out_health) *out_health = health;
+    return !health.stale &&
+           health.health_status != healthToString(StorageHealth::UNKNOWN) &&
+           health.health_status != healthToString(StorageHealth::OFFLINE);
+}
+
+void TierStorageManager::mergePoolRuntimeStats(StoragePool &pool) const {
+    if (!pool.health_check_enabled)
+        return;
+    PoolHealthInfo health;
+    if (!getPoolHealth(pool.id, health)) {
+        if (pool.health_check_enabled) {
+            pool.health_status = healthToString(StorageHealth::UNKNOWN);
+            pool.last_health_check = 0;
+        }
+        return;
+    }
+    pool.used_bytes = health.used_bytes;
+    pool.total_bytes = health.total_bytes;
+    pool.usage_pct = health.usage_pct;
+    pool.health_status = health.stale
+        ? healthToString(StorageHealth::UNKNOWN) : health.health_status;
+    pool.last_health_check = health.timestamp;
 }
 
 // ===================================================================

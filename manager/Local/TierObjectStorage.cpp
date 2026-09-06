@@ -123,7 +123,9 @@ std::string TierObjectStorage::makeS3Key(const std::string &base_path,
 std::shared_ptr<Aws::S3::S3Client>
 TierObjectStorage::buildClient(const std::string &endpoint,
                                 const std::string &access_key,
-                                const std::string &secret_key) const {
+                                const std::string &secret_key,
+                                long request_timeout_ms,
+                                long max_retries) const {
     Aws::Auth::AWSCredentials creds{Aws::String(access_key), Aws::String(secret_key)};
 
     Aws::Client::ClientConfiguration cc;
@@ -133,10 +135,10 @@ TierObjectStorage::buildClient(const std::string &endpoint,
                             : Aws::Http::Scheme::HTTP;
     cc.verifySSL        = false;
     cc.connectTimeoutMs = 5000;
-    cc.requestTimeoutMs = 60000;
+    cc.requestTimeoutMs = request_timeout_ms;
     cc.maxConnections   = 8;
     cc.retryStrategy    = Aws::MakeShared<Aws::Client::StandardRetryStrategy>(
-                              "TierObjStorage", 3L);
+                              "TierObjStorage", max_retries);
 
     // MinIO / Ceph require path-style: bucket in URL path, not virtual host
     return Aws::MakeShared<Aws::S3::S3Client>(
@@ -219,14 +221,14 @@ TierPoolStats TierObjectStorage::scrapeMinioPrometheus(const PoolEntry &entry) c
 
     // Cluster capacity
     auto cluster = httpGet(base + "/minio/v2/metrics/cluster");
-    if (!cluster.empty()) {
-        double total = firstMetric(cluster, "minio_cluster_capacity_raw_total_bytes");
-        double free  = firstMetric(cluster, "minio_cluster_capacity_raw_free_bytes");
-        stats.total_bytes = static_cast<uint64_t>(total);
-        stats.free_bytes  = static_cast<uint64_t>(free);
-        stats.used_bytes  = total > free ? static_cast<uint64_t>(total - free) : 0;
-        stats.is_online   = (total > 0);
-    }
+    if (cluster.empty())
+        return stats;
+    double total = firstMetric(cluster, "minio_cluster_capacity_raw_total_bytes");
+    double free  = firstMetric(cluster, "minio_cluster_capacity_raw_free_bytes");
+    stats.total_bytes = static_cast<uint64_t>(total);
+    stats.free_bytes  = static_cast<uint64_t>(free);
+    stats.used_bytes  = total > free ? static_cast<uint64_t>(total - free) : 0;
+    stats.is_online   = (total > 0);
 
     // Traffic counters
     auto bucket = httpGet(base + "/minio/v2/metrics/bucket");
@@ -256,11 +258,13 @@ bool TierObjectStorage::registerPool(const std::string &pool_id,
 
     PoolEntry entry;
     entry.pool_id   = pool_id;
+    entry.type      = type;
     entry.endpoint  = endpoint;
     entry.bucket    = bucket;
     entry.base_path = base_path;
     entry.access_key = access_key;
     entry.client    = buildClient(endpoint, access_key, secret_key);
+    entry.health_client = buildClient(endpoint, access_key, secret_key, 3000, 0);
 
     bool ok = ensureBucketExists(entry);
 
@@ -625,12 +629,15 @@ TierPoolStats TierObjectStorage::getPoolStats(const std::string &pool_id) {
 
     // MinIO exposes Prometheus at /minio/v2/metrics/cluster
     // Generic S3 (AWS) does not — fall back to HeadBucket connectivity check
-    TierPoolStats stats = scrapeMinioPrometheus(entry);
+    TierPoolStats stats;
+    if (entry.type == "MINIO")
+        stats = scrapeMinioPrometheus(entry);
     if (!stats.is_online) {
         // Try HeadBucket as a connectivity probe
         Aws::S3::Model::HeadBucketRequest req;
         req.SetBucket(entry.bucket.c_str());
-        stats.is_online = entry.client->HeadBucket(req).IsSuccess();
+        auto client = entry.health_client ? entry.health_client : entry.client;
+        stats.is_online = client->HeadBucket(req).IsSuccess();
     }
     return stats;
 }

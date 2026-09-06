@@ -59,7 +59,7 @@ Khi endpoint truyền nhiều permission vào `CHECK_USER_PERMISSION`, `checkPer
 | `914001` | 404 | Pool không tồn tại |
 | `914002` | 404 | Policy không tồn tại |
 | `914003` | 404 | Pool đang được tham chiếu |
-| `914004` | 404 | Pool offline |
+| `914004` | 503 | Pool offline hoặc health snapshot chưa xác định/quá hạn |
 | `914005` | 404 | Kiểm tra kết nối pool thất bại |
 | `914006` | 404 | Policy đang được camera dùng |
 | `914007` | 404 | Policy không hợp lệ |
@@ -514,6 +514,34 @@ RESTORE_REQUIRED/RESTORING:
 ```
 
 Nếu có job overlap, `status=RESTORING`, kèm `job_id`/`restore_job_status`. Response này có HTTP 404 theo error map, không phải 202.
+
+STORAGE_OFFLINE/STORAGE_STATUS_UNKNOWN:
+
+```json
+{
+  "code": 914004,
+  "msg": "Storage pool is offline",
+  "data": {
+    "status": "STORAGE_OFFLINE",
+    "tier": "WARM",
+    "restore_required": false,
+    "job_created": false,
+    "retryable": true,
+    "offline_pool_ids": ["pool-nas-01"],
+    "pools": [{
+      "pool_id": "pool-nas-01",
+      "health_status": "OFFLINE",
+      "last_health_check": 1787562000
+    }],
+    "protocol": "HTTP_MP4"
+  }
+}
+```
+
+Response dùng HTTP 503. Nếu snapshot chưa có hoặc quá hạn, `data.status` là
+`STORAGE_STATUS_UNKNOWN` và `pools[].health_status` là `UNKNOWN`. Pool có
+`health_check_enabled=false` giữ hành vi resolve cũ. Restore cache đã hoàn tất
+vẫn có thể trả `READY` khi object storage nguồn offline.
 
 NOT_FOUND/EXPIRED/DELETED/MISSING trả lần lượt `914016` hoặc `914017` và `data.status` tương ứng.
 

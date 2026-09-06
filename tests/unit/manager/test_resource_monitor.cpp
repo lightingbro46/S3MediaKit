@@ -49,9 +49,14 @@ TEST(ResourceMonitorModelsTest, SerializesDiskAndNetworkSnapshots) {
     disk.used_bytes = 25;
     disk.total_bytes = 100;
     disk.usage_pct = 25.0F;
+    disk.read_only = true;
+    disk.last_seen_at = 1234;
     auto disk_json = disk.toJson();
     EXPECT_EQ("/dev/sda1", disk_json["name"].asString());
     EXPECT_EQ("/data", disk_json["mount"].asString());
+    EXPECT_EQ("EXT4", disk_json["filesystem_type"].asString());
+    EXPECT_TRUE(disk_json["read_only"].asBool());
+    EXPECT_EQ(1234, disk_json["last_seen_at"].asInt64());
     EXPECT_EQ(25U, disk_json["used"].asUInt64());
     EXPECT_EQ("25.00", disk_json["used_pct"].asString());
     EXPECT_FALSE(disk.isNetworkFileSystem());
@@ -71,6 +76,78 @@ TEST(ResourceMonitorModelsTest, SerializesDiskAndNetworkSnapshots) {
     EXPECT_EQ("12.50", net_json["rx_mbps"].asString());
     EXPECT_EQ("0.00", net_json["tx_mbps"].asString());
     EXPECT_FLOAT_EQ(1000, net_json["speed_mbps"].asFloat());
+}
+
+TEST(HddMonitorTest, RefreshReplacesMountInventoryAndPreservesLastGoodSnapshotOnFailure) {
+    int phase = 0;
+    int provider_calls = 0;
+    HddMonitor::PartitionProvider provider = [&](std::vector<DiskPartition> &partitions) {
+        ++provider_calls;
+        if (phase == 2)
+            return false;
+        DiskPartition disk;
+        disk.device = phase == 0 ? "nas-a" : "nas-b";
+        disk.mount_point = phase == 0 ? "/mnt/a" : "/mnt/b";
+        disk.filesystem_type = "nfs4";
+        disk.total_bytes = 100;
+        disk.used_bytes = 25;
+        disk.free_bytes = 75;
+        disk.usage_pct = 25.0F;
+        partitions.push_back(disk);
+        return true;
+    };
+
+    HddMonitor monitor(toolkit::EventPollerPool::Instance().getPoller(), 3600.0F, provider);
+    ASSERT_TRUE(monitor.refreshNow());
+    DiskSnapshot first = monitor.getSnapshot();
+    ASSERT_TRUE(first.valid);
+    ASSERT_EQ(1U, first.partitions.size());
+    EXPECT_EQ("/mnt/a", first.partitions[0].mount_point);
+    EXPECT_GT(first.partitions[0].last_seen_at, 0);
+
+    phase = 1;
+    ASSERT_TRUE(monitor.refreshNow());
+    DiskSnapshot second = monitor.getSnapshot();
+    ASSERT_EQ(1U, second.partitions.size());
+    EXPECT_EQ("/mnt/b", second.partitions[0].mount_point);
+    EXPECT_GT(second.generation, first.generation);
+
+    phase = 2;
+    EXPECT_FALSE(monitor.refreshNow());
+    DiskSnapshot after_failure = monitor.getSnapshot();
+    ASSERT_EQ(1U, after_failure.partitions.size());
+    EXPECT_EQ("/mnt/b", after_failure.partitions[0].mount_point);
+    EXPECT_EQ(second.generation, after_failure.generation);
+    EXPECT_EQ(3, provider_calls);
+}
+
+TEST(HddMonitorTest, FindsLongestMountUsingPathBoundaryWithoutRefreshing) {
+    DiskSnapshot snapshot;
+    snapshot.valid = true;
+    DiskPartition root;
+    root.device = "root";
+    root.mount_point = "/";
+    DiskPartition nas;
+    nas.device = "nas";
+    nas.mount_point = "/mnt/nas";
+    DiskPartition nas2;
+    nas2.device = "nas2";
+    nas2.mount_point = "/mnt/nas2";
+    snapshot.partitions.push_back(root);
+    snapshot.partitions.push_back(nas);
+    snapshot.partitions.push_back(nas2);
+
+    DiskPartition found;
+    ASSERT_TRUE(HddMonitor::findMountPoint(snapshot, "/mnt/nas/camera/file.mp4", found));
+    EXPECT_EQ("nas", found.device);
+    ASSERT_TRUE(HddMonitor::findMountPoint(snapshot, "/mnt/nas2/camera/file.mp4", found));
+    EXPECT_EQ("nas2", found.device);
+    ASSERT_TRUE(HddMonitor::findMountPoint(snapshot, "/mnt/nas-other/file.mp4", found));
+    EXPECT_EQ("root", found.device);
+
+    for (int i = 0; i < 600; ++i) {
+        ASSERT_TRUE(HddMonitor::findMountPoint(snapshot, "/mnt/nas/camera/file.mp4", found));
+    }
 }
 
 TEST(ReaderMonitorTest, TracksLiveAndRecordedReaders) {

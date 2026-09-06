@@ -344,6 +344,11 @@ Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang
 
 `TierStorageManager::runTieringCycle()` chạy định kỳ bằng timer của `TierStorageManager` (hiện 300 giây/lần). Hàm này dispatch async sang `WorkThreadPool`.
 
+Health monitoring không còn phụ thuộc chu kỳ này. `TierStorageManager` dispatch
+một health cycle riêng theo `storage.pool_health_check_interval_seconds`, probe
+theo số pool và cập nhật runtime cache. `pool_metrics` chỉ được ghi khi trạng
+thái thay đổi hoặc đến chu kỳ snapshot để tránh tăng tải SQLite.
+
 ### 5.1 Các bước của một cycle
 
 Luồng hiện tại theo code:
@@ -903,6 +908,13 @@ storage.tier_range_backfill_dispatch_interval_seconds=1
 storage.tier_range_backfill_work_budget_ms=2000
 storage.tier_range_backfill_max_attempts=5
 storage.tier_range_backfill_retry_base_seconds=30
+storage.pool_health_check_interval_seconds=30
+storage.pool_health_failure_threshold=2
+storage.pool_health_recovery_threshold=2
+storage.pool_health_stale_after_seconds=90
+storage.pool_health_metric_snapshot_interval_seconds=300
+globalmonitor.mount_refresh_interval_seconds=10
+globalmonitor.mount_snapshot_stale_after_seconds=30
 ```
 
 | Biến | Nơi dùng | Ghi chú |
@@ -921,6 +933,13 @@ storage.tier_range_backfill_retry_base_seconds=30
 | `tier_range_backfill_work_budget_ms` | Backfill dispatcher | Time budget tối đa mỗi lượt |
 | `tier_range_backfill_max_attempts` | Backfill retry | Số lỗi tối đa trước khi chuyển `FAILED` |
 | `tier_range_backfill_retry_base_seconds` | Backfill retry | Backoff cơ sở, tăng theo lũy thừa hai |
+| `pool_health_check_interval_seconds` | Health timer | Chu kỳ probe nhẹ, độc lập với tiering cycle |
+| `pool_health_failure_threshold` | Health state machine | Số lỗi liên tiếp trước khi chuyển `OFFLINE` |
+| `pool_health_recovery_threshold` | Health state machine | Số lần thành công liên tiếp để phục hồi từ `OFFLINE` |
+| `pool_health_stale_after_seconds` | Playback health gate | Snapshot cũ hơn ngưỡng được coi là `UNKNOWN` |
+| `pool_health_metric_snapshot_interval_seconds` | `pool_metrics` | Chu kỳ ghi snapshot khi trạng thái không đổi |
+| `globalmonitor.mount_refresh_interval_seconds` | `HddMonitor` | Chu kỳ quét lại toàn bộ mount inventory để phát hiện mount/unmount |
+| `globalmonitor.mount_snapshot_stale_after_seconds` | Mount lookup | Snapshot quá ngưỡng sẽ được refresh trực tiếp trước khi probe NAS |
 
 `tier_backfill_tasks` lưu cursor và các counter `scanned_blocks`, `registered_blocks`, `orphan_blocks`, `indexed_bytes`. Khi task `FAILED`, có thể đưa lại về hàng đợi qua `TierBackfillTaskImp::retryFailed(camera_id)` sau khi đã xử lý nguyên nhân orphan hoặc lỗi mở timefile.
 
