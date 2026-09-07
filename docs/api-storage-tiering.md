@@ -576,7 +576,7 @@ Detail gồm `job_id`, `type=RESTORE`, status/progress, camera/tier, time window
 
 Item list/detail gồm `job_id`, status/progress, camera/stream/range, source/target tier/pool, bytes và timestamps. `segment_count`/`processed_segment_count` hiện luôn `0`. Detail thêm `error_code` (`TIERING_JOB_FAILED` khi có message), `error_message`, `retryable`.
 
-Tiering job `PENDING` được thực thi ở cycle 300 giây; không có API run-now.
+Tiering job `PENDING` được transfer dispatcher nhận ngay khi service khởi động, khi cycle tạo job hoặc khi một worker hoàn tất. Số job chạy đồng thời được giới hạn toàn cục và theo source/target pool; không có API run-now.
 
 ## 8. Dashboard
 

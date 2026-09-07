@@ -684,6 +684,7 @@ void TierStorageManager::start() {
         },
         _poller);
     runPoolHealthCycle();
+    dispatchPendingTieringJobs();
 
     InfoL << "TierStorageManager started";
 }
@@ -697,6 +698,11 @@ void TierStorageManager::stop() {
         std::unique_lock<std::mutex> lk(_health_cycle_state->mutex);
         while (_health_cycle_state->running)
             _health_cycle_state->completed.wait(lk);
+    }
+    {
+        std::unique_lock<std::mutex> lk(_transfer_dispatch_state->mutex);
+        while (_transfer_dispatch_state->active_total > 0)
+            _transfer_dispatch_state->completed.wait(lk);
     }
     _backfill_tasks_initialized = false;
     {
@@ -775,33 +781,9 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     }
 
     SegmentTierRangeImp range_imp;
-    SegmentTierImp segment_imp;
     std::string hot_tier = tierTypeToString(HotTier);
     std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
     std::lock_guard<std::mutex> registration_lk(_range_registration_mtx);
-    std::string segment_path;
-    if (!deriveSegmentPathFromFullPath(file_path, camera_id, stream_id, segment_path)) {
-        WarnL << "Cannot derive stable segment identity from " << file_path;
-        return false;
-    }
-    if (segment_imp.exists(camera_id, stream_id, segment_path))
-        return true;
-
-    SegmentTierRecord record;
-    record.camera_id = camera_id;
-    record.stream_id = stream_id;
-    record.segment_path = segment_path;
-    record.tier = hot_tier;
-    record.pool_id = hot_pool.id;
-    record.status = available;
-    record.start_time = start_time;
-    record.end_time = end_time;
-    record.file_size = std::max<int64_t>(0, file_size);
-    record.created_at = static_cast<int64_t>(time(nullptr));
-    record.updated_at = record.created_at;
-
-    if (range_imp.hasCoveringRange(camera_id, stream_id, hot_tier, available, start_time, end_time))
-        return segment_imp.upsert(record);
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     SegmentTierRange range;
@@ -818,9 +800,7 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     range.created_at = now;
     range.updated_at = now;
 
-    bool ok = range_imp.mergeOrInsert(range);
-    if (ok)
-        ok = segment_imp.upsert(record);
+    bool ok = range_imp.registerIfUncovered(range);
     if (ok) {
         DebugL << "Registered HOT segment range camera=" << camera_id
                << " stream=" << stream_id
@@ -906,8 +886,30 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
     const std::string hot_tier = tierTypeToString(HotTier);
     const std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
     std::unordered_set<std::string> seen_segments;
+    std::unordered_map<std::string, size_t> bucket_indexes;
+    std::unordered_map<std::string, std::vector<SegmentTierRange>> existing_by_stream;
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(
+             task.camera_id, chunk.start_time, chunk.end_time)) {
+        existing_by_stream[range.stream_id].push_back(range);
+    }
     for (const auto &block : blocks) {
         ++chunk.scanned_blocks;
+        int64_t block_start = static_cast<int64_t>(block.start_time());
+        int64_t block_end = block_start + std::max<int64_t>(
+            1, static_cast<int64_t>(block.time_len()));
+        bool already_indexed = false;
+        auto existing_it = existing_by_stream.find(block.stream());
+        if (existing_it != existing_by_stream.end()) {
+            for (const auto &range : existing_it->second) {
+                if (range.start_time <= block_start && range.end_time >= block_end) {
+                    already_indexed = true;
+                    break;
+                }
+            }
+        }
+        if (already_indexed)
+            continue;
+
         std::string full_path;
         if (!block.file_path().empty())
             full_path = decodeBase64(block.file_path());
@@ -927,59 +929,46 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
             continue;
         }
 
-        std::string segment_path;
-        if (!deriveSegmentPathFromFullPath(full_path, task.camera_id,
-                                           block.stream(), segment_path)) {
-            ++chunk.orphan_blocks;
-            if (error.empty())
-                error = "Cannot derive segment identity: " + full_path;
-            continue;
-        }
-        std::string identity = block.stream() + "\x1f" + segment_path;
+        std::string identity = block.stream() + "\x1f" + full_path;
         if (!seen_segments.insert(identity).second)
             continue;
 
-        int64_t block_start = static_cast<int64_t>(block.start_time());
-        int64_t block_end = block_start + std::max<int64_t>(
-            1, static_cast<int64_t>(block.time_len()));
         uint64_t raw_size = block.file_size();
         int64_t file_size = raw_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
             ? std::numeric_limits<int64_t>::max()
             : static_cast<int64_t>(raw_size);
         int64_t now = static_cast<int64_t>(time(nullptr));
 
-        SegmentTierRecord record;
-        record.camera_id = task.camera_id;
-        record.stream_id = block.stream();
-        record.segment_path = segment_path;
-        record.tier = hot_tier;
-        record.pool_id = hot_pool.id;
-        record.status = available;
-        record.start_time = block_start;
-        record.end_time = block_end;
-        record.file_size = std::max<int64_t>(0, file_size);
-        record.created_at = now;
-        record.updated_at = now;
-        chunk.records.push_back(record);
-        chunk.indexed_bytes += record.file_size;
-
-        SegmentTierRange range;
-        range.range_id = StrUUID::make_guid(8, "rng");
-        range.camera_id = record.camera_id;
-        range.stream_id = record.stream_id;
-        range.tier = record.tier;
-        range.pool_id = record.pool_id;
-        range.status = record.status;
-        range.start_time = record.start_time;
-        range.end_time = record.end_time;
-        range.segment_count = 1;
-        range.size_bytes = record.file_size;
-        range.created_at = now;
-        range.updated_at = now;
-        chunk.ranges.push_back(range);
+        const int64_t bucket_start = block_start - block_start % 86400;
+        const std::string bucket_key = block.stream() + "\x1f" + hot_pool.id +
+            "\x1f" + std::to_string(bucket_start);
+        auto bucket_it = bucket_indexes.find(bucket_key);
+        if (bucket_it == bucket_indexes.end()) {
+            SegmentTierRange range;
+            range.range_id = StrUUID::make_guid(8, "rng");
+            range.camera_id = task.camera_id;
+            range.stream_id = block.stream();
+            range.tier = hot_tier;
+            range.pool_id = hot_pool.id;
+            range.status = available;
+            range.start_time = block_start;
+            range.end_time = block_end;
+            range.segment_count = 1;
+            range.size_bytes = std::max<int64_t>(0, file_size);
+            range.created_at = now;
+            range.updated_at = now;
+            bucket_indexes[bucket_key] = chunk.ranges.size();
+            chunk.ranges.push_back(range);
+        } else {
+            auto &range = chunk.ranges[bucket_it->second];
+            range.start_time = std::min(range.start_time, block_start);
+            range.end_time = std::max(range.end_time, block_end);
+            ++range.segment_count;
+            range.size_bytes += std::max<int64_t>(0, file_size);
+        }
+        ++chunk.registered_blocks;
+        chunk.indexed_bytes += std::max<int64_t>(0, file_size);
     }
-
-    chunk.registered_blocks = static_cast<int64_t>(chunk.records.size());
     return chunk.orphan_blocks == 0;
 }
 
@@ -1397,11 +1386,19 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
     });
 
     int64_t split_time = 0;
+    int64_t move_count = 0;
+    int64_t move_size = 0;
+    int64_t remain_count = 0;
+    int64_t remain_size = 0;
     for (const auto &seg : segments) {
-        if (seg.end_time <= move_threshold)
+        if (seg.end_time <= move_threshold) {
             split_time = std::max(split_time, seg.end_time);
-        else
-            break;
+            ++move_count;
+            move_size += std::max<int64_t>(0, seg.file_size);
+        } else {
+            ++remain_count;
+            remain_size += std::max<int64_t>(0, seg.file_size);
+        }
     }
     if (split_time <= range.start_time)
         return false;
@@ -1414,25 +1411,16 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
     SegmentTierRange move_piece = range;
     SegmentTierRange remain_piece = range;
     move_piece.end_time = split_time;
+    move_piece.segment_count = move_count;
+    move_piece.size_bytes = move_size;
     move_piece.updated_at = now;
     remain_piece.range_id = StrUUID::make_guid(8, "rng");
     remain_piece.start_time = split_time;
+    remain_piece.segment_count = remain_count;
+    remain_piece.size_bytes = remain_size;
     remain_piece.created_at = now;
     remain_piece.updated_at = now;
-
-    auto refresh_stats = [&](SegmentTierRange &piece) {
-        auto files = collectSegmentFilesForRange(piece);
-        if (files.empty())
-            return false;
-        int64_t size = 0;
-        for (const auto &f : files)
-            size += std::max<int64_t>(0, f.file_size);
-        piece.segment_count = static_cast<int64_t>(files.size());
-        piece.size_bytes = size;
-        return true;
-    };
-
-    if (!refresh_stats(move_piece) || !refresh_stats(remain_piece)) {
+    if (move_piece.segment_count <= 0 || remain_piece.segment_count <= 0) {
         WarnL << "Cannot refresh split range stats, range=" << range.range_id
               << " camera=" << range.camera_id
               << " split_time=" << split_time;
@@ -2280,12 +2268,8 @@ void TierStorageManager::runTieringCycle() {
 
         self->ensureSystemDefaultPolicy();
 
-        // Execute pending jobs first (pick up where we left off)
-        TieringJobImp job_imp;
-        auto pending = job_imp.claimPending();
-        for (auto &job : pending) {
-            self->executePendingJob(job);
-        }
+        // Resume durable work without blocking the maintenance scan.
+        self->dispatchPendingTieringJobs();
 
         // Gather cameras from compact ranges.
         SegmentTierRangeImp range_imp;
@@ -2314,6 +2298,7 @@ void TierStorageManager::runTieringCycle() {
             self->pruneOldMetrics();
             self->cleanupRestoreTempFiles();
             self->cleanupOrphanTemporarySegments();
+            self->dispatchPendingTieringJobs();
             InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
         } catch (const std::exception &ex) {
             WarnL << "Tier storage maintenance cycle failed: " << ex.what();
@@ -2339,6 +2324,9 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
     });
 
     SegmentTierRangeImp range_imp;
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
 
     auto next_enabled_tier = [&](size_t index) -> const PolicyTierConfig * {
         for (size_t j = index + 1; j < tiers.size(); ++j) {
@@ -2371,7 +2359,8 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
                << " source_tier=" << src_tier_cfg.tier
                << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "")
                << " move_threshold=" << getTimeStr("%Y-%m-%d %H:%M:%S", move_threshold);
-        auto ranges = range_imp.findByCameraTierStartedBefore(camera_id, src_tier_cfg.tier, move_threshold);
+        auto ranges = range_imp.findByCameraTierStartedBefore(
+            camera_id, src_tier_cfg.tier, move_threshold, max_ranges_per_cycle);
 
         for (const auto &range : ranges) {
             if (range.pool_id.empty()) continue;
@@ -2451,7 +2440,6 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
            << " for camera " << range.camera_id
            << " [" << src_tier_cfg.tier << " -> " << dst_tier_cfg.tier << "]"
            << " range: " << range.start_time << "-" << range.end_time;
-    executePendingJob(job);
     return true;
 }
 
@@ -2474,6 +2462,9 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
     });
 
     SegmentTierRangeImp range_imp;
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
     auto next_enabled_tier = [&](size_t index) -> const PolicyTierConfig * {
         for (size_t j = index + 1; j < tiers.size(); ++j) {
             if (tiers[j].enabled)
@@ -2512,7 +2503,8 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
         if (dst_pool.usage_pct >= static_cast<float>(dst_pool.critical_watermark_percent))
             continue;
 
-        auto ranges = range_imp.findByCameraTierAndAge(camera_id, src_tier_cfg.tier, stable_threshold);
+        auto ranges = range_imp.findByCameraTierAndAge(
+            camera_id, src_tier_cfg.tier, stable_threshold, max_ranges_per_cycle);
         std::unordered_map<std::string, StoragePool> source_pool_cache;
         std::unordered_map<std::string, int64_t> moved_by_pool;
         std::unordered_map<std::string, bool> reclaimed_pool;
@@ -2571,7 +2563,10 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
         static_cast<int64_t>(delete_policy.delete_after_days) * 86400;
 
     SegmentTierRangeImp range_imp;
-    auto ranges = range_imp.queryByCamera(camera_id, 0, cutoff);
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
+    auto ranges = range_imp.queryByCamera(camera_id, 0, cutoff, max_ranges_per_cycle);
     for (const auto &range : ranges) {
         if (range.end_time > cutoff)
             continue;
@@ -2787,7 +2782,10 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
     if (!params.option.keepArchivedMaxForAuto && params.option.keepArchivedMaxFor > 0) {
         int64_t max_cutoff = now - static_cast<int64_t>(params.option.keepArchivedMaxFor);
         SegmentTierRangeImp range_imp;
-        auto ranges = range_imp.queryByCamera(camera_id, 0, max_cutoff);
+        GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+        if (max_ranges_per_cycle <= 0)
+            max_ranges_per_cycle = 64;
+        auto ranges = range_imp.queryByCamera(camera_id, 0, max_cutoff, max_ranges_per_cycle);
         for (const auto &range : ranges) {
             if (range.end_time > max_cutoff) continue;
             if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
@@ -2825,14 +2823,111 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
         return;
 
     SegmentTierRangeImp range_imp;
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
     for (const auto &pool : pressured_pools) {
-        auto ranges = range_imp.findByTierPoolAndAge(pool.tier, pool.id, delete_protected_cutoff);
+        auto ranges = range_imp.findByCameraTierPoolAndAge(
+            camera_id, pool.tier, pool.id, delete_protected_cutoff,
+            max_ranges_per_cycle);
         for (const auto &range : ranges) {
-            if (range.camera_id != camera_id) continue;
             if (range.end_time > delete_protected_cutoff) continue;
             if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
             expireRangeBestEffort(range);
         }
+    }
+}
+
+void TierStorageManager::dispatchPendingTieringJobs() {
+    if (_stopping)
+        return;
+
+    GET_CONFIG(int, max_concurrent, Storage::kTieringTransferMaxConcurrent);
+    GET_CONFIG(int, max_concurrent_per_pool, Storage::kTieringTransferMaxConcurrentPerPool);
+    if (max_concurrent <= 0)
+        max_concurrent = 4;
+    if (max_concurrent_per_pool <= 0)
+        max_concurrent_per_pool = 2;
+
+    std::vector<TieringJob> dispatch_jobs;
+    auto state = _transfer_dispatch_state;
+    {
+        std::lock_guard<std::mutex> lk(state->mutex);
+        int capacity = max_concurrent - state->active_total;
+        if (capacity <= 0)
+            return;
+
+        TieringJobImp job_imp;
+        auto candidates = job_imp.findByStatus(jobStatusToString(JobStatus::PENDING), std::max(max_concurrent * 32, capacity));
+        for (auto job : candidates) {
+            if (capacity <= 0)
+                break;
+            if (job.source_pool_id.empty() || job.target_pool_id.empty()) {
+                job_imp.transitionStatus(
+                    job.job_id, jobStatusToString(JobStatus::PENDING),
+                    jobStatusToString(JobStatus::FAILED), -1,
+                    "Tiering job has empty source_pool_id or target_pool_id");
+                continue;
+            }
+            const bool same_pool = job.source_pool_id == job.target_pool_id;
+            if (state->active_by_pool[job.source_pool_id] >= max_concurrent_per_pool ||
+                (!same_pool &&
+                 state->active_by_pool[job.target_pool_id] >= max_concurrent_per_pool)) {
+                continue;
+            }
+            if (!job_imp.transitionStatus(
+                    job.job_id, jobStatusToString(JobStatus::PENDING),
+                    jobStatusToString(JobStatus::RUNNING))) {
+                continue;
+            }
+            job.status = jobStatusToString(JobStatus::RUNNING);
+            ++state->active_total;
+            ++state->active_by_pool[job.source_pool_id];
+            if (!same_pool)
+                ++state->active_by_pool[job.target_pool_id];
+            --capacity;
+            dispatch_jobs.push_back(job);
+        }
+    }
+
+    weak_ptr<TierStorageManager> weak_self = shared_from_this();
+    for (auto job : dispatch_jobs) {
+        WorkThreadPool::Instance().getPoller()->async(
+            [weak_self, state, job]() mutable {
+                auto self = weak_self.lock();
+                if (self) {
+                    try {
+                        self->executePendingJob(job);
+                    } catch (const std::exception &ex) {
+                        TieringJobImp().updateStatus(
+                            job.job_id, jobStatusToString(JobStatus::FAILED),
+                            job.bytes_moved, ex.what());
+                    } catch (...) {
+                        TieringJobImp().updateStatus(
+                            job.job_id, jobStatusToString(JobStatus::FAILED),
+                            job.bytes_moved, "Unknown tier transfer error");
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(state->mutex);
+                    --state->active_total;
+                    auto release_pool = [&](const std::string &pool_id) {
+                        auto it = state->active_by_pool.find(pool_id);
+                        if (it == state->active_by_pool.end())
+                            return;
+                        if (--it->second <= 0)
+                            state->active_by_pool.erase(it);
+                    };
+                    release_pool(job.source_pool_id);
+                    if (job.target_pool_id != job.source_pool_id)
+                        release_pool(job.target_pool_id);
+                    state->completed.notify_all();
+                }
+
+                if (self && !self->_stopping)
+                    self->dispatchPendingTieringJobs();
+            });
     }
 }
 
@@ -3025,6 +3120,10 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             }
             return false;
         }
+        if (!range_imp.normalizeRangeById(job_range.range_id, 90, static_cast<int64_t>(time(nullptr)))) {
+            WarnL << "Moved tier range but could not merge adjacent destination ranges: "
+                  << job_range.range_id;
+        }
     }
 
     for (size_t i = 0; i < segments.size(); ++i) {
@@ -3123,6 +3222,10 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
             for (const auto &key : uploaded_keys)
                 _obj_storage.deleteSegment(dst_pool.id, key);
             return false;
+        }
+        if (!range_imp.normalizeRangeById(job_range.range_id, 90, static_cast<int64_t>(time(nullptr)))) {
+            WarnL << "Uploaded tier range but could not merge adjacent destination ranges: "
+                  << job_range.range_id;
         }
     }
 
@@ -3722,7 +3825,10 @@ bool TierStorageManager::retryTieringJob(const std::string &job_id) {
     if (status != jobStatusToString(JobStatus::FAILED) &&
         status != jobStatusToString(JobStatus::CANCELLED))
         return false;
-    return imp.transitionStatus(job_id, status, jobStatusToString(JobStatus::PENDING), 0);
+    bool queued = imp.transitionStatus(job_id, status, jobStatusToString(JobStatus::PENDING), 0);
+    if (queued)
+        dispatchPendingTieringJobs();
+    return queued;
 }
 
 bool TierStorageManager::cancelTieringJob(const std::string &job_id) {
@@ -3918,10 +4024,15 @@ void TierStorageManager::pruneOldMetrics() {
     PoolMetricsImp imp;
     imp.pruneOlderThan(cutoff);
 
-    GET_CONFIG(int64_t, segment_record_ttl_seconds, Storage::kSegmentRecordTTLSeconds);
-    if (segment_record_ttl_seconds > 0) {
-        SegmentTierImp seg_imp;
-        seg_imp.pruneOlderThan(static_cast<int64_t>(time(nullptr)) - segment_record_ttl_seconds);
+    GET_CONFIG(int64_t, tiering_job_retention_days, Storage::kTieringJobRetentionDays);
+    if (tiering_job_retention_days > 0) {
+        TieringJobImp().pruneTerminalOlderThan(static_cast<int64_t>(time(nullptr)) - tiering_job_retention_days * 86400);
+    }
+
+    GET_CONFIG(int64_t, terminal_range_retention_days,
+               Storage::kTieringTerminalRangeRetentionDays);
+    if (terminal_range_retention_days > 0) {
+        SegmentTierRangeImp().pruneDeletedOlderThan(static_cast<int64_t>(time(nullptr)) - terminal_range_retention_days * 86400);
     }
 }
 

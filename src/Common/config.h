@@ -719,9 +719,16 @@ extern const std::string kDefaultHotHighWatermarkPercent;
 // Default hot tier critical watermark percentage, when the hot tier usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the hot tier usage is below this percentage. 
 // The value range is 0~100, and the default value is 90.
 extern const std::string kDefaultHotCriticalWatermarkPercent;
-// TTL (Time To Live) for segment records in seconds, when the segment record is older than this value, it will be deleted according to the file deletion strategy. 
-// The value range is 0~31536000 (1 year), and the default value is 604800 (7 days).
-extern const std::string kSegmentRecordTTLSeconds;
+// Maximum compact ranges processed for one camera/tier in a maintenance cycle.
+extern const std::string kTieringMaxRangesPerCameraCycle;
+// Maximum concurrent tier-transfer jobs across all storage pools.
+extern const std::string kTieringTransferMaxConcurrent;
+// Maximum concurrent tier-transfer jobs touching the same storage pool.
+extern const std::string kTieringTransferMaxConcurrentPerPool;
+// Retention for terminal tiering job history. Zero disables pruning.
+extern const std::string kTieringJobRetentionDays;
+// Retention for DELETED/EXPIRED compact ranges. Zero disables pruning.
+extern const std::string kTieringTerminalRangeRetentionDays;
 // Enable background Timefile-to-TierRange backfill for historical MP4 records.
 extern const std::string kTierRangeBackfillEnabled;
 // Historical window in days for Timefile-to-TierRange backfill. Default: 180 days.

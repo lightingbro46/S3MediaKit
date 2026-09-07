@@ -94,10 +94,13 @@ Hiện backend chỉ resolve camera override rồi fallback về system default;
 
 ### 2.3 SegmentTierRange
 
-Với mô hình mỗi camera ghi 1 segment MP4/phút, 300 camera trong 6 tháng tạo khoảng 77 triệu bản ghi nếu lưu từng segment lâu dài. Vì vậy backend dùng metadata dạng range compact:
+Với mô hình 300 camera, 600 stream ghi 1 segment MP4/phút, 6 tháng tạo khoảng 155 triệu segment. Vì vậy backend dùng metadata dạng range compact:
 
-- `segment_tier_ranges`: bảng chính, lưu trạng thái tier theo khoảng thời gian liên tục.
-- `segment_tier_records`: bảng chi tiết ngắn hạn, dùng hỗ trợ thao tác file-level khi cần; không còn là nguồn chọn camera/tiering chính.
+- `segment_tier_ranges`: nguồn metadata tier duy nhất, lưu trạng thái theo khoảng thời gian liên tục.
+- TimeFile là nguồn file-level để resolve, move, restore và xóa từng MP4 trong range.
+
+Range được giới hạn theo bucket 24 giờ ổn định của `start_time`. Segment liền kề chỉ merge khi cùng camera, stream, tier, pool, status và cùng bucket; một lần split/transfer vì thế không phải đọc toàn bộ cửa sổ retention nhiều tháng.
+Ở trạng thái ổn định, 600 stream trong 180 ngày cần khoảng 108.000 daily range thay vì hàng triệu row file-level.
 
 `segment_tier_ranges` lưu:
 
@@ -336,7 +339,7 @@ MP4Recorder close/rename segment
       size_bytes += file_size
 ```
 
-Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery`, decode `TimeBlock.file_path` và resolve HOT pool. Range, segment record và cursor task được commit trong cùng transaction. Vì vậy restart sẽ tiếp tục từ cursor đã commit, replay không nhân đôi metadata, chunk có orphan không tiến cursor và lỗi mở timefile được chuyển sang retry. Lỗi phát sinh bên trong `TimeQuery::getRecordedTimePeriod()` giữ cơ chế tương thích cũ: được xử lý ngầm và trả kết quả đã thu thập được.
+Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery`, decode `TimeBlock.file_path`, resolve HOT pool và aggregate trực tiếp thành range theo ngày. Range compact và cursor task được commit trong cùng transaction. Vì vậy restart sẽ tiếp tục từ cursor đã commit, replay không nhân đôi metadata, chunk có orphan không tiến cursor và lỗi mở timefile được chuyển sang retry. Lỗi phát sinh bên trong `TimeQuery::getRecordedTimePeriod()` giữ cơ chế tương thích cũ: được xử lý ngầm và trả kết quả đã thu thập được.
 
 Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Task mới luôn bắt đầu từ cửa sổ cấu hình trong `tier_backfill_tasks`.
 
@@ -356,7 +359,7 @@ Luồng hiện tại theo code:
 1. Reset ticker và ghi log bắt đầu.
 2. Refresh `_pool_cache` từ `storage_pools`.
 3. Gọi `ensureSystemDefaultPolicy()` để đảm bảo policy `policy-system-default` tồn tại.
-4. Query `tiering_jobs` trạng thái `PENDING` và execute trước. Backfill được dispatcher riêng xử lý nên không kéo dài cycle này.
+4. Dispatch `tiering_jobs` trạng thái `PENDING` sang worker queue có giới hạn tổng và giới hạn trên từng pool. Copy/upload không chặn maintenance scan; worker hoàn tất sẽ tự dispatch phần backlog tiếp theo.
 5. Lấy danh sách camera có dữ liệu `AVAILABLE`:
    - Từ `segment_tier_ranges.findDistinctAvailableCameras()`.
 6. Với từng camera:
@@ -763,7 +766,7 @@ Quy tắc an toàn:
 7. Nếu TimeFile ngày không tồn tại/không phải regular file, hoặc constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
 8. Ngay trước `unlink`, cleanup kiểm tra lại file bằng `lstat`; với MP4 hoàn chỉnh còn xác nhận device, inode, size và mtime của TimeFile chưa thay đổi để tránh race với block được ghi muộn.
 9. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
-10. File được cleanup không được thêm vào `segment_tier_records`, `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
+10. File được cleanup không được thêm vào `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
 
 Các cấu hình:
 
@@ -899,7 +902,11 @@ storage.restore_save_path=/dev/shm/restore       # Linux
 storage.restore_ttl_seconds=3600
 storage.default_hot_high_watermark_percent=85
 storage.default_hot_critical_watermark_percent=95
-storage.segment_record_ttl_seconds=604800
+storage.tiering_max_ranges_per_camera_cycle=64
+storage.tiering_transfer_max_concurrent=4
+storage.tiering_transfer_max_concurrent_per_pool=2
+storage.tiering_job_retention_days=30
+storage.tiering_terminal_range_retention_days=180
 storage.tier_range_backfill_enabled=1
 storage.tier_range_backfill_days=180
 storage.tier_range_backfill_chunk_seconds=86400
@@ -924,7 +931,11 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
 | `default_hot_*_watermark_percent` | `ensureDefaultHotPool()` | Watermark cho `pool-default-hot` |
-| `segment_record_ttl_seconds` | `pruneOldMetrics()` | Chỉ prune `segment_tier_records`, không prune range chính |
+| `tiering_max_ranges_per_camera_cycle` | Tiering/retention | Giới hạn số range eligible xử lý cho mỗi camera/tier/cycle |
+| `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
+| `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
+| `tiering_job_retention_days` | `pruneOldMetrics()` | Xóa lịch sử job `DONE`/`FAILED`/`CANCELLED` cũ |
+| `tiering_terminal_range_retention_days` | `pruneOldMetrics()` | Xóa range `DELETED`/`EXPIRED` cũ |
 | `tier_range_backfill_enabled` | Backfill dispatcher | Bật/tắt durable backfill |
 | `tier_range_backfill_days` | Đồng bộ task | Cửa sổ lịch sử cố định khi tạo/reset task |
 | `tier_range_backfill_chunk_seconds` | Backfill worker | Khoảng timeline commit nguyên tử mỗi chunk |

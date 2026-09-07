@@ -228,28 +228,18 @@ bool TierBackfillTaskRepository::commitChunkAt(const TierBackfillTask &task,
             return false;
         }
 
-        SegmentTierRepository segment_repository;
         SegmentTierRangeRepository range_repository;
-        if (chunk.records.size() != chunk.ranges.size()) {
-            txn->rollback();
-            return false;
-        }
-        for (size_t index = 0; index < chunk.records.size(); ++index) {
-            const auto &record = chunk.records[index];
+        for (size_t index = 0; index < chunk.ranges.size(); ++index) {
             const auto &range = chunk.ranges[index];
-            // Backfill only absent metadata. Never downgrade a segment that was
-            // already moved to WARM/COLD while historical indexing was running.
-            if (segment_repository.existsWithTxn(
-                    txn, record.camera_id, record.stream_id,
-                    record.segment_path) ||
-                range_repository.hasAnyCoveringRangeWithTxn(
+            // A compact-only backfill must never overwrite data already moved
+            // by tiering while historical indexing was running.
+            if (range_repository.hasAnyCoveringRangeWithTxn(
                     txn, range.camera_id, range.stream_id,
                     range.start_time, range.end_time)) {
                 continue;
             }
             if (!range_repository.mergeNormalizedRangeWithTxn(
-                    range, 90, updated_at, txn) ||
-                !segment_repository.upsertWithTxn(record, txn)) {
+                    range, 90, updated_at, txn)) {
                 txn->rollback();
                 return false;
             }

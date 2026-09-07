@@ -563,11 +563,23 @@ int scenarioRegisterIdempotent(const std::string &root) {
     require(manager.registerHotSegmentRange(camera, stream, path, now - 120, now - 60, 18),
             "Second HOT registration failed");
 
-    SegmentTierImp segment_imp;
     SegmentTierRangeImp range_imp;
-    require(segment_imp.findByCamera(camera).size() == 1, "Duplicate segment row was created");
-    require(range_imp.queryByCamera(camera, now - 180, now).size() == 1,
-            "Duplicate range row was created");
+    auto ranges = range_imp.queryByCamera(camera, now - 180, now);
+    require(ranges.size() == 1 && ranges.front().segment_count == 1 &&
+                ranges.front().size_bytes == 18,
+            "Duplicate registration changed compact range counters");
+
+    require(range_imp.updateTierByRangeId(
+                ranges.front().range_id, tierTypeToString(WarmTier), "warm-pool",
+                segmentStatusToString(SegmentStatus::AVAILABLE)),
+            "Cannot simulate an already-moved range");
+    require(manager.registerHotSegmentRange(camera, stream, path, now - 120, now - 60, 18),
+            "Delayed duplicate registration failed");
+    ranges = range_imp.queryByCamera(camera, now - 180, now);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier) &&
+                ranges.front().pool_id == "warm-pool" &&
+                ranges.front().segment_count == 1 && ranges.front().size_bytes == 18,
+            "Delayed duplicate registration recreated HOT metadata");
     manager.stop();
     return 0;
 }
@@ -1272,7 +1284,8 @@ int scenarioBackfillAtomicIdempotent(const std::string &root) {
 
     const std::string camera = "camera-backfill-idempotent";
     const std::string stream = "main";
-    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 3600;
+    const int64_t start = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 86400))) + 3600;
     const int64_t middle = start + 60;
     const int64_t end = middle + 60;
     const std::string first_key = "2026-08-28_12-00-00";
@@ -1309,13 +1322,9 @@ int scenarioBackfillAtomicIdempotent(const std::string &root) {
         return rows.size() == 1 && rows.front().status == "COMPLETED";
     }, 5000), "Backfill task did not complete");
 
-    auto records = SegmentTierRepository().findByCamera(camera);
     auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
     const int64_t expected_size = static_cast<int64_t>(first_payload.size() +
                                                         second_payload.size());
-    require(records.size() == 2 && records.front().segment_path == first_key &&
-                records.back().segment_path == second_key,
-            "Backfill did not preserve and complete partial segment metadata");
     require(ranges.size() == 1 && ranges.front().segment_count == 2 &&
                 ranges.front().size_bytes == expected_size,
             "Backfill inflated the partially indexed HOT range");
@@ -1333,15 +1342,107 @@ int scenarioBackfillAtomicIdempotent(const std::string &root) {
         return rows.size() == 1 && rows.front().status == "COMPLETED";
     }, 5000), "Replayed backfill task did not complete");
 
-    records = SegmentTierRepository().findByCamera(camera);
     ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
-    require(records.size() == 2, "Backfill replay duplicated segment records");
     require(ranges.size() == 1 && ranges.front().segment_count == 2 &&
                 ranges.front().size_bytes == expected_size,
             "Backfill replay inflated normalized range counters");
 
     manager.stop();
     drainWorkThreadPool();
+    return 0;
+}
+
+int scenarioCompactRangeRepository(const std::string &root) {
+    migrateDatabase(root);
+    const int64_t day = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 2 * 86400)));
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRangeImp range_imp;
+
+    auto make_range = [&](const std::string &id, const std::string &camera,
+                          const std::string &tier, int64_t start) {
+        SegmentTierRange range;
+        range.range_id = id;
+        range.camera_id = camera;
+        range.stream_id = "main";
+        range.tier = tier;
+        range.pool_id = tier == "HOT" ? "hot-pool" : "warm-pool";
+        range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+        range.start_time = start;
+        range.end_time = start + 60;
+        range.segment_count = 1;
+        range.size_bytes = 100;
+        range.created_at = now;
+        range.updated_at = now;
+        return range;
+    };
+
+    require(range_imp.mergeOrInsert(make_range("day-a", "camera-day", "HOT", day + 60)),
+            "Cannot insert first daily range");
+    require(range_imp.mergeOrInsert(make_range("day-b", "camera-day", "HOT", day + 120)),
+            "Cannot merge same-day range");
+    require(range_imp.mergeOrInsert(make_range("day-c", "camera-day", "HOT", day + 86400)),
+            "Cannot insert next-day range");
+    auto daily = range_imp.queryByCamera("camera-day");
+    require(daily.size() == 2 && daily.front().segment_count == 2,
+            "Compact ranges crossed a date bucket or failed to merge within it");
+
+    require(range_imp.add(make_range("move-hot", "camera-move", "HOT", day + 600)),
+            "Cannot seed source range");
+    require(range_imp.add(make_range("move-warm", "camera-move", "WARM", day + 660)),
+            "Cannot seed destination range");
+    require(range_imp.updateTierByRangeId("move-hot", "WARM", "warm-pool",
+                                          segmentStatusToString(SegmentStatus::AVAILABLE)),
+            "Cannot update moved range tier");
+    require(range_imp.normalizeRangeById("move-hot", 90, now),
+            "Cannot normalize moved range");
+    auto moved = range_imp.queryByCamera("camera-move");
+    require(moved.size() == 1 && moved.front().segment_count == 2 &&
+                moved.front().size_bytes == 200,
+            "Adjacent destination ranges were not compacted after move");
+
+    for (int index = 0; index < 5; ++index) {
+        require(range_imp.add(make_range(
+                    "page-" + std::to_string(index), "camera-page", "HOT",
+                    day + 1200 + index * 300)),
+                "Cannot seed paginated range");
+    }
+    require(range_imp.findByCameraTierStartedBefore(
+                "camera-page", "HOT", day + 86400, 2).size() == 2,
+            "Eligible range query ignored its per-cycle limit");
+    require(range_imp.add(make_range(
+                "other-camera", "camera-other", "HOT", day + 300)),
+            "Cannot seed an earlier range for another camera");
+    auto pressure_page = range_imp.findByCameraTierPoolAndAge(
+        "camera-page", "HOT", "hot-pool", day + 86400, 2);
+    require(pressure_page.size() == 2 &&
+                pressure_page.front().camera_id == "camera-page" &&
+                pressure_page.back().camera_id == "camera-page",
+            "Pressure range query applied its limit before filtering camera");
+
+    SegmentTierRange terminal = make_range("terminal-range", "camera-terminal", "HOT", day);
+    terminal.status = segmentStatusToString(SegmentStatus::DELETED);
+    terminal.updated_at = day;
+    require(range_imp.add(terminal), "Cannot seed terminal range");
+    range_imp.pruneDeletedOlderThan(day + 1);
+    require(range_imp.findByRangeIds({terminal.range_id}).empty(),
+            "Terminal range retention did not prune old metadata");
+
+    TieringJob job;
+    job.job_id = "terminal-job";
+    job.camera_id = "camera-terminal";
+    job.stream_id = "main";
+    job.source_tier = "HOT";
+    job.target_tier = "WARM";
+    job.source_pool_id = "hot-pool";
+    job.target_pool_id = "warm-pool";
+    job.status = jobStatusToString(JobStatus::DONE);
+    job.created_at = day;
+    job.updated_at = day;
+    require(TieringJobImp().add(job), "Cannot seed terminal job");
+    TieringJobImp().pruneTerminalOlderThan(day + 1);
+    require(TieringJobImp().findByJobId(job.job_id).empty(),
+            "Tiering job retention did not prune old history");
     return 0;
 }
 
@@ -1380,8 +1481,8 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
                 rows.front().orphan_blocks == 1 && !rows.front().last_error.empty(),
             "Orphan retry advanced cursor or lost diagnostic counters");
-    require(SegmentTierRepository().findByCamera(camera).empty(),
-            "Orphan chunk partially committed segment metadata");
+    require(SegmentTierRangeImp().queryByCamera(camera).empty(),
+            "Orphan chunk partially committed range metadata");
 
     manager.stop();
     drainWorkThreadPool();
@@ -1481,9 +1582,11 @@ int scenarioRecoveryVerify(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
-    auto jobs = TieringJobImp().findByJobId("recovery-tier-job");
-    require(jobs.size() == 1 && jobs.front().status == "PENDING",
-            "RUNNING tiering job was not recovered to PENDING");
+    require(waitUntil([&]() {
+        auto jobs = TieringJobImp().findByJobId("recovery-tier-job");
+        return jobs.size() == 1 && jobs.front().status == "FAILED";
+    }, 5000),
+            "Recovered tiering job was not automatically dispatched");
     auto segments = RestoreJobSegmentImp().queryByJob("recovery-restore-job");
     require(segments.size() == 1 && segments.front().status == "PENDING",
             "RUNNING restore segment was not recovered to PENDING");
@@ -1533,9 +1636,9 @@ int scenarioTemporaryMp4CleanupStableStale(const std::string &root) {
     runTemporaryMp4CleanupPass(manager);
     require(!File::fileExist(first) && !File::fileExist(second),
             "Stable stale temporary MP4 was not deleted from every HOT pool");
-    require(SegmentTierRepository().findByCamera("camera-tmp").empty() &&
-                SegmentTierRepository().findByCamera("camera-tmp-two").empty(),
-            "Temporary MP4 cleanup created segment tier metadata");
+    require(SegmentTierRangeImp().queryByCamera("camera-tmp").empty() &&
+                SegmentTierRangeImp().queryByCamera("camera-tmp-two").empty(),
+            "Temporary MP4 cleanup created tier ranges");
 
     manager.stop();
     return 0;
@@ -1652,8 +1755,8 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
             "Completed relay MP4 referenced by the daily TimeFile was deleted");
     require(File::fileExist(missing_timefile),
             "Completed MP4 was deleted when its daily TimeFile was missing");
-    require(SegmentTierRepository().findByCamera("camera-completed").empty(),
-            "Completed orphan cleanup created segment tier metadata");
+    require(SegmentTierRangeImp().queryByCamera("camera-completed").empty(),
+            "Completed orphan cleanup created tier ranges");
 
     manager.stop();
     return 0;
@@ -1803,6 +1906,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
+        if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
         if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
@@ -1978,6 +2082,11 @@ TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOff
 TEST(TierStorageManagerIntegrationTest, BackfillsAtomicallyAndIdempotently) {
     TempRoot root;
     EXPECT_EQ(0, runChild("backfill-atomic-idempotent", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BoundsAndCompactsTierMetadata) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("compact-range-repository", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, RetriesOrphanChunkWithoutAdvancingCursor) {

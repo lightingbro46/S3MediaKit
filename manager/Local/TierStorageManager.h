@@ -185,8 +185,7 @@ public:
     // Section 4 — Camera Storage APIs
     // ------------------------------------------------------------------
 
-    // Timeline: returns segment ranges decorated with tier and status info.
-    // Merges DB-tracked SegmentTierRecord with the raw file-system timeline.
+    // Timeline: returns compact ranges decorated with tier and status info.
     std::vector<TimelineRange> getCameraTimeline(const std::string &camera_id,
                                                   int64_t start_time,
                                                   int64_t end_time);
@@ -361,6 +360,9 @@ private:
 
     void executePendingJob(TieringJob &job);
 
+    // Dispatch durable PENDING jobs to a bounded transfer worker set.
+    void dispatchPendingTieringJobs();
+
     bool executeLocalTierMove(TieringJob &job,
                                const StoragePool &src_pool,
                                const StoragePool &dst_pool);
@@ -426,6 +428,13 @@ private:
         bool running = false;
     };
 
+    struct TransferDispatchState {
+        std::mutex mutex;
+        std::condition_variable completed;
+        int active_total = 0;
+        std::unordered_map<std::string, int> active_by_pool;
+    };
+
     struct TemporaryMp4Observation {
         uint64_t device = 0;
         uint64_t inode = 0;
@@ -461,6 +470,7 @@ private:
     std::unordered_map<std::string, StoragePool> _pool_cache;
     std::unordered_map<std::string, PoolHealthRuntimeState> _pool_health_cache;
     std::shared_ptr<HealthCycleState> _health_cycle_state = std::make_shared<HealthCycleState>();
+    std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
     size_t _temporary_mp4_next_camera_index = 0;

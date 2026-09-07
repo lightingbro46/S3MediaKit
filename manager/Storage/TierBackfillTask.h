@@ -74,7 +74,6 @@ struct TierBackfillChunk {
     int64_t registered_blocks = 0;
     int64_t orphan_blocks = 0;
     int64_t indexed_bytes = 0;
-    std::vector<SegmentTierRecord> records;
     std::vector<SegmentTierRange> ranges;
 };
 

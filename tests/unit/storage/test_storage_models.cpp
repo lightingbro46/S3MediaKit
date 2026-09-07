@@ -82,12 +82,6 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     EXPECT_EQ(1024, job.toJson()["bytes_total"].asInt64());
     EXPECT_EQ("retry", job.toJson()["error_message"].asString());
 
-    SegmentTierRecord record;
-    record.camera_id = "camera";
-    record.segment_path = "2026/segment.mp4";
-    record.file_size = 2048;
-    EXPECT_EQ(2048, record.toJson()["file_size"].asInt64());
-
     SegmentTierRange range;
     range.range_id = "range";
     range.segment_count = 8;
@@ -111,7 +105,6 @@ TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<BookmarkIndex>("bookmark_index");
 #if defined(ENABLE_TIER_STORAGE)
     expectEntitySchema<TieringJob>("tiering_jobs");
-    expectEntitySchema<SegmentTierRecord>("segment_tier_records");
     expectEntitySchema<SegmentTierRange>("segment_tier_ranges");
     expectEntitySchema<PoolMetrics>("pool_metrics");
     expectEntitySchema<RestoreJob>("restore_jobs");
