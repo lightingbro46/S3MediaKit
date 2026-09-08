@@ -76,6 +76,19 @@ target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
+if(ENABLE_TIER_STORAGE)
+  add_s3_unit_test(unit_storage_pool_api
+    server/test_storage_pool_api.cpp
+    "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp")
+  target_link_libraries(unit_storage_pool_api PRIVATE
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec)
+  target_include_directories(unit_storage_pool_api PRIVATE
+    "${PROJECT_SOURCE_DIR}/server")
+  add_test(NAME unit.storage_pool_api_all COMMAND unit_storage_pool_api)
+  set_tests_properties(unit.storage_pool_api_all PROPERTIES LABELS unit TIMEOUT 15)
+endif()
+
 if(ENABLE_SERVER_LIB)
   add_executable(unit_extract_preview
     server/test_extract_preview.cpp

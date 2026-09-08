@@ -239,6 +239,10 @@ POST /media/mserver/storage/pool/testConnection
 
 Với pool MinIO, backend dùng object-storage probe để xác nhận kết nối. Với filesystem pool, backend kiểm tra path/mount và quyền truy cập.
 
+Khi chỉnh sửa pool, FE gửi `id` cùng các thông số mới. Backend merge request
+với cấu hình đã lưu rồi test bằng client/path tạm thời, vì vậy endpoint hoặc
+credential mới được kiểm tra trước khi update mà không thay đổi pool đang chạy.
+
 ### 3.3 Tạo Policy
 
 FE gọi:

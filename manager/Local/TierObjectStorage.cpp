@@ -295,6 +295,33 @@ bool TierObjectStorage::isRegistered(const std::string &pool_id) const {
 // ============================================================================
 // Connection tests
 // ============================================================================
+#ifdef ENABLE_AWS_SDK
+static bool probeObjectStorageConnection(const std::shared_ptr<Aws::S3::S3Client> &client,
+                                         const std::string &bucket,
+                                         std::string &out_message,
+                                         int &out_latency_ms) {
+    out_latency_ms = 0;
+    Ticker ticker;
+    Aws::S3::Model::HeadBucketRequest request;
+    request.SetBucket(bucket.c_str());
+    auto outcome = client->HeadBucket(request);
+    out_latency_ms = ticker.elapsedTime();
+    if (outcome.IsSuccess()) {
+        out_message = "Connection successful";
+        return true;
+    }
+
+    auto list_outcome = client->ListBuckets(Aws::S3::Model::ListBucketsRequest{});
+    out_latency_ms = ticker.elapsedTime();
+    if (list_outcome.IsSuccess()) {
+        out_message = "Connection successful (bucket not found or inaccessible)";
+        return true;
+    }
+    out_message = std::string("Connection failed: ") + outcome.GetError().GetMessage().c_str();
+    return false;
+}
+#endif
+
 bool TierObjectStorage::testConnection(const std::string &pool_id,
                                         std::string &out_message, int &out_latency_ms) {
     out_latency_ms = 0;
@@ -308,18 +335,7 @@ bool TierObjectStorage::testConnection(const std::string &pool_id,
         }
         entry = it->second;
     }
-
-    Ticker ticker;
-    Aws::S3::Model::HeadBucketRequest req;
-    req.SetBucket(entry.bucket.c_str());
-    auto out = entry.client->HeadBucket(req);
-    out_latency_ms = ticker.elapsedTime();
-    if (out.IsSuccess()) {
-        out_message = "Connection successful";
-        return true;
-    }
-    out_message = std::string("HeadBucket failed: ") + out.GetError().GetMessage().c_str();
-    return false;
+    return probeObjectStorageConnection(entry.client, entry.bucket, out_message, out_latency_ms);
 }
 
 bool TierObjectStorage::testConnectionParams(const std::string &endpoint,
@@ -330,23 +346,7 @@ bool TierObjectStorage::testConnectionParams(const std::string &endpoint,
                                               int &out_latency_ms) {
     out_latency_ms = 0;
     auto client = buildClient(endpoint, access_key, secret_key);
-    Ticker ticker;
-    Aws::S3::Model::HeadBucketRequest req;
-    req.SetBucket(bucket.c_str());
-    auto out = client->HeadBucket(req);
-    out_latency_ms = ticker.elapsedTime();
-    if (out.IsSuccess()) {
-        out_message = "Connection successful";
-        return true;
-    }
-    // Bucket might not exist yet — try listing buckets as a connectivity probe
-    auto list_out = client->ListBuckets(Aws::S3::Model::ListBucketsRequest{});
-    if (list_out.IsSuccess()) {
-        out_message = "Connection successful (bucket not found, will be created on first use)";
-        return true;
-    }
-    out_message = std::string("Connection failed: ") + out.GetError().GetMessage().c_str();
-    return false;
+    return probeObjectStorageConnection(client, bucket, out_message, out_latency_ms);
 }
 
 // ============================================================================

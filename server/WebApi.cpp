@@ -83,6 +83,7 @@
 #include "Storage/PolicyAssignment.h"
 #include "Storage/TieringJob.h"
 #include "Storage/StorageTierExtra.h"
+#include "Local/TierStorageBase.h"
 #include "Local/TierStorageManager.h"
 #endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
@@ -882,68 +883,6 @@ static Json::Value apiPolicyDetailToJson(const StoragePolicy &p, const std::unor
     v["delete_policy"] = p.parsedDeletePolicy().toJson();
     v["advanced_rules"] = p.parsedAdvancedRules().toJson();
     return v;
-}
-
-static bool apiValidateStoragePoolByType(const StoragePool &pool, std::string &err) {
-    auto support = poolTypeSupport(tierTypeFromString(pool.tier));
-    if (support.isMember(pool.type) && !support[pool.type].asBool()) {
-        err = pool.type + " pool is not supported for " + pool.tier + " tier";
-        return false;
-    }
-    if (pool.type == "LOCAL_DISK") {
-        if (!pool.mount_path.has_value() || pool.mount_path.value().empty()) {
-            err = "mount_path is required for LOCAL_DISK";
-            return false;
-        }
-    } else if (pool.type == "NAS") {
-        const bool has_mount = pool.mount_path.has_value() && !pool.mount_path.value().empty();
-        const bool has_network = pool.network_path.has_value() && !pool.network_path.value().empty();
-        if (!has_mount && !has_network) {
-            err = "mount_path or network_path is required for NAS";
-            return false;
-        }
-    } else if (pool.type == "MINIO" || pool.type == "S3") {
-        if (!pool.endpoint.has_value() || pool.endpoint.value().empty() ||
-            !pool.bucket.has_value() || pool.bucket.value().empty() ||
-            !pool.base_path.has_value() || pool.base_path.value().empty() ||
-            !pool.access_key.has_value() || pool.access_key.value().empty() ||
-            !pool.secret_key_enc.has_value() || pool.secret_key_enc.value().empty()) {
-            err = "endpoint, bucket, base_path, access_key and secret_key are required for MINIO/S3";
-            return false;
-        }
-    }
-    return true;
-}
-
-static StoragePool apiPoolFromJson(const Json::Value &body) {
-    StoragePool p;
-    p.id = body.get("id", "").asString();
-    p.name = body.get("name", "").asString();
-    p.type = body.get("type", "").asString();
-    p.tier = body.get("tier", "").asString();
-
-    auto optStr = [&](const char *key) -> Optional<std::string> {
-        if (body.isMember(key) && !body[key].isNull()) {
-            auto value = body[key].asString();
-            if (!value.empty()) return Optional<std::string>(value);
-        }
-        return Optional<std::string>();
-    };
-
-    p.endpoint = optStr("endpoint");
-    p.bucket = optStr("bucket");
-    p.base_path = optStr("base_path");
-    p.access_key = optStr("access_key");
-    p.mount_path = optStr("mount_path");
-    p.network_path = optStr("network_path");
-    if (body.isMember("secret_key") && !body["secret_key"].isNull() && body["secret_key"].asString() != "***********") {
-        p.secret_key_enc = Optional<std::string>(body["secret_key"].asString());
-    }
-    p.enabled = body.get("enabled", true).asBool() ? 1 : 0;
-    p.health_check_enabled = body.get("health_check_enabled", true).asBool() ? 1 : 0;
-    p.high_watermark_percent = body.get("high_watermark_percent", 85).asInt();
-    p.critical_watermark_percent = body.get("critical_watermark_percent", 90).asInt();
-    return p;
 }
 
 static bool apiValidatePolicyTierMoveChain(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
@@ -3289,7 +3228,8 @@ void installWebApi() {
     api_regist("/media/api/storage/pool/testConnection", [](API_ARGS_JSON_ASYNC) {
         CHECK_SECRET();
 
-        std::string pool_id = allArgs["pool_id"];
+        const Json::Value &body = allArgs.getArgs();
+        std::string pool_id = body.get("pool_id", "").asString();
         StoragePool pool;
         if (!pool_id.empty()) {
             auto existing = TierStorageManager::Instance().getPool(pool_id);
@@ -3298,8 +3238,15 @@ void installWebApi() {
                 return;
             }
             pool = existing.front();
+            TierStorageBase::applyPoolPatch(pool, body);
         } else {
-            pool = apiPoolFromJson(allArgs.getArgs());
+            pool = TierStorageBase::poolFromJson(body);
+        }
+
+        std::string validation_error;
+        if (!TierStorageBase::validatePoolByType(pool, validation_error)) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, validation_error);
+            return;
         }
 
         std::string message;
@@ -3469,9 +3416,9 @@ void installWebApi() {
     api_regist("/media/api/storage/pool/create", [](API_ARGS_JSON_ASYNC) {
         CHECK_SECRET();
         CHECK_ARGS_("name", "type", "tier");
-        auto pool = apiPoolFromJson(allArgs.getArgs());
+        auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
         std::string err;
-        if (!apiValidateStoragePoolByType(pool, err)) {
+        if (!TierStorageBase::validatePoolByType(pool, err)) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, err);
             return;
         }
@@ -3499,24 +3446,10 @@ void installWebApi() {
             return;
         }
         auto base = existing.front();
-        if (body.isMember("name") && !body["name"].asString().empty()) base.name = body["name"].asString();
-        if (body.isMember("type") && !body["type"].asString().empty()) base.type = body["type"].asString();
-        if (body.isMember("tier") && !body["tier"].asString().empty()) base.tier = body["tier"].asString();
-        if (body.isMember("enabled")) base.enabled = body["enabled"].asBool() ? 1 : 0;
-        if (body.isMember("health_check_enabled")) base.health_check_enabled = body["health_check_enabled"].asBool() ? 1 : 0;
-        if (body.isMember("high_watermark_percent")) base.high_watermark_percent = body["high_watermark_percent"].asInt();
-        if (body.isMember("critical_watermark_percent")) base.critical_watermark_percent = body["critical_watermark_percent"].asInt();
-        auto patch = apiPoolFromJson(body);
-        if (patch.endpoint.has_value()) base.endpoint = patch.endpoint;
-        if (patch.bucket.has_value()) base.bucket = patch.bucket;
-        if (patch.base_path.has_value()) base.base_path = patch.base_path;
-        if (patch.access_key.has_value()) base.access_key = patch.access_key;
-        if (patch.secret_key_enc.has_value()) base.secret_key_enc = patch.secret_key_enc;
-        if (patch.mount_path.has_value()) base.mount_path = patch.mount_path;
-        if (patch.network_path.has_value()) base.network_path = patch.network_path;
+        TierStorageBase::applyPoolPatch(base, body);
 
         std::string err;
-        if (!apiValidateStoragePoolByType(base, err)) {
+        if (!TierStorageBase::validatePoolByType(base, err)) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, err);
             return;
         }

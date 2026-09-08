@@ -220,7 +220,10 @@ Pool mặc định hoặc pool còn bị policy/range tham chiếu không thể 
 
 `POST /media/mserver/storage/pool/testConnection` — JSON, permission `150302`.
 
-- Pool đã lưu: gửi `pool_id`.
+- Pool đã lưu: gửi `id` cùng các field kết nối dự kiến thay đổi. Backend
+  merge các field này lên cấu hình hiện tại và test snapshot kết quả mà không
+  cập nhật database hoặc client đang hoạt động. Nếu `secret_key` bị bỏ trống
+  hoặc chứa giá trị mask thì secret hiện tại được giữ lại cho lần test.
 - Pool chưa lưu: gửi trực tiếp các field kết nối như create.
 
 ```json

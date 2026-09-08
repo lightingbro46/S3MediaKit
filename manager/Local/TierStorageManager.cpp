@@ -1602,11 +1602,6 @@ std::vector<StoragePool> TierStorageManager::getPool(const std::string &pool_id)
 
 bool TierStorageManager::testPoolConnection(const StoragePool &pool, std::string &out_message, int &out_latency_ms) {
     if (poolTypeIsObjectStorage(pool.type)) {
-        // If the pool is already registered (loaded at startup), test via its client.
-        if (_obj_storage.isRegistered(pool.id))
-            return _obj_storage.testConnection(pool.id, out_message, out_latency_ms);
-
-        // Otherwise do an ad-hoc test using the caller-provided credentials.
         if (!pool.endpoint.has_value() || !pool.bucket.has_value() ||
             !pool.access_key.has_value() || !pool.secret_key_enc.has_value()) {
             out_message = "Missing endpoint/bucket/credentials for object storage test";

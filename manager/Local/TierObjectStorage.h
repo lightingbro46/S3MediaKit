@@ -91,14 +91,14 @@ public:
 
     /**
      * Test connectivity for an already-registered pool.
-     * Tries HeadBucket; falls back to ListBuckets when bucket does not exist
-     * and creates it automatically.
+     * Tries HeadBucket and falls back to ListBuckets as a connectivity probe.
+     * This method does not create a bucket or modify storage state.
      */
     bool testConnection(const std::string &pool_id, std::string &out_message, int &out_latency_ms);
 
     /**
      * Ad-hoc test (before a pool is saved).
-     * Builds a temporary client and runs the same HeadBucket probe.
+     * Builds a temporary client and runs the same non-mutating probe.
      */
     bool testConnectionParams(const std::string &endpoint,
                                const std::string &bucket,

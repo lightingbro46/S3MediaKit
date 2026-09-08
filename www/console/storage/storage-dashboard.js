@@ -830,7 +830,7 @@
         };
         var secret = _fieldValue(form, 'secret_key');
         if (secret) payload.secret_key = secret;
-        if (existing && existing.id) payload.id = existing.id;
+        if (existing && existing.id) payload.pool_id = existing.id;
         return payload;
     }
 

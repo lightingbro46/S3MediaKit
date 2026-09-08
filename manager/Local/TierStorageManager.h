@@ -124,7 +124,8 @@ public:
     // Get a single pool by id (returns nullptr / empty on not-found)
     std::vector<StoragePool> getPool(const std::string &pool_id);
 
-    // Test connectivity to a pool (filesystem stat for LOCAL_DISK/NAS; HEAD request for object storage)
+    // Test the exact supplied pool snapshot without changing the registered
+    // client/path or persisted pool state.
     bool testPoolConnection(const StoragePool &pool, std::string &out_message, int &out_latency_ms);
 
     // Get available filesystem roots. Returned mount_path is the logical pool
