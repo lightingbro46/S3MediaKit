@@ -67,6 +67,7 @@ foreach(manager_case
     RequiresRestoreWhenObjectCacheIsMissing
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     BackfillsAtomicallyAndIdempotently
+    BackfillsAcrossLocalMidnightIntoSeparateRanges
     BoundsAndCompactsTierMetadata
     RetriesOrphanChunkWithoutAdvancingCursor
     RetriesWhenCameraHasNoTimeFile

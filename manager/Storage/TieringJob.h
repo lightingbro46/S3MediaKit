@@ -710,8 +710,12 @@ public:
                                      const toolkit::SqliteTransaction::Ptr &txn) {
         if (range.pool_id.empty() || !txn)
             return false;
-        const int64_t bucket_start = range.start_time - range.start_time % 86400;
-        const int64_t bucket_end = bucket_start + 86400;
+        const int64_t bucket_start = static_cast<int64_t>(
+            StampUtils::getStartOfDay(static_cast<uint64_t>(range.start_time)));
+        // Noon-plus-one-day is guaranteed to fall inside the next local date,
+        // including dates around daylight-saving transitions.
+        const int64_t bucket_end = static_cast<int64_t>(
+            StampUtils::getStartOfDay(static_cast<uint64_t>(bucket_start + 36 * 3600)));
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND stream_id = ? AND tier = ? AND status = ?";
@@ -724,8 +728,8 @@ public:
         where << " AND end_time >= ? AND start_time <= ?";
         params.push_back(std::to_string(range.start_time - merge_gap_seconds));
         params.push_back(std::to_string(range.end_time + merge_gap_seconds));
-        // Keep compact ranges inside a stable 24-hour timestamp bucket. This caps
-        // the amount of timeline data inspected by a split or transfer.
+        // Keep compact ranges inside the local calendar date of their start time.
+        // This caps the amount of timeline data inspected by a split or transfer.
         where << " AND start_time >= ? AND start_time < ?";
         params.push_back(std::to_string(bucket_start));
         params.push_back(std::to_string(bucket_end));

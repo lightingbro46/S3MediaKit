@@ -99,7 +99,7 @@ Với mô hình 300 camera, 600 stream ghi 1 segment MP4/phút, 6 tháng tạo k
 - `segment_tier_ranges`: nguồn metadata tier duy nhất, lưu trạng thái theo khoảng thời gian liên tục.
 - TimeFile là nguồn file-level để resolve, move, restore và xóa từng MP4 trong range.
 
-Range được giới hạn theo bucket 24 giờ ổn định của `start_time`. Segment liền kề chỉ merge khi cùng camera, stream, tier, pool, status và cùng bucket; một lần split/transfer vì thế không phải đọc toàn bộ cửa sổ retention nhiều tháng.
+Range được giới hạn theo ngày local của `start_time`, với đầu ngày được tính bằng `StampUtils::getStartOfDay()` theo timezone của process. Segment liền kề chỉ merge khi cùng camera, stream, tier, pool, status và cùng ngày local; một lần split/transfer vì thế không phải đọc toàn bộ cửa sổ retention nhiều tháng. Ngày local có thể dài 23, 24 hoặc 25 giờ ở timezone có DST; thay đổi timezone sau khi đã ghi metadata có thể làm quy tắc compact của dữ liệu mới không đồng nhất với range cũ.
 Ở trạng thái ổn định, 600 stream trong 180 ngày cần khoảng 108.000 daily range thay vì hàng triệu row file-level.
 
 `segment_tier_ranges` lưu:

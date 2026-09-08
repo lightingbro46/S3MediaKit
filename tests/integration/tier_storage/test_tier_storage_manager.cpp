@@ -1352,7 +1352,64 @@ int scenarioBackfillAtomicIdempotent(const std::string &root) {
     return 0;
 }
 
+int scenarioBackfillUsesLocalDayBuckets(const std::string &root) {
+    require(::setenv("TZ", "Asia/Ho_Chi_Minh", 1) == 0,
+            "Cannot configure test timezone");
+    ::tzset();
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 180;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string camera = "camera-backfill-local-day";
+    const std::string stream = "main";
+    const int64_t local_midnight = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 86400)));
+    const int64_t first_start = local_midnight - 60;
+    const int64_t first_end = local_midnight;
+    const int64_t second_start = local_midnight;
+    const int64_t second_end = local_midnight + 60;
+    const std::string first_path = root + "/hot/record/" + camera + "/" +
+                                   stream + "/before-local-midnight.mp4";
+    const std::string second_path = root + "/hot/record/" + camera + "/" +
+                                    stream + "/after-local-midnight.mp4";
+    writeTimeBlock(root, camera, stream, first_path, first_start, first_end, 100);
+    writeTimeBlock(root, camera, stream, second_path, second_start, second_end, 100);
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = first_start;
+    desired.cutoff_time = second_end;
+    desired.cursor_time = first_start;
+    TierBackfillTask task = TierBackfillTaskImp().ensureTask(desired);
+    require(!task.task_id.empty(), "Cannot seed local-day backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Local-day backfill task did not complete");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(
+        camera, first_start - 1, second_end + 1);
+    require(ranges.size() == 2 &&
+                ranges[0].start_time == first_start &&
+                ranges[1].start_time == second_start,
+            "Backfill merged ranges across local midnight");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
 int scenarioCompactRangeRepository(const std::string &root) {
+    require(::setenv("TZ", "Asia/Ho_Chi_Minh", 1) == 0,
+            "Cannot configure test timezone");
+    ::tzset();
     migrateDatabase(root);
     const int64_t day = static_cast<int64_t>(
         StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 2 * 86400)));
@@ -1386,6 +1443,16 @@ int scenarioCompactRangeRepository(const std::string &root) {
     auto daily = range_imp.queryByCamera("camera-day");
     require(daily.size() == 2 && daily.front().segment_count == 2,
             "Compact ranges crossed a date bucket or failed to merge within it");
+
+    require(range_imp.mergeOrInsert(make_range(
+                "local-day-a", "camera-local-day", "HOT", day + 86400 - 60)),
+            "Cannot insert range before local midnight");
+    require(range_imp.mergeOrInsert(make_range(
+                "local-day-b", "camera-local-day", "HOT", day + 86400)),
+            "Cannot insert range after local midnight");
+    auto local_day_ranges = range_imp.queryByCamera("camera-local-day");
+    require(local_day_ranges.size() == 2,
+            "Compact ranges crossed local midnight");
 
     require(range_imp.add(make_range("move-hot", "camera-move", "HOT", day + 600)),
             "Cannot seed source range");
@@ -1921,6 +1988,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
+        if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
         if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
         if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
@@ -2097,6 +2165,11 @@ TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOff
 TEST(TierStorageManagerIntegrationTest, BackfillsAtomicallyAndIdempotently) {
     TempRoot root;
     EXPECT_EQ(0, runChild("backfill-atomic-idempotent", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillsAcrossLocalMidnightIntoSeparateRanges) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-local-day", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, BoundsAndCompactsTierMetadata) {

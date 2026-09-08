@@ -897,7 +897,8 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
             : static_cast<int64_t>(raw_size);
         int64_t now = static_cast<int64_t>(time(nullptr));
 
-        const int64_t bucket_start = block_start - block_start % 86400;
+        const int64_t bucket_start = static_cast<int64_t>(
+            StampUtils::getStartOfDay(static_cast<uint64_t>(block_start)));
         const std::string bucket_key = block.stream() + "\x1f" + hot_pool.id +
             "\x1f" + std::to_string(bucket_start);
         auto bucket_it = bucket_indexes.find(bucket_key);
