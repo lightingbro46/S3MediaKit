@@ -2610,6 +2610,13 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
               << " range=" << range.range_id;
         return false;
     }
+    PoolHealthInfo health;
+    if (!isPoolAvailableForTierOperation(pool, false, &health)) {
+        DebugL << "Defer range deletion because storage pool is unavailable: pool="
+               << pool.id << " status=" << health.health_status
+               << " stale=" << health.stale << " range=" << range.range_id;
+        return false;
+    }
 
     auto segments = collectSegmentFilesForRange(range);
     if (segments.empty()) {
@@ -2803,6 +2810,12 @@ void TierStorageManager::dispatchPendingTieringJobs() {
     if (max_concurrent_per_pool <= 0)
         max_concurrent_per_pool = 2;
 
+    std::unordered_map<std::string, StoragePool> pool_snapshot;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        pool_snapshot = _pool_cache;
+    }
+
     std::vector<TieringJob> dispatch_jobs;
     auto state = _transfer_dispatch_state;
     {
@@ -2821,6 +2834,31 @@ void TierStorageManager::dispatchPendingTieringJobs() {
                     job.job_id, jobStatusToString(JobStatus::PENDING),
                     jobStatusToString(JobStatus::FAILED), -1,
                     "Tiering job has empty source_pool_id or target_pool_id");
+                continue;
+            }
+            auto src_it = pool_snapshot.find(job.source_pool_id);
+            auto dst_it = pool_snapshot.find(job.target_pool_id);
+            if (src_it == pool_snapshot.end() || dst_it == pool_snapshot.end()) {
+                const std::string missing_pool = src_it == pool_snapshot.end()
+                    ? job.source_pool_id : job.target_pool_id;
+                job_imp.transitionStatus(
+                    job.job_id, jobStatusToString(JobStatus::PENDING),
+                    jobStatusToString(JobStatus::FAILED), -1,
+                    "Storage pool not found: " + missing_pool);
+                continue;
+            }
+            PoolHealthInfo source_health;
+            PoolHealthInfo target_health;
+            const bool source_available =
+                isPoolAvailableForTierOperation(src_it->second, false, &source_health);
+            const bool target_available =
+                isPoolAvailableForTierOperation(dst_it->second, true, &target_health);
+            if (!source_available || !target_available) {
+                DebugL << "Defer tiering job because storage pool is unavailable: job="
+                       << job.job_id << " source_pool=" << job.source_pool_id
+                       << " source_status=" << source_health.health_status
+                       << " target_pool=" << job.target_pool_id
+                       << " target_status=" << target_health.health_status;
                 continue;
             }
             const bool same_pool = job.source_pool_id == job.target_pool_id;
@@ -2902,33 +2940,50 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
         return;
     }
 
+    StoragePool src_pool;
     StoragePool dst_pool;
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-        auto it = _pool_cache.find(job.target_pool_id);
-        if (it == _pool_cache.end()) {
+        auto src_it = _pool_cache.find(job.source_pool_id);
+        auto dst_it = _pool_cache.find(job.target_pool_id);
+        if (src_it == _pool_cache.end() || dst_it == _pool_cache.end()) {
+            const std::string missing_pool = src_it == _pool_cache.end()
+                ? job.source_pool_id : job.target_pool_id;
             job_imp.updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED),
-                                 -1, "Target pool not found: " + job.target_pool_id);
+                                 -1, "Storage pool not found: " + missing_pool);
             return;
         }
-        dst_pool = it->second;
+        src_pool = src_it->second;
+        dst_pool = dst_it->second;
+    }
+
+    PoolHealthInfo source_health;
+    PoolHealthInfo target_health;
+    const bool source_available =
+        isPoolAvailableForTierOperation(src_pool, false, &source_health);
+    const bool target_available =
+        isPoolAvailableForTierOperation(dst_pool, true, &target_health);
+    if (!source_available || !target_available) {
+        const std::string reason = StrPrinter
+            << "Deferred because storage pool is unavailable: source="
+            << job.source_pool_id << "(" << source_health.health_status << ")"
+            << ", target=" << job.target_pool_id << "("
+            << target_health.health_status << ")";
+        if (!job_imp.transitionStatus(
+                job.job_id, jobStatusToString(JobStatus::RUNNING),
+                jobStatusToString(JobStatus::PENDING), job.bytes_moved, reason)) {
+            WarnL << "Failed to defer unavailable tiering job: " << job.job_id;
+        } else {
+            job.status = jobStatusToString(JobStatus::PENDING);
+            DebugL << reason << " job=" << job.job_id;
+        }
+        return;
     }
 
     bool ok = false;
     if (poolTypeIsObjectStorage(dst_pool.type)) {
         ok = executeObjectStorageUpload(job, dst_pool);
     } else {
-        StoragePool src_pool;
-        {
-            std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-            auto it = _pool_cache.find(job.source_pool_id);
-            if (it == _pool_cache.end()) {
-                job_imp.updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED),
-                                     -1, "Source pool not found: " + job.source_pool_id);
-                return;
-            }
-            src_pool = it->second;
-        }
         ok = executeLocalTierMove(job, src_pool, dst_pool);
     }
 
@@ -3674,6 +3729,8 @@ void TierStorageManager::runPoolHealthCycle() {
             return;
         try {
             self->checkAndRecordPoolHealth();
+            if (!self->_stopping)
+                self->dispatchPendingTieringJobs();
         } catch (const std::exception &ex) {
             WarnL << "Storage pool health cycle failed: " << ex.what();
         } catch (...) {
@@ -3725,6 +3782,41 @@ bool TierStorageManager::isPoolAvailableForPlayback(const StoragePool &pool,
     return !health.stale &&
            health.health_status != healthToString(StorageHealth::UNKNOWN) &&
            health.health_status != healthToString(StorageHealth::OFFLINE);
+}
+
+bool TierStorageManager::isPoolAvailableForTierOperation(
+        const StoragePool &pool,
+        bool destination_write,
+        PoolHealthInfo *out_health) const {
+    PoolHealthInfo health;
+    health.pool_id = pool.id;
+    if (!pool.enabled) {
+        health.health_status = healthToString(StorageHealth::OFFLINE);
+        health.message = "Storage pool is disabled";
+        health.stale = false;
+        if (out_health) *out_health = health;
+        return false;
+    }
+    if (!pool.health_check_enabled) {
+        health.health_status = pool.health_status.empty()
+            ? healthToString(StorageHealth::UNKNOWN) : pool.health_status;
+        health.stale = false;
+        if (out_health) *out_health = health;
+        return true;
+    }
+    if (!getPoolHealth(pool.id, health)) {
+        health.health_status = healthToString(StorageHealth::UNKNOWN);
+        health.stale = true;
+        health.message = "Storage pool has not been checked";
+    }
+    if (out_health) *out_health = health;
+    if (health.stale ||
+        health.health_status == healthToString(StorageHealth::UNKNOWN) ||
+        health.health_status == healthToString(StorageHealth::OFFLINE)) {
+        return false;
+    }
+    return !destination_write ||
+           health.health_status != healthToString(StorageHealth::CRITICAL);
 }
 
 void TierStorageManager::mergePoolRuntimeStats(StoragePool &pool) const {
@@ -4077,6 +4169,13 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
     std::vector<std::string> roots;
     roots.reserve(pools.size());
     for (const auto &pool : pools) {
+        PoolHealthInfo health;
+        if (!isPoolAvailableForTierOperation(pool, false, &health)) {
+            DebugL << "Skip orphan MP4 cleanup because HOT pool is unavailable: pool="
+                   << pool.id << " status=" << health.health_status
+                   << " stale=" << health.stale;
+            continue;
+        }
         std::string root = normalizeStoragePath(configuredPoolDataRoot(pool));
         struct stat root_stat{};
         if (root.empty() || root == "/" ||

@@ -396,7 +396,9 @@ move_threshold không được mới hơn now - min_segment_age_minutes_before_m
 
 `queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị.
 
-`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window. Sau khi insert job `PENDING` thành công, hàm gọi `executePendingJob(job)` ngay; cycle sau chỉ nhặt lại các job `PENDING` còn sót từ lần chạy trước.
+`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window. Dispatcher chỉ claim job khi source cho phép đọc và destination cho phép ghi. Pool `UNKNOWN`, `OFFLINE`, có snapshot stale hoặc bị disable làm job tiếp tục ở `PENDING`; health cycle sẽ gọi lại dispatcher sau khi probe để job tự resume khi pool phục hồi.
+
+Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNING`, `HIGH` hoặc `CRITICAL`, nhưng không ghi thêm dữ liệu vào destination `CRITICAL`. Pool tắt `health_check_enabled` giữ hành vi tương thích cũ, miễn là pool vẫn enabled. Worker kiểm tra lại health sau khi claim; nếu trạng thái thay đổi, job được trả từ `RUNNING` về `PENDING` thay vì đánh dấu `FAILED`.
 
 ### 5.3 Move Sớm Khi Pool HOT/WARM Đầy
 
@@ -423,7 +425,7 @@ Luồng này cũng tạo `tiering_jobs` qua `queueTierMoveJob(..., pressure=true
 
 Nếu HOT/WARM pool critical, backend expire các range đủ cũ và không còn trong vùng protected minimum.
 
-Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại trong cache. Nếu range thiếu pool hoặc pool không tồn tại, backend return ngay và không fallback sang `kMP4SavePath`.
+Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại và sẵn sàng cho thao tác xóa. Nếu range thiếu pool, pool không tồn tại hoặc health gate chưa cho phép, backend return mà không đổi trạng thái range và không fallback sang `kMP4SavePath`.
 
 Ngoài `CameraOption`, `enforcePolicyDeleteRetention()` xử lý `delete_policy`:
 
@@ -763,14 +765,15 @@ Quy tắc an toàn:
 
 1. Chỉ xét regular file kết thúc bằng `.mp4` và parse được timestamp segment; tên bắt đầu bằng `.` được phân loại là file tạm.
 2. Không đi theo symlink directory và không xóa symlink file.
-3. Ngưỡng cleanup của camera là thời điểm hiện tại trừ retention nhỏ hơn giữa `HOT.retain_until_days` và `keepArchivedMaxFor` khi camera cấu hình giá trị này thủ công (`keepArchivedMaxForAuto=false`, giá trị lớn hơn 0). Khi không có statistic camera, chỉ dùng retention HOT của policy hiệu lực. Policy bị tắt hoặc không có HOT tier hợp lệ thì bỏ qua camera.
-4. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
-5. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
-6. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup dùng `TimeQuery` ở cấp camera để truy vấn một khoảng gộp cho nhóm camera/stream/ngày trên toàn bộ TimeFile còn tồn tại, rồi giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment. Việc thiếu riêng TimeFile của ngày chứa MP4 không làm nhóm bị bỏ qua.
-7. Nếu camera không có TimeFile hợp lệ khiến constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
-8. Ngay trước `unlink`, cleanup kiểm tra lại MP4 bằng `lstat` và xác nhận device, inode, size và mtime chưa thay đổi.
-9. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
-10. File được cleanup không được thêm vào `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
+3. Chỉ scan HOT pool đang sẵn sàng cho thao tác xóa; pool disabled, `UNKNOWN`, `OFFLINE` hoặc có health snapshot stale được bỏ qua toàn bộ.
+4. Ngưỡng cleanup của camera là thời điểm hiện tại trừ retention nhỏ hơn giữa `HOT.retain_until_days` và `keepArchivedMaxFor` khi camera cấu hình giá trị này thủ công (`keepArchivedMaxForAuto=false`, giá trị lớn hơn 0). Khi không có statistic camera, chỉ dùng retention HOT của policy hiệu lực. Policy bị tắt hoặc không có HOT tier hợp lệ thì bỏ qua camera.
+5. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
+6. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
+7. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup dùng `TimeQuery` ở cấp camera để truy vấn một khoảng gộp cho nhóm camera/stream/ngày trên toàn bộ TimeFile còn tồn tại, rồi giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment. Việc thiếu riêng TimeFile của ngày chứa MP4 không làm nhóm bị bỏ qua.
+8. Nếu camera không có TimeFile hợp lệ khiến constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
+9. Ngay trước `unlink`, cleanup kiểm tra lại MP4 bằng `lstat` và xác nhận device, inode, size và mtime chưa thay đổi.
+10. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
+11. File được cleanup không được thêm vào `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
 
 Các cấu hình:
 

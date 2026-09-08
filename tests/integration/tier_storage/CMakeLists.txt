@@ -66,6 +66,8 @@ foreach(manager_case
     RejectsUnreadablePlaybackFile
     RequiresRestoreWhenObjectCacheIsMissing
     TracksPoolHealthAndBlocksPlaybackWhenOffline
+    DefersTierMoveUntilDestinationPoolRecovers
+    GuardsRangeAndOrphanDeletionUntilPoolRecovers
     BackfillsAtomicallyAndIdempotently
     BackfillsAcrossLocalMidnightIntoSeparateRanges
     BoundsAndCompactsTierMetadata

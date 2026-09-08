@@ -381,6 +381,10 @@ private:
     StorageHealth computePoolHealth(const StoragePool &pool,
                                     float usage_pct) const;
 
+    bool isPoolAvailableForTierOperation(const StoragePool &pool,
+                                         bool destination_write,
+                                         PoolHealthInfo *out_health = nullptr) const;
+
     void fillPoolRuntimeStats(StoragePool &pool);
 
     // Maintenance

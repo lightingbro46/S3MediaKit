@@ -408,6 +408,8 @@ void drainWorkThreadPool() {
     });
 }
 
+void runTemporaryMp4CleanupPass(TierStorageManager &manager);
+
 class SlowS3Server {
 public:
     SlowS3Server() {
@@ -1273,6 +1275,161 @@ int scenarioTracksPoolHealthAndBlocksPlayback(const std::string &root) {
     return 0;
 }
 
+int scenarioPoolHealthDefersTierMove(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    StoragePool warm = makeHotPool(root, "health-gated-warm", "health-warm");
+    warm.name = "Health-gated WARM pool";
+    warm.tier = tierTypeToString(WarmTier);
+    warm.health_check_enabled = 1;
+    require(manager.createPool(warm) == warm.id, "Health-gated WARM pool creation failed");
+    drainWorkThreadPool();
+
+    const std::string warm_root = root + "/health-warm";
+    removeTree(warm_root);
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(manager.getPoolHealth(warm.id, health) &&
+                health.health_status == healthToString(StorageHealth::OFFLINE),
+            "WARM pool did not become OFFLINE");
+
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, warm.id);
+    require(manager.createPolicy(policy) == policy.id, "Health-gated move policy creation failed");
+    const std::string camera = "camera-health-gated-move";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "health gate integration"),
+            "Health-gated policy assignment failed");
+
+    const std::string segment_key = "2026-08-20/17-00-00";
+    const std::string source = root + "/hot/record/" + camera + "/" + stream +
+                               "/" + segment_key + ".mp4";
+    const std::string destination = warm_root + "/record/" + camera + "/" + stream +
+                                    "/" + segment_key + ".mp4";
+    const std::string payload = "health-gated-tier-move";
+    writeFile(source, payload);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    writeTimeBlock(root, camera, stream, source, now - 180, now - 120,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, now - 180, now - 120,
+                                            static_cast<int64_t>(payload.size())),
+            "Health-gated HOT range registration failed");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::PENDING),
+            "Offline destination did not keep tiering job PENDING");
+    require(File::fileExist(source) && !File::fileExist(destination),
+            "Tier move performed I/O while destination was OFFLINE");
+
+    makeDirectory(warm_root + "/record");
+    manager.checkAndRecordPoolHealth();
+    jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::PENDING),
+            "Tiering job resumed before the pool recovery threshold");
+
+    manager.runPoolHealthCycle();
+    require(waitUntil([&]() {
+        auto current = manager.listTieringJobs(camera);
+        return current.size() == 1 && current.front().status == jobStatusToString(JobStatus::DONE);
+    }, 5000), "Tiering job did not resume after destination recovery");
+    require(!File::fileExist(source) && File::loadFile(destination) == payload,
+            "Recovered tier move did not preserve destination data");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioPoolHealthGuardsDeletion(const std::string &root) {
+    migrateDatabase(root);
+    configureTemporaryMp4Cleanup(false);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool hot = makeHotPool(root, "health-gated-hot", "health-hot");
+    hot.health_check_enabled = 1;
+    require(manager.createPool(hot) == hot.id, "Health-gated HOT pool creation failed");
+    drainWorkThreadPool();
+
+    const std::string hot_root = root + "/health-hot";
+    removeTree(hot_root);
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(manager.getPoolHealth(hot.id, health) &&
+                health.health_status == healthToString(StorageHealth::OFFLINE),
+            "HOT pool did not become OFFLINE");
+
+    const std::string camera = "camera-health-gated-delete";
+    const std::string stream = "main";
+    const std::string date = "2020-01-02";
+    const std::string segment_name = "2020-01-02-12-00-00-0";
+    const std::string orphan_name = "2020-01-02-12-01-00-0";
+    const std::string segment_path = date + "/" + segment_name;
+    const std::string source = hot_root + "/record/" + camera + "/" + stream +
+                               "/" + segment_path + ".mp4";
+    const std::string orphan = hot_root + "/record/" + camera + "/" + stream +
+                               "/" + date + "/" + orphan_name + ".mp4";
+    writeFile(source, "health-gated-delete");
+    writeFile(orphan, "health-gated-orphan");
+
+    const int64_t start = static_cast<int64_t>(
+        StrTimeUtils::getTsFromDateTimeStr2(segment_path));
+    writeDailyTimeBlock(root, camera, stream, date, source, start, start + 60,
+                        static_cast<int64_t>(std::strlen("health-gated-delete")));
+    const std::string keeper_path = date + "/2020-01-02-13-00-00-0";
+    writeDailyTimeBlock(root, camera, stream, date, keeper_path, start + 3600,
+                        start + 3660, 1);
+
+    StoragePolicy policy = makeHotOnlyPolicy(hot.id, "health-gated-delete-policy", 1);
+    require(manager.createPolicy(policy) == policy.id, "Health-gated delete policy creation failed");
+    require(manager.assignPolicyToCamera(camera, policy.id, "health gate deletion"),
+            "Health-gated delete policy assignment failed");
+
+    SegmentTierRange range;
+    range.range_id = "health-gated-delete-range";
+    range.camera_id = camera;
+    range.stream_id = stream;
+    range.tier = tierTypeToString(HotTier);
+    range.pool_id = hot.id;
+    range.status = segmentStatusToString(SegmentStatus::EXPIRED);
+    range.start_time = start;
+    range.end_time = start + 60;
+    range.segment_count = 1;
+    range.size_bytes = static_cast<int64_t>(std::strlen("health-gated-delete"));
+    require(SegmentTierRangeImp().mergeOrInsert(range), "Cannot seed health-gated delete range");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    require(File::fileExist(orphan), "Orphan cleanup scanned an OFFLINE HOT pool");
+    require(!manager.approveExpiredRange(range.range_id),
+            "Range deletion succeeded while source pool was OFFLINE");
+    require(File::fileExist(source), "Range data was deleted while source pool was OFFLINE");
+
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+    require(manager.getPoolHealth(hot.id, health) &&
+                health.health_status != healthToString(StorageHealth::OFFLINE),
+            "HOT pool did not recover");
+    require(manager.approveExpiredRange(range.range_id),
+            "Range deletion did not resume after source pool recovery");
+    require(!File::fileExist(source), "Recovered range deletion left source data behind");
+
+    runTemporaryMp4CleanupPass(manager);
+    require(!File::fileExist(orphan), "Recovered orphan cleanup did not delete orphan MP4");
+
+    manager.stop();
+    return 0;
+}
+
 int scenarioBackfillAtomicIdempotent(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
@@ -1987,6 +2144,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "reject-unreadable-playback-path") return scenarioRejectUnreadablePlaybackPath(root);
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
+        if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
+        if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
         if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
         if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
@@ -2160,6 +2319,16 @@ TEST(TierStorageManagerIntegrationTest, RequiresRestoreWhenObjectCacheIsMissing)
 TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOffline) {
     TempRoot root;
     EXPECT_EQ(0, runChild("pool-health-playback", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DefersTierMoveUntilDestinationPoolRecovers) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pool-health-tier-move", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, GuardsRangeAndOrphanDeletionUntilPoolRecovers) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pool-health-tier-delete", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, BackfillsAtomicallyAndIdempotently) {
