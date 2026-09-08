@@ -766,9 +766,9 @@ Quy tắc an toàn:
 3. Ngưỡng cleanup của camera là thời điểm hiện tại trừ retention nhỏ hơn giữa `HOT.retain_until_days` và `keepArchivedMaxFor` khi camera cấu hình giá trị này thủ công (`keepArchivedMaxForAuto=false`, giá trị lớn hơn 0). Khi không có statistic camera, chỉ dùng retention HOT của policy hiệu lực. Policy bị tắt hoặc không có HOT tier hợp lệ thì bỏ qua camera.
 4. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
 5. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
-6. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup mở đúng TimeFile ngày `{MP4SavePath}/{app}/{camera}/{YYYY-MM-DD}.s3db` bằng `TimeQuery`, truy vấn một khoảng gộp cho nhóm camera/stream/ngày và giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment.
-7. Nếu TimeFile ngày không tồn tại/không phải regular file, hoặc constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
-8. Ngay trước `unlink`, cleanup kiểm tra lại file bằng `lstat`; với MP4 hoàn chỉnh còn xác nhận device, inode, size và mtime của TimeFile chưa thay đổi để tránh race với block được ghi muộn.
+6. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup dùng `TimeQuery` ở cấp camera để truy vấn một khoảng gộp cho nhóm camera/stream/ngày trên toàn bộ TimeFile còn tồn tại, rồi giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment. Việc thiếu riêng TimeFile của ngày chứa MP4 không làm nhóm bị bỏ qua.
+7. Nếu camera không có TimeFile hợp lệ khiến constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
+8. Ngay trước `unlink`, cleanup kiểm tra lại MP4 bằng `lstat` và xác nhận device, inode, size và mtime chưa thay đổi.
 9. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
 10. File được cleanup không được thêm vào `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.
 

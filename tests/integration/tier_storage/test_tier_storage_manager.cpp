@@ -1706,6 +1706,9 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
     const std::string date = "2020-01-02";
     const std::string missing_timefile = root +
         "/hot/record/camera-missing-timefile/main/" + date + "/2020-01-02-13-59-00-0.mp4";
+    const std::string missing_daily_timefile = root +
+        "/hot/record/camera-missing-daily-timefile/main/" + date +
+        "/2020-01-02-13-58-00-0.mp4";
     const std::string orphan = root +
         "/hot/record/camera-completed/main/" + date + "/2020-01-02-14-00-00-0.mp4";
     const std::string referenced = root +
@@ -1714,9 +1717,19 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
         "/hot/record/camera-completed/main.relay.fixture/" + date +
         "/2020-01-02-14-02-00-0.mp4";
     writeFile(missing_timefile, "completed-without-timefile");
+    writeFile(missing_daily_timefile, "completed-without-daily-timefile");
     writeFile(orphan, "completed-without-timeblock");
     writeFile(referenced, "completed-with-timeblock");
     writeFile(relay_referenced, "completed-relay-with-timeblock");
+
+    const std::string other_date = "2020-01-03";
+    const std::string other_segment = root +
+        "/hot/record/camera-missing-daily-timefile/main/" + other_date +
+        "/2020-01-03-00-00-00-0.mp4";
+    const int64_t other_start = static_cast<int64_t>(
+        StrTimeUtils::getTsFromDateTimeStr2(other_date + "/2020-01-03-00-00-00-0"));
+    writeDailyTimeBlock(root, "camera-missing-daily-timefile", "main", other_date,
+                        other_segment, other_start, other_start + 60, 1);
 
     const int64_t referenced_start = static_cast<int64_t>(
         StrTimeUtils::getTsFromDateTimeStr2(date + "/2020-01-02-14-01-00-0"));
@@ -1754,7 +1767,9 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
     require(File::fileExist(relay_referenced),
             "Completed relay MP4 referenced by the daily TimeFile was deleted");
     require(File::fileExist(missing_timefile),
-            "Completed MP4 was deleted when its daily TimeFile was missing");
+            "Completed MP4 was deleted when the camera had no TimeFile");
+    require(!File::fileExist(missing_daily_timefile),
+            "Completed MP4 without a matching TimeBlock was retained because its daily TimeFile was missing");
     require(SegmentTierRangeImp().queryByCamera("camera-completed").empty(),
             "Completed orphan cleanup created tier ranges");
 
