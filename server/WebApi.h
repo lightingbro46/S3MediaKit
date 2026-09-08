@@ -288,14 +288,17 @@ bool checkUserAuthor(const std::string &resource_id, const std::string &jwt_toke
     }
 
 #define RETURN_API_RESPONSE(code, msg)                                                                                                                         \
-    std::string message(msg);                                                                                                                                  \
-    if (message.empty()) {                                                                                                                                     \
-        message = getDefaultMessage(static_cast<ApiErrCode>(code));                                                                                            \
-    }                                                                                                                                                          \
-    val["code"] = code;                                                                                                                                        \
-    val["msg"] = message;                                                                                                                                      \
-    auto status_code = getStatusCode(static_cast<ApiErrCode>(code));                                                                                           \
-    invoker(status_code, headerOut, val.toStyledString());
+    do {                                                                                                                                                       \
+        const ApiErrCode _api_response_code = static_cast<ApiErrCode>(code);                                                                                  \
+        std::string _api_response_message(msg);                                                                                                                \
+        if (_api_response_message.empty()) {                                                                                                                   \
+            _api_response_message = getDefaultMessage(_api_response_code);                                                                                     \
+        }                                                                                                                                                      \
+        val["code"] = static_cast<int>(_api_response_code);                                                                                                    \
+        val["msg"] = _api_response_message;                                                                                                                    \
+        const int _api_response_status_code = getStatusCode(_api_response_code);                                                                               \
+        invoker(_api_response_status_code, headerOut, val.toStyledString());                                                                                   \
+    } while (false)
 
 bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::string &key);
 
