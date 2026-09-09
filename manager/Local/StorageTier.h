@@ -88,8 +88,8 @@ inline Json::Value poolTypeSupport(TierType t) {
         v["NAS"]        = true;
 #ifdef ENABLE_AWS_SDK
         v["MINIO"]      = true;
-        v["S3"]         = true;
-        v["ARCHIVE"]    = true;
+        v["S3"]         = false;
+        v["ARCHIVE"]    = false;
 #else
         v["MINIO"]      = false;
         v["S3"]         = false;
