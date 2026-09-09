@@ -101,6 +101,24 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     range.size_bytes = 4096;
     EXPECT_EQ(8, range.toJson()["segment_count"].asInt64());
 
+    RestoreJob restore;
+    restore.job_id = "restore";
+    restore.processed_bytes = 512;
+    EXPECT_EQ("restore", restore.toJson()["job_id"].asString());
+    EXPECT_EQ(512, restore.toJson()["processed_bytes"].asInt64());
+
+    StorageAlert alert;
+    alert.id = "alert";
+    alert.acknowledged = 1;
+    EXPECT_EQ("alert", alert.toJson()["id"].asString());
+    EXPECT_TRUE(alert.toJson()["acknowledged"].asBool());
+
+    ProtectedVideo video;
+    video.protected_id = "protected";
+    video.reason = Optional<std::string>("evidence");
+    EXPECT_EQ("protected", video.toJson()["protected_id"].asString());
+    EXPECT_EQ("evidence", video.toJson()["reason"].asString());
+
     StoragePool pool;
     pool.capacity_available = true;
     pool.capacity_status = "AVAILABLE";

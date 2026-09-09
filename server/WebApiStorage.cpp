@@ -36,348 +36,11 @@ using namespace managerkit;
 
 #ifdef ENABLE_TIER_STORAGE
 
-// ===================================================================
-// Policy tier config validation helper
-// ===================================================================
-static bool validatePolicyTierMoveChain(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
-    std::vector<PolicyTierConfig> sorted;
-    for (const auto &tier : tiers) {
-        if (tier.enabled)
-            sorted.push_back(tier);
-    }
-    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
-        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
-    });
-    if (sorted.empty() || sorted.front().tier != "HOT") {
-        err = "HOT tier must be enabled";
-        return false;
-    }
-    for (size_t i = 0; i + 1 < sorted.size(); ++i) {
-        if (sorted[i].overflow_action != "MOVE_TO_NEXT_TIER") {
-            err = sorted[i + 1].tier + " tier can only be enabled when " +
-                  sorted[i].tier + " overflow_action is MOVE_TO_NEXT_TIER";
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool validatePolicyTiers(const std::vector<PolicyTierConfig> &tiers, std::string &err) {
-    if (!validatePolicyTierMoveChain(tiers, err))
-        return false;
-
-    // Enabled tiers must increase by retain_until_days in HOT -> WARM -> COLD order.
-    std::vector<PolicyTierConfig> sorted;
-    for (const auto &t : tiers) {
-        if (t.enabled)
-            sorted.push_back(t);
-    }
-    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
-        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
-    });
-
-    int previous_days = -1;
-    std::string previous_tier;
-    for (const auto &t : sorted) {
-        if (previous_days >= 0 && previous_days >= t.retain_until_days) {
-            err = previous_tier + ".retain_until_days must be less than " +
-                  t.tier + ".retain_until_days";
-            return false;
-        }
-        previous_days = t.retain_until_days;
-        previous_tier = t.tier;
-        if (t.high_watermark_percent >= t.critical_watermark_percent) {
-            err = "high_watermark_percent must be less than critical_watermark_percent";
-            return false;
-        }
-    }
-    return true;
-}
-
-static std::unordered_map<std::string, StoragePool> loadPoolMap() {
-    StoragePoolImp imp;
-    std::unordered_map<std::string, StoragePool> ret;
-    for (const auto &pool : imp.queryAll())
-        ret[pool.id] = pool;
-    return ret;
-}
-
-static bool isRestoreRequiredPool(const std::string &pool_id,
-                                  const std::unordered_map<std::string, StoragePool> &pool_map) {
-    auto it = pool_map.find(pool_id);
-    return it != pool_map.end() && poolTypeIsObjectStorage(it->second.type);
-}
-
-static Json::Value poolToDocJson(const StoragePool &p) {
-    Json::Value v;
-    const int64_t free_bytes = p.total_bytes > p.used_bytes ? p.total_bytes - p.used_bytes : 0;
-    const int used_percent = p.total_bytes > 0
-        ? static_cast<int>((p.used_bytes * 100) / p.total_bytes)
-        : static_cast<int>(p.usage_pct);
-
-    v["id"]                = p.id;
-    v["name"]              = p.name;
-    v["type"]              = p.type;
-    v["tier"]              = p.tier;
-    v["status"]            = p.health_status.empty() ? "OK" : p.health_status;
-    v["total_bytes"]       = static_cast<Json::Int64>(p.total_bytes);
-    v["used_bytes"]        = static_cast<Json::Int64>(p.used_bytes);
-    v["free_bytes"]        = static_cast<Json::Int64>(free_bytes);
-    v["used_percent"]      = used_percent;
-    v["write_mbps"]        = 0;
-    v["read_mbps"]         = 0;
-    v["camera_count"]      = 0;
-    v["enabled"]           = (p.enabled != 0);
-    v["last_health_check"] = static_cast<Json::Int64>(p.last_health_check);
-    v["capacity_available"] = p.capacity_available;
-    v["capacity_status"] = p.capacity_status;
-    v["capacity_message"] = p.capacity_message;
-    return v;
-}
-
-static Json::Value poolDetailToDocJson(const StoragePool &p) {
-    Json::Value v = poolToDocJson(p);
-    const double used_percent = p.total_bytes > 0
-        ? static_cast<double>(p.used_bytes) * 100.0 / static_cast<double>(p.total_bytes)
-        : static_cast<double>(p.usage_pct);
-
-    v["access_key"]                 = p.access_key.has_value() && !p.access_key.value().empty()
-                                      ? "***********" : "";
-    v["secret_key"]                 = p.secret_key_enc.has_value() && !p.secret_key_enc.value().empty()
-                                      ? "***********" : "";
-    v["base_path"]                  = p.base_path.value_or("");
-    v["bucket"]                     = p.bucket.value_or("");
-    v["created_at"]                 = static_cast<Json::Int64>(p.created_at);
-    v["critical_watermark_percent"] = p.critical_watermark_percent;
-    v["endpoint"]                   = p.endpoint.value_or("");
-    v["health_check_enabled"]       = (p.health_check_enabled != 0);
-    v["high_watermark_percent"]     = p.high_watermark_percent;
-    v["mount_path"]                 = p.mount_path.value_or("");
-    v["network_path"]               = p.network_path.value_or("");
-    v["updated_at"]                 = static_cast<Json::Int64>(p.updated_at);
-    v["used_percent"]               = used_percent;
-    return v;
-}
-
-static Json::Value policyDetailToDocJson(
-    const StoragePolicy &p,
-    const std::unordered_map<std::string, StoragePool> &pool_map) {
-    Json::Value v;
-    v["id"]                    = p.id;
-    v["name"]                  = p.name;
-    v["description"]           = p.description.value_or("");
-    v["enabled"]               = (p.enabled != 0);
-    v["total_retention_days"]  = p.total_retention_days;
-    v["allow_camera_override"] = (p.allow_camera_override != 0);
-    v["protect_event_video"]   = (p.protect_event_video != 0);
-
-    Json::Value tiers(Json::arrayValue);
-    for (const auto &tier : p.parsedTiers()) {
-        auto tv = tier.toJson();
-        auto it = pool_map.find(tier.pool_id);
-        tv["pool_name"] = it != pool_map.end() ? it->second.name : "";
-        tiers.append(tv);
-    }
-    v["tiers"] = tiers;
-    v["delete_policy"] = p.parsedDeletePolicy().toJson();
-    v["advanced_rules"] = p.parsedAdvancedRules().toJson();
-    return v;
-}
-
-static Json::Value policySummaryToDocJson(const StoragePolicy &p, int applied_camera_count) {
-    Json::Value v;
-    v["id"]                    = p.id;
-    v["name"]                  = p.name;
-    v["description"]           = p.description.value_or("");
-    v["enabled"]               = (p.enabled != 0);
-    v["total_retention_days"]  = p.total_retention_days;
-    v["hot_retain_until_days"] = 0;
-    v["warm_retain_until_days"] = 0;
-    v["cold_retain_until_days"] = 0;
-    for (const auto &tier : p.parsedTiers()) {
-        if (tier.tier == "HOT") v["hot_retain_until_days"] = tier.retain_until_days;
-        if (tier.tier == "WARM") v["warm_retain_until_days"] = tier.retain_until_days;
-        if (tier.tier == "COLD") v["cold_retain_until_days"] = tier.retain_until_days;
-    }
-    v["delete_after_days"]     = p.parsedDeletePolicy().delete_after_days;
-    v["allow_camera_override"] = (p.allow_camera_override != 0);
-    v["protect_event_video"]   = (p.protect_event_video != 0);
-    v["applied_camera_count"]  = applied_camera_count;
-    v["created_at"]            = static_cast<Json::Int64>(p.created_at);
-    v["updated_at"]            = static_cast<Json::Int64>(p.updated_at);
-    return v;
-}
-
-static bool validatePolicyByDocRules(const StoragePolicy &policy, std::string &err) {
-    auto tiers = policy.parsedTiers();
-    if (!validatePolicyTiers(tiers, err))
-        return false;
-
-    int max_retain_days = 0;
-    bool hot_found = false;
-    bool hot_enabled = false;
-    auto pool_map = loadPoolMap();
-
-    for (const auto &tier : tiers) {
-        if (!tier.enabled) continue;
-        if (tier.data_mode != "FULL_VIDEO" || tier.priority != "NORMAL" ||
-            tier.overflow_action == "STOP_RECORDING_AND_ALERT") {
-            err = "Only FULL_VIDEO, NORMAL priority and executable overflow actions are supported";
-            return false;
-        }
-        max_retain_days = std::max(max_retain_days, tier.retain_until_days);
-        if (tier.tier == "HOT") {
-            hot_found = true;
-            hot_enabled = true;
-        }
-        if (tier.pool_id.empty()) {
-            err = tier.tier + ".pool_id is required";
-            return false;
-        }
-        auto pit = pool_map.find(tier.pool_id);
-        if (pit == pool_map.end() || pit->second.enabled == 0) {
-            err = "pool_id must exist and be enabled: " + tier.pool_id;
-            return false;
-        }
-#ifndef ENABLE_AWS_SDK
-        if (poolTypeIsObjectStorage(pit->second.type)) {
-            err = "Object storage requires ENABLE_AWS_SDK";
-            return false;
-        }
-#endif
-        if (pit->second.tier != tier.tier) {
-            err = "pool_id " + tier.pool_id + " belongs to " + pit->second.tier +
-                  " tier, expected " + tier.tier;
-            return false;
-        }
-        auto support = poolTypeSupport(tierTypeFromString(tier.tier));
-        if (support.isMember(pit->second.type) && !support[pit->second.type].asBool()) {
-            err = pit->second.type + " pool is not supported for " + tier.tier + " tier";
-            return false;
-        }
-        if (tier.high_watermark_percent >= tier.critical_watermark_percent) {
-            err = "high_watermark_percent must be less than critical_watermark_percent";
-            return false;
-        }
-        if (tier.critical_watermark_percent > 95) {
-            err = "critical_watermark_percent must be <= 95";
-            return false;
-        }
-    }
-
-    if (!hot_found || !hot_enabled) {
-        err = "HOT tier must be enabled";
-        return false;
-    }
-
-    const auto delete_policy = policy.parsedDeletePolicy();
-    if (delete_policy.delete_after_days < max_retain_days) {
-        err = "delete_after_days must be greater than or equal to the largest retain_until_days";
-        return false;
-    }
-    return true;
-}
-
 static int64_t latestTieringJobTime(const std::string &camera_id) {
     TieringJobImp imp;
     auto jobs = imp.query(camera_id, "", "", "", 0, 0, 0, 1);
     if (jobs.empty()) return 0;
     return jobs.front().updated_at > 0 ? jobs.front().updated_at : jobs.front().created_at;
-}
-
-static Json::Value effectivePolicyToJson(const EffectivePolicyResult &result, std::string camera_name) {
-    Json::Value data;
-    bool is_camera_override = result.source == policySourceToString(PolicySource::CAMERA);
-    data["camera_id"]             = result.camera_id;
-    data["camera_name"]           = camera_name;
-    data["policy_id"]             = is_camera_override ? result.policy_id : "";
-    data["effective_policy_id"]   = result.policy_id;
-    data["policy_name"]           = result.policy_name;
-    data["source"]                = result.source;
-    data["source_id"]             = is_camera_override ? result.camera_id : "";
-    data["allow_camera_override"] = result.allow_camera_override;
-    return data;
-}
-
-static int progressPercent(int64_t processed, int64_t total, const std::string &status) {
-    if (status == "DONE") return 100;
-    if (total <= 0) return processed > 0 ? 100 : 0;
-    auto pct = static_cast<int>((processed * 100) / total);
-    return std::max(0, std::min(100, pct));
-}
-
-static Json::Value restoreJobToDocJson(const RestoreJob &j, bool list_view = false) {
-    Json::Value v;
-    v["job_id"]           = j.job_id;
-    v["status"]           = j.status;
-    v["progress_percent"] = progressPercent(j.processed_bytes, j.total_bytes, j.status);
-    v["camera_id"]        = j.camera_id;
-    if (list_view) {
-        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        v["camera_name"] = device ? device->getDeviceTuple().name : "";
-    } else
-        v["type"] = "RESTORE";
-    v["source_tier"]      = j.source_tier;
-    v["target_tier"]      = j.target_tier;
-    if (!list_view) {
-        v["start_time"]      = static_cast<Json::Int64>(j.start_time);
-        v["end_time"]        = static_cast<Json::Int64>(j.end_time);
-        v["processed_bytes"] = static_cast<Json::Int64>(j.processed_bytes);
-    }
-    v["total_bytes"]      = static_cast<Json::Int64>(j.total_bytes);
-    v["playback_ready"]   = (j.status == "DONE");
-    v["created_at"]       = static_cast<Json::Int64>(j.created_at);
-    if (!list_view)
-        v["updated_at"] = static_cast<Json::Int64>(j.updated_at);
-    return v;
-}
-
-static Json::Value tieringJobToDocJson(const TieringJob &j, bool detail = false) {
-    Json::Value v;
-    v["job_id"]                  = j.job_id;
-    v["status"]                  = j.status;
-    v["progress_percent"]        = progressPercent(j.bytes_moved, j.bytes_total, j.status);
-    v["camera_id"]               = j.camera_id;
-    v["stream_id"]               = j.stream_id;
-    v["range_id"]                = j.range_id;
-    if (!detail) {
-        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        v["camera_name"] = device ? device->getDeviceTuple().name : "";
-    }
-    v["source_tier"]             = j.source_tier;
-    v["target_tier"]             = j.target_tier;
-    v["source_pool_id"]          = j.source_pool_id;
-    v["target_pool_id"]          = j.target_pool_id;
-    v["job_trigger"]             = j.job_trigger;
-    v["policy_id"]               = j.policy_id;
-    v["policy_updated_at"]       = static_cast<Json::Int64>(j.policy_updated_at);
-    v["segment_count"]           = 0;
-    v["processed_segment_count"] = 0;
-    v["total_bytes"]             = static_cast<Json::Int64>(j.bytes_total);
-    v["processed_bytes"]         = static_cast<Json::Int64>(j.bytes_moved);
-    v["created_at"]              = static_cast<Json::Int64>(j.created_at);
-    v["updated_at"]              = static_cast<Json::Int64>(j.updated_at);
-    if (detail) {
-        const auto error = j.error_message.value_or("");
-        const bool policy_changed =
-            j.status == jobStatusToString(JobStatus::CANCELLED) &&
-            error.find("POLICY_CHANGED:") == 0;
-        v["error_code"] = error.empty()
-            ? "" : (policy_changed ? "TIERING_JOB_POLICY_CHANGED" : "TIERING_JOB_FAILED");
-        v["error_message"] = error;
-        v["retryable"] = (j.status == "FAILED");
-    }
-    return v;
-}
-
-static std::string worstStatus(const std::string &a, const std::string &b) {
-    auto rank = [](const std::string &s) {
-        if (s == "CRITICAL" || s == "OFFLINE") return 4;
-        if (s == "HIGH") return 3;
-        if (s == "WARNING") return 2;
-        return 1;
-    };
-    return rank(b) > rank(a) ? b : a;
 }
 
 static Json::Value dashboardSummaryToDocJson() {
@@ -407,12 +70,12 @@ static Json::Value dashboardSummaryToDocJson() {
         auto &agg = tiers[p.tier];
         agg.total += p.total_bytes;
         agg.used += p.used_bytes;
-        agg.status = worstStatus(agg.status, pool_status);
+        agg.status = TierStorageBase::worstStorageStatus(agg.status, pool_status);
         total_bytes += p.total_bytes;
         used_bytes += p.used_bytes;
         if (p.enabled && !p.capacity_available)
             ++capacity_unavailable_pool_count;
-        status = worstStatus(status, pool_status);
+        status = TierStorageBase::worstStorageStatus(status, pool_status);
 
         const int used_percent = p.total_bytes > 0
             ? static_cast<int>((p.used_bytes * 100) / p.total_bytes)
@@ -458,97 +121,6 @@ static Json::Value dashboardSummaryToDocJson() {
     return data;
 }
 
-static Json::Value alertToDocJson(const StorageAlert &a, const std::unordered_map<std::string, StoragePool> &pool_map) {
-    Json::Value v;
-    v["id"] = a.id;
-    v["level"] = a.level;
-    v["type"] = a.type;
-    v["pool_id"] = a.pool_id;
-    auto it = pool_map.find(a.pool_id);
-    v["pool_name"] = it == pool_map.end() ? "" : it->second.name;
-    v["message"] = a.message;
-    v["created_at"] = static_cast<Json::Int64>(a.created_at);
-    v["acknowledged"] = (a.acknowledged != 0);
-    return v;
-}
-
-static Json::Value expiredSegmentToDocJson(const SegmentTierRange &r) {
-    ProtectedVideoImp protected_imp;
-    Json::Value v;
-    v["segment_id"] = r.range_id;
-    v["range_id"] = r.range_id;
-    v["camera_id"] = r.camera_id;
-    v["stream_id"] = r.stream_id;
-    {
-        auto device = findDeviceSource(r.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        v["camera_name"] = device ? device->getDeviceTuple().name : "";
-    }
-    v["start_time"] = static_cast<Json::Int64>(r.start_time);
-    v["end_time"] = static_cast<Json::Int64>(r.end_time);
-    v["tier"] = r.tier;
-    v["pool_id"] = r.pool_id;
-    v["segment_count"] = static_cast<Json::Int64>(r.segment_count);
-    v["size_bytes"] = static_cast<Json::Int64>(r.size_bytes);
-    v["expired_at"] = static_cast<Json::Int64>(r.updated_at > 0 ? r.updated_at : r.end_time);
-    v["protected"] = protected_imp.overlaps(r.camera_id, r.start_time, r.end_time);
-    v["evidence"] = false;
-    return v;
-}
-
-static Json::Value protectedVideoToDocJson(const ProtectedVideo &p) {
-    Json::Value v;
-    v["protected_id"] = p.protected_id;
-    v["camera_id"] = p.camera_id;
-    {
-        auto device = findDeviceSource(p.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        v["camera_name"] = device ? device->getDeviceTuple().name : "";
-    }
-    v["start_time"] = static_cast<Json::Int64>(p.start_time);
-    v["end_time"] = static_cast<Json::Int64>(p.end_time);
-    v["type"] = p.type;
-    v["reason"] = p.reason.value_or("");
-    v["created_at"] = static_cast<Json::Int64>(p.created_at);
-    return v;
-}
-
-// ===================================================================
-// Build a StoragePolicy from JSON request body
-// ===================================================================
-static StoragePolicy policyFromJson(const Json::Value &body) {
-    StoragePolicy p;
-    p.id             = body.get("id",   "").asString();
-    p.name           = body.get("name", "").asString();
-    if (body.isMember("description") && !body["description"].isNull())
-        p.description = Optional<std::string>(body["description"].asString());
-    p.enabled               = body.get("enabled", true).asBool() ? 1 : 0;
-    p.total_retention_days  = body.get("total_retention_days", 30).asInt();
-    p.allow_camera_override = body.get("allow_camera_override", true).asBool() ? 1 : 0;
-    p.protect_event_video   = body.get("protect_event_video", false).asBool() ? 1 : 0;
-
-    // Serialize nested objects back to JSON strings for storage
-    Json::FastWriter writer;
-
-    if (body.isMember("tiers") && body["tiers"].isArray()) {
-        p.tiers_json = writer.write(body["tiers"]);
-    } else {
-        p.tiers_json = "[]";
-    }
-
-    if (body.isMember("delete_policy") && body["delete_policy"].isObject()) {
-        p.delete_policy_json = writer.write(body["delete_policy"]);
-    } else {
-        p.delete_policy_json = "{}";
-    }
-
-    if (body.isMember("advanced_rules") && body["advanced_rules"].isObject()) {
-        p.advanced_rules_json = writer.write(body["advanced_rules"]);
-    } else {
-        p.advanced_rules_json = "{}";
-    }
-
-    return p;
-}
-
 // ===================================================================
 // Register all storage API routes
 // ===================================================================
@@ -576,7 +148,7 @@ void registerStorageApis() {
             const std::string pool_status = p.health_status.empty() ? "OK" : p.health_status;
             if (!status.empty() && pool_status != status)
                 continue;
-            data.append(poolToDocJson(p));
+            data.append(TierStorageBase::poolSummaryToJson(p));
         }
         val["data"] = data;
     });
@@ -593,7 +165,7 @@ void registerStorageApis() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
             return;
         }
-        val["data"] = poolDetailToDocJson(pools.front());
+        val["data"] = TierStorageBase::poolDetailToJson(pools.front());
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -756,7 +328,7 @@ void registerStorageApis() {
         PolicyAssignmentImp assignment_imp;
         for (const auto &p : policies) {
             const int applied_count = static_cast<int>(assignment_imp.findCamerasByPolicyId(p.id).size());
-            items.append(policySummaryToDocJson(p, applied_count));
+            items.append(TierStorageBase::policySummaryToJson(p, applied_count));
         }
 
         Json::Value data;
@@ -782,7 +354,8 @@ void registerStorageApis() {
             return;
         }
 
-        val["data"] = policyDetailToDocJson(policies.front(), loadPoolMap());
+        val["data"] = TierStorageBase::policyDetailToJson(
+            policies.front(), TierStorageBase::loadPoolMap());
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -792,10 +365,11 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("name", "total_retention_days");
 
-        auto policy = policyFromJson(allArgs.getArgs());
+        auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
 
         std::string tier_err;
-        if (!validatePolicyByDocRules(policy, tier_err)) {
+        if (!TierStorageBase::validateStoragePolicy(
+                policy, TierStorageBase::loadPoolMap(), tier_err)) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
             return;
         }
@@ -823,10 +397,11 @@ void registerStorageApis() {
             return;
         }
 
-        auto policy = policyFromJson(allArgs.getArgs());
+        auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
 
         std::string tier_err;
-        if (!validatePolicyByDocRules(policy, tier_err)) {
+        if (!TierStorageBase::validateStoragePolicy(
+                policy, TierStorageBase::loadPoolMap(), tier_err)) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
             return;
         }
@@ -1057,7 +632,7 @@ void registerStorageApis() {
         }
         auto device_tuple = device->getDeviceTuple();
         auto result = TierStorageManager::Instance().getEffectivePolicy(device_tuple.device_id);
-        val["data"] = effectivePolicyToJson(result, device_tuple.name);
+        val["data"] = TierStorageBase::effectivePolicyToJson(result, device_tuple.name);
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -1084,7 +659,7 @@ void registerStorageApis() {
             auto result = TierStorageManager::Instance().getEffectivePolicy(device_id);
             if (!policy_id.empty() && result.policy_id != policy_id)
                 continue;
-            items.append(effectivePolicyToJson(result, device_name));
+            items.append(TierStorageBase::effectivePolicyToJson(result, device_name));
         }
 
         Json::Value data;
@@ -1122,7 +697,7 @@ void registerStorageApis() {
         auto device_tuple = device->getDeviceTuple();
 
         Json::Value ranges_json(Json::arrayValue);
-        auto pool_map = loadPoolMap();
+        auto pool_map = TierStorageBase::loadPoolMap();
         auto ranges = TierStorageManager::Instance().getCameraTimeline(camera_id, start_time, end_time);
         for (const auto &r : ranges) {
             if (!include_deleted && r.status == segmentStatusToString(SegmentStatus::DELETED))
@@ -1135,7 +710,7 @@ void registerStorageApis() {
             range["status"]           = r.status;
             range["segment_count"]    = static_cast<Json::Int64>(r.segment_count);
             range["size_bytes"]       = static_cast<Json::Int64>(r.size_bytes);
-            range["restore_required"] = isRestoreRequiredPool(r.pool_id, pool_map);
+            range["restore_required"] = TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map);
             range["has_motion"]       = r.has_motion;
             range["has_event"]        = r.has_event;
             ranges_json.append(range);
@@ -1277,7 +852,7 @@ void registerStorageApis() {
             return;
         }
 
-        auto pool_map = loadPoolMap();
+        auto pool_map = TierStorageBase::loadPoolMap();
         SegmentTierRangeImp range_imp;
         auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
 
@@ -1313,7 +888,7 @@ void registerStorageApis() {
             if (r.status == segmentStatusToString(SegmentStatus::EXPIRED)) has_expired = true;
             if (r.status == segmentStatusToString(SegmentStatus::DELETED)) has_deleted = true;
             if (r.status == segmentStatusToString(SegmentStatus::MISSING)) has_missing = true;
-            if (isRestoreRequiredPool(r.pool_id, pool_map)) {
+            if (TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map)) {
                 restore_required = true;
                 tier = r.tier;
                 if (resolved_stream_id.empty())
@@ -1512,7 +1087,7 @@ void registerStorageApis() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_NOT_FOUND, "Restore job not found");
             return;
         }
-        val["data"] = restoreJobToDocJson(jobs.front());
+        val["data"] = TierStorageBase::restoreJobToJson(jobs.front(), "");
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -1530,8 +1105,11 @@ void registerStorageApis() {
 
         auto jobs = TierStorageManager::Instance().listRestoreJobs(camera_id, status, from_time, to_time, page, size);
         Json::Value items(Json::arrayValue);
-        for (const auto &j : jobs)
-            items.append(restoreJobToDocJson(j, true));
+        for (const auto &j : jobs) {
+            auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            items.append(TierStorageBase::restoreJobToJson(
+                j, device ? device->getDeviceTuple().name : "", true));
+        }
 
         auto total_count = TierStorageManager::Instance().countRestoreJobs(camera_id, status, from_time, to_time);
 
@@ -1566,8 +1144,11 @@ void registerStorageApis() {
         Json::Value items(Json::arrayValue);
         auto jobs = TierStorageManager::Instance().listTieringJobs(
             camera_id, status, source_tier, target_tier, from_time, to_time, page, size);
-        for (const auto &j : jobs)
-            items.append(tieringJobToDocJson(j));
+        for (const auto &j : jobs) {
+            auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            items.append(TierStorageBase::tieringJobToJson(
+                j, device ? device->getDeviceTuple().name : ""));
+        }
 
         auto total_count = TierStorageManager::Instance().countTieringJobs(
             camera_id, status, from_time, to_time);
@@ -1593,7 +1174,7 @@ void registerStorageApis() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
             return;
         }
-        val["data"] = tieringJobToDocJson(jobs.front(), true);
+        val["data"] = TierStorageBase::tieringJobToJson(jobs.front(), "", true);
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -1654,9 +1235,9 @@ void registerStorageApis() {
 
         StorageAlertImp imp;
         Json::Value items(Json::arrayValue);
-        auto pool_map = loadPoolMap();
+        auto pool_map = TierStorageBase::loadPoolMap();
         for (const auto &a : imp.query(level, acknowledged, page, size))
-            items.append(alertToDocJson(a, pool_map));
+            items.append(TierStorageBase::alertToJson(a, pool_map));
 
         Json::Value data;
         data["items"] = items;
@@ -1699,8 +1280,14 @@ void registerStorageApis() {
 
         SegmentTierRangeImp imp;
         Json::Value items(Json::arrayValue);
-        for (const auto &r : imp.findExpired(camera_id, from_time, to_time, page, size))
-            items.append(expiredSegmentToDocJson(r));
+        for (const auto &r : imp.findExpired(camera_id, from_time, to_time, page, size)) {
+            auto device = findDeviceSource(r.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            ProtectedVideoImp protected_imp;
+            items.append(TierStorageBase::expiredSegmentToJson(
+                r,
+                device ? device->getDeviceTuple().name : "",
+                protected_imp.overlaps(r.camera_id, r.start_time, r.end_time)));
+        }
 
         Json::Value data;
         data["items"] = items;
@@ -1842,8 +1429,11 @@ void registerStorageApis() {
 
         ProtectedVideoImp imp;
         Json::Value items(Json::arrayValue);
-        for (const auto &p : imp.query(camera_id, type, from_time, to_time, page, size))
-            items.append(protectedVideoToDocJson(p));
+        for (const auto &p : imp.query(camera_id, type, from_time, to_time, page, size)) {
+            auto device = findDeviceSource(p.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            items.append(TierStorageBase::protectedVideoToJson(
+                p, device ? device->getDeviceTuple().name : ""));
+        }
 
         Json::Value data;
         data["items"] = items;

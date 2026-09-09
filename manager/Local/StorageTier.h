@@ -432,6 +432,19 @@ struct EffectivePolicyResult {
     std::string policy_name;
     std::string source;          // CAMERA | GROUP | PROJECT | SYSTEM_DEFAULT
     bool        allow_camera_override = true;
+
+    Json::Value toJson() const {
+        Json::Value value;
+        const bool camera_override = source == policySourceToString(PolicySource::CAMERA);
+        value["camera_id"] = camera_id;
+        value["policy_id"] = camera_override ? policy_id : "";
+        value["effective_policy_id"] = policy_id;
+        value["policy_name"] = policy_name;
+        value["source"] = source;
+        value["source_id"] = camera_override ? camera_id : "";
+        value["allow_camera_override"] = allow_camera_override;
+        return value;
+    }
 };
 
 struct TierSummaryInfo {

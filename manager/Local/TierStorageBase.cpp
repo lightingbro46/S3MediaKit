@@ -4,6 +4,8 @@
 
 #include "StorageTier.h"
 
+#include <algorithm>
+
 namespace managerkit {
 
 namespace {
@@ -109,6 +111,356 @@ bool TierStorageBase::validatePoolByType(const StoragePool &pool, std::string &e
         }
     }
     return true;
+}
+
+StoragePolicy TierStorageBase::policyFromJson(const Json::Value &body) {
+    StoragePolicy policy;
+    policy.id = body.get("id", "").asString();
+    policy.name = body.get("name", "").asString();
+    if (body.isMember("description") && !body["description"].isNull())
+        policy.description = Optional<std::string>(body["description"].asString());
+    policy.enabled = body.get("enabled", true).asBool() ? 1 : 0;
+    policy.total_retention_days = body.get("total_retention_days", 30).asInt();
+    policy.allow_camera_override = body.get("allow_camera_override", true).asBool() ? 1 : 0;
+    policy.protect_event_video = body.get("protect_event_video", false).asBool() ? 1 : 0;
+
+    Json::FastWriter writer;
+    policy.tiers_json = body.isMember("tiers") && body["tiers"].isArray()
+        ? writer.write(body["tiers"]) : "[]";
+    policy.delete_policy_json = body.isMember("delete_policy") && body["delete_policy"].isObject()
+        ? writer.write(body["delete_policy"]) : "{}";
+    policy.advanced_rules_json = body.isMember("advanced_rules") && body["advanced_rules"].isObject()
+        ? writer.write(body["advanced_rules"]) : "{}";
+    return policy;
+}
+
+bool TierStorageBase::validatePolicyTierMoveChain(
+        const std::vector<PolicyTierConfig> &tiers,
+        std::string &error) {
+    std::vector<PolicyTierConfig> sorted;
+    for (const auto &tier : tiers) {
+        if (tier.enabled)
+            sorted.push_back(tier);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &left,
+                                                const PolicyTierConfig &right) {
+        return tierTypeFromString(left.tier) < tierTypeFromString(right.tier);
+    });
+    if (sorted.empty() || sorted.front().tier != "HOT") {
+        error = "HOT tier must be enabled";
+        return false;
+    }
+    for (size_t index = 0; index + 1 < sorted.size(); ++index) {
+        if (sorted[index].overflow_action != "MOVE_TO_NEXT_TIER") {
+            error = sorted[index + 1].tier + " tier can only be enabled when " +
+                    sorted[index].tier + " overflow_action is MOVE_TO_NEXT_TIER";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TierStorageBase::validatePolicyTiers(const std::vector<PolicyTierConfig> &tiers,
+                                          std::string &error) {
+    if (!validatePolicyTierMoveChain(tiers, error))
+        return false;
+
+    std::vector<PolicyTierConfig> sorted;
+    for (const auto &tier : tiers) {
+        if (tier.enabled)
+            sorted.push_back(tier);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const PolicyTierConfig &left,
+                                                const PolicyTierConfig &right) {
+        return tierTypeFromString(left.tier) < tierTypeFromString(right.tier);
+    });
+
+    int previous_days = -1;
+    std::string previous_tier;
+    for (const auto &tier : sorted) {
+        if (previous_days >= 0 && previous_days >= tier.retain_until_days) {
+            error = previous_tier + ".retain_until_days must be less than " +
+                    tier.tier + ".retain_until_days";
+            return false;
+        }
+        if (tier.high_watermark_percent >= tier.critical_watermark_percent) {
+            error = "high_watermark_percent must be less than critical_watermark_percent";
+            return false;
+        }
+        previous_days = tier.retain_until_days;
+        previous_tier = tier.tier;
+    }
+    return true;
+}
+
+bool TierStorageBase::validateStoragePolicy(const StoragePolicy &policy,
+                                            const StoragePoolMap &pool_map,
+                                            std::string &error) {
+    const auto tiers = policy.parsedTiers();
+    if (!validatePolicyTiers(tiers, error))
+        return false;
+
+    int max_retain_days = 0;
+    for (const auto &tier : tiers) {
+        if (!tier.enabled)
+            continue;
+        if (tier.data_mode != "FULL_VIDEO" || tier.priority != "NORMAL" ||
+            tier.overflow_action == "STOP_RECORDING_AND_ALERT") {
+            error = "Only FULL_VIDEO, NORMAL priority and executable overflow actions are supported";
+            return false;
+        }
+        max_retain_days = std::max(max_retain_days, tier.retain_until_days);
+        if (tier.pool_id.empty()) {
+            error = tier.tier + ".pool_id is required";
+            return false;
+        }
+        auto pool_it = pool_map.find(tier.pool_id);
+        if (pool_it == pool_map.end() || pool_it->second.enabled == 0) {
+            error = "pool_id must exist and be enabled: " + tier.pool_id;
+            return false;
+        }
+#ifndef ENABLE_AWS_SDK
+        if (poolTypeIsObjectStorage(pool_it->second.type)) {
+            error = "Object storage requires ENABLE_AWS_SDK";
+            return false;
+        }
+#endif
+        if (pool_it->second.tier != tier.tier) {
+            error = "pool_id " + tier.pool_id + " belongs to " + pool_it->second.tier +
+                    " tier, expected " + tier.tier;
+            return false;
+        }
+        const auto support = poolTypeSupport(tierTypeFromString(tier.tier));
+        if (support.isMember(pool_it->second.type) && !support[pool_it->second.type].asBool()) {
+            error = pool_it->second.type + " pool is not supported for " + tier.tier + " tier";
+            return false;
+        }
+        if (tier.critical_watermark_percent > 95) {
+            error = "critical_watermark_percent must be <= 95";
+            return false;
+        }
+    }
+
+    if (policy.parsedDeletePolicy().delete_after_days < max_retain_days) {
+        error = "delete_after_days must be greater than or equal to the largest retain_until_days";
+        return false;
+    }
+    return true;
+}
+
+TierStorageBase::StoragePoolMap TierStorageBase::loadPoolMap() {
+    StoragePoolImp repository;
+    StoragePoolMap pools;
+    for (const auto &pool : repository.queryAll())
+        pools[pool.id] = pool;
+    return pools;
+}
+
+bool TierStorageBase::isRestoreRequiredPool(const std::string &pool_id,
+                                            const StoragePoolMap &pool_map) {
+    auto pool_it = pool_map.find(pool_id);
+    return pool_it != pool_map.end() && poolTypeIsObjectStorage(pool_it->second.type);
+}
+
+Json::Value TierStorageBase::poolSummaryToJson(const StoragePool &pool) {
+    Json::Value value;
+    const int64_t free_bytes = pool.total_bytes > pool.used_bytes
+        ? pool.total_bytes - pool.used_bytes : 0;
+    const int used_percent = pool.total_bytes > 0
+        ? static_cast<int>((pool.used_bytes * 100) / pool.total_bytes)
+        : static_cast<int>(pool.usage_pct);
+    value["id"] = pool.id;
+    value["name"] = pool.name;
+    value["type"] = pool.type;
+    value["tier"] = pool.tier;
+    value["status"] = pool.health_status.empty() ? "OK" : pool.health_status;
+    value["total_bytes"] = static_cast<Json::Int64>(pool.total_bytes);
+    value["used_bytes"] = static_cast<Json::Int64>(pool.used_bytes);
+    value["free_bytes"] = static_cast<Json::Int64>(free_bytes);
+    value["used_percent"] = used_percent;
+    value["write_mbps"] = 0;
+    value["read_mbps"] = 0;
+    value["camera_count"] = 0;
+    value["enabled"] = (pool.enabled != 0);
+    value["last_health_check"] = static_cast<Json::Int64>(pool.last_health_check);
+    value["capacity_available"] = pool.capacity_available;
+    value["capacity_status"] = pool.capacity_status;
+    value["capacity_message"] = pool.capacity_message;
+    return value;
+}
+
+Json::Value TierStorageBase::poolDetailToJson(const StoragePool &pool) {
+    Json::Value value = poolSummaryToJson(pool);
+    value["health_status"] = pool.health_status.empty() ? "OK" : pool.health_status;
+    value["usage_pct"] = pool.usage_pct;
+    value["access_key"] = pool.access_key.has_value() && !pool.access_key.value().empty()
+        ? kMaskedCredential : "";
+    value["secret_key"] = pool.secret_key_enc.has_value() && !pool.secret_key_enc.value().empty()
+        ? kMaskedCredential : "";
+    value["base_path"] = pool.base_path.value_or("");
+    value["bucket"] = pool.bucket.value_or("");
+    value["created_at"] = static_cast<Json::Int64>(pool.created_at);
+    value["critical_watermark_percent"] = pool.critical_watermark_percent;
+    value["endpoint"] = pool.endpoint.value_or("");
+    value["health_check_enabled"] = (pool.health_check_enabled != 0);
+    value["high_watermark_percent"] = pool.high_watermark_percent;
+    value["mount_path"] = pool.mount_path.value_or("");
+    value["network_path"] = pool.network_path.value_or("");
+    value["updated_at"] = static_cast<Json::Int64>(pool.updated_at);
+    value["used_percent"] = pool.total_bytes > 0
+        ? static_cast<double>(pool.used_bytes) * 100.0 / static_cast<double>(pool.total_bytes)
+        : static_cast<double>(pool.usage_pct);
+    return value;
+}
+
+Json::Value TierStorageBase::policySummaryToJson(const StoragePolicy &policy,
+                                                 int applied_camera_count) {
+    Json::Value value = policy.toJson();
+    value.removeMember("tiers");
+    value.removeMember("delete_policy");
+    value.removeMember("advanced_rules");
+    value["hot_retain_until_days"] = 0;
+    value["warm_retain_until_days"] = 0;
+    value["cold_retain_until_days"] = 0;
+    for (const auto &tier : policy.parsedTiers()) {
+        if (tier.tier == "HOT") value["hot_retain_until_days"] = tier.retain_until_days;
+        if (tier.tier == "WARM") value["warm_retain_until_days"] = tier.retain_until_days;
+        if (tier.tier == "COLD") value["cold_retain_until_days"] = tier.retain_until_days;
+    }
+    value["delete_after_days"] = policy.parsedDeletePolicy().delete_after_days;
+    value["applied_camera_count"] = applied_camera_count;
+    return value;
+}
+
+Json::Value TierStorageBase::policyDetailToJson(const StoragePolicy &policy,
+                                                const StoragePoolMap &pool_map,
+                                                bool include_summary_fields) {
+    Json::Value value = include_summary_fields
+        ? policySummaryToJson(policy, 0) : policy.toJson();
+    if (!include_summary_fields) {
+        value.removeMember("created_at");
+        value.removeMember("updated_at");
+    }
+    Json::Value tiers(Json::arrayValue);
+    for (const auto &tier : policy.parsedTiers()) {
+        Json::Value tier_value = tier.toJson();
+        auto pool_it = pool_map.find(tier.pool_id);
+        tier_value["pool_name"] = pool_it == pool_map.end() ? "" : pool_it->second.name;
+        tiers.append(tier_value);
+    }
+    value["tiers"] = tiers;
+    value["delete_policy"] = policy.parsedDeletePolicy().toJson();
+    value["advanced_rules"] = policy.parsedAdvancedRules().toJson();
+    return value;
+}
+
+Json::Value TierStorageBase::effectivePolicyToJson(const EffectivePolicyResult &result,
+                                                   const std::string &camera_name) {
+    Json::Value value = result.toJson();
+    value["camera_name"] = camera_name;
+    return value;
+}
+
+namespace {
+
+int progressPercent(int64_t processed, int64_t total, const std::string &status) {
+    if (status == "DONE") return 100;
+    if (total <= 0) return processed > 0 ? 100 : 0;
+    return std::max(0, std::min(100, static_cast<int>((processed * 100) / total)));
+}
+
+} // namespace
+
+Json::Value TierStorageBase::restoreJobToJson(const RestoreJob &job,
+                                              const std::string &camera_name,
+                                              bool list_view) {
+    Json::Value value = job.toJson();
+    value["progress_percent"] = progressPercent(job.processed_bytes, job.total_bytes, job.status);
+    value["playback_ready"] = (job.status == "DONE");
+    value.removeMember("reason");
+    value.removeMember("error_message");
+    if (list_view) {
+        value["camera_name"] = camera_name;
+        value.removeMember("type");
+        value.removeMember("start_time");
+        value.removeMember("end_time");
+        value.removeMember("processed_bytes");
+        value.removeMember("updated_at");
+        value.removeMember("reason");
+        value.removeMember("error_message");
+    } else {
+        value["type"] = "RESTORE";
+    }
+    return value;
+}
+
+Json::Value TierStorageBase::tieringJobToJson(const TieringJob &job,
+                                              const std::string &camera_name,
+                                              bool detail) {
+    Json::Value value = job.toJson();
+    value["progress_percent"] = progressPercent(job.bytes_moved, job.bytes_total, job.status);
+    if (!detail)
+        value["camera_name"] = camera_name;
+    value["segment_count"] = 0;
+    value["processed_segment_count"] = 0;
+    value["total_bytes"] = static_cast<Json::Int64>(job.bytes_total);
+    value["processed_bytes"] = static_cast<Json::Int64>(job.bytes_moved);
+    value.removeMember("segment_start_time");
+    value.removeMember("segment_end_time");
+    value.removeMember("bytes_total");
+    value.removeMember("bytes_moved");
+    if (detail) {
+        const std::string error_message = job.error_message.value_or("");
+        const bool policy_changed = job.status == "CANCELLED" &&
+            error_message.find("POLICY_CHANGED:") == 0;
+        value["error_code"] = error_message.empty()
+            ? "" : (policy_changed ? "TIERING_JOB_POLICY_CHANGED" : "TIERING_JOB_FAILED");
+        value["error_message"] = error_message;
+        value["retryable"] = (job.status == "FAILED");
+    } else {
+        value.removeMember("error_message");
+    }
+    return value;
+}
+
+Json::Value TierStorageBase::alertToJson(const StorageAlert &alert,
+                                         const StoragePoolMap &pool_map) {
+    Json::Value value = alert.toJson();
+    auto pool_it = pool_map.find(alert.pool_id);
+    value["pool_name"] = pool_it == pool_map.end() ? "" : pool_it->second.name;
+    return value;
+}
+
+Json::Value TierStorageBase::expiredSegmentToJson(const SegmentTierRange &range,
+                                                  const std::string &camera_name,
+                                                  bool is_protected) {
+    Json::Value value = range.toJson();
+    value["segment_id"] = range.range_id;
+    value["camera_name"] = camera_name;
+    value["expired_at"] = static_cast<Json::Int64>(
+        range.updated_at > 0 ? range.updated_at : range.end_time);
+    value["protected"] = is_protected;
+    value["evidence"] = false;
+    value.removeMember("status");
+    return value;
+}
+
+Json::Value TierStorageBase::protectedVideoToJson(const ProtectedVideo &video,
+                                                  const std::string &camera_name) {
+    Json::Value value = video.toJson();
+    value["camera_name"] = camera_name;
+    return value;
+}
+
+std::string TierStorageBase::worstStorageStatus(const std::string &left,
+                                                const std::string &right) {
+    const auto rank = [](const std::string &status) {
+        if (status == "CRITICAL" || status == "OFFLINE") return 4;
+        if (status == "HIGH") return 3;
+        if (status == "WARNING") return 2;
+        return 1;
+    };
+    return rank(right) > rank(left) ? right : left;
 }
 
 } // namespace managerkit

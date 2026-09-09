@@ -28,6 +28,24 @@ struct RestoreJob {
     Optional<std::string> error_message;
     int64_t created_at = 0;
     int64_t updated_at = 0;
+
+    Json::Value toJson() const {
+        Json::Value value;
+        value["job_id"] = job_id;
+        value["camera_id"] = camera_id;
+        value["source_tier"] = source_tier;
+        value["target_tier"] = target_tier;
+        value["status"] = status;
+        value["start_time"] = static_cast<Json::Int64>(start_time);
+        value["end_time"] = static_cast<Json::Int64>(end_time);
+        value["total_bytes"] = static_cast<Json::Int64>(total_bytes);
+        value["processed_bytes"] = static_cast<Json::Int64>(processed_bytes);
+        value["reason"] = reason.value_or("");
+        value["error_message"] = error_message.value_or("");
+        value["created_at"] = static_cast<Json::Int64>(created_at);
+        value["updated_at"] = static_cast<Json::Int64>(updated_at);
+        return value;
+    }
 };
 
 DECLARE_ENTITY(RestoreJob, "restore_jobs",
@@ -126,6 +144,18 @@ struct StorageAlert {
     std::string message;
     int acknowledged = 0;
     int64_t created_at = 0;
+
+    Json::Value toJson() const {
+        Json::Value value;
+        value["id"] = id;
+        value["level"] = level;
+        value["type"] = type;
+        value["pool_id"] = pool_id;
+        value["message"] = message;
+        value["acknowledged"] = (acknowledged != 0);
+        value["created_at"] = static_cast<Json::Int64>(created_at);
+        return value;
+    }
 };
 
 DECLARE_ENTITY(StorageAlert, "storage_alerts",
@@ -147,6 +177,18 @@ struct ProtectedVideo {
     std::string type;
     Optional<std::string> reason;
     int64_t created_at = 0;
+
+    Json::Value toJson() const {
+        Json::Value value;
+        value["protected_id"] = protected_id;
+        value["camera_id"] = camera_id;
+        value["start_time"] = static_cast<Json::Int64>(start_time);
+        value["end_time"] = static_cast<Json::Int64>(end_time);
+        value["type"] = type;
+        value["reason"] = reason.value_or("");
+        value["created_at"] = static_cast<Json::Int64>(created_at);
+        return value;
+    }
 };
 
 DECLARE_ENTITY(ProtectedVideo, "protected_videos",

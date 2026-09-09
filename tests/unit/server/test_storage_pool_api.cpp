@@ -94,4 +94,81 @@ TEST(StoragePoolApiTest, ParsesAdHocObjectPoolAndValidatesRequiredFields) {
     pool = TierStorageBase::poolFromJson(body);
     EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error));
 }
+
+TEST(StoragePoolApiTest, SerializesPoolDetailWithoutExposingCredentials) {
+    StoragePool pool;
+    pool.id = "pool-1";
+    pool.name = "Archive";
+    pool.type = "MINIO";
+    pool.tier = "COLD";
+    pool.access_key = Optional<std::string>("access-value");
+    pool.secret_key_enc = Optional<std::string>("secret-value");
+    pool.capacity_available = false;
+    pool.capacity_status = "UNAVAILABLE";
+    pool.capacity_message = "HTTP 403";
+
+    const Json::Value value = TierStorageBase::poolDetailToJson(pool);
+
+    EXPECT_EQ("***********", value["access_key"].asString());
+    EXPECT_EQ("***********", value["secret_key"].asString());
+    EXPECT_FALSE(value["capacity_available"].asBool());
+    EXPECT_EQ("UNAVAILABLE", value["capacity_status"].asString());
+    EXPECT_EQ("HTTP 403", value["capacity_message"].asString());
+}
+
+TEST(StoragePoolApiTest, ValidatesPolicyAgainstProvidedPoolMap) {
+    PolicyTierConfig hot;
+    hot.tier = "HOT";
+    hot.enabled = true;
+    hot.pool_id = "hot-pool";
+    hot.retain_until_days = 7;
+    hot.overflow_action = "DELETE_OLDEST";
+
+    PolicyDeleteConfig deletion;
+    deletion.delete_after_days = 7;
+
+    StoragePolicy policy;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot});
+    Json::FastWriter writer;
+    policy.delete_policy_json = writer.write(deletion.toJson());
+
+    StoragePool pool;
+    pool.id = "hot-pool";
+    pool.type = "LOCAL_DISK";
+    pool.tier = "HOT";
+    pool.enabled = 1;
+    TierStorageBase::StoragePoolMap pools;
+    pools[pool.id] = pool;
+
+    std::string error;
+    EXPECT_TRUE(TierStorageBase::validateStoragePolicy(policy, pools, error)) << error;
+
+    pools[pool.id].enabled = 0;
+    EXPECT_FALSE(TierStorageBase::validateStoragePolicy(policy, pools, error));
+    EXPECT_NE(std::string::npos, error.find("must exist and be enabled"));
+}
+
+TEST(StoragePoolApiTest, SerializesJobViewsWithSharedRules) {
+    RestoreJob restore;
+    restore.job_id = "restore-1";
+    restore.camera_id = "camera-1";
+    restore.status = "RUNNING";
+    restore.total_bytes = 100;
+    restore.processed_bytes = 25;
+    const Json::Value restore_value = TierStorageBase::restoreJobToJson(
+        restore, "Front door", true);
+    EXPECT_EQ(25, restore_value["progress_percent"].asInt());
+    EXPECT_EQ("Front door", restore_value["camera_name"].asString());
+    EXPECT_FALSE(restore_value.isMember("processed_bytes"));
+
+    TieringJob tiering;
+    tiering.job_id = "tier-1";
+    tiering.camera_id = "camera-1";
+    tiering.status = "CANCELLED";
+    tiering.error_message = Optional<std::string>("POLICY_CHANGED: policy updated");
+    const Json::Value tiering_value = TierStorageBase::tieringJobToJson(
+        tiering, "", true);
+    EXPECT_EQ("TIERING_JOB_POLICY_CHANGED", tiering_value["error_code"].asString());
+    EXPECT_FALSE(tiering_value.isMember("camera_name"));
+}
 #endif
