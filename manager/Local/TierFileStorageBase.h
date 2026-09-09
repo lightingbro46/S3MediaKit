@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "TierObjectStorage.h"
+#include "TierStorageStats.h"
 
 namespace managerkit {
 

@@ -355,6 +355,8 @@ TierPoolStats TierFileStorageBase::getPoolStats(const std::string &pool_id) cons
         return stats;
 
     stats.is_online = true;
+    stats.capacity_available = true;
+    stats.capacity_status = "AVAILABLE";
     stats.total_bytes = static_cast<uint64_t>(vfs.f_blocks) * static_cast<uint64_t>(vfs.f_frsize);
     stats.free_bytes = static_cast<uint64_t>(vfs.f_bavail) * static_cast<uint64_t>(vfs.f_frsize);
     stats.used_bytes = stats.total_bytes > stats.free_bytes

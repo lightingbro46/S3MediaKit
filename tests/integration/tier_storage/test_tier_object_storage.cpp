@@ -95,6 +95,13 @@ TEST(TierObjectStorageIntegrationTest, UploadsDownloadsAndDeletesExactSegment) {
         pool_id, "MINIO", endpoint, bucket, base_path, access_key, secret_key));
     ASSERT_TRUE(storage.isRegistered(pool_id));
 
+    const TierPoolStats stats = storage.getPoolStats(pool_id);
+    ASSERT_TRUE(stats.is_online);
+    ASSERT_TRUE(stats.capacity_available) << stats.capacity_message;
+    EXPECT_EQ("AVAILABLE", stats.capacity_status);
+    EXPECT_GT(stats.total_bytes, 0U);
+    EXPECT_LE(stats.used_bytes, stats.total_bytes);
+
     ASSERT_TRUE(storage.uploadSegment(pool_id, source_path, object_key));
     ASSERT_TRUE(storage.segmentExists(pool_id, object_key));
     ASSERT_TRUE(storage.downloadSegment(pool_id, object_key, download_path));

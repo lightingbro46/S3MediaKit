@@ -129,6 +129,9 @@ static Json::Value poolToDocJson(const StoragePool &p) {
     v["camera_count"]      = 0;
     v["enabled"]           = (p.enabled != 0);
     v["last_health_check"] = static_cast<Json::Int64>(p.last_health_check);
+    v["capacity_available"] = p.capacity_available;
+    v["capacity_status"] = p.capacity_status;
+    v["capacity_message"] = p.capacity_message;
     return v;
 }
 
@@ -395,6 +398,7 @@ static Json::Value dashboardSummaryToDocJson() {
 
     int64_t total_bytes = 0;
     int64_t used_bytes = 0;
+    int capacity_unavailable_pool_count = 0;
     std::string status = "OK";
     Json::Value alerts(Json::arrayValue);
 
@@ -406,6 +410,8 @@ static Json::Value dashboardSummaryToDocJson() {
         agg.status = worstStatus(agg.status, pool_status);
         total_bytes += p.total_bytes;
         used_bytes += p.used_bytes;
+        if (p.enabled && !p.capacity_available)
+            ++capacity_unavailable_pool_count;
         status = worstStatus(status, pool_status);
 
         const int used_percent = p.total_bytes > 0
@@ -442,6 +448,8 @@ static Json::Value dashboardSummaryToDocJson() {
     data["free_bytes"] = static_cast<Json::Int64>(total_bytes > used_bytes ? total_bytes - used_bytes : 0);
     data["used_percent"] = total_bytes > 0 ? static_cast<int>((used_bytes * 100) / total_bytes) : 0;
     data["status"] = status;
+    data["capacity_complete"] = capacity_unavailable_pool_count == 0;
+    data["capacity_unavailable_pool_count"] = capacity_unavailable_pool_count;
     data["tier_summary"] = tier_summary;
     data["active_tiering_jobs"] = tiering_imp.countQuery("", "PENDING") + tiering_imp.countQuery("", "RUNNING");
     data["failed_tiering_jobs"] = tiering_imp.countQuery("", "FAILED");

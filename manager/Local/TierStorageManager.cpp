@@ -3823,20 +3823,37 @@ void TierStorageManager::updateRestoreParent(const std::string &job_id) {
 // ===================================================================
 bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &out_message) {
     pool.last_health_check = static_cast<int64_t>(time(nullptr));
+    pool.capacity_available = false;
+    pool.capacity_status = "UNAVAILABLE";
+    pool.capacity_message.clear();
     if (poolTypeIsObjectStorage(pool.type)) {
         if (!_obj_storage.isRegistered(pool.id) && pool.enabled)
             registerPoolObjStorage(pool);
         if (_obj_storage.isRegistered(pool.id)) {
             auto stats = _obj_storage.getPoolStats(pool.id);
             if (stats.is_online) {
-                pool.used_bytes  = static_cast<int64_t>(stats.used_bytes);
-                pool.total_bytes = static_cast<int64_t>(stats.total_bytes);
-                pool.usage_pct   = (stats.total_bytes > 0)
-                    ? static_cast<float>(stats.used_bytes) * 100.f
-                      / static_cast<float>(stats.total_bytes)
-                    : 0.f;
-                pool.health_status = healthToString(computePoolHealth(pool, pool.usage_pct));
-                out_message = "Object storage probe succeeded";
+                pool.capacity_available = stats.capacity_available;
+                pool.capacity_status = stats.capacity_status;
+                pool.capacity_message = stats.capacity_message;
+                if (stats.capacity_available) {
+                    pool.used_bytes  = static_cast<int64_t>(stats.used_bytes);
+                    pool.total_bytes = static_cast<int64_t>(stats.total_bytes);
+                    pool.usage_pct   = (stats.total_bytes > 0)
+                        ? static_cast<float>(stats.used_bytes) * 100.f
+                          / static_cast<float>(stats.total_bytes)
+                        : 0.f;
+                    pool.health_status = healthToString(computePoolHealth(pool, pool.usage_pct));
+                    out_message = "Object storage probe and capacity collection succeeded";
+                } else {
+                    pool.used_bytes = 0;
+                    pool.total_bytes = 0;
+                    pool.usage_pct = 0.0f;
+                    pool.health_status = healthToString(StorageHealth::OK);
+                    out_message = "Object storage is online; capacity is " +
+                                  stats.capacity_status;
+                    if (!stats.capacity_message.empty())
+                        out_message += ": " + stats.capacity_message;
+                }
                 return true;
             }
             out_message = "Object storage connectivity probe failed";
@@ -3852,6 +3869,9 @@ bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &o
         registerPoolFileStorage(pool);
     auto file_stats = file_storage ? file_storage->getPoolStats(pool.id) : TierPoolStats();
     if (file_stats.is_online) {
+        pool.capacity_available = file_stats.capacity_available;
+        pool.capacity_status = file_stats.capacity_status;
+        pool.capacity_message = file_stats.capacity_message;
         pool.used_bytes  = static_cast<int64_t>(file_stats.used_bytes);
         pool.total_bytes = static_cast<int64_t>(file_stats.total_bytes);
         pool.usage_pct   = (file_stats.total_bytes > 0)
@@ -3918,17 +3938,28 @@ void TierStorageManager::checkAndRecordPoolHealth() {
             state.info.timestamp = now;
             state.info.message = probe_message;
             state.info.stale = false;
+            state.info.capacity_available = p.capacity_available;
+            state.info.capacity_status = p.capacity_status;
+            state.info.capacity_message = p.capacity_message;
 
             if (online) {
                 state.info.consecutive_failures = 0;
                 ++state.info.consecutive_successes;
                 state.info.last_success_at = now;
-                state.info.used_bytes = p.used_bytes;
-                state.info.total_bytes = p.total_bytes;
-                state.info.usage_pct = p.usage_pct;
+                if (p.capacity_available) {
+                    state.info.used_bytes = p.used_bytes;
+                    state.info.total_bytes = p.total_bytes;
+                    state.info.usage_pct = p.usage_pct;
+                }
+                std::string online_status = p.health_status;
+                if (!p.capacity_available &&
+                    previous != healthToString(StorageHealth::UNKNOWN) &&
+                    previous != healthToString(StorageHealth::OFFLINE)) {
+                    online_status = previous;
+                }
                 if (previous != healthToString(StorageHealth::OFFLINE) ||
                     state.info.consecutive_successes >= recovery_threshold) {
-                    state.info.health_status = p.health_status;
+                    state.info.health_status = online_status;
                 } else {
                     state.info.health_status = previous;
                 }
@@ -4102,6 +4133,9 @@ void TierStorageManager::mergePoolRuntimeStats(StoragePool &pool) const {
     pool.used_bytes = health.used_bytes;
     pool.total_bytes = health.total_bytes;
     pool.usage_pct = health.usage_pct;
+    pool.capacity_available = health.capacity_available;
+    pool.capacity_status = health.capacity_status;
+    pool.capacity_message = health.capacity_message;
     pool.health_status = health.stale
         ? healthToString(StorageHealth::UNKNOWN) : health.health_status;
     pool.last_health_check = health.timestamp;

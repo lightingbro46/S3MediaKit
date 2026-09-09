@@ -128,12 +128,21 @@ Params optional: `tier`, `type`, `status`, `keyword`.
     "read_mbps": 0,
     "camera_count": 0,
     "enabled": true,
-    "last_health_check": 1787562000
+    "last_health_check": 1787562000,
+    "capacity_available": true,
+    "capacity_status": "AVAILABLE",
+    "capacity_message": ""
   }]
 }
 ```
 
 `write_mbps`, `read_mbps` và `camera_count` hiện là `0`.
+
+Với object storage, trạng thái kết nối và trạng thái dung lượng là độc lập.
+`capacity_status` nhận `AVAILABLE`, `UNAVAILABLE` hoặc `UNSUPPORTED`. Khi MinIO
+online nhưng endpoint metrics không cho phép truy cập, `status` vẫn phản ánh
+kết nối bucket còn `capacity_available=false`; client không nên diễn giải các
+field dung lượng bằng `0` là dung lượng thật.
 
 ### 2.2 Pool detail
 
@@ -587,7 +596,9 @@ Tiering job `PENDING` được transfer dispatcher nhận ngay khi service khở
 
 `GET/POST /media/mserver/storage/dashboard/summary` — permission `150301`.
 
-Response gồm `total_bytes`, `used_bytes`, `free_bytes`, `used_percent`, `status`, `tier_summary[]`, `active_tiering_jobs`, `failed_tiering_jobs`, `active_restore_jobs`, `alerts[]`.
+Response gồm `total_bytes`, `used_bytes`, `free_bytes`, `used_percent`, `status`,
+`capacity_complete`, `capacity_unavailable_pool_count`, `tier_summary[]`,
+`active_tiering_jobs`, `failed_tiering_jobs`, `active_restore_jobs`, `alerts[]`.
 
 Trong `tier_summary`, `estimated_remaining_days` và `write_mbps` hiện là `0`.
 

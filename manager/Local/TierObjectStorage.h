@@ -20,6 +20,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "TierStorageStats.h"
+
 #ifdef ENABLE_AWS_SDK
 
 #include <aws/core/Aws.h>
@@ -42,18 +44,9 @@
 
 namespace managerkit {
 
-// ============================================================================
-// PoolStats — capacity snapshot returned by getPoolStats()
-// ============================================================================
-struct TierPoolStats {
-    bool     is_online   = false;
-    uint64_t total_bytes = 0;
-    uint64_t used_bytes  = 0;
-    uint64_t free_bytes  = 0;
-    // MinIO Prometheus I/O counters (0 if not available)
-    uint64_t rx_bytes    = 0;
-    uint64_t tx_bytes    = 0;
-};
+#ifdef ENABLE_AWS_SDK
+class ObjectStorageMetricsProvider;
+#endif
 
 // ============================================================================
 // TierObjectStorage
@@ -195,10 +188,11 @@ private:
 
     bool ensureBucketExists(const PoolEntry &entry);
 
-    TierPoolStats scrapeMinioPrometheus(const PoolEntry &entry) const;
-
     Aws::SDKOptions _sdk_options;
     bool            _sdk_initialized = false;
+
+    std::unordered_map<std::string, std::shared_ptr<ObjectStorageMetricsProvider>>
+        _metrics_providers;
 
 #endif // ENABLE_AWS_SDK
 

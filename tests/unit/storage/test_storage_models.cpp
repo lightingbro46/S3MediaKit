@@ -100,6 +100,15 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     range.segment_count = 8;
     range.size_bytes = 4096;
     EXPECT_EQ(8, range.toJson()["segment_count"].asInt64());
+
+    StoragePool pool;
+    pool.capacity_available = true;
+    pool.capacity_status = "AVAILABLE";
+    pool.capacity_message = "capacity collected";
+    const Json::Value pool_json = pool.toJson();
+    EXPECT_TRUE(pool_json["capacity_available"].asBool());
+    EXPECT_EQ("AVAILABLE", pool_json["capacity_status"].asString());
+    EXPECT_EQ("capacity collected", pool_json["capacity_message"].asString());
 #endif
 
     SystemMetric metric;

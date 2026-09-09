@@ -6,7 +6,8 @@ find_package(GTest 1.10 REQUIRED)
 include(GoogleTest)
 
 add_executable(integration_tier_storage_minio
-  test_tier_object_storage.cpp)
+  test_tier_object_storage.cpp
+  test_object_storage_metrics.cpp)
 target_compile_options(integration_tier_storage_minio PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 target_compile_definitions(integration_tier_storage_minio PRIVATE ${MK_COMPILE_DEFINITIONS})
 target_link_libraries(integration_tier_storage_minio

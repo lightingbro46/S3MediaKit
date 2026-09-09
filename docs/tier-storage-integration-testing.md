@@ -29,6 +29,8 @@ MinIO test chỉ thao tác object dưới prefix riêng `agent-runs/<pid>`. Test
 - AWS SDK đã có tại `3rdpart/aws-sdk/bin/`.
 - MinIO đang chạy và health endpoint trả về HTTP thành công.
 - Bucket test đã được tạo trước và credential có quyền đọc/ghi/xóa object trong bucket đó.
+- Để kiểm tra capacity MinIO, credential test phải có quyền `admin:Prometheus`;
+  test coi metrics bị `401/403` là thất bại thay vì capacity bằng `0`.
 - Codex agent được khởi động từ process nhận các biến `TIER_TEST_S3_*`.
 
 Kiểm tra MinIO mà không truyền credential:

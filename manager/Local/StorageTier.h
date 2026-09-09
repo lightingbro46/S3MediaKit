@@ -421,6 +421,9 @@ struct PoolHealthInfo {
     int         consecutive_successes = 0;
     bool        stale = true;
     std::string message;
+    bool        capacity_available = false;
+    std::string capacity_status = "UNAVAILABLE";
+    std::string capacity_message;
 };
 
 struct EffectivePolicyResult {

@@ -43,6 +43,9 @@ struct StoragePool {
     int64_t     total_bytes      = 0;
     float       usage_pct        = 0.0f;
     int64_t     last_health_check = 0;
+    bool        capacity_available = false;
+    std::string capacity_status = "UNAVAILABLE";
+    std::string capacity_message;
 
     Json::Value toJson() const {
         Json::Value v;
@@ -68,6 +71,9 @@ struct StoragePool {
         v["total_bytes"]               = static_cast<Json::Int64>(total_bytes);
         v["usage_pct"]                 = usage_pct;
         v["last_health_check"]         = static_cast<Json::Int64>(last_health_check);
+        v["capacity_available"]        = capacity_available;
+        v["capacity_status"]           = capacity_status;
+        v["capacity_message"]          = capacity_message;
         return v;
     }
 };

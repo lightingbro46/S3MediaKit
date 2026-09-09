@@ -1,4 +1,5 @@
 #include "TierObjectStorage.h"
+#include "ObjectStorageMetricsProvider.h"
 
 #include "Util/logger.h"
 #include "Util/File.h"
@@ -9,7 +10,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 
 #ifdef ENABLE_AWS_SDK
 
@@ -21,7 +21,6 @@
 #include <aws/s3/model/UploadPartRequest.h>
 #include <aws/s3/model/CompleteMultipartUploadRequest.h>
 #include <aws/s3/model/AbortMultipartUploadRequest.h>
-#include <curl/curl.h>
 #include <sys/stat.h>
 
 #endif // ENABLE_AWS_SDK
@@ -77,6 +76,7 @@ TierObjectStorage::TierObjectStorage() {
     _sdk_options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Off;
     Aws::InitAPI(_sdk_options);
     _sdk_initialized = true;
+    _metrics_providers["MINIO"] = std::make_shared<MinioPrometheusMetricsProvider>();
     DebugL << "TierObjectStorage: AWS SDK initialised";
 #endif
 }
@@ -86,6 +86,7 @@ TierObjectStorage::~TierObjectStorage() {
     {
         std::lock_guard<std::mutex> lk(_mtx);
         _pool_map.clear();
+        _metrics_providers.clear();
     }
     if (_sdk_initialized) {
         Aws::ShutdownAPI(_sdk_options);
@@ -167,78 +168,6 @@ bool TierObjectStorage::ensureBucketExists(const PoolEntry &entry) {
     }
     WarnL << "TierObjectStorage: cannot create bucket '" << entry.bucket << "': " << out.GetError().GetMessage();
     return false;
-}
-
-// ---------------------------------------------------------------------------
-// Prometheus scraper for MinIO capacity metrics
-// ---------------------------------------------------------------------------
-static size_t curlWrite(char *ptr, size_t sz, size_t nmemb, void *ud) {
-    auto *buf = static_cast<std::string *>(ud);
-    const size_t bytes = sz * nmemb;
-    try {
-        buf->append(ptr, bytes);
-        return bytes;
-    } catch (...) {
-        return 0;
-    }
-}
-
-static std::string httpGet(const std::string &url, int timeout_s = 3) {
-    CURL *c = curl_easy_init();
-    if (!c) return {};
-    std::string body;
-    curl_easy_setopt(c, CURLOPT_URL,           url.c_str());
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curlWrite);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA,     &body);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT,       static_cast<long>(timeout_s));
-    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
-    CURLcode result = curl_easy_perform(c);
-    curl_easy_cleanup(c);
-    return result == CURLE_OK ? body : std::string();
-}
-
-static double firstMetric(const std::string &body, const std::string &name) {
-    std::istringstream ss(body);
-    std::string line;
-    while (std::getline(ss, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        if (line.rfind(name, 0) != 0) continue;
-        auto pos = line.rfind('}');
-        try {
-            return std::stod(pos != std::string::npos
-                             ? line.substr(pos + 1)
-                             : line.substr(name.size() + 1));
-        } catch (...) {}
-    }
-    return 0.0;
-}
-
-TierPoolStats TierObjectStorage::scrapeMinioPrometheus(const PoolEntry &entry) const {
-    TierPoolStats stats;
-    std::string base = entry.endpoint;
-    if (!base.empty() && base.back() == '/') base.pop_back();
-
-    // Cluster capacity
-    auto cluster = httpGet(base + "/minio/v2/metrics/cluster");
-    if (cluster.empty())
-        return stats;
-    double total = firstMetric(cluster, "minio_cluster_capacity_raw_total_bytes");
-    double free  = firstMetric(cluster, "minio_cluster_capacity_raw_free_bytes");
-    stats.total_bytes = static_cast<uint64_t>(total);
-    stats.free_bytes  = static_cast<uint64_t>(free);
-    stats.used_bytes  = total > free ? static_cast<uint64_t>(total - free) : 0;
-    stats.is_online   = (total > 0);
-
-    // Traffic counters
-    auto bucket = httpGet(base + "/minio/v2/metrics/bucket");
-    if (!bucket.empty()) {
-        stats.rx_bytes = static_cast<uint64_t>(
-            firstMetric(bucket, "minio_bucket_traffic_received_bytes"));
-        stats.tx_bytes = static_cast<uint64_t>(
-            firstMetric(bucket, "minio_bucket_traffic_sent_bytes"));
-    }
-    return stats;
 }
 
 // ============================================================================
@@ -620,25 +549,52 @@ bool TierObjectStorage::segmentExists(const std::string &pool_id,
 // ============================================================================
 TierPoolStats TierObjectStorage::getPoolStats(const std::string &pool_id) {
     PoolEntry entry;
+    std::string secret_key;
+    std::shared_ptr<ObjectStorageMetricsProvider> metrics_provider;
     {
         std::lock_guard<std::mutex> lk(_mtx);
         auto it = _pool_map.find(pool_id);
         if (it == _pool_map.end()) return {};
         entry = it->second;
+        auto secret_it = _pool_secret_map.find(pool_id);
+        if (secret_it != _pool_secret_map.end())
+            secret_key = secret_it->second;
+        auto provider_it = _metrics_providers.find(entry.type);
+        if (provider_it != _metrics_providers.end())
+            metrics_provider = provider_it->second;
     }
 
-    // MinIO exposes Prometheus at /minio/v2/metrics/cluster
-    // Generic S3 (AWS) does not — fall back to HeadBucket connectivity check
     TierPoolStats stats;
-    if (entry.type == "MINIO")
-        stats = scrapeMinioPrometheus(entry);
-    if (!stats.is_online) {
-        // Try HeadBucket as a connectivity probe
-        Aws::S3::Model::HeadBucketRequest req;
-        req.SetBucket(entry.bucket.c_str());
-        auto client = entry.health_client ? entry.health_client : entry.client;
-        stats.is_online = client->HeadBucket(req).IsSuccess();
+    Aws::S3::Model::HeadBucketRequest request;
+    request.SetBucket(entry.bucket.c_str());
+    auto client = entry.health_client ? entry.health_client : entry.client;
+    stats.is_online = client->HeadBucket(request).IsSuccess();
+    if (!stats.is_online)
+        return stats;
+
+    if (!metrics_provider) {
+        stats.capacity_status = "UNSUPPORTED";
+        stats.capacity_message = "Capacity metrics are not supported for object storage type " +
+                                 entry.type;
+        return stats;
     }
+
+    ObjectStorageMetricsContext context;
+    context.type = entry.type;
+    context.endpoint = entry.endpoint;
+    context.bucket = entry.bucket;
+    context.access_key = entry.access_key;
+    context.secret_key = secret_key;
+    const ObjectStorageMetricsResult metrics = metrics_provider->collect(context);
+    stats.capacity_available = metrics.capacity_available;
+    stats.traffic_available = metrics.traffic_available;
+    stats.total_bytes = metrics.total_bytes;
+    stats.used_bytes = metrics.used_bytes;
+    stats.free_bytes = metrics.free_bytes;
+    stats.rx_bytes = metrics.rx_bytes;
+    stats.tx_bytes = metrics.tx_bytes;
+    stats.capacity_status = metrics.capacity_status;
+    stats.capacity_message = metrics.capacity_message;
     return stats;
 }
 
