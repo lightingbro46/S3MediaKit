@@ -67,6 +67,8 @@ foreach(manager_case
     RequiresRestoreWhenObjectCacheIsMissing
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     DefersTierMoveUntilDestinationPoolRecovers
+    CancelsPendingJobAfterPolicyReassignment
+    CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers
     BackfillsAtomicallyAndIdempotently
     BackfillsAcrossLocalMidnightIntoSeparateRanges

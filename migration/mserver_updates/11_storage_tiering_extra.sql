@@ -1,3 +1,19 @@
+-- Preserve the policy context that admitted each durable tiering job.
+ALTER TABLE "tiering_jobs"
+    ADD COLUMN "job_trigger" TEXT NOT NULL DEFAULT 'LEGACY';
+
+ALTER TABLE "tiering_jobs"
+    ADD COLUMN "policy_id" TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE "tiering_jobs"
+    ADD COLUMN "policy_updated_at" INTEGER NOT NULL DEFAULT 0;
+
+-- Pressure jobs used a durable ID prefix before job_trigger was persisted.
+UPDATE "tiering_jobs"
+SET "job_trigger" = 'PRESSURE'
+WHERE "job_trigger" = 'LEGACY'
+  AND "job_id" LIKE 'ptj-%';
+
 -- Storage Tiering: restore jobs for cold playback workflows
 CREATE TABLE IF NOT EXISTS "restore_jobs" (
     "job_id"          TEXT    NOT NULL PRIMARY KEY,

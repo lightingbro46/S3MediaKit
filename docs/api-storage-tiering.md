@@ -577,9 +577,9 @@ Detail gồm `job_id`, `type=RESTORE`, status/progress, camera/tier, time window
 - `POST /media/mserver/storage/tieringJob/retry` — permission `150302`; required `job_id`; đặt job về `PENDING`, bytes moved về `0`.
 - `POST /media/mserver/storage/tieringJob/cancel` — permission `150302`; required `job_id`; chỉ cancel job chưa `DONE`/`FAILED`/`CANCELLED`.
 
-Item list/detail gồm `job_id`, status/progress, camera/stream/range, source/target tier/pool, bytes và timestamps. `segment_count`/`processed_segment_count` hiện luôn `0`. Detail thêm `error_code` (`TIERING_JOB_FAILED` khi có message), `error_message`, `retryable`.
+Item list/detail gồm `job_id`, status/progress, camera/stream/range, source/target tier/pool, bytes, timestamps và context lúc tạo job: `job_trigger`, `policy_id`, `policy_updated_at`. `job_trigger` nhận `LEGACY`, `RETENTION`, `PRESSURE` hoặc `DELETE_POLICY_EXTERNAL`; `segment_count`/`processed_segment_count` hiện luôn `0`. Detail thêm `error_code`, `error_message`, `retryable`. Job tự hủy vì policy camera không còn cho phép thao tác trả `status=CANCELLED`, `error_code=TIERING_JOB_POLICY_CHANGED`, `retryable=false`; lỗi thực thi khác tiếp tục dùng `TIERING_JOB_FAILED`.
 
-Tiering job `PENDING` được transfer dispatcher nhận ngay khi service khởi động, khi cycle tạo job hoặc khi một worker hoàn tất. Số job chạy đồng thời được giới hạn toàn cục và theo source/target pool; không có API run-now.
+Tiering job `PENDING` được transfer dispatcher nhận ngay khi service khởi động, khi cycle tạo job hoặc khi một worker hoàn tất. Trước khi claim và ngay trước I/O, backend đối chiếu route/retention/trigger với effective policy hiện tại của camera. Job không còn hợp lệ được chuyển atomically sang `CANCELLED`; lỗi đọc policy chỉ defer job ở `PENDING`. Số job chạy đồng thời được giới hạn toàn cục và theo source/target pool; không có API run-now.
 
 ## 8. Dashboard
 

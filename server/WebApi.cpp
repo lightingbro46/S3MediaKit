@@ -1057,6 +1057,9 @@ static Json::Value apiTieringJobToJson(const TieringJob &j) {
     v["target_tier"] = j.target_tier;
     v["source_pool_id"] = j.source_pool_id;
     v["target_pool_id"] = j.target_pool_id;
+    v["job_trigger"] = j.job_trigger;
+    v["policy_id"] = j.policy_id;
+    v["policy_updated_at"] = static_cast<Json::Int64>(j.policy_updated_at);
     v["segment_count"] = 0;
     v["processed_segment_count"] = 0;
     v["total_bytes"] = static_cast<Json::Int64>(j.bytes_total);

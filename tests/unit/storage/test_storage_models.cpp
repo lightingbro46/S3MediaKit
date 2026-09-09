@@ -78,9 +78,22 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     job.target_tier = "COLD";
     job.bytes_total = 1024;
     job.error_message = std::string("retry");
+    job.job_trigger = tieringJobTriggerToString(TieringJobTrigger::PRESSURE);
+    job.policy_id = "policy";
+    job.policy_updated_at = 123;
     EXPECT_EQ("job", job.toJson()["job_id"].asString());
     EXPECT_EQ(1024, job.toJson()["bytes_total"].asInt64());
     EXPECT_EQ("retry", job.toJson()["error_message"].asString());
+    EXPECT_EQ("PRESSURE", job.toJson()["job_trigger"].asString());
+    EXPECT_EQ("policy", job.toJson()["policy_id"].asString());
+    EXPECT_EQ(123, job.toJson()["policy_updated_at"].asInt64());
+    EXPECT_EQ(TieringJobTrigger::PRESSURE,
+              tieringJobTriggerFromString(job.toJson()["job_trigger"].asString()));
+    EXPECT_EQ(TieringJobTrigger::LEGACY, tieringJobTriggerFromString("UNKNOWN"));
+
+    PolicyDeleteConfig deletion;
+    deletion.external_pool_id = "archive-pool";
+    EXPECT_EQ("archive-pool", deletion.toJson()["external_pool_id"].asString());
 
     SegmentTierRange range;
     range.range_id = "range";

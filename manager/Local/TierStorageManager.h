@@ -332,7 +332,25 @@ private:
     bool queueTierMoveJob(const SegmentTierRange &range,
                           const PolicyTierConfig &src_tier_cfg,
                           const PolicyTierConfig &dst_tier_cfg,
-                          bool pressure);
+                          const StoragePolicy &policy,
+                          TieringJobTrigger trigger);
+
+    enum class PendingJobPolicyDecision {
+        VALID,
+        STALE,
+        DEFER
+    };
+
+    bool loadEffectiveStoragePolicy(const std::string &camera_id,
+                                    StoragePolicy &out_policy,
+                                    std::string &out_error);
+
+    PendingJobPolicyDecision validatePendingJobAgainstPolicy(
+        const TieringJob &job,
+        const SegmentTierRange *range,
+        const StoragePolicy &policy,
+        int64_t now,
+        std::string &out_reason) const;
 
     bool splitRangeForTieringThreshold(const SegmentTierRange &range,
                                        int64_t move_threshold,

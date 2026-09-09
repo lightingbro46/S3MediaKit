@@ -345,6 +345,9 @@ static Json::Value tieringJobToDocJson(const TieringJob &j, bool detail = false)
     v["target_tier"]             = j.target_tier;
     v["source_pool_id"]          = j.source_pool_id;
     v["target_pool_id"]          = j.target_pool_id;
+    v["job_trigger"]             = j.job_trigger;
+    v["policy_id"]               = j.policy_id;
+    v["policy_updated_at"]       = static_cast<Json::Int64>(j.policy_updated_at);
     v["segment_count"]           = 0;
     v["processed_segment_count"] = 0;
     v["total_bytes"]             = static_cast<Json::Int64>(j.bytes_total);
@@ -353,7 +356,11 @@ static Json::Value tieringJobToDocJson(const TieringJob &j, bool detail = false)
     v["updated_at"]              = static_cast<Json::Int64>(j.updated_at);
     if (detail) {
         const auto error = j.error_message.value_or("");
-        v["error_code"] = error.empty() ? "" : "TIERING_JOB_FAILED";
+        const bool policy_changed =
+            j.status == jobStatusToString(JobStatus::CANCELLED) &&
+            error.find("POLICY_CHANGED:") == 0;
+        v["error_code"] = error.empty()
+            ? "" : (policy_changed ? "TIERING_JOB_POLICY_CHANGED" : "TIERING_JOB_FAILED");
         v["error_message"] = error;
         v["retryable"] = (j.status == "FAILED");
     }

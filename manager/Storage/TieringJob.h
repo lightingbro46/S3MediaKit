@@ -35,6 +35,9 @@ struct TieringJob {
     Optional<std::string> error_message;
     int64_t created_at         = 0;
     int64_t updated_at         = 0;
+    std::string job_trigger    = tieringJobTriggerToString(TieringJobTrigger::LEGACY);
+    std::string policy_id;
+    int64_t policy_updated_at  = 0;
 
     Json::Value toJson() const {
         Json::Value v;
@@ -54,6 +57,9 @@ struct TieringJob {
         v["error_message"]       = error_message.value_or("");
         v["created_at"]          = static_cast<Json::Int64>(created_at);
         v["updated_at"]          = static_cast<Json::Int64>(updated_at);
+        v["job_trigger"]         = job_trigger;
+        v["policy_id"]           = policy_id;
+        v["policy_updated_at"]   = static_cast<Json::Int64>(policy_updated_at);
         return v;
     }
 };
@@ -75,7 +81,10 @@ DECLARE_ENTITY(TieringJob, "tiering_jobs",
     &TieringJob::bytes_moved,         "bytes_moved",
     &TieringJob::error_message,       "error_message",
     &TieringJob::created_at,          "created_at",
-    &TieringJob::updated_at,          "updated_at"
+    &TieringJob::updated_at,          "updated_at",
+    &TieringJob::job_trigger,         "job_trigger",
+    &TieringJob::policy_id,           "policy_id",
+    &TieringJob::policy_updated_at,   "policy_updated_at"
 )
 
 // ===================================================================
@@ -628,14 +637,25 @@ public:
 
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
         std::vector<SegmentTierRange> ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
         for (const auto &range_id : range_ids) {
             if (range_id.empty())
                 continue;
-            SegmentTierRange key;
-            key.range_id = range_id;
-            auto rows = SqliteRepository<SegmentTierRange>::findById(key);
-            ret.insert(ret.end(), rows.begin(), rows.end());
+            if (!params.empty())
+                where << ", ";
+            where << "?";
+            params.push_back(range_id);
         }
+        if (params.empty())
+            return ret;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("range_id IN (" + where.str() + ")", params));
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
         std::sort(ret.begin(), ret.end(), [](const SegmentTierRange &a, const SegmentTierRange &b) {
             if (a.camera_id != b.camera_id) return a.camera_id < b.camera_id;
             return a.start_time < b.start_time;

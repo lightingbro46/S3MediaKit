@@ -193,7 +193,7 @@ Các bảng job/trạng thái hỗ trợ:
 - `storage_alerts`: cảnh báo storage.
 - `protected_videos`: đoạn video được bảo vệ/evidence/locked.
 
-`tiering_jobs` lưu `job_id`, camera/stream/range, source/target tier, source/target pool, status, segment time window, `bytes_total`, `bytes_moved`, `error_message`, `created_at`, `updated_at`.
+`tiering_jobs` lưu `job_id`, camera/stream/range, source/target tier, source/target pool, status, segment time window, `bytes_total`, `bytes_moved`, `error_message`, `created_at`, `updated_at`. Ba field `job_trigger`, `policy_id`, `policy_updated_at` ghi lại nguyên nhân và policy context tại thời điểm tạo job để kiểm tra lại khi policy camera thay đổi. Row cũ được migrate với `LEGACY`; job pressure cũ có prefix `ptj-` được nhận diện thành `PRESSURE`.
 
 `restore_jobs` lưu summary parent. Mỗi child trong `restore_job_segments` giữ stream, range, segment path, source pool, bytes và lỗi riêng. Job auto-restore dùng `reason=AUTO_RECORD_ACCESS`.
 
@@ -363,7 +363,7 @@ Luồng hiện tại theo code:
 1. Reset ticker và ghi log bắt đầu.
 2. Refresh `_pool_cache` từ `storage_pools`.
 3. Gọi `ensureSystemDefaultPolicy()` để đảm bảo policy `policy-system-default` tồn tại.
-4. Dispatch `tiering_jobs` trạng thái `PENDING` sang worker queue có giới hạn tổng và giới hạn trên từng pool. Copy/upload không chặn maintenance scan; worker hoàn tất sẽ tự dispatch phần backlog tiếp theo.
+4. Kiểm tra effective policy hiện tại rồi dispatch `tiering_jobs` trạng thái `PENDING` sang worker queue có giới hạn tổng và giới hạn trên từng pool. Job không còn đúng route, target pool, retention hoặc trigger được chuyển `PENDING -> CANCELLED` với nguyên nhân `POLICY_CHANGED`; lỗi lookup policy giữ job ở `PENDING`. Copy/upload không chặn maintenance scan; worker kiểm tra policy thêm lần nữa ngay trước I/O và tự dispatch phần backlog khi hoàn tất.
 5. Lấy danh sách camera có dữ liệu `AVAILABLE`:
    - Từ `segment_tier_ranges.findDistinctAvailableCameras()`.
 6. Với từng camera:
@@ -394,9 +394,9 @@ move_threshold không được mới hơn now - min_segment_age_minutes_before_m
 6. Nếu range vượt quá ngưỡng nhưng còn phần mới chưa đủ tuổi, backend split range tại ranh giới segment gần `move_threshold`.
 7. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
 
-`queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị.
+`queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị. Job ghi `job_trigger=RETENTION` cùng `policy_id`/`policy_updated_at` hiện tại.
 
-`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window. Dispatcher chỉ claim job khi source cho phép đọc và destination cho phép ghi. Pool `UNKNOWN`, `OFFLINE`, có snapshot stale hoặc bị disable làm job tiếp tục ở `PENDING`; health cycle sẽ gọi lại dispatcher sau khi probe để job tự resume khi pool phục hồi.
+`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window. Dispatcher cache effective policy theo camera trong mỗi lượt và batch-load range để tránh N+1 query. Dispatcher chỉ claim job khi policy vẫn cho phép, source cho phép đọc và destination cho phép ghi. Pool `UNKNOWN`, `OFFLINE`, có snapshot stale hoặc bị disable làm job tiếp tục ở `PENDING`; health cycle sẽ gọi lại dispatcher sau khi probe để job tự resume khi pool phục hồi.
 
 Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNING`, `HIGH` hoặc `CRITICAL`, nhưng không ghi thêm dữ liệu vào destination `CRITICAL`. Pool tắt `health_check_enabled` giữ hành vi tương thích cũ, miễn là pool vẫn enabled. Worker kiểm tra lại health sau khi claim; nếu trạng thái thay đổi, job được trả từ `RUNNING` về `PENDING` thay vì đánh dấu `FAILED`.
 
@@ -414,7 +414,7 @@ Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNI
 - Range source đang `AVAILABLE`.
 - Range đủ ổn định theo `min_segment_age_minutes_before_move`, tối thiểu 60 giây.
 
-Luồng này cũng tạo `tiering_jobs` qua `queueTierMoveJob(..., pressure=true)`. Mục tiêu reclaim xấp xỉ tới dưới high watermark 5%.
+Luồng này cũng tạo `tiering_jobs` với `job_trigger=PRESSURE`. Mục tiêu reclaim xấp xỉ tới dưới high watermark 5%.
 
 ### 5.4 Retention Theo CameraOption
 

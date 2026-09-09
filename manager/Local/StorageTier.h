@@ -204,6 +204,29 @@ inline JobStatus jobStatusFromString(const std::string &s) {
     return JobStatus::PENDING;
 }
 
+enum class TieringJobTrigger {
+    LEGACY,
+    RETENTION,
+    PRESSURE,
+    DELETE_POLICY_EXTERNAL
+};
+
+inline std::string tieringJobTriggerToString(TieringJobTrigger trigger) {
+    switch (trigger) {
+        case TieringJobTrigger::RETENTION:              return "RETENTION";
+        case TieringJobTrigger::PRESSURE:               return "PRESSURE";
+        case TieringJobTrigger::DELETE_POLICY_EXTERNAL: return "DELETE_POLICY_EXTERNAL";
+        default:                                        return "LEGACY";
+    }
+}
+
+inline TieringJobTrigger tieringJobTriggerFromString(const std::string &value) {
+    if (value == "RETENTION")              return TieringJobTrigger::RETENTION;
+    if (value == "PRESSURE")               return TieringJobTrigger::PRESSURE;
+    if (value == "DELETE_POLICY_EXTERNAL") return TieringJobTrigger::DELETE_POLICY_EXTERNAL;
+    return TieringJobTrigger::LEGACY;
+}
+
 // ===================================================================
 // Policy source (effective policy resolution)
 // ===================================================================
@@ -302,6 +325,7 @@ struct PolicyDeleteConfig {
         v["skip_protected_video"]           = skip_protected_video;
         v["skip_evidence_video"]            = skip_evidence_video;
         v["require_approval_before_delete"] = require_approval_before_delete;
+        v["external_pool_id"]               = external_pool_id;
         return v;
     }
 

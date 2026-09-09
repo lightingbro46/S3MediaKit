@@ -2329,7 +2329,8 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
                           << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "");
                     continue;
                 }
-                queueTierMoveJob(move_range, src_tier_cfg, *dst_tier_cfg, false);
+                queueTierMoveJob(move_range, src_tier_cfg, *dst_tier_cfg, policy,
+                                 TieringJobTrigger::RETENTION);
             } else if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::DELETE_OLDEST)) {
                 expireRangeBestEffort(move_range, segmentStatusToString(SegmentStatus::DELETED));
             } else if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::STOP_RECORDING_AND_ALERT)) {
@@ -2343,7 +2344,8 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
 bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
                                           const PolicyTierConfig &src_tier_cfg,
                                           const PolicyTierConfig &dst_tier_cfg,
-                                          bool pressure) {
+                                          const StoragePolicy &policy,
+                                          TieringJobTrigger trigger) {
     std::string source_pool_id = range.pool_id.empty() ? src_tier_cfg.pool_id : range.pool_id;
     if (source_pool_id.empty() || dst_tier_cfg.pool_id.empty()) {
         WarnL << "Refuse to queue tiering job with empty pool_id camera=" << range.camera_id
@@ -2371,6 +2373,7 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
 
     int64_t now = static_cast<int64_t>(time(nullptr));
     TieringJob job;
+    const bool pressure = trigger == TieringJobTrigger::PRESSURE;
     job.job_id             = StrUUID::make_guid(8, pressure ? "ptj" : "tj");
     job.camera_id          = range.camera_id;
     job.stream_id          = range.stream_id;
@@ -2385,6 +2388,9 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
     job.bytes_total        = range.size_bytes;
     job.created_at         = now;
     job.updated_at         = now;
+    job.job_trigger        = tieringJobTriggerToString(trigger);
+    job.policy_id          = policy.id;
+    job.policy_updated_at  = policy.updated_at;
 
     if (!job_imp.add(job))
         return false;
@@ -2488,7 +2494,8 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
             if (src_pool.usage_pct < static_cast<float>(src_pool.high_watermark_percent))
                 continue;
 
-            if (queueTierMoveJob(range, src_tier_cfg, *dst_tier_cfg, true)) {
+            if (queueTierMoveJob(range, src_tier_cfg, *dst_tier_cfg, policy,
+                                 TieringJobTrigger::PRESSURE)) {
                 moved_by_pool[src_pool.id] += std::max<int64_t>(0, range.size_bytes);
             }
 
@@ -2574,7 +2581,8 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
             dst_cfg.tier = target_pool.tier;
             dst_cfg.enabled = true;
             dst_cfg.pool_id = target_pool.id;
-            queueTierMoveJob(range, src_cfg, dst_cfg, false);
+            queueTierMoveJob(range, src_cfg, dst_cfg, policy,
+                             TieringJobTrigger::DELETE_POLICY_EXTERNAL);
             continue;
         }
 
@@ -2799,6 +2807,132 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
     }
 }
 
+bool TierStorageManager::loadEffectiveStoragePolicy(const std::string &camera_id,
+                                                    StoragePolicy &out_policy,
+                                                    std::string &out_error) {
+    out_policy = StoragePolicy();
+    out_error.clear();
+    auto effective = getEffectivePolicy(camera_id);
+    if (effective.policy_id.empty()) {
+        out_error = "Camera has no effective storage policy";
+        return false;
+    }
+    auto policies = getPolicy(effective.policy_id);
+    if (policies.empty()) {
+        out_error = "Effective storage policy not found: " + effective.policy_id;
+        return false;
+    }
+    out_policy = policies.front();
+    return true;
+}
+
+TierStorageManager::PendingJobPolicyDecision
+TierStorageManager::validatePendingJobAgainstPolicy(
+        const TieringJob &job,
+        const SegmentTierRange *range,
+        const StoragePolicy &policy,
+        int64_t now,
+        std::string &out_reason) const {
+    out_reason.clear();
+    const auto trigger = tieringJobTriggerFromString(job.job_trigger);
+    // Rows created before policy context was persisted cannot be validated
+    // semantically without guessing their original trigger. Preserve their
+    // legacy dispatch behaviour; every newly-created job records a trigger.
+    if (trigger == TieringJobTrigger::LEGACY && job.policy_id.empty())
+        return PendingJobPolicyDecision::VALID;
+
+    if (!policy.enabled) {
+        out_reason = "effective policy is disabled";
+        return PendingJobPolicyDecision::STALE;
+    }
+
+    auto tiers = policy.parsedTiers();
+    std::sort(tiers.begin(), tiers.end(), [](const PolicyTierConfig &a,
+                                             const PolicyTierConfig &b) {
+        return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+    });
+
+    const PolicyTierConfig *source_config = nullptr;
+    const PolicyTierConfig *target_config = nullptr;
+    for (size_t i = 0; i < tiers.size(); ++i) {
+        if (!tiers[i].enabled || tiers[i].tier != job.source_tier)
+            continue;
+        source_config = &tiers[i];
+        for (size_t j = i + 1; j < tiers.size(); ++j) {
+            if (tiers[j].enabled) {
+                target_config = &tiers[j];
+                break;
+            }
+        }
+        break;
+    }
+
+    const bool tier_route_matches =
+        source_config && target_config &&
+        source_config->overflow_action ==
+            overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER) &&
+        target_config->tier == job.target_tier &&
+        target_config->pool_id == job.target_pool_id;
+
+    bool retention_move_valid = false;
+    bool pressure_move_valid = false;
+    if (tier_route_matches) {
+        const auto rules = policy.parsedAdvancedRules();
+        const int64_t min_age_seconds =
+            static_cast<int64_t>(rules.min_segment_age_minutes_before_move) * 60;
+        int64_t retention_threshold = now -
+            static_cast<int64_t>(source_config->retain_until_days) * 86400;
+        if (retention_threshold > now - min_age_seconds)
+            retention_threshold = now - min_age_seconds;
+        retention_move_valid = job.segment_end_time <= retention_threshold;
+
+        const int64_t pressure_threshold =
+            now - std::max<int64_t>(min_age_seconds, 60);
+        pressure_move_valid = rules.enable_early_move_when_pool_high &&
+                              job.segment_end_time <= pressure_threshold;
+    }
+
+    const auto delete_policy = policy.parsedDeletePolicy();
+    bool external_move_valid =
+        delete_policy.delete_after_days > 0 &&
+        delete_policy.delete_mode ==
+            deleteModeToString(DeleteMode::MOVE_TO_EXTERNAL_STORAGE) &&
+        delete_policy.external_pool_id == job.target_pool_id &&
+        job.segment_end_time <= now -
+            static_cast<int64_t>(delete_policy.delete_after_days) * 86400;
+    if (external_move_valid && range && isRangeDeletionProtected(*range))
+        external_move_valid = false;
+
+    bool valid = false;
+    switch (trigger) {
+        case TieringJobTrigger::RETENTION:
+            valid = retention_move_valid;
+            break;
+        case TieringJobTrigger::PRESSURE:
+            valid = pressure_move_valid;
+            break;
+        case TieringJobTrigger::DELETE_POLICY_EXTERNAL:
+            valid = external_move_valid;
+            break;
+        case TieringJobTrigger::LEGACY:
+        default:
+            valid = retention_move_valid || pressure_move_valid || external_move_valid;
+            break;
+    }
+    if (valid)
+        return PendingJobPolicyDecision::VALID;
+
+    out_reason = StrPrinter
+        << "trigger=" << tieringJobTriggerToString(trigger)
+        << ", original_policy=" << (job.policy_id.empty() ? "LEGACY" : job.policy_id)
+        << "@" << job.policy_updated_at
+        << ", effective_policy=" << policy.id << "@" << policy.updated_at
+        << ", route=" << job.source_tier << "->" << job.target_tier
+        << ", target_pool=" << job.target_pool_id
+        << " is no longer eligible";
+    return PendingJobPolicyDecision::STALE;
+}
+
 void TierStorageManager::dispatchPendingTieringJobs() {
     if (_stopping)
         return;
@@ -2816,26 +2950,109 @@ void TierStorageManager::dispatchPendingTieringJobs() {
         pool_snapshot = _pool_cache;
     }
 
-    std::vector<TieringJob> dispatch_jobs;
     auto state = _transfer_dispatch_state;
+    {
+        std::lock_guard<std::mutex> lk(state->mutex);
+        if (max_concurrent - state->active_total <= 0)
+            return;
+    }
+
+    struct CachedPolicyContext {
+        bool attempted = false;
+        bool available = false;
+        StoragePolicy policy;
+        std::string error;
+    };
+    std::unordered_map<std::string, CachedPolicyContext> policy_cache;
+    std::vector<TieringJob> eligible_candidates;
+    TieringJobImp job_imp;
+    const int candidate_limit = std::max(max_concurrent * 32, max_concurrent);
+    const int max_refill_passes = 8;
+    for (int pass = 0; pass < max_refill_passes; ++pass) {
+        auto candidates = job_imp.findByStatus(
+            jobStatusToString(JobStatus::PENDING), candidate_limit);
+        if (candidates.empty())
+            break;
+
+        std::vector<std::string> range_ids;
+        range_ids.reserve(candidates.size());
+        for (const auto &job : candidates) {
+            if (!job.range_id.empty())
+                range_ids.push_back(job.range_id);
+        }
+        std::unordered_map<std::string, SegmentTierRange> ranges_by_id;
+        for (const auto &range : SegmentTierRangeImp().findByRangeIds(range_ids))
+            ranges_by_id[range.range_id] = range;
+
+        int removed_candidates = 0;
+        for (auto job : candidates) {
+            if (job.source_pool_id.empty() || job.target_pool_id.empty()) {
+                if (job_imp.transitionStatus(
+                    job.job_id, jobStatusToString(JobStatus::PENDING),
+                    jobStatusToString(JobStatus::FAILED), -1,
+                    "Tiering job has empty source_pool_id or target_pool_id")) {
+                    ++removed_candidates;
+                }
+                continue;
+            }
+
+            auto &cached_policy = policy_cache[job.camera_id];
+            if (!cached_policy.attempted) {
+                cached_policy.attempted = true;
+                try {
+                    cached_policy.available = loadEffectiveStoragePolicy(
+                        job.camera_id, cached_policy.policy, cached_policy.error);
+                } catch (const std::exception &ex) {
+                    cached_policy.error = ex.what();
+                } catch (...) {
+                    cached_policy.error = "Unknown policy lookup error";
+                }
+            }
+            if (!cached_policy.available) {
+                DebugL << "Defer tiering job because policy validation is unavailable: job="
+                       << job.job_id << " camera=" << job.camera_id
+                       << " error=" << cached_policy.error;
+                continue;
+            }
+
+            const SegmentTierRange *range = nullptr;
+            auto range_it = ranges_by_id.find(job.range_id);
+            if (range_it != ranges_by_id.end())
+                range = &range_it->second;
+            std::string policy_reason;
+            const auto policy_decision = validatePendingJobAgainstPolicy(
+                job, range, cached_policy.policy,
+                static_cast<int64_t>(time(nullptr)), policy_reason);
+            if (policy_decision == PendingJobPolicyDecision::STALE) {
+                if (job_imp.transitionStatus(
+                        job.job_id, jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::CANCELLED), job.bytes_moved,
+                        "POLICY_CHANGED: " + policy_reason)) {
+                    ++removed_candidates;
+                    InfoL << "Cancelled stale pending tiering job: job=" << job.job_id
+                          << " camera=" << job.camera_id << " reason=" << policy_reason;
+                }
+                continue;
+            }
+            if (policy_decision == PendingJobPolicyDecision::DEFER)
+                continue;
+            eligible_candidates.push_back(job);
+        }
+
+        if (!eligible_candidates.empty() || removed_candidates == 0)
+            break;
+    }
+
+    std::vector<TieringJob> dispatch_jobs;
     {
         std::lock_guard<std::mutex> lk(state->mutex);
         int capacity = max_concurrent - state->active_total;
         if (capacity <= 0)
             return;
 
-        TieringJobImp job_imp;
-        auto candidates = job_imp.findByStatus(jobStatusToString(JobStatus::PENDING), std::max(max_concurrent * 32, capacity));
-        for (auto job : candidates) {
+        for (auto job : eligible_candidates) {
             if (capacity <= 0)
                 break;
-            if (job.source_pool_id.empty() || job.target_pool_id.empty()) {
-                job_imp.transitionStatus(
-                    job.job_id, jobStatusToString(JobStatus::PENDING),
-                    jobStatusToString(JobStatus::FAILED), -1,
-                    "Tiering job has empty source_pool_id or target_pool_id");
-                continue;
-            }
             auto src_it = pool_snapshot.find(job.source_pool_id);
             auto dst_it = pool_snapshot.find(job.target_pool_id);
             if (src_it == pool_snapshot.end() || dst_it == pool_snapshot.end()) {
@@ -2937,6 +3154,58 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
             return;
         job.status = jobStatusToString(JobStatus::RUNNING);
     } else if (job.status != jobStatusToString(JobStatus::RUNNING)) {
+        return;
+    }
+
+    StoragePolicy effective_policy;
+    std::string policy_error;
+    SegmentTierRange policy_range;
+    const SegmentTierRange *policy_range_ptr = nullptr;
+    PendingJobPolicyDecision policy_decision = PendingJobPolicyDecision::DEFER;
+    try {
+        if (loadEffectiveStoragePolicy(job.camera_id, effective_policy, policy_error)) {
+            if (!job.range_id.empty()) {
+                auto ranges = SegmentTierRangeImp().findByRangeIds({job.range_id});
+                if (!ranges.empty()) {
+                    policy_range = ranges.front();
+                    policy_range_ptr = &policy_range;
+                }
+            }
+            policy_decision = validatePendingJobAgainstPolicy(
+                job, policy_range_ptr, effective_policy,
+                static_cast<int64_t>(time(nullptr)), policy_error);
+        }
+    } catch (const std::exception &ex) {
+        policy_error = ex.what();
+        policy_decision = PendingJobPolicyDecision::DEFER;
+    } catch (...) {
+        policy_error = "Unknown policy validation error";
+        policy_decision = PendingJobPolicyDecision::DEFER;
+    }
+
+    if (policy_decision == PendingJobPolicyDecision::STALE) {
+        const std::string reason = "POLICY_CHANGED: " + policy_error;
+        if (!job_imp.transitionStatus(
+                job.job_id, jobStatusToString(JobStatus::RUNNING),
+                jobStatusToString(JobStatus::CANCELLED), job.bytes_moved, reason)) {
+            WarnL << "Failed to cancel stale running tiering job before I/O: " << job.job_id;
+        } else {
+            job.status = jobStatusToString(JobStatus::CANCELLED);
+            InfoL << "Cancelled stale tiering job before I/O: job=" << job.job_id
+                  << " reason=" << policy_error;
+        }
+        return;
+    }
+    if (policy_decision == PendingJobPolicyDecision::DEFER) {
+        const std::string reason = "POLICY_VALIDATION_UNAVAILABLE: " + policy_error;
+        if (!job_imp.transitionStatus(
+                job.job_id, jobStatusToString(JobStatus::RUNNING),
+                jobStatusToString(JobStatus::PENDING), job.bytes_moved, reason)) {
+            WarnL << "Failed to defer tiering job after policy validation error: " << job.job_id;
+        } else {
+            job.status = jobStatusToString(JobStatus::PENDING);
+            DebugL << reason << " job=" << job.job_id;
+        }
         return;
     }
 

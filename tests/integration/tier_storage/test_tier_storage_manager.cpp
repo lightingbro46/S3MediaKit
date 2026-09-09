@@ -1347,6 +1347,180 @@ int scenarioPoolHealthDefersTierMove(const std::string &root) {
     return 0;
 }
 
+int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    StoragePool old_warm = makeHotPool(root, "policy-old-warm", "policy-old-warm");
+    old_warm.tier = tierTypeToString(WarmTier);
+    old_warm.health_check_enabled = 1;
+    require(manager.createPool(old_warm) == old_warm.id, "Old WARM pool creation failed");
+
+    StoragePool new_warm = makeHotPool(root, "policy-new-warm", "policy-new-warm");
+    new_warm.tier = tierTypeToString(WarmTier);
+    new_warm.health_check_enabled = 0;
+    require(manager.createPool(new_warm) == new_warm.id, "New WARM pool creation failed");
+    drainWorkThreadPool();
+
+    const std::string old_warm_root = root + "/policy-old-warm";
+    removeTree(old_warm_root);
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+
+    StoragePolicy old_policy = makeMovePolicy(hot_pools.front().id, old_warm.id);
+    old_policy.id = "policy-old-route";
+    require(manager.createPolicy(old_policy) == old_policy.id, "Old move policy creation failed");
+    StoragePolicy new_policy = makeMovePolicy(hot_pools.front().id, new_warm.id);
+    new_policy.id = "policy-new-route";
+    require(manager.createPolicy(new_policy) == new_policy.id, "New move policy creation failed");
+
+    const std::string camera = "camera-policy-reassignment";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, old_policy.id, "seed pending job"),
+            "Old policy assignment failed");
+
+    const std::string segment_key = "2026-08-20/18-00-00";
+    const std::string source = root + "/hot/record/" + camera + "/" + stream +
+                               "/" + segment_key + ".mp4";
+    const std::string old_destination = old_warm_root + "/record/" + camera + "/" +
+                                        stream + "/" + segment_key + ".mp4";
+    const std::string new_destination = root + "/policy-new-warm/record/" + camera +
+                                        "/" + stream + "/" + segment_key + ".mp4";
+    const std::string payload = "policy-reassignment-tier-move";
+    writeFile(source, payload);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    writeTimeBlock(root, camera, stream, source, now - 180, now - 120,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, now - 180, now - 120,
+                                            static_cast<int64_t>(payload.size())),
+            "Policy reassignment range registration failed");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::PENDING) &&
+                jobs.front().job_trigger == tieringJobTriggerToString(TieringJobTrigger::RETENTION) &&
+                jobs.front().policy_id == old_policy.id,
+            "Old policy did not leave one contextual PENDING job");
+
+    require(manager.assignPolicyToCamera(camera, new_policy.id, "change destination"),
+            "New policy assignment failed");
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    jobs = manager.listTieringJobs(camera);
+    bool found_cancelled = false;
+    for (const auto &job : jobs) {
+        if (job.policy_id == old_policy.id &&
+            job.status == jobStatusToString(JobStatus::CANCELLED) &&
+            job.error_message.value_or("").find("POLICY_CHANGED:") == 0) {
+            found_cancelled = true;
+        }
+    }
+    require(found_cancelled,
+            "Reassigned policy did not cancel the stale PENDING job");
+    require(!File::fileExist(old_destination),
+            "Stale job wrote to the old destination after policy reassignment");
+
+    bool replacement_done = false;
+    for (const auto &job : jobs) {
+        replacement_done = replacement_done ||
+            (job.status == jobStatusToString(JobStatus::DONE) &&
+             job.target_pool_id == new_warm.id && job.policy_id == new_policy.id);
+    }
+    if (!replacement_done)
+        manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto current = manager.listTieringJobs(camera);
+        if (current.size() != 2)
+            return false;
+        bool cancelled = false;
+        bool done = false;
+        for (const auto &job : current) {
+            cancelled = cancelled || job.status == jobStatusToString(JobStatus::CANCELLED);
+            done = done || (job.status == jobStatusToString(JobStatus::DONE) &&
+                            job.target_pool_id == new_warm.id &&
+                            job.policy_id == new_policy.id);
+        }
+        return cancelled && done;
+    }, 5000), "A replacement job was not completed with the reassigned policy");
+    drainWorkThreadPool();
+    require(!File::fileExist(source) && File::loadFile(new_destination) == payload,
+            "Replacement job did not move data to the reassigned destination");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioPolicyRetentionChangeCancelsPendingJob(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    StoragePool warm = makeHotPool(root, "policy-retention-warm", "policy-retention-warm");
+    warm.tier = tierTypeToString(WarmTier);
+    warm.health_check_enabled = 1;
+    require(manager.createPool(warm) == warm.id, "Retention WARM pool creation failed");
+    drainWorkThreadPool();
+    removeTree(root + "/policy-retention-warm");
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+
+    StoragePolicy policy = makeMovePolicy(hot_pools.front().id, warm.id);
+    policy.id = "policy-retention-change";
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const std::string camera = "camera-policy-retention-change";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "seed pending job"),
+            "Retention policy assignment failed");
+
+    const std::string source = root + "/hot/record/" + camera + "/" + stream +
+                               "/2026-08-20/19-00-00.mp4";
+    const std::string payload = "policy-retention-change";
+    writeFile(source, payload);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    writeTimeBlock(root, camera, stream, source, now - 180, now - 120,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, now - 180, now - 120,
+                                            static_cast<int64_t>(payload.size())),
+            "Retention change range registration failed");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::PENDING),
+            "Retention change fixture did not create a PENDING job");
+
+    auto persisted = manager.getPolicy(policy.id);
+    require(persisted.size() == 1, "Cannot reload retention policy");
+    auto tiers = persisted.front().parsedTiers();
+    require(!tiers.empty(), "Retention policy has no tiers");
+    for (auto &tier : tiers) {
+        if (tier.tier == tierTypeToString(HotTier))
+            tier.retain_until_days = 30;
+    }
+    persisted.front().tiers_json = StoragePolicy::tiersToJson(tiers);
+    require(manager.updatePolicy(persisted.front()), "Retention policy update failed");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::CANCELLED) &&
+                jobs.front().error_message.value_or("").find("POLICY_CHANGED:") == 0,
+            "Retention increase did not cancel the no-longer-eligible job");
+    require(File::fileExist(source), "Cancelled retention job removed source data");
+
+    manager.stop();
+    return 0;
+}
+
 int scenarioPoolHealthGuardsDeletion(const std::string &root) {
     migrateDatabase(root);
     configureTemporaryMp4Cleanup(false);
@@ -2145,6 +2319,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
+        if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
+        if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
         if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
@@ -2324,6 +2500,16 @@ TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOff
 TEST(TierStorageManagerIntegrationTest, DefersTierMoveUntilDestinationPoolRecovers) {
     TempRoot root;
     EXPECT_EQ(0, runChild("pool-health-tier-move", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("policy-reassignment-cancels-job", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterRetentionIncrease) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("policy-retention-cancels-job", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, GuardsRangeAndOrphanDeletionUntilPoolRecovers) {
