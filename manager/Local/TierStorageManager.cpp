@@ -20,6 +20,7 @@
 #include "Local/TimeRebuilder.h"
 #include "Local/MotionBlockManager.h"
 #include "Common/DeviceSource.h"
+#include "Storage/Bookmark.h"
 #include "Storage/TierBackfillTask.h"
 
 #include "TierStorageManager.h"
@@ -2740,8 +2741,9 @@ void TierStorageManager::processMetadataCleanupJobs() {
             // drain. Do not run later metadata steps until a subsequent cycle
             // verifies that every TimeBlock identity for this range is gone.
             if (identities.empty()) {
-                bool completed = cleanupRangeMotionMetadata(range);
-                cleanup_imp.updateResult(job.range_id, completed, completed ? "" : "Invalid motion cleanup range");
+                bool completed = cleanupRangeMotionMetadata(range) &&
+                                 cleanupRangeBookmarkMetadata(range);
+                cleanup_imp.updateResult(job.range_id, completed, completed ? "" : "Invalid metadata cleanup range");
                 continue;
             }
             StorageManager::Instance().removeCameraTimeBlocks(range.camera_id, identities);
@@ -2776,6 +2778,16 @@ bool TierStorageManager::cleanupRangeMotionMetadata(const SegmentTierRange &rang
 #else
     (void)range;
 #endif
+    return true;
+}
+
+bool TierStorageManager::cleanupRangeBookmarkMetadata(const SegmentTierRange &range) {
+    if (range.camera_id.empty() || range.start_time <= 0 || range.end_time < range.start_time)
+        return false;
+    BookmarkImp().removeByTimeRange(
+        static_cast<uint64_t>(range.start_time),
+        static_cast<uint64_t>(range.end_time),
+        range.camera_id);
     return true;
 }
 

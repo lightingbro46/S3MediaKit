@@ -31,7 +31,9 @@
 #include "Local/TimeMuxer.h"
 #include "Local/TimeQuery.h"
 #include "Storage/DbStorage.h"
+#include "Storage/Bookmark.h"
 #include "Storage/MigrationHistory.h"
+#include "Storage/MiscData.h"
 #include "Storage/StorageTierExtra.h"
 #include "Storage/TierBackfillTask.h"
 #include "Storage/TieringJob.h"
@@ -2379,8 +2381,32 @@ bool metadataCleanupPending(const std::string &range_id,
     return false;
 }
 
+void addBookmark(const std::string &guid,
+                 const std::string &camera,
+                 int64_t start_time,
+                 int64_t end_time) {
+    Bookmark bookmark;
+    bookmark.guid = guid;
+    bookmark.camera_guid = camera;
+    bookmark.start_time = start_time;
+    bookmark.end_time = end_time;
+    bookmark.duration = static_cast<int>(end_time - start_time);
+    bookmark.created = static_cast<int64_t>(::time(nullptr));
+    BookmarkImp().add(bookmark, "");
+}
+
+bool bookmarkExists(const std::string &guid) {
+    return !BookmarkImp().findById(guid).empty();
+}
+
+bool bookmarkIndexExists(const std::string &guid) {
+    return !BookmarkIndexImp().findByBookmarkGuid(guid).empty();
+}
+
 int scenarioMotionCleanupSafety(const std::string &root) {
     migrateDatabase(root);
+    migrateEscDatabase(root);
+    MiscDataImp().initMiscData();
     mINI::Instance()[Record::kArchiveName] = "archive";
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
@@ -2411,6 +2437,13 @@ int scenarioMotionCleanupSafety(const std::string &root) {
                    next_day + 3600, next_day + 3660, 1);
     addMetadataCleanupRange(empty_range, empty_camera, "main",
                             day + 3500, day + 3700);
+    const std::string deleted_bookmark = "bookmark-range-deleted";
+    const std::string retained_bookmark = "bookmark-range-retained";
+    const std::string other_camera_bookmark = "bookmark-other-camera";
+    addBookmark(deleted_bookmark, empty_camera, day + 3600, day + 3660);
+    addBookmark(retained_bookmark, empty_camera, day + 3400, day + 3450);
+    addBookmark(other_camera_bookmark, "camera-bookmark-other",
+                day + 3600, day + 3660);
 
     const std::string no_timefile_camera = "camera-motion-no-timefile";
     const std::string no_timefile_range = "range-motion-no-timefile";
@@ -2438,6 +2471,9 @@ int scenarioMotionCleanupSafety(const std::string &root) {
                    day + 7200, day + 7260, 1);
     addMetadataCleanupRange(sequential_range, sequential_camera, "main",
                             day + 7100, day + 7300);
+    const std::string sequential_bookmark = "bookmark-range-sequential";
+    addBookmark(sequential_bookmark, sequential_camera,
+                day + 7150, day + 7200);
 
     TierMetadataCleanupJob missing_range_job;
     missing_range_job.range_id = "range-motion-missing";
@@ -2469,16 +2505,30 @@ int scenarioMotionCleanupSafety(const std::string &root) {
             "Motion was not deleted for an empty camera day");
     require(!File::fileExist(no_timefile_block) && !File::fileExist(no_timefile_index),
             "Motion was not deleted for a camera without any TimeFile");
-    require(!metadataCleanupPending(retained_range) &&
-                !metadataCleanupPending(empty_range) &&
-                !metadataCleanupPending(no_timefile_range),
-            "Metadata job completed before all range metadata was processed");
+    require(!metadataCleanupPending(retained_range),
+            "Retained-day metadata job did not complete");
+    require(!metadataCleanupPending(empty_range),
+            "Empty-day metadata job did not complete");
+    require(!metadataCleanupPending(no_timefile_range),
+            "No-TimeFile metadata job did not complete");
+    require(!bookmarkExists(deleted_bookmark) &&
+                !bookmarkIndexExists(deleted_bookmark),
+            "Bookmark or its cluster index inside the deleted range was retained");
+    require(bookmarkExists(retained_bookmark) &&
+                bookmarkIndexExists(retained_bookmark),
+            "Bookmark or its cluster index outside the deleted range was removed");
+    require(bookmarkExists(other_camera_bookmark) &&
+                bookmarkIndexExists(other_camera_bookmark),
+            "Bookmark or its cluster index belonging to another camera was removed");
     std::string sequential_error;
     require(metadataCleanupPending(sequential_range, &sequential_error) &&
                 sequential_error.find("Awaiting timefile swap verification") == 0,
             "Metadata job did not wait for TimeFile swap verification");
     require(File::fileExist(sequential_block) && File::fileExist(sequential_index),
             "Motion was deleted in the same pass that scheduled TimeFile cleanup");
+    require(bookmarkExists(sequential_bookmark) &&
+                bookmarkIndexExists(sequential_bookmark),
+            "Bookmark or its cluster index was deleted before TimeFile cleanup completed");
     std::string missing_range_error;
     require(metadataCleanupPending(missing_range_job.range_id, &missing_range_error) &&
                 missing_range_error.find("Metadata missing") == 0,
@@ -2495,6 +2545,9 @@ int scenarioMotionCleanupSafety(const std::string &root) {
             "Metadata job did not complete after TimeFile cleanup");
     require(!File::fileExist(sequential_block) && !File::fileExist(sequential_index),
             "Motion was not deleted after TimeFile cleanup completed");
+    require(!bookmarkExists(sequential_bookmark) &&
+                !bookmarkIndexExists(sequential_bookmark),
+            "Bookmark or its cluster index was not deleted after TimeFile cleanup completed");
 
     manager.stop();
     return 0;

@@ -135,7 +135,7 @@ Các luồng tiering, timeline, summary, playback và restore phải lấy `segm
    - `MARK_EXPIRED_WAIT_APPROVAL` chuyển range sang `EXPIRED` nhưng chưa xóa file.
    - Automatic delete/`DELETE_OLDEST` chỉ chuyển range sang `DELETED` khi mọi file/object đã xóa thành công.
    - Sau đó `tier_metadata_cleanup_jobs` xóa đúng các `TimeBlock` tương ứng; move giữa tier không xóa timefile.
-   - `tier_metadata_cleanup_jobs` xử lý tuần tự toàn bộ metadata của range: xác minh cleanup TimeFile, sau đó cleanup motion trên các ngày bị ảnh hưởng và chỉ chuyển `DONE` khi mọi bước hoàn tất. Camera không có TimeFile được hiểu là không có dữ liệu lưu trữ và tiếp tục cleanup; các lỗi mở/đọc khác giữ job ở `PENDING`.
+   - `tier_metadata_cleanup_jobs` xử lý tuần tự toàn bộ metadata của range: xác minh cleanup TimeFile, cleanup motion trên các ngày bị ảnh hưởng, rồi cleanup bookmark trong range và chỉ chuyển `DONE` khi mọi bước hoàn tất. Camera không có TimeFile được hiểu là không có dữ liệu lưu trữ và tiếp tục cleanup; các lỗi mở/đọc khác giữ job ở `PENDING`.
    - `protected_videos` và `segment_retention_overrides` được kiểm tra tập trung trước mọi đường xóa.
 
 4. **Luồng restore COLD**
@@ -445,10 +445,11 @@ segment_tier_ranges = DELETED
   -> cùng metadata job xác định các ngày giao với range
   -> TimeQuery toàn camera xác minh ngày không còn TimeBlock
   -> gọi MotionBlockManager xóa .mblk/.idx của các ngày rỗng
+  -> xóa bookmark của camera có start_time nằm trong range
   -> mọi metadata step thành công mới đánh dấu job DONE
 ```
 
-Pipeline không lưu phase: mỗi lần retry chạy lại từ bước TimeFile và dựa trên trạng thái dữ liệu thực tế làm checkpoint. Vì vậy mọi metadata step phải idempotent. Motion hiện có độ phân giải theo ngày: `TierStorageManager` lọc các ngày không còn TimeBlock rồi chuyển danh sách đó cho API hiện có của `MotionBlockManager`. Nếu stream/range khác vẫn còn TimeBlock trong ngày, motion ngày đó được giữ lại. Move HOT/WARM/COLD không chạy metadata cleanup vì video vẫn còn được lưu giữ.
+Pipeline không lưu phase: mỗi lần retry chạy lại từ bước TimeFile và dựa trên trạng thái dữ liệu thực tế làm checkpoint. Vì vậy mọi metadata step phải idempotent. Motion hiện có độ phân giải theo ngày: `TierStorageManager` lọc các ngày không còn TimeBlock rồi chuyển danh sách đó cho API hiện có của `MotionBlockManager`. Nếu stream/range khác vẫn còn TimeBlock trong ngày, motion ngày đó được giữ lại. Bookmark được cleanup bằng `BookmarkImp::removeByTimeRange()` sau bước motion; bookmark ngoài range hoặc thuộc camera khác được giữ lại. Move HOT/WARM/COLD không chạy metadata cleanup vì video vẫn còn được lưu giữ.
 Range terminal và cleanup job `PENDING` không bị TTL cleanup để giữ đủ `start_time/end_time` cho retry sau restart. Range chỉ được prune khi không còn cleanup job `PENDING`; cleanup job `DONE` được prune cùng thời hạn range terminal.
 
 ### 5.5 Move LOCAL/NAS
