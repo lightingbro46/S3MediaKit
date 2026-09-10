@@ -18,6 +18,7 @@
 #include "Local/StatisticRecorder.h"
 #include "Local/TimeQuery.h"
 #include "Local/TimeRebuilder.h"
+#include "Local/MotionBlockManager.h"
 #include "Common/DeviceSource.h"
 #include "Storage/TierBackfillTask.h"
 
@@ -117,6 +118,27 @@ static const char kDefaultHotPoolId[] = "pool-default-hot";
 static const char kDefaultHotPoolName[] = "Default HOT Tier Storage";
 static const char kSystemDefaultPolicyId[] = "policy-system-default";
 static const char kSystemDefaultPolicyName[] = "System Default Policy";
+
+static uint64_t nextLocalDayStart(uint64_t day_start) {
+    return StampUtils::getStartOfDay(day_start + 36 * 3600);
+}
+
+static std::vector<uint64_t> localDaysForWindow(int64_t start_time, int64_t end_time) {
+    std::vector<uint64_t> days;
+    if (start_time <= 0 || end_time < start_time)
+        return days;
+    const uint64_t exclusive_end = static_cast<uint64_t>(
+        end_time == start_time ? end_time + 1 : end_time);
+    uint64_t day = StampUtils::getStartOfDay(static_cast<uint64_t>(start_time));
+    while (day < exclusive_end) {
+        days.push_back(day);
+        auto next = nextLocalDayStart(day);
+        if (next <= day)
+            break;
+        day = next;
+    }
+    return days;
+}
 
 struct DiskSegmentInfo {
     std::string camera_id;
@@ -2696,10 +2718,14 @@ void TierStorageManager::processMetadataCleanupJobs() {
         try {
             auto ranges = range_imp.findByRangeIds({job.range_id});
             if (ranges.empty()) {
-                cleanup_imp.updateResult(job.range_id, true);
+                cleanup_imp.updateResult(job.range_id, false, "Metadata missing for pending cleanup job");
                 continue;
             }
             const auto &range = ranges.front();
+            if (job.camera_id != range.camera_id) {
+                cleanup_imp.updateResult(job.range_id, false, "Camera ID mismatch for pending cleanup job");
+                continue;
+            }
             auto segments = collectSegmentFilesForRange(range);
             std::vector<TimeBlockIdentity> identities;
             for (const auto &segment : segments) {
@@ -2710,14 +2736,15 @@ void TierStorageManager::processMetadataCleanupJobs() {
                 identity.segment_path = segment.segment_path;
                 identities.push_back(identity);
             }
-            // Completion is verified in a later maintenance cycle. TimeRebuilder
-            // swaps files asynchronously after active readers drain, so marking
-            // this job DONE here would lose the durable retry point on a crash.
+            // TimeRebuilder swaps files asynchronously after active readers
+            // drain. Do not run later metadata steps until a subsequent cycle
+            // verifies that every TimeBlock identity for this range is gone.
             if (identities.empty()) {
-                cleanup_imp.updateResult(job.range_id, true);
+                bool completed = cleanupRangeMotionMetadata(range);
+                cleanup_imp.updateResult(job.range_id, completed, completed ? "" : "Invalid motion cleanup range");
                 continue;
             }
-            StorageManager::Instance().removeCameraTimeBlocks(job.camera_id, identities);
+            StorageManager::Instance().removeCameraTimeBlocks(range.camera_id, identities);
             cleanup_imp.updateResult(job.range_id, false, "Awaiting timefile swap verification");
         } catch (const std::exception &ex) {
             cleanup_imp.updateResult(job.range_id, false, ex.what());
@@ -2725,6 +2752,31 @@ void TierStorageManager::processMetadataCleanupJobs() {
             cleanup_imp.updateResult(job.range_id, false, "Unknown metadata cleanup error");
         }
     }
+}
+
+bool TierStorageManager::cleanupRangeMotionMetadata(const SegmentTierRange &range) {
+#if defined(ENABLE_MOTION)
+    auto range_days = localDaysForWindow(range.start_time, range.end_time);
+    if (range_days.empty())
+        return false;
+
+    MediaTuple tuple;
+    tuple.app = range.camera_id;
+    TimeQuery query(tuple, "", false);
+    std::vector<uint64_t> empty_days;
+    for (auto day_start : range_days) {
+        auto day_end = nextLocalDayStart(day_start);
+        query.getRecordedTimePeriod(day_start, day_end, [&](const std::vector<TimeBlock> &blocks) {
+            if (blocks.empty())
+                empty_days.push_back(day_start);
+        });
+    }
+    if (!empty_days.empty())
+        MotionBlockManager::Instance().removeMotionBlockDays(range.camera_id, empty_days);
+#else
+    (void)range;
+#endif
+    return true;
 }
 
 void TierStorageManager::notifyRebuildTimeFile(const std::string &camera_id,
@@ -4378,10 +4430,11 @@ void TierStorageManager::pruneOldMetrics() {
         TieringJobImp().pruneTerminalOlderThan(static_cast<int64_t>(time(nullptr)) - tiering_job_retention_days * 86400);
     }
 
-    GET_CONFIG(int64_t, terminal_range_retention_days,
-               Storage::kTieringTerminalRangeRetentionDays);
+    GET_CONFIG(int64_t, terminal_range_retention_days, Storage::kTieringTerminalRangeRetentionDays);
     if (terminal_range_retention_days > 0) {
-        SegmentTierRangeImp().pruneDeletedOlderThan(static_cast<int64_t>(time(nullptr)) - terminal_range_retention_days * 86400);
+        auto terminal_cutoff = static_cast<int64_t>(time(nullptr)) - terminal_range_retention_days * 86400;
+        SegmentTierRangeImp().pruneDeletedOlderThan(terminal_cutoff);
+        TierMetadataCleanupJobImp().pruneDoneOlderThan(terminal_cutoff);
     }
 }
 

@@ -4,8 +4,14 @@
 #include "TimeFile.h"
 #include "TimeMaker.h"
 #include "TimeFileAccessManager.h"
+#include <stdexcept>
 
 namespace managerkit {
+
+class NoTimeFileError : public std::runtime_error {
+public:
+    explicit NoTimeFileError(const std::string &message) : std::runtime_error(message) {}
+};
 
 class TimerDemuxerInterface {
 public:

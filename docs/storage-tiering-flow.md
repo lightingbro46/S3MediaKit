@@ -135,6 +135,7 @@ Các luồng tiering, timeline, summary, playback và restore phải lấy `segm
    - `MARK_EXPIRED_WAIT_APPROVAL` chuyển range sang `EXPIRED` nhưng chưa xóa file.
    - Automatic delete/`DELETE_OLDEST` chỉ chuyển range sang `DELETED` khi mọi file/object đã xóa thành công.
    - Sau đó `tier_metadata_cleanup_jobs` xóa đúng các `TimeBlock` tương ứng; move giữa tier không xóa timefile.
+   - `tier_metadata_cleanup_jobs` xử lý tuần tự toàn bộ metadata của range: xác minh cleanup TimeFile, sau đó cleanup motion trên các ngày bị ảnh hưởng và chỉ chuyển `DONE` khi mọi bước hoàn tất. Camera không có TimeFile được hiểu là không có dữ liệu lưu trữ và tiếp tục cleanup; các lỗi mở/đọc khác giữ job ở `PENDING`.
    - `protected_videos` và `segment_retention_overrides` được kiểm tra tập trung trước mọi đường xóa.
 
 4. **Luồng restore COLD**
@@ -434,6 +435,21 @@ Ngoài `CameraOption`, `enforcePolicyDeleteRetention()` xử lý `delete_policy`
 - `MOVE_TO_EXTERNAL_STORAGE`: queue tiering job tới `external_pool_id` nếu pool tồn tại và khác pool hiện tại.
 - `DELETE_AUTOMATICALLY`: xóa segment qua backend của pool, update range `DELETED` và rebuild timefile.
 - `skip_protected_video=true`: bỏ qua range overlap bất kỳ row `protected_videos`. Field `skip_evidence_video` được parse nhưng chưa có check riêng trong hàm này.
+
+Sau khi physical deletion thành công, cleanup metadata chạy theo thứ tự:
+
+```text
+segment_tier_ranges = DELETED
+  -> tier_metadata_cleanup_jobs xóa đúng TimeBlock
+  -> đợi và xác minh TimeFile đã swap
+  -> cùng metadata job xác định các ngày giao với range
+  -> TimeQuery toàn camera xác minh ngày không còn TimeBlock
+  -> gọi MotionBlockManager xóa .mblk/.idx của các ngày rỗng
+  -> mọi metadata step thành công mới đánh dấu job DONE
+```
+
+Pipeline không lưu phase: mỗi lần retry chạy lại từ bước TimeFile và dựa trên trạng thái dữ liệu thực tế làm checkpoint. Vì vậy mọi metadata step phải idempotent. Motion hiện có độ phân giải theo ngày: `TierStorageManager` lọc các ngày không còn TimeBlock rồi chuyển danh sách đó cho API hiện có của `MotionBlockManager`. Nếu stream/range khác vẫn còn TimeBlock trong ngày, motion ngày đó được giữ lại. Move HOT/WARM/COLD không chạy metadata cleanup vì video vẫn còn được lưu giữ.
+Range terminal và cleanup job `PENDING` không bị TTL cleanup để giữ đủ `start_time/end_time` cho retry sau restart. Range chỉ được prune khi không còn cleanup job `PENDING`; cleanup job `DONE` được prune cùng thời hạn range terminal.
 
 ### 5.5 Move LOCAL/NAS
 
@@ -770,7 +786,7 @@ Quy tắc an toàn:
 5. Quy đổi ngưỡng cleanup về đầu ngày và chỉ scan folder có ngày nhỏ hơn ngày ngưỡng. Folder của chính ngày biên được bỏ qua toàn bộ, tránh phải duyệt và so sánh từng file trong folder này.
 6. File tạm chỉ bị xóa khi hai maintenance pass liên tiếp thấy cùng device, inode, size và mtime. Quan sát này chỉ nằm trong bộ nhớ, nên restart luôn bắt đầu lại từ pass đầu tiên.
 7. MP4 hoàn chỉnh không cần hai lần quan sát. Cleanup dùng `TimeQuery` ở cấp camera để truy vấn một khoảng gộp cho nhóm camera/stream/ngày trên toàn bộ TimeFile còn tồn tại, rồi giữ file có TimeBlock khớp chính xác đường dẫn hoặc định danh segment. Việc thiếu riêng TimeFile của ngày chứa MP4 không làm nhóm bị bỏ qua.
-8. Nếu camera không có TimeFile hợp lệ khiến constructor `TimeQuery` phát sinh exception, cả nhóm MP4 hoàn chỉnh được bỏ qua. Lỗi nội bộ được `TimeQuery::getRecordedTimePeriod()` xử lý theo cơ chế tương thích hiện tại; kết quả không có TimeBlock khớp được xem là orphan và file bị xóa.
+8. Nếu camera không có TimeFile, `TimeQuery` trả timeline rỗng; MP4 hoàn chỉnh không có TimeBlock khớp được xem là orphan và tiếp tục cleanup. Lỗi mở/đọc TimeFile khác vẫn được xử lý theo cơ chế an toàn hiện tại và không bị đồng nhất với trạng thái camera không có dữ liệu.
 9. Ngay trước `unlink`, cleanup kiểm tra lại MP4 bằng `lstat` và xác nhận device, inode, size và mtime chưa thay đổi.
 10. Điểm bắt đầu pool và camera được xoay vòng giữa các pass để camera ở cuối danh sách không bị bỏ đói khi hết budget.
 11. File được cleanup không được thêm vào `segment_tier_ranges`, không move và không upload sang tier khác. MP4 có TimeBlock được giữ lại để `runTieringCycle()` move hoặc xóa theo policy.

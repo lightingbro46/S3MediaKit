@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace managerkit {
 
@@ -21,6 +22,11 @@ public:
      */
     void removeExpiredMotionBlocks(const std::unordered_map<std::string, uint64_t> &blocks_map);
 
+    /**
+     * Delete one device's daily motion pair. Missing files are success so a durable cleanup job can retry safely after a crash.
+     */
+    void removeMotionBlockDays(const std::string &device_id, const std::vector<uint64_t> &day_starts);
+
 private:
     MotionBlockManager(const std::string &file_path = "", int max_hour_retention = 4320);
 
@@ -33,6 +39,16 @@ private:
      * Emit event to get motion block threshold for a device, and update threshold map with returned value
      */
     void emitEvent(const std::string &key, bool start, uint64_t &threshold);
+
+    /**
+     * Get the motion block file path for a device and day. The day is the start of the day in seconds since epoch.
+     */
+    std::string getMotionBlockPath(const std::string &device_id, uint64_t day_start) const;
+
+    /**
+     * Refresh the motion block threshold for a device by scanning its motion block directory and finding the earliest timestamp. This will emit an event to notify listeners of the new threshold.
+     */
+    void refreshMotionKeepThreshold(const std::string &device_id);
 
 private:
     std::string _record_path;

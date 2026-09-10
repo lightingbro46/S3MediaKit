@@ -980,10 +980,16 @@ public:
     void pruneDeletedOlderThan(int64_t ts) {
         std::ostringstream where;
         std::vector<std::string> params;
-        where << "updated_at < ? AND status IN (?, ?)";
+        where << "segment_tier_ranges.updated_at < ? "
+                 "AND segment_tier_ranges.status IN (?, ?) "
+                 "AND NOT EXISTS ("
+                 "SELECT 1 FROM tier_metadata_cleanup_jobs "
+                 "WHERE tier_metadata_cleanup_jobs.range_id = segment_tier_ranges.range_id "
+                 "AND tier_metadata_cleanup_jobs.status = ?)";
         params.push_back(std::to_string(ts));
         params.push_back(segmentStatusToString(SegmentStatus::DELETED));
         params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+        params.push_back(jobStatusToString(JobStatus::PENDING));
         _executor->execDML(
             toolkit::QueryBuilder()
                 .deleteFrom(EntityTraits<SegmentTierRange>::tableName())

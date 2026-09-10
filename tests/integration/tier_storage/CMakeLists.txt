@@ -75,14 +75,16 @@ foreach(manager_case
     BackfillsAcrossLocalMidnightIntoSeparateRanges
     BoundsAndCompactsTierMetadata
     RetriesOrphanChunkWithoutAdvancingCursor
-    RetriesWhenCameraHasNoTimeFile
+    CompletesEmptyBackfillWhenCameraHasNoTimeFile
     RecoversRunningWorkAcrossFreshProcesses
     DeletesStableStaleTemporaryMp4FromHotPools
     PreservesUnsafeTemporaryMp4Candidates
     DeletesCompletedMp4OnlyWhenMatchingTimeBlockIsMissing
     ReportsTemporaryMp4InDryRunWithoutDeleting
     UsesSmallerHotOrCameraRetentionForCleanup
-    DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart)
+    DoesNotDeleteTemporaryMp4ImmediatelyAfterRestart
+    CleansRangeMetadataBeforeCompletingJob)
+
   add_test(
     NAME "integration.tier-manager.${manager_case}"
     COMMAND integration_tier_storage_manager

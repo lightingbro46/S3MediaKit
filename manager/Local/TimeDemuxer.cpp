@@ -155,7 +155,9 @@ void MultiTimeDemuxer::openFile(const string &files_string) {
         auto start_stamp = demuxer->getFirstStamp();
         _demuxers.emplace(start_stamp, demuxer);
     }
-    CHECK(!_demuxers.empty(), (StrPrinter << "No valid time file found in " << files_string));
+    if (_demuxers.empty()) {
+        throw NoTimeFileError(StrPrinter << "No valid time file found in " << files_string);
+    }
     _it = _demuxers.begin();
 }
 

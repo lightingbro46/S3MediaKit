@@ -63,34 +63,81 @@ void MotionBlockManager::removeExpiredMotionBlocks(const string &record_path, ui
         return;
     }
 
-    auto star_of_day = StampUtils::getStartOfDay(threshold);
+    auto start_of_day = StampUtils::getStartOfDay(threshold);
 
-    File::scanDir(motion_block_path, [this, star_of_day](const string &path, bool isDir) {
+    File::scanDir(motion_block_path, [this, start_of_day](const string &path, bool isDir) {
         if (isDir) return true; // skip directories
         if (!end_with(path, ".mblk")) return true; // skip non-motion block files
 
         auto folder_path = File::parentDir(path);
         auto filename = findSubString(path.data() + folder_path.size(), nullptr, ".mblk");
         uint64_t stamp = StrTimeUtils::getTsFromDateStr(filename);
-        TraceL << "Checking motion block file: " << path << ". Timestamp: " << getTimeStr("%Y-%m-%d %H:%M:%S", stamp) << ". Threshold: " << getTimeStr("%Y-%m-%d %H:%M:%S", star_of_day);
-        if (stamp < star_of_day) {
+        TraceL << "Checking motion block file: " << path << ". Timestamp: " << getTimeStr("%Y-%m-%d %H:%M:%S", stamp) << ". Threshold: " << getTimeStr("%Y-%m-%d %H:%M:%S", start_of_day);
+        if (stamp < start_of_day) {
             deleteMotionBlockPair(path);
         }
         return true;
     });
 
-    emitEvent(record_path, true, threshold);
-
-}
-
-void MotionBlockManager::emitEvent(const string &record_path, bool start, uint64_t &threshold) {
     auto parent_path = File::parentDir(record_path);
     auto device_id = findSubString(record_path.data() + parent_path.size(), nullptr, nullptr);
+    emitEvent(device_id, true, threshold);
+}
+
+void MotionBlockManager::emitEvent(const string &device_id, bool start, uint64_t &threshold) {
     auto flag = NOTICE_EMIT(BroadcastMotionKeepThresholdArgs, Broadcast::kBroadcastMotionKeepThreshold, device_id, start, threshold);
     if (!flag) {
         // No one is listening to this event
         DebugL << "No listener for BroadcastMotionKeepThreshold, device_id: " << device_id;
     }
+}
+
+string MotionBlockManager::getMotionBlockPath(const string &device_id, uint64_t day_start) const {
+    GET_CONFIG(string, archive_name, Record::kArchiveName);
+    auto device_path = File::absolutePath(device_id, _record_path);
+    auto archive_path = File::absolutePath(archive_name, device_path);
+    auto date = getTimeStr("%Y-%m-%d", static_cast<time_t>(StampUtils::getStartOfDay(day_start)));
+    return archive_path + "/motion/" + date + ".mblk";
+}
+
+void MotionBlockManager::refreshMotionKeepThreshold(const string &device_id) {
+    GET_CONFIG(string, archive_name, Record::kArchiveName);
+    auto device_path = File::absolutePath(device_id, _record_path);
+    auto motion_path = device_path + "/" + archive_name + "/motion";
+    uint64_t earliest = 0;
+    if (File::is_dir(motion_path)) {
+        File::scanDir(motion_path, [&](const string &path, bool is_dir) {
+            if (is_dir || !end_with(path, ".mblk"))
+                return true;
+            auto parent = File::parentDir(path);
+            auto filename = findSubString(path.data() + parent.size(), nullptr, ".mblk");
+            auto stamp = StrTimeUtils::getTsFromDateStr(filename);
+            if (stamp && (!earliest || stamp < earliest))
+                earliest = stamp;
+            return true;
+        });
+    }
+    if (!earliest)
+        earliest = static_cast<uint64_t>(time(nullptr));
+
+    emitEvent(device_id, true, earliest);
+}
+
+void MotionBlockManager::removeMotionBlockDays(const string &device_id, const vector<uint64_t> &day_starts) {
+    if (device_id.empty() || day_starts.empty()) {
+        WarnL << "Device_id is empty or day_starts is empty, skipping";
+        return;
+    }
+    for (const auto &day_start : day_starts) {
+        auto block_path = getMotionBlockPath(device_id, day_start);
+        if (File::fileExist(block_path)) {
+            deleteMotionBlockPair(block_path);
+            TraceL << "Deleted motion block for device=" << device_id << " day=" << getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start));
+        } else {
+            WarnL << "Motion block file does not exist for device=" << device_id << " day=" << getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start));
+        }
+    }
+    refreshMotionKeepThreshold(device_id);
 }
 
 } // namespace managerkit

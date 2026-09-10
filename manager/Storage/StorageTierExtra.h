@@ -526,6 +526,13 @@ public:
                       {"updated_at", std::to_string(updated_at)}})
                 .where("range_id = ?", {range_id}));
     }
+
+    void pruneDoneOlderThan(int64_t updated_at) {
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .where("status = ? AND updated_at < ?", {"DONE", std::to_string(updated_at)}));
+    }
 };
 
 class SegmentRetentionOverrideRepository : public SqliteRepository<SegmentRetentionOverride> {

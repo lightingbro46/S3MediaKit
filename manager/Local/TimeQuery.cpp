@@ -22,7 +22,13 @@ TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path, bool use_stati
     }
 
     _demuxer = std::make_shared<MultiTimeDemuxer>();
-    _demuxer->openFile(_file_path);
+    try {
+        _demuxer->openFile(_file_path);
+    } catch (const NoTimeFileError &) {
+        // A camera without any TimeFile has no recorded timeline. Keep an empty
+        // demuxer so query APIs return no data and maintenance can continue.
+        DebugL << "No TimeFile for camera path: " << _file_path;
+    }
 
     _tuple = tuple;
 };

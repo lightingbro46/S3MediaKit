@@ -1822,9 +1822,32 @@ int scenarioCompactRangeRepository(const std::string &root) {
     terminal.status = segmentStatusToString(SegmentStatus::DELETED);
     terminal.updated_at = day;
     require(range_imp.add(terminal), "Cannot seed terminal range");
+
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = terminal.range_id;
+    cleanup_job.camera_id = terminal.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = day;
+    cleanup_job.updated_at = day;
+    TierMetadataCleanupJobRepository cleanup_repo;
+    require(cleanup_repo.add(cleanup_job),
+            "Cannot seed pending metadata cleanup job");
+    range_imp.pruneDeletedOlderThan(day + 1);
+    require(!range_imp.findByRangeIds({terminal.range_id}).empty(),
+            "Terminal range was pruned while metadata cleanup was pending");
+    require(cleanup_repo.updateResultAt(terminal.range_id, "DONE", day),
+            "Cannot complete metadata cleanup job");
     range_imp.pruneDeletedOlderThan(day + 1);
     require(range_imp.findByRangeIds({terminal.range_id}).empty(),
             "Terminal range retention did not prune old metadata");
+    cleanup_repo.pruneDoneOlderThan(day + 1);
+    auto cleanup_rows = cleanup_repo.getExecutor()->executeRaw(
+        toolkit::QueryBuilder()
+            .select({"range_id"})
+            .from(EntityTraits<TierMetadataCleanupJob>::tableName())
+            .where("range_id = ?", {terminal.range_id}));
+    require(cleanup_rows.empty(),
+            "Completed metadata cleanup job was not pruned");
 
     TieringJob job;
     job.job_id = "terminal-job";
@@ -1887,7 +1910,7 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     return 0;
 }
 
-int scenarioBackfillMissingTimelineRetries(const std::string &root) {
+int scenarioBackfillMissingTimelineCompletes(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
     mINI::Instance()[Storage::kTierRangeBackfillRetryBaseSeconds] = 60;
@@ -1910,12 +1933,14 @@ int scenarioBackfillMissingTimelineRetries(const std::string &root) {
     manager.runBackfillCycle();
     require(waitUntil([&]() {
         auto rows = TierBackfillTaskImp().findByCameraId(camera);
-        return rows.size() == 1 && rows.front().status == "RETRY";
-    }, 5000), "Missing timeline did not move backfill task to RETRY");
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Missing timeline did not complete as an empty backfill task");
     auto rows = TierBackfillTaskImp().findByCameraId(camera);
-    require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
-                !rows.front().last_error.empty(),
-            "Missing timeline advanced cursor or lost constructor error");
+    require(rows.front().cursor_time == desired.cutoff_time &&
+                rows.front().attempt_count == 0 && rows.front().last_error.empty(),
+            "Empty timeline did not advance cleanly to the backfill cutoff");
+    require(SegmentTierRangeImp().queryByCamera(camera).empty(),
+            "Empty timeline unexpectedly created tier range metadata");
 
     manager.stop();
     drainWorkThreadPool();
@@ -2164,8 +2189,8 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
             "Completed MP4 referenced by the daily TimeFile was deleted");
     require(File::fileExist(relay_referenced),
             "Completed relay MP4 referenced by the daily TimeFile was deleted");
-    require(File::fileExist(missing_timefile),
-            "Completed MP4 was deleted when the camera had no TimeFile");
+    require(!File::fileExist(missing_timefile),
+            "Completed orphan MP4 was retained when the camera had no TimeFile");
     require(!File::fileExist(missing_daily_timefile),
             "Completed MP4 without a matching TimeBlock was retained because its daily TimeFile was missing");
     require(SegmentTierRangeImp().queryByCamera("camera-completed").empty(),
@@ -2301,6 +2326,180 @@ int scenarioTemporaryMp4CleanupRestartVerify(const std::string &root) {
     return 0;
 }
 
+std::string motionPathForDay(const std::string &root,
+                             const std::string &camera,
+                             int64_t day_start,
+                             const std::string &extension) {
+    return root + "/hot/record/" + camera + "/archive/motion/" +
+        getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start)) + extension;
+}
+
+void addMetadataCleanupRange(const std::string &range_id,
+                             const std::string &camera,
+                             const std::string &stream,
+                             int64_t start_time,
+                             int64_t end_time,
+                             const std::string &job_camera = "") {
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRange range;
+    range.range_id = range_id;
+    range.camera_id = camera;
+    range.stream_id = stream;
+    range.tier = tierTypeToString(HotTier);
+    range.pool_id = "hot-pool";
+    range.status = segmentStatusToString(SegmentStatus::DELETED);
+    range.start_time = start_time;
+    range.end_time = end_time;
+    range.segment_count = 1;
+    range.created_at = now;
+    range.updated_at = now;
+    require(SegmentTierRangeImp().add(range),
+            "Cannot seed deleted tier range");
+
+    TierMetadataCleanupJob job;
+    job.range_id = range_id;
+    job.camera_id = job_camera.empty() ? camera : job_camera;
+    job.status = "PENDING";
+    job.created_at = now;
+    job.updated_at = now;
+    require(TierMetadataCleanupJobRepository().add(job),
+            "Cannot seed metadata cleanup job");
+}
+
+bool metadataCleanupPending(const std::string &range_id,
+                            std::string *error = nullptr) {
+    auto jobs = TierMetadataCleanupJobRepository().queryPending(1000);
+    for (const auto &job : jobs) {
+        if (job.range_id != range_id)
+            continue;
+        if (error)
+            *error = job.error_message.value_or("");
+        return true;
+    }
+    return false;
+}
+
+int scenarioMotionCleanupSafety(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Record::kArchiveName] = "archive";
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const int64_t day = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 10 * 86400)));
+    const int64_t next_day = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(day + 36 * 3600)));
+
+    const std::string retained_camera = "camera-motion-retained";
+    const std::string retained_range = "range-motion-retained";
+    const std::string retained_block = motionPathForDay(root, retained_camera, day, ".mblk");
+    const std::string retained_index = motionPathForDay(root, retained_camera, day, ".idx");
+    writeFile(retained_block, "motion");
+    writeFile(retained_index, "index");
+    writeTimeBlock(root, retained_camera, "secondary", "retained.mp4",
+                   day + 3600, day + 3660, 1);
+    addMetadataCleanupRange(retained_range, retained_camera, "main",
+                            day + 3500, day + 3700);
+
+    const std::string empty_camera = "camera-motion-empty";
+    const std::string empty_range = "range-motion-empty";
+    const std::string empty_block = motionPathForDay(root, empty_camera, day, ".mblk");
+    const std::string empty_index = motionPathForDay(root, empty_camera, day, ".idx");
+    writeFile(empty_block, "motion");
+    writeFile(empty_index, "index");
+    writeTimeBlock(root, empty_camera, "main", "next-day.mp4",
+                   next_day + 3600, next_day + 3660, 1);
+    addMetadataCleanupRange(empty_range, empty_camera, "main",
+                            day + 3500, day + 3700);
+
+    const std::string no_timefile_camera = "camera-motion-no-timefile";
+    const std::string no_timefile_range = "range-motion-no-timefile";
+    const std::string no_timefile_block =
+        motionPathForDay(root, no_timefile_camera, day, ".mblk");
+    const std::string no_timefile_index =
+        motionPathForDay(root, no_timefile_camera, day, ".idx");
+    writeFile(no_timefile_block, "motion");
+    writeFile(no_timefile_index, "index");
+    addMetadataCleanupRange(no_timefile_range, no_timefile_camera, "main",
+                            day + 3500, day + 3700);
+
+    const std::string sequential_camera = "camera-motion-sequential";
+    const std::string sequential_range = "range-motion-sequential";
+    const std::string sequential_block =
+        motionPathForDay(root, sequential_camera, day, ".mblk");
+    const std::string sequential_index =
+        motionPathForDay(root, sequential_camera, day, ".idx");
+    const std::string date = getTimeStr("%Y-%m-%d", static_cast<time_t>(day));
+    const std::string sequential_segment = root + "/hot/record/" +
+        sequential_camera + "/main/" + date + "/" + date + "-02-00-00-0.mp4";
+    writeFile(sequential_block, "motion");
+    writeFile(sequential_index, "index");
+    writeTimeBlock(root, sequential_camera, "main", sequential_segment,
+                   day + 7200, day + 7260, 1);
+    addMetadataCleanupRange(sequential_range, sequential_camera, "main",
+                            day + 7100, day + 7300);
+
+    TierMetadataCleanupJob missing_range_job;
+    missing_range_job.range_id = "range-motion-missing";
+    missing_range_job.camera_id = "camera-motion-missing";
+    missing_range_job.status = "PENDING";
+    missing_range_job.created_at = static_cast<int64_t>(::time(nullptr));
+    missing_range_job.updated_at = missing_range_job.created_at;
+    require(TierMetadataCleanupJobRepository().add(missing_range_job),
+            "Cannot seed metadata job without a range");
+
+    const std::string mismatch_camera = "camera-motion-mismatch";
+    const std::string mismatch_range = "range-motion-mismatch";
+    const std::string mismatch_block =
+        motionPathForDay(root, mismatch_camera, day, ".mblk");
+    const std::string mismatch_index =
+        motionPathForDay(root, mismatch_camera, day, ".idx");
+    writeFile(mismatch_block, "motion");
+    writeFile(mismatch_index, "index");
+    addMetadataCleanupRange(mismatch_range, mismatch_camera, "main",
+                            day + 3500, day + 3700,
+                            "camera-motion-wrong-owner");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+
+    require(File::fileExist(retained_block) && File::fileExist(retained_index),
+            "Motion was deleted while another stream still had a TimeBlock");
+    require(!File::fileExist(empty_block) && !File::fileExist(empty_index),
+            "Motion was not deleted for an empty camera day");
+    require(!File::fileExist(no_timefile_block) && !File::fileExist(no_timefile_index),
+            "Motion was not deleted for a camera without any TimeFile");
+    require(!metadataCleanupPending(retained_range) &&
+                !metadataCleanupPending(empty_range) &&
+                !metadataCleanupPending(no_timefile_range),
+            "Metadata job completed before all range metadata was processed");
+    std::string sequential_error;
+    require(metadataCleanupPending(sequential_range, &sequential_error) &&
+                sequential_error.find("Awaiting timefile swap verification") == 0,
+            "Metadata job did not wait for TimeFile swap verification");
+    require(File::fileExist(sequential_block) && File::fileExist(sequential_index),
+            "Motion was deleted in the same pass that scheduled TimeFile cleanup");
+    std::string missing_range_error;
+    require(metadataCleanupPending(missing_range_job.range_id, &missing_range_error) &&
+                missing_range_error.find("Metadata missing") == 0,
+            "Missing range metadata job was incorrectly completed");
+    std::string mismatch_error;
+    require(metadataCleanupPending(mismatch_range, &mismatch_error) &&
+                mismatch_error.find("Camera ID mismatch") == 0 &&
+                File::fileExist(mismatch_block) && File::fileExist(mismatch_index),
+            "Camera mismatch did not fail closed");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    require(!metadataCleanupPending(sequential_range),
+            "Metadata job did not complete after TimeFile cleanup");
+    require(!File::fileExist(sequential_block) && !File::fileExist(sequential_index),
+            "Motion was not deleted after TimeFile cleanup completed");
+
+    manager.stop();
+    return 0;
+}
+
 int runScenario(const std::string &name, const std::string &root) {
     try {
         if (name == "register-idempotent") return scenarioRegisterIdempotent(root);
@@ -2326,7 +2525,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
         if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
         if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
-        if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineRetries(root);
+        if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineCompletes(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
         if (name == "tmp-cleanup-stable-stale") return scenarioTemporaryMp4CleanupStableStale(root);
@@ -2336,6 +2535,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "tmp-cleanup-retention") return scenarioTemporaryMp4CleanupRetention(root);
         if (name == "tmp-cleanup-restart-prepare") return scenarioTemporaryMp4CleanupRestartPrepare(root);
         if (name == "tmp-cleanup-restart-verify") return scenarioTemporaryMp4CleanupRestartVerify(root);
+        if (name == "motion-cleanup-safety") return scenarioMotionCleanupSafety(root);
         throw std::runtime_error("Unknown scenario: " + name);
     } catch (const std::exception &ex) {
         std::fprintf(stderr, "TierStorageManager scenario '%s' failed: %s\n", name.c_str(), ex.what());
@@ -2418,6 +2618,11 @@ TEST(TierStorageManagerIntegrationTest, MapsAppDirectoryBindMountToLogicalPoolRo
 TEST(TierStorageManagerIntegrationTest, RegistersHotSegmentIdempotently) {
     TempRoot root;
     EXPECT_EQ(0, runChild("register-idempotent", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, CleansRangeMetadataBeforeCompletingJob) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("motion-cleanup-safety", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToNas) {
@@ -2537,7 +2742,7 @@ TEST(TierStorageManagerIntegrationTest, RetriesOrphanChunkWithoutAdvancingCursor
     EXPECT_EQ(0, runChild("backfill-orphan-retry", root.path));
 }
 
-TEST(TierStorageManagerIntegrationTest, RetriesWhenCameraHasNoTimeFile) {
+TEST(TierStorageManagerIntegrationTest, CompletesEmptyBackfillWhenCameraHasNoTimeFile) {
     TempRoot root;
     EXPECT_EQ(0, runChild("backfill-missing-timeline", root.path));
 }

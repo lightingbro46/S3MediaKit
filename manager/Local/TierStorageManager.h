@@ -363,6 +363,8 @@ private:
 
     void processMetadataCleanupJobs();
 
+    bool cleanupRangeMotionMetadata(const SegmentTierRange &range);
+
     std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
 
     std::vector<TierRangeSegmentFile> collectSegmentFilesForWindow(const std::string &camera_id,
