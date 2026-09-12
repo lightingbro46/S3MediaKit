@@ -846,189 +846,199 @@ void registerStorageApis() {
             return;
         }
 
-        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        if (!device) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            return;
-        }
-
-        auto pool_map = TierStorageBase::loadPoolMap();
-        SegmentTierRangeImp range_imp;
-        auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
-
-        std::vector<SegmentTierRange> matched;
-        matched.reserve(ranges.size());
-        for (const auto &r : ranges) {
-            if (!stream_id.empty() && r.stream_id != stream_id)
-                continue;
-            if (r.end_time <= start_time || r.start_time >= end_time)
-                continue;
-            matched.push_back(r);
-        }
-
-        if (matched.empty()) {
-            Json::Value data;
-            data["status"] = "NOT_FOUND";
-            data["tier"] = "";
-            data["restore_required"] = false;
-            data["job_created"] = false;
-            data["protocol"] = protocol;
-            val["data"] = data;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND, "No segments found for the specified time range");
-            return;
-        }
-
-        std::string tier = matched.front().tier;
-        std::string resolved_stream_id = stream_id.empty() ? matched.front().stream_id : stream_id;
-        bool restore_required = false;
-        bool has_expired = false;
-        bool has_deleted = false;
-        bool has_missing = false;
-        for (const auto &r : matched) {
-            if (r.status == segmentStatusToString(SegmentStatus::EXPIRED)) has_expired = true;
-            if (r.status == segmentStatusToString(SegmentStatus::DELETED)) has_deleted = true;
-            if (r.status == segmentStatusToString(SegmentStatus::MISSING)) has_missing = true;
-            if (TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map)) {
-                restore_required = true;
-                tier = r.tier;
-                if (resolved_stream_id.empty())
-                    resolved_stream_id = r.stream_id;
+        auto on_access = [val, invoker, headerOut, camera_id, stream_id, start_time, end_time, protocol]() mutable {
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                return;
             }
-        }
 
-        if (has_expired || has_deleted || has_missing) {
-            Json::Value data;
-            data["status"] = has_expired ? "EXPIRED" : (has_deleted ? "DELETED" : "MISSING");
-            data["tier"] = tier;
-            data["restore_required"] = false;
-            data["job_created"] = false;
-            data["protocol"] = protocol;
-            val["data"] = data;
-            RETURN_API_RESPONSE(has_expired ? ApiErrCode::CODE_STORAGE_SEGMENTS_EXPIRED
-                                            : ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND,
-                                has_expired ? "Some segments have expired"
-                                            : "Some segments are not available");
-            return;
-        }
+            auto pool_map = TierStorageBase::loadPoolMap();
+            SegmentTierRangeImp range_imp;
+            auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
 
-        for (const auto &r : matched) {
-            if (pool_map.find(r.pool_id) == pool_map.end()) {
+            std::vector<SegmentTierRange> matched;
+            matched.reserve(ranges.size());
+            for (const auto &r : ranges) {
+                if (!stream_id.empty() && r.stream_id != stream_id)
+                    continue;
+                if (r.end_time <= start_time || r.start_time >= end_time)
+                    continue;
+                matched.push_back(r);
+            }
+
+            if (matched.empty()) {
                 Json::Value data;
-                data["status"] = "POOL_NOT_FOUND";
-                data["tier"] = r.tier;
-                data["pool_id"] = r.pool_id;
+                data["status"] = "NOT_FOUND";
+                data["tier"] = "";
                 data["restore_required"] = false;
                 data["job_created"] = false;
                 data["protocol"] = protocol;
                 val["data"] = data;
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND,
-                                    "Storage pool referenced by segment metadata was not found");
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND, "No segments found for the specified time range");
                 return;
             }
-        }
 
-        RestoreJobImp restore_imp;
-        auto jobs = restore_imp.queryOverlapping(camera_id, start_time, end_time, 20);
-        const RestoreJob *covering_done = nullptr;
-        const RestoreJob *active_job = nullptr;
-        const RestoreJob *latest_job = nullptr;
-        for (const auto &j : jobs) {
-            if (!latest_job)
-                latest_job = &j;
-            if (j.start_time <= start_time && j.end_time >= end_time &&
-                j.status == jobStatusToString(JobStatus::DONE)) {
-                covering_done = &j;
-                break;
+            std::string tier = matched.front().tier;
+            bool restore_required = false;
+            bool has_expired = false;
+            bool has_deleted = false;
+            bool has_missing = false;
+            for (const auto &r : matched) {
+                if (r.status == segmentStatusToString(SegmentStatus::EXPIRED)) has_expired = true;
+                if (r.status == segmentStatusToString(SegmentStatus::DELETED)) has_deleted = true;
+                if (r.status == segmentStatusToString(SegmentStatus::MISSING)) has_missing = true;
+                if (TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map)) {
+                    restore_required = true;
+                    tier = r.tier;
+                }
             }
-            if (!active_job &&
-                (j.status == jobStatusToString(JobStatus::PENDING) ||
-                 j.status == jobStatusToString(JobStatus::RUNNING))) {
-                active_job = &j;
+
+            if (has_expired || has_deleted || has_missing) {
+                Json::Value data;
+                data["status"] = has_expired ? "EXPIRED" : (has_deleted ? "DELETED" : "MISSING");
+                data["tier"] = tier;
+                data["restore_required"] = false;
+                data["job_created"] = false;
+                data["protocol"] = protocol;
+                val["data"] = data;
+                RETURN_API_RESPONSE(has_expired ? ApiErrCode::CODE_STORAGE_SEGMENTS_EXPIRED
+                                                : ApiErrCode::CODE_STORAGE_SEGMENTS_NOT_FOUND,
+                                    has_expired ? "Some segments have expired"
+                                                : "Some segments are not available");
+                return;
             }
-        }
 
-        Json::Value unavailable_pools = Json::arrayValue;
-        Json::Value unavailable_pool_ids = Json::arrayValue;
-        std::set<std::string> checked_pool_ids;
-        bool has_unknown_pool = false;
-        for (const auto &r : matched) {
-            if (!checked_pool_ids.insert(r.pool_id).second)
-                continue;
-            const auto pool_it = pool_map.find(r.pool_id);
-            const StoragePool &pool = pool_it->second;
-            if (covering_done && poolTypeIsObjectStorage(pool.type))
-                continue;
+            for (const auto &r : matched) {
+                if (pool_map.find(r.pool_id) == pool_map.end()) {
+                    Json::Value data;
+                    data["status"] = "POOL_NOT_FOUND";
+                    data["tier"] = r.tier;
+                    data["pool_id"] = r.pool_id;
+                    data["restore_required"] = false;
+                    data["job_created"] = false;
+                    data["protocol"] = protocol;
+                    val["data"] = data;
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool referenced by segment metadata was not found");
+                    return;
+                }
+            }
 
-            PoolHealthInfo health;
-            if (TierStorageManager::Instance().isPoolAvailableForPlayback(pool, &health))
-                continue;
+            std::vector<SegmentTierRange> restore_ranges;
+            for (const auto &r : matched) {
+                const auto pool_it = pool_map.find(r.pool_id);
+                if (pool_it != pool_map.end() && poolTypeIsObjectStorage(pool_it->second.type))
+                    restore_ranges.push_back(r);
+            }
 
-            Json::Value item;
-            item["pool_id"] = r.pool_id;
-            item["health_status"] = health.health_status;
-            item["last_health_check"] = static_cast<Json::Int64>(health.timestamp);
-            unavailable_pools.append(item);
-            unavailable_pool_ids.append(r.pool_id);
-            if (health.stale || health.health_status == healthToString(StorageHealth::UNKNOWN))
-                has_unknown_pool = true;
-        }
+            RestoreJobImp restore_imp;
+            auto jobs = restore_imp.queryOverlapping(camera_id, start_time, end_time, 0, stream_id);
+            const RestoreJob *covering_done = nullptr;
+            const RestoreJob *active_job = nullptr;
+            const RestoreJob *latest_job = nullptr;
+            int64_t restore_expires_at = 0;
+            GET_CONFIG(int64_t, restore_ttl_seconds, Storage::kRestoreTTLSeconds);
+            for (const auto &j : jobs) {
+                if (!latest_job)
+                    latest_job = &j;
+                if (j.start_time <= start_time && j.end_time >= end_time &&
+                    TierStorageManager::Instance().validateRestoreWindowCache(
+                        j, restore_ranges, stream_id, start_time, end_time,
+                        restore_ttl_seconds, restore_expires_at)) {
+                    covering_done = &j;
+                    break;
+                }
+                if (!active_job &&
+                    (j.status == jobStatusToString(JobStatus::PENDING) ||
+                    j.status == jobStatusToString(JobStatus::RUNNING))) {
+                    active_job = &j;
+                }
+            }
 
-        if (!unavailable_pools.empty()) {
+            Json::Value unavailable_pools = Json::arrayValue;
+            Json::Value unavailable_pool_ids = Json::arrayValue;
+            std::set<std::string> checked_pool_ids;
+            bool has_unknown_pool = false;
+            for (const auto &r : matched) {
+                if (!checked_pool_ids.insert(r.pool_id).second)
+                    continue;
+                const auto pool_it = pool_map.find(r.pool_id);
+                const StoragePool &pool = pool_it->second;
+                if (covering_done && poolTypeIsObjectStorage(pool.type))
+                    continue;
+
+                PoolHealthInfo health;
+                if (TierStorageManager::Instance().isPoolAvailableForPlayback(pool, &health))
+                    continue;
+
+                Json::Value item;
+                item["pool_id"] = r.pool_id;
+                item["health_status"] = health.health_status;
+                item["last_health_check"] = static_cast<Json::Int64>(health.timestamp);
+                unavailable_pools.append(item);
+                unavailable_pool_ids.append(r.pool_id);
+                if (health.stale || health.health_status == healthToString(StorageHealth::UNKNOWN))
+                    has_unknown_pool = true;
+            }
+
+            if (!unavailable_pools.empty()) {
+                Json::Value data;
+                data["status"] = has_unknown_pool ? "STORAGE_STATUS_UNKNOWN" : "STORAGE_OFFLINE";
+                data["tier"] = tier;
+                data["restore_required"] = false;
+                data["job_created"] = false;
+                data["retryable"] = true;
+                data["offline_pool_ids"] = unavailable_pool_ids;
+                data["pools"] = unavailable_pools;
+                data["protocol"] = protocol;
+                val["data"] = data;
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_OFFLINE,
+                                    has_unknown_pool ? "Storage pool health status is unknown or stale"
+                                                    : "Storage pool is offline");
+                return;
+            }
+
+            if (restore_required && !covering_done) {
+                Json::Value data;
+                data["status"] = active_job ? "RESTORING" : "RESTORE_REQUIRED";
+                data["tier"] = tier.empty() ? tierTypeToString(ColdTier) : tier;
+                data["restore_required"] = true;
+                data["job_created"] = active_job != nullptr;
+                data["protocol"] = protocol;
+                if (active_job) {
+                    data["job_id"] = active_job->job_id;
+                    data["restore_job_status"] = active_job->status;
+                } else if (latest_job) {
+                    data["job_id"] = latest_job->job_id;
+                    data["restore_job_status"] = latest_job->status;
+                } else {
+                    data["job_id"] = "";
+                    data["restore_job_status"] = "";
+                }
+                data["estimated_restore_seconds"] = 120;
+                val["data"] = data;
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED,
+                                    active_job ? "Restore job is running"
+                                            : "Recording is in object storage and must be restored before playback");
+                return;
+            }
+
             Json::Value data;
-            data["status"] = has_unknown_pool ? "STORAGE_STATUS_UNKNOWN" : "STORAGE_OFFLINE";
+            data["status"] = "READY";
             data["tier"] = tier;
             data["restore_required"] = false;
-            data["job_created"] = false;
-            data["retryable"] = true;
-            data["offline_pool_ids"] = unavailable_pool_ids;
-            data["pools"] = unavailable_pools;
+            data["job_created"] = covering_done != nullptr;
             data["protocol"] = protocol;
-            val["data"] = data;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_OFFLINE,
-                                has_unknown_pool ? "Storage pool health status is unknown or stale"
-                                                 : "Storage pool is offline");
-            return;
-        }
-
-        if (restore_required && !covering_done) {
-            Json::Value data;
-            data["status"] = active_job ? "RESTORING" : "RESTORE_REQUIRED";
-            data["tier"] = tier.empty() ? tierTypeToString(ColdTier) : tier;
-            data["restore_required"] = true;
-            data["job_created"] = (active_job  != nullptr || latest_job != nullptr);
-            data["protocol"] = protocol;
-            if (active_job) {
-                data["job_id"] = active_job->job_id;
-                data["restore_job_status"] = active_job->status;
-            } else if (latest_job) {
-                data["job_id"] = latest_job->job_id;
-                data["restore_job_status"] = latest_job->status;
-            } else {
-                data["job_id"] = "";
-                data["restore_job_status"] = "";
+            if (covering_done) {
+                data["job_id"] = covering_done->job_id;
+                data["restore_job_status"] = covering_done->status;
             }
-            data["estimated_restore_seconds"] = 120;
+            data["expires_at"] = static_cast<Json::Int64>(covering_done ? restore_expires_at : 0);
             val["data"] = data;
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED,
-                                active_job ? "Restore job is running"
-                                           : "Recording is in object storage and must be restored before playback");
-            return;
-        }
+            invoker(200, headerOut, val.toStyledString());
+        };
 
-        Json::Value data;
-        data["status"] = "READY";
-        data["tier"] = tier;
-        data["restore_required"] = false;
-        data["job_created"] = covering_done != nullptr;
-        data["protocol"] = protocol;
-        if (covering_done) {
-            data["job_id"] = covering_done->job_id;
-            data["restore_job_status"] = covering_done->status;
-        }
-        GET_CONFIG(int, restore_ttl_seconds, Storage::kRestoreTTLSeconds);
-        data["expires_at"] = static_cast<Json::Int64>(time(nullptr) + restore_ttl_seconds);
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(camera_id, on_access);
     });
 
     api_regist("/media/mserver/storage/restoreJob/create", [](API_ARGS_MAP_ASYNC) {
@@ -1055,24 +1065,37 @@ void registerStorageApis() {
             return;
         }
 
-        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        if (!device) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            return;
-        }
+        auto on_access = [val, invoker, headerOut, camera_id, stream_id,
+                          start_time, end_time, reason]() mutable {
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                return;
+            }
 
-        auto restore = TierStorageManager::Instance().requestRestoreWindow(
-            camera_id, stream_id, start_time, end_time, reason.empty() ? "MANUAL" : reason);
-        if (!restore.handled) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED, "Failed to create restore job");
-            return;
-        }
+            auto restore = TierStorageManager::Instance().requestRestoreWindow(
+                camera_id, stream_id, start_time, end_time,
+                reason.empty() ? "MANUAL" : reason);
+            if (!restore.handled) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                                    "Failed to create restore job");
+                return;
+            }
 
-        Json::Value data;
-        data["job_id"] = restore.job_id;
-        data["status"] = restore.status;
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            RestoreJobSnapshot snapshot;
+            if (!TierStorageManager::Instance().getRestoreJobSnapshot(
+                    restore.job_id, snapshot)) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                                    "Restore job was created but its status is unavailable");
+                return;
+            }
+            Json::Value data = TierStorageBase::restoreJobSnapshotToJson(snapshot);
+            data["job_created"] = restore.job_created;
+            val["data"] = data;
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(camera_id, on_access);
     });
 
     api_regist("/media/mserver/storage/restoreJob/detail", [](API_ARGS_MAP_ASYNC) {
@@ -1087,8 +1110,18 @@ void registerStorageApis() {
             RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_NOT_FOUND, "Restore job not found");
             return;
         }
-        val["data"] = TierStorageBase::restoreJobToJson(jobs.front(), "");
-        invoker(200, headerOut, val.toStyledString());
+        auto on_access = [val, invoker, headerOut, job_id]() mutable {
+            RestoreJobSnapshot snapshot;
+            if (!TierStorageManager::Instance().getRestoreJobSnapshot(job_id, snapshot)) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_NOT_FOUND,
+                                    "Restore job not found");
+                return;
+            }
+            val["data"] = TierStorageBase::restoreJobSnapshotToJson(snapshot);
+            invoker(200, headerOut, val.toStyledString());
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(jobs.front().camera_id, on_access);
     });
 
     api_regist("/media/mserver/storage/restoreJob/list", [](API_ARGS_MAP_ASYNC) {

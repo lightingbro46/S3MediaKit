@@ -394,6 +394,20 @@ Json::Value TierStorageBase::restoreJobToJson(const RestoreJob &job,
     return value;
 }
 
+Json::Value TierStorageBase::restoreJobSnapshotToJson(const RestoreJobSnapshot &snapshot,
+                                                      const std::string &camera_name) {
+    Json::Value value = restoreJobToJson(snapshot.job, camera_name, false);
+    value["playback_status"] = snapshot.playback_status;
+    value["playback_ready"] = snapshot.playback_ready;
+    value["total_segment_count"] = snapshot.total_segment_count;
+    value["restored_segment_count"] = snapshot.restored_segment_count;
+    value["remaining_segment_count"] = snapshot.remaining_segment_count;
+    value["failed_segment_count"] = snapshot.failed_segment_count;
+    value["segment_progress_percent"] = snapshot.segment_progress_percent;
+    value["expires_at"] = static_cast<Json::Int64>(snapshot.expires_at);
+    return value;
+}
+
 Json::Value TierStorageBase::tieringJobToJson(const TieringJob &job,
                                               const std::string &camera_name,
                                               bool detail) {

@@ -486,7 +486,7 @@ Mỗi summary:
 
 ### 6.1 Resolve playback state
 
-`POST /media/mserver/storage/playback/resolve` — params, permission `1003`; required `camera_id`, `start_time`, `end_time`; optional `stream_id`, `protocol` (default `HTTP_MP4`).
+`POST /media/mserver/storage/playback/resolve` — params, permission `1003` và quyền truy cập camera; required `camera_id`, `start_time`, `end_time`; optional `stream_id`, `protocol` (default `HTTP_MP4`).
 
 Handler không đọc `quality` và không tạo `playback_url`.
 
@@ -501,7 +501,7 @@ READY:
     "restore_required": false,
     "job_created": false,
     "protocol": "HTTP_MP4",
-    "expires_at": 1787563600
+    "expires_at": 0
   }
 }
 ```
@@ -525,7 +525,9 @@ RESTORE_REQUIRED/RESTORING:
 }
 ```
 
-Nếu có job overlap, `status=RESTORING`, kèm `job_id`/`restore_job_status`. Response này có HTTP 404 theo error map, không phải 202.
+Với HOT/WARM, `expires_at=0` vì không áp dụng TTL restore cache. Với COLD đã restore, `expires_at` bằng `restore_job.updated_at + storage.restore_ttl_seconds`; API chỉ trả `READY` khi job/child đúng stream và range, cache file còn tồn tại và chưa hết TTL.
+
+Nếu có job đúng stream overlap, `status=RESTORING`, kèm `job_id`/`restore_job_status`. Response này có HTTP 404 theo error map, không phải 202.
 
 STORAGE_OFFLINE/STORAGE_STATUS_UNKNOWN:
 
@@ -559,25 +561,38 @@ NOT_FOUND/EXPIRED/DELETED/MISSING trả lần lượt `914016` hoặc `914017` v
 
 ### 6.2 Create restore job
 
+Hướng dẫn tích hợp và UI contract cho Web/Desktop/Mobile: [restore-job-client-integration.md](restore-job-client-integration.md).
+
 `POST /media/mserver/storage/restoreJob/create` — params; cần cả permission `150301` và `1003`; required `camera_id`, `start_time`, `end_time`; optional `stream_id`, `target_tier` (chỉ hỗ trợ `HOT`), `reason`.
 
 ```json
 {
   "data": {
     "job_id": "rj-...",
-    "status": "PENDING"
+    "status": "PENDING",
+    "job_created": true,
+    "playback_status": "RESTORING",
+    "playback_ready": false,
+    "total_segment_count": 4,
+    "restored_segment_count": 0,
+    "remaining_segment_count": 4,
+    "failed_segment_count": 0,
+    "segment_progress_percent": 0,
+    "expires_at": 0
   }
 }
 ```
 
-Endpoint tạo parent/child job bền vững và dispatch worker ngay. Số child chạy đồng thời bị giới hạn bởi `storage.auto_restore_max_concurrent`; job `RUNNING` được recovery về queue sau restart.
+Endpoint kiểm tra quyền trên camera rồi tìm job có cùng `camera_id`, `stream_id`, `start_time`, `end_time`, target tier và cùng tập segment/source pool. Job `PENDING`/`RUNNING` tương đương được trả lại với `job_created=false`. Job `DONE` chỉ được tái sử dụng khi toàn bộ child và cache còn đầy đủ; khi đó `updated_at` được cập nhật để bắt đầu lại TTL và response trả `READY`. `FAILED`/`CANCELLED`/`EXPIRED` hoặc job thiếu cache không được tái sử dụng. `reason` là metadata mô tả và không tham gia khóa so khớp.
+
+Nếu không có job phù hợp, endpoint tạo parent/child job bền vững và dispatch worker ngay. Những request khác thông số vẫn có thư mục `{storage.restore_save_path}/{job_id}/...` riêng, nên TTL và cleanup không ảnh hưởng nhau. Số child chạy đồng thời bị giới hạn bởi `storage.auto_restore_max_concurrent`; job `RUNNING` được recovery về queue sau restart. Response không có trường estimate thời gian restore.
 
 ### 6.3 Restore job detail/list
 
 - `GET/POST /media/mserver/storage/restoreJob/detail` — cần cả permission `150301` và `1003`; required `job_id`.
 - `GET/POST /media/mserver/storage/restoreJob/list` — cần cả permission `150301` và `1003`; optional `camera_id`, `status`, `from_time`, `to_time`, `page`, `size`.
 
-Detail gồm `job_id`, `type=RESTORE`, status/progress, camera/tier, time window, processed/total bytes, `playback_ready`, `created_at`, `updated_at`. Item list bỏ `type`, time window, processed bytes và updated time; thêm `camera_name`.
+Detail gồm `job_id`, `type=RESTORE`, status/progress, camera/tier, time window, processed/total bytes, `playback_status`, `playback_ready`, số segment tổng/đã restore/còn lại/thất bại, `segment_progress_percent`, `expires_at`, `created_at`, `updated_at`. `playback_status` nhận `RESTORING`, `READY`, `NOT_READY`, `FAILED`, `CANCELLED` hoặc `EXPIRED`; client chỉ bắt đầu playback khi nhận `READY`. Response không có trường estimate thời gian restore. Item list giữ contract rút gọn hiện tại và thêm `camera_name`.
 
 ## 7. Tiering job
 

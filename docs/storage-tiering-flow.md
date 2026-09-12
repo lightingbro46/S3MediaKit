@@ -558,11 +558,13 @@ Luồng xử lý:
 
 ```text
 camera/time window
+  -> kiểm tra quyền truy cập camera
   -> query segment_tier_ranges
   -> filter stream_id và overlap
   -> kiểm tra EXPIRED/DELETED/MISSING
   -> resolve pool type của từng range
-  -> query restore_jobs overlap
+  -> query restore_jobs/restore_job_segments đúng stream và overlap
+  -> xác minh child DONE, cache file tồn tại và TTL còn hiệu lực
   -> trả READY / RESTORE_REQUIRED / RESTORING / NOT_FOUND / EXPIRED
 ```
 
@@ -570,14 +572,14 @@ Trạng thái và mã lỗi:
 
 | Trạng thái | Điều kiện | API code / HTTP |
 |------------|-----------|-----------------|
-| `READY` | Không có object-storage range cần restore, hoặc có job `DONE` phủ toàn window | `0` / 200 |
+| `READY` | Không có object-storage range cần restore, hoặc có job `DONE` phủ toàn window với đủ child/cache đúng stream và TTL còn hiệu lực | `0` / 200 |
 | `RESTORE_REQUIRED` | Có object-storage range, chưa có job `DONE` phủ window | `914009` / 404 |
 | `RESTORING` | Có job `PENDING` hoặc `RUNNING` overlap | `914009` / 404 |
 | `NOT_FOUND` | Không có range hoặc range `MISSING` | `914016` / 404 |
 | `EXPIRED` | Có range `EXPIRED` | `914017` / 404 |
 | `DELETED` | Có range `DELETED` | `914016` / 404 |
 
-API này không tạo `playback_url`. Field `expires_at` trong response `READY` chỉ là thời điểm hiện tại cộng `storage.restore_ttl_seconds`; URL phát vẫn do luồng playback hiện hữu của hệ thống cung cấp.
+API này không tạo `playback_url`. Với restore cache, `expires_at` là `restore_job.updated_at + storage.restore_ttl_seconds`; HOT/WARM hoặc TTL bị vô hiệu hóa trả `expires_at=0`. URL phát vẫn do luồng playback hiện hữu của hệ thống cung cấp.
 
 ### 7.2 Resolver Đường Dẫn MP4 Thực Tế
 
@@ -678,7 +680,7 @@ Nếu có job:
 - Trả lại `job_id` và status hiện tại.
 - Không dispatch thêm worker.
 
-Job API và job auto-restore đều đi qua cùng durable child queue; unique active index ngăn hai job tải đồng thời cùng một segment.
+Auto-restore tái sử dụng child đang active của cùng segment. `restoreJob/create` tái sử dụng job có cùng camera, stream, window, target tier và tập segment/source pool; request khác thông số vẫn tạo job độc lập. Cả hai luồng dùng chung durable child queue và giới hạn concurrency.
 
 ### 8.4 Tạo Parent/Child Job
 
@@ -720,7 +722,7 @@ claim RestoreJobSegment PENDING -> RUNNING
        update child DONE bằng file size
        tổng hợp trạng thái/progress parent
        return
-  -> download object vào <restore_path>.restore.<job_id>
+  -> download object vào <restore_path>.part
   -> rename atomic sang <restore_path>
   -> stat file lấy processed_bytes
   -> update child DONE
@@ -731,7 +733,7 @@ Khi register/download/mkdir/rename lỗi:
 
 - Child chuyển `FAILED`, parent được tổng hợp thành `FAILED` và ghi `error_message`.
 - Range COLD vẫn giữ `AVAILABLE` vì trạng thái restore thuộc durable child queue.
-- Partial file `.restore.<job_id>` được xóa ở các nhánh download/rename thất bại.
+- Partial file `.part` trong thư mục job được xóa ở các nhánh download/rename thất bại.
 - Code hiện không chuyển range sang `MISSING` khi object download thất bại.
 
 ### 8.7 Object Key Và Restore Path
@@ -745,26 +747,26 @@ Object key:
 Restore cache:
 
 ```text
-{storage.restore_save_path}/{camera_id}/{stream_id}/{segment_path}.mp4
+{storage.restore_save_path}/{job_id}/{camera_id}/{stream_id}/{segment_path}.mp4
 ```
 
 File tạm:
 
 ```text
-{restore_path}.restore
+{restore_path}.part
 ```
 
-Range sau restore vẫn giữ `tier=COLD` và `pool_id` của object pool. Chỉ status trở về `AVAILABLE`; file local là cache tạm, không phải dữ liệu HOT chính thức.
+Mỗi job có marker `.restore_job` trong thư mục gốc của nó. Hai job có thể chứa bản sao riêng của cùng một segment. Range sau restore vẫn giữ `tier=COLD` và `pool_id` của object pool. Chỉ status trở về `AVAILABLE`; file local là cache tạm, không phải dữ liệu HOT chính thức.
 
 ### 8.8 Cleanup Cache
 
 Mỗi timer tick, `cleanupRestoreTempFiles()`:
 
-1. Lấy job `DONE` có `updated_at <= now - storage.restore_ttl_seconds`.
-2. Thu thập segment trong job window; nếu metadata không đủ thì scan restore root.
-3. Xóa file cache và file `.restore`.
-4. Chuyển job sang `EXPIRED` để không xử lý lặp.
-5. Scan và xóa partial `.restore` bị bỏ dở quá TTL.
+1. Lấy tối đa 100 job `DONE`/`FAILED`/`CANCELLED` có `updated_at <= now - storage.restore_ttl_seconds`.
+2. Xóa toàn bộ thư mục `{storage.restore_save_path}/{job_id}` của đúng job đã hết TTL, gồm cache, `.part` và marker.
+3. Chỉ chuyển job sang `EXPIRED` khi thư mục job đã xóa hoặc không còn tồn tại. Lỗi xóa giữ nguyên status/`updated_at` để retry ở cycle sau.
+4. Với job tạo trước khi áp dụng layout theo `job_id`, cleanup vẫn xóa exact child cache và partial `.restore.<job_id>` theo layout cũ.
+5. Scan và xóa partial `.restore.*` legacy bị bỏ dở quá TTL; lỗi xóa cũng được retry ở lần scan sau.
 
 `EXPIRED` là status runtime thực tế của restore job sau cleanup, dù enum `JobStatus` dùng chung chưa khai báo giá trị này.
 
@@ -813,6 +815,12 @@ Luồng đang hoạt động:
 FE -> playback/resolve
 BE -> READY hoặc RESTORE_REQUIRED/RESTORING
 
+FE đã xác định range COLD từ timeline -> restoreJob/create
+BE -> tái sử dụng job tương đương hoặc tạo job mới và bắt đầu download ngay
+FE -> poll restoreJob/detail
+BE -> RESTORING/READY/NOT_READY/FAILED/CANCELLED/EXPIRED
+FE nhận READY -> gọi API playback hiện hữu
+
 Luồng replay nội bộ -> resolveRecordedBlockPath
 BE -> handleColdAccessByPath
 BE -> tạo job + dispatch worker nếu auto_restore bật
@@ -834,9 +842,9 @@ Các endpoint restore job yêu cầu đồng thời permission playback `1003` v
 - Resolve các segment COLD/AVAILABLE chính xác từ timefile.
 - Insert atomic parent `restore_jobs` và các child `restore_job_segments`.
 - Dispatch các child theo giới hạn `storage.auto_restore_max_concurrent`.
-- Trả `job_id`.
+- Trả ngay snapshot của job gồm `job_id`, trạng thái playback và tiến độ theo số segment; không trả estimate thời gian restore.
 
-Manual restore và auto-restore dùng chung durable queue. Partial unique index trên segment ngăn hai job active cùng tải một object.
+Manual restore và auto-restore dùng chung durable queue. Manual request tương đương tái sử dụng job `PENDING`/`RUNNING`; job `DONE` có cache đầy đủ được cập nhật `updated_at` để gia hạn TTL. Job terminal lỗi, đã hết hạn hoặc thiếu cache không được tái sử dụng. Request khác thông số vẫn có thể tải cùng object vào folder job khác để vòng đời cache, TTL và cleanup độc lập.
 
 ### 9.3 Không Có HTTP Static-File Hook
 
@@ -1041,8 +1049,8 @@ void TierStorageManager::executeRestoreSegment(...) {
 
     pool = source_pool_from_cold_range.pool_id
     key = TierObjectStorage::makeS3Key(pool.base_path, camera_id, stream_id, segment_path)
-    restore_path = storage.restore_save_path + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4"
-    local_tmp = restore_path + ".restore." + job_id
+    restore_path = storage.restore_save_path + "/" + job_id + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4"
+    local_tmp = restore_path + ".part"
 
     ok = objectStorage.downloadSegment(pool.id, key, local_tmp)
     if (!ok) fail
@@ -1057,8 +1065,8 @@ void TierStorageManager::executeRestoreSegment(...) {
 ## 13. Rủi Ro Và Lưu Ý
 
 - Download được dispatch sang `WorkThreadPool`, không block EventPoller và được giới hạn bởi `storage.auto_restore_max_concurrent`.
-- Manual restore và auto-restore đều được scheduler consume; active child trùng segment bị unique index từ chối.
-- Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; job đã cleanup chuyển sang `EXPIRED`.
+- Manual restore và auto-restore đều được scheduler consume; manual request tương đương được deduplicate, còn request khác thông số có thể restore cùng segment độc lập và chịu chung giới hạn concurrency.
+- Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; cleanup chỉ xóa thư mục của job hết TTL rồi chuyển job đó sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
 - Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.

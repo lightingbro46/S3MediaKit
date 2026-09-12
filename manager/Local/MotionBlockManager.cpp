@@ -134,7 +134,7 @@ void MotionBlockManager::removeMotionBlockDays(const string &device_id, const ve
             deleteMotionBlockPair(block_path);
             TraceL << "Deleted motion block for device=" << device_id << " day=" << getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start));
         } else {
-            WarnL << "Motion block file does not exist for device=" << device_id << " day=" << getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start));
+            TraceL << "Motion block file does not exist for device=" << device_id << " day=" << getTimeStr("%Y-%m-%d", static_cast<time_t>(day_start));
         }
     }
     refreshMotionKeepThreshold(device_id);

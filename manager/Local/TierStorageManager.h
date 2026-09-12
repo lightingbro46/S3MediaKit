@@ -29,6 +29,7 @@ namespace managerkit {
 
 struct ColdAccessRestoreResult {
     bool handled = false;
+    bool job_created = false;
     std::string job_id;
     std::string status;
     std::string message;
@@ -266,7 +267,19 @@ public:
                                                          int64_t segment_start_time,
                                                          const std::string &timefile_path);
 
-    std::string getRestoreSegmentPath(const std::string &camera_id,
+    bool validateRestoreWindowCache(const RestoreJob &job,
+                                    const std::vector<SegmentTierRange> &ranges,
+                                    const std::string &stream_id,
+                                    int64_t start_time,
+                                    int64_t end_time,
+                                    int64_t restore_ttl_seconds,
+                                    int64_t &expires_at) const;
+
+    bool getRestoreJobSnapshot(const std::string &job_id,
+                               RestoreJobSnapshot &snapshot) const;
+
+    std::string getRestoreSegmentPath(const std::string &job_id,
+                                      const std::string &camera_id,
                                       const std::string &stream_id,
                                       const std::string &segment_path) const;
 
@@ -491,6 +504,7 @@ private:
     mutable std::mutex        _pool_cache_mtx;
     mutable std::mutex        _pool_health_mtx;
     mutable std::mutex        _range_registration_mtx;
+    mutable std::mutex        _restore_request_mtx;
     mutable std::mutex        _restore_dispatch_mtx;
     mutable std::mutex        _temporary_mp4_observations_mtx;
     // In-memory cache of enabled pools (refreshed every tick)

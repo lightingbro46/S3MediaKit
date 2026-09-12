@@ -10,6 +10,7 @@
 - [Sync DB](./api-sync.md)
 - [Luồng đồng bộ dữ liệu thẻ nhớ SD](./sd-card-sync-flow.md)
 - [Storage Tiering](./api-storage-tiering.md)
+- [Tích hợp Restore Job cho Web, Desktop và Mobile](./restore-job-client-integration.md)
 - [Kiểm thử tích hợp Storage Tiering với Codex agent](./tier-storage-integration-testing.md)
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
 

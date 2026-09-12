@@ -1,6 +1,7 @@
 #include <ctime>
 #include <cstring>
 #include <cmath>
+#include <cctype>
 #include <limits>
 #include <unordered_set>
 #include <sys/stat.h>
@@ -281,13 +282,56 @@ static std::string getRestoreRootPath() {
     return File::absolutePath("", restore_save_path);
 }
 
-static std::string buildRestoreSegmentPath(const std::string &camera_id,
+static bool isSafeRestoreJobId(const std::string &job_id) {
+    if (job_id.empty() || job_id == "." || job_id == "..")
+        return false;
+    for (const auto ch : job_id) {
+        if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_')
+            return false;
+    }
+    return true;
+}
+
+static std::string buildRestoreJobRootPath(const std::string &job_id) {
+    if (!isSafeRestoreJobId(job_id))
+        return "";
+    auto root = getRestoreRootPath();
+    if (!root.empty() && root.back() == '/')
+        root.pop_back();
+    return root + "/" + job_id;
+}
+
+static std::string buildLegacyRestoreSegmentPath(const std::string &camera_id,
                                            const std::string &stream_id,
                                            const std::string &segment_path) {
     auto root = getRestoreRootPath();
     if (!root.empty() && root.back() == '/')
         root.pop_back();
     return root + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4";
+}
+
+static std::string buildRestoreSegmentPath(const std::string &job_id,
+                                           const std::string &camera_id,
+                                           const std::string &stream_id,
+                                           const std::string &segment_path) {
+    auto job_root = buildRestoreJobRootPath(job_id);
+    if (job_root.empty())
+        return "";
+    return job_root + "/" + camera_id + "/" + stream_id + "/" + segment_path + ".mp4";
+}
+
+static bool isJobScopedRestoreLayout(const std::string &job_id) {
+    auto job_root = buildRestoreJobRootPath(job_id);
+    return !job_root.empty() && File::is_dir(job_root);
+}
+
+static std::string resolveRestoreSegmentPath(const RestoreJob &job,
+                                             const RestoreJobSegment &segment) {
+    if (isJobScopedRestoreLayout(job.job_id))
+        return buildRestoreSegmentPath(job.job_id, segment.camera_id,
+                                       segment.stream_id, segment.segment_path);
+    return buildLegacyRestoreSegmentPath(segment.camera_id, segment.stream_id,
+                                         segment.segment_path);
 }
 
 static bool ensureDirectoryPath(const std::string &dir, unsigned int mode, std::string &err) {
@@ -312,6 +356,36 @@ static bool ensureDirectoryPath(const std::string &dir, unsigned int mode, std::
         return false;
     }
     return true;
+}
+
+static bool prepareRestoreJobDirectory(const std::string &job_id, std::string &err) {
+    const auto job_root = buildRestoreJobRootPath(job_id);
+    if (job_root.empty()) {
+        err = "Invalid restore job id";
+        return false;
+    }
+    if (!ensureDirectoryPath(job_root, S_IRWXO | S_IRWXG | S_IRWXU, err))
+        return false;
+    const std::string marker_path = job_root + "/.restore_job";
+    if (!File::saveFile(job_id + "\n", marker_path)) {
+        err = "Cannot create restore job marker: " + marker_path;
+        File::delete_file(job_root, false, false);
+        return false;
+    }
+    return true;
+}
+
+static std::set<std::string> restoreSegmentIdentities(
+        const std::vector<RestoreJobSegment> &segments) {
+    std::set<std::string> identities;
+    for (const auto &segment : segments) {
+        identities.insert(segment.camera_id + "\n" + segment.stream_id + "\n" +
+                          segment.range_id + "\n" + segment.segment_path + "\n" +
+                          segment.source_pool_id + "\n" +
+                          std::to_string(segment.range_start) + "\n" +
+                          std::to_string(segment.range_end));
+    }
+    return identities;
 }
 
 static bool isSameFileOnDisk(const std::string &a, const std::string &b) {
@@ -1159,10 +1233,130 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForWind
     return ret;
 }
 
-std::string TierStorageManager::getRestoreSegmentPath(const std::string &camera_id,
+std::string TierStorageManager::getRestoreSegmentPath(const std::string &job_id,
+                                                      const std::string &camera_id,
                                                       const std::string &stream_id,
                                                       const std::string &segment_path) const {
-    return buildRestoreSegmentPath(camera_id, stream_id, segment_path);
+    return buildRestoreSegmentPath(job_id, camera_id, stream_id, segment_path);
+}
+
+bool TierStorageManager::validateRestoreWindowCache(
+        const RestoreJob &job,
+        const std::vector<SegmentTierRange> &ranges,
+        const std::string &stream_id,
+        int64_t start_time,
+        int64_t end_time,
+        int64_t restore_ttl_seconds,
+        int64_t &expires_at) const {
+    expires_at = 0;
+    if (job.status != jobStatusToString(JobStatus::DONE) ||
+        job.camera_id.empty() || job.start_time > start_time || job.end_time < end_time ||
+        start_time <= 0 || end_time <= start_time) {
+        return false;
+    }
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (restore_ttl_seconds >= 0) {
+        if (job.updated_at <= 0 ||
+            job.updated_at > std::numeric_limits<int64_t>::max() - restore_ttl_seconds)
+            return false;
+        expires_at = job.updated_at + restore_ttl_seconds;
+        if (expires_at <= now)
+            return false;
+    }
+
+    std::set<std::string> expected_ranges;
+    for (const auto &range : ranges) {
+        if (range.camera_id != job.camera_id ||
+            (!stream_id.empty() && range.stream_id != stream_id) ||
+            range.end_time <= start_time || range.start_time >= end_time) {
+            continue;
+        }
+        expected_ranges.insert(range.range_id + "\n" + range.stream_id);
+    }
+    if (expected_ranges.empty())
+        return false;
+
+    std::set<std::string> covered_ranges;
+    for (const auto &segment : RestoreJobSegmentImp().queryByJob(job.job_id)) {
+        if (segment.camera_id != job.camera_id ||
+            (!stream_id.empty() && segment.stream_id != stream_id) ||
+            segment.range_end <= start_time || segment.range_start >= end_time) {
+            continue;
+        }
+        const std::string range_key = segment.range_id + "\n" + segment.stream_id;
+        if (expected_ranges.find(range_key) == expected_ranges.end())
+            continue;
+        if (segment.status != jobStatusToString(JobStatus::DONE) ||
+            !File::fileExist(resolveRestoreSegmentPath(job, segment))) {
+            return false;
+        }
+        covered_ranges.insert(range_key);
+    }
+    return !covered_ranges.empty() && covered_ranges == expected_ranges;
+}
+
+bool TierStorageManager::getRestoreJobSnapshot(const std::string &job_id,
+                                               RestoreJobSnapshot &snapshot) const {
+    auto jobs = RestoreJobImp().findByJobId(job_id);
+    if (jobs.empty())
+        return false;
+
+    snapshot = RestoreJobSnapshot();
+    snapshot.job = jobs.front();
+    auto children = RestoreJobSegmentImp().queryByJob(job_id);
+    snapshot.total_segment_count = static_cast<int>(children.size());
+    for (const auto &child : children) {
+        if (child.status == jobStatusToString(JobStatus::FAILED)) {
+            ++snapshot.failed_segment_count;
+            continue;
+        }
+        if (child.status == jobStatusToString(JobStatus::DONE) &&
+            File::fileExist(resolveRestoreSegmentPath(snapshot.job, child))) {
+            ++snapshot.restored_segment_count;
+            continue;
+        }
+        ++snapshot.remaining_segment_count;
+    }
+    if (snapshot.total_segment_count > 0) {
+        snapshot.segment_progress_percent = std::max(
+            0, std::min(100, snapshot.restored_segment_count * 100 /
+                                  snapshot.total_segment_count));
+    }
+
+    const std::string &status = snapshot.job.status;
+    if (status == "CANCELLED") {
+        snapshot.playback_status = "CANCELLED";
+    } else if (status == "EXPIRED") {
+        snapshot.playback_status = "EXPIRED";
+    } else if (status == jobStatusToString(JobStatus::FAILED) ||
+               snapshot.failed_segment_count > 0) {
+        snapshot.playback_status = "FAILED";
+    } else if (status == jobStatusToString(JobStatus::DONE)) {
+        bool ttl_valid = true;
+        GET_CONFIG(int64_t, restore_ttl_seconds, Storage::kRestoreTTLSeconds);
+        if (restore_ttl_seconds >= 0) {
+            if (snapshot.job.updated_at <= 0 ||
+                snapshot.job.updated_at > std::numeric_limits<int64_t>::max() - restore_ttl_seconds) {
+                ttl_valid = false;
+            } else {
+                snapshot.expires_at = snapshot.job.updated_at + restore_ttl_seconds;
+                ttl_valid = snapshot.expires_at > static_cast<int64_t>(time(nullptr));
+            }
+        }
+        if (!ttl_valid) {
+            snapshot.playback_status = "EXPIRED";
+        } else if (snapshot.total_segment_count > 0 &&
+                   snapshot.restored_segment_count == snapshot.total_segment_count) {
+            snapshot.playback_status = "READY";
+            snapshot.playback_ready = true;
+        } else {
+            snapshot.playback_status = "NOT_READY";
+        }
+    } else {
+        snapshot.playback_status = "RESTORING";
+    }
+    return true;
 }
 
 PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const std::string &camera_id,
@@ -1242,28 +1436,43 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
     }
 
     if (poolTypeIsObjectStorage(pool.type)) {
-        auto restore_path = buildRestoreSegmentPath(camera_id, stream_id, segment_path);
-        if (File::fileExist(restore_path)) {
+        RestoreJobSegment restored_segment;
+        restored_segment.camera_id = camera_id;
+        restored_segment.stream_id = stream_id;
+        restored_segment.segment_path = segment_path;
+        GET_CONFIG(int64_t, restore_ttl_seconds, Storage::kRestoreTTLSeconds);
+        for (const auto &job : RestoreJobImp().queryCompletedForSegment(
+                 camera_id, stream_id, segment_path)) {
+            if (restore_ttl_seconds >= 0 &&
+                (job.updated_at <= 0 ||
+                 job.updated_at > std::numeric_limits<int64_t>::max() - restore_ttl_seconds ||
+                 job.updated_at + restore_ttl_seconds <= static_cast<int64_t>(time(nullptr)))) {
+                continue;
+            }
+            auto restore_path = resolveRestoreSegmentPath(job, restored_segment);
+            if (!File::fileExist(restore_path))
+                continue;
             ret.read_path = restore_path;
             ret.ready = true;
             ret.restore_required = false;
-            ret.message = "Resolved to restore cache";
-        } else {
-            PoolHealthInfo health;
-            if (!isPoolAvailableForPlayback(pool, &health)) {
-                ret.read_path.clear();
-                ret.ready = false;
-                ret.restore_required = false;
-                ret.storage_unavailable = true;
-                ret.pool_health_status = health.health_status;
-                ret.message = "Object storage pool is unavailable: " + health.health_status;
-                return ret;
-            }
+            ret.message = "Resolved to restore job cache " + job.job_id;
+            return ret;
+        }
+
+        PoolHealthInfo health;
+        if (!isPoolAvailableForPlayback(pool, &health)) {
             ret.read_path.clear();
             ret.ready = false;
-            ret.restore_required = true;
-            ret.message = "Segment is in object storage and restore cache is not ready";
+            ret.restore_required = false;
+            ret.storage_unavailable = true;
+            ret.pool_health_status = health.health_status;
+            ret.message = "Object storage pool is unavailable: " + health.health_status;
+            return ret;
         }
+        ret.read_path.clear();
+        ret.ready = false;
+        ret.restore_required = true;
+        ret.message = "Segment is in object storage and restore cache is not ready";
         return ret;
     }
 
@@ -3668,15 +3877,29 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::str
     child.created_at = now;
     child.updated_at = now;
 
+    std::string directory_error;
+    if (!prepareRestoreJobDirectory(job.job_id, directory_error)) {
+        WarnL << "Cannot prepare restore segment directory job=" << job.job_id
+              << ": " << directory_error;
+        return ret;
+    }
     try {
-        if (!restore_imp.addWithSegments(job, {child}))
+        if (!restore_imp.addWithSegments(job, {child})) {
+            File::delete_file(buildRestoreJobRootPath(job.job_id));
             return ret;
+        }
     } catch (const std::exception &ex) {
+        File::delete_file(buildRestoreJobRootPath(job.job_id));
         WarnL << "Cannot enqueue restore segment: " << ex.what();
+        return ret;
+    } catch (...) {
+        File::delete_file(buildRestoreJobRootPath(job.job_id));
+        WarnL << "Cannot enqueue restore segment: unknown database error";
         return ret;
     }
 
     ret.handled = true;
+    ret.job_created = true;
     ret.job_id = job.job_id;
     ret.status = "PENDING";
     ret.message = "Segment is in COLD tier. Restore has been queued";
@@ -3697,6 +3920,7 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
 
     SegmentTierRangeImp range_imp;
     std::vector<RestoreJobSegment> children;
+    std::set<std::string> child_keys;
     int64_t total_bytes = 0;
     for (const auto &range : range_imp.queryByCamera(camera_id, start_time, end_time)) {
         if ((!stream_id.empty() && range.stream_id != stream_id) ||
@@ -3706,6 +3930,8 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
             continue;
         for (const auto &file : collectSegmentFilesForRange(range)) {
             if (file.start_time < start_time || file.start_time >= end_time)
+                continue;
+            if (!child_keys.insert(file.stream_id + "\n" + file.segment_path).second)
                 continue;
             RestoreJobSegment child;
             child.camera_id = camera_id;
@@ -3719,24 +3945,62 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
             child.total_bytes = std::max<int64_t>(0, file.file_size);
             child.created_at = static_cast<int64_t>(time(nullptr));
             child.updated_at = child.created_at;
-            auto active = RestoreJobSegmentImp().queryActiveSegment(
-                child.camera_id, child.stream_id, child.segment_path);
-            if (!active.empty()) {
-                if (ret.job_id.empty()) {
-                    ret.job_id = active.front().job_id;
-                    ret.status = active.front().status;
-                }
-                continue;
-            }
             total_bytes += child.total_bytes;
             children.push_back(child);
         }
     }
-    if (children.empty()) {
-        if (!ret.job_id.empty()) {
-            ret.handled = true;
-            ret.message = "Requested restore segments are already queued";
+    if (children.empty())
+        return ret;
+
+    std::lock_guard<std::mutex> request_lk(_restore_request_mtx);
+    const auto requested_segments = restoreSegmentIdentities(children);
+    RestoreJob active_match;
+    bool has_active_match = false;
+    for (const auto &candidate : restore_imp.queryOverlapping(
+             camera_id, start_time, end_time, 0, stream_id)) {
+        if (candidate.start_time != start_time || candidate.end_time != end_time ||
+            candidate.source_tier != tierTypeToString(ColdTier) ||
+            candidate.target_tier != tierTypeToString(HotTier)) {
+            continue;
         }
+        const auto candidate_segments = RestoreJobSegmentImp().queryByJob(candidate.job_id);
+        if (candidate_segments.size() != children.size() ||
+            restoreSegmentIdentities(candidate_segments) != requested_segments) {
+            continue;
+        }
+
+        if (candidate.status == jobStatusToString(JobStatus::DONE)) {
+            bool cache_complete = !candidate_segments.empty();
+            for (const auto &segment : candidate_segments) {
+                if (segment.status != jobStatusToString(JobStatus::DONE) ||
+                    !File::fileExist(resolveRestoreSegmentPath(candidate, segment))) {
+                    cache_complete = false;
+                    break;
+                }
+            }
+            if (!cache_complete ||
+                !restore_imp.updateStatus(candidate.job_id, candidate.status,
+                                          candidate.processed_bytes)) {
+                continue;
+            }
+            ret.handled = true;
+            ret.job_id = candidate.job_id;
+            ret.status = candidate.status;
+            ret.message = "Completed restore job reused and TTL extended";
+            return ret;
+        }
+        if (!has_active_match &&
+            (candidate.status == jobStatusToString(JobStatus::PENDING) ||
+             candidate.status == jobStatusToString(JobStatus::RUNNING))) {
+            active_match = candidate;
+            has_active_match = true;
+        }
+    }
+    if (has_active_match) {
+        ret.handled = true;
+        ret.job_id = active_match.job_id;
+        ret.status = active_match.status;
+        ret.message = "Equivalent restore job already queued";
         return ret;
     }
 
@@ -3755,14 +4019,28 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
     for (auto &child : children)
         child.job_id = job.job_id;
 
+    std::string directory_error;
+    if (!prepareRestoreJobDirectory(job.job_id, directory_error)) {
+        WarnL << "Cannot prepare restore window directory job=" << job.job_id
+              << ": " << directory_error;
+        return ret;
+    }
     try {
-        if (!restore_imp.addWithSegments(job, children))
+        if (!restore_imp.addWithSegments(job, children)) {
+            File::delete_file(buildRestoreJobRootPath(job.job_id));
             return ret;
+        }
     } catch (const std::exception &ex) {
+        File::delete_file(buildRestoreJobRootPath(job.job_id));
         WarnL << "Cannot enqueue restore window: " << ex.what();
+        return ret;
+    } catch (...) {
+        File::delete_file(buildRestoreJobRootPath(job.job_id));
+        WarnL << "Cannot enqueue restore window: unknown database error";
         return ret;
     }
     ret.handled = true;
+    ret.job_created = true;
     ret.job_id = job.job_id;
     ret.status = job.status;
     ret.message = "Restore window queued";
@@ -3823,9 +4101,16 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
 
     std::string base_path = source_pool.base_path.value_or("");
     std::string s3_key = TierObjectStorage::makeS3Key(base_path, segment.camera_id, segment.stream_id, segment.segment_path);
-    std::string restore_path = buildRestoreSegmentPath(segment.camera_id, segment.stream_id, segment.segment_path);
+    std::string directory_error;
+    if (!prepareRestoreJobDirectory(segment.job_id, directory_error)) {
+        segment_imp.updateStatus(segment, "FAILED", 0, directory_error);
+        updateRestoreParent(segment.job_id);
+        return;
+    }
+    std::string restore_path = buildRestoreSegmentPath(
+        segment.job_id, segment.camera_id, segment.stream_id, segment.segment_path);
     std::string restore_dir = restore_path.substr(0, restore_path.rfind('/'));
-    std::string tmp_path = restore_path + ".restore." + segment.job_id;
+    std::string tmp_path = restore_path + ".part";
 
     std::string mkdir_err;
     if (!ensureDirectoryPath(restore_dir, S_IRWXO | S_IRWXG | S_IRWXU, mkdir_err)) {
@@ -3836,8 +4121,16 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
 
     struct stat st{};
     if (stat(restore_path.c_str(), &st) == 0) {
+        ::unlink(tmp_path.c_str());
         int64_t restored_bytes = static_cast<int64_t>(st.st_size);
         segment_imp.updateStatus(segment, "DONE", restored_bytes);
+        updateRestoreParent(segment.job_id);
+        return;
+    }
+
+    if (::unlink(tmp_path.c_str()) != 0 && errno != ENOENT) {
+        std::string err = std::string("Cannot remove stale partial restore file: ") + strerror(errno);
+        segment_imp.updateStatus(segment, "FAILED", 0, err);
         updateRestoreParent(segment.job_id);
         return;
     }
@@ -4459,6 +4752,8 @@ void TierStorageManager::cleanupRestoreTempFiles() {
     if (restore_root.empty() || !File::is_dir(restore_root))
         return;
 
+    std::lock_guard<std::mutex> request_lk(_restore_request_mtx);
+
     const int64_t now = static_cast<int64_t>(time(nullptr));
     const int64_t cutoff = now - restore_ttl_seconds;
     RestoreJobImp restore_imp;
@@ -4467,20 +4762,53 @@ void TierStorageManager::cleanupRestoreTempFiles() {
     int expired_job_count = 0;
     auto expired_jobs = restore_imp.queryExpiredTerminal(cutoff);
     for (const auto &job : expired_jobs) {
-        auto segments = RestoreJobSegmentImp().queryByJob(job.job_id);
-        for (const auto &seg : segments) {
-            auto path = buildRestoreSegmentPath(seg.camera_id, seg.stream_id, seg.segment_path);
-            if (::unlink(path.c_str()) == 0)
+        bool cleanup_succeeded = true;
+        const auto job_root = buildRestoreJobRootPath(job.job_id);
+        if (job_root.empty()) {
+            WarnL << "Cannot clean restore job with unsafe id=" << job.job_id;
+            cleanup_succeeded = false;
+        } else if (isJobScopedRestoreLayout(job.job_id)) {
+            const int result = File::delete_file(job_root, false, false);
+            struct stat remaining_path{};
+            const bool path_exists = ::lstat(job_root.c_str(), &remaining_path) == 0;
+            if (result == 0 || !path_exists) {
                 ++deleted_count;
-            std::string tmp_path = path + ".restore." + job.job_id;
-            if (::unlink(tmp_path.c_str()) == 0)
-                ++deleted_count;
+            } else {
+                WarnL << "Cannot remove restore job directory job=" << job.job_id
+                      << " path=" << job_root << ": " << strerror(errno);
+                cleanup_succeeded = false;
+            }
+        } else {
+            // Transitional cleanup for jobs created with the legacy shared layout.
+            auto segments = RestoreJobSegmentImp().queryByJob(job.job_id);
+            for (const auto &seg : segments) {
+                auto path = buildLegacyRestoreSegmentPath(
+                    seg.camera_id, seg.stream_id, seg.segment_path);
+                if (::unlink(path.c_str()) == 0) {
+                    ++deleted_count;
+                } else if (errno != ENOENT && errno != ENOTDIR) {
+                    WarnL << "Cannot remove legacy restore cache file job=" << job.job_id
+                          << " path=" << path << ": " << strerror(errno);
+                    cleanup_succeeded = false;
+                }
+                std::string tmp_path = path + ".restore." + job.job_id;
+                if (::unlink(tmp_path.c_str()) == 0) {
+                    ++deleted_count;
+                } else if (errno != ENOENT && errno != ENOTDIR) {
+                    WarnL << "Cannot remove legacy temporary restore file job=" << job.job_id
+                          << " path=" << tmp_path << ": " << strerror(errno);
+                    cleanup_succeeded = false;
+                }
+            }
         }
 
-        // Mark the restore cache as expired so the same job is not processed
-        // again on every cleanup tick.
-        restore_imp.updateStatus(job.job_id, "EXPIRED", job.processed_bytes);
-        ++expired_job_count;
+        if (cleanup_succeeded) {
+            if (restore_imp.updateStatus(job.job_id, "EXPIRED", job.processed_bytes)) {
+                ++expired_job_count;
+            } else {
+                WarnL << "Cannot mark cleaned restore job expired job=" << job.job_id;
+            }
+        }
     }
 
     // Clean up abandoned partial downloads for failed/interrupted jobs.
@@ -4490,7 +4818,9 @@ void TierStorageManager::cleanupRestoreTempFiles() {
         struct stat st{};
         if (stat(path.c_str(), &st) == 0 &&
             now - static_cast<int64_t>(st.st_mtime) > restore_ttl_seconds) {
-            ::unlink(path.c_str());
+            if (::unlink(path.c_str()) != 0 && errno != ENOENT && errno != ENOTDIR) {
+                WarnL << "Cannot remove abandoned restore file path=" << path << ": " << strerror(errno);
+            }
         }
         return true;
     }, false, true);

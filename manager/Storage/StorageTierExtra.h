@@ -100,6 +100,18 @@ DECLARE_ENTITY(RestoreJobSegment, "restore_job_segments",
     &RestoreJobSegment::updated_at,      "updated_at"
 )
 
+struct RestoreJobSnapshot {
+    RestoreJob job;
+    std::string playback_status;
+    bool playback_ready = false;
+    int total_segment_count = 0;
+    int restored_segment_count = 0;
+    int remaining_segment_count = 0;
+    int failed_segment_count = 0;
+    int segment_progress_percent = 0;
+    int64_t expires_at = 0;
+};
+
 struct TierMetadataCleanupJob {
     std::string range_id;
     std::string camera_id;
@@ -292,21 +304,59 @@ public:
     std::vector<RestoreJob> queryOverlapping(const std::string &camera_id,
                                              int64_t start_time,
                                              int64_t end_time,
-                                             int size = 20) {
+                                             int size = 20,
+                                             const std::string &stream_id = "") {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND start_time < ? AND end_time > ?";
         params.push_back(camera_id);
         params.push_back(std::to_string(end_time));
         params.push_back(std::to_string(start_time));
+        if (!stream_id.empty()) {
+            where << " AND EXISTS (SELECT 1 FROM restore_job_segments"
+                     " WHERE restore_job_segments.job_id = restore_jobs.job_id"
+                     " AND restore_job_segments.stream_id = ?"
+                     " AND restore_job_segments.range_start < ?"
+                     " AND restore_job_segments.range_end > ?)";
+            params.push_back(stream_id);
+            params.push_back(std::to_string(end_time));
+            params.push_back(std::to_string(start_time));
+        }
 
-        auto rows = _executor->executeRaw(
-            toolkit::QueryBuilder()
-                .select(EntityTraits<RestoreJob>::getColumns())
-                .from(EntityTraits<RestoreJob>::tableName())
-                .where(where.str(), params)
-                .orderBy("updated_at DESC")
-                .limit(size));
+        auto query = toolkit::QueryBuilder()
+            .select(EntityTraits<RestoreJob>::getColumns())
+            .from(EntityTraits<RestoreJob>::tableName())
+            .where(where.str(), params)
+            .orderBy("updated_at DESC");
+        if (size > 0)
+            query = query.limit(size);
+        auto rows = _executor->executeRaw(query);
+
+        std::vector<RestoreJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJob>::fromRow(row));
+        return ret;
+    }
+
+    std::vector<RestoreJob> queryCompletedForSegment(const std::string &camera_id,
+                                                     const std::string &stream_id,
+                                                     const std::string &segment_path,
+                                                     int size = 0) {
+        auto query = toolkit::QueryBuilder()
+            .select(EntityTraits<RestoreJob>::getColumns())
+            .from(EntityTraits<RestoreJob>::tableName())
+            .where("camera_id = ? AND status = ? AND EXISTS ("
+                   "SELECT 1 FROM restore_job_segments "
+                   "WHERE restore_job_segments.job_id = restore_jobs.job_id "
+                   "AND restore_job_segments.camera_id = ? "
+                   "AND restore_job_segments.stream_id = ? "
+                   "AND restore_job_segments.segment_path = ? "
+                   "AND restore_job_segments.status = ?)",
+                   {camera_id, "DONE", camera_id, stream_id, segment_path, "DONE"})
+            .orderBy("updated_at DESC");
+        if (size > 0)
+            query = query.limit(size);
+        auto rows = _executor->executeRaw(query);
 
         std::vector<RestoreJob> ret;
         for (const auto &row : rows)

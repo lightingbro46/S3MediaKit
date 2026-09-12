@@ -62,11 +62,6 @@ CREATE INDEX IF NOT EXISTS "idx_restore_job_segments_status_created"
 CREATE INDEX IF NOT EXISTS "idx_restore_job_segments_job"
     ON "restore_job_segments" ("job_id", "status");
 
--- Prevent the same physical segment from being restored by two active jobs.
-CREATE UNIQUE INDEX IF NOT EXISTS "idx_restore_job_segments_active"
-    ON "restore_job_segments" ("camera_id", "stream_id", "segment_path")
-    WHERE "status" IN ('PENDING', 'RUNNING');
-
 -- Physical deletion and playback-metadata deletion are deliberately separated.
 CREATE TABLE IF NOT EXISTS "tier_metadata_cleanup_jobs" (
     "range_id"      TEXT    NOT NULL PRIMARY KEY,

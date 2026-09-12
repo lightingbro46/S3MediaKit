@@ -47,6 +47,8 @@ public:
     static Json::Value restoreJobToJson(const RestoreJob &job,
                                         const std::string &camera_name,
                                         bool list_view = false);
+    static Json::Value restoreJobSnapshotToJson(const RestoreJobSnapshot &snapshot,
+                                                const std::string &camera_name = "");
     static Json::Value tieringJobToJson(const TieringJob &job,
                                         const std::string &camera_name,
                                         bool detail = false);
