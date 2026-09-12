@@ -212,15 +212,16 @@ function initStreamSelect(player, state) {
         if (transport === state.selectedTransport) return;
         state.selectedTransport = transport;
         _updateTransportMenu();
+        if (state.mode === 'replay' && transport === 'hls') {
+            // Revert: HLS not supported in replay mode
+            state.selectedTransport = 'mp4';
+            _updateTransportMenu();
+            if (state.errMsgEl)   state.errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4 hoặc WS';
+            if (state.errOverlay) state.errOverlay.classList.add('show');
+            return;
+        }
+        if (state.invalidateRestoreSession) state.invalidateRestoreSession('transport');
         if (!state.stopped) {
-            if (state.mode === 'replay' && transport === 'hls') {
-                // Revert: HLS not supported in replay mode
-                state.selectedTransport = 'mp4';
-                _updateTransportMenu();
-                if (state.errMsgEl)   state.errMsgEl.textContent = 'HLS không hỗ trợ chế độ Replay — vui lòng chọn MP4 hoặc WS';
-                if (state.errOverlay) state.errOverlay.classList.add('show');
-                return;
-            }
             if (state.mode === 'live') {
                 document.getElementById('btn-play').click();
             } else if (state.mode === 'replay' && state.replayStartTime > 0) {
@@ -231,6 +232,8 @@ function initStreamSelect(player, state) {
 
     window.onProfileSelect = function (profileId) {
         if (profileId === state.selectedStreamId) return;
+        if (state.invalidateRestoreSession) state.invalidateRestoreSession('profile');
+        if (state.clearTimelineData) state.clearTimelineData();
         state.selectedStreamId = profileId;
         document.getElementById('stream-id').value = (profileId === 'auto') ? '' : profileId;
         if (state.triggerTimelineRefresh) state.triggerTimelineRefresh();

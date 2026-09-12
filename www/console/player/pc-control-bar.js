@@ -43,7 +43,7 @@ function initControlBar(player, state) {
                 var os = Math.max(st, hStart), oe = Math.min(st + dur, hStart + 3600);
                 if (os >= oe) return;
                 var seg = document.createElement('div');
-                seg.className = 'pcb-ts-seg';
+                seg.className = 'pcb-ts-seg' + (p.restoreRequired ? ' pcb-ts-restore' : '');
                 seg.style.left  = ((os - hStart) / 3600 * 100) + '%';
                 seg.style.width = ((oe - os)     / 3600 * 100) + '%';
                 pcbTrack.appendChild(seg);
@@ -95,16 +95,9 @@ function initControlBar(player, state) {
             var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             var wall  = state.pcbDayStart + _pcbCurrentHour * 3600 + ratio * 3600;
             // Only seek if position has recording data
-            var hPeriods = state.pcbRecHours && state.pcbRecHours[_pcbCurrentHour];
-            var hasData  = false;
-            if (hPeriods) {
-                hPeriods.forEach(function (p) {
-                    if (wall >= Number(p.startTime) && wall < Number(p.startTime) + Number(p.duration)) {
-                        hasData = true;
-                    }
-                });
-            }
-            if (hasData && state.seekToWallTime) state.seekToWallTime(wall);
+            var hasData = state.findRecordingPeriod ? !!state.findRecordingPeriod(wall) : false;
+            if (hasData && state.requestReplayAtWallTime) state.requestReplayAtWallTime(wall);
+            else if (hasData && state.seekToWallTime) state.seekToWallTime(wall);
         });
 
         // Hover tooltip
@@ -114,7 +107,9 @@ function initControlBar(player, state) {
             var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             var wall  = state.pcbDayStart + _pcbCurrentHour * 3600 + ratio * 3600;
             var wrapRect = pcbTimebarWrap.getBoundingClientRect();
-            pcbHoverTime.textContent   = new Date(wall * 1000).toLocaleTimeString();
+            var needsRestore = state.findRestoreRange ? !!state.findRestoreRange(wall) : false;
+            pcbHoverTime.textContent   = new Date(wall * 1000).toLocaleTimeString()
+                + (needsRestore ? ' · Cần khôi phục' : '');
             pcbHoverTime.style.left    = (e.clientX - wrapRect.left) + 'px';
             pcbHoverTime.style.display = 'block';
         });

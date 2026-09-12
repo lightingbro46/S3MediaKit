@@ -18,6 +18,12 @@
         cameraSummary: null,
         cameraTimeline: null,
         selectedCameraId: '',
+        restoreRequest: null,
+        restoreSnapshot: null,
+        restorePollTimer: null,
+        restorePollGeneration: 0,
+        restorePollInFlight: false,
+        restorePollError: '',
         chart: null,
         loading: false,
         saving: false
@@ -66,9 +72,9 @@
 
     function _statusClass(status) {
         var s = String(status || '').toUpperCase();
-        if (s === 'OK' || s === 'DONE') return 'std-ok';
-        if (s === 'WARNING' || s === 'HIGH' || s === 'PENDING' || s === 'RUNNING') return 'std-warn';
-        if (s === 'CRITICAL' || s === 'OFFLINE' || s === 'FAILED') return 'std-danger';
+        if (s === 'OK' || s === 'DONE' || s === 'READY') return 'std-ok';
+        if (s === 'WARNING' || s === 'HIGH' || s === 'PENDING' || s === 'RUNNING' || s === 'RESTORING' || s === 'NOT_READY') return 'std-warn';
+        if (s === 'CRITICAL' || s === 'OFFLINE' || s === 'FAILED' || s === 'EXPIRED') return 'std-danger';
         return 'std-muted';
     }
 
@@ -226,6 +232,28 @@
         });
     }
 
+    function _apiFormPostStrict(path, body) {
+        var auth = S3Auth.get();
+        if (!auth) return Promise.reject(new Error('Not authenticated'));
+        var form = new URLSearchParams();
+        Object.keys(body || {}).forEach(function (key) {
+            if (body[key] != null) form.set(key, String(body[key]));
+        });
+        var url = auth.serverUrl + path + '?secret=' + encodeURIComponent(auth.secret);
+        return window.fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: form.toString(),
+            credentials: 'omit'
+        }).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        }).then(function (res) {
+            if (res.code !== 0) throw new Error(res.msg || 'API error code ' + res.code);
+            return res.data || {};
+        });
+    }
+
     function _renderData(data, docSummary) {
         var body = document.getElementById('std-body');
         if (body) body.style.display = '';
@@ -261,7 +289,10 @@
         if (action === 'assign-open') return _openAssignModal();
         if (action === 'camera-remove') return _removeCamera(cameraId);
         if (action === 'camera-storage-load') return _loadCameraStorage();
-        if (action === 'playback-resolve') return _resolvePlayback(btn);
+        if (action === 'restore-create') return _createRestoreJob(btn);
+        if (action === 'restore-retry') return _createRestoreJob();
+        if (action === 'restore-dismiss') return _dismissRestoreJob();
+        if (action === 'restore-play') return _playRestoredRange();
         if (action === 'expired-approve') return _approveExpiredRange(id);
         if (action === 'expired-extend') return _extendExpiredRange(id);
     }
@@ -474,6 +505,7 @@
                 '<label class="std-check std-camera-check"><input id="std-camera-include-deleted" type="checkbox"' + (includeDeleted ? ' checked' : '') + '><span>Hiển thị dữ liệu đã xóa</span></label>' +
                 '<button class="std-btn std-btn-primary" data-std-action="camera-storage-load">Load camera data</button>' +
             '</div>' +
+            '<div id="std-restore-progress">' + _restoreProgressHtml() + '</div>' +
             '<div id="std-camera-storage-result">' + resultHtml + '</div>';
     }
 
@@ -502,7 +534,7 @@
             if (r.has_event) flags.push('Event');
             if (r.has_motion) flags.push('Motion');
             var actions = r.restore_required ?
-                '<button class="std-icon-btn" data-std-action="playback-resolve" data-camera-id="' + _esc(timeline.camera_id || summary.camera_id || '') + '" data-start="' + _esc(r.start) + '" data-end="' + _esc(r.end) + '">Resolve</button>' :
+                '<button class="std-icon-btn" data-std-action="restore-create" data-camera-id="' + _esc(timeline.camera_id || summary.camera_id || '') + '" data-start="' + _esc(r.start) + '" data-end="' + _esc(r.end) + '">Restore</button>' :
                 '';
             return '<tr>' +
                 '<td>' + _fmtTs(r.start) + '<div class="std-id">' + _fmtTs(r.end) + '</div></td>' +
@@ -798,7 +830,7 @@
             '<div class="std-form-actions"><button class="std-btn" type="button" data-std-action="modal-close">Cancel</button><button class="std-btn std-btn-primary" type="submit">' + (editing ? 'Update pool' : 'Create pool') + '</button></div>' +
         '</form>';
         _showModal(editing ? 'Update pool' : 'Create pool', html, function (form) {
-            var payload = _poolPayloadFromForm(form, pool);
+            var payload = _poolPayloadFromForm2(form, pool);
             if (_poolNeedsTest(payload.type) && form.getAttribute('data-tested') !== 'true') {
                 _setPoolTestResult('err', 'Cần test kết nối thành công trước khi lưu');
                 return;
@@ -831,6 +863,28 @@
         var secret = _fieldValue(form, 'secret_key');
         if (secret) payload.secret_key = secret;
         if (existing && existing.id) payload.pool_id = existing.id;
+        return payload;
+    }
+
+    function _poolPayloadFromForm2(form, existing) {
+        var payload = {
+            name: _fieldValue(form, 'name'),
+            type: _fieldValue(form, 'type'),
+            tier: _fieldValue(form, 'tier'),
+            mount_path: _fieldValue(form, 'mount_path'),
+            network_path: _fieldValue(form, 'network_path'),
+            endpoint: _fieldValue(form, 'endpoint'),
+            bucket: _fieldValue(form, 'bucket'),
+            base_path: _fieldValue(form, 'base_path'),
+            access_key: _fieldValue(form, 'access_key'),
+            enabled: !!form.elements.enabled.checked,
+            health_check_enabled: !!form.elements.health_check_enabled.checked,
+            high_watermark_percent: parseInt(_fieldValue(form, 'high_watermark_percent'), 10) || 85,
+            critical_watermark_percent: parseInt(_fieldValue(form, 'critical_watermark_percent'), 10) || 90
+        };
+        var secret = _fieldValue(form, 'secret_key');
+        if (secret) payload.secret_key = secret;
+        if (existing && existing.id) payload.id = existing.id;
         return payload;
     }
 
@@ -1161,29 +1215,194 @@
         _save('/media/api/storage/policy/removeCamera', { camera_id: cameraId }, 'Camera đã được gỡ khỏi policy');
     }
 
-    function _resolvePlayback(btn) {
-        var cameraId = btn.getAttribute('data-camera-id') || _state.selectedCameraId || '';
-        var start = parseInt(btn.getAttribute('data-start'), 10) || 0;
-        var end = parseInt(btn.getAttribute('data-end'), 10) || 0;
-        if (!cameraId || !start || !end || start >= end) {
-            _setStatus('err', 'Thiếu thông tin range để resolve playback');
+    function _restoreStatus(snapshot) {
+        var playbackStatus = String((snapshot && snapshot.playback_status) || '').toUpperCase();
+        if (playbackStatus) return playbackStatus;
+        var jobStatus = String((snapshot && snapshot.status) || '').toUpperCase();
+        if (jobStatus === 'PENDING' || jobStatus === 'RUNNING') return 'RESTORING';
+        if (jobStatus === 'DONE' && snapshot && snapshot.playback_ready) return 'READY';
+        return jobStatus || 'RESTORING';
+    }
+
+    function _restoreProgressHtml() {
+        var snapshot = _state.restoreSnapshot;
+        if (!snapshot) return '';
+        var status = _restoreStatus(snapshot);
+        var total = Math.max(0, parseInt(snapshot.total_segment_count, 10) || 0);
+        var restored = Math.max(0, parseInt(snapshot.restored_segment_count, 10) || 0);
+        var pct = Math.max(0, Math.min(100, _num(snapshot.segment_progress_percent)));
+        var determinate = total > 0;
+        var caption = 'Đang khôi phục dữ liệu ... ' + restored + '/' + total;
+        var action = '';
+        if (status === 'READY') {
+            pct = 100;
+            caption = 'Dữ liệu đã sẵn sàng';
+            action = '<button class="std-btn std-btn-primary" data-std-action="restore-play">Xem lại</button>';
+        } else if (status === 'NOT_READY') {
+            caption = 'Dữ liệu khôi phục không còn đầy đủ';
+            action = '<button class="std-btn std-btn-primary" data-std-action="restore-retry">Khôi phục lại</button>';
+        } else if (status === 'FAILED') {
+            caption = 'Không thể khôi phục dữ liệu';
+            action = '<button class="std-btn std-btn-primary" data-std-action="restore-retry">Thử lại</button>';
+        } else if (status === 'CANCELLED') {
+            caption = 'Đã hủy khôi phục dữ liệu';
+            action = '<button class="std-btn std-btn-primary" data-std-action="restore-retry">Khôi phục lại</button>';
+        } else if (status === 'EXPIRED') {
+            caption = 'Dữ liệu tạm đã hết hạn';
+            action = '<button class="std-btn std-btn-primary" data-std-action="restore-retry">Khôi phục lại</button>';
+        }
+        var donutClass = determinate ? '' : ' std-restore-donut-indeterminate';
+        var aria = determinate ? ('Đã khôi phục ' + restored + ' trên ' + total + ' đoạn dữ liệu') : 'Đang xác định số đoạn dữ liệu cần khôi phục';
+        var errorHtml = _state.restorePollError ? '<div class="std-restore-error">' + _esc(_state.restorePollError) + ' · sẽ tự thử lại</div>' : '';
+        return '<div class="std-restore-card">' +
+            '<div class="std-restore-donut' + donutClass + '" role="progressbar" aria-label="' + _esc(aria) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct.toFixed(0) + '" style="--std-restore-progress:' + pct.toFixed(1) + '%">' +
+                '<span>' + (determinate ? pct.toFixed(0) + '%' : '…') + '</span>' +
+            '</div>' +
+            '<div class="std-restore-content">' +
+                '<div class="std-restore-head"><span class="std-status-chip ' + _statusClass(status) + '">' + _esc(status) + '</span><span class="std-id">' + _esc(snapshot.job_id || '') + '</span></div>' +
+                '<div class="std-restore-caption">' + _esc(caption) + '</div>' +
+                '<div class="std-restore-meta">' + _esc(snapshot.camera_id || '') + ' · ' + _fmtTs(snapshot.start_time) + ' — ' + _fmtTs(snapshot.end_time) + '</div>' +
+                errorHtml +
+            '</div>' +
+            '<div class="std-restore-actions">' + action + '<button class="std-btn" data-std-action="restore-dismiss">Ẩn</button></div>' +
+        '</div>';
+    }
+
+    function _renderRestoreProgress() {
+        var el = document.getElementById('std-restore-progress');
+        if (el) el.innerHTML = _restoreProgressHtml();
+    }
+
+    function _clearRestorePoll() {
+        if (_state.restorePollTimer) window.clearTimeout(_state.restorePollTimer);
+        _state.restorePollTimer = null;
+    }
+
+    function _dismissRestoreJob() {
+        _clearRestorePoll();
+        _state.restorePollGeneration += 1;
+        _state.restorePollInFlight = false;
+        _state.restorePollError = '';
+        _state.restoreRequest = null;
+        _state.restoreSnapshot = null;
+        _renderRestoreProgress();
+    }
+
+    function _scheduleRestorePoll(delay, generation) {
+        _clearRestorePoll();
+        if (!_state.restoreSnapshot || generation !== _state.restorePollGeneration) return;
+        _state.restorePollTimer = window.setTimeout(function () {
+            _pollRestoreJob(generation);
+        }, document.hidden ? Math.max(delay, 5000) : delay);
+    }
+
+    function _applyRestoreSnapshot(snapshot, generation) {
+        if (!snapshot || !snapshot.job_id || generation !== _state.restorePollGeneration) return;
+        _state.restoreSnapshot = snapshot;
+        _state.restorePollError = '';
+        _renderRestoreProgress();
+        _state.restoreJobs = [snapshot].concat((_state.restoreJobs || []).filter(function (job) {
+            return job && job.job_id !== snapshot.job_id;
+        })).slice(0, 10);
+        if (document.getElementById('std-restore-jobs')) _renderRestoreJobs(_state.restoreJobs);
+        var status = _restoreStatus(snapshot);
+        if (status === 'RESTORING') {
+            _scheduleRestorePoll(2000, generation);
+        } else {
+            _clearRestorePoll();
+            _setStatus(status === 'READY' ? 'ok' : 'err', status === 'READY' ? 'Restore hoàn tất, dữ liệu đã sẵn sàng để xem lại' : 'Restore kết thúc với trạng thái ' + status);
+        }
+    }
+
+    function _pollRestoreJob(generation) {
+        if (generation !== _state.restorePollGeneration || !_state.restoreSnapshot || _state.restorePollInFlight) return;
+        var jobId = _state.restoreSnapshot.job_id;
+        _state.restorePollInFlight = true;
+        S3Auth.apiFetch('/media/mserver/storage/restoreJob/detail', { job_id: jobId }).then(function (res) {
+            var data = res.data || {};
+            if (generation !== _state.restorePollGeneration) return;
+            _state.restorePollInFlight = false;
+            _applyRestoreSnapshot(data, generation);
+        }).catch(function (err) {
+            if (generation !== _state.restorePollGeneration) return;
+            _state.restorePollInFlight = false;
+            _state.restorePollError = (err && err.message) || 'Không cập nhật được trạng thái restore';
+            _renderRestoreProgress();
+            _scheduleRestorePoll(5000, generation);
+        });
+    }
+
+    function _createRestoreJob(btn) {
+        var request = _state.restoreRequest;
+        if (btn) {
+            request = {
+                camera_id: btn.getAttribute('data-camera-id') || _state.selectedCameraId || '',
+                stream_id: '',
+                start_time: parseInt(btn.getAttribute('data-start'), 10) || 0,
+                end_time: parseInt(btn.getAttribute('data-end'), 10) || 0,
+                target_tier: 'HOT',
+                reason: 'PLAYBACK'
+            };
+        }
+        if (!request || !request.camera_id || !request.start_time || !request.end_time || request.start_time >= request.end_time) {
+            _setStatus('err', 'Thiếu thông tin range để tạo restore job');
             return;
         }
-        _setStatus('', 'Đang kiểm tra restore/playback...');
-        _apiStrict('/media/mserver/storage/playback/resolve', {
-            camera_id: cameraId,
-            start_time: start,
-            end_time: end
-        }).then(function (data) {
-            var status = data.restore_job_status || data.status || '';
-            var url = data.playback_url || '';
-            _setStatus('ok', url ? ('Playback READY: ' + url) : ('Playback status: ' + (status || 'RESTORE_REQUIRED')));
-            if (url && window.navigator && window.navigator.clipboard) {
-                window.navigator.clipboard.writeText(url).catch(function () {});
-            }
+        _clearRestorePoll();
+        var generation = ++_state.restorePollGeneration;
+        _state.restorePollInFlight = false;
+        _state.restoreRequest = request;
+        _state.restorePollError = '';
+        _state.restoreSnapshot = {
+            job_id: '',
+            camera_id: request.camera_id,
+            start_time: request.start_time,
+            end_time: request.end_time,
+            playback_status: 'RESTORING',
+            total_segment_count: 0,
+            restored_segment_count: 0,
+            segment_progress_percent: 0
+        };
+        _renderRestoreProgress();
+        _setStatus('', 'Đang tạo hoặc tái sử dụng restore job...');
+        _apiFormPostStrict('/media/mserver/storage/restoreJob/create', request).then(function (data) {
+            if (generation !== _state.restorePollGeneration) return;
+            if (!data || !data.job_id) throw new Error('API không trả về restore job hợp lệ');
+            _setStatus('ok', data.job_created === false ? 'Đã tái sử dụng restore job ' + data.job_id : 'Đã tạo restore job ' + data.job_id);
+            _applyRestoreSnapshot(data, generation);
         }).catch(function (err) {
-            _setStatus('err', (err && err.message) || 'Không resolve được playback');
+            if (generation !== _state.restorePollGeneration) return;
+            _state.restoreSnapshot = null;
+            _renderRestoreProgress();
+            _setStatus('err', (err && err.message) || 'Không tạo được restore job');
         });
+    }
+
+    function _playRestoredRange() {
+        var snapshot = _state.restoreSnapshot;
+        if (!snapshot || _restoreStatus(snapshot) !== 'READY' || snapshot.playback_ready !== true) {
+            _setStatus('err', 'Restore job chưa sẵn sàng để xem lại');
+            return;
+        }
+        var cameraId = snapshot.camera_id || (_state.restoreRequest && _state.restoreRequest.camera_id) || '';
+        var startTime = parseInt(snapshot.start_time, 10) || (_state.restoreRequest && _state.restoreRequest.start_time) || 0;
+        if (!cameraId || !startTime || typeof window.activateSection !== 'function') {
+            _setStatus('err', 'Không mở được trình xem lại');
+            return;
+        }
+        window.activateSection('sec-player', true);
+        var attempts = 0;
+        function openWhenReady() {
+            if (typeof window.openConsoleReplay === 'function') {
+                window.openConsoleReplay(cameraId, startTime);
+                return;
+            }
+            attempts += 1;
+            if (attempts < 15) {
+                window.setTimeout(openWhenReady, 100);
+            }
+        }
+        openWhenReady();
     }
 
     function _approveExpiredRange(rangeId) {
@@ -1237,9 +1456,10 @@
             '.std-tier{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:10px;font-size:.68rem;font-weight:800;border:1px solid currentColor}.std-tier-hot{color:#f778ba}.std-tier-warm{color:#d29922}.std-tier-cold{color:#79c0ff}.std-arrow{color:var(--c-muted);margin:0 4px}',
             '.std-status-chip{display:inline-flex;align-items:center;height:21px;padding:0 8px;border-radius:10px;font-size:.68rem;font-weight:800;border:1px solid currentColor}.std-meter{height:8px;background:var(--c-elev);border-radius:4px;overflow:hidden;min-width:120px}.std-meter span{display:block;height:100%;background:var(--c-accent);border-radius:4px}.std-meter-label{font-size:.68rem;color:var(--c-muted);font-family:monospace;margin-top:4px;white-space:nowrap}.std-empty{padding:18px;color:var(--c-muted);font-size:.8rem;border:1px dashed var(--c-border);border-radius:7px;text-align:center}',
             '.std-camera-toolbar{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(170px,.8fr) minmax(170px,.8fr) auto auto;gap:10px;align-items:end;margin-bottom:12px}.std-camera-toolbar label{display:flex;flex-direction:column;gap:5px;color:var(--c-muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.std-camera-toolbar input,.std-camera-toolbar select{height:32px;border-radius:6px;border:1px solid var(--c-border);background:var(--c-elev);color:var(--c-text);padding:0 9px;font-size:.8rem;font-weight:600;text-transform:none;letter-spacing:0}.std-camera-check{height:32px;justify-content:center;margin:0}.std-mini-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px}.std-mini-kpi{border:1px solid var(--c-border);border-radius:7px;background:rgba(255,255,255,.02);padding:9px 10px;min-width:0}.std-mini-kpi div{font-size:.66rem;color:var(--c-muted);font-weight:800;text-transform:uppercase;letter-spacing:.06em}.std-mini-kpi b{display:block;margin-top:3px;color:var(--c-text);font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.std-camera-result-grid{display:grid;grid-template-columns:minmax(280px,.75fr) minmax(360px,1.25fr);gap:12px}.std-subpanel-title{font-size:.68rem;color:var(--c-muted);font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin:2px 0 8px}',
+            '.std-restore-card{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;margin:0 0 12px;padding:13px 14px;border:1px solid rgba(56,139,253,.45);border-radius:8px;background:rgba(56,139,253,.06)}.std-restore-donut{--std-restore-progress:0%;position:relative;display:grid;place-items:center;width:64px;height:64px;flex:0 0 auto;border-radius:50%;background:conic-gradient(var(--c-accent) var(--std-restore-progress),var(--c-elev) 0)}.std-restore-donut:after{content:"";position:absolute;inset:7px;border-radius:50%;background:var(--c-surf)}.std-restore-donut span{position:relative;z-index:1;color:var(--c-text);font-size:.78rem;font-weight:800;font-family:monospace}.std-restore-donut-indeterminate{background:conic-gradient(var(--c-accent) 0 22%,var(--c-elev) 22% 100%);animation:std-restore-spin 1.1s linear infinite}.std-restore-donut-indeterminate span{animation:std-restore-spin 1.1s linear infinite reverse}.std-restore-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.std-restore-caption{margin-top:6px;color:var(--c-text);font-size:.86rem;font-weight:800}.std-restore-meta,.std-restore-error{margin-top:4px;color:var(--c-muted);font-size:.72rem}.std-restore-error{color:var(--c-warn)}.std-restore-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}@keyframes std-restore-spin{to{transform:rotate(360deg)}}',
             '.std-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(1,4,9,.72);display:flex;align-items:flex-start;justify-content:center;padding:42px 16px;overflow:auto}.std-modal{width:min(1180px,calc(100vw - 32px));max-width:100%;background:var(--c-surf);border:1px solid var(--c-border);border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.42)}.std-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;border-bottom:1px solid var(--c-border)}.std-modal-title{font-size:.95rem;font-weight:800}.std-close{width:28px;height:28px;border-radius:6px;border:1px solid var(--c-border);background:var(--c-elev);color:var(--c-muted);cursor:pointer;font-size:1.1rem;line-height:1}.std-close:hover{color:var(--c-text);border-color:var(--c-accent)}',
             '.std-form{padding:14px}.std-section-title{margin:4px 0 10px;padding:10px 12px;background:var(--c-elev);border-top:1px solid var(--c-border);border-bottom:1px solid var(--c-border);font-size:.8rem;font-weight:800;color:var(--c-text)}.std-form-grid{display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:10px}.std-form-grid-one{grid-template-columns:minmax(180px,1fr) 1fr}.std-form label{display:flex;flex-direction:column;gap:5px;min-width:0;color:var(--c-muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.std-form input,.std-form select{box-sizing:border-box;width:100%;min-width:0;height:34px;border-radius:6px;border:1px solid var(--c-border);background:var(--c-elev);color:var(--c-text);padding:0 9px;font-size:.82rem;text-transform:none;letter-spacing:0;font-weight:600}.std-form input:focus,.std-form select:focus{outline:none;border-color:var(--c-accent)}.std-form input:disabled,.std-form select:disabled{opacity:.55;cursor:not-allowed}.std-check-row,.std-check-col{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}.std-check-col{flex-direction:column;gap:8px}.std-check{flex-direction:row!important;align-items:center;color:var(--c-text)!important;text-transform:none!important;letter-spacing:0!important}.std-check input{flex:0 0 auto;width:16px;height:16px}.std-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}.std-test-row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}.std-test-result{font-size:.78rem;color:var(--c-muted)}.std-test-ok{color:var(--c-success)}.std-test-err{color:var(--c-danger)}.std-tier-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}.std-tier-form{min-width:0;overflow:hidden;border:1px solid var(--c-border);border-radius:7px;padding:10px;background:rgba(255,255,255,.02);display:grid;gap:9px}.std-tier-form-disabled{opacity:.58;background:rgba(255,255,255,.01)}.std-tier-form-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;flex-wrap:wrap}.std-tier-form .std-check{margin:0;white-space:nowrap}.std-tier-form label{gap:4px}',
-            '@media(max-width:1100px){.std-main-grid,.std-split,.std-form-grid,.std-tier-grid,.std-camera-toolbar,.std-camera-result-grid{grid-template-columns:1fr}.std-chart{height:210px}.std-modal-backdrop{padding:20px 10px}.std-panel-head{align-items:flex-start;flex-direction:column}.std-camera-toolbar{align-items:stretch}.std-camera-check{justify-content:flex-start}}'
+            '@media(max-width:1100px){.std-main-grid,.std-split,.std-form-grid,.std-tier-grid,.std-camera-toolbar,.std-camera-result-grid{grid-template-columns:1fr}.std-chart{height:210px}.std-modal-backdrop{padding:20px 10px}.std-panel-head{align-items:flex-start;flex-direction:column}.std-camera-toolbar{align-items:stretch}.std-camera-check{justify-content:flex-start}.std-restore-card{grid-template-columns:auto minmax(0,1fr)}.std-restore-actions{grid-column:1/-1;justify-content:flex-start}}'
         ].join('\n');
         document.head.appendChild(style);
     }
@@ -1252,5 +1472,10 @@
 
     window.addEventListener('resize', function () {
         if (_state.chart) _state.chart.resize();
+    });
+
+    document.addEventListener('visibilitychange', function () {
+        if (!_state.restoreSnapshot || _restoreStatus(_state.restoreSnapshot) !== 'RESTORING') return;
+        _scheduleRestorePoll(document.hidden ? 5000 : 0, _state.restorePollGeneration);
     });
 })();

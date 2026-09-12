@@ -58,9 +58,10 @@ function initTimeline(player, state) {
             const rect     = bar.getBoundingClientRect();
             const ratio    = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             const wallTime = state.dayStart + h * 3600 + ratio * 3600;
-            const isRecording = e.target.classList.contains('tl-segment');
-            if (isRecording) {
-                seekToWallTime(wallTime);
+            const recording = state.findRecordingPeriod ? state.findRecordingPeriod(wallTime) : null;
+            if (recording) {
+                if (state.requestReplayAtWallTime) state.requestReplayAtWallTime(wallTime);
+                else seekToWallTime(wallTime);
             } else {
                 moveCursorToWallTime(wallTime);
                 if (state.showNoData) state.showNoData();
@@ -173,7 +174,14 @@ function initTimeline(player, state) {
             b.innerHTML = '';
         });
         cursorTimeEl.style.display = 'none';
+        state.restoreRanges = [];
+        state.findRecordingPeriod = null;
+        state.findRestoreRange = null;
+        state.pcbRecHours = null;
+        state.pcbMotHours = null;
+        if (state.pcbRenderTimebar) state.pcbRenderTimebar();
     }
+    state.clearTimelineData = clearTimeline;
 
     function validateInputs() {
         // stream-id is optional (auto mode); only camera-id and media-domain are required
@@ -204,11 +212,12 @@ function initTimeline(player, state) {
             const oe = Math.min(st + dur, hStart + 3600);
             if (os >= oe) return;
             const seg = document.createElement('div');
-            seg.className = 'tl-segment';
+            seg.className = 'tl-segment' + (p.restoreRequired ? ' tl-segment-restore' : '');
             seg.style.left  = ((os - hStart) / 3600 * 100) + '%';
             seg.style.width = ((oe - os)     / 3600 * 100) + '%';
             seg.title = new Date(os * 1000).toLocaleTimeString()
-                + ' - ' + new Date(oe * 1000).toLocaleTimeString();
+                + ' - ' + new Date(oe * 1000).toLocaleTimeString()
+                + (p.restoreRequired ? ' · ' + (p.tier || 'COLD') + ' · Cần khôi phục' : '');
             // clicks bubble up to bar handler
             bar.appendChild(seg);
         });
@@ -254,6 +263,57 @@ function initTimeline(player, state) {
         return merged;
     }
 
+    function _normalizeRecordingHours(hours, streamId) {
+        if (!Array.isArray(hours)) return null;
+        var normalized = [];
+        for (var h = 0; h < 24; ++h) {
+            normalized[h] = (hours[h] || []).map(function (period) {
+                return {
+                    startTime: Number(period.startTime),
+                    duration: Number(period.duration),
+                    tier: period.tier || 'HOT',
+                    restoreRequired: period.restore_required === true || period.restoreRequired === true,
+                    mediaServerId: period.mediaServerId || '',
+                    streamId: streamId || ''
+                };
+            }).filter(function (period) {
+                return period.startTime > 0 && period.duration > 0;
+            });
+        }
+        return normalized;
+    }
+
+    function _sortRecordingHours(hours) {
+        (hours || []).forEach(function (periods) {
+            periods.sort(function (a, b) { return a.startTime - b.startTime; });
+        });
+        return hours;
+    }
+
+    function _installTimelineLookups(recordingHours) {
+        state.restoreRanges = window.PlayerRestoreUtils
+            ? window.PlayerRestoreUtils.normalizeRestoreRanges(recordingHours)
+            : [];
+        state.findRecordingPeriod = function (wallTime) {
+            if (!state.dayStart || !recordingHours) return null;
+            var hour = Math.floor((Number(wallTime) - state.dayStart) / 3600);
+            if (hour < 0 || hour >= 24) return null;
+            var periods = recordingHours[hour] || [];
+            for (var i = 0; i < periods.length; ++i) {
+                var start = Number(periods[i].startTime);
+                if (wallTime >= start && wallTime < start + Number(periods[i].duration)) return periods[i];
+            }
+            return null;
+        };
+        state.findRestoreRange = function (wallTime) {
+            for (var i = 0; i < state.restoreRanges.length; ++i) {
+                var range = state.restoreRanges[i];
+                if (wallTime >= range.startTime && wallTime < range.endTime) return range;
+            }
+            return null;
+        };
+    }
+
     function fillTimeline(raw, dateStr, dayStart) {
         clearTimeline();
         state.dayStart = dayStart;
@@ -269,16 +329,18 @@ function initTimeline(player, state) {
                 // Merge all streams' recording data
                 json.streams.forEach(function (s) {
                     const hrs = resolveDatesArray(s && s.dates, dateStr);
-                    recordingHours = _mergeRecordingHours(recordingHours, hrs);
+                    recordingHours = _mergeRecordingHours(recordingHours, _normalizeRecordingHours(hrs, s && s.streamId));
                 });
                 if (state.consoleLogEnabled) console.log('[Timeline] auto mode — merged', json.streams.length, 'streams');
             } else {
                 const stream = json.streams.find(function (s) { return s.streamId === state.selectedStreamId; })
                             || json.streams[0];
                 if (state.consoleLogEnabled) console.log('[Timeline] stream:', stream ? stream.streamId : 'none');
-                recordingHours = resolveDatesArray(stream && stream.dates, dateStr);
+                recordingHours = _normalizeRecordingHours(resolveDatesArray(stream && stream.dates, dateStr), stream && stream.streamId);
             }
         }
+        recordingHours = _sortRecordingHours(recordingHours);
+        _installTimelineLookups(recordingHours);
         if (state.consoleLogEnabled) console.log('[Timeline] recordingHours length:', recordingHours ? recordingHours.length : 'null');
 
         const motionHours = resolveDatesArray(json.motionPeriods, dateStr);
@@ -337,7 +399,15 @@ function initTimeline(player, state) {
     state.triggerTimelineRefresh = _triggerTimelineRefresh;
 
     fetchBtn.addEventListener('click', fetchTimeline);
-    dateInput.addEventListener('change', fetchTimeline);
+    var cameraInput = document.getElementById('camera-id');
+    if (cameraInput) cameraInput.addEventListener('input', function () {
+        clearTimeline();
+    });
+    dateInput.addEventListener('change', function () {
+        if (state.invalidateRestoreSession) state.invalidateRestoreSession('timeline-date');
+        clearTimeline();
+        fetchTimeline();
+    });
 
     // Auto-refresh timeline every 60 seconds (silent, no button spinner)
     setInterval(function () {

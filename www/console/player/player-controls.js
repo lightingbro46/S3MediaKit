@@ -26,6 +26,7 @@ function initPlayerControls(player) {
         pcbDayStart:       0,
         pcbRecHours:       null,
         pcbMotHours:       null,
+        restoreRanges:     [],
         // Cross-module function refs — populated during sub-module init
         setMode:               null,
         seekToWallTime:        null,
@@ -38,6 +39,12 @@ function initPlayerControls(player) {
         getActiveStreamId:     null,
         buildLiveUrl:          null,
         buildVodUrl:           null,
+        findRecordingPeriod:   null,
+        findRestoreRange:      null,
+        clearTimelineData:     null,
+        requestReplayAtWallTime:null,
+        invalidateRestoreSession:null,
+        onUserPlaybackStop:    null,
         clearFrame:            null,
         showStoppedOverlay:    null,
         hideStoppedOverlay:    null,
@@ -60,6 +67,9 @@ function initPlayerControls(player) {
     const badgeMotion = document.getElementById('badge-motion');
 
     function setMode(m) {
+        if (m === 'live' && state.mode !== 'live' && state.invalidateRestoreSession) {
+            state.invalidateRestoreSession('live-mode');
+        }
         state.mode = m;
         liveBtn.classList.toggle('active',   m === 'live');
         replayBtn.classList.toggle('active', m === 'replay');
@@ -147,6 +157,7 @@ function initPlayerControls(player) {
     // Play / Stop button wiring
     // =========================================================================
     document.getElementById('btn-stop').addEventListener('click', function (e) {
+        if (state.onUserPlaybackStop) state.onUserPlaybackStop();
         state.stopped = true;
         player.stop();
         if (e.isTrusted) {
@@ -176,16 +187,18 @@ function initPlayerControls(player) {
 
     // =========================================================================
     // Init sub-modules
-    // Order: HUD → PCB → Streams → Timeline
+    // Order: HUD → PCB → Streams → Timeline → Restore
     //   HUD first  → sets state.errOverlay / errMsgEl used by later modules
     //   PCB second → state.pcbMoveCursor / pcbRenderTimebar set before timeline
     //   Streams    → uses pcbQualMenu DOM (no PCB function refs needed at init)
     //   Timeline   → sets seekToWallTime / moveCursorToWallTime / triggerTimelineRefresh
+    //   Restore    → consumes timeline lookups and owns restore job polling
     // =========================================================================
     initPlayerHud(player, state);
     initControlBar(player, state);
     initStreamSelect(player, state);
     initTimeline(player, state);
+    initPlaybackRestore(player, state);
 
     // Auto-play from ?url= query parameter (runs after all modules are wired)
     var _qUrl = new URLSearchParams(location.search).get('url');
@@ -193,6 +206,29 @@ function initPlayerControls(player) {
         if (_urlInput) _urlInput.value = _qUrl;
         document.getElementById('btn-play').click();
     }
+
+    // Cross-tab entry point used by Storage Tier after a restore job is READY.
+    // The player continues to build the normal replay URL; restore cache paths
+    // and restore job internals remain backend concerns.
+    window.openConsoleReplay = function (cameraId, wallTime) {
+        var ts = Math.floor(Number(wallTime) || 0);
+        var cameraInput = document.getElementById('camera-id');
+        if (!cameraInput || !cameraId || !ts || !state.seekToWallTime) return false;
+        cameraInput.value = cameraId;
+        cameraInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+        var dateInput = document.getElementById('timeline-date');
+        if (dateInput) {
+            var d = new Date(ts * 1000);
+            dateInput.value = d.getFullYear() + '-'
+                + String(d.getMonth() + 1).padStart(2, '0') + '-'
+                + String(d.getDate()).padStart(2, '0');
+        }
+        var fetchTimeline = document.getElementById('timeline-fetch');
+        if (fetchTimeline) fetchTimeline.click();
+        state.seekToWallTime(ts);
+        return true;
+    };
 
     return {
         setConsoleLogEnabled: function (v) { state.consoleLogEnabled = !!v; },

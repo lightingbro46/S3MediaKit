@@ -209,10 +209,13 @@ body.s3-loading { visibility: hidden; }
 .tl-bar { flex: 1; height: 18px; background: #252525; border-radius: 2px 2px 0 0; position: relative; overflow: hidden; cursor: default; }
 .tl-segment { position: absolute; top: 0; height: 100%; background: #2e7d32; border-radius: 1px; cursor: pointer; transition: background 0.12s; }
 .tl-segment:hover { background: #43a047; }
+.tl-segment.tl-segment-restore { background: repeating-linear-gradient(135deg,#1565c0 0,#1565c0 6px,#42a5f5 6px,#42a5f5 10px); }
+.tl-segment.tl-segment-restore:hover { background: repeating-linear-gradient(135deg,#1976d2 0,#1976d2 6px,#64b5f6 6px,#64b5f6 10px); }
 .tl-mbar { height: 6px; background: #1e1e1e; border-radius: 0 0 2px 2px; position: relative; overflow: hidden; pointer-events: none; }
 .tl-mseg { position: absolute; top: 0; height: 100%; background: rgba(255,152,0,0.65); }
 .tl-legend { display: flex; gap: 14px; font-size: 0.68rem; color: #666; padding: 0 0 2px 25px; align-items: center; }
 .tl-leg-rec { display: inline-block; width: 10px; height: 10px; background: #2e7d32; border-radius: 1px; vertical-align: middle; margin-right: 3px; }
+.tl-leg-restore { display: inline-block; width: 12px; height: 10px; background: repeating-linear-gradient(135deg,#1565c0 0,#1565c0 4px,#42a5f5 4px,#42a5f5 7px); border-radius: 1px; vertical-align: middle; margin-right: 3px; }
 .tl-leg-mot { display: inline-block; width: 10px; height: 4px; background: rgba(255,152,0,0.55); border-radius: 1px; vertical-align: middle; margin-right: 3px; }
 .tl-cursor { position: absolute; top: 0; width: 2px; height: 100%; background: #fff; opacity: 0.9; z-index: 3; pointer-events: none; transform: translateX(-50%); display: none; }
 .tl-cursor::before { content: ''; position: absolute; top: -4px; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top: 5px solid #fff; }
@@ -231,6 +234,22 @@ body.s3-loading { visibility: hidden; }
 #player-error.show { display: flex; }
 #player-error svg { width: 46px; height: 46px; flex-shrink: 0; }
 #player-error span { max-width: 220px; line-height: 1.5; word-break: break-all; }
+#player-restore { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.9); z-index: 12; color: #ddd; gap: 8px; border-radius: 6px; padding: 16px; text-align: center; }
+#player-restore.show { display: flex; }
+#player-restore-donut { --restore-progress: 0%; position: relative; display: grid; place-items: center; width: 72px; height: 72px; border-radius: 50%; background: conic-gradient(#42a5f5 var(--restore-progress),#263238 0); }
+#player-restore-donut::after { content: ''; position: absolute; inset: 8px; border-radius: 50%; background: #080808; }
+#player-restore-donut span { position: relative; z-index: 1; font: 700 .82rem monospace; color: #fff; }
+#player-restore-donut.indeterminate { background: conic-gradient(#42a5f5 0 22%,#263238 22% 100%); animation: player-restore-spin 1.1s linear infinite; }
+#player-restore-donut.indeterminate span { animation: player-restore-spin 1.1s linear infinite reverse; }
+#player-restore-status { padding: 2px 8px; border: 1px solid currentColor; border-radius: 10px; color: #64b5f6; font-size: .66rem; font-weight: 800; }
+#player-restore-caption { font-size: .86rem; }
+#player-restore-job { color: #888; font: .68rem monospace; word-break: break-all; }
+#player-restore-actions { display: flex; gap: 8px; margin-top: 2px; }
+#player-restore-actions button { border: 1px solid #555; border-radius: 4px; background: #212121; color: #ddd; padding: 6px 10px; font-size: .74rem; font-weight: 700; cursor: pointer; }
+#player-restore-actions button:hover { border-color: #42a5f5; }
+#player-restore-retry { display: none; }
+#player-restore-retry.show { display: inline-block; }
+@keyframes player-restore-spin { to { transform: rotate(360deg); } }
 #player-badges { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; align-items: center; z-index: 7; pointer-events: none; }
 .player-badge { display: none; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 3px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em; line-height: 1; white-space: nowrap; backdrop-filter: blur(4px); }
 .player-badge.show { display: flex; }
@@ -254,6 +273,7 @@ body.s3-loading { visibility: hidden; }
 #pcb-timebar-track { position: absolute; left: 0; right: 0; height: 4px; background: rgba(255,255,255,0.18); border-radius: 2px; overflow: hidden; transition: height 0.12s; }
 #pcb-timebar-wrap:hover #pcb-timebar-track { height: 6px; }
 .pcb-ts-seg { position: absolute; top: 0; height: 100%; background: rgba(255,255,255,0.45); pointer-events: none; }
+.pcb-ts-seg.pcb-ts-restore { background: repeating-linear-gradient(135deg,rgba(21,101,192,.95) 0,rgba(21,101,192,.95) 5px,rgba(66,165,245,.95) 5px,rgba(66,165,245,.95) 8px); }
 .pcb-tm-seg { position: absolute; top: 0; height: 100%; background: rgba(255,152,0,0.55); pointer-events: none; }
 #pcb-cursor { position: absolute; top: 50%; width: 12px; height: 12px; background: #fff; border-radius: 50%; transform: translate(-50%,-50%); pointer-events: none; display: none; box-shadow: 0 0 3px rgba(0,0,0,0.6); }
 #pcb-hover-time { position: absolute; bottom: 24px; font-size: 0.68rem; font-family: monospace; color: #fff; background: rgba(20,20,20,0.92); border: 1px solid #555; padding: 1px 6px; border-radius: 3px; pointer-events: none; display: none; transform: translateX(-50%); white-space: nowrap; }
@@ -572,6 +592,18 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
                             </svg>
                             <span id="player-error-msg">Lỗi kết nối</span>
                         </div>
+                        <div id="player-restore" role="status" aria-live="polite">
+                            <div id="player-restore-donut" role="progressbar" aria-label="Đang khôi phục dữ liệu" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                                <span id="player-restore-percent">0%</span>
+                            </div>
+                            <span id="player-restore-status">RESTORING</span>
+                            <strong id="player-restore-caption">Đang khôi phục dữ liệu ... 0/0</strong>
+                            <small id="player-restore-job"></small>
+                            <div id="player-restore-actions">
+                                <button id="player-restore-retry" type="button">Thử lại</button>
+                                <button id="player-restore-stop" type="button">Dừng xem lại</button>
+                            </div>
+                        </div>
                         <div id="player-badges">
                             <div id="badge-live" class="player-badge">LIVE</div>
                             <div id="badge-replay" class="player-badge">
@@ -665,6 +697,7 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
                     </div>
                     <div class="tl-legend">
                         <span><span class="tl-leg-rec"></span>Recording</span>
+                        <span><span class="tl-leg-restore"></span>Cần khôi phục</span>
                         <span><span class="tl-leg-mot"></span>Motion</span>
                     </div>
                     <div id="timeline"></div>
@@ -716,6 +749,7 @@ textarea.cfg-input { resize: vertical; min-height: 64px; font-size: 0.78rem; lin
 <script src="player/s3pro-player.js"></script>
 <script src="player/pc-hud.js"></script>
 <script src="player/pc-stream-select.js"></script>
+<script src="player/pc-restore.js"></script>
 <script src="player/pc-timeline.js"></script>
 <script src="player/pc-control-bar.js"></script>
 <script src="player/player-controls.js"></script>
