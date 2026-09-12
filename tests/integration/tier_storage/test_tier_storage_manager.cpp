@@ -680,7 +680,7 @@ int scenarioRestoreFromMinio(const std::string &root) {
             jobs.empty() ? "Restore job disappeared"
                          : "Restore failed: " + jobs.front().error_message.value_or(""));
     const std::string restored = manager.getRestoreSegmentPath(
-        fixture.camera, fixture.stream, fixture.segment_key);
+        request.job_id, fixture.camera, fixture.stream, fixture.segment_key);
     require(File::loadFile(restored) == fixture.payload, "Restored MinIO content mismatch");
     manager.stop();
     return 0;
@@ -744,6 +744,121 @@ int scenarioDuplicateRestore(const std::string &root) {
     require(RestoreJobSegmentImp().queryActiveSegment(
                 fixture.camera, fixture.stream, fixture.segment_key).size() == 1,
             "More than one active child exists for the same physical segment");
+    manager.stop();
+    return 0;
+}
+
+int scenarioReusesEquivalentRestoreWindows(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kRestoreTTLSeconds] = 30;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto pool = makeObjectPool(root, "http://127.0.0.1:1", "test", "test", "test-bucket");
+    require(manager.createPool(pool) == pool.id, "Cannot create restore reuse test pool");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-independent-restore",
+                                      "2026-09-11/10-00-00",
+                                      "independent-restore", now - 60);
+    SegmentTierRange range;
+    range.range_id = "range-independent-restore";
+    range.camera_id = fixture.camera;
+    range.stream_id = fixture.stream;
+    range.tier = tierTypeToString(ColdTier);
+    range.pool_id = pool.id;
+    range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    range.start_time = fixture.start;
+    range.end_time = fixture.end;
+    range.segment_count = 1;
+    range.size_bytes = static_cast<int64_t>(fixture.payload.size());
+    require(SegmentTierRangeImp().mergeOrInsert(range),
+            "Cannot seed independent restore range");
+
+    auto first = manager.requestRestoreWindow(
+        fixture.camera, fixture.stream, fixture.start, fixture.end, "first restore window");
+    auto second = manager.requestRestoreWindow(
+        fixture.camera, fixture.stream, fixture.start, fixture.end, "second restore window");
+    require(first.handled && first.job_created && second.handled && !second.job_created &&
+                !first.job_id.empty() && first.job_id == second.job_id,
+            "Equivalent active restore window was not reused");
+
+    auto first_children = RestoreJobSegmentImp().queryByJob(first.job_id);
+    require(first_children.size() == 1,
+            "Reused active restore job did not retain its segment list");
+
+    const auto completed_fixture = makeSegmentFixture(
+        root, "camera-completed-restore-reuse", "2026-09-11/11-00-00",
+        "completed-restore-reuse", now - 120);
+    SegmentTierRange completed_range = range;
+    completed_range.range_id = "range-completed-restore-reuse";
+    completed_range.camera_id = completed_fixture.camera;
+    completed_range.stream_id = completed_fixture.stream;
+    completed_range.start_time = completed_fixture.start;
+    completed_range.end_time = completed_fixture.end;
+    completed_range.size_bytes = static_cast<int64_t>(completed_fixture.payload.size());
+    require(SegmentTierRangeImp().mergeOrInsert(completed_range),
+            "Cannot seed completed restore reuse range");
+
+    RestoreJob completed_job;
+    completed_job.job_id = "completed-restore-reuse";
+    completed_job.camera_id = completed_fixture.camera;
+    completed_job.source_tier = tierTypeToString(ColdTier);
+    completed_job.target_tier = tierTypeToString(HotTier);
+    completed_job.status = jobStatusToString(JobStatus::DONE);
+    completed_job.start_time = completed_fixture.start;
+    completed_job.end_time = completed_fixture.end;
+    completed_job.total_bytes = static_cast<int64_t>(completed_fixture.payload.size());
+    completed_job.processed_bytes = completed_job.total_bytes;
+    completed_job.created_at = now - 120;
+    completed_job.updated_at = now - 60;
+
+    RestoreJobSegment completed_child;
+    completed_child.job_id = completed_job.job_id;
+    completed_child.camera_id = completed_fixture.camera;
+    completed_child.stream_id = completed_fixture.stream;
+    completed_child.range_id = completed_range.range_id;
+    completed_child.segment_path = completed_fixture.segment_key;
+    completed_child.source_pool_id = pool.id;
+    completed_child.range_start = completed_fixture.start;
+    completed_child.range_end = completed_fixture.end;
+    completed_child.status = jobStatusToString(JobStatus::DONE);
+    completed_child.total_bytes = completed_job.total_bytes;
+    completed_child.processed_bytes = completed_job.processed_bytes;
+    completed_child.created_at = completed_job.created_at;
+    completed_child.updated_at = completed_job.updated_at;
+    require(RestoreJobImp().addWithSegments(completed_job, {completed_child}),
+            "Cannot seed completed restore job for TTL extension");
+    const std::string completed_cache = manager.getRestoreSegmentPath(
+        completed_job.job_id, completed_fixture.camera, completed_fixture.stream,
+        completed_fixture.segment_key);
+    writeFile(completed_cache, completed_fixture.payload);
+
+    auto reused_done = manager.requestRestoreWindow(
+        completed_fixture.camera, completed_fixture.stream,
+        completed_fixture.start, completed_fixture.end, "reuse completed restore");
+    require(reused_done.handled && !reused_done.job_created &&
+                reused_done.job_id == completed_job.job_id &&
+                reused_done.status == jobStatusToString(JobStatus::DONE),
+            "Equivalent completed restore job was not reused");
+    auto refreshed_jobs = RestoreJobImp().findByJobId(completed_job.job_id);
+    require(refreshed_jobs.size() == 1 && refreshed_jobs.front().updated_at >= now,
+            "Reused completed restore job TTL was not extended");
+    RestoreJobSnapshot snapshot;
+    require(manager.getRestoreJobSnapshot(completed_job.job_id, snapshot) &&
+                snapshot.playback_ready && snapshot.playback_status == "READY" &&
+                snapshot.expires_at > now,
+            "TTL-extended restore job was not playback-ready");
+
+    require(::unlink(completed_cache.c_str()) == 0,
+            "Cannot remove completed cache before missing-cache reuse check");
+    auto replacement = manager.requestRestoreWindow(
+        completed_fixture.camera, completed_fixture.stream,
+        completed_fixture.start, completed_fixture.end, "replace missing restore cache");
+    require(replacement.handled && replacement.job_created &&
+                replacement.job_id != completed_job.job_id,
+            "Completed restore job with missing cache was incorrectly reused");
+
+    drainWorkThreadPool();
     manager.stop();
     return 0;
 }
@@ -1185,7 +1300,8 @@ int scenarioMissingRestoreCacheRequiresRestore(const std::string &root) {
     range.size_bytes = 128;
     require(SegmentTierRangeImp().mergeOrInsert(range),
             "Cannot seed COLD range for playback resolution");
-    require(!File::fileExist(manager.getRestoreSegmentPath(camera, stream, segment_path)),
+    require(!File::fileExist(manager.getRestoreSegmentPath(
+                "missing-restore", camera, stream, segment_path)),
             "Restore cache unexpectedly exists before resolution");
 
     const PlaybackPathResolveResult result =
@@ -1194,6 +1310,272 @@ int scenarioMissingRestoreCacheRequiresRestore(const std::string &root) {
                 result.read_path.empty() && result.tier == tierTypeToString(ColdTier) &&
                 result.pool_id == cold_pool.id && result.range_id == range.range_id,
             "Missing object restore cache did not request restore");
+
+    RestoreJob older_job;
+    older_job.job_id = "playback-restore-older";
+    older_job.camera_id = camera;
+    older_job.source_tier = tierTypeToString(ColdTier);
+    older_job.target_tier = tierTypeToString(HotTier);
+    older_job.status = jobStatusToString(JobStatus::DONE);
+    older_job.start_time = range.start_time;
+    older_job.end_time = range.end_time;
+    older_job.created_at = now - 2;
+    older_job.updated_at = now - 2;
+    RestoreJobSegment older_child;
+    older_child.job_id = older_job.job_id;
+    older_child.camera_id = camera;
+    older_child.stream_id = stream;
+    older_child.range_id = range.range_id;
+    older_child.segment_path = segment_path;
+    older_child.source_pool_id = cold_pool.id;
+    older_child.range_start = range.start_time;
+    older_child.range_end = range.end_time;
+    older_child.status = jobStatusToString(JobStatus::DONE);
+    older_child.created_at = older_job.created_at;
+    older_child.updated_at = older_job.updated_at;
+    require(RestoreJobImp().addWithSegments(older_job, {older_child}),
+            "Cannot seed older restore cache job");
+
+    RestoreJob newer_job = older_job;
+    newer_job.job_id = "playback-restore-newer";
+    newer_job.created_at = now - 1;
+    newer_job.updated_at = now - 1;
+    RestoreJobSegment newer_child = older_child;
+    newer_child.job_id = newer_job.job_id;
+    newer_child.created_at = newer_job.created_at;
+    newer_child.updated_at = newer_job.updated_at;
+    require(RestoreJobImp().addWithSegments(newer_job, {newer_child}),
+            "Cannot seed newer restore cache job");
+
+    const std::string older_cache = manager.getRestoreSegmentPath(
+        older_job.job_id, camera, stream, segment_path);
+    const std::string newer_cache = manager.getRestoreSegmentPath(
+        newer_job.job_id, camera, stream, segment_path);
+    require(older_cache != newer_cache, "Restore jobs did not receive isolated paths");
+    writeFile(older_cache, "older-cache");
+    writeFile(newer_cache, "newer-cache");
+
+    const PlaybackPathResolveResult newest_result =
+        manager.resolvePlaybackSegmentPath(camera, stream, now, original);
+    require(newest_result.ready && newest_result.read_path == newer_cache,
+            "Playback did not select the newest valid restore job cache");
+
+    require(::unlink(newer_cache.c_str()) == 0,
+            "Cannot remove newer restore cache fixture");
+    const PlaybackPathResolveResult fallback_result =
+        manager.resolvePlaybackSegmentPath(camera, stream, now, original);
+    require(fallback_result.ready && fallback_result.read_path == older_cache,
+            "Playback did not fall back to an older valid restore job cache");
+
+    RestoreJobSnapshot snapshot;
+    require(manager.getRestoreJobSnapshot(newer_job.job_id, snapshot) &&
+                snapshot.playback_status == "NOT_READY" && !snapshot.playback_ready,
+            "Missing job-scoped cache was reported ready");
+    require(manager.getRestoreJobSnapshot(older_job.job_id, snapshot) &&
+                snapshot.playback_status == "READY" && snapshot.playback_ready &&
+                snapshot.total_segment_count == 1 &&
+                snapshot.restored_segment_count == 1 &&
+                snapshot.remaining_segment_count == 0,
+            "Complete job-scoped cache snapshot was not ready");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioValidatesRestoreWindowCache(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const std::string camera = "camera-restore-window";
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRange main_range;
+    main_range.range_id = "range-restore-main";
+    main_range.camera_id = camera;
+    main_range.stream_id = "main";
+    main_range.tier = tierTypeToString(ColdTier);
+    main_range.pool_id = "cold-pool";
+    main_range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    main_range.start_time = now - 120;
+    main_range.end_time = now + 120;
+
+    SegmentTierRange secondary_range = main_range;
+    secondary_range.range_id = "range-restore-secondary";
+    secondary_range.stream_id = "secondary";
+
+    RestoreJob secondary_job;
+    secondary_job.job_id = "restore-secondary-only";
+    secondary_job.camera_id = camera;
+    secondary_job.source_tier = tierTypeToString(ColdTier);
+    secondary_job.target_tier = tierTypeToString(HotTier);
+    secondary_job.status = jobStatusToString(JobStatus::DONE);
+    secondary_job.start_time = now - 60;
+    secondary_job.end_time = now + 60;
+    secondary_job.created_at = now;
+    secondary_job.updated_at = now;
+
+    RestoreJobSegment secondary_child;
+    secondary_child.job_id = secondary_job.job_id;
+    secondary_child.camera_id = camera;
+    secondary_child.stream_id = secondary_range.stream_id;
+    secondary_child.range_id = secondary_range.range_id;
+    secondary_child.segment_path = "2026-09-10/10-00-00";
+    secondary_child.source_pool_id = secondary_range.pool_id;
+    secondary_child.range_start = now - 30;
+    secondary_child.range_end = now + 30;
+    secondary_child.status = jobStatusToString(JobStatus::DONE);
+    secondary_child.created_at = now;
+    secondary_child.updated_at = now;
+    require(RestoreJobImp().addWithSegments(secondary_job, {secondary_child}),
+            "Cannot seed secondary restore job");
+    writeFile(manager.getRestoreSegmentPath(
+                  secondary_job.job_id, camera, secondary_child.stream_id,
+                  secondary_child.segment_path),
+              "secondary-cache");
+
+    require(RestoreJobImp().queryOverlapping(
+                camera, now - 10, now + 10, 0, "main").empty(),
+            "Restore query reused a job from another stream");
+    require(!RestoreJobImp().queryOverlapping(
+                 camera, now - 10, now + 10, 0, "secondary").empty(),
+            "Restore query did not return the matching stream job");
+
+    int64_t expires_at = 0;
+    require(!manager.validateRestoreWindowCache(
+                secondary_job, {main_range}, "main", now - 10, now + 10,
+                3600, expires_at),
+            "Restore cache from another stream validated the main stream");
+
+    RestoreJob main_job = secondary_job;
+    main_job.job_id = "restore-main";
+    RestoreJobSegment main_child = secondary_child;
+    main_child.job_id = main_job.job_id;
+    main_child.stream_id = main_range.stream_id;
+    main_child.range_id = main_range.range_id;
+    main_child.segment_path = "2026-09-10/10-01-00";
+    require(RestoreJobImp().addWithSegments(main_job, {main_child}),
+            "Cannot seed main restore job");
+    const std::string main_cache = manager.getRestoreSegmentPath(
+        main_job.job_id, camera, main_child.stream_id, main_child.segment_path);
+    writeFile(main_cache, "main-cache");
+
+    require(manager.validateRestoreWindowCache(
+                main_job, {main_range}, "main", now - 10, now + 10,
+                3600, expires_at) && expires_at == now + 3600,
+            "Complete restore cache was not valid until the exact job expiry");
+    require(manager.validateRestoreWindowCache(
+                main_job, {main_range}, "main", now - 10, now + 10,
+                -1, expires_at) && expires_at == 0,
+            "Unlimited restore cache TTL did not return expires_at=0");
+
+    RestoreJob multi_child_job = main_job;
+    multi_child_job.job_id = "restore-main-multi-child";
+    RestoreJobSegment done_child = main_child;
+    done_child.job_id = multi_child_job.job_id;
+    done_child.segment_path = "2026-09-10/10-02-00";
+    RestoreJobSegment failed_child = done_child;
+    failed_child.segment_path = "2026-09-10/10-03-00";
+    failed_child.status = jobStatusToString(JobStatus::FAILED);
+    require(RestoreJobImp().addWithSegments(
+                multi_child_job, {done_child, failed_child}),
+            "Cannot seed multi-child restore job");
+    writeFile(manager.getRestoreSegmentPath(
+                  multi_child_job.job_id, camera, done_child.stream_id,
+                  done_child.segment_path),
+              "done-child-cache");
+    require(!manager.validateRestoreWindowCache(
+                multi_child_job, {main_range}, "main", now - 10, now + 10,
+                3600, expires_at),
+            "Failed child in a covered range was ignored");
+
+    require(!manager.validateRestoreWindowCache(
+                main_job, {main_range, secondary_range}, "", now - 10, now + 10,
+                3600, expires_at),
+            "Partial multi-stream restore cache was reported complete");
+
+    require(::unlink(main_cache.c_str()) == 0,
+            "Cannot remove main restore cache fixture");
+    require(!manager.validateRestoreWindowCache(
+                main_job, {main_range}, "main", now - 10, now + 10,
+                3600, expires_at),
+            "Missing restore cache file was reported ready");
+
+    writeFile(main_cache, "main-cache");
+    RestoreJob expired_job = main_job;
+    expired_job.updated_at = now - 3600;
+    require(!manager.validateRestoreWindowCache(
+                expired_job, {main_range}, "main", now - 10, now + 10,
+                3600, expires_at),
+            "Restore cache at its TTL boundary was reported ready");
+
+    manager.stop();
+    return 0;
+}
+
+int scenarioCleansJobScopedRestoreCache(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kRestoreTTLSeconds] = 30;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    RestoreJob job;
+    job.job_id = "restore-cleanup-retry";
+    job.camera_id = "camera-restore-cleanup";
+    job.source_tier = tierTypeToString(ColdTier);
+    job.target_tier = tierTypeToString(HotTier);
+    job.status = jobStatusToString(JobStatus::DONE);
+    job.start_time = now - 120;
+    job.end_time = now - 60;
+    job.created_at = now - 120;
+    job.updated_at = now - 60;
+
+    RestoreJobSegment child;
+    child.job_id = job.job_id;
+    child.camera_id = job.camera_id;
+    child.stream_id = "main";
+    child.range_id = "range-restore-cleanup";
+    child.segment_path = "2026-09-10/11-00-00";
+    child.source_pool_id = "cold-pool";
+    child.range_start = job.start_time;
+    child.range_end = job.end_time;
+    child.status = jobStatusToString(JobStatus::DONE);
+    child.created_at = job.created_at;
+    child.updated_at = job.updated_at;
+    require(RestoreJobImp().addWithSegments(job, {child}),
+            "Cannot seed restore cleanup job");
+
+    RestoreJob fresh_job = job;
+    fresh_job.job_id = "restore-cleanup-fresh";
+    fresh_job.created_at = now;
+    fresh_job.updated_at = now;
+    RestoreJobSegment fresh_child = child;
+    fresh_child.job_id = fresh_job.job_id;
+    fresh_child.created_at = now;
+    fresh_child.updated_at = now;
+    require(RestoreJobImp().addWithSegments(fresh_job, {fresh_child}),
+            "Cannot seed fresh restore cleanup job");
+
+    const std::string expired_cache_path = manager.getRestoreSegmentPath(
+        job.job_id, child.camera_id, child.stream_id, child.segment_path);
+    const std::string fresh_cache_path = manager.getRestoreSegmentPath(
+        fresh_job.job_id, fresh_child.camera_id, fresh_child.stream_id,
+        fresh_child.segment_path);
+    require(expired_cache_path != fresh_cache_path,
+            "Restore jobs shared the same cache path");
+    writeFile(expired_cache_path, "expired-cache");
+    writeFile(fresh_cache_path, "fresh-cache");
+
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    auto rows = RestoreJobImp().findByJobId(job.job_id);
+    require(rows.size() == 1 && rows.front().status == "EXPIRED" &&
+                !File::fileExist(expired_cache_path),
+            "Expired restore job directory was not cleaned");
+    rows = RestoreJobImp().findByJobId(fresh_job.job_id);
+    require(rows.size() == 1 && rows.front().status == jobStatusToString(JobStatus::DONE) &&
+                File::loadFile(fresh_cache_path) == "fresh-cache",
+            "Cleanup of one restore job affected another job cache");
 
     manager.stop();
     return 0;
@@ -2560,6 +2942,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "hot-to-minio") return scenarioHotToMinio(root);
         if (name == "restore-from-minio") return scenarioRestoreFromMinio(root);
         if (name == "duplicate-restore") return scenarioDuplicateRestore(root);
+        if (name == "reuse-equivalent-restore-windows") return scenarioReusesEquivalentRestoreWindows(root);
         if (name == "retention-approval") return scenarioRetentionApproval(root);
         if (name == "protected-retention") return scenarioProtectedRetention(root);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
@@ -2569,6 +2952,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "resolve-local-playback-paths") return scenarioResolveLocalPlaybackPaths(root);
         if (name == "reject-unreadable-playback-path") return scenarioRejectUnreadablePlaybackPath(root);
         if (name == "missing-restore-cache") return scenarioMissingRestoreCacheRequiresRestore(root);
+        if (name == "validate-restore-window-cache") return scenarioValidatesRestoreWindowCache(root);
+        if (name == "job-scoped-restore-cache-cleanup") return scenarioCleansJobScopedRestoreCache(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
@@ -2702,6 +3087,11 @@ TEST(TierStorageManagerIntegrationTest, ReusesActiveRestoreForDuplicateRequest) 
     EXPECT_EQ(0, runChild("duplicate-restore", root.path));
 }
 
+TEST(TierStorageManagerIntegrationTest, ReusesEquivalentRestoreWindowJobsAndExtendsTtl) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("reuse-equivalent-restore-windows", root.path));
+}
+
 TEST(TierStorageManagerIntegrationTest, MarksExpiredAndDeletesAfterApproval) {
     TempRoot root;
     EXPECT_EQ(0, runChild("retention-approval", root.path));
@@ -2748,6 +3138,16 @@ TEST(TierStorageManagerIntegrationTest, RejectsUnreadablePlaybackFile) {
 TEST(TierStorageManagerIntegrationTest, RequiresRestoreWhenObjectCacheIsMissing) {
     TempRoot root;
     EXPECT_EQ(0, runChild("missing-restore-cache", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ValidatesRestoreWindowCacheByStreamCoverageAndTtl) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("validate-restore-window-cache", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, CleansOnlyExpiredJobScopedRestoreCache) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("job-scoped-restore-cache-cleanup", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOffline) {

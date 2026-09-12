@@ -57,6 +57,7 @@ foreach(manager_case
     RunsCycleAndMovesHotSegmentToMinio
     RestoresSegmentFromMinio
     ReusesActiveRestoreForDuplicateRequest
+    ReusesEquivalentRestoreWindowJobsAndExtendsTtl
     MarksExpiredAndDeletesAfterApproval
     ProtectsRetentionUntilGuardsExpire
     EnforcesRestoreConcurrencyLimit
@@ -66,6 +67,8 @@ foreach(manager_case
     ResolvesExistingEmptyAndSymlinkPlaybackFiles
     RejectsUnreadablePlaybackFile
     RequiresRestoreWhenObjectCacheIsMissing
+    ValidatesRestoreWindowCacheByStreamCoverageAndTtl
+    CleansOnlyExpiredJobScopedRestoreCache
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     DefersTierMoveUntilDestinationPoolRecovers
     CancelsPendingJobAfterPolicyReassignment

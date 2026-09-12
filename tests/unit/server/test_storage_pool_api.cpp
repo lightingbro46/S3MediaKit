@@ -161,6 +161,21 @@ TEST(StoragePoolApiTest, SerializesJobViewsWithSharedRules) {
     EXPECT_EQ("Front door", restore_value["camera_name"].asString());
     EXPECT_FALSE(restore_value.isMember("processed_bytes"));
 
+    RestoreJobSnapshot snapshot;
+    snapshot.job = restore;
+    snapshot.playback_status = "RESTORING";
+    snapshot.total_segment_count = 4;
+    snapshot.restored_segment_count = 1;
+    snapshot.remaining_segment_count = 3;
+    snapshot.segment_progress_percent = 25;
+    const Json::Value snapshot_value = TierStorageBase::restoreJobSnapshotToJson(snapshot);
+    EXPECT_EQ("RESTORING", snapshot_value["playback_status"].asString());
+    EXPECT_FALSE(snapshot_value["playback_ready"].asBool());
+    EXPECT_EQ(4, snapshot_value["total_segment_count"].asInt());
+    EXPECT_EQ(3, snapshot_value["remaining_segment_count"].asInt());
+    EXPECT_EQ(25, snapshot_value["segment_progress_percent"].asInt());
+    EXPECT_FALSE(snapshot_value.isMember("estimated_restore_seconds"));
+
     TieringJob tiering;
     tiering.job_id = "tier-1";
     tiering.camera_id = "camera-1";
