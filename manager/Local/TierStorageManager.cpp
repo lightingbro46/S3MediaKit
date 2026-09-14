@@ -301,11 +301,17 @@ static std::string resolveRestoreSegmentPath(const RestoreJob &job,
                                          segment.segment_path);
 }
 
+// Restore children run concurrently and commonly create the same camera/stream
+// directory. File::create_path() performs access()+mkdir(), so without this
+// narrow lock a losing thread treats the expected EEXIST race as a failure.
+static std::mutex s_restore_directory_mtx;
+
 static bool ensureDirectoryPath(const std::string &dir, unsigned int mode, std::string &err) {
     if (dir.empty()) {
         err = "Directory path is empty";
         return false;
     }
+    std::lock_guard<std::mutex> directory_lk(s_restore_directory_mtx);
     std::string mkdir_path = dir;
     if (mkdir_path.back() != '/')
         mkdir_path += '/';
