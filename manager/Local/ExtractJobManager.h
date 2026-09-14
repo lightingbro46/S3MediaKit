@@ -68,6 +68,7 @@ private:
     void startOnPoller();
     void stopOnPoller();
     void dispatch();
+    void updateActiveProgress(int64_t now);
     void startExtract(const ExtractJob &job);
     void onExtractCompleted(const std::string &file_id,
                             const FFmpegExtractor::Status &status,

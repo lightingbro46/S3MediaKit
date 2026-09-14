@@ -1,12 +1,59 @@
 #include <gtest/gtest.h>
 
 #include "Storage/ExtractJob.h"
+#include "Local/ObjectReadSource.h"
 
 using namespace managerkit;
 
 TEST(ExtractJobTest, ExposesPersistentSchema) {
     EXPECT_EQ("extract_jobs", EntityTraits<ExtractJob>::tableName());
     EXPECT_EQ(27U, EntityTraits<ExtractJob>::getColumns().size());
+}
+
+TEST(ExtractJobTest, PresignedTtlCoversWorstCaseExtractRuntime) {
+    EXPECT_EQ(660, requiredObjectReadTtlSeconds(100, 160, ObjectReadPurpose::EXTRACT));
+    EXPECT_EQ(12 * 3600 + 60,
+              requiredObjectReadTtlSeconds(100, 100 + 24 * 3600,
+                                           ObjectReadPurpose::EXTRACT));
+    EXPECT_EQ(10, requiredObjectReadTtlSeconds(100, 101,
+                                              ObjectReadPurpose::THUMBNAIL));
+}
+
+TEST(ExtractJobTest, SerializesRestoreProgress) {
+    ExtractJob job;
+    job.file_id = "clip-cold";
+    job.status = extractJobStatusToString(ExtractJobStatus::RESTORING);
+    job.progress_percent = 18.0f;
+
+    const Json::Value value = job.toJson();
+    EXPECT_EQ("RUNNING", value["status"].asString());
+    EXPECT_EQ("RESTORING", value["stage"].asString());
+    EXPECT_FLOAT_EQ(18.0f, value["progressPercent"].asFloat());
+    EXPECT_FALSE(value.isMember("restoreJobId"));
+    EXPECT_FALSE(value.isMember("file"));
+    EXPECT_FALSE(value.isMember("error"));
+}
+
+TEST(ExtractJobTest, MapsInternalStagesToStablePublicStatus) {
+    ExtractJob job;
+
+    job.status = "PENDING";
+    EXPECT_EQ("QUEUED", job.toJson()["status"].asString());
+    EXPECT_EQ("QUEUED", job.toJson()["stage"].asString());
+
+    job.status = "EXTRACTING";
+    EXPECT_EQ("RUNNING", job.toJson()["status"].asString());
+    EXPECT_EQ("EXTRACTING", job.toJson()["stage"].asString());
+
+    job.status = "UPLOADING";
+    EXPECT_EQ("RUNNING", job.toJson()["status"].asString());
+    EXPECT_EQ("UPLOADING", job.toJson()["stage"].asString());
+}
+
+TEST(ExtractJobTest, MapsStageProgressIntoOverallProgress) {
+    EXPECT_FLOAT_EQ(15.0f, extractJobRestoreProgress(50));
+    EXPECT_FLOAT_EQ(60.0f, extractJobFfmpegProgress(50.0f));
+    EXPECT_FLOAT_EQ(90.0f, extractJobFfmpegProgress(100.0f));
 }
 
 TEST(ExtractJobTest, SerializesSuccessCallbackContract) {

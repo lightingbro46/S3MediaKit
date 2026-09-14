@@ -17,6 +17,9 @@
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
 #include "Local/StatisticRecorder.h"
+#ifdef ENABLE_TIER_STORAGE
+#include "Local/TierStorageManager.h"
+#endif
 #include "WebApiErrCode.h"
 
 using namespace std;
@@ -34,6 +37,8 @@ const string kSnap = FFmpeg_FIELD"snap";
 const string kSnapOverlay = FFmpeg_FIELD"snap_overlay";
 const string kExtract = FFmpeg_FIELD"extract";
 const string kExtractOverlay = FFmpeg_FIELD"extract_overlay";
+const string kRecordedThumbnailTimeoutSec = FFmpeg_FIELD"recorded_thumbnail_timeout_sec";
+const string kExtractRestoreTimeoutSec = FFmpeg_FIELD"extract_restore_timeout_sec";
 const string kProbe = FFmpeg_FIELD"probe";
 const string kRestartSec = FFmpeg_FIELD"restart_sec";
 const string kDelayCloseSec = FFmpeg_FIELD"delay_close_sec";
@@ -56,10 +61,12 @@ onceToken token([]() {
     mINI::Instance()[kSnap] = "%s -i %s -ss %s -y -f mjpeg -frames:v 1 -an %s";
     mINI::Instance()[kSnapOverlay] = "%s -ss %s -i %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
-    mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
-    mINI::Instance()[kExtractOverlay] = "%s -f concat -safe 0 -ss %s -i %s -y -t %s -filter_complex %s -map [v] -map 0:a? "
+    mINI::Instance()[kExtract] = "%s -protocol_whitelist file,crypto,tcp,tls,http,https -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
+    mINI::Instance()[kExtractOverlay] = "%s -protocol_whitelist file,crypto,tcp,tls,http,https -f concat -safe 0 -ss %s -i %s -y -t %s -filter_complex %s -map [v] -map 0:a? "
                                             "-metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s "
                                             "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac %s";
+    mINI::Instance()[kRecordedThumbnailTimeoutSec] = 5;
+    mINI::Instance()[kExtractRestoreTimeoutSec] = 3600;
     mINI::Instance()[kProbe] = "%s -rtsp_transport tcp -print_format json -show_streams -show_format -show_error -select_streams v:0 %s";
     mINI::Instance()[kRestartSec] = 0;
     mINI::Instance()[kDelayCloseSec] = 300;
@@ -512,6 +519,8 @@ FFmpegExtractor::FFmpegExtractor(MediaTuple &tuple, ExtractOptions &options, int
 }
 
 FFmpegExtractor::~FFmpegExtractor() {
+    _timer.reset();
+    releaseRestoreCache();
     DebugL;
 }
 
@@ -566,7 +575,21 @@ static uint64_t getExtractStreamDuration(vector<pair<uint64_t, uint64_t>> &range
     return has_range ? duration + range_end - range_start : 0;
 }
 
-static void makeIndexFile(string &file_path, string &camera_id, string &stream_id, uint64_t start_time, uint64_t end_time,
+static std::string concatFileLine(const std::string &path) {
+    std::string escaped;
+    escaped.reserve(path.size() + 16);
+    for (const auto ch : path) {
+        if (ch == '\'') {
+            escaped += "'\\''";
+        } else {
+            escaped += ch;
+        }
+    }
+    return "file '" + escaped + "'\n";
+}
+
+static void makeManifestPlaylist(string &file_path, string &camera_id, string &stream_id,
+        uint64_t start_time, uint64_t end_time, const vector<TimeBlock> &time_blocks,
         const function<void(const SockException &ex, uint32_t &duration_start, uint32_t &duration_end)> &cb) {
     uint32_t duration_start = 0;
     uint32_t duration_end = 0;
@@ -582,13 +605,13 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
     }
 
     struct FileIndexs {
-        vector<string> file_path;
+        vector<TimeBlock> blocks;
         uint64_t dur_start = 0;
         uint64_t dur_end = 0;
     };
     unordered_map<string, FileIndexs> file_indexs_map;
     unordered_map<string, vector<pair<uint64_t, uint64_t>>> available_ranges;
-    queryExtractTimeBlocks(camera_id, stream_id, start_time, end_time, [&](const TimeBlock &block) {
+    for (const auto &block : time_blocks) {
         auto stream = block.stream();
         auto &file_indexs = file_indexs_map[stream];
         uint64_t start_pos = block.start_time();
@@ -602,9 +625,9 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
             end_pos = end_time;
         }
         file_indexs.dur_end += end_pos - start_pos;
-        file_indexs.file_path.push_back(block.file_path());
+        file_indexs.blocks.push_back(block);
         addExtractTimeRange(available_ranges, block, start_time, end_time);
-    });
+    }
 
     uint64_t total_dur = 0;
     // Find the stream with the longest duration in the time period, and then extract the video based on this stream
@@ -612,7 +635,7 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
     for (auto it = file_indexs_map.begin(); it != file_indexs_map.end(); ++it) {
         auto &file_indexs = it->second;
         auto range_it = available_ranges.find(it->first);
-        if (range_it == available_ranges.end() || file_indexs.file_path.empty()) {
+        if (range_it == available_ranges.end() || file_indexs.blocks.empty()) {
             continue;
         }
         auto duration = getExtractStreamDuration(range_it->second);
@@ -626,12 +649,42 @@ static void makeIndexFile(string &file_path, string &camera_id, string &stream_i
         }
     }
 
+    vector<string> manifest_lines;
     if (file_indexs_it != file_indexs_map.end()) {
         duration_start = file_indexs_it->second.dur_start;
         duration_end = file_indexs_it->second.dur_end;
-        for (const auto &file_path : file_indexs_it->second.file_path) {
-            auto line = "file '" + decodeBase64(file_path) + "'\n";
-            fwrite(line.c_str(), line.size(), 1, file_ptr.get());
+        for (const auto &block : file_indexs_it->second.blocks) {
+            string resolved_path = decodeBase64(block.file_path());
+#ifdef ENABLE_TIER_STORAGE
+            ObjectReadRequest request;
+            request.camera_id = block.app();
+            request.stream_id = block.stream();
+            request.segment_start_time = static_cast<int64_t>(block.start_time());
+            request.timefile_path = resolved_path;
+            request.segment_size = static_cast<int64_t>(block.file_size());
+            request.required_ttl_seconds = requiredObjectReadTtlSeconds(
+                static_cast<int64_t>(start_time), static_cast<int64_t>(end_time),
+                ObjectReadPurpose::EXTRACT);
+            request.purpose = ObjectReadPurpose::EXTRACT;
+            ObjectReadSource source = TierStorageManager::Instance().resolveObjectReadSource(request);
+            if (source.kind == ObjectReadSourceKind::LOCAL_PATH) {
+                resolved_path = source.local_path;
+            } else if (source.kind == ObjectReadSourceKind::PRESIGNED_URL) {
+                resolved_path = source.url;
+            } else if (source.kind == ObjectReadSourceKind::RESTORE_REQUIRED) {
+                const string message = "Recorded segment is not ready for extraction: " + source.message;
+                return cb(SockException(Err_other, message, ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED), duration_start, duration_end);
+            } else {
+                const string message = "Recorded segment is unavailable for extraction: " + source.message;
+                return cb(SockException(Err_other, message, ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
+            }
+#endif
+            manifest_lines.push_back(concatFileLine(resolved_path));
+        }
+    }
+    for (const auto &line : manifest_lines) {
+        if (fwrite(line.c_str(), line.size(), 1, file_ptr.get()) != 1) {
+            return cb(SockException(Err_other, "Failed to write extraction manifest", ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
         }
     }
     // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
@@ -997,6 +1050,241 @@ bool FFmpegOverlayFilter::buildThumbnailOverlay(const MediaTuple &tuple, const s
 }
 
 void FFmpegExtractor::makeExtract(const string &key, const string &root_path, const onExtract &cb) {
+    bool already_started = false;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_started) {
+            already_started = true;
+        } else {
+            _started = true;
+            _extract_key = key;
+            _extract_root = root_path;
+            _onStart = cb;
+        }
+    }
+    if (already_started) {
+        if (cb) {
+            cb(SockException(Err_other, "Extraction task has already been started",
+                             ApiErrCode::CODE_EXTRACT_FAILED));
+        }
+        return;
+    }
+    updateLifecycleStatus(Stage::QUEUED, 0.0f);
+    prepareExtractSource();
+}
+
+const char *FFmpegExtractor::stageToString(Stage stage) {
+    switch (stage) {
+        case Stage::QUEUED: return "QUEUED";
+        case Stage::RESTORING: return "RESTORING";
+        case Stage::EXTRACTING: return "EXTRACTING";
+        case Stage::COMPLETED: return "COMPLETED";
+        case Stage::FAILED: return "FAILED";
+    }
+    return "FAILED";
+}
+
+float FFmpegExtractor::lifecycleProgress(Stage stage, float stage_progress) {
+    const float progress = std::max(0.0f, std::min(100.0f, stage_progress));
+    switch (stage) {
+        case Stage::QUEUED: return 0.0f;
+        case Stage::RESTORING: return progress * 0.3f;
+        case Stage::EXTRACTING: return 30.0f + progress * 0.7f;
+        case Stage::COMPLETED: return 100.0f;
+        case Stage::FAILED: return progress;
+    }
+    return progress;
+}
+
+void FFmpegExtractor::updateLifecycleStatus(Stage stage, float stage_progress) {
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_complete_emitted) {
+            return;
+        }
+        _stage = stage;
+        _stage_progress = std::max(0.0f, std::min(100.0f, stage_progress));
+        _progress = lifecycleProgress(stage, _stage_progress);
+    }
+}
+
+void FFmpegExtractor::notifyStartOnce(const SockException &ex) {
+    onExtract cb;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_start_emitted) {
+            return;
+        }
+        _start_emitted = true;
+        cb = std::move(_onStart);
+        _onStart = nullptr;
+    }
+    if (cb) {
+        cb(ex);
+    }
+}
+
+void FFmpegExtractor::prepareExtractSource() {
+    vector<TimeBlock> blocks;
+    queryExtractTimeBlocks(_tuple.app, _tuple.stream, _options.start_time,
+                           _options.end_time, [&blocks](const TimeBlock &block) {
+        blocks.push_back(block);
+    });
+    if (_tuple.stream.empty()) {
+        unordered_map<string, vector<pair<uint64_t, uint64_t>>> ranges;
+        for (const auto &block : blocks)
+            addExtractTimeRange(ranges, block, _options.start_time, _options.end_time);
+        uint64_t selected_duration = 0;
+        for (auto &item : ranges) {
+            const uint64_t duration = getExtractStreamDuration(item.second);
+            if (duration > selected_duration) {
+                selected_duration = duration;
+                _tuple.stream = item.first;
+            }
+        }
+    }
+    _time_blocks.clear();
+    for (const auto &block : blocks) {
+        if (block.stream() == _tuple.stream)
+            _time_blocks.push_back(block);
+    }
+    if (_tuple.stream.empty() || _time_blocks.empty()) {
+        const SockException ex(Err_other, "No data in time period",
+                               ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
+
+#ifdef ENABLE_TIER_STORAGE
+    const ObjectReadPlan plan = TierStorageManager::Instance().planObjectReadWindow(
+        _tuple.app, _tuple.stream, static_cast<int64_t>(_options.start_time),
+        static_cast<int64_t>(_options.end_time), ObjectReadPurpose::EXTRACT);
+    if (plan.strategy == ObjectReadStrategy::RESTORE) {
+        startRestore();
+        return;
+    }
+#endif
+    startFfmpeg();
+}
+
+void FFmpegExtractor::startRestore() {
+#ifdef ENABLE_TIER_STORAGE
+    if (!_restore_started) {
+        _restore_started = true;
+        _restore_ticker.resetTime();
+    }
+    GET_CONFIG(float, restore_timeout_sec, FFmpeg::kExtractRestoreTimeoutSec);
+    if (restore_timeout_sec > 0 &&
+        _restore_ticker.elapsedTime() >= static_cast<uint64_t>(restore_timeout_sec * 1000)) {
+        const SockException ex(Err_timeout, "Cold-storage restore timed out",
+                               ApiErrCode::CODE_EXTRACT_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
+    updateLifecycleStatus(Stage::RESTORING, 0.0f);
+    const ColdAccessRestoreResult restore = TierStorageManager::Instance().requestRestoreWindow(
+        _tuple.app, _tuple.stream, static_cast<int64_t>(_options.start_time),
+        static_cast<int64_t>(_options.end_time), "EXTRACT");
+    if (!restore.handled || restore.job_id.empty()) {
+        const SockException ex(Err_other, "Cold-storage restore job could not be created",
+                               ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        _restore_job_id = restore.job_id;
+    }
+    RestoreJobSnapshot snapshot;
+    if (!TierStorageManager::Instance().getRestoreJobSnapshot(restore.job_id, snapshot)) {
+        const SockException ex(Err_other, "Cold-storage restore job could not be loaded",
+                               ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
+    if (snapshot.playback_ready) {
+        if (retainRestoreCache()) {
+            startFfmpeg();
+            return;
+        }
+    }
+    if (snapshot.playback_status == "FAILED" || snapshot.playback_status == "CANCELLED") {
+        const SockException ex(Err_other, "Cold-storage restore is " + snapshot.playback_status,
+                               ApiErrCode::CODE_EXTRACT_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
+    updateLifecycleStatus(Stage::RESTORING,
+                          static_cast<float>(snapshot.segment_progress_percent));
+    weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
+    _timer = std::make_shared<Timer>(1.0f, [weak_self]() {
+        auto self = weak_self.lock();
+        return self ? self->pollRestore() : false;
+    }, _poller);
+#else
+    startFfmpeg();
+#endif
+}
+
+bool FFmpegExtractor::pollRestore() {
+#ifdef ENABLE_TIER_STORAGE
+    string restore_job_id;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_complete_emitted || _stage != Stage::RESTORING) {
+            return false;
+        }
+        restore_job_id = _restore_job_id;
+    }
+    RestoreJobSnapshot snapshot;
+    GET_CONFIG(float, restore_timeout_sec, FFmpeg::kExtractRestoreTimeoutSec);
+    if (restore_timeout_sec > 0 &&
+        _restore_ticker.elapsedTime() >= static_cast<uint64_t>(restore_timeout_sec * 1000)) {
+        const SockException ex(Err_timeout, "Cold-storage restore timed out",
+                               ApiErrCode::CODE_EXTRACT_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return false;
+    }
+    if (restore_job_id.empty() ||
+        !TierStorageManager::Instance().getRestoreJobSnapshot(restore_job_id, snapshot)) {
+        startRestore();
+        return false;
+    }
+    if (snapshot.playback_ready) {
+        if (retainRestoreCache()) {
+            startFfmpeg();
+        }
+        return false;
+    }
+    if (snapshot.playback_status == "EXPIRED") {
+        startRestore();
+        return false;
+    }
+    if (snapshot.playback_status == "FAILED" || snapshot.playback_status == "CANCELLED") {
+        const SockException ex(Err_other, "Cold-storage restore is " + snapshot.playback_status,
+                               ApiErrCode::CODE_EXTRACT_FAILED);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return false;
+    }
+    updateLifecycleStatus(Stage::RESTORING,
+                          static_cast<float>(snapshot.segment_progress_percent));
+    return true;
+#else
+    return false;
+#endif
+}
+
+void FFmpegExtractor::startFfmpeg() {
+    updateLifecycleStatus(Stage::EXTRACTING, 0.0f);
+    const string &key = _extract_key;
+    const string &root_path = _extract_root;
     GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
     GET_CONFIG(string, ffmpeg_extract, FFmpeg::kExtract);
     GET_CONFIG(string, ffmpeg_extract_overlay, FFmpeg::kExtractOverlay);
@@ -1006,7 +1294,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     uint32_t duration_end = 0;
     SockException err;
     _src_path = File::absolutePath(key + ".txt", root_path);
-    makeIndexFile(_src_path, _tuple.app, _tuple.stream, _options.start_time, _options.end_time, [&](const SockException &ex, uint32_t &start, uint32_t &end) {
+    makeManifestPlaylist(_src_path, _tuple.app, _tuple.stream, _options.start_time,
+                         _options.end_time, _time_blocks,
+                         [&](const SockException &ex, uint32_t &start, uint32_t &end) {
         if (ex) {
             err = ex;
             return;
@@ -1016,16 +1306,21 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         duration_end = end;
     });
     if (err) {
-        completeOnce(false, err.what());
-        cb(err);
+        if (err.getCustomCode() == ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED) {
+            cleanupTemporaryFiles();
+            startRestore();
+            return;
+        }
+        completeOnce(false, err.what(), err.getCustomCode());
+        notifyStartOnce(err);
         return;
     }
     if (_duration == 0) {
         WarnL << "No data in time period: " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.start_time) << " - " << getTimeStr("%Y-%m-%d %H:%M:%S" , _options.end_time)
               << ", camera_id: " << _tuple.app << ", stream_id: " << _tuple.stream;
         const SockException ex(Err_other, "No data in time period", ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA);
-        completeOnce(false, ex.what());
-        cb(ex);
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
         return;
     }
     auto save_format = getFileExtension(_options.filename);
@@ -1044,7 +1339,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         const string err_msg = "Unable to render required watermark/privacy mask/source stamp overlay";
         WarnL << "Extract video: " << err_msg << " for " << _tuple.app;
         completeOnce(false, err_msg);
-        cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
+        notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         return;
     }
 
@@ -1092,19 +1387,20 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         WarnL << "Extract video: generated FFmpeg command exceeds " << sizeof(cmd) - 1 << " bytes";
         const string err_msg = "FFmpeg extract command is too long";
         completeOnce(false, err_msg);
-        cb(SockException(Err_other, err_msg));
+        notifyStartOnce(SockException(Err_other, err_msg));
         return;
     }
     // Each extractor needs its own log. A shared ffmpeg.log makes progress and
     // failure diagnostics race when multiple extracts run concurrently.
     _log_file = ffmpeg_log.empty() ? "" : File::absolutePath(key + ".ffmpeg.log", root_path);
     _process.run(cmd, _log_file);
+    _ticker.resetTime();
     _cmd = cmd;
     InfoL << cmd;
 
     // judge whether it is successful by judging whether the FFmpeg process is online
     weak_ptr<FFmpegExtractor> weakSelf = shared_from_this();
-    _poller->doDelayTask(_timeout_ms, [weakSelf, cb]() {
+    _poller->doDelayTask(_timeout_ms, [weakSelf]() {
         auto strongSelf = weakSelf.lock();
         if (!strongSelf) {
             // Self has been destroyed
@@ -1112,7 +1408,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         }
         // FFmpeg is still online, so we think the extract stream is successful
         if (strongSelf->_process.wait(false)) {
-            cb(SockException());
+            strongSelf->notifyStartOnce(SockException());
             strongSelf->startTimer();
             return 0;
         }
@@ -1124,9 +1420,9 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         }
         strongSelf->completeOnce(success, err_msg);
         if (success) {
-            cb(SockException());
+            strongSelf->notifyStartOnce(SockException());
         } else {
-            cb(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
+            strongSelf->notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
         }
         return 0;
     });
@@ -1200,10 +1496,7 @@ void FFmpegExtractor::startTimer() {
             }
             // find progress bar
             auto progress = trackFFmpegProgress(strongSelf->_log_file, strongSelf->_duration);
-            {
-                lock_guard<mutex> lock(strongSelf->_status_mtx);
-                strongSelf->_progress = progress;
-            }
+            strongSelf->updateLifecycleStatus(Stage::EXTRACTING, progress);
             return true;
         } else {
             // ffmpeg is not online, check output file and set status
@@ -1219,9 +1512,15 @@ FFmpegExtractor::Status FFmpegExtractor::status() const {
     lock_guard<mutex> lock(_status_mtx);
     Status ret;
     ret.progress = _progress;
+    ret.stage_progress = _stage_progress;
     ret.finished = _finished;
     ret.success = _success;
+    ret.error_code = _error_code;
     ret.err_msg = _err_msg;
+    ret.status = _finished ? (_success ? "SUCCESS" : "FAILED")
+                           : (_stage == Stage::QUEUED ? "QUEUED" : "RUNNING");
+    ret.stage = stageToString(_stage);
+    ret.selected_stream_id = _tuple.stream;
     return ret;
 }
 
@@ -1234,7 +1533,47 @@ void FFmpegExtractor::setOnComplete(const OnComplete &cb) {
     _onComplete = cb;
 }
 
-void FFmpegExtractor::completeOnce(bool success, const string &err_msg) {
+bool FFmpegExtractor::retainRestoreCache() {
+#ifdef ENABLE_TIER_STORAGE
+    string restore_job_id;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_restore_cache_retained || _restore_job_id.empty()) {
+            return _restore_cache_retained;
+        }
+        restore_job_id = _restore_job_id;
+    }
+    if (!TierStorageManager::Instance().tryRetainRestoreCache(restore_job_id)) {
+        return false;
+    }
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        _restore_cache_retained = true;
+        _retained_restore_job_id = restore_job_id;
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
+void FFmpegExtractor::releaseRestoreCache() {
+#ifdef ENABLE_TIER_STORAGE
+    string restore_job_id;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (!_restore_cache_retained) {
+            return;
+        }
+        _restore_cache_retained = false;
+        restore_job_id = _retained_restore_job_id;
+        _retained_restore_job_id.clear();
+    }
+    TierStorageManager::Instance().releaseRestoreCache(restore_job_id);
+#endif
+}
+
+void FFmpegExtractor::completeOnce(bool success, const string &err_msg, int error_code) {
     OnComplete on_complete;
     Status snapshot;
     uint64_t size_bytes = 0;
@@ -1246,18 +1585,29 @@ void FFmpegExtractor::completeOnce(bool success, const string &err_msg) {
         _complete_emitted = true;
         _finished = true;
         _success = success;
+        _error_code = error_code;
         _err_msg = err_msg;
         if (success) {
             _progress = 100.0f;
+            _stage_progress = 100.0f;
+            _stage = Stage::COMPLETED;
+        } else {
+            _stage = Stage::FAILED;
         }
         snapshot.progress = _progress;
+        snapshot.stage_progress = _stage_progress;
         snapshot.finished = _finished;
         snapshot.success = _success;
+        snapshot.error_code = _error_code;
         snapshot.err_msg = _err_msg;
+        snapshot.status = success ? "SUCCESS" : "FAILED";
+        snapshot.stage = stageToString(_stage);
+        snapshot.selected_stream_id = _tuple.stream;
         on_complete = _onComplete;
         size_bytes = success ? File::fileSize(_save_path) : 0;
     }
 
+    releaseRestoreCache();
     emitAuditEvent(success, err_msg);
     if (on_complete) {
         on_complete(snapshot, _save_path, _duration, size_bytes);
@@ -1282,6 +1632,7 @@ void FFmpegExtractor::closeAfterDelaySec() {
 }
 
 bool FFmpegExtractor::close() {
+    releaseRestoreCache();
     auto on_close = std::move(_onClose);
     _onClose = nullptr;
     if (on_close) {

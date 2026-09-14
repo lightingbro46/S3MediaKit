@@ -279,7 +279,8 @@ void registerExtractionApis() {
         }
 
         val["data"]["fileId"] = result.job.file_id;
-        val["data"]["status"] = result.job.status;
+        val["data"]["accepted"] = true;
+        val["data"]["status"] = extractJobPublicStatus(result.job.status);
         invoker(202, headerOut, val.toStyledString());
     });
 

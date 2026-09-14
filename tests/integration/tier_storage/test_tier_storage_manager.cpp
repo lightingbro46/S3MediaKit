@@ -32,6 +32,7 @@
 #include "Local/TimeQuery.h"
 #include "Storage/DbStorage.h"
 #include "Storage/Bookmark.h"
+#include "Storage/ExtractJob.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/MiscData.h"
 #include "Storage/StorageTierExtra.h"
@@ -668,8 +669,10 @@ int scenarioRestoreFromMinio(const std::string &root) {
     ObjectCleanup cleanup(pool, object_key);
     moveSegmentToMinio(manager, root, pool, fixture);
 
+    const int64_t declared_size = static_cast<int64_t>(fixture.payload.size()) + 17;
     auto request = manager.requestRestoreSegment(
-        fixture.camera, fixture.stream, fixture.start, fixture.source_path, "integration test");
+        fixture.camera, fixture.stream, fixture.start, fixture.source_path, "integration test",
+        declared_size);
     require(request.handled && !request.job_id.empty(), "Restore request was not accepted");
     require(waitUntil([&]() {
         auto jobs = manager.getRestoreJob(request.job_id);
@@ -679,6 +682,13 @@ int scenarioRestoreFromMinio(const std::string &root) {
     require(jobs.size() == 1 && jobs.front().status == "DONE",
             jobs.empty() ? "Restore job disappeared"
                          : "Restore failed: " + jobs.front().error_message.value_or(""));
+    auto children = RestoreJobSegmentImp().queryByJob(request.job_id);
+    require(children.size() == 1 &&
+                children.front().total_bytes == declared_size &&
+                children.front().processed_bytes == static_cast<int64_t>(fixture.payload.size()) &&
+                jobs.front().total_bytes == declared_size &&
+                jobs.front().processed_bytes == static_cast<int64_t>(fixture.payload.size()),
+            "Restore completion changed total_bytes instead of preserving TimeBlock metadata");
     const std::string restored = manager.getRestoreSegmentPath(
         request.job_id, fixture.camera, fixture.stream, fixture.segment_key);
     require(File::loadFile(restored) == fixture.payload, "Restored MinIO content mismatch");
@@ -745,6 +755,156 @@ int scenarioDuplicateRestore(const std::string &root) {
                 fixture.camera, fixture.stream, fixture.segment_key).size() == 1,
             "More than one active child exists for the same physical segment");
     manager.stop();
+    return 0;
+}
+
+int scenarioRestoreWindowIncludesAllStreams(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto pool = makeObjectPool(root, "http://127.0.0.1:1", "test", "test", "test-bucket");
+    require(manager.createPool(pool) == pool.id, "Cannot create multi-stream restore pool");
+
+    const std::string camera = "camera-restore-all-streams";
+    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 180;
+    const int64_t end = start + 60;
+    const std::vector<std::string> streams = {"main", "sub"};
+    for (const auto &stream : streams) {
+        const std::string segment_key = "2026-09-12/10-00-00-" + stream;
+        const std::string path = root + "/hot/record/" + camera + "/" + stream + "/" + segment_key + ".mp4";
+        writeTimeBlock(root, camera, stream, path, start, end, 64);
+
+        SegmentTierRange range;
+        range.range_id = "range-restore-all-" + stream;
+        range.camera_id = camera;
+        range.stream_id = stream;
+        range.tier = tierTypeToString(ColdTier);
+        range.pool_id = pool.id;
+        range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+        range.start_time = start;
+        range.end_time = end;
+        range.segment_count = 1;
+        range.size_bytes = 64;
+        require(SegmentTierRangeImp().mergeOrInsert(range),
+                "Cannot seed multi-stream COLD range");
+    }
+
+    auto request = manager.requestRestoreWindow(camera, "", start + 10, end - 10,
+                                                "all stream restore");
+    require(request.handled && !request.job_id.empty(),
+            "Restore without stream id was not accepted");
+    const auto children = RestoreJobSegmentImp().queryByJob(request.job_id);
+    std::set<std::string> restored_streams;
+    for (const auto &child : children) {
+        restored_streams.insert(child.stream_id);
+        require(child.total_bytes == 64,
+                "Restore child did not preserve the TimeBlock byte size");
+    }
+    require(children.size() == 2 && restored_streams.size() == 2 &&
+                restored_streams.count("main") == 1 && restored_streams.count("sub") == 1,
+            "Restore without stream id did not include both camera streams");
+    const auto jobs = manager.getRestoreJob(request.job_id);
+    require(jobs.size() == 1 && jobs.front().total_bytes == 128,
+            "Restore parent did not aggregate child TimeBlock byte sizes");
+
+    ExtractJob extract;
+    extract.file_id = "extract-restoring-state";
+    extract.request_hash = "request-hash";
+    extract.camera_id = camera;
+    extract.start_time = start + 10;
+    extract.end_time = end - 10;
+    extract.format = "mp4";
+    extract.upload_url = "https://example.invalid/upload";
+    extract.created_at = start;
+    extract.updated_at = start;
+    ExtractJob stored;
+    ExtractJobImp extract_imp;
+    require(extract_imp.createOrFind(extract, stored) == ExtractJobRepository::CreateResult::CREATED,
+            "Cannot seed persistent extract job");
+    require(extract_imp.claimExtract(extract.file_id, 0, start),
+            "Cannot claim persistent extract job");
+    require(extract_imp.updateLifecycleState(extract.file_id, "RESTORING", 15.0f,
+                                             "main", start + 1),
+            "Cannot persist extract RESTORING state");
+    auto extracts = extract_imp.findByFileId(extract.file_id);
+    require(extracts.size() == 1 && extracts.front().status == "RESTORING",
+            "Extract job did not persist its restore stage");
+    require(extract_imp.updateLifecycleState(extract.file_id, "EXTRACTING", 30.0f,
+                                             "main", start + 2),
+            "Cannot persist transition from restore to extraction");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioRestoreStatusPreservesDeclaredTotals(const std::string &root) {
+    migrateDatabase(root);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    RestoreJob job;
+    job.job_id = "restore-fixed-total";
+    job.camera_id = "camera-fixed-total";
+    job.source_tier = "COLD";
+    job.target_tier = "HOT";
+    job.status = "PENDING";
+    job.start_time = now - 60;
+    job.end_time = now;
+    job.total_bytes = 777;
+    job.created_at = now;
+    job.updated_at = now;
+
+    RestoreJobSegment child;
+    child.job_id = job.job_id;
+    child.camera_id = job.camera_id;
+    child.stream_id = "main";
+    child.segment_path = "2026-09-12/10-00-00";
+    child.source_pool_id = "cold-pool";
+    child.range_start = job.start_time;
+    child.range_end = job.end_time;
+    child.status = "PENDING";
+    child.total_bytes = 777;
+    child.created_at = now;
+    child.updated_at = now;
+    require(RestoreJobImp().addWithSegments(job, {child}),
+            "Cannot seed restore byte-accounting fixture");
+
+    require(RestoreJobSegmentImp().updateStatus(child, "DONE", 700),
+            "Cannot update restore child status");
+    require(RestoreJobImp().updateStatus(job.job_id, "DONE", 700),
+            "Cannot update restore parent status");
+    const auto jobs = RestoreJobImp().findByJobId(job.job_id);
+    const auto children = RestoreJobSegmentImp().queryByJob(job.job_id);
+    require(jobs.size() == 1 && children.size() == 1 &&
+                jobs.front().total_bytes == 777 && jobs.front().processed_bytes == 700 &&
+                children.front().total_bytes == 777 && children.front().processed_bytes == 700,
+            "Restore status transition mutated the declared TimeBlock totals");
+
+    ExtractJob extract;
+    extract.file_id = "extract-lifecycle-recovery";
+    extract.request_hash = "extract-lifecycle-recovery-hash";
+    extract.camera_id = job.camera_id;
+    extract.start_time = job.start_time;
+    extract.end_time = job.end_time;
+    extract.format = "mp4";
+    extract.upload_url = "https://example.invalid/upload";
+    extract.created_at = now;
+    extract.updated_at = now;
+    ExtractJob stored;
+    ExtractJobImp extract_imp;
+    require(extract_imp.createOrFind(extract, stored) == ExtractJobRepository::CreateResult::CREATED,
+            "Cannot seed extraction lifecycle fixture");
+    require(extract_imp.claimExtract(extract.file_id, 0, now + 1),
+            "Cannot claim extraction lifecycle fixture");
+    require(extract_imp.updateLifecycleState(extract.file_id, "RESTORING", 12.0f,
+                                             "main", now + 2),
+            "Cannot persist extraction restore stage");
+    auto extracts = extract_imp.findByFileId(extract.file_id);
+    require(extracts.size() == 1 && extracts.front().status == "RESTORING",
+            "Extractor lifecycle did not persist its restore stage");
+    extract_imp.recoverInterrupted(now + 4);
+    extracts = extract_imp.findByFileId(extract.file_id);
+    require(extracts.size() == 1 && extracts.front().status == "PENDING" &&
+                extracts.front().progress_percent == 0.0f,
+            "Interrupted extractor lifecycle was not reset for automatic replanning");
     return 0;
 }
 
@@ -1357,14 +1517,16 @@ int scenarioMissingRestoreCacheRequiresRestore(const std::string &root) {
 
     const PlaybackPathResolveResult newest_result =
         manager.resolvePlaybackSegmentPath(camera, stream, now, original);
-    require(newest_result.ready && newest_result.read_path == newer_cache,
+    require(newest_result.ready && newest_result.read_path == newer_cache &&
+                newest_result.restore_job_id == newer_job.job_id,
             "Playback did not select the newest valid restore job cache");
 
     require(::unlink(newer_cache.c_str()) == 0,
             "Cannot remove newer restore cache fixture");
     const PlaybackPathResolveResult fallback_result =
         manager.resolvePlaybackSegmentPath(camera, stream, now, original);
-    require(fallback_result.ready && fallback_result.read_path == older_cache,
+    require(fallback_result.ready && fallback_result.read_path == older_cache &&
+                fallback_result.restore_job_id == older_job.job_id,
             "Playback did not fall back to an older valid restore job cache");
 
     RestoreJobSnapshot snapshot;
@@ -1514,7 +1676,7 @@ int scenarioValidatesRestoreWindowCache(const std::string &root) {
 
 int scenarioCleansJobScopedRestoreCache(const std::string &root) {
     migrateDatabase(root);
-    mINI::Instance()[Storage::kRestoreTTLSeconds] = 30;
+    mINI::Instance()[Storage::kRestoreTTLSeconds] = 120;
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
 
@@ -1566,9 +1728,20 @@ int scenarioCleansJobScopedRestoreCache(const std::string &root) {
     writeFile(expired_cache_path, "expired-cache");
     writeFile(fresh_cache_path, "fresh-cache");
 
+    require(manager.tryRetainRestoreCache(job.job_id),
+            "Cannot retain ready restore cache");
+    mINI::Instance()[Storage::kRestoreTTLSeconds] = 30;
     manager.runTieringCycle();
     drainWorkThreadPool();
     auto rows = RestoreJobImp().findByJobId(job.job_id);
+    require(rows.size() == 1 && rows.front().status == jobStatusToString(JobStatus::DONE) &&
+                File::loadFile(expired_cache_path) == "expired-cache",
+            "Leased restore cache was deleted while an extractor could still use it");
+
+    manager.releaseRestoreCache(job.job_id);
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    rows = RestoreJobImp().findByJobId(job.job_id);
     require(rows.size() == 1 && rows.front().status == "EXPIRED" &&
                 !File::fileExist(expired_cache_path),
             "Expired restore job directory was not cleaned");
@@ -2942,6 +3115,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "hot-to-minio") return scenarioHotToMinio(root);
         if (name == "restore-from-minio") return scenarioRestoreFromMinio(root);
         if (name == "duplicate-restore") return scenarioDuplicateRestore(root);
+        if (name == "restore-window-all-streams") return scenarioRestoreWindowIncludesAllStreams(root);
+        if (name == "restore-status-preserves-total") return scenarioRestoreStatusPreservesDeclaredTotals(root);
         if (name == "reuse-equivalent-restore-windows") return scenarioReusesEquivalentRestoreWindows(root);
         if (name == "retention-approval") return scenarioRetentionApproval(root);
         if (name == "protected-retention") return scenarioProtectedRetention(root);
@@ -3085,6 +3260,16 @@ TEST(TierStorageManagerIntegrationTest, RestoresSegmentFromMinio) {
 TEST(TierStorageManagerIntegrationTest, ReusesActiveRestoreForDuplicateRequest) {
     TempRoot root;
     EXPECT_EQ(0, runChild("duplicate-restore", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RestoresAllCameraStreamsWhenStreamIdIsEmpty) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("restore-window-all-streams", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RestoreStatusPreservesTimeBlockTotalBytes) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("restore-status-preserves-total", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ReusesEquivalentRestoreWindowJobsAndExtendsTtl) {

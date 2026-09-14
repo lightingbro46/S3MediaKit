@@ -11,6 +11,7 @@
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "server/WebApi.h"
+#include "server/WebApiErrCode.h"
 
 using namespace std;
 using namespace toolkit;
@@ -239,8 +240,9 @@ void ExtractJobManager::dispatch() {
     GET_CONFIG(int, max_concurrent, ExtractJobConfig::kMaxConcurrent);
     const size_t capacity = static_cast<size_t>(std::max(max_concurrent, 1));
     ExtractJobImp repository;
+    updateActiveProgress(now);
     auto jobs = repository.findDueProcessing(now, static_cast<int>(capacity * 2));
-    for (const auto &job : jobs) {
+    for (auto job : jobs) {
         if (_active_processing.size() >= capacity) {
             break;
         }
@@ -266,6 +268,41 @@ void ExtractJobManager::dispatch() {
     }
 }
 
+void ExtractJobManager::updateActiveProgress(int64_t now) {
+    ExtractJobImp repository;
+    for (auto &entry : _active_processing) {
+        auto &context = entry.second;
+        if (!context->extractor) {
+            continue;
+        }
+        const FFmpegExtractor::Status status = context->extractor->status();
+        if (status.finished) {
+            continue;
+        }
+        string lifecycle_status;
+        float progress = status.progress;
+        if (status.stage == "RESTORING") {
+            lifecycle_status = extractJobStatusToString(ExtractJobStatus::RESTORING);
+        } else if (status.stage == "EXTRACTING") {
+            lifecycle_status = extractJobStatusToString(ExtractJobStatus::EXTRACTING);
+            progress = extractJobFfmpegProgress(status.stage_progress);
+        } else {
+            continue;
+        }
+        if (lifecycle_status == context->job.status &&
+            progress < context->job.progress_percent + 1.0f &&
+            status.selected_stream_id == context->job.stream_id) {
+            continue;
+        }
+        if (repository.updateLifecycleState(context->job.file_id, lifecycle_status,
+                                            progress, status.selected_stream_id, now)) {
+            context->job.status = lifecycle_status;
+            context->job.progress_percent = progress;
+            context->job.stream_id = status.selected_stream_id;
+        }
+    }
+}
+
 void ExtractJobManager::startExtract(const ExtractJob &job) {
     ExtractJobImp repository;
     const int64_t now = static_cast<int64_t>(time(nullptr));
@@ -276,6 +313,7 @@ void ExtractJobManager::startExtract(const ExtractJob &job) {
     auto context = std::make_shared<ActiveProcessing>();
     context->job = job;
     context->job.status = "EXTRACTING";
+    context->job.progress_percent = 0.0f;
     context->job.extract_attempts++;
 
     MediaTuple tuple = {DEFAULT_VHOST, job.camera_id, job.stream_id, ""};
@@ -303,7 +341,8 @@ void ExtractJobManager::startExtract(const ExtractJob &job) {
     _active_processing[job.file_id] = context;
     GET_CONFIG(string, extract_path, API::kExtractRoot);
     const string internal_key = "job-" + SHA1::encode(job.file_id);
-    context->extractor->makeExtract(internal_key, extract_path, [file_id](const SockException &ex) {
+    context->extractor->makeExtract(internal_key, extract_path,
+                                    [file_id](const SockException &ex) {
         if (ex) {
             WarnL << "Extract job failed to start, file_id=" << file_id << ", error=" << ex.what();
         }
@@ -323,7 +362,8 @@ void ExtractJobManager::onExtractCompleted(const string &file_id,
     ExtractJobImp repository;
     const int64_t now = static_cast<int64_t>(time(nullptr));
     if (!status.success) {
-        const string code = status.err_msg.find("No data") != string::npos ? "RECORDING_NOT_FOUND" : "EXTRACT_FAILED";
+        const string code = status.error_code == ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA
+                                ? "RECORDING_NOT_FOUND" : "EXTRACT_FAILED";
         repository.markFailed(file_id, code, boundedError(status.err_msg), now);
         finishProcessing(file_id, true);
         wakeUp();
@@ -331,10 +371,14 @@ void ExtractJobManager::onExtractCompleted(const string &file_id,
     }
 
     context->job.status = "UPLOADING";
+    context->job.progress_percent = 90.0f;
     context->job.local_path = output_path;
     context->job.size_bytes = static_cast<int64_t>(size_bytes);
     context->job.duration_seconds = static_cast<int64_t>(duration_seconds);
     context->job.content_type = contentTypeForFormat(context->job.format);
+    repository.updateLifecycleState(file_id,
+                                    extractJobStatusToString(ExtractJobStatus::EXTRACTING),
+                                    90.0f, status.selected_stream_id, now);
     if (!repository.markUploading(file_id, output_path, context->job.size_bytes,
                                   context->job.duration_seconds, context->job.content_type, now)) {
         repository.markFailed(file_id, "INTERNAL_ERROR", "Failed to persist extracted file metadata", now);

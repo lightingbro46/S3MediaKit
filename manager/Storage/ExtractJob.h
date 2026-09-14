@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_EXTRACT_JOB_H
 
 #include <climits>
+#include <algorithm>
 #include <ctime>
 #include <string>
 #include <vector>
@@ -15,6 +16,7 @@ namespace managerkit {
 
 enum class ExtractJobStatus {
     PENDING,
+    RESTORING,
     EXTRACTING,
     UPLOADING,
     SUCCESS,
@@ -32,12 +34,41 @@ enum class ExtractCallbackStatus {
 inline const char *extractJobStatusToString(ExtractJobStatus status) {
     switch (status) {
         case ExtractJobStatus::PENDING: return "PENDING";
+        case ExtractJobStatus::RESTORING: return "RESTORING";
         case ExtractJobStatus::EXTRACTING: return "EXTRACTING";
         case ExtractJobStatus::UPLOADING: return "UPLOADING";
         case ExtractJobStatus::SUCCESS: return "SUCCESS";
         case ExtractJobStatus::FAILED: return "FAILED";
     }
     return "FAILED";
+}
+
+inline const char *extractJobPublicStatus(const std::string &status) {
+    if (status == extractJobStatusToString(ExtractJobStatus::PENDING)) return "QUEUED";
+    if (status == extractJobStatusToString(ExtractJobStatus::RESTORING) ||
+        status == extractJobStatusToString(ExtractJobStatus::EXTRACTING) ||
+        status == extractJobStatusToString(ExtractJobStatus::UPLOADING)) return "RUNNING";
+    if (status == extractJobStatusToString(ExtractJobStatus::SUCCESS)) return "SUCCESS";
+    return "FAILED";
+}
+
+inline std::string extractJobStage(const std::string &status) {
+    if (status == extractJobStatusToString(ExtractJobStatus::PENDING)) return "QUEUED";
+    if (status == extractJobStatusToString(ExtractJobStatus::SUCCESS)) return "COMPLETED";
+    if (status == extractJobStatusToString(ExtractJobStatus::FAILED)) return "FAILED";
+    return status;
+}
+
+inline float clampExtractJobProgress(float progress) {
+    return std::max(0.0f, std::min(100.0f, progress));
+}
+
+inline float extractJobRestoreProgress(int restore_progress_percent) {
+    return clampExtractJobProgress(static_cast<float>(restore_progress_percent) * 0.3f);
+}
+
+inline float extractJobFfmpegProgress(float ffmpeg_progress_percent) {
+    return clampExtractJobProgress(30.0f + ffmpeg_progress_percent * 0.6f);
 }
 
 inline const char *extractCallbackStatusToString(ExtractCallbackStatus status) {
@@ -88,8 +119,9 @@ struct ExtractJob {
         value["startTime"] = static_cast<Json::Int64>(start_time);
         value["endTime"] = static_cast<Json::Int64>(end_time);
         value["format"] = format;
-        value["status"] = status;
-        value["progressPercent"] = progress_percent;
+        value["status"] = extractJobPublicStatus(status);
+        value["stage"] = extractJobStage(status);
+        value["progressPercent"] = clampExtractJobProgress(progress_percent);
         value["callbackStatus"] = callback_status;
         value["completedAt"] = static_cast<Json::Int64>(completed_at);
         value["createdAt"] = static_cast<Json::Int64>(created_at);
@@ -211,9 +243,28 @@ public:
                 .update(EntityTraits<ExtractJob>::tableName())
                 .set({{"status", "EXTRACTING"},
                       {"extract_attempts", std::to_string(extract_attempts + 1)},
+                      {"progress_percent", "0"},
                       {"next_attempt_at", "0"},
                       {"updated_at", std::to_string(now)}})
                 .where("file_id = ? AND status = ?", {file_id, "PENDING"}));
+    }
+
+    bool updateLifecycleState(const std::string &file_id, const std::string &status,
+                              float progress_percent, const std::string &stream_id,
+                              int64_t now) {
+        if (status != extractJobStatusToString(ExtractJobStatus::RESTORING) &&
+            status != extractJobStatusToString(ExtractJobStatus::EXTRACTING)) {
+            return false;
+        }
+        const float progress = std::max(0.0f, std::min(90.0f, progress_percent));
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<ExtractJob>::tableName())
+                .set({{"status", status}, {"progress_percent", std::to_string(progress)},
+                      {"stream_id", stream_id},
+                      {"updated_at", std::to_string(now)}})
+                .where("file_id = ? AND status IN (?, ?)",
+                       {file_id, "RESTORING", "EXTRACTING"}));
     }
 
     bool markUploading(const std::string &file_id, const std::string &local_path,
@@ -222,7 +273,7 @@ public:
         return _executor->execDML(
             toolkit::QueryBuilder()
                 .update(EntityTraits<ExtractJob>::tableName())
-                .set({{"status", "UPLOADING"}, {"progress_percent", "100"},
+                .set({{"status", "UPLOADING"}, {"progress_percent", "90"},
                       {"local_path", local_path}, {"size_bytes", std::to_string(size_bytes)},
                       {"duration_seconds", std::to_string(duration_seconds)},
                       {"content_type", content_type}, {"next_attempt_at", "0"},
@@ -254,7 +305,8 @@ public:
         return _executor->execDML(
             toolkit::QueryBuilder()
                 .update(EntityTraits<ExtractJob>::tableName())
-                .set({{"status", "SUCCESS"}, {"callback_status", "PENDING"},
+                .set({{"status", "SUCCESS"}, {"progress_percent", "100"},
+                      {"callback_status", "PENDING"},
                       {"next_callback_at", std::to_string(now)},
                       {"completed_at", std::to_string(now)},
                       {"updated_at", std::to_string(now)}, {"upload_url", ""}})
@@ -369,9 +421,10 @@ public:
         _executor->execDML(
             toolkit::QueryBuilder()
                 .update(EntityTraits<ExtractJob>::tableName())
-                .set({{"status", "PENDING"}, {"next_attempt_at", "0"},
+                .set({{"status", "PENDING"}, {"progress_percent", "0"},
+                      {"next_attempt_at", "0"},
                       {"updated_at", std::to_string(now)}})
-                .where("status = ?", {"EXTRACTING"}));
+                .where("status IN (?, ?)", {"RESTORING", "EXTRACTING"}));
         _executor->execDML(
             toolkit::QueryBuilder()
                 .update(EntityTraits<ExtractJob>::tableName())

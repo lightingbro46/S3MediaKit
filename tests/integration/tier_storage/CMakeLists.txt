@@ -57,6 +57,8 @@ foreach(manager_case
     RunsCycleAndMovesHotSegmentToMinio
     RestoresSegmentFromMinio
     ReusesActiveRestoreForDuplicateRequest
+    RestoresAllCameraStreamsWhenStreamIdIsEmpty
+    RestoreStatusPreservesTimeBlockTotalBytes
     ReusesEquivalentRestoreWindowJobsAndExtendsTtl
     MarksExpiredAndDeletesAfterApproval
     ProtectsRetentionUntilGuardsExpire

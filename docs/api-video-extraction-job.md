@@ -34,12 +34,23 @@ Phản hồi thành công dùng HTTP `202 Accepted`:
   "msg": "success",
   "data": {
     "fileId": "b0ca90e6-d938-4f25-9b78-1eda8b33feb7",
-    "status": "PENDING"
+    "accepted": true,
+    "status": "QUEUED",
+    "stage": "QUEUED",
+    "progressPercent": 0.0
   }
 }
 ```
 
 `fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung trả về job đã có; dùng cùng `fileId` với nội dung khác trả HTTP `409 Conflict`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
+
+Restore là một stage nội bộ của tiến trình trích xuất. API công khai giữ `status=RUNNING`,
+trả `stage=RESTORING` và ánh xạ tiến độ restore vào khoảng 0-30%. FFmpeg dùng khoảng
+30-90%, upload dùng 90-100%. ID của restore job không được đưa vào response. Nếu
+`streamId` rỗng, MediaServer chọn trước stream có dữ liệu khả dụng dài nhất rồi chỉ
+restore và trích xuất stream đó. Việc chọn stream, chọn nguồn đọc, restore, giữ cache
+restore và chạy FFmpeg đều do cùng `FFmpegExtractor` quản lý; manager của service job
+chỉ lưu trạng thái, upload và callback.
 
 ## Liệt kê job
 
@@ -64,6 +75,7 @@ Các bộ lọc đều không bắt buộc. `camera_id` được so khớp chín
         "endTime": 1784253615,
         "format": "mp4",
         "status": "SUCCESS",
+        "stage": "COMPLETED",
         "progressPercent": 100.0,
         "callbackStatus": "DELIVERED",
         "completedAt": 1784253723,
@@ -128,6 +140,10 @@ Thất bại:
 
 Callback có ngữ nghĩa at-least-once: VMS phải xử lý idempotent theo `fileId`. MediaServer chỉ đánh dấu `DELIVERED` khi callback trả 2xx; lỗi có thể retry được sẽ được lưu lại trong database và gửi lại sau khi khởi động lại.
 
+## Đọc dữ liệu từ cold storage
+
+Với `storage.object_read_mode=HYBRID`, persistent extraction có thể đọc trực tiếp object qua URL tạm khi pool online, TTL đủ dài và request không vượt giới hạn segment/byte. Khi tạo playlist cho FFmpeg, path của block COLD được thay bằng presigned URL; URL không được trả qua API hoặc lưu trong database. Nếu resolver xác định nguồn trực tiếp cần restore trước khi chạy FFmpeg, job chuyển sang cơ chế restore rồi thực hiện lại.
+
 ## Trạng thái bền vững
 
-Luồng chính là `PENDING -> EXTRACTING -> UPLOADING -> SUCCESS|FAILED`. Callback có trạng thái riêng `NONE -> PENDING -> SENDING -> DELIVERED|DEAD`. Khi khởi động, `EXTRACTING` được đưa về `PENDING`, `SENDING` được đưa về `PENDING`, còn `UPLOADING` tiếp tục từ file tạm đã lưu.
+Luồng chính là `PENDING -> RESTORING|EXTRACTING -> UPLOADING -> SUCCESS|FAILED`. Callback có trạng thái riêng `NONE -> PENDING -> SENDING -> DELIVERED|DEAD`. Khi khởi động, job bị gián đoạn ở `RESTORING` hoặc `EXTRACTING` được đưa về `PENDING` và tự lập kế hoạch nguồn đọc lại theo cấu hình `storage.object_read_mode`; `SENDING` được đưa về `PENDING`, còn `UPLOADING` tiếp tục từ file tạm đã lưu.

@@ -14,6 +14,26 @@
 
 using namespace managerkit;
 using namespace mediakit;
+
+TEST(ExtractLifecycleTest, MapsStageProgressToOneTaskProgress) {
+    EXPECT_FLOAT_EQ(0.0f, FFmpegExtractor::lifecycleProgress(
+                              FFmpegExtractor::Stage::QUEUED, 75.0f));
+    EXPECT_FLOAT_EQ(15.0f, FFmpegExtractor::lifecycleProgress(
+                               FFmpegExtractor::Stage::RESTORING, 50.0f));
+    EXPECT_FLOAT_EQ(65.0f, FFmpegExtractor::lifecycleProgress(
+                               FFmpegExtractor::Stage::EXTRACTING, 50.0f));
+    EXPECT_FLOAT_EQ(100.0f, FFmpegExtractor::lifecycleProgress(
+                                FFmpegExtractor::Stage::COMPLETED, 0.0f));
+}
+
+TEST(ExtractLifecycleTest, ExposesStableStageNames) {
+    EXPECT_STREQ("QUEUED", FFmpegExtractor::stageToString(FFmpegExtractor::Stage::QUEUED));
+    EXPECT_STREQ("RESTORING", FFmpegExtractor::stageToString(FFmpegExtractor::Stage::RESTORING));
+    EXPECT_STREQ("EXTRACTING", FFmpegExtractor::stageToString(FFmpegExtractor::Stage::EXTRACTING));
+    EXPECT_STREQ("COMPLETED", FFmpegExtractor::stageToString(FFmpegExtractor::Stage::COMPLETED));
+    EXPECT_STREQ("FAILED", FFmpegExtractor::stageToString(FFmpegExtractor::Stage::FAILED));
+}
+
 using namespace toolkit;
 
 namespace {
@@ -111,6 +131,13 @@ TEST_F(ExtractPreviewTest, ReportsNoDataForEmptyRange) {
     EXPECT_EQ(0U, preview.availableDuration);
     EXPECT_TRUE(preview.streamId.empty());
     EXPECT_TRUE(preview.streamName.empty());
+}
+
+TEST_F(ExtractPreviewTest, DefaultExtractCommandAllowsSecureHttpManifestSources) {
+    const std::string command = mINI::Instance()[FFmpeg::kExtract];
+
+    EXPECT_NE(std::string::npos, command.find("-protocol_whitelist"));
+    EXPECT_NE(std::string::npos, command.find("https"));
 }
 
 } // namespace

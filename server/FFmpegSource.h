@@ -10,6 +10,7 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "User/UserAuthorManager.h"
+#include "Local/TimeQuery.h"
 
 namespace mediakit {
 struct PrivacyMaskRegion;
@@ -19,6 +20,8 @@ namespace FFmpeg {
     extern const std::string kSnap;
     extern const std::string kBin;
     extern const std::string kExtract;
+    extern const std::string kRecordedThumbnailTimeoutSec;
+    extern const std::string kExtractRestoreTimeoutSec;
 }
 
 class FFmpegSnap {
@@ -158,6 +161,14 @@ public:
     using Ptr = std::shared_ptr<FFmpegExtractor>;
     using onExtract = std::function<void(const toolkit::SockException &ex)>;
 
+    enum class Stage {
+        QUEUED,
+        RESTORING,
+        EXTRACTING,
+        COMPLETED,
+        FAILED
+    };
+
     struct PreviewInfo {
         bool hasData = false;
         uint64_t availableDuration = 0;
@@ -167,9 +178,14 @@ public:
 
     struct Status {
         float progress = 0.0f;
+        float stage_progress = 0.0f;
         bool finished = false;
         bool success = false;
+        int error_code = 0;
         std::string err_msg;
+        std::string status = "QUEUED";
+        std::string stage = "QUEUED";
+        std::string selected_stream_id;
     };
     using OnClose = std::function<void()>;
     using OnComplete = std::function<void(const Status &status,
@@ -213,33 +229,51 @@ public:
     bool success() const { return status().success; }
     std::string errMsg() const { return status().err_msg; }
 
+    static const char *stageToString(Stage stage);
+    static float lifecycleProgress(Stage stage, float stage_progress);
+
 private:
     // create txt file include mp4 list
     void create_src_path(std::string &src_path);
     // create Timer to check ffmpeg status
     void startTimer();
+    void prepareExtractSource();
+    void startRestore();
+    bool pollRestore();
+    void startFfmpeg();
+    void updateLifecycleStatus(Stage stage, float stage_progress);
+    void notifyStartOnce(const toolkit::SockException &ex);
+    bool retainRestoreCache();
+    void releaseRestoreCache();
     // create delay task to close process
     void closeAfterDelaySec();
     // Close
     bool close();
     // Emit event to notify the result of the extract task
     void emitAuditEvent(bool success, const std::string &err_msg = "");
-    void completeOnce(bool success, const std::string &err_msg = "");
+    void completeOnce(bool success, const std::string &err_msg = "", int error_code = 0);
 
 private:
     mediakit::MediaTuple _tuple;
     ExtractOptions _options;
     Process _process;
     toolkit::Ticker _ticker;
+    toolkit::Ticker _restore_ticker;
     toolkit::Timer::Ptr _timer;
     toolkit::EventPoller::Ptr _poller;
     std::string _src_path;
     std::string _save_path;
     std::vector<std::string> _overlay_temp_paths;
+    std::vector<TimeBlock> _time_blocks;
     std::string _log_file;
     std::string _cmd;
     OnClose _onClose;
     OnComplete _onComplete;
+    onExtract _onStart;
+    std::string _extract_key;
+    std::string _extract_root;
+    std::string _restore_job_id;
+    std::string _retained_restore_job_id;
     uint64_t _created_at;
     int _timeout_ms;
     uint32_t _duration = 0;
@@ -247,7 +281,14 @@ private:
     bool _finished = false;
     bool _success = false;
     bool _complete_emitted = false;
+    bool _started = false;
+    bool _start_emitted = false;
+    bool _restore_cache_retained = false;
+    bool _restore_started = false;
     bool _auto_cleanup = true;
+    Stage _stage = Stage::QUEUED;
+    float _stage_progress = 0.0f;
+    int _error_code = 0;
     std::string _err_msg;
     mutable std::mutex _status_mtx;
     managerkit::UserSessionCache::Ptr _session;
