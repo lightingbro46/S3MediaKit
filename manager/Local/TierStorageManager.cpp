@@ -889,6 +889,9 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
     MediaTuple tuple;
     tuple.app = task.camera_id;
     std::vector<TimeBlock> blocks;
+    if (!File::fileExist(task.timeline_path)) {
+        return true;
+    }
     try {
         TimeQuery query(tuple, task.timeline_path, false);
         query.getRecordedTimePeriod(
