@@ -122,7 +122,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnSyncBookmarkCreate] = "/media/esc/bookmark/create";
     mINI::Instance()[kOnSyncBookmarkUpdate] = "/media/esc/bookmark/update";
     mINI::Instance()[kOnSyncBookmarkDelete] = "/media/esc/bookmark/delete";
-    mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordedThumbnail";
+    mINI::Instance()[kOnSyncBookmarkThumbnail] = "/media/esc/bookmark/recordThumbnail";
     mINI::Instance()[kOnMediaServerHealthCheck] = "/media/mserver/healthcheck";
     mINI::Instance()[kOnClusterAcrossAuth] = "/media/api/cluster/access";
     mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
