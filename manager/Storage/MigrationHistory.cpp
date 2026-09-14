@@ -11,16 +11,6 @@ using namespace mediakit;
 
 namespace managerkit {
 
-MigrationHistoryImp::~MigrationHistoryImp() {
-    GET_CONFIG(bool, keep_migration_sql_files, Database::kKeepMigrationSqlFiles);
-    if (!keep_migration_sql_files) {
-        WarnL << "Deleting migration sql files in folder: " << _folder_path;
-        removeFile(_folder_path);
-    } else {
-        DebugL << "Keep migration sql files in folder: " << _folder_path;
-    }
-}
-
 void MigrationHistoryImp::migrate(const string &files_string) {
     std::lock_guard<std::mutex> lock(_mtx);
 
@@ -85,6 +75,17 @@ void MigrationHistoryImp::removeFile(const std::string &folder_path) {
         TraceL << "Delete file success: " << path;
         return true;
     });
+}
+
+void MigrationHistoryImp::cleanMigrationFiles() {
+    std::lock_guard<std::mutex> lock(_mtx);
+    GET_CONFIG(bool, keep_migration_sql_files, Database::kKeepMigrationSqlFiles);
+    if (!keep_migration_sql_files) {
+        WarnL << "Deleting migration sql files in folder: " << _folder_path;
+        removeFile(_folder_path);
+    } else {
+        DebugL << "Keep migration sql files in folder: " << _folder_path;
+    }
 }
 
 } // namespace managerkit

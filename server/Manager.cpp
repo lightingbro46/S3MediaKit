@@ -477,11 +477,13 @@ void migrateDatabase() {
     auto localDbMigrate = make_shared<MigrationHistoryImp>(Database::kMediaServerDb);
     GET_CONFIG(string, mserverUpdateSavePath, Database::kMServerMigrationSavePath)
     localDbMigrate->migrate(mserverUpdateSavePath);
+    localDbMigrate->cleanMigrationFiles();
 
     TraceL << "Prepare migrating edge storage database";
     auto escDbMigrate = make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb);
     GET_CONFIG(string, escUpdateSavePath, Database::kESCMigrationSavePath)
     escDbMigrate->migrate(escUpdateSavePath);
+    escDbMigrate->cleanMigrationFiles();
 
     TraceL << "Init misc data";
     auto miscDataImp = make_shared<MiscDataImp>();

@@ -45,9 +45,11 @@ public:
 
     MigrationHistoryImp(const std::string &tag) : MigrationHistoryRepository(tag) { }
 
-    ~MigrationHistoryImp();
+    ~MigrationHistoryImp() = default;
 
     void migrate(const std::string &files_string);
+
+    void cleanMigrationFiles();
 
 private:
     void removeFile(const std::string &folder_path);
