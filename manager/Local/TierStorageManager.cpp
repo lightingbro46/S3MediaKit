@@ -899,7 +899,7 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         return true;
     }
     try {
-        TimeQuery query(tuple, task.timeline_path, false);
+        TimeQuery query(tuple, task.timeline_path);
         query.getRecordedTimePeriod(
             static_cast<uint64_t>(chunk.start_time),
             static_cast<uint64_t>(chunk.end_time),
@@ -1122,7 +1122,7 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRang
         mediakit::MediaTuple tuple;
         tuple.app = range.camera_id;
         tuple.stream = range.stream_id;
-        TimeQuery query(tuple, "", false);
+        TimeQuery query(tuple);
         uint64_t start = static_cast<uint64_t>(range.start_time);
         uint64_t end = static_cast<uint64_t>(range.end_time);
         query.getRecordedTimePeriod(start, end, [&](std::vector<TimeBlock> &blocks) {
@@ -3207,7 +3207,7 @@ bool TierStorageManager::cleanupRangeMotionMetadata(const SegmentTierRange &rang
 
     MediaTuple tuple;
     tuple.app = range.camera_id;
-    TimeQuery query(tuple, "", false);
+    TimeQuery query(tuple);
     std::vector<uint64_t> empty_days;
     for (auto day_start : range_days) {
         auto day_end = nextLocalDayStart(day_start);
@@ -5385,7 +5385,7 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                             MediaTuple tuple;
                             tuple.app = camera_id;
                             tuple.stream = stream_id;
-                            query = std::make_shared<TimeQuery>(tuple, "", false);
+                            query = std::make_shared<TimeQuery>(tuple);
                             time_query_cache.emplace(query_key, query);
                         } else {
                             query = query_it->second;

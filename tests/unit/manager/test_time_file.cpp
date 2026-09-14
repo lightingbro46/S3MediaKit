@@ -7,6 +7,7 @@
 #include "Local/TimeFile.h"
 #include "Local/TimeMaker.h"
 #include "Local/TimeDemuxer.h"
+#include "Local/TimeQuery.h"
 
 using namespace managerkit;
 
@@ -260,4 +261,40 @@ TEST(MultiTimeDemuxerTest, SwitchesAcrossTimelineFiles) {
 
     std::remove(first.c_str());
     std::remove(second.c_str());
+}
+
+TEST(TimeQueryTest, ReadsTimelineWithoutStatisticState) {
+    const std::string path = "/tmp/s3mediakit-unit-time-query.s3db";
+    writeTimeline(path,
+                  {makeBlock("secondary", 140, 20),
+                   makeBlock("main", 100, 20),
+                   makeBlock("main", 220, 20)},
+                  true);
+
+    mediakit::MediaTuple all_streams;
+    all_streams.app = "camera";
+    TimeQuery all_query(all_streams, path);
+    std::vector<TimeBlock> all_blocks;
+    all_query.getRecordedTimePeriod(90, 180, [&](std::vector<TimeBlock> &blocks) {
+        all_blocks = blocks;
+    });
+    ASSERT_EQ(2u, all_blocks.size());
+    EXPECT_EQ(100u, all_blocks[0].start_time());
+    EXPECT_EQ("main", all_blocks[0].stream());
+    EXPECT_EQ(140u, all_blocks[1].start_time());
+    EXPECT_EQ("secondary", all_blocks[1].stream());
+
+    mediakit::MediaTuple main_stream;
+    main_stream.app = "camera";
+    main_stream.stream = "main";
+    TimeQuery main_query(main_stream, path);
+    std::vector<TimeBlock> main_blocks;
+    main_query.getRecordedTimePeriod(90, 180, [&](std::vector<TimeBlock> &blocks) {
+        main_blocks = blocks;
+    });
+    ASSERT_EQ(1u, main_blocks.size());
+    EXPECT_EQ("main", main_blocks[0].stream());
+
+    std::remove(path.c_str());
+    std::remove(TimeMakerImp::indexFile(path).c_str());
 }

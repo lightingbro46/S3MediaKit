@@ -2727,8 +2727,7 @@ int scenarioCompletedMp4Cleanup(const std::string &root) {
         tuple.stream = "main";
         std::vector<TimeBlock> seeded_blocks;
         TimeQuery query(tuple,
-                        root + "/hot/record/camera-completed/" + date + ".s3db",
-                        false);
+                        root + "/hot/record/camera-completed/" + date + ".s3db");
         query.getRecordedTimePeriod(
             static_cast<uint64_t>(referenced_start - 60),
             static_cast<uint64_t>(referenced_start + 60),

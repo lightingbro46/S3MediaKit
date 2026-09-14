@@ -1,4 +1,5 @@
 #include "SearchEngine.h"
+#include "MotionRangeUtils.h"
 
 #include "Common/config.h"
 #include "Util/logger.h"
@@ -741,10 +742,34 @@ static void findTimePeriodLocal(
 
     TimeQuery::Ptr query;
     try {
+        // TimeFile is the source of truth for timeline and motion filtering.
+        // CameraStatistic may be stale and must not clamp this query.
         query = std::make_shared<TimeQuery>(tuple);
     } catch (const std::exception &ex) {
         WarnL << "TimeQuery init failed: " << ex.what();
     }
+
+#if defined(ENABLE_MOTION)
+    vector<MotionTimeRange> filtered_motion;
+    if (include_motion && query) {
+        try {
+            vector<MotionTimeRange> recorded_ranges;
+            query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
+                recorded_ranges.reserve(ret.size());
+                for (const auto &range : ret) {
+                    recorded_ranges.push_back({range.startTime, range.duration});
+                }
+            });
+
+            MotionSearch ms(tuple);
+            ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
+                filtered_motion = MotionRangeUtils::filterByRecordedRanges(ret, recorded_ranges);
+            });
+        } catch (const std::exception &ex) {
+            WarnL << "Motion query failed: " << ex.what();
+        }
+    }
+#endif
 
     if (period_type == 1) {
         if (detail == 0) {
@@ -769,18 +794,11 @@ static void findTimePeriodLocal(
             if (include_motion) {
 #if defined(ENABLE_MOTION)
                 result["motionPeriods"] = arrayValue;
-                try {
-                    MotionSearch ms(tuple);
-                    ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
-                        for (auto const &p : ret) {
-                            Value period;
-                            period["startTime"] = (Json::UInt64)p.startTime;
-                            period["duration"] = p.duration;
-                            result["motionPeriods"].append(period);
-                        }
-                    });
-                } catch (const std::exception &ex) {
-                    WarnL << "Motion query failed: " << ex.what();
+                for (const auto &p : filtered_motion) {
+                    Value period;
+                    period["startTime"] = (Json::UInt64)p.startTime;
+                    period["duration"] = p.duration;
+                    result["motionPeriods"].append(period);
                 }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
@@ -818,18 +836,11 @@ static void findTimePeriodLocal(
             if (include_motion) {
 #if defined(ENABLE_MOTION)
                 result["motionPeriods"] = arrayValue;
-                try {
-                    MotionSearch ms(tuple);
-                    ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
-                        for (auto const &p : ret) {
-                            Value period;
-                            period["startTime"] = (Json::UInt64)p.startTime;
-                            period["duration"] = p.duration;
-                            result["motionPeriods"].append(period);
-                        }
-                    });
-                } catch (const std::exception &ex) {
-                    WarnL << "Motion query failed: " << ex.what();
+                for (const auto &p : filtered_motion) {
+                    Value period;
+                    period["startTime"] = (Json::UInt64)p.startTime;
+                    period["duration"] = p.duration;
+                    result["motionPeriods"].append(period);
                 }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
@@ -882,22 +893,23 @@ static void findTimePeriodLocal(
             if (include_motion) {
 #if defined(ENABLE_MOTION)
                 result["motionPeriods"] = objectValue;
-                try {
-                    MotionSearch ms(tuple);
-                    ms.getMotionTimePeriod(start_time, end_time,
-                        [&](unordered_map<string, set<int>> &ret) {
-                            for (auto const &it : ret) {
-                                const string &date_str = it.first;
-                                const auto &hour_set = it.second;
-                                result["motionPeriods"][date_str] = arrayValue;
-                                for (int i = 0; i < 24; i++) {
-                                    result["motionPeriods"][date_str].append(
-                                        hour_set.count(i) ? 1 : 0);
-                                }
-                            }
-                        });
-                } catch (const std::exception &ex) {
-                    WarnL << "Motion query failed: " << ex.what();
+                uint64_t date = StampUtils::getStartOfDay(start_time);
+                while (date < end_time) {
+                    const string date_str = getTimeStr("%Y-%m-%d", static_cast<time_t>(date));
+                    result["motionPeriods"][date_str] = arrayValue;
+                    for (int i = 0; i < 24; ++i) result["motionPeriods"][date_str].append(0);
+                    date += 86400;
+                }
+                for (const auto &p : filtered_motion) {
+                    uint64_t current = p.startTime;
+                    const uint64_t motion_end = p.startTime + p.duration;
+                    while (current < motion_end) {
+                        const string date_str = getTimeStr("%Y-%m-%d", static_cast<time_t>(current));
+                        const int hour = atoi(getTimeStr("%H", static_cast<time_t>(current)).c_str());
+                        result["motionPeriods"][date_str][hour] = 1;
+                        const uint64_t next_hour = StampUtils::getStartOfHour(current) + 3600;
+                        current = min(motion_end, next_hour);
+                    }
                 }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
@@ -947,32 +959,26 @@ static void findTimePeriodLocal(
             if (include_motion) {
 #if defined(ENABLE_MOTION)
                 result["motionPeriods"] = objectValue;
-                try {
-                    MotionSearch ms(tuple);
-                    ms.getMotionTimePeriod(start_time, end_time,
-                        [&](unordered_map<string, unordered_map<int, vector<MotionTimeRange>>> &ret) {
-                            for (auto const &it_date : ret) {
-                                const string &date_str = it_date.first;
-                                const auto &hour_map = it_date.second;
-                                Value date;
-                                for (int i = 0; i < 24; i++) {
-                                    Value hour = arrayValue;
-                                    auto it_hour = hour_map.find(i);
-                                    if (it_hour != hour_map.end()) {
-                                        for (auto const &p : it_hour->second) {
-                                            Value period;
-                                            period["startTime"] = (Json::UInt64)p.startTime;
-                                            period["duration"] = p.duration;
-                                            hour.append(period);
-                                        }
-                                    }
-                                    date.append(hour);
-                                }
-                                result["motionPeriods"][date_str] = date;
-                            }
-                        });
-                } catch (const std::exception &ex) {
-                    WarnL << "Motion query failed: " << ex.what();
+                uint64_t date_start = StampUtils::getStartOfDay(start_time);
+                while (date_start < end_time) {
+                    const string date_str = getTimeStr("%Y-%m-%d", static_cast<time_t>(date_start));
+                    result["motionPeriods"][date_str] = arrayValue;
+                    for (int i = 0; i < 24; ++i) result["motionPeriods"][date_str].append(arrayValue);
+                    date_start += 86400;
+                }
+                for (const auto &p : filtered_motion) {
+                    uint64_t current = p.startTime;
+                    const uint64_t motion_end = p.startTime + p.duration;
+                    while (current < motion_end) {
+                        const string date_str = getTimeStr("%Y-%m-%d", static_cast<time_t>(current));
+                        const int hour = atoi(getTimeStr("%H", static_cast<time_t>(current)).c_str());
+                        const uint64_t chunk_end = min(motion_end, StampUtils::getStartOfHour(current) + 3600);
+                        Value period;
+                        period["startTime"] = (Json::UInt64)current;
+                        period["duration"] = static_cast<Json::UInt>(chunk_end - current);
+                        result["motionPeriods"][date_str][hour].append(period);
+                        current = chunk_end;
+                    }
                 }
 #else
                 WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";
@@ -1041,18 +1047,11 @@ static void findTimePeriodLocal(
         if (include_motion) {
 #if defined(ENABLE_MOTION)
             result["motionPeriods"] = arrayValue;
-            try {
-                MotionSearch ms(tuple);
-                ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
-                    for (auto const &p : ret) {
-                        Value period;
-                        period["startTime"] = (Json::UInt64)p.startTime;
-                        period["duration"] = p.duration;
-                        result["motionPeriods"].append(period);
-                    }
-                });
-            } catch (const std::exception &ex) {
-                WarnL << "Motion query failed: " << ex.what();
+            for (const auto &p : filtered_motion) {
+                Value period;
+                period["startTime"] = (Json::UInt64)p.startTime;
+                period["duration"] = p.duration;
+                result["motionPeriods"].append(period);
             }
 #else
             WarnL << "Motion is not enabled. Rebuild with ENABLE_MOTION to use this feature.";

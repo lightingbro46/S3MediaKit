@@ -31,7 +31,8 @@ public:
      *                       1 = per-stream TimeRange list
      *                       2 = calendar (date → hours bitmap)
      * @param detail         0 = summary  1 = per-stream detail (type 1 & 2 only)
-     * @param include_motion When true, adds "motionPeriods" key to the result.
+     * @param include_motion When true, adds "motionPeriods" limited to ranges
+     *                       where the TimeFile reports recorded media.
      * @param include_status When true, adds "statusGaps" key to the result.
      * @param jwt_token      JWT bearer token forwarded to remote peers for auth.
      * @param edge           When true, query only the local node (no remote calls).
