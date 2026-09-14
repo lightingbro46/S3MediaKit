@@ -71,7 +71,7 @@ bool MotionDemuxer::open(const std::string &blk_path, const std::string &idx_pat
         }
     }
 
-    DebugL << "MotionDemuxer: opened " << blk_path << " (" << entryCount() << " entries"
+    TraceL << "MotionDemuxer: opened " << blk_path << " (" << entryCount() << " entries"
            << (_has_meta ? ", has meta: " + _meta.device_id + "/" + _meta.stream_id : "") << ")";
     return true;
 }
