@@ -713,6 +713,13 @@ extern const std::string kAutoRestoreMaxConcurrent;
 extern const std::string kRestoreSavePath;
 // TTL (Time To Live) for restore on cold tier, when the restored file is older than this value, it will be deleted according to the file deletion strategy. The value range is 0~86400 (1 day), and the default value is 3600 (1 hour).
 extern const std::string kRestoreTTLSeconds;
+// Object read mode for cold data: RESTORE, PRESIGNED or HYBRID.
+extern const std::string kObjectReadMode;
+// Lifetime of generated object-storage read URLs.
+extern const std::string kPresignedUrlTTLSeconds;
+// HYBRID direct-extraction limits; zero disables direct extraction.
+extern const std::string kPresignedExtractMaxSegments;
+extern const std::string kPresignedExtractMaxBytes;
 // Default hot tier high watermark percentage, when the hot tier usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the hot tier usage is below this percentage. 
 // The value range is 0~100, and the default value is 80.
 extern const std::string kDefaultHotHighWatermarkPercent;

@@ -932,6 +932,10 @@ storage.auto_restore_max_concurrent=5
 storage.restore_save_path=/dev/shm/restore       # Linux
 # storage.restore_save_path=./www/restore        # Nền tảng khác
 storage.restore_ttl_seconds=3600
+storage.object_read_mode=RESTORE
+storage.presigned_url_ttl_seconds=3600
+storage.presigned_extract_max_segments=0
+storage.presigned_extract_max_bytes=0
 storage.default_hot_high_watermark_percent=85
 storage.default_hot_critical_watermark_percent=95
 storage.tiering_max_ranges_per_camera_cycle=64
@@ -962,6 +966,10 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `auto_restore_max_concurrent` | `processRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
+| `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ |
+| `presigned_url_ttl_seconds` | Object read resolver | TTL URL tạm, tối đa 7 ngày và phải đủ dài cho extraction |
+| `presigned_extract_max_segments` | HYBRID extraction | Số object tối đa cho direct read; `0` tắt direct extraction |
+| `presigned_extract_max_bytes` | HYBRID extraction | Tổng byte tối đa cho direct read; `0` tắt direct extraction |
 | `default_hot_*_watermark_percent` | `ensureDefaultHotPool()` | Watermark cho `pool-default-hot` |
 | `tiering_max_ranges_per_camera_cycle` | Tiering/retention | Giới hạn số range eligible xử lý cho mỗi camera/tier/cycle |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |

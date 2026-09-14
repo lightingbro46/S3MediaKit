@@ -550,6 +550,10 @@ const string kAutoRestoreOnRecordAccess = STORAGE_FIELD "auto_restore_on_record_
 const string kAutoRestoreMaxConcurrent = STORAGE_FIELD "auto_restore_max_concurrent";
 const string kRestoreSavePath = STORAGE_FIELD "restore_save_path";
 const string kRestoreTTLSeconds = STORAGE_FIELD "restore_ttl_seconds";
+const string kObjectReadMode = STORAGE_FIELD "object_read_mode";
+const string kPresignedUrlTTLSeconds = STORAGE_FIELD "presigned_url_ttl_seconds";
+const string kPresignedExtractMaxSegments = STORAGE_FIELD "presigned_extract_max_segments";
+const string kPresignedExtractMaxBytes = STORAGE_FIELD "presigned_extract_max_bytes";
 const string kDefaultHotHighWatermarkPercent = STORAGE_FIELD "default_hot_high_watermark_percent";
 const string kDefaultHotCriticalWatermarkPercent = STORAGE_FIELD "default_hot_critical_watermark_percent";
 const string kTieringMaxRangesPerCameraCycle = STORAGE_FIELD "tiering_max_ranges_per_camera_cycle";
@@ -586,6 +590,10 @@ static onceToken token([]() {
     mINI::Instance()[kRestoreSavePath] = "./www/restore";
 #endif
     mINI::Instance()[kRestoreTTLSeconds] = 3600; // 1 hour
+    mINI::Instance()[kObjectReadMode] = "RESTORE";
+    mINI::Instance()[kPresignedUrlTTLSeconds] = 3600;
+    mINI::Instance()[kPresignedExtractMaxSegments] = 0;
+    mINI::Instance()[kPresignedExtractMaxBytes] = 0;
     mINI::Instance()[kDefaultHotHighWatermarkPercent] = 85;
     mINI::Instance()[kDefaultHotCriticalWatermarkPercent] = 95;
     mINI::Instance()[kTieringMaxRangesPerCameraCycle] = 64;

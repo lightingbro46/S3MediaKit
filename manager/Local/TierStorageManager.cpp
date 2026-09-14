@@ -227,39 +227,6 @@ static bool pathStartsWithRoot(const std::string &path, const std::string &root)
     return path.size() == root.size() || path[root.size()] == '/';
 }
 
-static bool parseRecordFilePath(const std::string &file_path,
-                                std::string &camera_id,
-                                std::string &stream_id,
-                                std::string &segment_path,
-                                int64_t &segment_start) {
-    GET_CONFIG(std::string, mp4_save_path, Protocol::kMP4SavePath);
-    GET_CONFIG(std::string, app_name, Record::kAppName);
-    std::string rec_root = File::absolutePath(app_name, mp4_save_path);
-    if (!start_with(file_path, rec_root))
-        return false;
-
-    std::string rel = file_path.substr(rec_root.size());
-    if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
-    auto first = rel.find('/');
-    if (first == std::string::npos)
-        return false;
-    auto second = rel.find('/', first + 1);
-    if (second == std::string::npos)
-        return false;
-
-    camera_id = rel.substr(0, first);
-    stream_id = rel.substr(first + 1, second - first - 1);
-    segment_path = rel.substr(second + 1);
-    if (!end_with(segment_path, ".mp4"))
-        return false;
-    segment_path.resize(segment_path.size() - 4);
-
-    segment_start = static_cast<int64_t>(StrTimeUtils::getTsFromDateTimeStr(segment_path));
-    if (segment_start <= 0)
-        segment_start = static_cast<int64_t>(StrTimeUtils::getTsFromDateTimeStr2(segment_path));
-    return segment_start > 0;
-}
-
 static bool deriveSegmentPathFromFullPath(const std::string &full_path,
                                           const std::string &camera_id,
                                           const std::string &stream_id,
@@ -1209,30 +1176,6 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRang
     return ret;
 }
 
-std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForWindow(const std::string &camera_id,
-                                                                                  int64_t start_time,
-                                                                                  int64_t end_time,
-                                                                                  const std::string &tier,
-                                                                                  const std::string &pool_id) {
-    SegmentTierRangeImp range_imp;
-    std::vector<TierRangeSegmentFile> ret;
-    for (const auto &range : range_imp.queryByCamera(camera_id, start_time, end_time)) {
-        if (!tier.empty() && range.tier != tier)
-            continue;
-        if (!pool_id.empty() && range.pool_id != pool_id)
-            continue;
-        if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE))
-            continue;
-        auto files = collectSegmentFilesForRange(range);
-        ret.insert(ret.end(), files.begin(), files.end());
-    }
-    std::sort(ret.begin(), ret.end(), [](const TierRangeSegmentFile &a, const TierRangeSegmentFile &b) {
-        if (a.stream_id != b.stream_id) return a.stream_id < b.stream_id;
-        return a.start_time < b.start_time;
-    });
-    return ret;
-}
-
 std::string TierStorageManager::getRestoreSegmentPath(const std::string &job_id,
                                                       const std::string &camera_id,
                                                       const std::string &stream_id,
@@ -1359,6 +1302,31 @@ bool TierStorageManager::getRestoreJobSnapshot(const std::string &job_id,
     return true;
 }
 
+bool TierStorageManager::tryRetainRestoreCache(const std::string &job_id) {
+    if (job_id.empty())
+        return false;
+    std::lock_guard<std::mutex> lk(_restore_request_mtx);
+    RestoreJobSnapshot snapshot;
+    if (!getRestoreJobSnapshot(job_id, snapshot) || !snapshot.playback_ready)
+        return false;
+    ++_restore_cache_leases[job_id];
+    return true;
+}
+
+void TierStorageManager::releaseRestoreCache(const std::string &job_id) {
+    if (job_id.empty())
+        return;
+    std::lock_guard<std::mutex> lk(_restore_request_mtx);
+    auto it = _restore_cache_leases.find(job_id);
+    if (it == _restore_cache_leases.end())
+        return;
+    if (it->second <= 1) {
+        _restore_cache_leases.erase(it);
+    } else {
+        --it->second;
+    }
+}
+
 PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const std::string &camera_id,
                                                                          const std::string &stream_id,
                                                                          int64_t segment_start_time,
@@ -1455,6 +1423,8 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
             ret.read_path = restore_path;
             ret.ready = true;
             ret.restore_required = false;
+            ret.restore_job_id = job.job_id;
+            ret.restore_status = job.status;
             ret.message = "Resolved to restore job cache " + job.job_id;
             return ret;
         }
@@ -1515,6 +1485,261 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
     ret.restore_required = false;
     ret.message = "Resolved to file storage pool";
     return ret;
+}
+
+PlaybackPathResolveResult TierStorageManager::accessRecordedSegment(
+        const std::string &camera_id,
+        const std::string &stream_id,
+        int64_t segment_start_time,
+        const std::string &timefile_path,
+        int64_t segment_size,
+        bool enqueue_restore,
+        const std::string &reason,
+        bool retain_restore_cache) {
+    PlaybackPathResolveResult result;
+    if (retain_restore_cache) {
+        std::lock_guard<std::mutex> lk(_restore_request_mtx);
+        result = resolvePlaybackSegmentPath(camera_id, stream_id, segment_start_time,
+                                            timefile_path);
+        if (result.ready && !result.restore_job_id.empty()) {
+            ++_restore_cache_leases[result.restore_job_id];
+        }
+    } else {
+        result = resolvePlaybackSegmentPath(camera_id, stream_id, segment_start_time,
+                                            timefile_path);
+    }
+    if (!result.restore_required || !enqueue_restore)
+        return result;
+
+    auto restore = requestRestoreSegment(camera_id, stream_id, segment_start_time,
+                                         timefile_path, reason, segment_size);
+    result.restore_job_id = restore.job_id;
+    result.restore_status = restore.status;
+    if (restore.handled && !restore.message.empty())
+        result.message = restore.message;
+    return result;
+}
+
+namespace {
+
+static std::string normalizedObjectReadMode(std::string mode) {
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    if (mode != "PRESIGNED" && mode != "HYBRID")
+        return "RESTORE";
+    return mode;
+}
+
+} // namespace
+
+ObjectReadSource TierStorageManager::resolveObjectReadSource(const ObjectReadRequest &request) {
+    ObjectReadSource source;
+
+    const PlaybackPathResolveResult resolved = request.retain_restore_cache
+        ? accessRecordedSegment(request.camera_id, request.stream_id,
+                                request.segment_start_time, request.timefile_path,
+                                request.segment_size, false, "OBJECT_READ", true)
+        : resolvePlaybackSegmentPath(request.camera_id, request.stream_id,
+                                     request.segment_start_time, request.timefile_path);
+    source.restore_job_id = resolved.restore_job_id;
+    source.message = resolved.message;
+    source.storage_unavailable = resolved.storage_unavailable;
+    if (resolved.ready) {
+        source.kind = ObjectReadSourceKind::LOCAL_PATH;
+        source.local_path = resolved.read_path;
+        return source;
+    }
+    if (resolved.storage_unavailable) {
+        source.kind = ObjectReadSourceKind::UNAVAILABLE;
+        return source;
+    }
+    if (!resolved.restore_required) {
+        source.kind = ObjectReadSourceKind::UNAVAILABLE;
+        return source;
+    }
+
+    const auto restore_source = [&]() -> ObjectReadSource {
+        source.kind = ObjectReadSourceKind::RESTORE_REQUIRED;
+        if (!request.enqueue_restore)
+            return source;
+
+        const std::string reason = request.restore_reason.empty()
+            ? "OBJECT_READ" : request.restore_reason;
+        const PlaybackPathResolveResult access = accessRecordedSegment(
+            request.camera_id, request.stream_id, request.segment_start_time,
+            request.timefile_path, request.segment_size, true, reason,
+            request.retain_restore_cache);
+        source.restore_job_id = access.restore_job_id;
+        source.message = access.message;
+        source.storage_unavailable = access.storage_unavailable;
+        if (access.ready) {
+            source.kind = ObjectReadSourceKind::LOCAL_PATH;
+            source.local_path = access.read_path;
+            return source;
+        }
+        if (access.storage_unavailable) {
+            source.kind = ObjectReadSourceKind::UNAVAILABLE;
+            return source;
+        }
+        if (access.restore_job_id.empty()) {
+            source.kind = ObjectReadSourceKind::UNAVAILABLE;
+            source.restore_unavailable = true;
+            source.message = access.message.empty()
+                ? "Restore job could not be created" : access.message;
+            return source;
+        }
+
+        RestoreJobSnapshot snapshot;
+        if (!getRestoreJobSnapshot(access.restore_job_id, snapshot)) {
+            source.kind = ObjectReadSourceKind::UNAVAILABLE;
+            source.restore_unavailable = true;
+            source.message = "Restore job could not be loaded";
+            return source;
+        }
+        if (snapshot.playback_ready) {
+            const PlaybackPathResolveResult ready = accessRecordedSegment(
+                request.camera_id, request.stream_id, request.segment_start_time,
+                request.timefile_path, request.segment_size, false, reason,
+                request.retain_restore_cache);
+            if (ready.ready) {
+                source.kind = ObjectReadSourceKind::LOCAL_PATH;
+                source.local_path = ready.read_path;
+                source.restore_job_id = ready.restore_job_id;
+                source.message = ready.message;
+                return source;
+            }
+        }
+        if (snapshot.playback_status == "FAILED" ||
+            snapshot.playback_status == "CANCELLED") {
+            source.kind = ObjectReadSourceKind::UNAVAILABLE;
+            source.restore_unavailable = true;
+            source.message = "Cold-storage restore is " + snapshot.playback_status;
+            return source;
+        }
+        source.progress_percent = static_cast<float>(
+            std::max(0, std::min(100, snapshot.segment_progress_percent))) * 0.3f;
+        return source;
+    };
+
+    GET_CONFIG(std::string, configured_mode, Storage::kObjectReadMode);
+    const std::string mode = normalizedObjectReadMode(configured_mode);
+    const ObjectReadStrategy strategy = mode == "RESTORE"
+        ? ObjectReadStrategy::RESTORE : ObjectReadStrategy::PRESIGNED;
+    if (strategy != ObjectReadStrategy::PRESIGNED) {
+        return restore_source();
+    }
+
+    GET_CONFIG(int64_t, configured_ttl, Storage::kPresignedUrlTTLSeconds);
+    const int64_t ttl = std::max<int64_t>(1, std::min<int64_t>(configured_ttl, 7 * 24 * 3600));
+    if (request.required_ttl_seconds > ttl) {
+        source.message = "Presigned URL lifetime is shorter than the requested operation";
+        return restore_source();
+    }
+
+    StoragePool pool;
+    if (!getPoolById(resolved.pool_id, pool) || !poolTypeIsObjectStorage(pool.type) ||
+        !_obj_storage.supportsPresignedRead(pool.id)) {
+        source.message = "Object storage provider does not support presigned reads";
+        return restore_source();
+    }
+
+    std::string segment_path;
+    if (!deriveSegmentPathFromFullPath(request.timefile_path, request.camera_id,
+                                       request.stream_id, segment_path)) {
+        source.message = "Cannot derive object key for direct read";
+        return restore_source();
+    }
+    const std::string object_key = TierObjectStorage::makeS3Key(
+        pool.base_path.value_or(""), request.camera_id, request.stream_id,
+        segment_path);
+    std::string error;
+    if (!_obj_storage.createPresignedGetUrl(pool.id, object_key,
+                                            static_cast<uint32_t>(ttl),
+                                            source.url, error)) {
+        source.message = error;
+        return restore_source();
+    }
+    source.kind = ObjectReadSourceKind::PRESIGNED_URL;
+    source.message = "Resolved to a temporary object read source";
+    return source;
+}
+
+ObjectReadPlan TierStorageManager::planObjectReadWindow(
+        const std::string &camera_id,
+        const std::string &stream_id,
+        int64_t start_time,
+        int64_t end_time,
+        ObjectReadPurpose purpose) {
+    ObjectReadPlan plan;
+    if (camera_id.empty() || start_time <= 0 || end_time <= start_time) {
+        plan.strategy = ObjectReadStrategy::RESTORE;
+        return plan;
+    }
+
+    std::set<std::string> identities;
+    std::set<std::string> pool_ids;
+    SegmentTierRangeImp range_imp;
+    for (const auto &range : range_imp.queryByCamera(camera_id, start_time, end_time)) {
+        if ((!stream_id.empty() && range.stream_id != stream_id) ||
+            range.tier != tierTypeToString(ColdTier) ||
+            range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
+            range.pool_id.empty()) {
+            continue;
+        }
+        for (const auto &file : collectSegmentFilesForRange(range)) {
+            if (file.end_time <= start_time || file.start_time >= end_time)
+                continue;
+            if (!identities.insert(file.stream_id + "\n" + file.segment_path).second)
+                continue;
+            ++plan.segment_count;
+            plan.total_bytes += std::max<int64_t>(0, file.file_size);
+            pool_ids.insert(range.pool_id);
+        }
+    }
+    if (plan.segment_count == 0) {
+        plan.strategy = ObjectReadStrategy::LOCAL;
+        return plan;
+    }
+
+    GET_CONFIG(std::string, configured_mode, Storage::kObjectReadMode);
+    const std::string mode = normalizedObjectReadMode(configured_mode);
+    const ObjectReadStrategy strategy = mode == "RESTORE"
+        ? ObjectReadStrategy::RESTORE : ObjectReadStrategy::PRESIGNED;
+    if (strategy == ObjectReadStrategy::RESTORE) {
+        plan.strategy = ObjectReadStrategy::RESTORE;
+        return plan;
+    }
+
+    GET_CONFIG(int64_t, configured_ttl, Storage::kPresignedUrlTTLSeconds);
+    const int64_t required_ttl = requiredObjectReadTtlSeconds(start_time, end_time, purpose);
+    if (purpose == ObjectReadPurpose::EXTRACT && configured_ttl < required_ttl) {
+        plan.strategy = ObjectReadStrategy::RESTORE;
+        return plan;
+    }
+    if (mode == "HYBRID" && purpose == ObjectReadPurpose::EXTRACT) {
+        GET_CONFIG(int64_t, max_segments, Storage::kPresignedExtractMaxSegments);
+        GET_CONFIG(int64_t, max_bytes, Storage::kPresignedExtractMaxBytes);
+        if (max_segments <= 0 || max_bytes <= 0 ||
+            plan.segment_count > static_cast<size_t>(max_segments) ||
+            plan.total_bytes > max_bytes) {
+            plan.strategy = ObjectReadStrategy::RESTORE;
+            return plan;
+        }
+    }
+
+    for (const auto &pool_id : pool_ids) {
+        StoragePool pool;
+        PoolHealthInfo health;
+        if (!getPoolById(pool_id, pool) ||
+            !isPoolAvailableForPlayback(pool, &health) ||
+            !_obj_storage.supportsPresignedRead(pool_id)) {
+            plan.strategy = ObjectReadStrategy::RESTORE;
+            return plan;
+        }
+    }
+    plan.strategy = ObjectReadStrategy::PRESIGNED;
+    return plan;
 }
 
 std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
@@ -3000,15 +3225,6 @@ bool TierStorageManager::cleanupRangeBookmarkMetadata(const SegmentTierRange &ra
     return true;
 }
 
-void TierStorageManager::notifyRebuildTimeFile(const std::string &camera_id,
-                                               uint64_t threshold) {
-    if (camera_id.empty() || threshold == 0) {
-        WarnL << "Device id empty or threshold is zero, skipping rebuild time file notification";
-        return;
-    }
-    NOTICE_EMIT(BroadcastRebuildTimeFileArgs, Broadcast::kBroadcastRebuildTimeFile, camera_id, threshold);
-}
-
 void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera_id,
                                                        const StoragePolicy &) {
     auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
@@ -3793,28 +4009,12 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
     return true;
 }
 
-ColdAccessRestoreResult TierStorageManager::handleColdAccessByPath(const std::string &file_path) {
-    ColdAccessRestoreResult ret;
-
-    GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
-    if (!auto_restore)
-        return ret;
-
-    std::string camera_id;
-    std::string stream_id;
-    std::string segment_path;
-    int64_t segment_start = 0;
-    if (!parseRecordFilePath(file_path, camera_id, stream_id, segment_path, segment_start))
-        return ret;
-
-    return requestRestoreSegment(camera_id, stream_id, segment_start, file_path, "AUTO_RECORD_ACCESS");
-}
-
 ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::string &camera_id,
                                                                   const std::string &stream_id,
                                                                   int64_t segment_start,
                                                                   const std::string &timefile_path,
-                                                                  const std::string &reason) {
+                                                                  const std::string &reason,
+                                                                  int64_t segment_size) {
     ColdAccessRestoreResult ret;
     std::string segment_path;
     if (camera_id.empty() || stream_id.empty() || segment_start <= 0 ||
@@ -3837,6 +4037,7 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::str
     if (!found || cold_range.pool_id.empty())
         return ret;
 
+    std::lock_guard<std::mutex> request_lk(_restore_request_mtx);
     RestoreJobImp restore_imp;
     auto active = RestoreJobSegmentImp().queryActiveSegment(camera_id, stream_id, segment_path);
     if (!active.empty()) {
@@ -3856,7 +4057,10 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::str
     job.status = "PENDING";
     job.start_time = segment_start;
     job.end_time = segment_start + 60;
-    job.total_bytes = 0;
+    const int64_t known_size = segment_size > 0
+        ? segment_size
+        : (cold_range.segment_count == 1 ? std::max<int64_t>(0, cold_range.size_bytes) : 0);
+    job.total_bytes = known_size;
     job.processed_bytes = 0;
     job.reason = Optional<std::string>(reason);
     job.created_at = now;
@@ -3873,7 +4077,7 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::str
     child.range_start = segment_start;
     child.range_end = segment_end;
     child.status = "PENDING";
-    child.total_bytes = 0;
+    child.total_bytes = known_size;
     child.created_at = now;
     child.updated_at = now;
 
@@ -4762,6 +4966,8 @@ void TierStorageManager::cleanupRestoreTempFiles() {
     int expired_job_count = 0;
     auto expired_jobs = restore_imp.queryExpiredTerminal(cutoff);
     for (const auto &job : expired_jobs) {
+        if (_restore_cache_leases.count(job.job_id))
+            continue;
         bool cleanup_succeeded = true;
         const auto job_root = buildRestoreJobRootPath(job.job_id);
         if (job_root.empty()) {

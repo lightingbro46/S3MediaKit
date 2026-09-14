@@ -116,26 +116,23 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
         return "";
 
 #ifdef ENABLE_TIER_STORAGE
-    auto resolved = TierStorageManager::Instance().resolvePlaybackSegmentPath(
-        block.app(),
-        block.stream(),
-        static_cast<int64_t>(block.start_time()),
-        timefile_path);
+    GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
+    const int64_t block_size = static_cast<int64_t>(block.file_size());
+    auto resolved = TierStorageManager::Instance().accessRecordedSegment(
+        block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
+        timefile_path, block_size, auto_restore, "AUTO_RECORD_ACCESS");
 
     if (resolved.ready && !resolved.read_path.empty())
         return resolved.read_path;
 
-    if (resolved.restore_required) {
-        auto restore = TierStorageManager::Instance().requestRestoreSegment(
-            block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
-            timefile_path, "AUTO_RECORD_ACCESS");
+    if (resolved.restore_required && auto_restore) {
         WarnL << "Recorded MP4 segment requires restore before playback, camera=" << block.app()
               << " stream=" << block.stream()
               << " start_time=" << block.start_time()
               << " pool=" << resolved.pool_id
               << " range=" << resolved.range_id
-              << " restore_job=" << restore.job_id
-              << " status=" << restore.status;
+              << " restore_job=" << resolved.restore_job_id
+              << " status=" << resolved.restore_status;
     } else {
         WarnL << "Recorded MP4 segment path is not ready, camera=" << block.app()
               << " stream=" << block.stream()

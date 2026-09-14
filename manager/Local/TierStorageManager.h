@@ -21,6 +21,7 @@
 #include "Storage/TieringJob.h"
 #include "Storage/TierBackfillTask.h"
 #include "TierObjectStorage.h"
+#include "ObjectReadSource.h"
 #include "TierLocalDiskStorage.h"
 #include "TierNASStorage.h"
 #include "Server/GlobalMonitor.h"
@@ -46,6 +47,8 @@ struct PlaybackPathResolveResult {
     bool fallback = false;
     bool storage_unavailable = false;
     std::string pool_health_status;
+    std::string restore_job_id;
+    std::string restore_status;
     std::string message;
 };
 
@@ -246,15 +249,12 @@ public:
 
     bool cancelTieringJob(const std::string &job_id);
 
-    // Trigger async restore when a record MP4 access misses locally but the
-    // segment is tracked in a cold tier range.
-    ColdAccessRestoreResult handleColdAccessByPath(const std::string &file_path);
-
     ColdAccessRestoreResult requestRestoreSegment(const std::string &camera_id,
                                                    const std::string &stream_id,
                                                    int64_t segment_start_time,
                                                    const std::string &timefile_path,
-                                                   const std::string &reason);
+                                                   const std::string &reason,
+                                                   int64_t segment_size = 0);
 
     ColdAccessRestoreResult requestRestoreWindow(const std::string &camera_id,
                                                   const std::string &stream_id,
@@ -267,6 +267,23 @@ public:
                                                          int64_t segment_start_time,
                                                          const std::string &timefile_path);
 
+    PlaybackPathResolveResult accessRecordedSegment(const std::string &camera_id,
+                                                    const std::string &stream_id,
+                                                    int64_t segment_start_time,
+                                                    const std::string &timefile_path,
+                                                    int64_t segment_size,
+                                                    bool enqueue_restore,
+                                                    const std::string &reason,
+                                                    bool retain_restore_cache = false);
+
+    ObjectReadSource resolveObjectReadSource(const ObjectReadRequest &request);
+
+    ObjectReadPlan planObjectReadWindow(const std::string &camera_id,
+                                        const std::string &stream_id,
+                                        int64_t start_time,
+                                        int64_t end_time,
+                                        ObjectReadPurpose purpose);
+
     bool validateRestoreWindowCache(const RestoreJob &job,
                                     const std::vector<SegmentTierRange> &ranges,
                                     const std::string &stream_id,
@@ -277,6 +294,9 @@ public:
 
     bool getRestoreJobSnapshot(const std::string &job_id,
                                RestoreJobSnapshot &snapshot) const;
+
+    bool tryRetainRestoreCache(const std::string &job_id);
+    void releaseRestoreCache(const std::string &job_id);
 
     std::string getRestoreSegmentPath(const std::string &job_id,
                                       const std::string &camera_id,
@@ -382,17 +402,8 @@ private:
 
     std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
 
-    std::vector<TierRangeSegmentFile> collectSegmentFilesForWindow(const std::string &camera_id,
-                                                                   int64_t start_time,
-                                                                   int64_t end_time,
-                                                                   const std::string &tier = "",
-                                                                   const std::string &pool_id = "");
-
     std::vector<TierRangeSegmentFile> collectSegmentFilesForJob(const TieringJob &job,
                                                                 SegmentTierRange &out_range);
-
-    void notifyRebuildTimeFile(const std::string &camera_id,
-                               uint64_t threshold);
 
     void executePendingJob(TieringJob &job);
 
@@ -505,6 +516,7 @@ private:
     mutable std::mutex        _pool_health_mtx;
     mutable std::mutex        _range_registration_mtx;
     mutable std::mutex        _restore_request_mtx;
+    std::unordered_map<std::string, size_t> _restore_cache_leases;
     mutable std::mutex        _restore_dispatch_mtx;
     mutable std::mutex        _temporary_mp4_observations_mtx;
     // In-memory cache of enabled pools (refreshed every tick)
