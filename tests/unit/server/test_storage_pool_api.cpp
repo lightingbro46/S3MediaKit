@@ -10,6 +10,46 @@ using namespace managerkit;
 using namespace mediakit;
 using namespace toolkit;
 
+TEST(WebApiResponseTest, MapsRecordedThumbnailTimeoutToGatewayTimeout) {
+    EXPECT_EQ(504, getStatusCode(ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT));
+}
+
+TEST(MediaSeekEventTest, EmitsBooleanResolveFlagWithoutTypeMismatch) {
+    const std::string event = "test.media.seeked2.boolean.flag";
+    int listener_tag = 0;
+    int callback_count = 0;
+    bool last_resolve_flag = false;
+    NoticeCenter::Instance().addListener(&listener_tag, event,
+        [&](BroadcastMediaSeeked2Args) {
+            ++callback_count;
+            last_resolve_flag = resolve_recorded_block_path;
+            invoker(max_duration, {});
+        });
+
+    MediaTuple tuple = {DEFAULT_VHOST, "camera", "stream", ""};
+    uint64_t callback_duration = 0;
+    Broadcast::Seek2Invoker invoker = [&](const uint64_t &duration,
+                                          const std::map<std::string, std::map<uint64_t, std::string>> &) {
+        callback_duration = duration;
+    };
+
+    EXPECT_NO_THROW({
+        EXPECT_EQ(1, NOTICE_EMIT(BroadcastMediaSeeked2Args, event,
+                                 tuple, uint64_t(100), uint64_t(300), true, invoker));
+    });
+    EXPECT_EQ(1, callback_count);
+    EXPECT_TRUE(last_resolve_flag);
+    EXPECT_EQ(300U, callback_duration);
+
+    EXPECT_NO_THROW({
+        EXPECT_EQ(1, NOTICE_EMIT(BroadcastMediaSeeked2Args, event,
+                                 tuple, uint64_t(100), uint64_t(300), false, invoker));
+    });
+    EXPECT_EQ(2, callback_count);
+    EXPECT_FALSE(last_resolve_flag);
+    NoticeCenter::Instance().delListener(&listener_tag, event);
+}
+
 TEST(WebApiResponseTest, AcceptsLocalVariableNamedMessage) {
     Json::Value val;
     HttpSession::KeyValue headerOut;

@@ -49,6 +49,64 @@ private:
     ~FFmpegSnap() = delete;
 };
 
+class RecordedThumbnailTask : public std::enable_shared_from_this<RecordedThumbnailTask> {
+public:
+    using Ptr = std::shared_ptr<RecordedThumbnailTask>;
+
+    struct Request {
+        mediakit::MediaTuple tuple;
+        std::string source_path;
+        int64_t segment_start_time = 0;
+        int64_t segment_size = 0;
+        uint64_t seek_time = 0;
+        std::string output_path;
+        std::string filter_complex;
+        std::vector<std::string> temporary_paths;
+        std::string restore_reason;
+        float timeout_sec = 5.0f;
+    };
+
+    struct Result {
+        bool success = false;
+        bool timeout = false;
+        bool storage_unavailable = false;
+        bool restore_unavailable = false;
+        bool recording_unavailable = false;
+        std::string stage = "RESOLVING";
+        float progress_percent = 0.0f;
+        std::string error;
+    };
+
+    using onComplete = std::function<void(const Result &result)>;
+
+    RecordedThumbnailTask(const Request &request, const onComplete &cb,
+                          toolkit::EventPoller::Ptr poller = nullptr);
+    ~RecordedThumbnailTask();
+    void start();
+
+private:
+    bool tick();
+    void startSnap(const std::string &source_path);
+    void onSnap(bool success, const std::string &error);
+    void complete(const Result &result);
+    void releaseDeferredResources();
+
+private:
+    Request _request;
+    onComplete _on_complete;
+    toolkit::EventPoller::Ptr _poller;
+    toolkit::Timer::Ptr _timer;
+    toolkit::Ticker _ticker;
+    Ptr _self_holder;
+    std::string _restore_cache_job_id;
+    std::string _stage = "RESOLVING";
+    float _progress_percent = 0.0f;
+    bool _snap_started = false;
+    bool _completed = false;
+    bool _cleanup_deferred = false;
+    std::mutex _mutex;
+};
+
 class FFmpegSource : public std::enable_shared_from_this<FFmpegSource> , public mediakit::MediaSourceEventInterceptor{
 public:
     using Ptr = std::shared_ptr<FFmpegSource>;

@@ -7,6 +7,10 @@
 #include "Util/base64.h"
 #include "Util/MD5.h"
 #include "Http/HttpClient.h"
+#ifdef ENABLE_TIER_STORAGE
+#include "Local/TierStorageManager.h"
+#endif
+#include <limits>
 
 using namespace std;
 using namespace toolkit;
@@ -350,9 +354,13 @@ void registerBookmarkApis() {
             } catch(...) {}
 
             string src_path;
+            TimeBlock selected_block;
+            bool has_selected_block = false;
             if (query) {
                 auto block = query->getLastBlock(start_time);
                 if (block) {
+                    selected_block = *block;
+                    has_selected_block = true;
                     src_path = decodeBase64(block->file_path());
                     diff_time = start_time > block->start_time() ? start_time - block->start_time() : 0;
                 }
@@ -361,6 +369,11 @@ void registerBookmarkApis() {
             if (src_path.empty()) {
                 RETURN_API_RESPONSE(ApiErrCode::CODE_TIMELINE_NOT_FOUND, "No data in period");
                 return;
+            }
+
+            if (has_selected_block) {
+                stream_id = selected_block.stream();
+                tuple.stream = stream_id;
             }
 
             GET_CONFIG(string, snap_root, API::kSnapRoot);
@@ -391,37 +404,49 @@ void registerBookmarkApis() {
             }
 
             File::delete_file(snap_path);
-            string snap_path_tmp = snap_path + ".tmp";
-            auto on_snap = [invoker, allArgs, val, headerOut, snap_path, snap_path_tmp, overlay_temp_paths](bool success, const string &err_msg) mutable {
-                if (!success) {
-                    File::delete_file(snap_path_tmp);
-                    for (const auto &temp_path : overlay_temp_paths) {
-                        File::delete_file(temp_path);
+            GET_CONFIG(float, thumbnail_timeout_sec, FFmpeg::kRecordedThumbnailTimeoutSec);
+            RecordedThumbnailTask::Request request;
+            request.tuple = tuple;
+            request.source_path = src_path;
+            request.segment_start_time = static_cast<int64_t>(selected_block.start_time());
+            request.segment_size = selected_block.file_size() > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+                ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(selected_block.file_size());
+            request.seek_time = diff_time;
+            request.output_path = snap_path;
+            request.filter_complex = filter_complex;
+            request.temporary_paths = overlay_temp_paths;
+            request.restore_reason = "BOOKMARK_THUMBNAIL";
+            request.timeout_sec = thumbnail_timeout_sec;
+            auto task = std::make_shared<RecordedThumbnailTask>(request,
+                [invoker, allArgs, val, headerOut, snap_path](const RecordedThumbnailTask::Result &result) mutable {
+                    if (result.success) {
+                        StrCaseMap response_headers;
+                        response_headers["Content-Type"] = HttpFileManager::getContentType(".jpeg");
+                        invoker.responseFile(allArgs.parser.getHeader(), response_headers, snap_path);
+                        return;
                     }
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, err_msg.data());
-                    return;
-                }
-                File::delete_file(snap_path);
-                if (rename(snap_path_tmp.data(), snap_path.data()) != 0) {
-                    File::delete_file(snap_path_tmp);
-                    for (const auto &temp_path : overlay_temp_paths) {
-                        File::delete_file(temp_path);
+                    if (result.timeout) {
+                        val["code"] = ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT;
+                        val["msg"] = result.error;
+                        val["data"]["status"] = "TIMEOUT";
+                        val["data"]["stage"] = result.stage;
+                        val["data"]["progressPercent"] = result.progress_percent;
+                        invoker(getStatusCode(ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT),
+                                headerOut, val.toStyledString());
+                        return;
                     }
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to finalize thumbnail");
-                    return;
-                }
-                for (const auto &temp_path : overlay_temp_paths) {
-                    File::delete_file(temp_path);
-                }
-                StrCaseMap response_headers;
-                response_headers["Content-Type"] = HttpFileManager::getContentType(".jpeg");
-                invoker.responseFile(allArgs.parser.getHeader(), response_headers, snap_path);
-            };
-            if (filter_complex.empty()) {
-                FFmpegSnap::makeSnap(false, src_path, snap_path_tmp, diff_time, 2, on_snap);
-            } else {
-                FFmpegSnap::makeSnapWithFilter(src_path, snap_path_tmp, diff_time, 2, filter_complex, on_snap);
-            }
+                    const ApiErrCode code = result.storage_unavailable
+                        ? ApiErrCode::CODE_STORAGE_POOL_OFFLINE
+                        : (result.restore_unavailable
+                            ? ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED
+                            : (result.recording_unavailable
+                                ? ApiErrCode::CODE_TIMELINE_NOT_FOUND
+                                : ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY));
+                    val["code"] = code;
+                    val["msg"] = result.error;
+                    invoker(getStatusCode(code), headerOut, val.toStyledString());
+                });
+            task->start();
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(device_id, on_access);

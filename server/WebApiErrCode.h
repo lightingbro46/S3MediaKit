@@ -39,6 +39,7 @@ namespace managerkit {
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         903001) \
     /* 904xxx - Thumbnail/snapshot errors */                                                         \
     XX(CODE_EXTRACT_THUMBNAIL_EMPTY,                 "Snapshot is empty",                404,         904001) \
+    XX(CODE_EXTRACT_THUMBNAIL_TIMEOUT,               "Snapshot processing timed out",   504,         904002) \
     /* 905xxx - Device errors */                                                                     \
     XX(CODE_DEVICE_NOT_FOUND,               "Device not found",                 404,         905001) \
     XX(CODE_DEVICE_OFFLINE,                 "Device offline",                   400,         905002) \

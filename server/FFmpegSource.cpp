@@ -691,6 +691,234 @@ static void makeManifestPlaylist(string &file_path, string &camera_id, string &s
     return cb(total_dur == 0 ? SockException(Err_other, "No data in time period", ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA) : SockException(), duration_start, duration_end);
 }
 
+RecordedThumbnailTask::RecordedThumbnailTask(const Request &request, const onComplete &cb, EventPoller::Ptr poller)
+    : _request(request), _on_complete(cb),
+      _poller(poller ? poller : WorkThreadPool::Instance().getPoller()) {
+    if (_request.timeout_sec <= 0)
+        _request.timeout_sec = 5.0f;
+}
+
+RecordedThumbnailTask::~RecordedThumbnailTask() {
+#ifdef ENABLE_TIER_STORAGE
+    if (!_restore_cache_job_id.empty()) {
+        TierStorageManager::Instance().releaseRestoreCache(_restore_cache_job_id);
+    }
+#endif
+    for (const auto &path : _request.temporary_paths) {
+        File::delete_file(path);
+    }
+}
+
+void RecordedThumbnailTask::start() {
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_self_holder || _completed)
+            return;
+        _self_holder = shared_from_this();
+        _ticker.resetTime();
+    }
+    weak_ptr<RecordedThumbnailTask> weak_self = shared_from_this();
+    _timer = std::make_shared<Timer>(1.0f, [weak_self]() {
+        auto self = weak_self.lock();
+        return self ? self->tick() : false;
+    }, _poller);
+    tick();
+}
+
+bool RecordedThumbnailTask::tick() {
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_completed)
+            return false;
+    }
+    const uint64_t timeout_ms = _request.timeout_sec > 0 ? static_cast<uint64_t>(_request.timeout_sec * 1000) : 0;
+    if (timeout_ms > 0 && _ticker.elapsedTime() >= timeout_ms) {
+        Result result;
+        result.timeout = true;
+        {
+            lock_guard<mutex> lock(_mutex);
+            result.stage = _stage;
+            result.progress_percent = _progress_percent;
+        }
+        result.error = "Recorded thumbnail processing timed out";
+        complete(result);
+        return false;
+    }
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_snap_started)
+            return true;
+    }
+
+    string source_path = _request.source_path;
+#ifdef ENABLE_TIER_STORAGE
+    ObjectReadRequest read_request;
+    read_request.camera_id = _request.tuple.app;
+    read_request.stream_id = _request.tuple.stream;
+    read_request.segment_start_time = _request.segment_start_time;
+    read_request.timefile_path = _request.source_path;
+    read_request.segment_size = _request.segment_size;
+    read_request.required_ttl_seconds = std::max<int64_t>(
+        static_cast<int64_t>(_request.timeout_sec) + 5,
+        requiredObjectReadTtlSeconds(_request.segment_start_time,
+                                     _request.segment_start_time + 1,
+                                     ObjectReadPurpose::THUMBNAIL));
+    read_request.purpose = ObjectReadPurpose::THUMBNAIL;
+    read_request.retain_restore_cache = true;
+    read_request.enqueue_restore = true;
+    read_request.restore_reason = _request.restore_reason;
+    const ObjectReadSource source = TierStorageManager::Instance().resolveObjectReadSource(read_request);
+    if (source.kind == ObjectReadSourceKind::LOCAL_PATH) {
+        source_path = source.local_path;
+        lock_guard<mutex> lock(_mutex);
+        _restore_cache_job_id = source.restore_job_id;
+    } else if (source.kind == ObjectReadSourceKind::PRESIGNED_URL) {
+        source_path = source.url;
+    } else if (source.kind == ObjectReadSourceKind::RESTORE_REQUIRED) {
+        lock_guard<mutex> lock(_mutex);
+        _stage = "RESTORING";
+        _progress_percent = source.progress_percent;
+        return true;
+    } else {
+        Result result;
+        result.stage = "RESOLVING";
+        result.storage_unavailable = source.storage_unavailable;
+        result.restore_unavailable = source.restore_unavailable;
+        result.recording_unavailable = !source.storage_unavailable && !source.restore_unavailable;
+        result.error = source.message.empty() ? "Recorded segment is unavailable" : source.message;
+        complete(result);
+        return false;
+    }
+#endif
+    startSnap(source_path);
+    return true;
+}
+
+void RecordedThumbnailTask::startSnap(const string &source_path) {
+    float remaining_sec = 0.1f;
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_completed || _snap_started)
+            return;
+        _snap_started = true;
+        _stage = "EXTRACTING";
+        _progress_percent = 0.0f;
+        const float elapsed_sec = static_cast<float>(_ticker.elapsedTime()) / 1000.0f;
+        remaining_sec = std::max(0.1f, _request.timeout_sec - elapsed_sec);
+    }
+    const string temporary_output = _request.output_path + ".tmp";
+    File::delete_file(temporary_output);
+    Ptr self = shared_from_this();
+    FFmpegSnap::onSnap cb = [self](bool success, const string &error) {
+        self->onSnap(success, error);
+    };
+    if (_request.filter_complex.empty()) {
+        FFmpegSnap::makeSnap(false, source_path, temporary_output,
+                             _request.seek_time, remaining_sec, cb);
+    } else {
+        FFmpegSnap::makeSnapWithFilter(source_path, temporary_output,
+                                       _request.seek_time, remaining_sec,
+                                       _request.filter_complex, cb);
+    }
+}
+
+void RecordedThumbnailTask::onSnap(bool success, const string &error) {
+    const string temporary_output = _request.output_path + ".tmp";
+    bool already_completed = false;
+    {
+        lock_guard<mutex> lock(_mutex);
+        already_completed = _completed;
+    }
+    if (already_completed) {
+        File::delete_file(temporary_output);
+        // The HTTP deadline may expire while FFmpeg is stopping. Keep the
+        // restore lease and overlay inputs alive until this callback.
+        releaseDeferredResources();
+        return;
+    }
+    Result result;
+    result.stage = success ? "COMPLETED" : "EXTRACTING";
+    result.progress_percent = success ? 100.0f : 0.0f;
+    result.error = error;
+    if (success) {
+        File::delete_file(_request.output_path);
+        if (rename(temporary_output.data(), _request.output_path.data()) != 0) {
+            File::delete_file(temporary_output);
+            result.error = "Unable to finalize thumbnail";
+        } else {
+            result.success = true;
+        }
+    } else {
+        File::delete_file(temporary_output);
+    }
+    complete(result);
+    // If the HTTP timeout won the race after the completed check above,
+    // complete() keeps the restore lease and overlay files alive for FFmpeg.
+    // The callback is now finished, so those deferred resources are safe to
+    // release immediately instead of waiting for the fallback delay.
+    releaseDeferredResources();
+}
+
+void RecordedThumbnailTask::complete(const Result &result) {
+    onComplete cb;
+    string restore_cache_job_id;
+    Ptr self_holder;
+    bool defer_cleanup = false;
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_completed)
+            return;
+        _completed = true;
+        cb = std::move(_on_complete);
+        _on_complete = nullptr;
+        defer_cleanup = result.timeout && _snap_started;
+        _cleanup_deferred = defer_cleanup;
+        if (!defer_cleanup) {
+            restore_cache_job_id.swap(_restore_cache_job_id);
+            self_holder.swap(_self_holder);
+        }
+    }
+#ifdef ENABLE_TIER_STORAGE
+    TierStorageManager::Instance().releaseRestoreCache(restore_cache_job_id);
+#endif
+    if (!defer_cleanup) {
+        for (const auto &path : _request.temporary_paths) {
+            File::delete_file(path);
+        }
+        _request.temporary_paths.clear();
+    } else {
+        weak_ptr<RecordedThumbnailTask> weak_self = shared_from_this();
+        _poller->doDelayTask(3000, [weak_self]() {
+            auto self = weak_self.lock();
+            if (self)
+                self->releaseDeferredResources();
+            return static_cast<uint64_t>(0);
+        });
+    }
+    if (cb)
+        cb(result);
+}
+
+void RecordedThumbnailTask::releaseDeferredResources() {
+    string restore_cache_job_id;
+    vector<string> temporary_paths;
+    Ptr self_holder;
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (!_cleanup_deferred)
+            return;
+        _cleanup_deferred = false;
+        restore_cache_job_id.swap(_restore_cache_job_id);
+        temporary_paths.swap(_request.temporary_paths);
+        self_holder.swap(_self_holder);
+    }
+#ifdef ENABLE_TIER_STORAGE
+    TierStorageManager::Instance().releaseRestoreCache(restore_cache_job_id);
+#endif
+    for (const auto &path : temporary_paths)
+        File::delete_file(path);
+}
+
 FFmpegExtractor::PreviewInfo FFmpegExtractor::getExtractPreview(const string &camera_id,
                                                                 const string &stream_id,
                                                                 uint64_t start_time,

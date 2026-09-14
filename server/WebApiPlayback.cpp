@@ -5,6 +5,9 @@
 #include "Common/config.h"
 #include "Manager.h"
 #include "Local/SearchEngine.h"
+#ifdef ENABLE_TIER_STORAGE
+#include "Local/TierStorageManager.h"
+#endif
 #include "Util/base64.h"
 #include "Util/MD5.h"
 #include <sys/stat.h>
@@ -131,6 +134,8 @@ void registerPlaybackApis() {
             } catch(...) {}
 
             string src_path;
+            TimeBlock selected_block;
+            bool has_selected_block = false;
             uint64_t pos_time = 0;
             uint64_t diff_time = 0;
             if (query) {
@@ -159,6 +164,8 @@ void registerPlaybackApis() {
                                     if (last_archived_time > 0) {
                                         auto block = query->getLastBlock(last_archived_time);
                                         if (block) {
+                                            selected_block = *block;
+                                            has_selected_block = true;
                                             pos_time = block->start_time() + block->time_len() - 10;
                                             diff_time = pos_time - block->start_time();
                                             src_path = decodeBase64(block->file_path());
@@ -172,13 +179,15 @@ void registerPlaybackApis() {
                     pos_time = stoll(pos_str);
                     auto start_time = pos_time - 60;
                     auto end_time = pos_time + 60;
-                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path, &diff_time](const vector<TimeBlock> &blocks) {
+                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path, &diff_time, &selected_block, &has_selected_block](const vector<TimeBlock> &blocks) {
                         for (const auto &block : blocks) {
                             if (block.start_time() > pos_time) {
                                 break;
                             }
                             diff_time = pos_time - block.start_time();
                             src_path = decodeBase64(block.file_path());
+                            selected_block = block;
+                            has_selected_block = true;
                         }
                     });
                 }
@@ -187,6 +196,11 @@ void registerPlaybackApis() {
             if (src_path.empty() || pos_time == 0) {
                 RETURN_API_RESPONSE(ApiErrCode::CODE_TIMELINE_NOT_FOUND, "No data in period");
                 return;
+            }
+
+            if (has_selected_block) {
+                stream_id = selected_block.stream();
+                tuple.stream = stream_id;
             }
 
             GET_CONFIG(string, snap_root, API::kSnapRoot);
@@ -217,32 +231,46 @@ void registerPlaybackApis() {
                 return;
             }
             File::delete_file(new_snap);
-            auto cache_file = File::create_file(new_snap, "wb");
-            if (cache_file) {
-                fclose(cache_file);
-            }
-
-            // Start the FFmpeg process, start taking screenshots, generate temporary files, replace them with formal files after successful screenshots
-            auto new_snap_tmp = new_snap + ".tmp";
-            auto on_snap = [invoker, allArgs, new_snap, new_snap_tmp, overlay_temp_paths](bool success, const string &err_msg) {
-                if (!success) {
-                    // Screenshot generation failed, there may be residual empty files
-                    File::delete_file(new_snap_tmp);
-                } else {
-                    // Temporary file changed to formal file
-                    File::delete_file(new_snap);
-                    rename(new_snap_tmp.data(), new_snap.data());
-                }
-                for (const auto &temp_path : overlay_temp_paths) {
-                    File::delete_file(temp_path);
-                }
-                responseSnap(new_snap, allArgs.parser.getHeader(), invoker, err_msg);
-            };
-            if (filter_complex.empty()) {
-                FFmpegSnap::makeSnap(false, src_path, new_snap_tmp, diff_time, 2, on_snap);
-            } else {
-                FFmpegSnap::makeSnapWithFilter(src_path, new_snap_tmp, diff_time, 2, filter_complex, on_snap);
-            }
+            GET_CONFIG(float, thumbnail_timeout_sec, FFmpeg::kRecordedThumbnailTimeoutSec);
+            RecordedThumbnailTask::Request request;
+            request.tuple = tuple;
+            request.source_path = src_path;
+            request.segment_start_time = static_cast<int64_t>(selected_block.start_time());
+            request.segment_size = static_cast<int64_t>(selected_block.file_size());
+            request.seek_time = diff_time;
+            request.output_path = new_snap;
+            request.filter_complex = filter_complex;
+            request.temporary_paths = overlay_temp_paths;
+            request.restore_reason = "THUMBNAIL";
+            request.timeout_sec = thumbnail_timeout_sec;
+            auto task = std::make_shared<RecordedThumbnailTask>(request,
+                [invoker, allArgs, val, headerOut, new_snap](const RecordedThumbnailTask::Result &result) mutable {
+                    if (result.success) {
+                        responseSnap(new_snap, allArgs.parser.getHeader(), invoker);
+                        return;
+                    }
+                    if (result.timeout) {
+                        val["code"] = ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT;
+                        val["msg"] = result.error;
+                        val["data"]["status"] = "TIMEOUT";
+                        val["data"]["stage"] = result.stage;
+                        val["data"]["progressPercent"] = result.progress_percent;
+                        invoker(getStatusCode(ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT),
+                                headerOut, val.toStyledString());
+                        return;
+                    }
+                    const ApiErrCode code = result.storage_unavailable
+                        ? ApiErrCode::CODE_STORAGE_POOL_OFFLINE
+                        : (result.restore_unavailable
+                            ? ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED
+                            : (result.recording_unavailable
+                                ? ApiErrCode::CODE_TIMELINE_NOT_FOUND
+                                : ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY));
+                    val["code"] = code;
+                    val["msg"] = result.error;
+                    invoker(getStatusCode(code), headerOut, val.toStyledString());
+                });
+            task->start();
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);

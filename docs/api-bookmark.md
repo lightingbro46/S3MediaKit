@@ -30,6 +30,7 @@ Tất cả API bookmark đều yêu cầu:
 | `902001` | 400 | Thiếu tham số bắt buộc |
 | `903001` | 404 | Không có dữ liệu recording/timeline |
 | `904001` | 404 | FFmpeg không tạo được thumbnail |
+| `904002` | 504 | Restore hoặc FFmpeg chưa hoàn tất trong timeout của request |
 | `905001` | 404 | Camera không tìm thấy |
 | `908001` | 404 | Bookmark không tìm thấy |
 | `908003` | 500 | Tạo bookmark thất bại |
@@ -299,6 +300,13 @@ Nếu camera được cấu hình watermark hoặc privacy mask, ảnh thumbnail
 - Content-Type: `image/jpeg`
 - Body: binary JPEG data
 
+Nếu segment đang ở COLD tier, server tự chọn presigned URL hoặc restore và tiếp tục
+FFmpeg trong cùng request; FE không cần gọi lại API. Timeout mặc định là 5 giây.
+Nếu chưa hoàn tất, API trả HTTP `504`, code `904002` cùng
+`data.status=TIMEOUT`, `data.stage=RESTORING|EXTRACTING` và
+`data.progressPercent`. Response timeout là response kết thúc; server không thể gửi
+ảnh lần hai trên cùng kết nối HTTP.
+
 ### Mã lỗi riêng
 
 | `code` | Mô tả |
@@ -306,6 +314,7 @@ Nếu camera được cấu hình watermark hoặc privacy mask, ảnh thumbnail
 | `908001` | Bookmark không tìm thấy |
 | `903001` | Không có dữ liệu recording tại thời điểm bookmark |
 | `904001` | Snapshot rỗng hoặc ffmpeg thất bại |
+| `904002` | Restore hoặc FFmpeg vượt timeout của request |
 
 ### Ví dụ
 
@@ -362,8 +371,10 @@ sequenceDiagram
 
 3. **`partial: true`**: Khi search/recent trả về `partial: true`, kết quả chưa đầy đủ (một số node remote chưa trả lời kịp). FE có thể hiển thị indicator "đang tải thêm..." hoặc retry sau vài giây.
 
-4. **Thumbnail**: API `recordThumbnail` có thể chậm (~2 giây) vì cần dùng ffmpeg để chụp frame từ file MP4. Nên hiển thị skeleton/loading placeholder khi chờ.
+4. **Thumbnail**: API `recordThumbnail` giữ request tối đa 5 giây theo cấu hình mặc định để restore (nếu cần) và dùng FFmpeg chụp frame. Nên hiển thị skeleton/loading placeholder trong lúc chờ và placeholder ảnh nếu nhận HTTP `504`/code `904002`.
 
 5. **Phân quyền camera**: API `create`, `update`, `delete` kiểm tra quyền của user với camera liên quan. Nếu user không có quyền trên camera → lỗi `901002` (Permission denied).
 
 6. **Endpoint nội bộ**: `/media/esc/bookmark/detail` được dùng để node aggregator lấy detail theo danh sách `ids`. FE thông thường không cần gọi endpoint này.
+
+7. **Cold storage**: Với chế độ `PRESIGNED` hoặc `HYBRID`, thumbnail bookmark thay local path bằng presigned URL. API không trả presigned URL và fallback về restore khi direct read không khả dụng.

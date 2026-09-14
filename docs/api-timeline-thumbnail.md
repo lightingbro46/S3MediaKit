@@ -36,6 +36,7 @@ Tất cả API đều yêu cầu:
 | `902003` | 400 | Extension file không hợp lệ |
 | `903001` | 404 | Không có dữ liệu timeline trong khoảng thời gian |
 | `904001` | 404 | Snapshot rỗng hoặc FFmpeg không tạo được thumbnail |
+| `904002` | 504 | Restore hoặc FFmpeg chưa hoàn tất trong timeout của request |
 | `905001` | 404 | Camera không tìm thấy |
 | `909001` | 404 | Extract key không tìm thấy |
 | `909002` | 500 | Extract video thất bại |
@@ -125,6 +126,16 @@ Nếu camera được cấu hình watermark hoặc privacy mask, ảnh thumbnail
 
 - **Content-Type:** `image/jpeg`
 - **Body:** Binary JPEG data (trả về trực tiếp, không wrap JSON)
+
+Nếu segment đang ở COLD tier, server tự chọn presigned URL hoặc restore rồi chạy
+FFmpeg trong cùng request; FE không cần retry. Timeout mặc định là 5 giây. Nếu tác vụ
+chưa hoàn tất, API trả HTTP `504`, code `904002` và trạng thái hiện tại:
+
+```json
+{"code":904002,"msg":"Recorded thumbnail processing timed out","data":{"status":"TIMEOUT","stage":"RESTORING","progressPercent":12.0}}
+```
+
+Restore job ID và presigned URL là chi tiết nội bộ, không được trả về client.
 
 #### Mã lỗi riêng
 
@@ -222,15 +233,15 @@ sequenceDiagram
     participant API
 
     FE->>API: POST extractArchived/create {cameraId, streamId, startTime, endTime, filename}
-    API-->>FE: {code: 0, data: {key: "abc123"}} (HTTP 201)
+    API-->>FE: {code: 0, data: {key: "abc123", status: "RUNNING", stage: "RESTORING"}} (HTTP 201)
 
     loop Polling mỗi 2-3 giây
         FE->>API: GET extractArchived/progress?key=abc123
-        API-->>FE: {data: {progress: 0.65, ready: false}} (HTTP 202)
+        API-->>FE: {data: {status: "RUNNING", stage: "RESTORING|EXTRACTING", progressPercent: 65, ready: false}} (HTTP 200)
     end
 
     FE->>API: GET extractArchived/progress?key=abc123
-    API-->>FE: {data: {progress: 1.0, ready: true}} (HTTP 202)
+    API-->>FE: {data: {status: "SUCCESS", stage: "COMPLETED", progressPercent: 100, ready: true}} (HTTP 200)
 
     FE->>API: GET extractArchived/download?key=abc123
     API-->>FE: File binary (Content-Disposition: attachment)
@@ -263,11 +274,23 @@ sequenceDiagram
 {
   "code": 0,
   "msg": "",
-  "data": { "key": "a1b2c3d4e5f6..." }
+  "data": {
+    "key": "a1b2c3d4e5f6...",
+    "status": "RUNNING",
+    "stage": "RESTORING",
+    "progressPercent": 4.5,
+    "progress": 4.5,
+    "ready": false
+  }
 }
 ```
 
 > Lưu `key` này để dùng cho các API tiếp theo. Key tự động hết hạn sau **600 giây** không hoạt động.
+
+Nếu cửa sổ extract có dữ liệu ở COLD tier, API vẫn trả key ngay. `FFmpegExtractor` tự
+chọn stream khi cần, chọn presigned URL hoặc restore theo chế độ HYBRID, theo dõi restore
+và chuyển sang FFmpeg trong cùng task. Client chỉ polling API progress bằng key, không
+gọi lại API create.
 
 #### Lỗi đặc biệt
 
@@ -285,14 +308,17 @@ sequenceDiagram
 
 JWT gọi API không cần trùng với JWT đã tạo tác vụ. API cho phép truy cập khi JWT có quyền Extract (`1004`) và có quyền truy cập camera của tác vụ tại thời điểm kiểm tra.
 
-#### Response (`202 Accepted`)
+#### Response (`200 OK`)
 
 ```json
 {
   "code": 0,
   "msg": "",
   "data": {
-    "progress": 0.72,
+    "status": "RUNNING",
+    "stage": "EXTRACTING",
+    "progressPercent": 72.0,
+    "progress": 72.0,
     "ready": false
   }
 }
@@ -300,7 +326,10 @@ JWT gọi API không cần trùng với JWT đã tạo tác vụ. API cho phép 
 
 | Field | Kiểu | Mô tả |
 |-------|------|-------|
-| `progress` | `float` | Tiến độ từ 0.0 đến 1.0 |
+| `status` | `string` | `QUEUED`, `RUNNING`, `SUCCESS` hoặc `FAILED` |
+| `stage` | `string` | `QUEUED`, `RESTORING`, `EXTRACTING`, `COMPLETED` hoặc `FAILED` |
+| `progressPercent` | `float` | Tiến độ chung từ 0 đến 100; restore chiếm 0-30%, FFmpeg chiếm 30-100% |
+| `progress` | `float` | Alias tương thích ngược của `progressPercent` |
 | `ready` | `bool` | `true` khi extract hoàn tất và có thể download |
 
 #### Lỗi
@@ -461,3 +490,5 @@ await fetch(`/media/esc/extractArchived/delete?key=${key}`);
 4. **File size giới hạn**: Không có giới hạn cứng từ API, nhưng extract đoạn quá dài (>1 giờ) có thể mất nhiều thời gian và tốn dung lượng disk trên server.
 
 5. **Phân quyền**: Timeline, thumbnail và motion dùng quyền Playback (`1003`). Extract dùng quyền Extract (`1004`). Tất cả API đều kiểm tra quyền của user với camera cụ thể.
+
+6. **Cold storage**: Khi bật `PRESIGNED` hoặc `HYBRID`, thumbnail và extract có thể đọc trực tiếp object storage. Presigned URL không xuất hiện trong response nhưng có thể nằm trong manifest/log FFmpeg tạm và được dọn cùng file tạm. Nếu cần restore, task extract giữ nguyên key và API progress trả `status=RUNNING`, `stage=RESTORING`.
