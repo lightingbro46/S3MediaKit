@@ -3,7 +3,7 @@
 Tài liệu này mô tả contract chung để ba phân hệ Web, Desktop và Mobile khôi phục dữ liệu ghi hình từ tầng lưu trữ COLD bằng hai API:
 
 - `POST /media/mserver/storage/restoreJob/create`
-- `GET/POST /media/mserver/storage/restoreJob/detail`
+- `POST /media/mserver/storage/restoreJob/detail`
 
 Frontend xác định khoảng thời gian cần restore từ API timeline. Backend dùng window đó để kiểm tra và resolve chính xác các segment COLD; API detail chỉ dùng để theo dõi job đã tạo hoặc được tái sử dụng.
 
@@ -14,7 +14,9 @@ Frontend xác định khoảng thời gian cần restore từ API timeline. Back
 - User cần đồng thời permission Playback `1003`, Read MediaServer `150301` và quyền truy cập camera.
 - `start_time` và `end_time` là Unix timestamp theo giây, với `0 < start_time < end_time`.
 - `target_tier` hiện chỉ hỗ trợ `HOT`.
-- Các endpoint dùng query/form parameters, không dùng JSON body.
+- FE gửi tham số bằng JSON body với `Content-Type: application/json`.
+- `GET restoreJob/detail?job_id=...` vẫn có thể được giữ cho client cũ, nhưng
+  tích hợp mới nên thống nhất dùng `POST` với JSON body.
 
 Response dùng envelope chung:
 
@@ -57,9 +59,16 @@ Client không cần biết đường dẫn cache restore. Khi job `READY`, clien
 ```http
 POST /media/mserver/storage/restoreJob/create
 Authorization: Bearer <JWT>
-Content-Type: application/x-www-form-urlencoded
+Content-Type: application/json
 
-camera_id=cam-001&stream_id=main&start_time=1789092000&end_time=1789092600&target_tier=HOT&reason=PLAYBACK
+{
+  "camera_id": "cam-001",
+  "stream_id": "main",
+  "start_time": 1789092000,
+  "end_time": 1789092600,
+  "target_tier": "HOT",
+  "reason": "PLAYBACK"
+}
 ```
 
 | Field | Bắt buộc | Mô tả |
@@ -123,11 +132,18 @@ Frontend phải luôn sử dụng `data.job_id` từ response, không tự giả
 ### 4.1 Request
 
 ```http
-GET /media/mserver/storage/restoreJob/detail?job_id=rj-12345678
+POST /media/mserver/storage/restoreJob/detail
 Authorization: Bearer <JWT>
+Content-Type: application/json
+
+{
+  "job_id": "rj-12345678"
+}
 ```
 
-Có thể dùng POST với form parameter `job_id`, nhưng cả ba client nên thống nhất dùng GET để truy vấn trạng thái.
+Client cũ có thể tiếp tục dùng
+`GET /media/mserver/storage/restoreJob/detail?job_id=...`; client mới nên dùng
+POST JSON để thống nhất transport với API create.
 
 ### 4.2 Response
 
@@ -277,8 +293,9 @@ Không lưu riêng progress do client tự tính qua nhiều lần poll. Mỗi r
 Khuyến nghị chung:
 
 1. Render ngay snapshot từ response create.
-2. Nếu chưa `READY` và đang `RESTORING`, gọi detail sau khoảng 2 giây.
-3. Khi ứng dụng/tab ở background, giảm xuống khoảng 5–10 giây hoặc tạm dừng theo lifecycle nền tảng.
+2. Nếu chưa `READY` và đang `RESTORING`, gọi detail sau 5 giây.
+3. Khi ứng dụng/tab ở background, giữ tối thiểu 5 giây, tăng lên khoảng 10 giây
+   hoặc tạm dừng theo lifecycle nền tảng.
 4. Thêm jitter nhỏ để nhiều client không poll đồng thời.
 5. Chỉ duy trì một polling task cho mỗi `job_id`.
 6. Dừng polling khi trạng thái khác `RESTORING`, khi người dùng rời màn hình hoặc khi request bị hủy.
@@ -339,7 +356,7 @@ restoreAndPlay(request):
 
     while snapshot.playback_status == RESTORING:
         waitAccordingToAppLifecycle()
-        snapshot = GET restoreJob/detail(snapshot.job_id)
+        snapshot = POST restoreJob/detail({"job_id": snapshot.job_id})
         render(snapshot)
 
     if snapshot.playback_status == READY && snapshot.playback_ready:
@@ -367,26 +384,227 @@ Khi người dùng chọn “Thử lại” hoặc “Khôi phục lại”, g�
 
 ## 13. Web Console Player: restore theo chunk
 
-Player Console dùng trực tiếp metadata `tier` và `restore_required` trong từng
-period của `GET /media/esc/recordedTimePeriod?periodType=2&detail=1`. Không cần
-gọi thêm API storage timeline để tô dữ liệu COLD.
+Phần này lấy state machine trong `www/console/player/pc-restore.js` làm tham
+chiếu. Contract dành cho FE mới được chuẩn hóa dùng JSON body và poll mỗi 5 giây,
+không phụ thuộc vào DOM hoặc player library của Console.
 
-Các period `restore_required=true` liền nhau được chuẩn hóa thành một range.
-Khi người dùng chọn một timestamp trong range, chunk đầu tiên bắt đầu đúng tại
-timestamp đó; các chunk tiếp theo nối tiếp nhau và dài tối đa 300 giây:
+### 13.1. Nguồn timeline và routing
 
-1. Gọi `restoreJob/create` cho chunk bắt đầu tại timestamp và chỉ mở playback khi
-   `playback_status=READY && playback_ready=true`.
-2. Khi media timestamp đạt 80% chunk hiện tại, create/poll chunk kế tiếp ở nền.
-3. Nếu chunk kế tiếp READY trước biên, giữ URL hiện tại và tiếp tục phát.
-4. Nếu chưa READY tại biên, pause video, hiển thị restore overlay và tiếp tục
-   poll detail.
-5. Khi chunk bị chặn chuyển READY, mở URL replay mới với timestamp bằng đầu
-   chunk đó. Không dùng URL cũ vì reader trước đã bị gián đoạn.
+Player dùng metadata trong từng period của:
 
-Mỗi playback restore session chỉ giữ tối đa current chunk và một chunk
-look-ahead. Seek, đổi camera, stream, transport, ngày hoặc chuyển sang Live phải
-invalidate session cũ; response bất đồng bộ cũ không được phép đổi URL hay UI.
-Auto quality ưu tiên phát liên tục trên URL cũ khi prefetch kịp READY; tùy dữ
-liệu hiện có, reader có thể tạm fallback sang low quality cho tới lần mở URL
-tiếp theo.
+```http
+GET /media/esc/recordedTimePeriod?periodType=2&detail=1
+```
+
+Một period được xem là cần restore khi `restoreRequired === true` hoặc
+`restore_required === true`. Khoảng của period được tính theo nửa kín:
+
+```text
+[startTime, startTime + duration)
+```
+
+Các period hợp lệ được nhóm theo cặp `mediaServerId + tier`, sắp xếp theo thời
+gian và gộp khi giao nhau hoặc liền nhau. Không gộp range thuộc MediaServer hoặc
+tier khác nhau. FE dùng timeline tổng hợp nhiều node phải gửi restore request
+đến đúng MediaServer sở hữu range. Console hiện dùng `serverUrl` đang active và
+giả định timeline cũng thuộc server đó.
+
+Console nội bộ truyền `secret` trên query string. FE sản phẩm không nên sao chép
+cách này; hãy dùng `Authorization: Bearer <JWT>` và permission như phần 1.
+
+### 13.2. Chia restore window
+
+Khi người dùng chọn timestamp `T`:
+
+- Nếu `T` không thuộc range `restore_required`, hủy restore session hiện tại và
+  gọi luồng seek/playback thông thường.
+- Nếu `T` thuộc range COLD, pause player và tạo restore session mới.
+- Làm tròn `T` xuống epoch giây. Chunk đầu bắt đầu đúng tại `T`, không bắt đầu
+  từ đầu range COLD.
+- Mỗi chunk dài tối đa 300 giây; chunk cuối được cắt tại cuối range.
+- Dùng interval `[chunk.startTime, chunk.endTime)` để tránh trùng biên.
+
+Ví dụ range COLD `[10:14:01, 10:30:00)` và người dùng chọn `10:16:00`:
+
+```text
+chunk 0: [10:16:00, 10:21:00)
+chunk 1: [10:21:00, 10:26:00)
+chunk 2: [10:26:00, 10:30:00)
+```
+
+Không restore phần `[10:14:01, 10:16:00)` mà người dùng không yêu cầu xem.
+Backend vẫn lấy segment giao với window, vì một MP4 có thể bắt đầu trước
+`chunk.startTime` nhưng còn dữ liệu tại thời điểm đó.
+
+### 13.3. Model trạng thái phía client
+
+Mỗi chunk nên có state độc lập:
+
+```text
+RestoreChunk
+  startTime: number
+  endTime: number
+  jobId: string
+  snapshot: RestoreJobSnapshot | null
+  status: IDLE | CREATING | RESTORING | READY |
+          NOT_READY | FAILED | CANCELLED | EXPIRED
+  requestInFlight: boolean
+  prefetchStarted: boolean
+  pollTimer: Timer | null
+  error: string
+```
+
+Restore session giữ toàn bộ danh sách chunk để tính biên, nhưng tại một thời
+điểm chỉ chủ động restore/poll chunk hiện tại và tối đa một chunk look-ahead.
+Các cờ `requestInFlight` và `prefetchStarted` ngăn create/poll trùng.
+
+Mỗi session cần một `generation` hoặc cancellation token. Callback bất đồng bộ
+chỉ được cập nhật UI/player khi token vẫn thuộc session hiện tại. Invalidate
+session phải tăng token và hủy toàn bộ timer; không cần cancel restore job ở
+backend vì job có thể tiếp tục và được tái sử dụng.
+
+### 13.4. Tạo job và bắt đầu playback
+
+Với chunk cần phát, gọi một lần:
+
+```http
+POST /media/mserver/storage/restoreJob/create
+Content-Type: application/json
+
+{
+  "camera_id": "<camera>",
+  "stream_id": "<active-stream>",
+  "start_time": <chunk-start>,
+  "end_time": <chunk-end>,
+  "target_tier": "HOT",
+  "reason": "PLAYBACK"
+}
+```
+
+Nên truyền rõ `stream_id` đang phát. Nếu để trống, backend có thể restore tất cả
+stream phù hợp của camera trong window.
+
+Luồng xử lý response create:
+
+1. Luôn lấy `job_id` từ response, kể cả `job_created=false` vì backend có thể tái
+   sử dụng job đang chạy hoặc cache READY.
+2. Nếu snapshot đã `READY` và `playback_ready=true`, mở playback ngay.
+3. Nếu `RESTORING`, lưu snapshot và poll detail.
+4. Nếu là trạng thái terminal khác, dừng poll và hiển thị CTA phù hợp.
+5. Không gọi create lần nữa trong vòng polling.
+
+Chunk đầu READY thì gọi playback bằng timestamp người dùng chọn. Chunk sau READY
+sau khi player đã bị chặn tại biên thì mở lại playback bằng `chunk.startTime`.
+
+### 13.5. Polling, prefetch và chuyển chunk
+
+FE mới áp dụng các giá trị sau:
+
+- Poll `restoreJob/detail` mỗi 5 giây bằng POST JSON body
+  `{"job_id":"<job-id>"}`.
+- Cộng jitter ngẫu nhiên `0..249 ms` vào mỗi lần schedule.
+- Khi document bị ẩn, có thể tăng lên 10 giây hoặc tạm dừng theo lifecycle.
+- Lỗi mạng hoặc HTTP 5xx: giữ snapshot gần nhất và retry sau 5 giây cộng jitter;
+  không tạo job mới.
+- HTTP/business error không retry: code `914018` được ánh xạ `NOT_READY`; lỗi
+  khác được ánh xạ `FAILED`.
+- Dừng timer ngay khi snapshot không còn `RESTORING`.
+
+Khi playback đạt 80% thời lượng chunk hiện tại, gọi create cho chunk kế tiếp ở
+nền. Prefetch không hiển thị overlay nếu playback vẫn tiếp tục bình thường.
+
+Tại `current.endTime`:
+
+- Không còn chunk tiếp theo: kết thúc restore session và tiếp tục behavior kết
+  thúc range của player.
+- Chunk kế tiếp READY: chuyển `currentChunkIndex`, giữ URL/player hiện tại và
+  tiếp tục phát.
+- Chunk kế tiếp chưa READY: pause player, hiển thị overlay và tiếp tục poll.
+  Khi READY, mở lại playback tại đầu chunk kế tiếp.
+
+Nếu media reader tự dừng trong vòng 2 giây trước cuối chunk, xử lý giống như đã
+đến biên: chuyển sang chunk READY hoặc block chờ chunk kế tiếp.
+
+### 13.6. Overlay và thao tác người dùng
+
+Overlay chỉ bắt buộc hiển thị khi chunk hiện tại đang block playback. Nội dung
+dùng snapshot như phần 6:
+
+```text
+progress = clamp(segment_progress_percent, 0, 100)
+caption  = Đang khôi phục dữ liệu ... restored_segment_count/total_segment_count
+```
+
+Nếu `total_segment_count <= 0`, dùng progress indeterminate. Chỉ ẩn overlay và
+cho phát khi đồng thời thỏa:
+
+```text
+playback_status == READY && playback_ready == true
+```
+
+Nút “Thử lại/Khôi phục lại” reset state của đúng chunk về `IDLE`, xóa `jobId`
+cũ và gọi create lại bằng window của chunk đó. Nút dừng phải invalidate session,
+dừng player và hủy timer. Seek mới, đổi camera/stream/transport/ngày, chuyển Live,
+logout hoặc đổi server cũng phải invalidate session.
+
+### 13.7. Pseudocode tham chiếu
+
+```text
+requestReplay(T):
+    range = findRestoreRange(T)
+    invalidateCurrentSession()
+    if range == null:
+        seekNormally(T)
+        return
+
+    session = newSession(splitFrom(floor(T), range.end, 300 seconds))
+    pausePlayer()
+    restoreChunk(session.current, blocking=true)
+
+restoreChunk(chunk, blocking):
+    if chunk READY:
+        if blocking: resumeAt(chunk is first ? selectedTime : chunk.startTime)
+        return
+    if request already running or status is RESTORING/CREATING/terminal:
+        return
+
+    snapshot = POST restoreJob/create(chunk.window)
+    chunk.jobId = snapshot.job_id
+    applySnapshot(snapshot)
+
+applySnapshot(snapshot):
+    if callback does not belong to current generation: return
+    replace old snapshot
+    if READY && playback_ready:
+        stopPolling()
+        if current playback is blocked: resumeAtExpectedTimestamp()
+    else if playback_status == RESTORING:
+        scheduleDetailPoll(5 seconds + jitter)
+    else:
+        stopPolling()
+        renderTerminalAction()
+
+onPlaybackTime(wallTime):
+    if wallTime >= current.start + 80% * current.duration:
+        prefetchNextOnce()
+    if wallTime >= current.end:
+        if no next: finishSession()
+        else if next READY: advanceWithoutReopeningPlayer()
+        else: pauseAndBlockFor(next)
+```
+
+### 13.8. Checklist cho FE mới
+
+- [ ] Chỉ tạo restore job khi timeline đánh dấu `restore_required=true`.
+- [ ] Không gộp range khác `mediaServerId` hoặc tier.
+- [ ] Chunk đầu bắt đầu tại timestamp người dùng chọn; chunk tối đa 300 giây.
+- [ ] Truyền explicit active `stream_id` nếu chỉ phát một stream.
+- [ ] Lưu `job_id` kể cả khi `job_created=false`.
+- [ ] Chỉ phát khi `READY && playback_ready`.
+- [ ] Create và detail dùng `Content-Type: application/json` với JSON body.
+- [ ] Poll detail mỗi 5 giây; có jitter và backoff khi lỗi tạm thời.
+- [ ] Prefetch một chunk tại mốc 80%, không create trùng.
+- [ ] Có generation/cancellation token chống response cũ đổi player.
+- [ ] Backoff lỗi mạng/5xx; không gọi create trong vòng poll detail.
+- [ ] Invalidate timer/session khi thay đổi playback context.
+- [ ] Không đưa `secret` lên query string trong FE sản phẩm.
