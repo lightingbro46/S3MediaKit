@@ -99,6 +99,7 @@ private:
     toolkit::Ticker _ticker;
     Ptr _self_holder;
     std::string _restore_cache_job_id;
+    std::string _temporary_output_path;
     std::string _stage = "RESOLVING";
     float _progress_percent = 0.0f;
     bool _snap_started = false;

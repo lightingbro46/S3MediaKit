@@ -204,8 +204,6 @@ void registerPlaybackApis() {
             }
 
             GET_CONFIG(string, snap_root, API::kSnapRoot);
-            int expire_sec = 60;
-
             auto path = camera_id + "/" + stream_id;
             auto scan_path = File::absolutePath(path, snap_root) + "/";
             string filter_complex;

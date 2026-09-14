@@ -1,6 +1,7 @@
 #include <ctime>
 #include <cmath>
 #include <iomanip>
+#include <sys/stat.h>
 #include "Util/util.h"
 #include "Util/NoticeCenter.h"
 #include "Common/config.h"
@@ -42,6 +43,29 @@ static void cleanupFolder(const string folder) {
     });
 }
 
+static void cleanupFolder(const string &folder, time_t stale_before) {
+    if (folder.empty()) {
+        return;
+    }
+
+    size_t removed = 0;
+    File::scanDir(folder, [&](const string &path, bool is_dir) {
+        if (is_dir) {
+            cleanupFolder(path, stale_before);
+            return true;
+        }
+
+        struct stat file_stat;
+        if (::stat(path.c_str(), &file_stat) != 0 || file_stat.st_mtime >= stale_before) {
+            return true;
+        }
+        if (File::delete_file(path) == 0) {
+            ++removed;
+        }
+        return true;
+    }, false, true);
+}
+
 static void cleanCrashFiles() {
     vector<string> crash_file_paths;
     auto root_path = File::absolutePath("./", "");
@@ -67,6 +91,7 @@ void StorageManager::cleanupTemporaryFiles() {
     // reset ticker to elapse time
     _ticker.resetTime();
 
+    const time_t cleanup_started_at = time(nullptr);
     if (_next_cleanup_time == 0) {
         // only cleanup hls save path when the manager is started for the first time, 
         // to avoid deleting files created by other instances in cluster deployment
@@ -76,16 +101,17 @@ void StorageManager::cleanupTemporaryFiles() {
     }
     
     GET_CONFIG(string, snap_save_path, "api.snapRoot");
-    cleanupFolder(snap_save_path);
+    GET_CONFIG(float, thumbnail_timeout_sec, "ffmpeg.recorded_thumbnail_timeout_sec");
+    cleanupFolder(snap_save_path, cleanup_started_at - thumbnail_timeout_sec);
     DebugL << "Cleanup snap save path";
 
     GET_CONFIG(string, extract_save_path, "api.extractRoot")
-    cleanupFolder(extract_save_path);
+    cleanupFolder(extract_save_path, cleanup_started_at);
     DebugL << "Cleanup extract save path";
 
     GET_CONFIG(string, ffmpeg_log, "ffmpeg.log")
     auto parent_path = File::parentDir(ffmpeg_log);
-    cleanupFolder(parent_path);
+    cleanupFolder(parent_path, cleanup_started_at);
     DebugL << "Cleanup FFmpeg log files";
 
     if (_next_cleanup_time != 0) {

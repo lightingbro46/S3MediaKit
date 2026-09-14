@@ -11,6 +11,7 @@
 #include "Network/Socket.h"
 #include "Local/TimeQuery.h"
 #include "Transcode/OverlayPrivacyUtils.h"
+#include "Util/util.h"
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -704,6 +705,9 @@ RecordedThumbnailTask::~RecordedThumbnailTask() {
         TierStorageManager::Instance().releaseRestoreCache(_restore_cache_job_id);
     }
 #endif
+    if (!_temporary_output_path.empty()) {
+        File::delete_file(_temporary_output_path);
+    }
     for (const auto &path : _request.temporary_paths) {
         File::delete_file(path);
     }
@@ -796,6 +800,7 @@ bool RecordedThumbnailTask::tick() {
 
 void RecordedThumbnailTask::startSnap(const string &source_path) {
     float remaining_sec = 0.1f;
+    string temporary_output;
     {
         lock_guard<mutex> lock(_mutex);
         if (_completed || _snap_started)
@@ -805,10 +810,18 @@ void RecordedThumbnailTask::startSnap(const string &source_path) {
         _progress_percent = 0.0f;
         const float elapsed_sec = static_cast<float>(_ticker.elapsedTime()) / 1000.0f;
         remaining_sec = std::max(0.1f, _request.timeout_sec - elapsed_sec);
+        _temporary_output_path = _request.output_path + ".tmp." + makeRandStr(16);
+        temporary_output = _temporary_output_path;
     }
-    const string temporary_output = _request.output_path + ".tmp";
-    File::delete_file(temporary_output);
     Ptr self = shared_from_this();
+    if (!File::create_path(temporary_output, 0777) &&
+        !File::is_dir(File::parentDir(temporary_output))) {
+        Result result;
+        result.stage = "EXTRACTING";
+        result.error = "Unable to create thumbnail output directory";
+        complete(result);
+        return;
+    }
     FFmpegSnap::onSnap cb = [self](bool success, const string &error) {
         self->onSnap(success, error);
     };
@@ -823,14 +836,21 @@ void RecordedThumbnailTask::startSnap(const string &source_path) {
 }
 
 void RecordedThumbnailTask::onSnap(bool success, const string &error) {
-    const string temporary_output = _request.output_path + ".tmp";
+    string temporary_output;
     bool already_completed = false;
     {
         lock_guard<mutex> lock(_mutex);
         already_completed = _completed;
+        temporary_output = _temporary_output_path;
     }
     if (already_completed) {
         File::delete_file(temporary_output);
+        {
+            lock_guard<mutex> lock(_mutex);
+            if (_temporary_output_path == temporary_output) {
+                _temporary_output_path.clear();
+            }
+        }
         // The HTTP deadline may expire while FFmpeg is stopping. Keep the
         // restore lease and overlay inputs alive until this callback.
         releaseDeferredResources();
@@ -841,15 +861,30 @@ void RecordedThumbnailTask::onSnap(bool success, const string &error) {
     result.progress_percent = success ? 100.0f : 0.0f;
     result.error = error;
     if (success) {
-        File::delete_file(_request.output_path);
         if (rename(temporary_output.data(), _request.output_path.data()) != 0) {
-            File::delete_file(temporary_output);
-            result.error = "Unable to finalize thumbnail";
+            if (File::fileExist(_request.output_path) && File::fileSize(_request.output_path) > 0) {
+                File::delete_file(temporary_output);
+                result.success = true;
+            } else {
+                File::delete_file(_request.output_path);
+                if (rename(temporary_output.data(), _request.output_path.data()) == 0) {
+                    result.success = true;
+                } else {
+                    File::delete_file(temporary_output);
+                    result.error = "Unable to finalize thumbnail";
+                }
+            }
         } else {
             result.success = true;
         }
     } else {
         File::delete_file(temporary_output);
+    }
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_temporary_output_path == temporary_output) {
+            _temporary_output_path.clear();
+        }
     }
     complete(result);
     // If the HTTP timeout won the race after the completed check above,
