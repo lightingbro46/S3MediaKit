@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "Local/TierStorageBase.h"
+#include "Common/config.h"
+#include "Util/NoticeCenter.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 

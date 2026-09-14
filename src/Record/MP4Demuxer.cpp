@@ -297,7 +297,7 @@ static uint64_t findSegmentFiles(map<uint64_t, string> &files, const MediaTuple 
         duration = duration_;
         multi_files = ret;
     };
-    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
+    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, true, invoker);
     if (!flag) {
         // No one is listening to this event
     }
@@ -315,7 +315,7 @@ static uint64_t findSegmentDuration(const MediaTuple &tuple, const uint64_t &sta
     Broadcast::Seek2Invoker invoker = [&](const uint64_t &ret, const map<string, map<uint64_t, string>> &) {
         duration = ret;
     };
-    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, invoker);
+    auto flag = NOTICE_EMIT(BroadcastMediaSeeked2Args, Broadcast::kBroadcastMediaSeeked2, tuple, stamp, max_duration, false, invoker);
     if (!flag) {
         // No one is listening to this event
     }

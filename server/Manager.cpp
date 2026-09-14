@@ -223,13 +223,15 @@ void installManagerHook () {
                 // covering all streams.  Summing block.time_len() would double-count
                 // when both hi and lo blocks exist for the same timestamps.
                 duration = first_range.duration;
-                query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
-                    for (const auto &block : ret) {
-                        auto resolved_path = resolveRecordedBlockPath(block);
-                        if (!resolved_path.empty())
-                            files[block.stream()][block.start_time()] = resolved_path;
-                    }
-                });
+                if (resolve_recorded_block_path) {
+                    query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
+                        for (const auto &block : ret) {
+                            auto resolved_path = resolveRecordedBlockPath(block);
+                            if (!resolved_path.empty())
+                                files[block.stream()][block.start_time()] = resolved_path;
+                        }
+                    });
+                }
             }
         }
         invoker(duration, files);

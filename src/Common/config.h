@@ -150,7 +150,7 @@ extern const std::string kBroadcastMediaSeeked;
 using Seek2Invoker = std::function<void(const uint64_t&, const std::map<std::string, std::map<uint64_t, std::string>> &)>;
 // Broadcast for seeking rtsp/rtmp/http-flv events. Control playback seeking through this event.
 extern const std::string kBroadcastMediaSeeked2;
-#define BroadcastMediaSeeked2Args const MediaTuple& args, const uint64_t &stamp, const uint64_t &max_duration, const Broadcast::Seek2Invoker &invoker
+#define BroadcastMediaSeeked2Args const MediaTuple& args, const uint64_t &stamp, const uint64_t &max_duration, const bool &resolve_recorded_block_path, const Broadcast::Seek2Invoker &invoker
 
 // Inner map: stream_id → file_path (multiple streams can share the same timestamp)
 using RecordedMP4Invoker = std::function<void(const std::map<std::string, std::map<uint64_t, std::string>> &)>;
