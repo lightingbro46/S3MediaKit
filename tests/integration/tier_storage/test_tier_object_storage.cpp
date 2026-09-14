@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <curl/curl.h>
 
 #include "Local/TierObjectStorage.h"
 
@@ -23,6 +24,28 @@ std::string readFile(const std::string &path) {
     std::ostringstream output;
     output << input.rdbuf();
     return output.str();
+}
+
+size_t appendHttpBody(char *data, size_t size, size_t count, void *userdata) {
+    const size_t bytes = size * count;
+    static_cast<std::string *>(userdata)->append(data, bytes);
+    return bytes;
+}
+
+bool getPresignedObject(const std::string &url, std::string &body, long &status_code) {
+    CURL *curl = curl_easy_init();
+    if (!curl)
+        return false;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, appendHttpBody);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    const CURLcode result = curl_easy_perform(curl);
+    if (result == CURLE_OK)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
+    curl_easy_cleanup(curl);
+    return result == CURLE_OK;
 }
 
 class ObjectCleanup {
@@ -104,6 +127,19 @@ TEST(TierObjectStorageIntegrationTest, UploadsDownloadsAndDeletesExactSegment) {
 
     ASSERT_TRUE(storage.uploadSegment(pool_id, source_path, object_key));
     ASSERT_TRUE(storage.segmentExists(pool_id, object_key));
+    ASSERT_TRUE(storage.supportsPresignedRead(pool_id));
+    std::string presigned_url;
+    std::string presign_error;
+    ASSERT_TRUE(storage.createPresignedGetUrl(pool_id, object_key, 60,
+                                              presigned_url, presign_error))
+        << presign_error;
+    EXPECT_FALSE(presigned_url.empty());
+    EXPECT_NE(std::string::npos, presigned_url.find(object_key));
+    std::string presigned_body;
+    long presigned_status = 0;
+    ASSERT_TRUE(getPresignedObject(presigned_url, presigned_body, presigned_status));
+    EXPECT_EQ(200, presigned_status);
+    EXPECT_EQ(payload, presigned_body);
     ASSERT_TRUE(storage.downloadSegment(pool_id, object_key, download_path));
     EXPECT_EQ(payload, readFile(download_path));
 

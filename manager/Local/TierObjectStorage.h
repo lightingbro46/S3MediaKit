@@ -139,6 +139,13 @@ public:
      */
     bool segmentExists(const std::string &pool_id, const std::string &s3_key);
 
+    bool supportsPresignedRead(const std::string &pool_id) const;
+    bool createPresignedGetUrl(const std::string &pool_id,
+                               const std::string &s3_key,
+                               uint32_t ttl_seconds,
+                               std::string &out_url,
+                               std::string &out_error) const;
+
     // ------------------------------------------------------------------
     // Capacity / health stats
     // ------------------------------------------------------------------

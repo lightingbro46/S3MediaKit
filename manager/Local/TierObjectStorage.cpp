@@ -6,6 +6,7 @@
 #include "Util/util.h"
 #include "Util/TimeTicker.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -544,6 +545,38 @@ bool TierObjectStorage::segmentExists(const std::string &pool_id,
     return entry.client->HeadObject(req).IsSuccess();
 }
 
+bool TierObjectStorage::supportsPresignedRead(const std::string &pool_id) const {
+    std::lock_guard<std::mutex> lk(_mtx);
+    return _pool_map.count(pool_id) > 0;
+}
+
+bool TierObjectStorage::createPresignedGetUrl(const std::string &pool_id,
+                                               const std::string &s3_key,
+                                               uint32_t ttl_seconds,
+                                               std::string &out_url,
+                                               std::string &out_error) const {
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) {
+            out_error = "Object storage pool is not registered";
+            return false;
+        }
+        entry = it->second;
+    }
+    const uint32_t bounded_ttl = std::max<uint32_t>(1, std::min<uint32_t>(ttl_seconds, 7U * 24U * 3600U));
+    const Aws::String value = entry.client->GeneratePresignedUrl(
+        entry.bucket.c_str(), s3_key.c_str(), Aws::Http::HttpMethod::HTTP_GET, bounded_ttl);
+    if (value.empty()) {
+        out_error = "Failed to create a presigned object read URL";
+        return false;
+    }
+    out_url = value.c_str();
+    out_error.clear();
+    return true;
+}
+
 // ============================================================================
 // Capacity / health stats
 // ============================================================================
@@ -635,6 +668,13 @@ bool TierObjectStorage::deleteSegment(const std::string &, const std::string &) 
 bool TierObjectStorage::deleteSegmentsBatch(const std::string &,
                                               const std::vector<std::string> &) { return false; }
 bool TierObjectStorage::segmentExists(const std::string &, const std::string &) { return false; }
+bool TierObjectStorage::supportsPresignedRead(const std::string &) const { return false; }
+bool TierObjectStorage::createPresignedGetUrl(const std::string &, const std::string &,
+                                               uint32_t, std::string &,
+                                               std::string &out_error) const {
+    out_error = "Presigned object reads require ENABLE_AWS_SDK";
+    return false;
+}
 TierPoolStats TierObjectStorage::getPoolStats(const std::string &) { return {}; }
 
 #endif // ENABLE_AWS_SDK
