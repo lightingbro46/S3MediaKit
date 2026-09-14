@@ -85,6 +85,17 @@ assert.strictEqual(utils.findChunkIndex(chunks, 1720), -1, 'range end is exclusi
 assert.strictEqual(utils.prefetchThreshold(chunks[0]), 1240, 'prefetch starts at 80 percent');
 assert.strictEqual(utils.prefetchThreshold(chunks[2]), 1696, 'tail chunk uses its actual duration');
 
+const seekAlignedChunks = utils.splitRestoreRange(
+    { startTime: 1000, endTime: 1720 }, 300, 1120.75);
+assert.deepStrictEqual(seekAlignedChunks.map(function (chunk) {
+    return [chunk.startTime, chunk.endTime];
+}), [[1120, 1420], [1420, 1720]],
+'the first restore chunk must start at the selected playback timestamp');
+assert.deepStrictEqual(utils.splitRestoreRange(
+    { startTime: 1000, endTime: 1200 }, 300, 1190).map(function (chunk) {
+    return [chunk.startTime, chunk.endTime];
+}), [[1190, 1200]], 'a seek near the end must create one truncated restore chunk');
+
 assert.strictEqual(utils.playbackStatus({ status: 'PENDING' }), 'RESTORING');
 assert.strictEqual(utils.playbackStatus({ status: 'RUNNING' }), 'RESTORING');
 assert.strictEqual(utils.playbackStatus({ status: 'DONE', playback_ready: true }), 'READY');

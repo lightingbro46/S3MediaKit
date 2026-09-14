@@ -4142,7 +4142,7 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
             range.pool_id.empty())
             continue;
         for (const auto &file : collectSegmentFilesForRange(range)) {
-            if (file.start_time < start_time || file.start_time >= end_time)
+            if (file.end_time <= start_time || file.start_time >= end_time)
                 continue;
             if (!child_keys.insert(file.stream_id + "\n" + file.segment_path).second)
                 continue;

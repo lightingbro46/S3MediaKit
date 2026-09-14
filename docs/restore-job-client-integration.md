@@ -371,11 +371,11 @@ Player Console dùng trực tiếp metadata `tier` và `restore_required` trong 
 period của `GET /media/esc/recordedTimePeriod?periodType=2&detail=1`. Không cần
 gọi thêm API storage timeline để tô dữ liệu COLD.
 
-Các period `restore_required=true` liền nhau được chuẩn hóa thành một range và
-chia từ đầu range thành các chunk tối đa 300 giây. Khi người dùng chọn một
-timestamp trong range:
+Các period `restore_required=true` liền nhau được chuẩn hóa thành một range.
+Khi người dùng chọn một timestamp trong range, chunk đầu tiên bắt đầu đúng tại
+timestamp đó; các chunk tiếp theo nối tiếp nhau và dài tối đa 300 giây:
 
-1. Gọi `restoreJob/create` cho chunk chứa timestamp và chỉ mở playback khi
+1. Gọi `restoreJob/create` cho chunk bắt đầu tại timestamp và chỉ mở playback khi
    `playback_status=READY && playback_ready=true`.
 2. Khi media timestamp đạt 80% chunk hiện tại, create/poll chunk kế tiếp ở nền.
 3. Nếu chunk kế tiếp READY trước biên, giữ URL hiện tại và tiếp tục phát.

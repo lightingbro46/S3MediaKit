@@ -64,11 +64,14 @@
         return merged;
     }
 
-    function splitRestoreRange(range, chunkSeconds) {
+    function splitRestoreRange(range, chunkSeconds, selectedWallTime) {
         var size = Math.max(1, Math.floor(_number(chunkSeconds) || CHUNK_SECONDS));
         var chunks = [];
         if (!range || range.endTime <= range.startTime) return chunks;
-        for (var start = range.startTime; start < range.endTime; start += size) {
+        var requestedStart = Math.floor(_number(selectedWallTime));
+        var firstStart = requestedStart >= range.startTime && requestedStart < range.endTime
+            ? requestedStart : range.startTime;
+        for (var start = firstStart; start < range.endTime; start += size) {
             chunks.push({
                 startTime: start,
                 endTime: Math.min(range.endTime, start + size),
@@ -466,7 +469,10 @@
             }
 
             invalidateSession();
-            var chunks = splitRestoreRange(restoreRange, CHUNK_SECONDS);
+            // The first restore window starts at the exact seek position. This
+            // avoids downloading the unused beginning of a large COLD range;
+            // subsequent windows remain contiguous for prefetch.
+            var chunks = splitRestoreRange(restoreRange, CHUNK_SECONDS, wallTime);
             var chunkIndex = findChunkIndex(chunks, wallTime);
             if (chunkIndex < 0) return;
             var cameraId = (document.getElementById('camera-id').value || '').trim();
