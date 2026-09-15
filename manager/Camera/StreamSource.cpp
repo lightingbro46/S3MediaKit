@@ -249,6 +249,7 @@ TranslationInfo StreamSource::getTranslationInfo() {
     auto media_src = MediaSource::find(RTSP_SCHEMA, _option.tuple.vhost, _option.tuple.device_id, _option.tuple.stream_id);
     if (media_src) {
         info.byte_speed = media_src->getBytesSpeed();
+        info.total_bytes = media_src->getTotalBytes();
         info.start_time_stamp = media_src->getCreateStamp();
         info.stream_info.clear();
         auto tracks = media_src->getTracks();

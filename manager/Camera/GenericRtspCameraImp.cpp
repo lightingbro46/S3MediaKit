@@ -256,11 +256,19 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
             info = &data.get<mediakit::TranslationInfo>();
         }
         std::string updated_status = status;
-        // if stream status is live and byte speed is too low, set to offline to avoid false positive
-        if (live && current_stream_live == live && info && info->byte_speed < 1024) {
-            WarnL << "Camera " << _src->getUrl() << " stream type "<< type << " status not changed and byte speed is too low (" << info->byte_speed << " B/s). Set stream status to offline";
+        if (!isValidStreamType(type)) {
+            WarnL << "Invalid stream type in onStreamReady: " << type;
+            return;
+        }
+        if (!live) {
+            resetMediaHealth(type);
+        } else if (info && updateMediaHealth(type, *info)) {
+            WarnL << "Camera " << _src->getUrl() << " stream type " << type
+                   << " has no media byte progress for " << static_cast<int>(_no_progress_samples[type])
+                   << " consecutive samples (byte_speed=" << info->byte_speed
+                   << " B/s, total_bytes=" << info->total_bytes << ")";
             live = false;
-            updated_status = "Byte speed too low, less than 1KB/s";
+            updated_status = (StrPrinter << "Byte speed too low (" << info->byte_speed << " B/s), stream considered stalled");
         }
         strong_statistic->addStreamStatistic(type, live, updated_status, info);
     }
@@ -280,6 +288,42 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
     DebugL << "Sent stream ready event for camera " << _src->getUrl() << " live=" << live << ", status=" << status;
 #endif
     }
+}
+
+void GenericRtspCameraImp::resetMediaHealth(int type) {
+    _last_total_bytes[type] = 0;
+    _no_progress_samples[type] = 0;
+    _media_health_initialized[type] = false;
+    _media_stalled[type] = false;
+}
+
+bool GenericRtspCameraImp::updateMediaHealth(int type, const mediakit::TranslationInfo &info) {
+    if (!_media_health_initialized[type]) {
+        _last_total_bytes[type] = info.total_bytes;
+        _no_progress_samples[type] = 0;
+        _media_health_initialized[type] = true;
+        return false;
+    }
+
+    if (info.total_bytes > _last_total_bytes[type]) {
+        _last_total_bytes[type] = info.total_bytes;
+        _no_progress_samples[type] = 0;
+        _media_stalled[type] = false;
+        return false;
+    }
+
+    _last_total_bytes[type] = info.total_bytes;
+    // If the byte speed is greater than 1024 B/s, we consider the stream to be healthy even if the total bytes haven't increased, 
+    // because it may be a temporary pause in data. Otherwise, we increment the no-progress sample count and check if it exceeds the threshold for considering the stream stalled.
+    if (info.byte_speed >= 1024 || ++_no_progress_samples[type] < 2) {
+        return false;
+    }
+
+    if (_media_stalled[type]) {
+        return false;
+    }
+    _media_stalled[type] = true;
+    return true;
 }
 
 void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect, const std::string &status, const toolkit::Any &data) {

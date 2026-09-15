@@ -82,6 +82,10 @@ private:
 
     void saveTransportsSupport();
 
+    void resetMediaHealth(int type);
+
+    bool updateMediaHealth(int type, const mediakit::TranslationInfo &info);
+
 private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;
@@ -93,6 +97,10 @@ private:
     StreamSink::Ptr _sink;
     RecordScheduler::Ptr _scheduler;
     std::weak_ptr<CameraStatisticImp> _statistic;
+    uint64_t _last_total_bytes[StreamMax] = {0, 0};
+    uint8_t _no_progress_samples[StreamMax] = {0, 0};
+    bool _media_health_initialized[StreamMax] = {false, false};
+    bool _media_stalled[StreamMax] = {false, false};
 };
 
 } // namespace managerkit

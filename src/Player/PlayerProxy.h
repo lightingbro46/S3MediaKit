@@ -38,11 +38,13 @@ struct TranslationInfo
 {
     std::vector<StreamInfo> stream_info;
     int byte_speed;
+    uint64_t total_bytes;
     uint64_t start_time_stamp;
 
     TranslationInfo()
     {
         byte_speed = -1;
+        total_bytes = 0;
         start_time_stamp = 0;
     }
 };
