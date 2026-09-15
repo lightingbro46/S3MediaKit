@@ -166,7 +166,7 @@ void registerPlaybackApis() {
                                         if (block) {
                                             selected_block = *block;
                                             has_selected_block = true;
-                                            pos_time = block->start_time() + block->time_len() - 10;
+                                            pos_time = block->time_len() > 10 ? (block->start_time() + block->time_len() - 10): block->start_time();
                                             diff_time = pos_time - block->start_time();
                                             src_path = decodeBase64(block->file_path());
                                         }
