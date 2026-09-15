@@ -152,21 +152,25 @@ void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(Camer
             auto saved_path = path + "/info.txt";
             if (File::fileExist(saved_path) && File::fileSize(saved_path) > 0) {
                 DebugL << "Found saved file: " << saved_path << ". Loading...";
-                auto imp = std::make_shared<CameraStatisticImp>(saved_path);
-                weak_ptr<StatisticRecorder> weak_self = shared_from_this();
-                imp->setOnRemove([weak_self](const string &device_id) {
-                    auto strong_self = weak_self.lock();
-                    if (!strong_self) {
-                        return;
+                try {
+                    auto imp = std::make_shared<CameraStatisticImp>(saved_path);
+                    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
+                    imp->setOnRemove([weak_self](const string &device_id) {
+                        auto strong_self = weak_self.lock();
+                        if (!strong_self) {
+                            return;
+                        }
+                        strong_self->removeRecorder(device_id);
+                    });
+                    auto stats = imp->getParams();
+                    {
+                        std::lock_guard<std::mutex> lock(_mtx_stats);
+                        _cam_stats_map.emplace(stats.tuple.device_id, imp);
                     }
-                    strong_self->removeRecorder(device_id);
-                });
-                auto stats = imp->getParams();
-                {
-                    std::lock_guard<std::mutex> lock(_mtx_stats);
-                    _cam_stats_map.emplace(stats.tuple.device_id, imp);
+                    invoker(imp);
+                } catch (const exception &ex) {
+                    WarnL << "Load saved file failed: " << saved_path << ": " << ex.what();
                 }
-                invoker(imp);
                 return true;
             }
             WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
@@ -189,6 +193,7 @@ void StatisticRecorder::loadSavedSpeakerStatistics(const std::function<void(Spea
                     if (!strong_self) {
                         return;
                     }
+                    strong_self->removeSpeakerRecorder(device_id);
                 });
                 auto stats = imp->getParams();
                 {

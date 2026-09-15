@@ -21,7 +21,6 @@ namespace FFmpeg {
     extern const std::string kBin;
     extern const std::string kExtract;
     extern const std::string kRecordedThumbnailTimeoutSec;
-    extern const std::string kExtractRestoreTimeoutSec;
 }
 
 class FFmpegSnap {

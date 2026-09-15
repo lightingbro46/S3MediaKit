@@ -91,7 +91,6 @@ void StorageManager::cleanupTemporaryFiles() {
     // reset ticker to elapse time
     _ticker.resetTime();
 
-    const time_t cleanup_started_at = time(nullptr);
     if (_next_cleanup_time == 0) {
         // only cleanup hls save path when the manager is started for the first time, 
         // to avoid deleting files created by other instances in cluster deployment
@@ -101,17 +100,16 @@ void StorageManager::cleanupTemporaryFiles() {
     }
     
     GET_CONFIG(string, snap_save_path, "api.snapRoot");
-    GET_CONFIG(float, thumbnail_timeout_sec, "ffmpeg.recorded_thumbnail_timeout_sec");
-    cleanupFolder(snap_save_path, cleanup_started_at - thumbnail_timeout_sec);
+    cleanupFolder(snap_save_path);
     DebugL << "Cleanup snap save path";
 
     GET_CONFIG(string, extract_save_path, "api.extractRoot")
-    cleanupFolder(extract_save_path, cleanup_started_at);
+    cleanupFolder(extract_save_path);
     DebugL << "Cleanup extract save path";
 
     GET_CONFIG(string, ffmpeg_log, "ffmpeg.log")
     auto parent_path = File::parentDir(ffmpeg_log);
-    cleanupFolder(parent_path, cleanup_started_at);
+    cleanupFolder(parent_path);
     DebugL << "Cleanup FFmpeg log files";
 
     if (_next_cleanup_time != 0) {
