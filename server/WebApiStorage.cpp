@@ -326,9 +326,21 @@ void registerStorageApis() {
 
         Json::Value items = Json::arrayValue;
         PolicyAssignmentImp assignment_imp;
+        int total_device_count = CameraManager::Instance().getCameraKeys().size();
+        int total_applied_count = 0;
+        auto system_default_policy_id = TierStorageManager::Instance().getSystemDefaultPolicyId();
         for (const auto &p : policies) {
+            if (p.id == system_default_policy_id) continue; // skip system default policy for now
             const int applied_count = static_cast<int>(assignment_imp.findCamerasByPolicyId(p.id).size());
+            total_applied_count += applied_count;
             items.append(TierStorageBase::policySummaryToJson(p, applied_count));
+        }
+        // Add the system default policy with the remaining camera count
+        for (const auto &p : policies) {
+            if (p.id == system_default_policy_id) {
+                items.append(TierStorageBase::policySummaryToJson(p, total_device_count - total_applied_count));
+                break;
+            }
         }
 
         Json::Value data;

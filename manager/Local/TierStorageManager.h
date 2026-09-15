@@ -338,6 +338,10 @@ public:
                                  int64_t end_time,
                                  int64_t file_size);
 
+    std::string getSystemDefaultHotPoolId() const;
+
+    std::string getSystemDefaultPolicyId() const;
+
 private:
     TierStorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);
 
@@ -354,13 +358,9 @@ private:
     void enforcePolicyDeleteRetention(const std::string &camera_id,
                                       const StoragePolicy &policy);
 
-    std::string getSystemDefaultHotPoolId() const;
-
     void ensureDefaultHotPool();
 
     void ensureSystemDefaultPolicy();
-
-    std::string getSystemDefaultPolicyId() const;
 
     bool queueTierMoveJob(const SegmentTierRange &range,
                           const PolicyTierConfig &src_tier_cfg,
