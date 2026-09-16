@@ -100,8 +100,8 @@ public:
         _local_imp->remove(guid); // local-only first
         _rstatus_imp->remove(guid);
         _kvpair_imp->remove(guid);
-        _assign_imp->remove(guid);
         _resource_imp->remove(guid);
+        releaseResource(guid, getSelfNodeId());
         DebugL << "Removed resource with guid " << guid;
     }
 
@@ -170,8 +170,9 @@ public:
         assign.assigned_at    = static_cast<int64_t>(time(nullptr));
         assign.released_at    = 0;
         assign.assign_type    = static_cast<int>(type);
+        assign.prev_peer_id   = current.empty() ? "" : current[0].owner_peer_id;
         _assign_imp->add(assign);
-        InfoL << "Assigning resource " << resource_guid << " to peer " << peer_id;
+        InfoL << "Assigning resource " << resource_guid << " to peer " << peer_id << ", type " << static_cast<int>(assign.assign_type) << ", prev peer " << assign.prev_peer_id;
     }
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {

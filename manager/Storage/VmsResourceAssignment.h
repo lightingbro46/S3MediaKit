@@ -107,6 +107,7 @@ public:
             if (!existing.empty()) {
                 updateById(assign);
             } else {
+                if (isStaleActiveAssignment(assign)) return;
                 save(assign, true);
             }
         }
@@ -141,6 +142,7 @@ public:
             if (!existing.empty()) {
                 updateByIdWithTxn(assign, txn);
             } else {
+                if (isStaleActiveAssignment(assign)) return;
                 saveWithTxn(assign, txn, true);
             }
         }
@@ -223,6 +225,14 @@ public:
     }
 
 private:
+    // Check if the incoming assignment is stale compared to the current active assignment.
+    bool isStaleActiveAssignment(const VmsResourceAssignment &incoming) {
+        if (incoming.released_at != 0) return false;
+        auto current = findCurrentAssignment(incoming.resource_guid);
+        if (current.empty()) return false;
+        return incoming.assigned_at <= current[0].assigned_at;
+    }
+
     TransactionLogImp::Ptr _log_impl;
 
 public:

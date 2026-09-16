@@ -154,9 +154,9 @@ bool CameraManager::delCamera(const string &key) {
                                         << ", keepArchivedMaxForAuto: " << option_copy.keepArchivedMaxForAuto
                                         << ", keepArchivedMaxFor: " << option_copy.keepArchivedMaxFor;
                                     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
-                                    poller->async([imp, option]() {
+                                    poller->async([imp, option_copy]() {
                                         imp->setSyncMode(false); // disable sync mode to avoid sync to ESC
-                                        imp->setCameraOption(option);
+                                        imp->setCameraOption(option_copy);
                                     });
                                 }
                             } else {

@@ -22,6 +22,50 @@ Tuy nhiên, FE/admin dashboard có thể sử dụng để **giám sát trạng 
 
 ## Kiến trúc đồng bộ
 
+## Quy tắc phân phối camera và failover
+
+Service API bên ngoài là authority duy nhất quyết định camera thuộc node nào. Media server không tự election, không tự promote camera khi peer offline và không dùng `SyncManager` để phân phối camera.
+
+Luồng chuẩn trên mỗi media server là:
+
+```text
+Service API -> loadServerConfigJson(data_api) -> CameraManager::addCamera()
+             -> setCameraOption() -> assign/release resource
+```
+
+`SyncManager` chỉ đồng bộ dữ liệu DB giữa các node: cấu hình camera, trạng thái resource và lịch sử assignment. Việc node failover nào nhận camera phải được service API gửi lại bằng cấu hình camera đầy đủ, bao gồm `device_id`, `streamUrls` và các policy recording.
+
+### Move camera
+
+1. Service API gửi cấu hình `enableActive=false` cho node cũ để node cũ release assignment.
+2. Service API gửi cấu hình `enableActive=true` cho node mới.
+3. Node mới gọi `addCamera()` và tạo assignment mới.
+4. Assignment cũ được đóng bằng `released_at`; lịch sử không bị xóa.
+
+Mỗi assignment có `ownershipGeneration`. Service API nên tăng giá trị này cho
+mỗi lần move/failover. Media server từ chối assignment có generation nhỏ hơn
+generation hiện tại, giúp node cũ reconnect không giành lại camera. Payload cũ
+không có field này được hỗ trợ bằng cách tự tăng generation cục bộ.
+
+### Xóa camera
+
+Service API loại camera khỏi danh sách phân phối. Node sẽ xóa resource/config/status hiện tại và release assignment active nếu cần, nhưng không xóa các dòng `vms_resource_assignment` đã ghi nhận lịch sử ownership.
+
+### Node offline và failover
+
+1. Service API phát hiện node chính offline.
+2. Service API chọn node failover và gửi lại toàn bộ cấu hình camera cho node đó.
+3. Node failover chỉ khởi tạo camera khi nhận được cấu hình API, sau đó ghi assignment loại `FAILOVER`.
+4. Khi node chính trở lại, service API quyết định move-back; media server chỉ áp dụng cấu hình mới.
+
+Nếu service API không gửi cấu hình failover, DB sync một mình không làm camera chạy trên node khác.
+
+### Dữ liệu ESC
+
+`vms_kvpair` chỉ chứa cấu hình camera shared, trong đó `streamUrls` là cấu hình link RTSP và phải được đồng bộ. Các runtime statistic như stream status, transport và storage statistic không được ghi vào ESC resource KV.
+
+`vms_resource_assignment` là append-only history về owner theo thời gian. Không dùng thao tác xóa toàn bộ assignment khi xóa camera.
+
 ### Mô hình Multi-node
 
 ```
