@@ -2,6 +2,8 @@
 
 ## Tổng quan
 
+Media server phải được build với `-DENABLE_SYNC_CHANGES=ON` để bật engine và các API đồng bộ database giữa các node. Tắt option này sẽ loại bỏ đồng bộ transaction/snapshot giữa node; đồng bộ camera với ESC vẫn là luồng độc lập.
+
 Nhóm API `sync` cung cấp cơ chế **đồng bộ dữ liệu giữa các media server node** trong hệ thống multi-node ESC. Đây là API **nội bộ** (internal), được thiết kế để các node gọi lẫn nhau — **không phải để FE client gọi trực tiếp** trong luồng thông thường.
 
 Tuy nhiên, FE/admin dashboard có thể sử dụng để **giám sát trạng thái đồng bộ** hoặc **trigger đồng bộ thủ công** khi cần debug.

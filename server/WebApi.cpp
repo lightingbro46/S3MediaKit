@@ -3399,8 +3399,10 @@ void installWebApi() {
     managerkit::registerControlApis();
     // Motion detection APIs
     managerkit::registerMotionDetectionApis();
+#ifdef ENABLE_SYNC_CHANGES
     // Sync APIs
     managerkit::registerSyncDbApis();
+#endif
     // Monitor APIs
     managerkit::registerMonitorApis();
     // Storage tiering APIs

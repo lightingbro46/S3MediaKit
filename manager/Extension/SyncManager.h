@@ -1,6 +1,8 @@
 #ifndef STORAGE_SYNC_MANAGER_H
 #define STORAGE_SYNC_MANAGER_H
 
+#ifdef ENABLE_SYNC_CHANGES
+
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -146,5 +148,7 @@ private:
 };
 
 } // namespace managerkit
+
+#endif // ENABLE_SYNC_CHANGES
 
 #endif // STORAGE_SYNC_MANAGER_H

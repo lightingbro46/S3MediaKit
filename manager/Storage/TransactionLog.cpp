@@ -11,6 +11,12 @@ using namespace mediakit;
 namespace managerkit {
 
 void TransactionLogImp::appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload) {
+#ifndef ENABLE_SYNC_CHANGES
+    (void)table;
+    (void)op;
+    (void)payload;
+    return;
+#else
     // Serialize all callers (across every TransactionLogImp instance) to prevent
     // a read-modify-write race where two concurrent calls both read the same
     // current_seq, compute the same next sequence, and then one INSERT succeeds
@@ -39,6 +45,7 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     log.tran_data = StrJsonUtils::writeJsonString(tran_data_json);
 
     add(log);
+#endif // ENABLE_SYNC_CHANGES
 }
 
 } // namespace managerkit

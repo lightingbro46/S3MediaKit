@@ -12,6 +12,8 @@
 #include "Extension/Resource.h"
 #include <random>
 
+#ifdef ENABLE_SYNC_CHANGES
+
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
@@ -844,3 +846,5 @@ Json::Value SyncManager::getMiscData() {
 }
 
 } // namespace managerkit
+
+#endif // ENABLE_SYNC_CHANGES

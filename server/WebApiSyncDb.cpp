@@ -1,3 +1,5 @@
+#ifdef ENABLE_SYNC_CHANGES
+
 #include "WebApi.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
@@ -75,3 +77,5 @@ void registerSyncDbApis() {
 }
 
 } // namespace managerkit
+
+#endif // ENABLE_SYNC_CHANGES
