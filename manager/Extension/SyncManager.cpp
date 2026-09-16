@@ -3,6 +3,7 @@
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionPeerAckLog.h"
 #include "Storage/VmsResource.h"
+#include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsKvPair.h"
 #include "Storage/VmsResourceAssignment.h"
 #include "Storage/BookmarkIndex.h"
@@ -85,6 +86,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
     snap.sequences           = Json::arrayValue;
     snap.vms_resource        = Json::arrayValue;
     snap.vms_kvpair          = Json::arrayValue;
+    snap.vms_resource_status = Json::arrayValue;
     snap.resource_assignment = Json::arrayValue;
     snap.bookmark_index      = Json::arrayValue;
 
@@ -126,7 +128,18 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                 snap.vms_kvpair.append(EntityTraits<VmsKvPair>::fromRow(r).toJson());
             }
         }
-        // Step 4: vms_resource_assignment
+        // Step 4: vms_resource_status
+        {
+            auto sql = QueryBuilder()
+                           .select(EntityTraits<VmsResourceStatus>::getColumns())
+                           .from(EntityTraits<VmsResourceStatus>::tableName())
+                           .build();
+            auto rows = executor->executeRawWithTxn(txn, sql);
+            for (const auto &r : rows) {
+                snap.vms_resource_status.append(EntityTraits<VmsResourceStatus>::fromRow(r).toJson());
+            }
+        }
+        // Step 5: vms_resource_assignment
         {
             auto sql = QueryBuilder()
                            .select(EntityTraits<VmsResourceAssignment>::getColumns())
@@ -137,7 +150,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                 snap.resource_assignment.append(EntityTraits<VmsResourceAssignment>::fromRow(r).toJson());
             }
         }
-        // Step 5: bookmark_index
+        // Step 6: bookmark_index
         {
             auto sql = QueryBuilder()
                            .select(EntityTraits<BookmarkIndex>::getColumns())
@@ -163,6 +176,7 @@ string SnapshotBuilder::serialize(const SnapshotData &snap) {
     root["sequences"]           = snap.sequences;
     root["vms_resource"]        = snap.vms_resource;
     root["vms_kvpair"]          = snap.vms_kvpair;
+    root["vms_resource_status"] = snap.vms_resource_status;
     root["resource_assignment"] = snap.resource_assignment;
     root["bookmark_index"]      = snap.bookmark_index;
     return StrJsonUtils::writeJsonString(root);
@@ -180,6 +194,7 @@ SnapshotData SnapshotBuilder::deserialize(const string &json_body) {
     snap.sequences           = root["sequences"];
     snap.vms_resource        = root["vms_resource"];
     snap.vms_kvpair          = root["vms_kvpair"];
+    snap.vms_resource_status = root["vms_resource_status"];
     snap.resource_assignment = root["resource_assignment"];
     snap.bookmark_index      = root["bookmark_index"];
     return snap;
@@ -229,6 +244,7 @@ void SyncManager::start() {
     // and add one registerTable() call here.
     registerTable(EntityTraits<VmsResource>::tableName(),           VmsResourceImp::makeSyncHandler());
     registerTable(EntityTraits<VmsKvPair>::tableName(),             VmsKvPairImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsResourceStatus>::tableName(),     VmsResourceStatusImp::makeSyncHandler());
     registerTable(EntityTraits<VmsResourceAssignment>::tableName(), VmsResourceAssignmentImp::makeSyncHandler());
     registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
 
@@ -497,6 +513,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
     const std::pair<std::string, const Json::Value *> snap_tables[] = {
         {EntityTraits<VmsResource>::tableName(),           &snap.vms_resource},
         {EntityTraits<VmsKvPair>::tableName(),             &snap.vms_kvpair},
+        {EntityTraits<VmsResourceStatus>::tableName(),     &snap.vms_resource_status},
         {EntityTraits<VmsResourceAssignment>::tableName(), &snap.resource_assignment},
         {EntityTraits<BookmarkIndex>::tableName(),         &snap.bookmark_index},
     };

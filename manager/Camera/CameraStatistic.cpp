@@ -1212,56 +1212,23 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("motionPreRecordSec",         std::to_string(opt.motionPreRecordSec)));
         kvs.push_back(make("motionPostRecordSec",        std::to_string(opt.motionPostRecordSec)));
 
+        // ── additional shared camera configuration ───────────────────────
+        kvs.push_back(make("sdCardSyncEnabled",          std::to_string(opt.sdCardSyncEnabled)));
+        kvs.push_back(make("sdCardSyncAutoSyncEnabled",  std::to_string(opt.sdCardSyncAutoSyncEnabled)));
+        kvs.push_back(make("sdCardSyncMinSegmentGapSec", std::to_string(opt.sdCardSyncMinSegmentGapSec)));
+        kvs.push_back(make("sdCardSyncRetryCount",       std::to_string(opt.sdCardSyncRetryCount)));
+        kvs.push_back(make("enforceWatermarkOnView",     std::to_string(opt.enforceWatermarkOnView)));
+        kvs.push_back(make("watermarkExcludedRoleIds",   opt.watermarkExcludedRoleIds));
+        kvs.push_back(make("watermarkTemplate",          opt.watermarkTemplate));
+        kvs.push_back(make("enforcePrivacyMaskOnView",   std::to_string(opt.enforcePrivacyMaskOnView)));
+        kvs.push_back(make("privacyMaskExcludedRoleIds", opt.privacyMaskExcludedRoleIds));
+        kvs.push_back(make("privacyMaskRegions",          opt.privacyMaskRegions));
+
         // ── stream urls (synced so peers know where to pull) ──────────────
         Json::Value streamUrls = Json::objectValue;
         streamUrls[std::to_string(PrimaryStream)]   = makeStreamTupleJson(stats.stream_map, PrimaryStream);
         streamUrls[std::to_string(SecondaryStream)] = makeStreamTupleJson(stats.stream_map, SecondaryStream);
         kvs.push_back(make("streamUrls", StrJsonUtils::writeJsonString(streamUrls)));
-
-        // ── stream statistic (synced so peers know where to pull) ──────────────
-        Json::Value mediaStreams = Json::objectValue;
-        mediaStreams[std::to_string(PrimaryStream)]   = makeStreamStatisticJson(stats.sinfo_map, PrimaryStream);
-        mediaStreams[std::to_string(SecondaryStream)] = makeStreamStatisticJson(stats.sinfo_map, SecondaryStream);
-        kvs.push_back(make("mediaStreams", StrJsonUtils::writeJsonString(mediaStreams)));
-
-        kvs.push_back(make("transportStats", StrJsonUtils::writeJsonString(makeTransportStatsJson(stats.transport_stats))));
-
-        // ── storage info (synced so peers know where to pull) ──────────────
-        Json::Value storage_info = Json::objectValue;
-        auto bm_json = makeBookmarkStatsJson(stats.bm);
-        storage_info["bookmarkStats"] = bm_json;
-
-        auto motion_json = makeMotionStorageStatsJson(stats.motion_stats);
-        storage_info["motionStats"] = motion_json;
-
-        Json::Value stream_storage_json = Json::arrayValue;
-        auto it_primary = stats.stream_map.find(PrimaryStream);
-        if (it_primary != stats.stream_map.end()) {
-            Json::Value stream_json = Json::objectValue;
-            auto stream_id = it_primary->second.stream_id;
-            stream_json["key"] = stream_id;
-            stream_json["value"] = Json::objectValue;
-            if (stats.storage_map.find(stream_id) != stats.storage_map.end()) {
-                stream_json["value"] = makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, PrimaryStream);
-            }
-            stream_storage_json.append(stream_json);
-        }
-
-        auto it_secondary = stats.stream_map.find(SecondaryStream);
-        if (it_secondary != stats.stream_map.end()) {
-            Json::Value stream_json = Json::objectValue;
-            auto stream_id = it_secondary->second.stream_id;
-            stream_json["key"] = stream_id;
-            stream_json["value"] = Json::objectValue;
-            if (stats.storage_map.find(stream_id) != stats.storage_map.end()) {
-                stream_json["value"] = makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, SecondaryStream);
-            }
-            stream_storage_json.append(stream_json);
-        }
-        storage_info["streamStorageInfos"] = stream_storage_json;
-        storage_info["lastUpdateTimeMs"] = (Json::UInt64)(stats.updated_at * 1000);
-
-        kvs.push_back(make("storageInfos", StrJsonUtils::writeJsonString(storage_info)));
 
         return kvs;
     }
@@ -1277,7 +1244,7 @@ struct ResourceAdapter<CameraStatistic> {
             return props;
         };
         // add if needed, currently no local property for camera statistic
-        props.push_back(make("recordRootPath", stats.option.recordRootPath));
+        // props.push_back(make("recordRootPath", stats.option.recordRootPath));
         return props;
     }
 
@@ -1369,30 +1336,31 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.motionPreRecordSec = std::stoi(kv.value);
                 } else if (kv.name == "motionPostRecordSec") {
                     stats.option.motionPostRecordSec = std::stoi(kv.value);
+                } else if (kv.name == "sdCardSyncEnabled") {
+                    stats.option.sdCardSyncEnabled = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "sdCardSyncAutoSyncEnabled") {
+                    stats.option.sdCardSyncAutoSyncEnabled = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "sdCardSyncMinSegmentGapSec") {
+                    stats.option.sdCardSyncMinSegmentGapSec = std::stoi(kv.value);
+                } else if (kv.name == "sdCardSyncRetryCount") {
+                    stats.option.sdCardSyncRetryCount = std::stoi(kv.value);
+                } else if (kv.name == "enforceWatermarkOnView") {
+                    stats.option.enforceWatermarkOnView = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "watermarkExcludedRoleIds") {
+                    stats.option.watermarkExcludedRoleIds = kv.value;
+                } else if (kv.name == "watermarkTemplate") {
+                    stats.option.watermarkTemplate = kv.value;
+                } else if (kv.name == "enforcePrivacyMaskOnView") {
+                    stats.option.enforcePrivacyMaskOnView = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "privacyMaskExcludedRoleIds") {
+                    stats.option.privacyMaskExcludedRoleIds = kv.value;
+                } else if (kv.name == "privacyMaskRegions") {
+                    stats.option.privacyMaskRegions = kv.value;
                 } else if (kv.name == "streamUrls") {
                     Json::Value streamUrls_json;
                     StrJsonUtils::readJsonString(kv.value, streamUrls_json);
                     stats.stream_map[PrimaryStream]   = getStreamTuple(streamUrls_json[std::to_string(PrimaryStream)],   stats.tuple, PrimaryStream);
                     stats.stream_map[SecondaryStream] = getStreamTuple(streamUrls_json[std::to_string(SecondaryStream)], stats.tuple, SecondaryStream);
-                } else if (kv.name == "mediaStreams") {
-                    Json::Value mediaStreams_json;
-                    StrJsonUtils::readJsonString(kv.value, mediaStreams_json);
-                    stats.sinfo_map[PrimaryStream]   = getStreamStatistic(mediaStreams_json[std::to_string(PrimaryStream)]);
-                    stats.sinfo_map[SecondaryStream] = getStreamStatistic(mediaStreams_json[std::to_string(SecondaryStream)]);
-                } else if (kv.name == "transportStats") {
-                    Json::Value transport_stats_json;
-                    StrJsonUtils::readJsonString(kv.value, transport_stats_json);
-                    stats.transport_stats = getTransportStats(transport_stats_json);
-                } else if (kv.name == "storageInfos") {
-                    Json::Value storage_info_json;
-                    StrJsonUtils::readJsonString(kv.value, storage_info_json);
-                    stats.bm = getBookmarkStats(storage_info_json["bookmarkStats"]);
-                    stats.motion_stats = getMotionStorageStats(storage_info_json["motionStats"]);
-                    for (const auto &stream_storage_json : storage_info_json["streamStorageInfos"]) {
-                        auto stream_id = stream_storage_json["key"].asString();
-                        auto storage_stats = getStreamStorageStats(stream_storage_json["value"]);
-                        stats.storage_map[stream_id] = storage_stats;
-                    }
                 }
             } catch (const std::exception &e) {
                 WarnL << "Failed to parse KV pair '" << kv.name << "' = '" << kv.value << "': " << e.what();
@@ -1401,9 +1369,9 @@ struct ResourceAdapter<CameraStatistic> {
         
         for (const auto &prop : props) {
             try {
-                if (prop.property_name == "recordRootPath") {
-                    stats.option.recordRootPath = prop.property_value;
-                }
+                // if (prop.property_name == "recordRootPath") {
+                //     stats.option.recordRootPath = prop.property_value;
+                // }
             } catch (const std::exception &e) {
                 WarnL << "Failed to parse local property '" << prop.property_name << "' = '" << prop.property_value << "': " << e.what();
             }

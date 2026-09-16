@@ -26,6 +26,7 @@ struct SnapshotData {
     Json::Value  sequences;           // Json::arrayValue
     Json::Value  vms_resource;        // Json::arrayValue
     Json::Value  vms_kvpair;          // Json::arrayValue
+    Json::Value  vms_resource_status; // Json::arrayValue
     Json::Value  resource_assignment; // Json::arrayValue
     Json::Value  bookmark_index;      // Json::arrayValue — cluster-wide bookmark summary
 
