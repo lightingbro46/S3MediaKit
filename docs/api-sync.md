@@ -37,19 +37,22 @@ Service API -> loadServerConfigJson(data_api) -> CameraManager::addCamera()
 
 ### Move camera
 
-1. Service API gửi cấu hình `enableActive=false` cho node cũ để node cũ release assignment.
-2. Service API gửi cấu hình `enableActive=true` cho node mới.
-3. Node mới gọi `addCamera()` và tạo assignment mới.
+1. Service API bỏ camera khỏi danh sách của node cũ (hoặc gửi cấu hình `enableActive=false`).
+2. Node cũ **chỉ release assignment** của nó (`released_at`) và ngừng ghi ESC cho camera. Cấu hình "inactive" local của node cũ không được ghi lên ESC, vì cấu hình trên ESC thuộc về node nhận camera.
+3. Service API gửi cấu hình `enableActive=true` cho node mới. Node mới gọi `addCamera()`, tạo assignment mới (`FAILOVER` nếu nó không phải `priMediaServerId`) và ghi cấu hình lên ESC.
 4. Assignment cũ được đóng bằng `released_at`; lịch sử không bị xóa.
 
-Mỗi assignment có `ownershipGeneration`. Service API nên tăng giá trị này cho
-mỗi lần move/failover. Media server từ chối assignment có generation nhỏ hơn
-generation hiện tại, giúp node cũ reconnect không giành lại camera. Payload cũ
-không có field này được hỗ trợ bằng cách tự tăng generation cục bộ.
+Khi camera quay lại một node đã từng chạy nó (hoặc node khởi động lại và service API gửi lại đúng cấu hình cũ), việc bật sync mode sẽ tự ghi lại assignment, cấu hình và trạng thái lên ESC, kể cả khi option không đổi.
+
+> Chưa có cơ chế `ownershipGeneration` để chặn node cũ reconnect giành lại camera. Hiện tại, node tạo assignment sau sẽ đóng (`released_at`) assignment active của node khác, và khi đồng bộ, một assignment active có `assigned_at` cũ hơn assignment active đang có sẽ không được ghi. Service API vẫn là nơi quyết định camera chạy ở đâu.
 
 ### Xóa camera
 
-Service API loại camera khỏi danh sách phân phối. Node sẽ xóa resource/config/status hiện tại và release assignment active nếu cần, nhưng không xóa các dòng `vms_resource_assignment` đã ghi nhận lịch sử ownership.
+Service API loại camera khỏi danh sách phân phối của mọi node.
+
+- Node đang chạy camera: release assignment, tắt camera, rồi sau `manager.failoverActiveDelaySec` giây (mặc định 1800) xoá camera khỏi danh sách local.
+- Node chỉ xoá resource/config/status của camera trên ESC (`vms_resource`, `vms_kvpair`, `vms_resource_status`) khi **không có node khác đang giữ assignment active**. Nếu còn node khác đang chạy camera (tức camera đã được chuyển đi, không phải bị xoá), ESC được giữ nguyên.
+- Các lệnh xoá để lại tombstone (xem [Giải quyết xung đột](#giải-quyết-xung-đột-last-writer-wins)), nên cấu hình cũ gửi đến sau không làm camera sống lại. Các dòng `vms_resource_assignment` không bị xoá.
 
 ### Node offline và failover
 

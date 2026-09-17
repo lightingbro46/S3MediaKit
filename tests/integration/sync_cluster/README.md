@@ -22,6 +22,9 @@ tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_sync_cluster stop
 | phase2 | Chuyển camera: node-a bỏ camera (release), node-b nhận camera (assignment FAILOVER) |
 | restart | Restart cả hai node; trạng thái bootstrap đã lưu nên không bootstrap lại |
 | phase3 | Đổi `keepArchivedMaxFor` ở node-b, giá trị mới phải sang node-a |
+| phase4 | Xoá camera khỏi cả hai node; sau thời gian chờ failover (`failoverActiveDelaySec=5`), `vms_resource` và `vms_kvpair` của camera phải trống trên cả hai node |
+
+Ở phase2, node-a (node bỏ camera) chỉ release assignment, không ghi `enableActive=0` lên ESC; kiểm tra bằng `transaction_log` của node-a.
 
 Sau mỗi phase, script in ra:
 - Số dòng log `database is locked`, `Failed to apply`, `Relay received`, `Relay pull ... failed` và `skip stale` của từng node (mong đợi `locked=0`, `failed_apply=0`).

@@ -104,3 +104,7 @@ sleep "$WAIT_SEC"; report restart
 echo "phase3: config change on node-b"
 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" phase3
 sleep "$WAIT_SEC"; report phase3
+
+echo "phase4: camera deleted from the cluster"
+python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" phase4
+sleep "$WAIT_SEC"; report phase4

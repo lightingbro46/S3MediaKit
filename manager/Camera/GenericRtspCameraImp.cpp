@@ -495,6 +495,16 @@ void GenericRtspCameraImp::setSyncMode(bool enable) {
     statistic->setSyncMode(enable);
 }
 
+void GenericRtspCameraImp::detachFromCluster() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call detachFromCluster in it's owner poller");
+    auto statistic = _statistic.lock();
+    if (!statistic) {
+        WarnL << "Camera " << _src->getUrl() << " statistic has been released. Ignore detach from cluster request";
+        return;
+    }
+    statistic->detachFromCluster();
+}
+
 static void appendTransportStats(TransportStats &stats, const ProtocolOption &option) {
     std::vector<std::string> transports;
     if (option.enable_fmp4) {

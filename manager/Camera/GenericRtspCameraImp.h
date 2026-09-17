@@ -25,6 +25,9 @@ public:
 
     void setSyncMode(bool enable);
 
+    // Release this node's cluster assignment and stop ESC writes (camera is leaving this node).
+    void detachFromCluster();
+
     const CameraOption& getCameraOption() const { return _option; } 
 
     CameraStatisticImp::Ptr getCameraStatisticImp();

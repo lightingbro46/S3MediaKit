@@ -115,7 +115,9 @@ def main():
                          "mserver_updates_save_path": d + "/mserver_updates",
                          "keep_migration_sql_files": 1, "enable_sync_db": 1,
                          "pull_interval_sec": 5, "gossip_fanout": 3},
-            "manager": {"serverLocationId": 0, "apiSecret": "", "certSavePath": d + "/www/certs"},
+            # failoverActiveDelaySec: how long an inactive camera is kept after its release (default 1800s).
+            "manager": {"serverLocationId": 0, "apiSecret": "", "certSavePath": d + "/www/certs",
+                        "failoverActiveDelaySec": 5},
         }
         patch_ini(os.path.join(REPO, "conf/config.ini"), os.path.join(d, "config.ini"), overrides)
 
@@ -132,6 +134,10 @@ def phase(n):
     elif n == 3:
         # Config change on the current owner must reach the other node.
         write_api_config("node-b", [camera(True, keep_max_hours=48)])
+    elif n == 4:
+        # Camera deleted from the cluster: after the failover delay both nodes drop the ESC resource.
+        write_api_config("node-a", [])
+        write_api_config("node-b", [])
 
 
 if __name__ == "__main__":

@@ -119,9 +119,10 @@ bool CameraManager::delCamera(const string &key) {
             option.enableActive = false;
             auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
             poller->async([imp, option]() {
+                // Release this node's assignment and stop ESC writes first: the inactive option below is
+                // local state only and must not overwrite the config published by the node taking over.
+                imp->detachFromCluster();
                 imp->setCameraOption(option);
-                // disable sync mode to avoid sync to ESC, set after setCameraOption to release resource assignment
-                imp->setSyncMode(false); 
             });
         } else {
             bool failover_active = false;
@@ -131,7 +132,15 @@ bool CameraManager::delCamera(const string &key) {
                 if (option.enableFailover) {
                     auto params = stats_imp->getParams();
                     VmsResourceAssignment out;
-                    auto ret = ResourceManager::Instance().getLastResourceAssignment(params.tuple.device_id, out);
+                    auto &resources = ResourceManager::Instance();
+                    auto ret = resources.getLastResourceAssignment(params.tuple.device_id, out);
+                    if (ret && out.released_at == 0 && out.owner_peer_id == resources.getSelfNodeId()) {
+                        // Our own assignment was never released (e.g. sync mode was off when the camera
+                        // was disabled). Nobody else runs the camera: release it now and apply the delay.
+                        WarnL << "Device " << key << " is inactive but still assigned to this node. Releasing assignment";
+                        resources.releaseResource(params.tuple.device_id, resources.getSelfNodeId());
+                        out.released_at = static_cast<int64_t>(time(nullptr));
+                    }
                     if (ret) {
                         DebugL << "Device " << key << " is not active and failover mode is enabled. Device is currently assigned to media server " << out.owner_peer_id 
                                 << " with assign time " << getTimeStr("%Y-%m-%d %H:%M:%S", out.assigned_at) 
@@ -190,8 +199,15 @@ bool CameraManager::delCamera(const string &key) {
                         WarnL << "Device " << key << " is not active and has no archived data. Remove device out of list";
                     }
                 }
-                // Remove it out of list
-                stats_imp->remove(failover_active);
+                // Remove it out of list. The ESC resource is shared by the cluster: keep it while another
+                // node runs the camera (moved, not deleted); that node owns its config now.
+                auto device_id = stats_imp->getParams().tuple.device_id;
+                auto &resources = ResourceManager::Instance();
+                bool keep_in_esc = failover_active || resources.isAssignedToOtherPeer(device_id, resources.getSelfNodeId());
+                if (keep_in_esc) {
+                    DebugL << "Device " << key << " is assigned to another media server. Keep its ESC resource";
+                }
+                stats_imp->remove(keep_in_esc);
             }
             _gcImp.erase(key);
             return true;

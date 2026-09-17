@@ -749,6 +749,8 @@ void CameraStatisticImp::load() {
         sinfo_map = saved_stats.sinfo_map;
         transport_stats = saved_stats.transport_stats;
         device_stats = saved_stats.device_stats;
+        motion_stats = saved_stats.motion_stats;
+        tier_storage_map = saved_stats.tier_storage_map;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
     }
@@ -1147,7 +1149,9 @@ struct ResourceAdapter<CameraStatistic> {
     static VmsResource toVmsResource(const CameraStatistic &stats) {
         VmsResource res;
         res.guid = stats.tuple.device_id;
-        res.parent_guid = stats.option.preferedMediaServer; // Use preferedMediaServer as parent_guid to associate camera resource with media server resource in VMS
+        // parent_guid is the camera's primary (preferred) media server, not the node currently running it;
+        // the current owner is recorded in vms_resource_assignment.
+        res.parent_guid = stats.option.preferedMediaServer;
         res.name = stats.tuple.name;
         // For camera resource, use stream url as resource url if ip is not configured, so that VMS can pull stream directly from camera. 
         // If ip is configured, use http url with ip and web port as resource url for VMS to access camera info and control api, and pull stream through media server.
@@ -1164,7 +1168,8 @@ struct ResourceAdapter<CameraStatistic> {
                 }
             }
         } else {
-            url = StrPrinter << "http://" << stats.option.ip << ":" << (!stats.option.autoMediaPort ? std::to_string(stats.option.webPort) : std::to_string(stats.option.port));
+            // Same rule as the "webPage" reported to the service API (server/Manager.cpp).
+            url = StrPrinter << "http://" << stats.option.ip << ":" << (stats.option.autoWebPort ? stats.option.port : stats.option.webPort);
         }
         res.url = url; 
         res.xtype_guid = getXtypeId();
@@ -1381,8 +1386,13 @@ struct ResourceAdapter<CameraStatistic> {
                 } else if (kv.name == "streamUrls") {
                     Json::Value streamUrls_json;
                     StrJsonUtils::readJsonString(kv.value, streamUrls_json);
-                    stats.stream_map[PrimaryStream]   = getStreamTuple(streamUrls_json[std::to_string(PrimaryStream)],   stats.tuple, PrimaryStream);
-                    stats.stream_map[SecondaryStream] = getStreamTuple(streamUrls_json[std::to_string(SecondaryStream)], stats.tuple, SecondaryStream);
+                    const int stream_types[] = {PrimaryStream, SecondaryStream};
+                    for (int type : stream_types) {
+                        auto stream = getStreamTuple(streamUrls_json[std::to_string(type)], stats.tuple, type);
+                        if (!stream.empty()) {
+                            stats.stream_map[type] = stream;
+                        }
+                    }
                 }
             } catch (const std::exception &e) {
                 WarnL << "Failed to parse KV pair '" << kv.name << "' = '" << kv.value << "': " << e.what();
@@ -1503,6 +1513,8 @@ void CameraStatisticImp::syncResourceStatus() {
         DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource status sync";
         return;
     }
+    // Priority: ONLINE (any stream live) > UNAUTHORIZED (any stream rejected credentials) > OFFLINE,
+    // independent of unordered_map iteration order, so the replicated status does not flap.
     ResourceStatus state = ResourceStatus::OFFLINE;
     for (const auto &sinfo_pair : sinfo_map) {
         const auto &sinfo = sinfo_pair.second;
@@ -1512,8 +1524,6 @@ void CameraStatisticImp::syncResourceStatus() {
         }
         if (sinfo.status.find("Unauthorized") != string::npos) {
             state = ResourceStatus::UNAUTHORIZED;
-        } else {
-            state = ResourceStatus::OFFLINE;
         }
     }
     DebugL << "Sync resource status for camera " << tuple.shortUrl() << " as " << (state == ResourceStatus::ONLINE ? "ONLINE" : (state == ResourceStatus::UNAUTHORIZED ? "UNAUTHORIZED" : "OFFLINE"));
@@ -1530,8 +1540,29 @@ void CameraStatisticImp::syncResourceStatus() {
 
 void CameraStatisticImp::setSyncMode(bool enable) {
     std::lock_guard<std::mutex> lck(_mtx);
+    const bool was_enabled = _sync_mode;
     _sync_mode = enable;
     DebugL << "Set sync mode for camera " << tuple.shortUrl() << " to " << (_sync_mode ? "enabled" : "disabled");
+    if (enable && !was_enabled && !_esc_removed && option.enableActive) {
+        // This node runs the camera. The option may already be in place (loaded from info.txt at
+        // startup, and the camera skips setCameraOption when the option is unchanged), so publish
+        // ownership, config and status now. An inactive local option is not published: the camera
+        // is either coming back (setCameraOption follows) or owned elsewhere.
+        assignResource(true);
+        markEscConfigChanged();
+        syncResourceStatus();
+    }
+}
+
+void CameraStatisticImp::detachFromCluster() {
+    std::lock_guard<std::mutex> lck(_mtx);
+    if (_sync_mode) {
+        // Release ownership only. The camera config in ESC belongs to the node that takes the camera
+        // over; publishing this node's local "inactive" option would overwrite it.
+        assignResource(false);
+    }
+    _sync_mode = false;
+    DebugL << "Camera " << tuple.shortUrl() << " detached from cluster";
 }
 
 void CameraStatisticImp::saveStreamStatusHistory(const std::string &stream_id, const std::string &stream_url,

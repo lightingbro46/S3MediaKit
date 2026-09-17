@@ -128,7 +128,7 @@ public:
         for (const auto &res : ret) {
             auto kvs   = _kvpair_imp->findAllKeyValue(res.guid);
             auto props = _local_imp->findAllProperty(res.guid);
-            out.push_back(ResourceAdapter<T>::fromVmsData(res, kvs, props));
+            out.push_back(ResourceAdapter<T>::fromVmsResource(res, kvs, props));
         }
     }
 
@@ -188,6 +188,13 @@ public:
             return true;
         }
         return false;
+    }
+
+    // true if another peer currently holds an unreleased assignment of the resource.
+    bool isAssignedToOtherPeer(const std::string &resource_guid, const std::string &self_peer_id) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto current = _assign_imp->findCurrentAssignment(resource_guid);
+        return !current.empty() && current[0].owner_peer_id != self_peer_id;
     }
 
     const std::string getSelfNodeId() const { return _self_node_id; }

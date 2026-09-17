@@ -137,7 +137,13 @@ public:
 
     void remove(bool failover_active = false);
 
+    // Enables/disables writes to the cluster ESC database. Enabling publishes the current
+    // ownership, config and status (the option may be unchanged since startup).
     void setSyncMode(bool enable);
+
+    // The camera is leaving this node (moved, failed back or deleted): release this node's
+    // assignment and stop ESC writes, without publishing the local config.
+    void detachFromCluster();
 
     static bool syncFromEsc(std::string &guid, CameraStatistic &resource);
 
