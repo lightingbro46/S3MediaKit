@@ -5,6 +5,7 @@
 #include "Common/StrUtil.h"
 #include "WebApiErrCode.h"
 #include "Extension/SyncManager.h"
+#include "ApiWorkDispatcher.h"
 
 using namespace std;
 using namespace toolkit;
@@ -12,6 +13,8 @@ using namespace mediakit;
  
 namespace managerkit {
 
+// All sync endpoints do blocking SQLite work (log scan, snapshot build, ack upsert): validation stays on
+// the request poller, the DB work runs on the API worker pool (see ApiWorkDispatcher.h).
 void registerSyncDbApis() {
     // Register the Web API sync database endpoints here
     api_regist("/media/esc/sync/changes", [](API_ARGS_JSON_ASYNC) {
@@ -29,18 +32,19 @@ void registerSyncDbApis() {
         Json::Value cursors = body["cursors"];
         Json::Value ack_cursors = body["ack_cursors"];
 
-        // Save ack_cursors to local db for prune old logs later
-        if (!ack_cursors.empty() && ack_cursors.isArray()) {
-            SyncManager::Instance().recordRelayAck(ack_cursors);
-        }
+        dispatchApiWork(sender, headerOut, val, invoker, [cursors, ack_cursors, limit](Json::Value &val) {
+            // Save ack_cursors to local db for prune old logs later
+            if (!ack_cursors.empty() && ack_cursors.isArray()) {
+                SyncManager::Instance().recordRelayAck(ack_cursors);
+            }
 
-        // Parse cursors from request
-        Json::Value log_rows = Json::arrayValue;
-        if (!cursors.empty() && cursors.isArray()) {
-            log_rows = SyncManager::Instance().getCurrentCursors(cursors, limit);
-        }
-        val["data"] = log_rows;
-        invoker(200, headerOut, val.toStyledString());
+            // Parse cursors from request
+            Json::Value log_rows = Json::arrayValue;
+            if (!cursors.empty() && cursors.isArray()) {
+                log_rows = SyncManager::Instance().getCurrentCursors(cursors, limit);
+            }
+            val["data"] = log_rows;
+        });
     });
 
     api_regist("/media/esc/sync/snapshot", [](API_ARGS_MAP_ASYNC) {
@@ -54,14 +58,14 @@ void registerSyncDbApis() {
             return;
         }
 
-        auto snap = SyncManager::Instance().buildLocalSnapshot();
-        // if (snap.empty()) {
-        //     RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
-        //     return;
-        // }
-        Json::Value snap_json = SnapshotBuilder::serialize(snap);
-        val["data"] = snap_json;
-        invoker(200, headerOut, val.toStyledString());
+        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
+            auto snap = SyncManager::Instance().buildLocalSnapshot();
+            // if (snap.empty()) {
+            //     RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
+            //     return;
+            // }
+            val["data"] = SnapshotBuilder::serialize(snap);
+        });
     });
 
     api_regist("/media/esc/sync/misc", [](API_ARGS_MAP_ASYNC) {
@@ -75,8 +79,9 @@ void registerSyncDbApis() {
             return;
         }
         
-        val["data"] = SyncManager::Instance().getMiscData();
-        invoker(200, headerOut, val.toStyledString());
+        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
+            val["data"] = SyncManager::Instance().getMiscData();
+        });
     });
 
     DebugL << "Sync DB APIs registered";

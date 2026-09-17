@@ -34,6 +34,7 @@
 
 #include "WebApi.h"
 #include "WebHook.h"
+#include "ApiWorkDispatcher.h"
 
 #include "Common/config.h"
 #include "Common/MediaSource.h"
@@ -366,22 +367,9 @@ static inline void addHttpListener() {
         helper->getPoller()->async([it, parser, invoker, helper]() {
             try {
                 it->second(parser, invoker, *helper);
-            } catch (ApiRetException &ex) {
-                responseApi(ex.code(), ex.what(), ex.status_code(), invoker);
-                helper->getPoller()->async([helper, ex]() { helper->shutdown(SockException(Err_shutdown, ex.what())); }, false);
-            }
-#ifdef ENABLE_MYSQL
-            catch (SqlException &ex) {
-                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), 500, invoker);
-            }
-#endif // ENABLE_MYSQL
-#ifdef ENABLE_SQLITE
-            catch (SqliteException &ex) {
-                responseApi(API::SqlFailed, StrPrinter << "Failed to operate the database:" << ex.what() << ":" << ex.getSql(), 500, invoker);
-            }
-#endif // ENABLE_SQLITE
-            catch (std::exception &ex) {
-                responseApi(API::Exception, ex.what(), 500, invoker);
+            } catch (std::exception &) {
+                // Same error mapping as handlers that moved their work to the API worker pool.
+                responseApiException(std::current_exception(), invoker, helper);
             }
         },false);
     });

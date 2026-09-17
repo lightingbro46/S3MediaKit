@@ -98,6 +98,20 @@ if(ENABLE_SYNC_CHANGES)
   set_tests_properties(unit.sync_apply_all PROPERTIES LABELS unit TIMEOUT 30)
 endif()
 
+# API worker dispatcher (server/ApiWorkDispatcher.cpp), compiled directly like the storage API test.
+add_s3_unit_test(unit_api_work_dispatcher
+  server/test_api_work_dispatcher.cpp
+  "${PROJECT_SOURCE_DIR}/server/ApiWorkDispatcher.cpp")
+target_link_libraries(unit_api_work_dispatcher PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_api_work_dispatcher PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.api_work_dispatcher_all COMMAND unit_api_work_dispatcher)
+set_tests_properties(unit.api_work_dispatcher_all PROPERTIES LABELS unit TIMEOUT 30)
+
 if(ENABLE_TIER_STORAGE)
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp
