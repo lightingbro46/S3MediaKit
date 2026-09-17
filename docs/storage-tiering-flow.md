@@ -445,13 +445,13 @@ Retention theo tuổi (`keepArchivedMaxFor` và `delete_after_days`) dùng chung
 
 - Lấy range `AVAILABLE` có `start_time < cutoff` theo phân trang keyset `(start_time, range_id)`, tối đa 16 trang mỗi lượt; range có job `PENDING/RUNNING` hoặc override còn hạn bị loại ngay trong SQL nên không chiếm chỗ của range khác.
 - Range vượt qua cutoff được split; chỉ phần cũ bị xử lý, phần mới được lượt sau xử lý khi đủ tuổi.
-- Video được bảo vệ được kiểm tra trên phần đã split.
+- Phần đã split được cắt tiếp quanh video được bảo vệ (`carveDeletablePieces()`): segment chạm video bảo vệ nằm trong piece riêng giữ `AVAILABLE`, các piece còn lại được thu hẹp sát segment để không chạm video bảo vệ và được xử lý bình thường.
 
 Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một lần mỗi cycle cho từng pool HOT/WARM kiểu filesystem:
 
 - Chỉ chạy khi usage thực tế ≥ `critical_watermark_percent` và pool đọc/xóa được.
 - Ưu tiên chuyển tầng: nếu pool còn job move `PENDING/RUNNING` và usage < `critical + tiering_pressure_delete_margin_percent` thì hoãn xóa; nếu vẫn xóa thì trừ số byte đang chờ move khỏi lượng cần giải phóng.
-- Lượng cần giải phóng = `used - total * (high - 5)%`; range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job, override còn hạn hoặc overlap video được bảo vệ), bỏ range mới hơn `keepArchivedMinFor` của camera, và dừng ngay khi đủ dung lượng.
+- Lượng cần giải phóng = `used - total * (high - 5)%`; range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng.
 - Nếu không giải phóng đủ, ghi cảnh báo `POOL_CRITICAL_NO_DELETABLE` (tối đa một lần/giờ/pool).
 
 Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại và sẵn sàng cho thao tác xóa. Nếu range thiếu pool, pool không tồn tại hoặc health gate chưa cho phép, backend return mà không đổi trạng thái range và không fallback sang `kMP4SavePath`.
@@ -1123,8 +1123,8 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
-- Retention theo tuổi quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi camera/cycle; range có video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
-- Xóa khi vượt ngưỡng chỉ xóa theo range; range có overlap video được bảo vệ bị bỏ qua nguyên range.
+- Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
+- Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
 
 ## 14. Phần Còn Thiếu Theo Code Hiện Tại
 

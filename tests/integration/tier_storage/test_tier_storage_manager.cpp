@@ -1594,7 +1594,12 @@ int scenarioPressureDeletesOldestAcrossPool(const std::string &root) {
     StoragePool hot = hot_pools.front();
     hot.high_watermark_percent = 0;
     hot.critical_watermark_percent = 1;
+    // Let the startup health cycle finish; otherwise the one queued by
+    // updatePool() is skipped as overlapping and health stays UNKNOWN.
+    drainWorkThreadPool();
     require(manager.updatePool(hot), "Cannot lower HOT pool watermarks");
+    drainWorkThreadPool();
+    manager.checkAndRecordPoolHealth();
     PoolHealthInfo health;
     require(waitUntil([&]() {
         return manager.getPoolHealth(hot.id, health) &&
@@ -1754,6 +1759,113 @@ int scenarioAgeRetentionSkipsBlockedRangesAndSplits(const std::string &root) {
         require(blocked.status == expected,
                 "Blocked range status changed: " + blocked.range_id);
     }
+    manager.stop();
+    return 0;
+}
+
+int scenarioDeletionSplitsAroundProtectedVideo(const std::string &root, bool pressure) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    StoragePool hot = hot_pools.front();
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const std::string camera = pressure ? "camera-protected-pressure" : "camera-protected-age";
+
+    if (pressure) {
+        hot.high_watermark_percent = 0;
+        hot.critical_watermark_percent = 1;
+        drainWorkThreadPool();
+        require(manager.updatePool(hot), "Cannot lower HOT pool watermarks");
+        drainWorkThreadPool();
+        manager.checkAndRecordPoolHealth();
+        PoolHealthInfo health;
+        require(waitUntil([&]() {
+            return manager.getPoolHealth(hot.id, health) &&
+                   health.health_status == healthToString(StorageHealth::CRITICAL);
+        }, 5000), "HOT pool did not report CRITICAL after lowering its watermarks");
+    } else {
+        auto policy = makeRetentionPolicy(hot.id, "retention-protected-split", false);
+        require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+        require(manager.assignPolicyToCamera(camera, policy.id, "protected split"),
+                "Retention policy assignment failed");
+        require(manager.assignPolicyToCamera(camera + "-edge", policy.id, "protected edge"),
+                "Retention policy assignment failed");
+    }
+
+    const int64_t base = now - 5 * 86400;
+    auto first = makeSegmentFixture(root, camera, "2026-08-01/10-00-00", "first-free", base);
+    auto middle = makeSegmentFixture(root, camera, "2026-08-01/10-01-00", "middle-kept", base + 60);
+    auto last = makeSegmentFixture(root, camera, "2026-08-01/10-02-00", "last-free", base + 120);
+    for (const auto *segment : {&first, &middle, &last}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(SegmentTierRangeImp().queryByCamera(camera).size() == 1,
+            "Contiguous segments were not registered as one range");
+
+    ProtectedVideo video;
+    video.protected_id = std::string("protected-") + camera;
+    video.camera_id = camera;
+    video.start_time = base + 70;
+    video.end_time = base + 100;
+    video.type = "EVIDENCE";
+    video.created_at = now;
+    require(ProtectedVideoImp().add(video), "Cannot protect middle segment");
+
+    // A protection inside the leading gap of a range touches no segment; the
+    // range window must be tightened instead of being skipped forever.
+    const std::string edge_camera = camera + "-edge";
+    auto edge = makeSegmentFixture(root, edge_camera, "2026-08-01/11-00-00", "edge-free", base + 600);
+    SegmentTierRange edge_range;
+    edge_range.range_id = "edge-" + camera;
+    edge_range.camera_id = edge_camera;
+    edge_range.stream_id = edge.stream;
+    edge_range.tier = tierTypeToString(HotTier);
+    edge_range.pool_id = hot.id;
+    edge_range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    edge_range.start_time = edge.start - 30;
+    edge_range.end_time = edge.end;
+    edge_range.segment_count = 1;
+    edge_range.size_bytes = static_cast<int64_t>(edge.payload.size());
+    edge_range.created_at = now;
+    edge_range.updated_at = now;
+    require(SegmentTierRangeImp().add(edge_range), "Cannot seed edge range");
+    ProtectedVideo gap_video;
+    gap_video.protected_id = std::string("gap-protected-") + camera;
+    gap_video.camera_id = edge_camera;
+    gap_video.start_time = edge.start - 20;
+    gap_video.end_time = edge.start - 10;
+    gap_video.type = "EVIDENCE";
+    gap_video.created_at = now;
+    require(ProtectedVideoImp().add(gap_video), "Cannot protect edge gap");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        return !File::fileExist(first.source_path) && !File::fileExist(last.source_path) &&
+               !File::fileExist(edge.source_path);
+    }, 5000), "Unprotected segments of a partly protected range were not deleted");
+    auto edge_rows = SegmentTierRangeImp().findByRangeIds({edge_range.range_id});
+    require(edge_rows.size() == 1 && edge_rows.front().status == "DELETED" &&
+                edge_rows.front().start_time == edge.start,
+            "Range with a protection in its leading gap was not tightened and deleted");
+    drainWorkThreadPool();
+    require(File::fileExist(middle.source_path), "Protected segment was deleted");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 3 &&
+                ranges[0].status == "DELETED" && ranges[0].start_time == first.start &&
+                ranges[1].status == "AVAILABLE" && ranges[1].start_time == middle.start &&
+                ranges[1].segment_count == 1 &&
+                ranges[2].status == "DELETED" && ranges[2].start_time == last.start,
+            "Range was not split around the protected video");
+    require(ProtectedVideoImp().overlaps(camera, ranges[1].start_time, ranges[1].end_time) &&
+                !ProtectedVideoImp().overlaps(camera, ranges[0].start_time, ranges[0].end_time) &&
+                !ProtectedVideoImp().overlaps(camera, ranges[2].start_time, ranges[2].end_time),
+            "Split piece windows do not isolate the protected video");
     manager.stop();
     return 0;
 }
@@ -3901,6 +4013,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "unreadable-timefile-pending") return scenarioUnreadableTimefileKeepsWorkPending(root);
         if (name == "pressure-oldest-across-pool") return scenarioPressureDeletesOldestAcrossPool(root);
         if (name == "age-retention-paged-split") return scenarioAgeRetentionSkipsBlockedRangesAndSplits(root);
+        if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
+        if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -4107,6 +4221,16 @@ TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestAcrossPoolAndStopsA
 TEST(TierStorageManagerIntegrationTest, AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff) {
     TempRoot root;
     EXPECT_EQ(0, runChild("age-retention-paged-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletionSplitsAroundProtectedVideo) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-protected-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AgeRetentionSplitsAroundProtectedVideo) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("age-protected-split", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {

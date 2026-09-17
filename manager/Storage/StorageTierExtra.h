@@ -785,6 +785,23 @@ public:
         return rows.empty() || rows[0].empty() ? 0 : std::stoi(rows[0][0]);
     }
 
+    // Every protection touching [start_time, end_time] (inclusive, like overlaps()).
+    std::vector<ProtectedVideo> findOverlapping(const std::string &camera_id,
+                                                int64_t start_time,
+                                                int64_t end_time) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<ProtectedVideo>::getColumns())
+                .from(EntityTraits<ProtectedVideo>::tableName())
+                .where("camera_id = ? AND start_time <= ? AND end_time >= ?",
+                       {camera_id, std::to_string(end_time), std::to_string(start_time)})
+                .orderBy("start_time ASC"));
+        std::vector<ProtectedVideo> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<ProtectedVideo>::fromRow(row));
+        return ret;
+    }
+
     bool overlaps(const std::string &camera_id, int64_t start_time, int64_t end_time) {
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()

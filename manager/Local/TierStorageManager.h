@@ -364,6 +364,13 @@ private:
                                                             int64_t cutoff,
                                                             const std::string &exclude_pool_id);
 
+    // Splits `range` so segments touching protected videos stay in their own
+    // pieces, and returns the pieces that may be deleted (all of `range` when
+    // nothing is protected). Returns false when the range could not be read
+    // or changed concurrently.
+    bool carveDeletablePieces(const SegmentTierRange &range,
+                              std::vector<SegmentTierRange> &out);
+
     // Oldest-first deletion across each HOT/WARM pool above its critical
     // watermark; stops once usage would drop below (high - 5)%.
     void enforcePoolPressureRetention();

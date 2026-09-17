@@ -757,7 +757,8 @@ public:
         params.push_back(std::to_string(after_end_time));
         params.push_back(std::to_string(after_end_time));
         params.push_back(after_range_id);
-        appendDeletableFilter(where, params, now);
+        // Protected videos are handled by splitting candidates around them.
+        appendDeletableFilter(where, params, now, false);
 
         auto query = toolkit::QueryBuilder()
                 .select(EntityTraits<SegmentTierRange>::getColumns())

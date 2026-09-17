@@ -70,6 +70,8 @@ foreach(manager_case
     KeepsWorkPendingWhenTimefileIsUnreadable
     PressureDeletesOldestAcrossPoolAndStopsAtTarget
     AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff
+    PressureDeletionSplitsAroundProtectedVideo
+    AgeRetentionSplitsAroundProtectedVideo
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

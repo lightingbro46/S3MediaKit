@@ -3591,12 +3591,147 @@ std::vector<SegmentTierRange> TierStorageManager::collectAgeRetentionPieces(
             SegmentTierRange piece;
             if (!splitRangeForTieringThreshold(range, cutoff, piece))
                 continue;
-            pieces.push_back(piece);
+            std::vector<SegmentTierRange> deletable;
+            if (!carveDeletablePieces(piece, deletable))
+                continue;
+            for (const auto &item : deletable)
+                pieces.push_back(item);
             if (static_cast<int>(pieces.size()) >= max_ranges_per_cycle)
                 return pieces;
         }
     }
     return pieces;
+}
+
+bool TierStorageManager::carveDeletablePieces(const SegmentTierRange &range,
+                                              std::vector<SegmentTierRange> &out) {
+    out.clear();
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (SegmentRetentionOverrideImp().isActive(range.range_id, now))
+        return true;
+    auto protections = ProtectedVideoImp().findOverlapping(
+        range.camera_id, range.start_time, range.end_time);
+    if (protections.empty()) {
+        out.push_back(range);
+        return true;
+    }
+
+    // Skip the timefile read when protections cover the whole window.
+    {
+        int64_t covered_until = range.start_time;
+        for (const auto &video : protections) {
+            if (video.start_time > covered_until)
+                break;
+            covered_until = std::max(covered_until, video.end_time);
+        }
+        if (covered_until >= range.end_time)
+            return true;
+    }
+
+    std::vector<TierRangeSegmentFile> segments;
+    std::string error;
+    if (!collectSegmentFilesForRange(range, segments, error) || segments.empty())
+        return false;
+
+    // Protections use inclusive bounds (ProtectedVideoRepository::overlaps).
+    auto touchesProtection = [&](int64_t start, int64_t end) {
+        for (const auto &video : protections) {
+            if (video.start_time <= end && video.end_time >= start)
+                return true;
+        }
+        return false;
+    };
+
+    struct Run {
+        bool deletable = false;
+        size_t first = 0;
+        size_t last = 0;  // exclusive
+    };
+    std::vector<Run> runs;
+    size_t index = 0;
+    while (index < segments.size()) {
+        // Segments sharing a start time cannot be separated by ownership.
+        size_t group_end = index;
+        bool group_protected = false;
+        while (group_end < segments.size() &&
+               segments[group_end].start_time == segments[index].start_time) {
+            if (touchesProtection(segments[group_end].start_time, segments[group_end].end_time))
+                group_protected = true;
+            ++group_end;
+        }
+        const bool deletable = !group_protected;
+        bool extend = !runs.empty() && runs.back().deletable == deletable;
+        if (extend && deletable) {
+            // A protection sitting in the gap would make the widened window touch it.
+            int64_t previous_end = 0;
+            for (size_t i = runs.back().first; i < runs.back().last; ++i)
+                previous_end = std::max(previous_end, segments[i].end_time);
+            if (touchesProtection(previous_end, segments[index].start_time))
+                extend = false;
+        }
+        if (extend) {
+            runs.back().last = group_end;
+        } else {
+            Run run;
+            run.deletable = deletable;
+            run.first = index;
+            run.last = group_end;
+            runs.push_back(run);
+        }
+        index = group_end;
+    }
+
+    bool any_deletable = false;
+    for (const auto &run : runs)
+        any_deletable = any_deletable || run.deletable;
+    if (!any_deletable)
+        return true;
+
+    // Tighten each piece to its own segments so a deletable window never
+    // reaches a protection, and never past the next piece's first start.
+    std::vector<SegmentTierRange> pieces;
+    std::vector<bool> piece_deletable;
+    for (size_t r = 0; r < runs.size(); ++r) {
+        const auto &run = runs[r];
+        SegmentTierRange piece = range;
+        piece.range_id = r == 0 ? range.range_id : StrUUID::make_guid(8, "rng");
+        piece.start_time = segments[run.first].start_time;
+        piece.end_time = 0;
+        piece.segment_count = 0;
+        piece.size_bytes = 0;
+        for (size_t i = run.first; i < run.last; ++i) {
+            piece.end_time = std::max(piece.end_time, segments[i].end_time);
+            ++piece.segment_count;
+            piece.size_bytes += std::max<int64_t>(0, segments[i].file_size);
+        }
+        const int64_t limit = r + 1 < runs.size()
+            ? segments[runs[r + 1].first].start_time : range.end_time;
+        piece.end_time = std::min(piece.end_time, limit);
+        if (piece.end_time <= piece.start_time)
+            return false;
+        piece.created_at = r == 0 ? range.created_at : now;
+        piece.updated_at = now;
+        pieces.push_back(piece);
+        piece_deletable.push_back(run.deletable);
+    }
+    // A single piece whose window did not shrink needs no rewrite.
+    if (pieces.size() == 1 && pieces.front().start_time == range.start_time &&
+        pieces.front().end_time == range.end_time) {
+        if (piece_deletable.front())
+            out.push_back(range);
+        return true;
+    }
+    if (!SegmentTierRangeImp().replaceRangeWithPiecesIfUnchanged(range, pieces)) {
+        WarnL << "Cannot split range around protected videos, range=" << range.range_id;
+        return false;
+    }
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        if (piece_deletable[i])
+            out.push_back(pieces[i]);
+    }
+    DebugL << "Split range " << range.range_id << " around protected videos into "
+           << pieces.size() << " piece(s), deletable=" << out.size();
+    return true;
 }
 
 void TierStorageManager::enforcePoolPressureRetention() {
@@ -3685,12 +3820,19 @@ void TierStorageManager::enforcePoolPressureRetention() {
                     break;
                 if (range.end_time > deleteCutoffFor(range.camera_id, now))
                     continue;
-                if (!expireRangeBestEffort(range))
+                std::vector<SegmentTierRange> deletable;
+                if (!carveDeletablePieces(range, deletable))
                     continue;
-                ++deleted_count;
-                const int64_t freed = std::max<int64_t>(0, range.size_bytes);
-                deleted_bytes += freed;
-                need -= freed;
+                for (const auto &piece : deletable) {
+                    if (need <= 0 || _stopping)
+                        break;
+                    if (!expireRangeBestEffort(piece))
+                        continue;
+                    ++deleted_count;
+                    const int64_t freed = std::max<int64_t>(0, piece.size_bytes);
+                    deleted_bytes += freed;
+                    need -= freed;
+                }
             }
         }
 
