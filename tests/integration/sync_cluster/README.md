@@ -15,6 +15,12 @@ tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_sync_cluster stop
 ```
 `MEDIASERVER_DIR` dùng để chọn thư mục chứa binary, `WAIT_SEC` là thời gian chờ ở mỗi phase.
 
+Kiểm tra các API chạy trên API worker pool (`docs/features/worker.md`, bước 6), chỉ dùng một node:
+```bash
+tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
+```
+`check_worker_apis.py` gọi discovery ONVIF tới một IP không định tuyến được (mất khoảng 20s) và đo độ trễ của `/media/mserver/healthcheck` trong suốt thời gian đó; kiểm tra discovery RTSP, `subnetScan` và `register` (lưu certificate, gọi lại không đổi gì). Node test chạy với `manager.enableAuthorize=0`.
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|

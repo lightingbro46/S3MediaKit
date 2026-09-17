@@ -43,6 +43,11 @@ void responseApiException(const std::exception_ptr &error,
                           const mediakit::HttpSession::HttpResponseInvoker &invoker,
                           const std::weak_ptr<toolkit::SocketHelper> &session);
 
+// Request context for handlers that continue asynchronously (e.g. after an HTTP health check):
+// the poller that owns the HTTP session, and the session itself (weak).
+toolkit::EventPoller::Ptr apiRequestPoller(toolkit::SockInfo &sender);
+std::weak_ptr<toolkit::SocketHelper> apiRequestSession(toolkit::SockInfo &sender);
+
 // Generic form: `work` runs on the API worker pool, then `done(error)` runs on `owner`
 // exactly once (`error` is null on success). If `session` is given and already expired
 // before the work starts, the work is skipped and `done` is not called.

@@ -6,6 +6,7 @@
 #include "Control/SubnetScan.h"
 #include "Speaker/SpeakerController.h"
 #include "Manager.h"
+#include "ApiWorkDispatcher.h"
 
 using namespace std;
 using namespace toolkit;
@@ -30,15 +31,44 @@ void registerControlApis() {
         string username = allArgs["username"];
         string password = allArgs["password"];
 
-        SubnetScan::discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const DeviceScanResult &data) mutable {
+        auto respond = [val, headerOut, invoker](const SockException &ex, const DeviceScanResult &data) mutable {
+            val["data"] = toJsonValue(data);
             if (ex) {
-                val["data"] = toJsonValue(data);
                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 return;
             }
-            val["data"] = toJsonValue(data);
             invoker(200, headerOut, val.toStyledString());
-        });
+        };
+
+        if (start_with(address, "rtsp://")) {
+            // RTSP probing is asynchronous (ffprobe process), it does not block this poller.
+            SubnetScan::discovery_device(address, port, defaultPort, username, password, respond);
+            return;
+        }
+
+        // ONVIF discovery is a series of blocking SOAP calls: run it on the API worker pool and
+        // answer from the request poller.
+        struct DiscoveryResult {
+            SockException ex;
+            DeviceScanResult data;
+        };
+        auto result = std::make_shared<DiscoveryResult>();
+        auto session = apiRequestSession(sender);
+        runApiWork(apiRequestPoller(sender), session,
+            [result, address, port, defaultPort, username, password]() mutable {
+                SubnetScan::discovery_device(address, port, defaultPort, username, password,
+                    [result](const SockException &ex, const DeviceScanResult &data) {
+                        result->ex = ex;
+                        result->data = data;
+                    });
+            },
+            [result, respond, session, invoker](const std::exception_ptr &error) mutable {
+                if (error) {
+                    responseApiException(error, invoker, session);
+                    return;
+                }
+                respond(result->ex, result->data);
+            });
     });
 
     api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
@@ -58,16 +88,23 @@ void registerControlApis() {
             return;
         }
 
-        val["data"] = arrayValue;
-        auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
-        for (auto &ip : ip_range) {
-            SubnetScan::discovery_device(ip, port, defaultPort, username, password, [&](const SockException &ex, const DeviceScanResult &data) {
-                if (!ex) {
-                    val["data"].append(toJsonValue(data));
-                }
-            });
-        }
-        invoker(200, headerOut, val.toStyledString());
+        // Synchronous scan of the whole range (blocking ONVIF calls per IP): run it on the API worker
+        // pool. Addresses are IPs, so discovery_device answers synchronously.
+        dispatchApiWork(sender, headerOut, val, invoker, [startIp, endIp, port, defaultPort, username, password](Json::Value &val) {
+            int scan_port = port;
+            bool scan_default_port = defaultPort;
+            std::string user = username;
+            std::string pass = password;
+            val["data"] = arrayValue;
+            auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
+            for (auto &ip : ip_range) {
+                SubnetScan::discovery_device(ip, scan_port, scan_default_port, user, pass, [&val](const SockException &ex, const DeviceScanResult &data) {
+                    if (!ex) {
+                        val["data"].append(toJsonValue(data));
+                    }
+                });
+            }
+        });
     });
 
     static auto addSubnetScan = [](SubnetScanOption &option, const function<void(const SockException &ex, const string &key)> &cb) {

@@ -106,7 +106,9 @@ bool ResourceStatusManager::onDisconnected(const std::string &resource_id, const
     }
 
     try {
-        auto txn = _gap_imp->getExecutor()->execTxn();
+        // IMMEDIATE: reads the open gap before writing; a deferred transaction fails with
+        // "database is locked" when another connection commits in between.
+        auto txn = _gap_imp->getExecutor()->execTxn(true);
         LocalResourceStatusGap gap;
         if (_gap_imp->findOpenGapWithTxn(resource_id, gap, txn)) {
             // A reason change is metadata for the same outage, not a new gap.
@@ -145,7 +147,7 @@ bool ResourceStatusManager::onReconnected(const std::string &resource_id, uint64
     }
 
     try {
-        auto txn = _gap_imp->getExecutor()->execTxn();
+        auto txn = _gap_imp->getExecutor()->execTxn(true); // read-then-write, see onDisconnected
         LocalResourceStatusGap gap;
         if (!_gap_imp->findOpenGapWithTxn(resource_id, gap, txn)) {
             txn->commit();

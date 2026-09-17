@@ -7,6 +7,7 @@
 # Usage:
 #   run_cluster.sh [work_dir]            # full scenario: phase1 → phase2 → restart → phase3
 #   run_cluster.sh [work_dir] stop       # stop nodes and mock API started from work_dir
+#   run_cluster.sh [work_dir] workerapis # one node: check APIs that run on the API worker pool
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
 set -u
@@ -87,8 +88,19 @@ python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" || exit 1
 
 nohup python3 "$HERE/mock_api.py" 18090 > "$WORK/mock_api.log" 2>&1 &
 echo $! > "$WORK/mock_api.pid"
-for n in $NODES; do start_node "$n" init; done
 trap stop_all EXIT
+
+if [ "${2:-}" = "workerapis" ]; then
+    start_node node-a init
+    for _ in $(seq 1 60); do
+        curl -s -m 2 -o /dev/null http://127.0.0.1:18081/media/mserver/healthcheck && break
+        sleep 1
+    done
+    python3 "$HERE/check_worker_apis.py" http://127.0.0.1:18081 node-a
+    exit $?
+fi
+
+for n in $NODES; do start_node "$n" init; done
 
 echo "phase1: camera on node-a"; sleep "$WAIT_SEC"; report phase1
 

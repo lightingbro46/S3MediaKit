@@ -7,6 +7,7 @@
 #include "WebHook.h"
 #include "User/UserAuditLog.h"
 #include "Storage/Certification.h"
+#include "ApiWorkDispatcher.h"
 
 using namespace std;
 using namespace toolkit;
@@ -59,58 +60,75 @@ void registerConfigurationApis() {
             origin_urls_str += origin_urls[i];
         }
 
-        Broadcast::HealthInvoker on_health_check = [allArgs, origin_urls, mediaServerDomain, mediaServerCert, apiSecret, val, headerOut, invoker](const string& err, const int& idx) mutable {
-            if (!err.empty()) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_HEALTH_CHECK_API_FAILED, err.data());
-                return;
-            }
+        // The health check answers on an HTTP client poller. Config changes are applied on the request
+        // poller; certificate check/save and ini.dumpFile (file I/O) run on the API worker pool.
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        Broadcast::HealthInvoker on_health_check = [owner, session, origin_urls, mediaServerDomain, mediaServerCert, apiSecret, val, headerOut, invoker](const string& err, const int& idx) mutable {
+            owner->async([owner, session, origin_urls, mediaServerDomain, mediaServerCert, apiSecret, val, headerOut, invoker, err, idx]() mutable {
+                if (!err.empty()) {
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_HEALTH_CHECK_API_FAILED, err.data());
+                    return;
+                }
 
-            auto apiUrlTmp = origin_urls[idx];
-            int changed = 0;
-            bool need_to_restart = false;
-            auto &ini = mINI::Instance();
+                auto apiUrlTmp = origin_urls[idx];
+                struct RegisterResult {
+                    int changed = 0;
+                    bool need_to_restart = false;
+                };
+                auto result = std::make_shared<RegisterResult>();
+                auto &ini = mINI::Instance();
 
-            // get new config and compare to old one of system
-            if (ini[Hook::kApiUrl] != apiUrlTmp) {
-                ini[Hook::kApiUrl] = apiUrlTmp;
-                ++changed;
-                need_to_restart = true;
-            }
+                // get new config and compare to old one of system
+                if (ini[Hook::kApiUrl] != apiUrlTmp) {
+                    ini[Hook::kApiUrl] = apiUrlTmp;
+                    ++result->changed;
+                    result->need_to_restart = true;
+                }
 
-            if (ini[Manager::kApiSecret] != apiSecret) {
-                ini[Manager::kApiSecret] = apiSecret;
-                ++changed;
-            }
+                if (ini[Manager::kApiSecret] != apiSecret) {
+                    ini[Manager::kApiSecret] = apiSecret;
+                    ++result->changed;
+                }
 
-            if (!mediaServerDomain.empty() && !mediaServerCert.empty()) {
-                if (ini[Manager::kMediaServerDomain] != mediaServerDomain) {
+                const bool update_cert = !mediaServerDomain.empty() && !mediaServerCert.empty();
+                if (update_cert && ini[Manager::kMediaServerDomain] != mediaServerDomain) {
                     ini[Manager::kMediaServerDomain] = mediaServerDomain;
-                    ++changed;
+                    ++result->changed;
                 }
-                
-                {
-                    auto imp = std::make_shared<CertificateImp>();
-                    if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
-                        imp->saveCert(mediaServerDomain, mediaServerCert);
-                        ++changed;
-                    }
-                }
-            }
 
-            if (changed > 0) {
-                // notify to reload config and dump ini file
-                NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
-                ini.dumpFile(g_ini_file);
-            }
-
-            if (need_to_restart) {
-                // notify to restart server
-                NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::RESTART_CONFIG, string("Restart due to api configuration updating"));
-                NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
-            }
-
-            val["data"]["changed"] = changed;
-            invoker(200, headerOut, val.toStyledString());
+                runApiWork(owner, session,
+                    // `result` is only touched by the worker, then by the completion (sequential).
+                    [result, update_cert, mediaServerDomain, mediaServerCert]() {
+                        if (update_cert) {
+                            auto imp = std::make_shared<CertificateImp>();
+                            if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
+                                imp->saveCert(mediaServerDomain, mediaServerCert);
+                                ++result->changed;
+                            }
+                        }
+                        if (result->changed > 0) {
+                            mINI::Instance().dumpFile(g_ini_file);
+                        }
+                    },
+                    [result, session, val, headerOut, invoker](const std::exception_ptr &error) mutable {
+                        if (error) {
+                            responseApiException(error, invoker, session);
+                            return;
+                        }
+                        if (result->changed > 0) {
+                            // notify to reload config (the ini file is already saved)
+                            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+                        }
+                        if (result->need_to_restart) {
+                            // notify to restart server
+                            NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::RESTART_CONFIG, string("Restart due to api configuration updating"));
+                            NOTICE_EMIT(BroadcastRestartServerArgs, Broadcast::kBroadcastRestartServer);
+                        }
+                        val["data"]["changed"] = result->changed;
+                        invoker(200, headerOut, val.toStyledString());
+                    });
+            }, false);
         };
         
         auto flag = NOTICE_EMIT(BroadcastHealthCheckApiServiceArgs, Broadcast::kBroadcastHealthCheckApiService, origin_urls_str, on_health_check);

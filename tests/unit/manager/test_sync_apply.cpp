@@ -772,3 +772,28 @@ TEST_F(SyncApplyTest, OfflinePeerHoldsPruneWatermarkUntilTtl) {
     std::unordered_set<std::string> expected = {"healthy", "offline-recent"};
     EXPECT_EQ(expected, peers);
 }
+
+// Regression: recording a stream/device disconnection used a deferred read-then-write transaction on
+// the MediaServer DB and failed with "database is locked" when another connection committed meanwhile
+// (seen in the 2-node run while tier storage was writing).
+TEST_F(SyncApplyTest, StatusGapWaitsForConcurrentWriter) {
+    auto writer_ready = std::make_shared<std::promise<void>>();
+    auto ready_future = writer_ready->get_future();
+    std::thread writer([writer_ready]() {
+        auto executor = std::make_shared<SqliteQueryExecutor>(Database::kMediaServerDb);
+        auto txn = executor->execTxn(true);
+        txn->execScript("DELETE FROM migrationhistory WHERE 1 = 0;");
+        writer_ready->set_value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        txn->commit();
+    });
+    ready_future.wait();
+
+    const uint64_t now = static_cast<uint64_t>(time(nullptr));
+    EXPECT_TRUE(ResourceStatusManager::Instance().onDisconnected("gap-lock-cam", "timeout", now));
+    writer.join();
+    EXPECT_TRUE(ResourceStatusManager::Instance().onReconnected("gap-lock-cam", now + 1));
+    auto gaps = ResourceStatusManager::Instance().getResourceStatusGaps("gap-lock-cam", now - 10, now + 10);
+    ASSERT_EQ(1u, gaps.size());
+    EXPECT_EQ(now + 1, gaps[0].reconnect_time);
+}

@@ -117,7 +117,9 @@ def main():
                          "pull_interval_sec": 5, "gossip_fanout": 3},
             # failoverActiveDelaySec: how long an inactive camera is kept after its release (default 1800s).
             "manager": {"serverLocationId": 0, "apiSecret": "", "certSavePath": d + "/www/certs",
-                        "failoverActiveDelaySec": 5},
+                        "failoverActiveDelaySec": 5,
+                        # device/config APIs are exercised without JWT (check_worker_apis.py)
+                        "enableAuthorize": 0},
         }
         patch_ini(os.path.join(REPO, "conf/config.ini"), os.path.join(d, "config.ini"), overrides)
 

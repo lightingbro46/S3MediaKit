@@ -143,10 +143,17 @@ void dispatchApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper>
         });
 }
 
+EventPoller::Ptr apiRequestPoller(SockInfo &sender) {
+    // The HTTP API dispatch passes the session itself as SockInfo (see WebApi.cpp).
+    return static_cast<SocketHelper &>(sender).getPoller();
+}
+
+weak_ptr<SocketHelper> apiRequestSession(SockInfo &sender) {
+    return static_cast<SocketHelper &>(sender).shared_from_this();
+}
+
 void dispatchApiWork(SockInfo &sender, const HttpSession::KeyValue &headerOut, const Json::Value &val,
                      const HttpSession::HttpResponseInvoker &invoker,
                      const ApiWorkTask &work, const ApiCompletionTask &completion) {
-    // The HTTP API dispatch passes the session itself as SockInfo (see WebApi.cpp).
-    auto helper = static_cast<SocketHelper &>(sender).shared_from_this();
-    dispatchApiWork(helper->getPoller(), helper, headerOut, val, invoker, work, completion);
+    dispatchApiWork(apiRequestPoller(sender), apiRequestSession(sender), headerOut, val, invoker, work, completion);
 }
