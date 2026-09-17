@@ -120,6 +120,36 @@ static const char kDefaultHotPoolId[] = "pool-default-hot";
 static const char kDefaultHotPoolName[] = "Default HOT Tier Storage";
 static const char kSystemDefaultPolicyId[] = "policy-system-default";
 static const char kSystemDefaultPolicyName[] = "System Default Policy";
+static const char kMissingSourceAndTargetError[] = "SOURCE_AND_TARGET_NOT_FOUND";
+
+static int getMissingSegmentMaxAttempts() {
+    GET_CONFIG(int, max_attempts, Storage::kTieringMissingSegmentMaxAttempts);
+    return max_attempts > 0 ? max_attempts : 3;
+}
+
+static int countMissingSegmentFailures(const std::string &range_id) {
+    return static_cast<int>(TieringJobImp().findRecentFailedByRange(
+        range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts()).size());
+}
+
+// Earliest time a range whose previous jobs hit missing segments may be
+// queued again. Returns false when the range has no such failures.
+static bool missingSegmentRetryAt(const std::string &range_id, int64_t &retry_at) {
+    retry_at = 0;
+    auto failed = TieringJobImp().findRecentFailedByRange(
+        range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts());
+    if (failed.empty())
+        return false;
+    GET_CONFIG(int64_t, base_seconds, Storage::kTieringMissingSegmentRetryBaseSeconds);
+    const int64_t max_delay = 86400;
+    if (base_seconds <= 0)
+        base_seconds = 3600;
+    base_seconds = std::min(base_seconds, max_delay);
+    const int shift = std::min<int>(static_cast<int>(failed.size()) - 1, 16);
+    const int64_t delay = std::min(base_seconds << shift, max_delay);
+    retry_at = failed.front().updated_at + delay;
+    return true;
+}
 
 static uint64_t nextLocalDayStart(uint64_t day_start) {
     return StampUtils::getStartOfDay(day_start + 36 * 3600);
@@ -225,6 +255,44 @@ static bool pathStartsWithRoot(const std::string &path, const std::string &root)
     if (!start_with(path, root))
         return false;
     return path.size() == root.size() || path[root.size()] == '/';
+}
+
+static std::string parentPath(const std::string &path) {
+    auto pos = path.rfind('/');
+    return pos == std::string::npos ? std::string() : path.substr(0, pos);
+}
+
+static bool isDateDirectoryName(const std::string &name) {
+    if (name.size() != 10 || name[4] != '-' || name[7] != '-')
+        return false;
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (i == 4 || i == 7)
+            continue;
+        if (!std::isdigit(static_cast<unsigned char>(name[i])))
+            return false;
+    }
+    return true;
+}
+
+static void pruneEmptySegmentDateDirectories(
+        const std::string &storage_root,
+        const std::vector<TierRangeSegmentFile> &segments) {
+    const std::string root = normalizeStoragePath(storage_root);
+    if (root.empty())
+        return;
+
+    std::unordered_set<std::string> candidates;
+    for (const auto &segment : segments) {
+        const std::string date_dir = parentPath(segment.full_path);
+        const std::string stream_root = root + "/" + segment.camera_id + "/" + segment.stream_id;
+        if (!pathStartsWithRoot(date_dir, stream_root) || date_dir.size() <= stream_root.size() + 1)
+            continue;
+        const std::string relative = date_dir.substr(stream_root.size() + 1);
+        if (relative.find('/') == std::string::npos && isDateDirectoryName(relative))
+            candidates.insert(date_dir);
+    }
+    for (const auto &date_dir : candidates)
+        File::deleteEmptyDir(date_dir, false);
 }
 
 static bool deriveSegmentPathFromFullPath(const std::string &full_path,
@@ -1132,7 +1200,10 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRang
 
                 int64_t block_start = static_cast<int64_t>(block.start_time());
                 int64_t block_end = block_start + std::max<int64_t>(1, static_cast<int64_t>(block.time_len()));
-                if (block_end <= range.start_time || block_start >= range.end_time)
+                // A compact range owns segments by their start timestamp in
+                // the half-open interval [start_time, end_time). Media files
+                // may overlap at their edges and must still belong to one range.
+                if (block_start < range.start_time || block_start >= range.end_time)
                     continue;
 
                 std::string timefile_path;
@@ -1182,6 +1253,12 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRang
         WarnL << "collectSegmentFilesForRange failed range=" << range.range_id
               << " camera=" << range.camera_id;
     }
+    std::sort(ret.begin(), ret.end(), [](const TierRangeSegmentFile &a,
+                                         const TierRangeSegmentFile &b) {
+        if (a.start_time != b.start_time)
+            return a.start_time < b.start_time;
+        return a.segment_path < b.segment_path;
+    });
     return ret;
 }
 
@@ -1761,7 +1838,10 @@ std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForJob(
             if (out_range.camera_id != job.camera_id ||
                 out_range.tier != job.source_tier ||
                 out_range.pool_id != job.source_pool_id ||
-                out_range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) {
+                out_range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
+                out_range.start_time != job.segment_start_time ||
+                out_range.end_time != job.segment_end_time ||
+                (job.bytes_total > 0 && out_range.size_bytes != job.bytes_total)) {
                 return {};
             }
             return collectSegmentFilesForRange(out_range);
@@ -1793,10 +1873,6 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
         return false;
     if (range.start_time >= move_threshold)
         return false;
-    if (range.end_time <= move_threshold) {
-        out_move_range = range;
-        return true;
-    }
 
     auto segments = collectSegmentFilesForRange(range);
     if (segments.empty()) {
@@ -1810,14 +1886,28 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
         return a.start_time < b.start_time;
     });
 
-    int64_t split_time = 0;
+    size_t move_end = 0;
+    while (move_end < segments.size()) {
+        const int64_t group_start = segments[move_end].start_time;
+        size_t group_end = move_end;
+        bool group_eligible = true;
+        while (group_end < segments.size() && segments[group_end].start_time == group_start) {
+            if (segments[group_end].end_time > move_threshold)
+                group_eligible = false;
+            ++group_end;
+        }
+        if (!group_eligible)
+            break;
+        move_end = group_end;
+    }
+
     int64_t move_count = 0;
     int64_t move_size = 0;
     int64_t remain_count = 0;
     int64_t remain_size = 0;
-    for (const auto &seg : segments) {
-        if (seg.end_time <= move_threshold) {
-            split_time = std::max(split_time, seg.end_time);
+    for (size_t i = 0; i < segments.size(); ++i) {
+        const auto &seg = segments[i];
+        if (i < move_end) {
             ++move_count;
             move_size += std::max<int64_t>(0, seg.file_size);
         } else {
@@ -1825,16 +1915,40 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
             remain_size += std::max<int64_t>(0, seg.file_size);
         }
     }
-    if (split_time <= range.start_time)
+
+    int64_t now = static_cast<int64_t>(time(nullptr));
+    SegmentTierRange corrected_range = range;
+    corrected_range.segment_count = move_count + remain_count;
+    corrected_range.size_bytes = move_size + remain_size;
+    corrected_range.updated_at = now;
+
+    SegmentTierRangeImp range_imp;
+    if (move_end == 0) {
+        if ((corrected_range.segment_count != range.segment_count ||
+             corrected_range.size_bytes != range.size_bytes) &&
+            !range_imp.replaceRangeWithPiecesIfUnchanged(range, {corrected_range})) {
+            WarnL << "Failed to refresh tier range stats, range=" << range.range_id;
+        }
         return false;
-    if (split_time >= range.end_time) {
-        out_move_range = range;
+    }
+    if (move_end == segments.size()) {
+        if (corrected_range.segment_count != range.segment_count ||
+            corrected_range.size_bytes != range.size_bytes) {
+            if (!range_imp.replaceRangeWithPiecesIfUnchanged(range, {corrected_range})) {
+                WarnL << "Failed to refresh movable tier range stats, range=" << range.range_id;
+                return false;
+            }
+        }
+        out_move_range = corrected_range;
         return true;
     }
 
-    int64_t now = static_cast<int64_t>(time(nullptr));
-    SegmentTierRange move_piece = range;
-    SegmentTierRange remain_piece = range;
+    const int64_t split_time = segments[move_end].start_time;
+    if (split_time <= range.start_time || split_time >= range.end_time)
+        return false;
+
+    SegmentTierRange move_piece = corrected_range;
+    SegmentTierRange remain_piece = corrected_range;
     move_piece.end_time = split_time;
     move_piece.segment_count = move_count;
     move_piece.size_bytes = move_size;
@@ -1852,8 +1966,7 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
         return false;
     }
 
-    SegmentTierRangeImp range_imp;
-    if (!range_imp.replaceRangeWithPieces(range.range_id, {move_piece, remain_piece})) {
+    if (!range_imp.replaceRangeWithPiecesIfUnchanged(range, {move_piece, remain_piece})) {
         WarnL << "Failed to split tier range for scheduled move, range=" << range.range_id
               << " camera=" << range.camera_id
               << " split_time=" << split_time;
@@ -2782,8 +2895,12 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
         auto ranges = range_imp.findByCameraTierStartedBefore(
             camera_id, src_tier_cfg.tier, move_threshold, max_ranges_per_cycle);
 
+        TieringJobImp job_imp;
         for (const auto &range : ranges) {
             if (range.pool_id.empty()) continue;
+            // Splitting reads the timefile; skip ranges already queued for transfer.
+            if (job_imp.hasActiveJobForRange(range.range_id))
+                continue;
             SegmentTierRange move_range;
             if (!splitRangeForTieringThreshold(range, move_threshold, move_range))
                 continue;
@@ -2827,17 +2944,22 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
     }
 
     TieringJobImp job_imp;
-    auto existing_jobs = job_imp.query(range.camera_id, "", src_tier_cfg.tier, dst_tier_cfg.tier);
-    for (const auto &j : existing_jobs) {
-        if (j.segment_start_time == range.start_time &&
-            j.segment_end_time == range.end_time &&
-            (j.status == jobStatusToString(JobStatus::PENDING) ||
-             j.status == jobStatusToString(JobStatus::RUNNING))) {
-            return false;
-        }
+    if (job_imp.hasActiveJobForRange(range.range_id) ||
+        job_imp.hasActiveJobForWindow(range.camera_id, range.stream_id,
+                                      src_tier_cfg.tier, dst_tier_cfg.tier,
+                                      range.start_time, range.end_time)) {
+        return false;
     }
 
     int64_t now = static_cast<int64_t>(time(nullptr));
+    int64_t retry_at = 0;
+    if (missingSegmentRetryAt(range.range_id, retry_at) && now < retry_at) {
+        DebugL << "Defer tiering job for range with missing segments until "
+               << getTimeStr("%Y-%m-%d %H:%M:%S", retry_at)
+               << " range=" << range.range_id;
+        return false;
+    }
+
     TieringJob job;
     const bool pressure = trigger == TieringJobTrigger::PRESSURE;
     job.job_id             = StrUUID::make_guid(8, pressure ? "ptj" : "tj");
@@ -3126,6 +3248,7 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
             if (!storage->deleteSegment(pool.id, seg.storage_key))
                 all_deleted = false;
         }
+        pruneEmptySegmentDateDirectories(configuredPoolDataRoot(pool), segments);
     }
 
     if (!all_deleted) {
@@ -3749,7 +3872,7 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
 
     bool ok = false;
     if (poolTypeIsObjectStorage(dst_pool.type)) {
-        ok = executeObjectStorageUpload(job, dst_pool);
+        ok = executeObjectStorageUpload(job, src_pool, dst_pool);
     } else {
         ok = executeLocalTierMove(job, src_pool, dst_pool);
     }
@@ -3762,6 +3885,104 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
                              job.bytes_moved, job.error_message.value_or("Move failed"));
         WarnL << "Tiering job failed: " << job.job_id;
     }
+}
+
+bool TierStorageManager::canDropMissingSegments(const TieringJob &job,
+                                                const StoragePool &src_pool) const {
+    if (job.range_id.empty())
+        return false;
+    if (countMissingSegmentFailures(job.range_id) + 1 < getMissingSegmentMaxAttempts())
+        return false;
+    // A missing file only proves data loss when the source pool itself is
+    // reachable; an unmounted NAS also reports ENOENT for every segment.
+    if (!isPoolAvailableForTierOperation(src_pool, false))
+        return false;
+    if (poolTypeIsObjectStorage(src_pool.type))
+        return false;
+    const std::string src_root = configuredPoolDataRoot(src_pool);
+    struct stat root_st{};
+    return !src_root.empty() && ::stat(src_root.c_str(), &root_st) == 0 &&
+           S_ISDIR(root_st.st_mode);
+}
+
+void TierStorageManager::reportMissingSegments(const SegmentTierRange &range,
+                                               const std::vector<TierRangeSegmentFile> &missing) {
+    if (missing.empty())
+        return;
+    StorageAlert alert;
+    alert.id = StrUUID::make_guid(8, "alert");
+    alert.level = "WARNING";
+    alert.type = "TIER_SEGMENT_MISSING";
+    alert.pool_id = range.pool_id;
+    alert.message = StrPrinter << "Dropped " << missing.size()
+                               << " segment(s) missing from source and target, range="
+                               << range.range_id << ", first="
+                               << missing.front().segment_path;
+    alert.created_at = static_cast<int64_t>(time(nullptr));
+    StorageAlertImp().add(alert);
+
+    std::vector<TimeBlockIdentity> identities;
+    for (const auto &segment : missing) {
+        TimeBlockIdentity identity;
+        identity.camera_id = segment.camera_id;
+        identity.stream_id = segment.stream_id;
+        identity.start_time = static_cast<uint64_t>(segment.start_time);
+        identity.segment_path = segment.segment_path;
+        identities.push_back(identity);
+        WarnL << "Dropped missing tier segment: range=" << range.range_id
+              << " segment=" << segment.segment_path;
+    }
+    StorageManager::Instance().removeCameraTimeBlocks(range.camera_id, identities);
+}
+
+bool TierStorageManager::commitTierTransfer(TieringJob &job,
+                                            const SegmentTierRange &range,
+                                            const std::vector<TierRangeSegmentFile> &segments,
+                                            const std::vector<char> &missing,
+                                            const std::string &target_tier,
+                                            const std::string &target_pool_id) {
+    std::vector<TierRangeSegmentFile> missing_segments;
+    int64_t kept_count = 0;
+    int64_t kept_size = 0;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        if (missing[i]) {
+            missing_segments.push_back(segments[i]);
+            continue;
+        }
+        ++kept_count;
+        kept_size += std::max<int64_t>(0, segments[i].file_size);
+    }
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    SegmentTierRangeImp range_imp;
+    bool updated = false;
+    const bool all_missing = kept_count == 0;
+    if (all_missing) {
+        updated = range_imp.updateStatusBySnapshotAt(
+            range, segmentStatusToString(SegmentStatus::MISSING), now);
+    } else if (missing_segments.empty()) {
+        updated = range_imp.updateTierBySnapshotAt(
+            range, target_tier, target_pool_id,
+            segmentStatusToString(SegmentStatus::AVAILABLE), now);
+    } else {
+        updated = range_imp.updateTierBySnapshotAt(
+            range, target_tier, target_pool_id,
+            segmentStatusToString(SegmentStatus::AVAILABLE), now,
+            kept_count, kept_size);
+    }
+    if (!updated) {
+        job.error_message = Optional<std::string>(
+            "STALE_RANGE_SNAPSHOT: tier range changed during transfer");
+        WarnL << job.error_message.value() << " range=" << range.range_id
+              << " job=" << job.job_id;
+        return false;
+    }
+    if (!all_missing && !range_imp.normalizeRangeById(range.range_id, 90, now)) {
+        WarnL << "Transferred tier range but could not merge adjacent destination ranges: "
+              << range.range_id;
+    }
+    reportMissingSegments(range, missing_segments);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3797,6 +4018,13 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
         WarnL << job.error_message.value();
         return false;
     }
+    auto src_storage = fileStorageForPoolType(src_pool.type);
+    if (!src_storage ||
+        (!src_storage->isRegistered(src_pool.id) && !registerPoolFileStorage(src_pool))) {
+        job.error_message = "Source pool is not registered with file storage: " + src_pool.id;
+        WarnL << job.error_message.value();
+        return false;
+    }
 
     SegmentTierRange job_range;
     auto segments = collectSegmentFilesForJob(job, job_range);
@@ -3806,42 +4034,69 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
         return false;
     }
 
+    const size_t count = segments.size();
+    std::vector<std::string> target_paths(count);
+    std::vector<char> copied(count, 0);
+    std::vector<char> missing(count, 0);
     int64_t moved = 0;
-    std::vector<std::string> copied_keys;
-    std::vector<std::string> copied_paths;
+    int missing_count = 0;
+    bool drop_missing_checked = false;
+    bool drop_missing = false;
 
-    for (const auto &seg : segments) {
+    auto rollback = [&](const char *reason) {
+        for (size_t i = 0; i < count; ++i) {
+            if (!copied[i])
+                continue;
+            WarnL << "Rollback copied segment after " << reason << ": pool=" << dst_pool.id
+                  << " key=" << segments[i].storage_key;
+            dst_storage->deleteSegment(dst_pool.id, segments[i].storage_key);
+        }
+    };
+
+    for (size_t i = 0; i < count; ++i) {
+        const auto &seg = segments[i];
         if (seg.full_path.empty()) {
             WarnL << "Cannot resolve source segment path from pool_id=" << job.source_pool_id
                   << " segment=" << seg.segment_path;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after source resolve failure: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
-            }
+            rollback("source resolve failure");
             return false;
         }
 
-        struct stat src_st{};
-        if (stat(seg.full_path.c_str(), &src_st) != 0) {
-            WarnL << "Cannot stat source segment: " << seg.full_path;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after source stat failure: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
-            }
-            return false;
-        }
-
-        std::string dst_path = dst_storage->resolvePath(dst_pool.id, seg.storage_key);
+        const std::string dst_path = dst_storage->resolvePath(dst_pool.id, seg.storage_key);
         if (dst_path.empty()) {
             WarnL << "Cannot resolve destination segment path pool=" << dst_pool.id
                   << " key=" << seg.storage_key;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after destination resolve failure: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
+            rollback("destination resolve failure");
+            return false;
+        }
+        target_paths[i] = dst_path;
+
+        struct stat src_st{};
+        if (::stat(seg.full_path.c_str(), &src_st) != 0) {
+            const int stat_errno = errno;
+            if (stat_errno == ENOENT && dst_storage->segmentExists(dst_pool.id, seg.storage_key)) {
+                moved += std::max<int64_t>(0, seg.file_size);
+                InfoL << "Reusing existing tier target for missing source: " << dst_path
+                      << " key=" << seg.storage_key;
+                continue;
             }
+            if (stat_errno == ENOENT) {
+                if (!drop_missing_checked) {
+                    drop_missing = canDropMissingSegments(job, src_pool);
+                    drop_missing_checked = true;
+                }
+                if (drop_missing) {
+                    missing[i] = 1;
+                    ++missing_count;
+                    continue;
+                }
+            }
+            job.error_message = StrPrinter << kMissingSourceAndTargetError
+                                           << ": source=" << seg.full_path
+                                           << ", target=" << dst_path
+                                           << ", errno=" << stat_errno;
+            WarnL << job.error_message.value();
+            rollback("missing source");
             return false;
         }
         if (isSameFileOnDisk(seg.full_path, dst_path)) {
@@ -3849,11 +4104,7 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
                   << seg.full_path << " -> " << dst_path
                   << " source_pool=" << job.source_pool_id
                   << " target_pool=" << dst_pool.id;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after same-file detection: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
-            }
+            rollback("same-file detection");
             return false;
         }
 
@@ -3861,16 +4112,11 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             WarnL << "File storage upload failed for " << seg.full_path
                   << " -> " << dst_path
                   << " pool=" << dst_pool.id;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after upload failure: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
-            }
+            rollback("upload failure");
             return false;
         }
 
-        copied_keys.push_back(seg.storage_key);
-        copied_paths.push_back(dst_path);
+        copied[i] = 1;
         moved += src_st.st_size;
         InfoL << "Copied tier segment: " << seg.full_path
               << " -> " << dst_path
@@ -3878,36 +4124,18 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
     }
 
     job.bytes_moved = moved;
-    if (moved > 0) {
-        SegmentTierRangeImp range_imp;
-        if (!range_imp.updateTierByRangeId(job_range.range_id,
-                                           job.target_tier,
-                                           dst_pool.id,
-                                           segmentStatusToString(SegmentStatus::AVAILABLE))) {
-            job.error_message = Optional<std::string>("Failed to update tier range after local move");
-            WarnL << job.error_message.value() << ", rollback copied files"
-                  << " range=" << job_range.range_id
-                  << " source_pool=" << job.source_pool_id
-                  << " target_pool=" << dst_pool.id;
-            for (const auto &key : copied_keys) {
-                WarnL << "Rollback copied segment after DB update failure: pool=" << dst_pool.id
-                      << " key=" << key;
-                dst_storage->deleteSegment(dst_pool.id, key);
-            }
-            return false;
-        }
-        if (!range_imp.normalizeRangeById(job_range.range_id, 90, static_cast<int64_t>(time(nullptr)))) {
-            WarnL << "Moved tier range but could not merge adjacent destination ranges: "
-                  << job_range.range_id;
-        }
+    if (!commitTierTransfer(job, job_range, segments, missing, job.target_tier, dst_pool.id)) {
+        rollback("range update failure");
+        return false;
     }
 
-    for (size_t i = 0; i < segments.size(); ++i) {
+    for (size_t i = 0; i < count; ++i) {
+        if (!copied[i])
+            continue;
         const auto &seg = segments[i];
-        const std::string dst_path = i < copied_paths.size() ? copied_paths[i] : "";
-        if (isSameFileOnDisk(seg.full_path, dst_path)) {
+        if (isSameFileOnDisk(seg.full_path, target_paths[i])) {
             WarnL << "Skip deleting source because it matches destination: "
-                  << seg.full_path << " -> " << dst_path;
+                  << seg.full_path << " -> " << target_paths[i];
             continue;
         }
         if (::remove(seg.full_path.c_str()) != 0) {
@@ -3916,16 +4144,22 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             continue;
         }
         InfoL << "Moved segment: " << seg.full_path
-              << " -> " << dst_path
+              << " -> " << target_paths[i]
               << " tier=" << dst_pool.tier;
     }
-    return moved > 0;
+    pruneEmptySegmentDateDirectories(src_root, segments);
+    if (missing_count > 0) {
+        InfoL << "Tier move dropped " << missing_count << " missing segment(s), job="
+              << job.job_id << " range=" << job_range.range_id;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
 // Object storage upload (MINIO / S3 / ARCHIVE)
 // ---------------------------------------------------------------------------
 bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
+                                                     const StoragePool &src_pool,
                                                      const StoragePool &dst_pool) {
     if (job.source_pool_id.empty()) {
         job.error_message = Optional<std::string>("Source pool is required for object storage upload");
@@ -3941,6 +4175,7 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
 
     const std::string base_path = dst_pool.base_path.has_value()
                                     ? dst_pool.base_path.value() : "";
+    const std::string src_root = configuredPoolDataRoot(src_pool);
 
     SegmentTierRange job_range;
     auto segments = collectSegmentFilesForJob(job, job_range);
@@ -3952,68 +4187,90 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
         return false;
     }
 
+    const size_t count = segments.size();
+    std::vector<std::string> keys(count);
+    std::vector<char> uploaded(count, 0);
+    std::vector<char> missing(count, 0);
     int64_t bytes_moved = 0;
-    std::vector<std::string> uploaded_keys;
+    bool drop_missing_checked = false;
+    bool drop_missing = false;
 
-    for (auto &seg : segments) {
+    auto rollback = [&]() {
+        for (size_t i = 0; i < count; ++i) {
+            if (uploaded[i])
+                _obj_storage.deleteSegment(dst_pool.id, keys[i]);
+        }
+    };
+
+    for (size_t i = 0; i < count; ++i) {
+        const auto &seg = segments[i];
         if (seg.full_path.empty()) {
             WarnL << "executeObjectStorageUpload: cannot resolve local path for segment "
                   << seg.segment_path << " pool_id=" << job.source_pool_id;
-            for (const auto &key : uploaded_keys)
-                _obj_storage.deleteSegment(dst_pool.id, key);
+            rollback();
             return false;
         }
 
-        struct stat st{};
-        if (stat(seg.full_path.c_str(), &st) != 0) {
-            WarnL << "executeObjectStorageUpload: segment file not found: " << seg.full_path;
-            for (const auto &key : uploaded_keys)
-                _obj_storage.deleteSegment(dst_pool.id, key);
-            return false;
-        }
-
-        std::string s3_key = TierObjectStorage::makeS3Key(
+        keys[i] = TierObjectStorage::makeS3Key(
             base_path, seg.camera_id, seg.stream_id, seg.segment_path);
 
-        bool ok = _obj_storage.uploadSegment(dst_pool.id, seg.full_path, s3_key);
-        if (!ok) {
+        struct stat st{};
+        if (::stat(seg.full_path.c_str(), &st) != 0) {
+            const int stat_errno = errno;
+            if (stat_errno == ENOENT && _obj_storage.segmentExists(dst_pool.id, keys[i])) {
+                bytes_moved += std::max<int64_t>(0, seg.file_size);
+                InfoL << "executeObjectStorageUpload: reuse existing target key=" << keys[i]
+                      << " for missing source=" << seg.full_path;
+                continue;
+            }
+            if (stat_errno == ENOENT) {
+                if (!drop_missing_checked) {
+                    drop_missing = canDropMissingSegments(job, src_pool);
+                    drop_missing_checked = true;
+                }
+                if (drop_missing) {
+                    missing[i] = 1;
+                    continue;
+                }
+            }
+            job.error_message = StrPrinter << kMissingSourceAndTargetError
+                                           << ": source=" << seg.full_path
+                                           << ", target_key=" << keys[i]
+                                           << ", errno=" << stat_errno;
+            WarnL << "executeObjectStorageUpload: " << job.error_message.value();
+            rollback();
+            return false;
+        }
+
+        if (!_obj_storage.uploadSegment(dst_pool.id, seg.full_path, keys[i])) {
             WarnL << "executeObjectStorageUpload: upload failed for " << seg.full_path;
-            for (const auto &key : uploaded_keys)
-                _obj_storage.deleteSegment(dst_pool.id, key);
+            rollback();
             return false;
         }
 
         bytes_moved += static_cast<int64_t>(st.st_size);
-        uploaded_keys.push_back(s3_key);
+        uploaded[i] = 1;
     }
 
     job.bytes_moved = bytes_moved;
-    if (!uploaded_keys.empty()) {
-        SegmentTierRangeImp range_imp;
-        if (!range_imp.updateTierByRangeId(job_range.range_id,
-                                           tierTypeToString(tierTypeFromString(job.target_tier)),
-                                           dst_pool.id,
-                                           segmentStatusToString(SegmentStatus::AVAILABLE))) {
-            WarnL << "Failed to update tier range after object upload, range=" << job_range.range_id;
-            for (const auto &key : uploaded_keys)
-                _obj_storage.deleteSegment(dst_pool.id, key);
-            return false;
-        }
-        if (!range_imp.normalizeRangeById(job_range.range_id, 90, static_cast<int64_t>(time(nullptr)))) {
-            WarnL << "Uploaded tier range but could not merge adjacent destination ranges: "
-                  << job_range.range_id;
-        }
+    if (!commitTierTransfer(job, job_range, segments, missing,
+                            tierTypeToString(tierTypeFromString(job.target_tier)),
+                            dst_pool.id)) {
+        rollback();
+        return false;
     }
 
-    for (auto &seg : segments) {
-        if (::unlink(seg.full_path.c_str()) != 0) {
-            WarnL << "executeObjectStorageUpload: could not remove old local file "
-                  << seg.full_path << ": " << strerror(errno);
+    for (size_t i = 0; i < count; ++i) {
+        if (!uploaded[i])
             continue;
+        if (::unlink(segments[i].full_path.c_str()) != 0) {
+            WarnL << "executeObjectStorageUpload: could not remove old local file "
+                  << segments[i].full_path << ": " << strerror(errno);
         }
     }
+    pruneEmptySegmentDateDirectories(src_root, segments);
 
-    InfoL << "executeObjectStorageUpload: " << uploaded_keys.size() << " segments, "
+    InfoL << "executeObjectStorageUpload: " << count << " segments, "
           << bytes_moved << " bytes → pool " << dst_pool.id;
     return true;
 }

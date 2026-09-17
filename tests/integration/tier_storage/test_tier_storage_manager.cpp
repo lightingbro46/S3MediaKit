@@ -625,10 +625,267 @@ int scenarioHotToNas(const std::string &root) {
     require(!jobs.empty() && jobs.front().status == "DONE",
             jobs.empty() ? "Tiering job was not created" : "Tiering job failed: " + jobs.front().error_message.value_or(""));
     require(!File::fileExist(source), "HOT source was not removed after successful move");
+    require(!File::is_dir(File::parentDir(source)),
+            "Empty HOT date directory was not removed after successful move");
     require(File::loadFile(destination) == payload, "NAS destination content mismatch");
     auto ranges = SegmentTierRangeImp().queryByCamera(camera, now - 240, now);
     require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier) &&
             ranges.front().pool_id == nas.id, "Tier range was not updated to NAS/WARM");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioOverlappingSegmentsUseStartOwnership(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-overlap-ownership";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "overlap ownership test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t first_start = now - 63;
+    const int64_t first_end = now - 1;
+    const int64_t second_start = now - 2;
+    const int64_t second_end = now + 60;
+    const std::string first_key = "2026-08-20/12-00-00";
+    const std::string second_key = "2026-08-20/12-01-01";
+    const std::string first_source = root + "/hot/record/" + camera + "/" + stream + "/" + first_key + ".mp4";
+    const std::string second_source = root + "/hot/record/" + camera + "/" + stream + "/" + second_key + ".mp4";
+    const std::string first_target = root + "/nas/record/" + camera + "/" + stream + "/" + first_key + ".mp4";
+    const std::string second_target = root + "/nas/record/" + camera + "/" + stream + "/" + second_key + ".mp4";
+    const std::string first_payload = "overlap-first";
+    const std::string second_payload = "overlap-second";
+    writeFile(first_source, first_payload);
+    writeFile(second_source, second_payload);
+    writeTimeBlock(root, camera, stream, first_source, first_start, first_end,
+                   static_cast<int64_t>(first_payload.size()));
+    writeTimeBlock(root, camera, stream, second_source, second_start, second_end,
+                   static_cast<int64_t>(second_payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, first_source, first_start, first_end,
+                                            static_cast<int64_t>(first_payload.size())),
+            "First HOT range registration failed");
+    require(manager.registerHotSegmentRange(camera, stream, second_source, second_start, second_end,
+                                            static_cast<int64_t>(second_payload.size())),
+            "Second HOT range registration failed");
+
+    auto registered = SegmentTierRangeImp().queryByCamera(camera, first_start - 1, second_end + 1);
+    require(registered.size() == 1, "Overlapping segments were not registered as one range");
+    require(manager.extendRangeRetention(registered.front().range_id, now + 86400,
+                                         "split keeps override"),
+            "Cannot extend overlap range retention");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Overlap tiering job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Overlap tiering job was not created"
+                         : "Overlap tiering job failed: " + jobs.front().error_message.value_or(""));
+    require(!File::fileExist(first_source) && File::loadFile(first_target) == first_payload,
+            "Eligible first segment was not moved");
+    require(File::fileExist(second_source) && !File::fileExist(second_target),
+            "Overlapping second segment was owned by both ranges");
+    require(File::is_dir(File::parentDir(first_source)),
+            "Date directory was removed while the second segment remained");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, first_start - 1, second_end + 1);
+    require(ranges.size() == 2, "Overlap range was not split into two ownership windows");
+    require(ranges[0].tier == tierTypeToString(WarmTier) &&
+                ranges[0].end_time == second_start && ranges[0].segment_count == 1 &&
+                ranges[1].tier == tierTypeToString(HotTier) &&
+                ranges[1].start_time == second_start && ranges[1].segment_count == 1,
+            "Split ranges do not follow segment start-time ownership");
+    require(SegmentRetentionOverrideImp().isActive(ranges[0].range_id, now) &&
+                SegmentRetentionOverrideImp().isActive(ranges[1].range_id, now),
+            "Split range pieces did not keep the retention override");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioReusesExistingNasTarget(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-reuse-nas";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "reuse target test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 180;
+    const int64_t end = now - 120;
+    const std::string key = "2026-08-20/13-00-00";
+    const std::string source = root + "/hot/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string target = root + "/nas/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string payload = "already-copied-to-nas";
+    writeFile(source, payload);
+    writeFile(target, payload);
+    writeTimeBlock(root, camera, stream, source, start, end,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, start, end,
+                                            static_cast<int64_t>(payload.size())),
+            "HOT range registration failed");
+    require(::unlink(source.c_str()) == 0, "Cannot simulate missing source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Reused-target tiering job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Reused-target job was not created"
+                         : "Reused-target job failed: " + jobs.front().error_message.value_or(""));
+    require(File::loadFile(target) == payload, "Existing NAS target was changed or removed");
+    require(!File::is_dir(File::parentDir(source)),
+            "Empty source date directory was not pruned after target reuse");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier),
+            "Reused-target range was not moved to WARM");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioBacksOffMissingSegmentJob(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-missing-both";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "missing segment test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 180;
+    const int64_t end = now - 120;
+    const std::string source = root + "/hot/record/" + camera + "/" + stream +
+                               "/2026-08-20/14-00-00.mp4";
+    const std::string payload = "missing-from-both-pools";
+    writeFile(source, payload);
+    writeTimeBlock(root, camera, stream, source, start, end,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, start, end,
+                                            static_cast<int64_t>(payload.size())),
+            "HOT range registration failed");
+    require(::unlink(source.c_str()) == 0, "Cannot simulate missing source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && jobs.front().status == "FAILED";
+    }, 5000), "Missing segment job did not fail");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().error_message.has_value() &&
+                jobs.front().error_message.value().find("SOURCE_AND_TARGET_NOT_FOUND") == 0,
+            "Missing source/target did not produce a retryable missing-segment error");
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    require(manager.listTieringJobs(camera).size() == 1,
+            "Missing segment job was queued again before its retry backoff elapsed");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(HotTier) &&
+                ranges.front().status == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range changed before missing-segment retries were exhausted");
+    manager.stop();
+    return 0;
+}
+
+int scenarioDropsMissingSegmentAfterMaxAttempts(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringMissingSegmentMaxAttempts] = 1;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-missing-dropped";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "drop missing segment test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t lost_start = now - 300;
+    const int64_t kept_start = now - 240;
+    const int64_t kept_end = now - 180;
+    const std::string lost_key = "2026-08-20/15-00-00";
+    const std::string kept_key = "2026-08-20/15-01-00";
+    const std::string lost_source = root + "/hot/record/" + camera + "/" + stream + "/" + lost_key + ".mp4";
+    const std::string kept_source = root + "/hot/record/" + camera + "/" + stream + "/" + kept_key + ".mp4";
+    const std::string lost_target = root + "/nas/record/" + camera + "/" + stream + "/" + lost_key + ".mp4";
+    const std::string kept_target = root + "/nas/record/" + camera + "/" + stream + "/" + kept_key + ".mp4";
+    const std::string lost_payload = "lost-segment";
+    const std::string kept_payload = "kept-segment-payload";
+    writeFile(lost_source, lost_payload);
+    writeFile(kept_source, kept_payload);
+    writeTimeBlock(root, camera, stream, lost_source, lost_start, kept_start,
+                   static_cast<int64_t>(lost_payload.size()));
+    writeTimeBlock(root, camera, stream, kept_source, kept_start, kept_end,
+                   static_cast<int64_t>(kept_payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, lost_source, lost_start, kept_start,
+                                            static_cast<int64_t>(lost_payload.size())),
+            "Lost segment range registration failed");
+    require(manager.registerHotSegmentRange(camera, stream, kept_source, kept_start, kept_end,
+                                            static_cast<int64_t>(kept_payload.size())),
+            "Kept segment range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(camera, lost_start - 1, kept_end + 1).size() == 1,
+            "Adjacent segments were not registered as one range");
+    require(::unlink(lost_source.c_str()) == 0, "Cannot simulate lost source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Missing-segment drop job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Missing-segment drop job was not created"
+                         : "Missing-segment drop job failed: " + jobs.front().error_message.value_or(""));
+    require(!File::fileExist(kept_source) && File::loadFile(kept_target) == kept_payload,
+            "Present segment was not moved when its sibling was missing");
+    require(!File::fileExist(lost_target), "A target was invented for the lost segment");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, lost_start - 1, kept_end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier) &&
+                ranges.front().segment_count == 1 &&
+                ranges.front().size_bytes == static_cast<int64_t>(kept_payload.size()),
+            "Range stats still include the dropped segment");
+
+    bool alerted = false;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 50)) {
+        if (alert.type == "TIER_SEGMENT_MISSING" &&
+            alert.message.find(ranges.front().range_id) != std::string::npos) {
+            alerted = true;
+        }
+    }
+    require(alerted, "Dropping a missing segment did not raise a storage alert");
     drainWorkThreadPool();
     manager.stop();
     return 0;
@@ -3111,6 +3368,10 @@ int runScenario(const std::string &name, const std::string &root) {
     try {
         if (name == "register-idempotent") return scenarioRegisterIdempotent(root);
         if (name == "hot-to-nas") return scenarioHotToNas(root);
+        if (name == "overlap-start-ownership") return scenarioOverlappingSegmentsUseStartOwnership(root);
+        if (name == "reuse-existing-nas-target") return scenarioReusesExistingNasTarget(root);
+        if (name == "backoff-missing-segment-job") return scenarioBacksOffMissingSegmentJob(root);
+        if (name == "drop-missing-segment") return scenarioDropsMissingSegmentAfterMaxAttempts(root);
         if (name == "hot-to-minio") return scenarioHotToMinio(root);
         if (name == "restore-from-minio") return scenarioRestoreFromMinio(root);
         if (name == "duplicate-restore") return scenarioDuplicateRestore(root);
@@ -3240,6 +3501,26 @@ TEST(TierStorageManagerIntegrationTest, CleansRangeMetadataBeforeCompletingJob) 
 TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToNas) {
     TempRoot root;
     EXPECT_EQ(0, runChild("hot-to-nas", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, MovesOnlyStartOwnedSegmentsAcrossOverlappingBoundary) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("overlap-start-ownership", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReusesExistingNasTargetWhenSourceIsMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("reuse-existing-nas-target", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BacksOffMissingSegmentJob) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backoff-missing-segment-job", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DropsMissingSegmentAfterMaxAttempts) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("drop-missing-segment", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToMinio) {

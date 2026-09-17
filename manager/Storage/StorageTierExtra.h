@@ -526,6 +526,15 @@ public:
 
     bool add(const TierMetadataCleanupJob &job) { return save(job, true); }
 
+    // A range can be reactivated and deleted again, so replace any prior job row.
+    bool upsertWithTxn(const TierMetadataCleanupJob &job,
+                       const toolkit::SqliteTransaction::Ptr &txn) {
+        if (!txn || job.range_id.empty())
+            return false;
+        removeByIdWithTxn(job, txn);
+        return saveWithTxn(job, txn, true);
+    }
+
     bool markRangeDeletedAndInsert(const TierMetadataCleanupJob &job,
                                    const std::string &final_status) {
         auto txn = _executor->execTxn();
@@ -619,6 +628,29 @@ public:
                     .where("range_id = ?", {item.range_id})))
             return false;
         txn->commit();
+        return true;
+    }
+
+    // Splitting a range gives new pieces fresh ids; they inherit its override.
+    bool copyToRangesWithTxn(const std::string &from_range_id,
+                             const std::vector<std::string> &to_range_ids,
+                             const toolkit::SqliteTransaction::Ptr &txn) {
+        if (!txn || from_range_id.empty())
+            return false;
+        SegmentRetentionOverride key;
+        key.range_id = from_range_id;
+        auto existing = findByIdWithTxn(key, txn);
+        if (existing.empty())
+            return true;
+        for (const auto &range_id : to_range_ids) {
+            if (range_id.empty() || range_id == from_range_id)
+                continue;
+            SegmentRetentionOverride copy = existing.front();
+            copy.range_id = range_id;
+            removeByIdWithTxn(copy, txn);
+            if (!saveWithTxn(copy, txn, true))
+                return false;
+        }
         return true;
     }
 

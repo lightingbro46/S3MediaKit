@@ -415,7 +415,25 @@ private:
                                const StoragePool &dst_pool);
 
     bool executeObjectStorageUpload(TieringJob &job,
+                                     const StoragePool &src_pool,
                                      const StoragePool &dst_pool);
+
+    // True once a range has exhausted its missing-segment retries and the
+    // source pool is verifiably reachable, so absent files are real losses.
+    bool canDropMissingSegments(const TieringJob &job,
+                                const StoragePool &src_pool) const;
+
+    // Applies a finished transfer to the range snapshot. Segments flagged in
+    // `missing` are dropped from the range stats and from the timeline.
+    bool commitTierTransfer(TieringJob &job,
+                            const SegmentTierRange &range,
+                            const std::vector<TierRangeSegmentFile> &segments,
+                            const std::vector<char> &missing,
+                            const std::string &target_tier,
+                            const std::string &target_pool_id);
+
+    void reportMissingSegments(const SegmentTierRange &range,
+                               const std::vector<TierRangeSegmentFile> &missing);
 
     void executeRestoreSegment(const RestoreJobSegment &segment);
 

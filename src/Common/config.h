@@ -728,6 +728,14 @@ extern const std::string kDefaultHotHighWatermarkPercent;
 extern const std::string kDefaultHotCriticalWatermarkPercent;
 // Maximum compact ranges processed for one camera/tier in a maintenance cycle.
 extern const std::string kTieringMaxRangesPerCameraCycle;
+// Number of failed attempts before a segment missing from both source and
+// target pools is treated as lost and dropped from its tier range.
+extern const std::string kTieringMissingSegmentMaxAttempts;
+// Base retry delay for tier jobs with missing segments; doubles per attempt, capped at one day.
+extern const std::string kTieringMissingSegmentRetryBaseSeconds;
+// Extra usage percent above a pool's critical watermark before pressure deletion
+// runs while tier moves from that pool are still pending.
+extern const std::string kTieringPressureDeleteMarginPercent;
 // Maximum concurrent tier-transfer jobs across all storage pools.
 extern const std::string kTieringTransferMaxConcurrent;
 // Maximum concurrent tier-transfer jobs touching the same storage pool.

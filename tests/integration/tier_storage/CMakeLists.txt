@@ -54,6 +54,10 @@ foreach(manager_case
     MapsAppDirectoryBindMountToLogicalPoolRoot
     RegistersHotSegmentIdempotently
     RunsCycleAndMovesHotSegmentToNas
+    MovesOnlyStartOwnedSegmentsAcrossOverlappingBoundary
+    ReusesExistingNasTargetWhenSourceIsMissing
+    BacksOffMissingSegmentJob
+    DropsMissingSegmentAfterMaxAttempts
     RunsCycleAndMovesHotSegmentToMinio
     RestoresSegmentFromMinio
     ReusesActiveRestoreForDuplicateRequest

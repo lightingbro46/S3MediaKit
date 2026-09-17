@@ -12,6 +12,7 @@
 #include "Util/util.h"
 #include "Common/StrUtil.h"
 #include "Local/StorageTier.h"
+#include "StorageTierExtra.h"
 
 namespace managerkit {
 
@@ -252,6 +253,65 @@ public:
         TieringJob j;
         j.job_id = job_id;
         return SqliteRepository<TieringJob>::findById(j);
+    }
+
+    bool hasActiveJobForRange(const std::string &range_id) {
+        if (range_id.empty())
+            return false;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("range_id = ? AND status IN (?, ?)",
+                       {range_id,
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // Legacy jobs may not carry a range_id, so they are matched by window.
+    bool hasActiveJobForWindow(const std::string &camera_id,
+                               const std::string &stream_id,
+                               const std::string &source_tier,
+                               const std::string &target_tier,
+                               int64_t start_time,
+                               int64_t end_time) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND source_tier = ? AND "
+                       "target_tier = ? AND segment_start_time = ? AND "
+                       "segment_end_time = ? AND status IN (?, ?)",
+                       {camera_id, stream_id, source_tier, target_tier,
+                        std::to_string(start_time), std::to_string(end_time),
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // Newest first. error_prefix is compared literally, not as a LIKE pattern.
+    std::vector<TieringJob> findRecentFailedByRange(const std::string &range_id,
+                                                    const std::string &error_prefix,
+                                                    int limit) {
+        std::vector<TieringJob> ret;
+        if (range_id.empty() || error_prefix.empty() || limit <= 0)
+            return ret;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<TieringJob>::getColumns())
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("range_id = ? AND status = ? AND "
+                       "substr(error_message, 1, ?) = ?",
+                       {range_id, jobStatusToString(JobStatus::FAILED),
+                        std::to_string(error_prefix.size()), error_prefix})
+                .orderBy("updated_at DESC")
+                .limit(limit));
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<TieringJob>::fromRow(row));
+        return ret;
     }
 
     bool updateStatusAt(const std::string &job_id, const std::string &status,
@@ -862,6 +922,86 @@ public:
         return _executor->execDML(q);
     }
 
+    // WHERE clause matching a range row only while it still equals the snapshot
+    // a caller planned against, so concurrent split/merge/move/delete wins once.
+    static const char *snapshotWhereClause() {
+        return "range_id = ? AND camera_id = ? AND stream_id = ? AND "
+               "start_time = ? AND end_time = ? AND tier = ? AND pool_id = ? AND "
+               "status = ? AND segment_count = ? AND size_bytes = ?";
+    }
+
+    static std::vector<std::string> snapshotWhereParams(const SegmentTierRange &expected) {
+        return {expected.range_id, expected.camera_id, expected.stream_id,
+                std::to_string(expected.start_time), std::to_string(expected.end_time),
+                expected.tier, expected.pool_id, expected.status,
+                std::to_string(expected.segment_count), std::to_string(expected.size_bytes)};
+    }
+
+    // Negative segment_count/size_bytes keep the stored values.
+    bool updateTierBySnapshotAt(const SegmentTierRange &expected,
+                                const std::string &new_tier,
+                                const std::string &pool_id,
+                                const std::string &status,
+                                int64_t updated_at,
+                                int64_t segment_count = -1,
+                                int64_t size_bytes = -1) {
+        if (expected.range_id.empty() || pool_id.empty())
+            return false;
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"tier", new_tier});
+        set.push_back({"pool_id", pool_id});
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(updated_at)});
+        if (segment_count >= 0)
+            set.push_back({"segment_count", std::to_string(segment_count)});
+        if (size_bytes >= 0)
+            set.push_back({"size_bytes", std::to_string(size_bytes)});
+        auto q = toolkit::QueryBuilder()
+            .update(EntityTraits<SegmentTierRange>::tableName())
+            .set(set)
+            .where(snapshotWhereClause(), snapshotWhereParams(expected));
+        return _executor->execDML(q);
+    }
+
+    bool updateStatusBySnapshotAt(const SegmentTierRange &expected,
+                                  const std::string &status,
+                                  int64_t updated_at) {
+        return updateTierBySnapshotAt(expected, expected.tier, expected.pool_id,
+                                      status, updated_at);
+    }
+
+    // Marks the range terminal and queues its metadata cleanup atomically,
+    // only if the range still matches the snapshot the files were deleted from.
+    bool markDeletedBySnapshotAndEnqueue(const SegmentTierRange &expected,
+                                         const std::string &final_status,
+                                         const TierMetadataCleanupJob &cleanup_job) {
+        if (expected.range_id.empty() || cleanup_job.range_id != expected.range_id)
+            return false;
+        auto txn = _executor->execTxn();
+        try {
+            if (!_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .update(EntityTraits<SegmentTierRange>::tableName())
+                        .set({{"status", final_status},
+                              {"updated_at", std::to_string(cleanup_job.updated_at)}})
+                        .where(snapshotWhereClause(), snapshotWhereParams(expected)))) {
+                txn->rollback();
+                return false;
+            }
+            TierMetadataCleanupJobRepository cleanup_repo;
+            if (!cleanup_repo.upsertWithTxn(cleanup_job, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
     bool updateStatusByWindowAt(const std::string &camera_id,
                                 int64_t start_time,
                                 int64_t end_time,
@@ -975,6 +1115,48 @@ public:
         if (ok)
             txn->commit();
         return ok;
+    }
+
+    bool replaceRangeWithPiecesIfUnchanged(
+            const SegmentTierRange &expected,
+            const std::vector<SegmentTierRange> &pieces) {
+        if (expected.range_id.empty() || pieces.empty())
+            return false;
+        for (const auto &piece : pieces) {
+            if (piece.range_id.empty() || piece.pool_id.empty())
+                return false;
+        }
+
+        auto txn = _executor->execTxn();
+        try {
+            if (!_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
+                        .where(snapshotWhereClause(), snapshotWhereParams(expected)))) {
+                txn->rollback();
+                return false;
+            }
+
+            std::vector<std::string> piece_ids;
+            for (const auto &piece : pieces) {
+                if (!saveWithTxn(piece, txn, true)) {
+                    txn->rollback();
+                    return false;
+                }
+                piece_ids.push_back(piece.range_id);
+            }
+            SegmentRetentionOverrideRepository override_repo;
+            if (!override_repo.copyToRangesWithTxn(expected.range_id, piece_ids, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
     }
 
     void pruneDeletedOlderThan(int64_t ts) {
