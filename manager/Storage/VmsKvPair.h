@@ -87,6 +87,19 @@ protected:
         return ret;
     }
 
+    std::vector<VmsKvPair> findByResourceIdAndKeyWithTxn(const std::string &guid, const std::string &key, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<VmsKvPair>::getColumns())
+                         .from(EntityTraits<VmsKvPair>::tableName())
+                         .where("resource_guid = ? AND name = ?", {guid, key});
+        auto rows = executeRawWithTxn(txn, query);
+        std::vector<VmsKvPair> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<VmsKvPair>::fromRow(row));
+        }
+        return ret;
+    }
+
     bool removeByResourceId(const std::string &guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -256,7 +269,7 @@ private:
     void addInternalWithTxn(VmsKvPair &kv, toolkit::SqliteTransaction::Ptr txn) {
         static std::mutex s_add_mtx;
         std::lock_guard<std::mutex> lk(s_add_mtx);
-        auto ret = findByResourceIdAndKey(kv.resource_guid, kv.name);
+        auto ret = findByResourceIdAndKeyWithTxn(kv.resource_guid, kv.name, txn);
         if (!ret.empty()) {
             kv.id = ret[0].id;
             if (ret[0].value == kv.value) return;  // dirty check

@@ -190,9 +190,9 @@ bool CameraManager::delCamera(const string &key) {
                         WarnL << "Device " << key << " is not active and has no archived data. Remove device out of list";
                     }
                 }
+                // Remove it out of list
+                stats_imp->remove(failover_active);
             }
-            // Remove it out of list
-            stats_imp->remove(failover_active);
             _gcImp.erase(key);
             return true;
         }

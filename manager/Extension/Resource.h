@@ -101,7 +101,7 @@ public:
         _rstatus_imp->remove(guid);
         _kvpair_imp->remove(guid);
         _resource_imp->remove(guid);
-        releaseResource(guid, getSelfNodeId());
+        releaseResource_l(guid, getSelfNodeId()); // _mtx already held; releaseResource() would self-deadlock
         DebugL << "Removed resource with guid " << guid;
     }
 
@@ -177,19 +177,7 @@ public:
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
         std::lock_guard<std::mutex> lk(_mtx);
-        auto current = _assign_imp->findLastAssignment(resource_guid);
-        if (!current.empty()) {
-            auto assign = current[0];
-            if (assign.owner_peer_id != peer_id) {
-                WarnL << "Resource " << resource_guid << " is assigned to peer " << assign.owner_peer_id << ", cannot be released by peer " << peer_id;
-                return; // assigned to a different peer, cannot release
-            }
-            assign.released_at = static_cast<int64_t>(time(nullptr));
-            _assign_imp->update(assign);
-            InfoL << "Resource " << resource_guid << " is already released from peer " << assign.owner_peer_id;
-            return;
-        }
-        WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
+        releaseResource_l(resource_guid, peer_id);
     }
 
     bool getLastResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
@@ -210,6 +198,23 @@ private:
     ResourceManager();
 
     void load();
+
+    // Release a resource assignment if it is currently assigned to the given peer_id.
+    void releaseResource_l(const std::string &resource_guid, const std::string &peer_id) {
+        auto current = _assign_imp->findLastAssignment(resource_guid);
+        if (!current.empty()) {
+            auto assign = current[0];
+            if (assign.owner_peer_id != peer_id) {
+                WarnL << "Resource " << resource_guid << " is assigned to peer " << assign.owner_peer_id << ", cannot be released by peer " << peer_id;
+                return; // assigned to a different peer, cannot release
+            }
+            assign.released_at = static_cast<int64_t>(time(nullptr));
+            _assign_imp->update(assign);
+            InfoL << "Resource " << resource_guid << " is already released from peer " << assign.owner_peer_id;
+            return;
+        }
+        WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
+    }
 
 private:
     // Serializes all multi-table write and logical-read operations.

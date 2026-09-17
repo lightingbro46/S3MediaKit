@@ -204,6 +204,16 @@ public:
         return !_executor->executeRaw(query).empty();
     }
 
+    // Same as existsByTranGuid but sees rows written earlier in the same transaction.
+    bool existsByTranGuidWithTxn(const std::string &tran_guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .select({"tran_guid"})
+                        .from(EntityTraits<TransactionLog>::tableName())
+                        .where("tran_guid = ?", {tran_guid})
+                        .limit(1);
+        return !executeRawWithTxn(txn, query).empty();
+    }
+
 };
 
 class TransactionLogImp : public TransactionLogRepository {
@@ -225,15 +235,17 @@ public:
         }
     }
 
-    // Transaction-aware variant: insert the log entry within an existing transaction.
-    // The sequence update is intentionally kept outside the transaction (it's metadata).
+    // Transaction-aware variant: the log entry and the peer cursor are written in the
+    // same transaction, so a rollback never leaves the cursor ahead of the applied data.
+    // (Writing the cursor through another pooled connection would also block on the
+    // write lock held by this transaction.)
     void addWithTxn(TransactionLog &entity, toolkit::SqliteTransaction::Ptr txn) {
         if (saveWithTxn(entity, txn)) {
             TransactionSequence seq;
             seq.peer_guid = entity.peer_guid;
             seq.db_guid = entity.db_guid;
             seq.sequence = entity.sequence;
-            _seq_impl->add(seq);
+            _seq_impl->addWithTxn(seq, txn);
         }
     }
 

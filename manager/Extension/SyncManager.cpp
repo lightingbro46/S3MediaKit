@@ -478,6 +478,7 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
             if (snap.peer_id.empty() || snap.db_guid.empty() ||
                 !snap.sequences.isArray() || !snap.vms_resource.isArray() ||
                 !snap.vms_kvpair.isArray() || !snap.resource_assignment.isArray() ||
+                !snap.vms_resource_status.isArray() ||
                 !snap.bookmark_index.isArray()) {
                 throw std::runtime_error("bootstrap response contains an invalid snapshot");
             }
@@ -509,6 +510,7 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
 // discovered without a dedicated bootstrap round-trip.
 
 void SyncManager::applySnapshot(const SnapshotData &snap) {
+    lock_guard<mutex> apply_lock(_apply_mtx);
     // Map named SnapshotData fields to their table names, then dispatch via registry.
     const std::pair<std::string, const Json::Value *> snap_tables[] = {
         {EntityTraits<VmsResource>::tableName(),           &snap.vms_resource},
@@ -528,9 +530,24 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
 
     // Sequences are infrastructure state — not dispatched through the table registry.
     if (!snap.sequences.empty() && snap.sequences.isArray()) {
+        string self_node, self_db;
+        {
+            lock_guard<mutex> lock(_mtx);
+            self_node = _self_node_id;
+            self_db   = _self_db_id;
+        }
         auto imp = std::make_shared<TransactionSequenceImp>();
         for (const auto &v : snap.sequences) {
             auto seq = TransactionSequence::fromJson(v);
+            // Never take our own cursor from a peer: a lower value would make the next
+            // local mutation reuse an existing (peer_guid, db_guid, sequence).
+            if (seq.peer_guid == self_node && seq.db_guid == self_db) {
+                continue;
+            }
+            // Only move cursors forward.
+            if (seq.sequence <= imp->findSeqByPeerIdAndDbGuid(seq.peer_guid, seq.db_guid)) {
+                continue;
+            }
             imp->add(seq);
         }
     }
@@ -655,17 +672,23 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
 }
 
 void SyncManager::applyBatch(const Json::Value &rows) {
+    // Responses from several relays (gossip fanout) may arrive concurrently and carry
+    // the same entries; apply them one batch at a time.
+    lock_guard<mutex> apply_lock(_apply_mtx);
     auto log_imp = make_shared<TransactionLogImp>();
     // Wrap the entire batch in one SQLite transaction so that all data writes
     // and their transaction_log entries are committed atomically.
     // On any exception the transaction destructs without commit → auto-rollback.
     auto txn = log_imp->getExecutor()->execTxn();
+    // LWW decisions are staged here and merged into _applied_ts only after commit,
+    // so a rolled-back batch is not treated as "already applied" on retry.
+    LwwStage lww_stage;
     try {
         for (const auto &it : rows) {
             // Dedup first — exact duplicate check before any work (e.g. restart replay,
             // or same entry received via multiple relay paths).
             string tran_guid_early = it["tran_guid"].asString();
-            if (!tran_guid_early.empty() && log_imp->existsByTranGuid(tran_guid_early)) {
+            if (!tran_guid_early.empty() && log_imp->existsByTranGuidWithTxn(tran_guid_early, txn)) {
                 TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
                 continue;
             }
@@ -696,7 +719,7 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             }
             const TableSyncHandler &h = hit->second;
 
-            ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts);
+            ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts, lww_stage);
             // ApplyDecision::Skip => stale write — local version is newer
             // ApplyDecision::ApplyWinner => conflict winner — incoming version is newer (but still apply)
             // ApplyDecision::Apply => no conflict — apply normally
@@ -738,12 +761,20 @@ void SyncManager::applyBatch(const Json::Value &rows) {
         }
         txn->commit();
     } catch (...) {
-        // txn destructs without commit → auto-rollback
+        // txn destructs without commit → auto-rollback; lww_stage is discarded
         throw;
+    }
+
+    for (const auto &entry : lww_stage) {
+        if (entry.second < 0) {
+            _applied_ts.erase(entry.first);
+        } else {
+            _applied_ts[entry.first] = entry.second;
+        }
     }
 }
 
-SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const std::string &op, const Json::Value &payload, int64_t log_ts) {
+SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const std::string &op, const Json::Value &payload, int64_t log_ts, LwwStage &stage) {
     // UPSERT_BATCH covers multiple rows with a single timestamp; skip per-row LWW.
     if (op == TRAN_DATA_OP_UPSERT_BATCH) {
         return ApplyDecision::Apply;
@@ -766,27 +797,38 @@ SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const s
 
     // DELETE ops do not carry a meaningful timestamp for LWW; always apply.
     if (op == TRAN_DATA_OP_DELETE) {
-        _applied_ts.erase(map_key); // row is gone, remove from LWW cache
+        stage[map_key] = -1; // row is gone, remove from LWW cache after commit
         return ApplyDecision::Apply;
     }
 
-    auto it = _applied_ts.find(map_key);
-    if (it == _applied_ts.end()) {
-        _applied_ts[map_key] = log_ts;
+    // Look at decisions staged earlier in this batch first, then the committed cache.
+    int64_t prev_ts = -1;
+    auto staged = stage.find(map_key);
+    if (staged != stage.end()) {
+        prev_ts = staged->second;
+    } else {
+        auto it = _applied_ts.find(map_key);
+        if (it != _applied_ts.end()) {
+            prev_ts = it->second;
+        }
+    }
+
+    if (prev_ts < 0) {
+        stage[map_key] = log_ts;
         return ApplyDecision::Apply;
     }
 
-    if (log_ts <= it->second) {
+    if (log_ts <= prev_ts) {
         TraceL << "shouldApply skip stale: " << map_key
                << " incoming_ts=" << log_ts
-               << " local_ts=" << it->second;
+               << " local_ts=" << prev_ts;
         return ApplyDecision::Skip;
     }
 
     TraceL << "shouldApply conflict winner: " << map_key
            << " incoming_ts=" << log_ts
-           << " prev_ts=" << it->second;
-    it->second = log_ts;
+           << " prev_ts=" << prev_ts;
+    stage[map_key] = log_ts;
     return ApplyDecision::ApplyWinner;
 }
 
@@ -839,8 +881,8 @@ void SyncManager::maybePruneLog() {
     for (const auto &seq : safe_seqs) {
         auto safe_seq = seq.sequence - log_keep_num;
         if (safe_seq <= 0) continue; // nothing to prune
-        log_imp->pruneAckedLogs(seq.peer_guid, seq.db_guid, seq.sequence);
-        TraceL << "Pruned logs for source peer=" << seq.peer_guid << " db_guid=" << seq.db_guid << " up to seq=" << seq.sequence;
+        log_imp->pruneAckedLogs(seq.peer_guid, seq.db_guid, safe_seq);
+        TraceL << "Pruned logs for source peer=" << seq.peer_guid << " db_guid=" << seq.db_guid << " up to seq=" << safe_seq;
     }
 }
 

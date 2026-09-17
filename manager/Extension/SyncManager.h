@@ -114,7 +114,11 @@ private:
 
     // Last-Write-Wins by wall-clock timestamp (TransactionLog::timestamp, ms).
     // Updates _applied_ts on accept (Apply / ApplyWinner).
-    ApplyDecision shouldApply(const std::string &table_name, const std::string &op, const Json::Value &payload, int64_t log_ts);
+    // Pending LWW updates of one batch: key → accepted log_ts, or -1 to erase the key.
+    using LwwStage = std::unordered_map<std::string, int64_t>;
+
+    // Stages its decision into `stage`; the caller merges it into _applied_ts after commit.
+    ApplyDecision shouldApply(const std::string &table_name, const std::string &op, const Json::Value &payload, int64_t log_ts, LwwStage &stage);
 
     // Register a sync handler for a table. Must be called before start().
     // Replaces any previously registered handler for the same table name.
@@ -126,6 +130,8 @@ private:
 private:
     toolkit::Timer::Ptr                          _timer;
     std::mutex                                   _mtx;
+    // Serializes applyBatch/applySnapshot (and guards _applied_ts) across HTTP callback threads.
+    std::mutex                                   _apply_mtx;
     std::unordered_map<std::string, std::string> _peers; // node_id → base_url
     std::unordered_set<std::string>              _bootstrapping; // guard: bootstrap in progress
     std::string                                  _last_bootstrap_peer; // for logging

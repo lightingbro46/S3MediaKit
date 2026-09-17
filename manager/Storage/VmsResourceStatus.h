@@ -60,6 +60,19 @@ protected:
         return ret;
     }
 
+    std::vector<VmsResourceStatus> findByGuidWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<VmsResourceStatus>::getColumns())
+                         .from(EntityTraits<VmsResourceStatus>::tableName())
+                         .where("guid = ?", {guid});
+        auto rows = executeRawWithTxn(txn, query);
+        std::vector<VmsResourceStatus> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<VmsResourceStatus>::fromRow(row));
+        }
+        return ret;
+    }
+
     bool removeByGuid(const std::string &guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -116,8 +129,9 @@ public:
     void addWithTxn(VmsResourceStatus &resource, toolkit::SqliteTransaction::Ptr txn) {
         static std::mutex s_add_mtx;
         std::lock_guard<std::mutex> lk(s_add_mtx);
-        auto ret = findByGuid(resource.guid);
+        auto ret = findByGuidWithTxn(resource.guid, txn);
         if (!ret.empty()) {
+            if (ret[0].status == resource.status) return;
             updateByIdWithTxn(resource, txn);
         } else {
             saveWithTxn(resource, txn, true);
