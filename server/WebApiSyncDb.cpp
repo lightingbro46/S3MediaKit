@@ -15,13 +15,19 @@ namespace managerkit {
 void registerSyncDbApis() {
     // Register the Web API sync database endpoints here
     api_regist("/media/esc/sync/changes", [](API_ARGS_JSON_ASYNC) {
-        CHECK_ARGS_("cursors", "ack_cursors", "limit", "peer", "db");
+        // Array parameters must not go through allArgs[] / CHECK_ARGS_: they convert via
+        // Json::Value::asString(), which throws "Type is not convertible to string" for arrays.
+        CHECK_ARGS_("limit", "peer", "db");
+        const Json::Value &body = allArgs.getArgs();
+        if (!body.isMember("cursors") || !body.isMember("ack_cursors")) {
+            throw InvalidArgsException("Required parameter missed: cursors, ack_cursors", ApiErrCode::CODE_INVALID_ARGS);
+        }
 
         string peer_id      = allArgs["peer"];
         string db_guid      = allArgs["db"];
         int limit           = allArgs["limit"];
-        Json::Value cursors = allArgs["cursors"];
-        Json::Value ack_cursors = allArgs["ack_cursors"];
+        Json::Value cursors = body["cursors"];
+        Json::Value ack_cursors = body["ack_cursors"];
 
         // Save ack_cursors to local db for prune old logs later
         if (!ack_cursors.empty() && ack_cursors.isArray()) {

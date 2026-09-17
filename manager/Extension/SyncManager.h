@@ -83,6 +83,8 @@ public:
     Json::Value getMiscData();
 
 private:
+    friend class SyncManagerTestPeer; // unit tests drive applyBatch/applySnapshot directly
+
     SyncManager() = default;
 
     // ── Pull tick ──────────────────────────────

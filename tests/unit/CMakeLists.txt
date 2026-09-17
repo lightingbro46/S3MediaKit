@@ -76,6 +76,17 @@ target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
+if(ENABLE_SYNC_CHANGES)
+  # Uses a temporary on-disk ESC database built from the real migrations.
+  add_s3_unit_test(unit_sync_apply manager/test_sync_apply.cpp)
+  target_link_libraries(unit_sync_apply PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
+  target_compile_definitions(unit_sync_apply PRIVATE
+    S3_ESC_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/updates"
+    S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+  add_test(NAME unit.sync_apply_all COMMAND unit_sync_apply)
+  set_tests_properties(unit.sync_apply_all PROPERTIES LABELS unit TIMEOUT 30)
+endif()
+
 if(ENABLE_TIER_STORAGE)
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp
