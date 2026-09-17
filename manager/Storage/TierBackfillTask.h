@@ -86,6 +86,8 @@ public:
     std::vector<TierBackfillTask> findAll();
     bool insertTask(const TierBackfillTask &task);
     bool updateDefinitionAt(const TierBackfillTask &task);
+    // Slides the backfill window without touching retry state.
+    bool updateWindowAt(const TierBackfillTask &task);
     bool retryFailedAt(const std::string &camera_id, int64_t updated_at);
     bool hasDueAt(int64_t now);
     std::vector<TierBackfillTask> claimNextDueAt(int64_t now);

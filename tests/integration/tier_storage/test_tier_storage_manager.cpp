@@ -3063,7 +3063,7 @@ int scenarioCompactRangeRepository(const std::string &root) {
     return 0;
 }
 
-int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
+int scenarioBackfillSkipsOrphanWithAlert(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
     mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 3600;
@@ -3078,7 +3078,10 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     const int64_t end = start + 60;
     const std::string unmatched = root + "/unmapped/record/" + camera +
                                   "/main/2026-08-28_12-01-00.mp4";
+    const std::string indexed = root + "/hot/record/" + camera +
+                                "/main/2026-08-28_12-01-01.mp4";
     writeTimeBlock(root, camera, "main", unmatched, start, end, 128);
+    writeTimeBlock(root, camera, "main", indexed, start + 1, start + 30, 64);
 
     TierBackfillTask desired;
     desired.camera_id = camera;
@@ -3092,14 +3095,139 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     manager.runBackfillCycle();
     require(waitUntil([&]() {
         auto rows = TierBackfillTaskImp().findByCameraId(camera);
-        return rows.size() == 1 && rows.front().status == "RETRY";
-    }, 5000), "Orphan backfill task did not enter RETRY");
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Orphan block stalled the backfill task");
     auto rows = TierBackfillTaskImp().findByCameraId(camera);
-    require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
-                rows.front().orphan_blocks == 1 && !rows.front().last_error.empty(),
-            "Orphan retry advanced cursor or lost diagnostic counters");
-    require(SegmentTierRangeImp().queryByCamera(camera).empty(),
-            "Orphan chunk partially committed range metadata");
+    require(rows.front().cursor_time == end && rows.front().attempt_count == 0 &&
+                rows.front().orphan_blocks == 1 && rows.front().registered_blocks == 1,
+            "Orphan backfill did not advance with accurate counters");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 1 && ranges.front().start_time == start + 1 &&
+                ranges.front().segment_count == 1 && ranges.front().size_bytes == 64,
+            "Backfill did not index the valid block next to the orphan");
+    bool alerted = false;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 50)) {
+        if (alert.type == "TIER_BACKFILL_ORPHAN" &&
+            alert.message.find(camera) != std::string::npos) {
+            alerted = true;
+        }
+    }
+    require(alerted, "Skipped orphan block did not raise a storage alert");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
+int scenarioBackfillShapesRangesAroundExistingOnes(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 86400;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+    const int64_t day = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 86400)));
+
+    // The window slides forward on every sync; retry state must survive it.
+    TierBackfillTaskImp task_imp;
+    TierBackfillTask failed_desired;
+    failed_desired.camera_id = "camera-backfill-failed";
+    failed_desired.timeline_path = root + "/hot/record/camera-backfill-failed";
+    failed_desired.window_start = day;
+    failed_desired.cutoff_time = day + 60;
+    failed_desired.cursor_time = day;
+    TierBackfillTask failed = task_imp.ensureTask(failed_desired);
+    require(!failed.task_id.empty(), "Cannot seed failed backfill task");
+    failed.status = "FAILED";
+    failed.attempt_count = 5;
+    failed.last_error = "persistent failure";
+    failed.updated_at = day;
+    require(task_imp.updateDefinitionAt(failed), "Cannot mark backfill task FAILED");
+    failed_desired.window_start = day + 30;
+    failed_desired.cutoff_time = day + 120;
+    task_imp.ensureTask(failed_desired);
+    auto failed_rows = task_imp.findByCameraId(failed_desired.camera_id);
+    require(failed_rows.size() == 1 && failed_rows.front().status == "FAILED" &&
+                failed_rows.front().attempt_count == 5 &&
+                failed_rows.front().last_error == "persistent failure" &&
+                failed_rows.front().cutoff_time == day + 120 &&
+                failed_rows.front().cursor_time == day + 30,
+            "Sliding the backfill window reset a FAILED task");
+
+    TierBackfillTask done_desired;
+    done_desired.camera_id = "camera-backfill-done";
+    done_desired.timeline_path = root + "/hot/record/camera-backfill-done";
+    done_desired.window_start = day;
+    done_desired.cutoff_time = day + 60;
+    done_desired.cursor_time = day;
+    TierBackfillTask done = task_imp.ensureTask(done_desired);
+    done.status = "COMPLETED";
+    done.cursor_time = day + 60;
+    done.completed_at = day;
+    require(task_imp.updateDefinitionAt(done), "Cannot mark backfill task COMPLETED");
+    done_desired.window_start = day + 30;
+    done_desired.cutoff_time = day + 120;
+    done = task_imp.ensureTask(done_desired);
+    require(done.status == "PENDING" && done.cursor_time == day + 60 &&
+                done.cutoff_time == day + 120,
+            "Extending the cutoff did not reopen a completed backfill task");
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const std::string camera = "camera-backfill-shape";
+    const std::string stream = "main";
+    const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/";
+    auto block = [&](const std::string &name, int64_t start) {
+        writeTimeBlock(root, camera, stream, prefix + name + ".mp4", start, start + 60, 10);
+    };
+    block("gap-a", day + 3600);
+    block("gap-b", day + 4200);
+    block("around-a", day + 7200);
+    block("owned", day + 7260);
+    block("around-b", day + 7320);
+
+    SegmentTierRange warm;
+    warm.range_id = "existing-warm";
+    warm.camera_id = camera;
+    warm.stream_id = stream;
+    warm.tier = tierTypeToString(WarmTier);
+    warm.pool_id = "some-warm-pool";
+    warm.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    warm.start_time = day + 7260;
+    warm.end_time = day + 7320;
+    warm.segment_count = 1;
+    warm.size_bytes = 10;
+    warm.created_at = day;
+    warm.updated_at = day;
+    require(SegmentTierRangeImp().add(warm), "Cannot seed existing WARM range");
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = day;
+    desired.cutoff_time = day + 86400;
+    desired.cursor_time = day;
+    require(!task_imp.ensureTask(desired).task_id.empty(), "Cannot seed shape backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = task_imp.findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Shape backfill task did not complete");
+
+    std::vector<SegmentTierRange> hot;
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(camera)) {
+        if (range.tier != tierTypeToString(HotTier))
+            continue;
+        require(range.end_time <= warm.start_time || range.start_time >= warm.end_time,
+                "Backfilled HOT range overlaps an existing WARM range");
+        hot.push_back(range);
+    }
+    require(hot.size() == 4 &&
+                hot[0].start_time == day + 3600 && hot[0].end_time == day + 3660 &&
+                hot[1].start_time == day + 4200 &&
+                hot[2].start_time == day + 7200 && hot[2].end_time == day + 7260 &&
+                hot[3].start_time == day + 7320 && hot[3].segment_count == 1,
+            "Backfill did not split ranges at gaps and existing ranges");
 
     manager.stop();
     drainWorkThreadPool();
@@ -3783,7 +3911,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
         if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
         if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
-        if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
+        if (name == "backfill-orphan-skip") return scenarioBackfillSkipsOrphanWithAlert(root);
+        if (name == "backfill-shape") return scenarioBackfillShapesRangesAroundExistingOnes(root);
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineCompletes(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
@@ -4061,9 +4190,14 @@ TEST(TierStorageManagerIntegrationTest, BoundsAndCompactsTierMetadata) {
     EXPECT_EQ(0, runChild("compact-range-repository", root.path));
 }
 
-TEST(TierStorageManagerIntegrationTest, RetriesOrphanChunkWithoutAdvancingCursor) {
+TEST(TierStorageManagerIntegrationTest, SkipsOrphanBlockAndAdvancesCursor) {
     TempRoot root;
-    EXPECT_EQ(0, runChild("backfill-orphan-retry", root.path));
+    EXPECT_EQ(0, runChild("backfill-orphan-skip", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillShapesRangesAroundExistingOnes) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-shape", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CompletesEmptyBackfillWhenCameraHasNoTimeFile) {

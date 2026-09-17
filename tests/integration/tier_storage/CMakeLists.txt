@@ -87,7 +87,8 @@ foreach(manager_case
     BackfillsAtomicallyAndIdempotently
     BackfillsAcrossLocalMidnightIntoSeparateRanges
     BoundsAndCompactsTierMetadata
-    RetriesOrphanChunkWithoutAdvancingCursor
+    SkipsOrphanBlockAndAdvancesCursor
+    BackfillShapesRangesAroundExistingOnes
     CompletesEmptyBackfillWhenCameraHasNoTimeFile
     RecoversRunningWorkAcrossFreshProcesses
     DeletesStableStaleTemporaryMp4FromHotPools

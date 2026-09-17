@@ -840,11 +840,12 @@ public:
         return ret;
     }
 
-    bool hasAnyCoveringRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
-                                    const std::string &camera_id,
-                                    const std::string &stream_id,
-                                    int64_t start_time,
-                                    int64_t end_time) {
+    // True when a range of the stream owns `start_time`, i.e. start_time is in
+    // its half-open [start_time, end_time) window.
+    bool hasOwningRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                               const std::string &camera_id,
+                               const std::string &stream_id,
+                               int64_t start_time) {
         if (!txn)
             return false;
         auto rows = _executor->executeRawWithTxn(
@@ -852,9 +853,30 @@ public:
             toolkit::QueryBuilder()
                 .select({"1"})
                 .from(EntityTraits<SegmentTierRange>::tableName())
-                .where("camera_id = ? AND stream_id = ? AND start_time <= ? AND end_time >= ?",
+                .where("camera_id = ? AND stream_id = ? AND start_time <= ? AND end_time > ?",
                        {camera_id, stream_id, std::to_string(start_time),
-                        std::to_string(end_time)})
+                        std::to_string(start_time)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // True when inserting [start_time, end_time) would take ownership of a
+    // segment start already owned by another range of the stream.
+    bool hasOwnershipConflictWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                                     const std::string &camera_id,
+                                     const std::string &stream_id,
+                                     int64_t start_time,
+                                     int64_t end_time) {
+        if (!txn)
+            return false;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND start_time < ? AND end_time > ?",
+                       {camera_id, stream_id, std::to_string(end_time),
+                        std::to_string(start_time)})
                 .limit(1));
         return !rows.empty();
     }
@@ -864,9 +886,8 @@ public:
                           int64_t updated_at) {
         auto txn = _executor->execTxn();
         try {
-            if (hasAnyCoveringRangeWithTxn(
-                    txn, range.camera_id, range.stream_id,
-                    range.start_time, range.end_time)) {
+            if (hasOwningRangeWithTxn(txn, range.camera_id, range.stream_id,
+                                      range.start_time)) {
                 txn->commit();
                 return true;
             }
@@ -944,12 +965,42 @@ public:
         auto existing = EntityTraits<SegmentTierRange>::fromRow(rows[0]);
         int64_t merged_start = range.start_time;
         int64_t merged_end = range.end_time;
-        int64_t merged_count = std::max<int64_t>(1, range.segment_count);
-        int64_t merged_size = std::max<int64_t>(0, range.size_bytes);
         for (const auto &row : rows) {
             const auto item = EntityTraits<SegmentTierRange>::fromRow(row);
             merged_start = std::min(merged_start, item.start_time);
             merged_end = std::max(merged_end, item.end_time);
+        }
+        // Never let a merged window swallow a range of another tier, pool or
+        // status lying between the candidates; keep the new range separate.
+        {
+            std::ostringstream other_where;
+            std::vector<std::string> other_params;
+            other_where << "camera_id = ? AND stream_id = ? AND start_time < ? AND end_time > ?"
+                        << " AND range_id <> ?";
+            other_params.push_back(range.camera_id);
+            other_params.push_back(range.stream_id);
+            other_params.push_back(std::to_string(merged_end));
+            other_params.push_back(std::to_string(merged_start));
+            other_params.push_back(range.range_id);
+            for (const auto &row : rows) {
+                other_where << " AND range_id <> ?";
+                other_params.push_back(EntityTraits<SegmentTierRange>::fromRow(row).range_id);
+            }
+            auto others = _executor->executeRawWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .select({"1"})
+                    .from(EntityTraits<SegmentTierRange>::tableName())
+                    .where(other_where.str(), other_params)
+                    .limit(1));
+            if (!others.empty())
+                return saveWithTxn(range, txn, true);
+        }
+
+        int64_t merged_count = std::max<int64_t>(1, range.segment_count);
+        int64_t merged_size = std::max<int64_t>(0, range.size_bytes);
+        for (const auto &row : rows) {
+            const auto item = EntityTraits<SegmentTierRange>::fromRow(row);
             merged_count += std::max<int64_t>(0, item.segment_count);
             merged_size += std::max<int64_t>(0, item.size_bytes);
             if (item.range_id != existing.range_id &&

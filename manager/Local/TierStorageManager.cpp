@@ -2,7 +2,10 @@
 #include <cstring>
 #include <cmath>
 #include <cctype>
+#include <algorithm>
 #include <limits>
+#include <map>
+#include <set>
 #include <unordered_set>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -990,25 +993,45 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         return false;
     }
 
-    const std::string hot_tier = tierTypeToString(HotTier);
-    const std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
-    std::unordered_set<std::string> seen_segments;
-    std::unordered_map<std::string, size_t> bucket_indexes;
+    // Keep backfilled ranges shaped like recorder-registered ones: split at
+    // gaps larger than the merge gap and never across an existing range.
+    const int64_t merge_gap_seconds = 90;
+    struct PlannedBlock {
+        int64_t start_time;
+        int64_t end_time;
+        int64_t file_size;
+    };
+    struct PlannedGroup {
+        std::string stream_id;
+        std::string pool_id;
+        std::vector<PlannedBlock> blocks;
+    };
+
+    // Existing starts bound new pieces; the window is wide enough to see the
+    // next range after any block of this chunk within the same local day.
     std::unordered_map<std::string, std::vector<SegmentTierRange>> existing_by_stream;
     for (const auto &range : SegmentTierRangeImp().queryByCamera(
-             task.camera_id, chunk.start_time, chunk.end_time)) {
+             task.camera_id, chunk.start_time - 86400, chunk.end_time + 2 * 86400)) {
         existing_by_stream[range.stream_id].push_back(range);
     }
+
+    std::unordered_set<std::string> seen_segments;
+    std::map<std::string, PlannedGroup> groups;
+    std::string first_orphan;
     for (const auto &block : blocks) {
-        ++chunk.scanned_blocks;
         int64_t block_start = static_cast<int64_t>(block.start_time());
         int64_t block_end = block_start + std::max<int64_t>(
             1, static_cast<int64_t>(block.time_len()));
+        // A chunk owns blocks by start time, like a range does.
+        if (block_start < chunk.start_time || block_start >= chunk.end_time)
+            continue;
+        ++chunk.scanned_blocks;
+
         bool already_indexed = false;
         auto existing_it = existing_by_stream.find(block.stream());
         if (existing_it != existing_by_stream.end()) {
             for (const auto &range : existing_it->second) {
-                if (range.start_time <= block_start && range.end_time >= block_end) {
+                if (range.start_time <= block_start && block_start < range.end_time) {
                     already_indexed = true;
                     break;
                 }
@@ -1022,8 +1045,8 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
             full_path = decodeBase64(block.file_path());
         if (full_path.empty() || block.stream().empty()) {
             ++chunk.orphan_blocks;
-            if (error.empty())
-                error = "Timeline block has no usable stream or file path";
+            if (first_orphan.empty())
+                first_orphan = "<block without stream or file path>";
             continue;
         }
 
@@ -1031,8 +1054,8 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         std::string hot_root;
         if (!resolveHotPoolForPath(full_path, hot_pool, hot_root)) {
             ++chunk.orphan_blocks;
-            if (error.empty())
-                error = "No HOT pool matches timeline path: " + full_path;
+            if (first_orphan.empty())
+                first_orphan = full_path;
             continue;
         }
 
@@ -1044,40 +1067,105 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         int64_t file_size = raw_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
             ? std::numeric_limits<int64_t>::max()
             : static_cast<int64_t>(raw_size);
-        int64_t now = static_cast<int64_t>(time(nullptr));
-
-        const int64_t bucket_start = static_cast<int64_t>(
-            StampUtils::getStartOfDay(static_cast<uint64_t>(block_start)));
-        const std::string bucket_key = block.stream() + "\x1f" + hot_pool.id +
-            "\x1f" + std::to_string(bucket_start);
-        auto bucket_it = bucket_indexes.find(bucket_key);
-        if (bucket_it == bucket_indexes.end()) {
-            SegmentTierRange range;
-            range.range_id = StrUUID::make_guid(8, "rng");
-            range.camera_id = task.camera_id;
-            range.stream_id = block.stream();
-            range.tier = hot_tier;
-            range.pool_id = hot_pool.id;
-            range.status = available;
-            range.start_time = block_start;
-            range.end_time = block_end;
-            range.segment_count = 1;
-            range.size_bytes = std::max<int64_t>(0, file_size);
-            range.created_at = now;
-            range.updated_at = now;
-            bucket_indexes[bucket_key] = chunk.ranges.size();
-            chunk.ranges.push_back(range);
-        } else {
-            auto &range = chunk.ranges[bucket_it->second];
-            range.start_time = std::min(range.start_time, block_start);
-            range.end_time = std::max(range.end_time, block_end);
-            ++range.segment_count;
-            range.size_bytes += std::max<int64_t>(0, file_size);
-        }
+        auto &group = groups[block.stream() + "\x1f" + hot_pool.id];
+        group.stream_id = block.stream();
+        group.pool_id = hot_pool.id;
+        PlannedBlock planned;
+        planned.start_time = block_start;
+        planned.end_time = block_end;
+        planned.file_size = std::max<int64_t>(0, file_size);
+        group.blocks.push_back(planned);
         ++chunk.registered_blocks;
-        chunk.indexed_bytes += std::max<int64_t>(0, file_size);
+        chunk.indexed_bytes += planned.file_size;
     }
-    return chunk.orphan_blocks == 0;
+
+    const std::string hot_tier = tierTypeToString(HotTier);
+    const std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    for (auto &kv : groups) {
+        auto &group = kv.second;
+        std::sort(group.blocks.begin(), group.blocks.end(),
+                  [](const PlannedBlock &x, const PlannedBlock &y) {
+                      return x.start_time < y.start_time;
+                  });
+        std::vector<int64_t> existing_starts;
+        auto existing_it = existing_by_stream.find(group.stream_id);
+        if (existing_it != existing_by_stream.end()) {
+            for (const auto &range : existing_it->second)
+                existing_starts.push_back(range.start_time);
+        }
+        std::sort(existing_starts.begin(), existing_starts.end());
+        auto existingStartIn = [&](int64_t after, int64_t up_to) {
+            auto it = std::upper_bound(existing_starts.begin(), existing_starts.end(), after);
+            return it != existing_starts.end() && *it <= up_to;
+        };
+
+        bool open = false;
+        int64_t piece_day = 0;
+        SegmentTierRange piece;
+        auto closePiece = [&]() {
+            if (!open)
+                return;
+            auto next = std::upper_bound(existing_starts.begin(), existing_starts.end(),
+                                         piece.start_time);
+            if (next != existing_starts.end() && *next < piece.end_time)
+                piece.end_time = *next;
+            chunk.ranges.push_back(piece);
+            open = false;
+        };
+        for (const auto &planned : group.blocks) {
+            const int64_t day = static_cast<int64_t>(
+                StampUtils::getStartOfDay(static_cast<uint64_t>(planned.start_time)));
+            if (open && (day != piece_day ||
+                         planned.start_time - piece.end_time > merge_gap_seconds ||
+                         existingStartIn(piece.start_time, planned.start_time))) {
+                closePiece();
+            }
+            if (!open) {
+                piece = SegmentTierRange();
+                piece.range_id = StrUUID::make_guid(8, "rng");
+                piece.camera_id = task.camera_id;
+                piece.stream_id = group.stream_id;
+                piece.tier = hot_tier;
+                piece.pool_id = group.pool_id;
+                piece.status = available;
+                piece.start_time = planned.start_time;
+                piece.end_time = planned.end_time;
+                piece.segment_count = 1;
+                piece.size_bytes = planned.file_size;
+                piece.created_at = now;
+                piece.updated_at = now;
+                piece_day = day;
+                open = true;
+                continue;
+            }
+            piece.end_time = std::max(piece.end_time, planned.end_time);
+            ++piece.segment_count;
+            piece.size_bytes += planned.file_size;
+        }
+        closePiece();
+    }
+
+    if (chunk.orphan_blocks > 0) {
+        // Orphans cannot be tiered (no HOT pool owns their path), but they must
+        // not stall the rest of the camera's history behind them.
+        WarnL << "Tier backfill skipped " << chunk.orphan_blocks
+              << " orphan block(s) camera=" << task.camera_id
+              << " chunk=" << chunk.start_time << "-" << chunk.end_time
+              << " first=" << first_orphan;
+        StorageAlert alert;
+        alert.id = StrUUID::make_guid(8, "alert");
+        alert.level = "WARNING";
+        alert.type = "TIER_BACKFILL_ORPHAN";
+        alert.message = StrPrinter << "Backfill skipped " << chunk.orphan_blocks
+                                   << " block(s) outside any HOT pool, camera="
+                                   << task.camera_id << ", chunk="
+                                   << chunk.start_time << "-" << chunk.end_time
+                                   << ", first=" << first_orphan;
+        alert.created_at = now;
+        StorageAlertImp().add(alert);
+    }
+    return true;
 }
 
 bool TierStorageManager::processBackfillTask(const TierBackfillTask &task) {
