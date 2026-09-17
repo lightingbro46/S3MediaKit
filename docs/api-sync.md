@@ -213,8 +213,8 @@ Trả về danh sách transaction log kể từ các cursor được gửi lên.
 | `sequence` | `int64` | Số thứ tự tăng dần, dùng làm cursor cho lần pull tiếp theo |
 | `peer_guid` | `string` | GUID của node nguồn tạo ra transaction này |
 | `db_guid` | `string` | GUID của database chứa dữ liệu |
-| `timestamp` | `int64` | Unix timestamp (giây) khi transaction xảy ra |
-| `timestamp_hi` | `int64` | Timestamp millisecond (độ phân giải cao hơn) |
+| `timestamp` | `int64` | Thời điểm ghi (Unix epoch, millisecond). Cùng với `peer_guid`, đây là version dùng để giải quyết xung đột (xem [Giải quyết xung đột](#giải-quyết-xung-đột-last-writer-wins)) |
+| `timestamp_hi` | `int` | Cờ audit do node nhận ghi lại: `0` = áp dụng bình thường, `1` = thắng một version cũ hơn, `2` = bị bỏ qua vì đã có version mới hơn |
 | `tran_guid` | `string` | GUID duy nhất của transaction (dùng để dedup) |
 | `tran_type` | `string` | Loại transaction, ví dụ: `bookmark_create`, `bookmark_update`, `bookmark_delete` |
 | `tran_data` | `string` | JSON data của transaction (nội dung phụ thuộc `tran_type`) |
@@ -222,6 +222,19 @@ Trả về danh sách transaction log kể từ các cursor được gửi lên.
 #### Cơ chế xử lý cursor
 
 `sync/changes` gọi `SyncManager::getCurrentCursors(cursors, limit)`. Node gọi nên gửi đủ các cursor đang lưu. Nếu muốn pull từ đầu, gửi cursor `sequence = 0` cho cặp `peer_guid/db_guid` tương ứng.
+
+#### Giải quyết xung đột (last-writer-wins)
+
+Mỗi dòng dữ liệu được đồng bộ có một version lưu bền vững trong bảng `sync_row_version` của DB ESC (migration `09_sync_row_version.sql`):
+
+- **Version** = (`timestamp`, `peer_guid`) của transaction đã ghi dòng đó. Version nào có `timestamp` lớn hơn thì mới hơn; nếu bằng nhau thì so `peer_guid`. Vì vậy mọi node đều chọn cùng một kết quả, bất kể thứ tự nhận log.
+- **Khoá dòng:** `vms_resource`/`vms_resource_status` dùng `guid`; `vms_resource_assignment` dùng `assignment_guid`; `bookmark_index` dùng `bookmark_guid`; `vms_kvpair` dùng `resource_guid:name`. Với `vms_kvpair`, mỗi item trong `UPSERT_BATCH` được so sánh riêng.
+- **Log bị bỏ qua:** log có version cũ hơn version đã lưu vẫn được ghi vào `transaction_log` (với `timestamp_hi = 2`) để relay tiếp và cursor vẫn tiến, nhưng dữ liệu không đổi.
+- **`DELETE`:** để lại tombstone (`deleted = 1`), nên một `UPSERT` cũ hơn không làm dòng sống lại. Với `vms_kvpair`, `DELETE` xoá theo nhóm (toàn bộ kv của một resource); các item được ghi sau lệnh xoá vẫn được giữ lại.
+- **Ghi local:** cũng được ghi version. Timestamp của log được đẩy lên lớn hơn version đã biết của các dòng liên quan, nên node có đồng hồ chậm vẫn không thua dữ liệu mà chính nó đã nhận trước đó.
+- **Dọn tombstone:** tombstone cũ hơn `database.row_version_tombstone_ttl_days` (mặc định 30 ngày) sẽ bị xoá. Giá trị này phải lớn hơn thời gian tối đa một node có thể offline mà vẫn tiếp tục bằng pull incremental.
+
+Version, dữ liệu, `transaction_log` và cursor được ghi trong cùng một transaction, nên một batch lỗi được áp dụng lại nguyên vẹn ở lần pull sau.
 
 ---
 
@@ -241,18 +254,23 @@ Trả về toàn bộ dữ liệu hiện tại của node dưới dạng snapsho
 
 ### Response thành công (`200`)
 
+`data` là một chuỗi JSON (`SnapshotBuilder::serialize()`) có dạng:
+
 ```json
 {
-  "code": 0,
-  "data": {
-    "bookmarks": [ ... ],
-    "tags": [ ... ],
-    "sequences": [ ... ]
-  }
+  "peer_id": "node-a",
+  "db_guid": "…",
+  "sequences": [ … ],
+  "vms_resource": [ … ],
+  "vms_kvpair": [ … ],
+  "vms_resource_status": [ … ],
+  "resource_assignment": [ … ],
+  "bookmark_index": [ … ],
+  "row_versions": [ … ]
 }
 ```
 
-> Cấu trúc cụ thể của `data` phụ thuộc vào `SnapshotBuilder::serialize()` – bao gồm toàn bộ dữ liệu bookmark, tag, sequence của node.
+> `row_versions` là nội dung bảng `sync_row_version` (có từ migration 09; snapshot từ node cũ không có trường này). Node nhận không ghi đè một dòng mà nó đã có version mới hơn version trong snapshot.
 
 ### Mã lỗi
 

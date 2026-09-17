@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Storage/BookmarkIndex.h"
+#include "Storage/SyncRowVersion.h"
 #include "Storage/SystemMetrics.h"
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionSequence.h"
@@ -67,6 +68,31 @@ TEST(StorageModelsTest, RoundTripsJsonModels) {
     auto assignment_copy = VmsResourceAssignment::fromJson(assignment.toJson());
     EXPECT_EQ(assignment.assignment_guid, assignment_copy.assignment_guid);
     EXPECT_EQ(assignment.owner_peer_id, assignment_copy.owner_peer_id);
+}
+
+TEST(StorageModelsTest, SyncRowVersionRoundTripAndOrdering) {
+    SyncRowVersion v;
+    v.table_name = "vms_kvpair";
+    v.row_key = "cam:enableActive";
+    v.group_key = "cam";
+    v.ts_ms = 1789617436049LL;
+    v.peer_guid = "node-b";
+    v.deleted = 1;
+    auto copy = SyncRowVersion::fromJson(v.toJson());
+    EXPECT_EQ(v.table_name, copy.table_name);
+    EXPECT_EQ(v.row_key, copy.row_key);
+    EXPECT_EQ(v.group_key, copy.group_key);
+    EXPECT_EQ(v.ts_ms, copy.ts_ms);
+    EXPECT_EQ(v.peer_guid, copy.peer_guid);
+    EXPECT_EQ(v.deleted, copy.deleted);
+    expectEntitySchema<SyncRowVersion>("sync_row_version");
+    EXPECT_EQ(2u, EntityTraits<SyncRowVersion>::getPrimaryKey().size());
+
+    EXPECT_TRUE(SyncRowVersionImp::isNewer(2, "a", 1, "z"));
+    EXPECT_FALSE(SyncRowVersionImp::isNewer(1, "z", 2, "a"));
+    EXPECT_TRUE(SyncRowVersionImp::isNewer(5, "node-b", 5, "node-a"));
+    EXPECT_FALSE(SyncRowVersionImp::isNewer(5, "node-a", 5, "node-a"));
+    EXPECT_EQ("#group:cam", SyncRowVersionImp::groupRowKey("cam"));
 }
 
 TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {

@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <json/json.h>
 #include "Util/SqlitePool.h"
@@ -18,9 +19,20 @@ namespace managerkit {
  *   2. Call SyncManager::registerTable() at startup.
  */
 struct TableSyncHandler {
-    // Return a stable per-row LWW key derived from the UPSERT payload.
-    // Return empty string to skip LWW tracking for this table (always apply).
+    // Return a stable per-row LWW key derived from an UPSERT/DELETE payload, or from one item of an
+    // UPSERT_BATCH payload ({"items":[...]}). Versions are persisted in sync_row_version.
+    // nullptr: no LWW tracking for this table (always apply).
     std::function<std::string(const Json::Value &payload)> rowKey;
+
+    // Multi-row groups (e.g. all vms_kvpair rows of one resource). Returns the group of a row/item,
+    // or of a DELETE payload that removes the whole group. A group DELETE leaves a group tombstone
+    // and only removes rows written before it. nullptr: rows are independent.
+    std::function<std::string(const Json::Value &payload)> groupKey;
+
+    // Group DELETE inside the batch transaction: remove the group's rows except those whose
+    // rowKey is in `keep` (they were written after the delete). Required when groupKey is set.
+    std::function<void(const Json::Value &payload, const std::set<std::string> &keep,
+                       toolkit::SqliteTransaction::Ptr txn)> onGroupDeleteWithTxn;
 
     // Handle UPSERT op (single-row).
     std::function<void(const Json::Value &payload)> onUpsert;

@@ -13,6 +13,7 @@ TABLES = {
     "vms_resource_assignment": "SELECT assignment_guid, resource_guid, owner_peer_id, assigned_at, released_at, "
                                "assign_type FROM vms_resource_assignment ORDER BY assigned_at, assignment_guid",
     "transaction_sequence": "SELECT peer_guid, db_guid, sequence FROM transaction_sequence ORDER BY peer_guid",
+    "sync_row_version": "SELECT table_name, row_key, ts_ms, peer_guid, deleted FROM sync_row_version ORDER BY table_name, row_key",
 }
 
 
@@ -27,6 +28,10 @@ def dump(node):
 
 
 a, b = dump("node-a"), dump("node-b")
+KEY_FIELDS = ("enableActive", "enableFailover", "preferedMediaServer", "keepArchivedMaxFor")
+for node, d in (("node-a", a), ("node-b", b)):
+    kv = {name: value for _, name, value in d["vms_kvpair"] if name in KEY_FIELDS}
+    print("   %s kv: %s" % (node, kv))
 all_same = True
 for t in list(TABLES) + ["log_count"]:
     same = a[t] == b[t]

@@ -8,6 +8,7 @@
 #include "Storage/VmsResourceAssignment.h"
 #include "Storage/BookmarkIndex.h"
 #include "Storage/MiscData.h"
+#include "Storage/SyncRowVersion.h"
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
@@ -23,6 +24,17 @@ using namespace mediakit;
 namespace managerkit {
 
 INSTANCE_IMP(SyncManager)
+
+SyncManager::SyncManager() {
+    // Register sync handlers for all synced tables. Done at construction so that local mutations
+    // (which record LWW versions through stampLocalMutation) work before start() is called.
+    // To add a new synced table: implement makeSyncHandler() on its Imp class and add one line here.
+    registerTable(EntityTraits<VmsResource>::tableName(),           VmsResourceImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsKvPair>::tableName(),             VmsKvPairImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsResourceStatus>::tableName(),     VmsResourceStatusImp::makeSyncHandler());
+    registerTable(EntityTraits<VmsResourceAssignment>::tableName(), VmsResourceAssignmentImp::makeSyncHandler());
+    registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
+}
 
 // ── TransactionSequence helpers ─────────────────────────────────────────────
 
@@ -90,6 +102,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
     snap.vms_resource_status = Json::arrayValue;
     snap.resource_assignment = Json::arrayValue;
     snap.bookmark_index      = Json::arrayValue;
+    snap.row_versions        = Json::arrayValue;
 
     auto executor = make_shared<SqliteQueryExecutor>(db_tag);
 
@@ -162,6 +175,17 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
                 snap.bookmark_index.append(EntityTraits<BookmarkIndex>::fromRow(r).toJson());
             }
         }
+        // Step 7: sync_row_version — the receiver needs the LWW state matching the snapshot data
+        {
+            auto sql = QueryBuilder()
+                           .select(EntityTraits<SyncRowVersion>::getColumns())
+                           .from(EntityTraits<SyncRowVersion>::tableName())
+                           .build();
+            auto rows = executor->executeRawWithTxn(txn, sql);
+            for (const auto &r : rows) {
+                snap.row_versions.append(EntityTraits<SyncRowVersion>::fromRow(r).toJson());
+            }
+        }
         txn->commit();
     } catch (const std::exception &ex) {
         WarnL << "[Snapshot] build failed: " << ex.what();
@@ -180,6 +204,7 @@ string SnapshotBuilder::serialize(const SnapshotData &snap) {
     root["vms_resource_status"] = snap.vms_resource_status;
     root["resource_assignment"] = snap.resource_assignment;
     root["bookmark_index"]      = snap.bookmark_index;
+    root["row_versions"]        = snap.row_versions;
     return StrJsonUtils::writeJsonString(root);
 }
 
@@ -198,6 +223,7 @@ SnapshotData SnapshotBuilder::deserialize(const string &json_body) {
     snap.vms_resource_status = root["vms_resource_status"];
     snap.resource_assignment = root["resource_assignment"];
     snap.bookmark_index      = root["bookmark_index"];
+    snap.row_versions        = root["row_versions"]; // null for snapshots from older nodes
     return snap;
 }
 
@@ -240,15 +266,6 @@ void SyncManager::start() {
         _bootstrapped = true;
         InfoL << "Database already populated, skipping bootstrap";
     }
-
-    // Register sync handlers for all synced tables.
-    // To add a new synced table: implement makeSyncHandler() on its Imp class
-    // and add one registerTable() call here.
-    registerTable(EntityTraits<VmsResource>::tableName(),           VmsResourceImp::makeSyncHandler());
-    registerTable(EntityTraits<VmsKvPair>::tableName(),             VmsKvPairImp::makeSyncHandler());
-    registerTable(EntityTraits<VmsResourceStatus>::tableName(),     VmsResourceStatusImp::makeSyncHandler());
-    registerTable(EntityTraits<VmsResourceAssignment>::tableName(), VmsResourceAssignmentImp::makeSyncHandler());
-    registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
 
     InfoL << "Sync database started, node=" << mediaServerId << ", bootstrapped=" << _bootstrapped << ", interval=" << interval_sec << "s";
 }
@@ -454,6 +471,7 @@ void SyncManager::markBootstrapDone(const SnapshotData &snap) {
     counts["vms_kvpair"]             = static_cast<Json::UInt64>(snap.vms_kvpair.size());
     counts["vms_resource_assignment"] = static_cast<Json::UInt64>(snap.resource_assignment.size());
     counts["bookmark_index"]         = static_cast<Json::UInt64>(snap.bookmark_index.size());
+    counts["sync_row_version"]       = static_cast<Json::UInt64>(snap.row_versions.size());
 
     Json::Value state;
     state["schema_version"]    = 1;
@@ -538,12 +556,54 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         {EntityTraits<BookmarkIndex>::tableName(),         &snap.bookmark_index},
     };
 
+    // Snapshot versions, keyed by table + row key (absent in snapshots from older nodes).
+    unordered_map<string, SyncRowVersion> snap_versions;
+    if (snap.row_versions.isArray()) {
+        for (const auto &v : snap.row_versions) {
+            auto version = SyncRowVersion::fromJson(v);
+            snap_versions[version.table_name + "\n" + version.row_key] = version;
+        }
+    }
+
+    auto version_imp = make_shared<SyncRowVersionImp>();
     for (const auto &entry : snap_tables) {
         const Json::Value &arr = *entry.second;
         if (arr.empty() || !arr.isArray()) continue;
         auto hit = _table_handlers.find(entry.first);
         if (hit == _table_handlers.end() || !hit->second.onSnapshot) continue;
-        hit->second.onSnapshot(arr);
+        const TableSyncHandler &h = hit->second;
+
+        // A row this node already holds a version for (written locally before the bootstrap
+        // finished) is kept unless the snapshot carries a newer version of it.
+        Json::Value rows = Json::arrayValue;
+        {
+            auto txn = version_imp->getExecutor()->execTxn();
+            for (const auto &row : arr) {
+                string key = h.rowKey ? h.rowKey(row) : string();
+                SyncRowVersion local;
+                if (!key.empty() && version_imp->findEffectiveWithTxn(entry.first, key, h.groupKey ? h.groupKey(row) : string(), local, txn)) {
+                    auto sv = snap_versions.find(entry.first + "\n" + key);
+                    if (sv == snap_versions.end() || !SyncRowVersionImp::isNewer(sv->second.ts_ms, sv->second.peer_guid, local)) {
+                        TraceL << "applySnapshot keeps local row " << entry.first << ":" << key;
+                        continue;
+                    }
+                }
+                rows.append(row);
+            }
+            txn->commit();
+        }
+        if (!rows.empty()) {
+            h.onSnapshot(rows);
+        }
+    }
+
+    // Adopt the snapshot's LWW state (only versions newer than what is stored locally).
+    if (!snap_versions.empty()) {
+        auto txn = version_imp->getExecutor()->execTxn(true);
+        for (const auto &v : snap_versions) {
+            version_imp->recordWithTxn(v.second, txn);
+        }
+        txn->commit();
     }
 
     // Sequences are infrastructure state — not dispatched through the table registry.
@@ -701,177 +761,232 @@ void SyncManager::applyBatch(const Json::Value &rows) {
     // the same entries; apply them one batch at a time.
     lock_guard<mutex> apply_lock(_apply_mtx);
     auto log_imp = make_shared<TransactionLogImp>();
-    // Wrap the entire batch in one SQLite transaction so that all data writes
-    // and their transaction_log entries are committed atomically.
-    // On any exception the transaction destructs without commit → auto-rollback.
-    // IMMEDIATE: the batch reads (cursors, dedup, existing rows) before writing; a deferred
+    auto version_imp = make_shared<SyncRowVersionImp>();
+    // Wrap the entire batch in one SQLite transaction: data rows, row versions (LWW state),
+    // transaction_log entries and cursors are committed atomically, or not at all.
+    // IMMEDIATE: the batch reads (cursors, dedup, versions, existing rows) before writing; a deferred
     // transaction would fail with "database is locked" if another connection wrote meanwhile.
     auto txn = log_imp->getExecutor()->execTxn(true);
-    // LWW decisions are staged here and merged into _applied_ts only after commit,
-    // so a rolled-back batch is not treated as "already applied" on retry.
-    LwwStage lww_stage;
-    try {
-        // Cursors only advance on commit, so a row at or below its cursor was already applied
-        // (typically the same entries returned by several relays in one gossip round).
-        unordered_map<string, int> cursors;
-        for (const auto &c : make_shared<TransactionSequenceImp>()->findAllWithTxn(txn)) {
-            cursors[c.peer_guid + "|" + c.db_guid] = c.sequence;
-        }
-        size_t skipped = 0;
-        for (const auto &it : rows) {
-            auto cur = cursors.find(it["peer_guid"].asString() + "|" + it["db_guid"].asString());
-            if (cur != cursors.end() && it["sequence"].asInt() <= cur->second) {
-                ++skipped;
-                continue;
-            }
-            // Dedup first — exact duplicate check before any work (e.g. restart replay,
-            // or same entry received via multiple relay paths).
-            string tran_guid_early = it["tran_guid"].asString();
-            if (!tran_guid_early.empty() && log_imp->existsByTranGuidWithTxn(tran_guid_early, txn)) {
-                TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
-                continue;
-            }
 
-            int tran_type = it["tran_type"].asInt();
-            if (tran_type != static_cast<int>(TranType::DataMutation)) {
-                WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
-                continue;
-            }
-
-            // tran_data is a JSON string: {"table":"...","op":"UPSERT|DELETE","payload":{...}}
-            string raw = it["tran_data"].asString();
-            Json::Value tran_data;
-            if (!StrJsonUtils::readJsonString(raw, tran_data)) {
-                WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
-                continue;
-            }
-
-            string table               = tran_data["table"].asString();
-            string op                  = tran_data["op"].asString();
-            const Json::Value &payload = tran_data["payload"];
-            int64_t log_ts             = it["timestamp"].asInt64();
-
-            auto hit = _table_handlers.find(table);
-            if (hit == _table_handlers.end()) {
-                WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
-                continue;
-            }
-            const TableSyncHandler &h = hit->second;
-
-            ApplyDecision apply_decision = shouldApply(table, op, payload, log_ts, lww_stage);
-            // ApplyDecision::Skip => stale write — local version is newer
-            // ApplyDecision::ApplyWinner => conflict winner — incoming version is newer (but still apply)
-            // ApplyDecision::Apply => no conflict — apply normally
-            if (apply_decision != ApplyDecision::Skip) {
-                if (op == TRAN_DATA_OP_UPSERT) {
-                    if (h.onUpsertWithTxn) h.onUpsertWithTxn(payload, txn);
-                    else if (h.onUpsert) h.onUpsert(payload);
-                } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-                    if (h.onUpsertBatchWithTxn) {
-                        h.onUpsertBatchWithTxn(payload, txn);
-                    } else if (h.onUpsertBatch) {
-                        h.onUpsertBatch(payload);
-                    } else {
-                        WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
-                        continue;
-                    }
-                } else if (op == TRAN_DATA_OP_DELETE) {
-                    if (h.onDeleteWithTxn) h.onDeleteWithTxn(payload, txn);
-                    else if (h.onDelete) h.onDelete(payload);
-                } else {
-                    WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-                    continue;
-                }
-            }
-
-            // Record the transaction in local log, update sequence of the remote peer.
-            // If this entry won a conflict (newer than a previously accepted entry for
-            // the same row), flag it with timestamp_hi=1 for audit purposes.
-            // If this entry was skipped (stale write), flag it with timestamp_hi=2 for audit purposes.
-            auto log = TransactionLog::fromJson(it);
-            if (apply_decision == ApplyDecision::ApplyWinner) {
-                log.timestamp_hi = 1; // conflict winner (newer than previous), still record it for audit
-            } else if (apply_decision == ApplyDecision::Skip) {
-                log.timestamp_hi = 2; // stale write, but still record it for audit
-            } else {
-                log.timestamp_hi = 0; // normal case, no conflict
-            }
-            log_imp->addWithTxn(log, txn);
-        }
-        txn->commit();
-        if (skipped) {
-            TraceL << "applyBatch skipped " << skipped << " already-applied entries";
-        }
-    } catch (...) {
-        // txn destructs without commit → auto-rollback; lww_stage is discarded
-        throw;
+    // Cursors only advance on commit, so a row at or below its cursor was already applied
+    // (typically the same entries returned by several relays in one gossip round).
+    unordered_map<string, int> cursors;
+    for (const auto &c : make_shared<TransactionSequenceImp>()->findAllWithTxn(txn)) {
+        cursors[c.peer_guid + "|" + c.db_guid] = c.sequence;
     }
-
-    for (const auto &entry : lww_stage) {
-        if (entry.second < 0) {
-            _applied_ts.erase(entry.first);
-        } else {
-            _applied_ts[entry.first] = entry.second;
+    size_t skipped = 0;
+    for (const auto &it : rows) {
+        auto cur = cursors.find(it["peer_guid"].asString() + "|" + it["db_guid"].asString());
+        if (cur != cursors.end() && it["sequence"].asInt() <= cur->second) {
+            ++skipped;
+            continue;
         }
+        // Dedup — exact duplicate check before any work (e.g. restart replay,
+        // or same entry received via multiple relay paths).
+        string tran_guid_early = it["tran_guid"].asString();
+        if (!tran_guid_early.empty() && log_imp->existsByTranGuidWithTxn(tran_guid_early, txn)) {
+            TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
+            continue;
+        }
+
+        int tran_type = it["tran_type"].asInt();
+        if (tran_type != static_cast<int>(TranType::DataMutation)) {
+            WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
+            continue;
+        }
+
+        // tran_data is a JSON string: {"table":"...","op":"UPSERT|UPSERT_BATCH|DELETE","payload":{...}}
+        string raw = it["tran_data"].asString();
+        Json::Value tran_data;
+        if (!StrJsonUtils::readJsonString(raw, tran_data)) {
+            WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
+            continue;
+        }
+
+        string table               = tran_data["table"].asString();
+        string op                  = tran_data["op"].asString();
+        const Json::Value &payload = tran_data["payload"];
+        int64_t log_ts             = it["timestamp"].asInt64();
+        string origin_peer         = it["peer_guid"].asString();
+
+        auto hit = _table_handlers.find(table);
+        if (hit == _table_handlers.end()) {
+            WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
+            continue;
+        }
+        const TableSyncHandler &h = hit->second;
+        if (op != TRAN_DATA_OP_UPSERT && op != TRAN_DATA_OP_UPSERT_BATCH && op != TRAN_DATA_OP_DELETE) {
+            WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
+            continue;
+        }
+        if (op == TRAN_DATA_OP_UPSERT_BATCH && !h.onUpsertBatchWithTxn && !h.onUpsertBatch) {
+            WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
+            continue;
+        }
+
+        Json::Value apply_payload;
+        set<string> keep_keys;
+        ApplyDecision apply_decision = resolveConflict(table, h, op, payload, log_ts, origin_peer,
+                                                       *version_imp, txn, apply_payload, keep_keys);
+        // Skip        => stale write, the stored version is newer
+        // ApplyWinner => incoming version is newer than a stored one
+        // Apply       => no stored version for this row
+        if (apply_decision != ApplyDecision::Skip) {
+            if (op == TRAN_DATA_OP_UPSERT) {
+                if (h.onUpsertWithTxn) h.onUpsertWithTxn(apply_payload, txn);
+                else if (h.onUpsert) h.onUpsert(apply_payload);
+            } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+                if (h.onUpsertBatchWithTxn) h.onUpsertBatchWithTxn(apply_payload, txn);
+                else h.onUpsertBatch(apply_payload);
+            } else if (h.groupKey && h.onGroupDeleteWithTxn) {
+                h.onGroupDeleteWithTxn(apply_payload, keep_keys, txn);
+            } else {
+                if (h.onDeleteWithTxn) h.onDeleteWithTxn(apply_payload, txn);
+                else if (h.onDelete) h.onDelete(apply_payload);
+            }
+        }
+
+        // Record the transaction in the local log (for relaying) and advance the peer cursor.
+        // timestamp_hi is an audit flag: 1 = won a conflict, 2 = skipped as stale, 0 = normal.
+        auto log = TransactionLog::fromJson(it);
+        if (apply_decision == ApplyDecision::ApplyWinner) {
+            log.timestamp_hi = 1;
+        } else if (apply_decision == ApplyDecision::Skip) {
+            log.timestamp_hi = 2;
+        } else {
+            log.timestamp_hi = 0;
+        }
+        log_imp->addWithTxn(log, txn);
+    }
+    txn->commit(); // on exception the transaction rolls back when it goes out of scope
+    if (skipped) {
+        TraceL << "applyBatch skipped " << skipped << " already-applied entries";
     }
 }
 
-SyncManager::ApplyDecision SyncManager::shouldApply(const string &table, const std::string &op, const Json::Value &payload, int64_t log_ts, LwwStage &stage) {
-    // UPSERT_BATCH covers multiple rows with a single timestamp; skip per-row LWW.
-    if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-        return ApplyDecision::Apply;
+SyncManager::ApplyDecision SyncManager::resolveConflict(const string &table, const TableSyncHandler &h,
+                                                        const string &op, const Json::Value &payload,
+                                                        int64_t ts, const string &peer,
+                                                        SyncRowVersionImp &versions, SqliteTransaction::Ptr txn,
+                                                        Json::Value &apply_payload, set<string> &keep_keys) {
+    apply_payload = payload;
+    if (!h.rowKey) {
+        return ApplyDecision::Apply; // table without LWW tracking
     }
 
-    // Derive a stable per-row key via the registered handler.
+    // UPSERT_BATCH: every item is its own row; stale items are dropped from the payload.
+    if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+        const Json::Value &items = payload["items"];
+        if (!items.isArray()) {
+            return ApplyDecision::Apply;
+        }
+        Json::Value kept = Json::arrayValue;
+        bool conflict = false;
+        for (const auto &item : items) {
+            string key = h.rowKey(item);
+            string group = h.groupKey ? h.groupKey(item) : string();
+            if (key.empty()) {
+                kept.append(item);
+                continue;
+            }
+            SyncRowVersion prev;
+            bool has_prev = versions.findEffectiveWithTxn(table, key, group, prev, txn);
+            if (has_prev && !SyncRowVersionImp::isNewer(ts, peer, prev)) {
+                TraceL << "resolveConflict skip stale item: " << table << ":" << key << " incoming=" << ts << "/" << peer
+                       << " stored=" << prev.ts_ms << "/" << prev.peer_guid;
+                continue;
+            }
+            conflict = conflict || has_prev;
+            kept.append(item);
+            versions.recordWithTxn(makeVersion(table, key, group, ts, peer, false), txn);
+        }
+        if (kept.empty()) {
+            return ApplyDecision::Skip;
+        }
+        apply_payload["items"] = kept;
+        return conflict ? ApplyDecision::ApplyWinner : ApplyDecision::Apply;
+    }
+
+    // Group DELETE (e.g. all kv of a resource): compared with the group tombstone; rows written
+    // after the delete survive it.
+    if (op == TRAN_DATA_OP_DELETE && h.groupKey) {
+        string group = h.groupKey(payload);
+        if (group.empty()) {
+            WarnL << "resolveConflict: missing group key for table=" << table << " op=" << op;
+            return ApplyDecision::Skip;
+        }
+        const string tomb_key = SyncRowVersionImp::groupRowKey(group);
+        SyncRowVersion prev;
+        bool has_prev = versions.findWithTxn(table, tomb_key, prev, txn);
+        if (has_prev && !SyncRowVersionImp::isNewer(ts, peer, prev)) {
+            return ApplyDecision::Skip;
+        }
+        keep_keys = versions.liveKeysNewerThanWithTxn(table, group, ts, peer, txn);
+        versions.recordWithTxn(makeVersion(table, tomb_key, group, ts, peer, true), txn);
+        return has_prev ? ApplyDecision::ApplyWinner : ApplyDecision::Apply;
+    }
+
+    // Single-row UPSERT / DELETE.
+    string key = h.rowKey(payload);
+    if (key.empty()) {
+        WarnL << "resolveConflict: missing row key for table=" << table << " op=" << op;
+        return ApplyDecision::Skip;
+    }
+    string group = h.groupKey ? h.groupKey(payload) : string();
+    SyncRowVersion prev;
+    bool has_prev = versions.findEffectiveWithTxn(table, key, group, prev, txn);
+    if (has_prev && !SyncRowVersionImp::isNewer(ts, peer, prev)) {
+        TraceL << "resolveConflict skip stale: " << table << ":" << key << " incoming=" << ts << "/" << peer
+               << " stored=" << prev.ts_ms << "/" << prev.peer_guid << (prev.deleted ? " (deleted)" : "");
+        return ApplyDecision::Skip;
+    }
+    versions.recordWithTxn(makeVersion(table, key, group, ts, peer, op == TRAN_DATA_OP_DELETE), txn);
+    return has_prev ? ApplyDecision::ApplyWinner : ApplyDecision::Apply;
+}
+
+SyncRowVersion SyncManager::makeVersion(const string &table, const string &key, const string &group,
+                                        int64_t ts, const string &peer, bool deleted) {
+    SyncRowVersion v;
+    v.table_name = table;
+    v.row_key    = key;
+    v.group_key  = group;
+    v.ts_ms      = ts;
+    v.peer_guid  = peer;
+    v.deleted    = deleted ? 1 : 0;
+    return v;
+}
+
+int64_t SyncManager::stampLocalMutation(const string &table, const string &op, const Json::Value &payload,
+                                        int64_t now_ms, const string &self_peer) {
     auto hit = _table_handlers.find(table);
     if (hit == _table_handlers.end() || !hit->second.rowKey) {
-        // Unknown table or no LWW tracking — always apply (safe default).
-        return ApplyDecision::Apply;
+        return now_ms;
     }
-
-    string row_key = hit->second.rowKey(payload);
-    if (row_key.empty()) {
-        WarnL << "shouldApply: missing row key for table=" << table << " op=" << op;
-        return ApplyDecision::Skip;
-    }
-
-    const string map_key = table + ":" + row_key;
-
-    // DELETE ops do not carry a meaningful timestamp for LWW; always apply.
-    if (op == TRAN_DATA_OP_DELETE) {
-        stage[map_key] = -1; // row is gone, remove from LWW cache after commit
-        return ApplyDecision::Apply;
-    }
-
-    // Look at decisions staged earlier in this batch first, then the committed cache.
-    int64_t prev_ts = -1;
-    auto staged = stage.find(map_key);
-    if (staged != stage.end()) {
-        prev_ts = staged->second;
+    const TableSyncHandler &h = hit->second;
+    vector<SyncRowVersion> keys;
+    if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+        for (const auto &item : payload["items"]) {
+            string key = h.rowKey(item);
+            if (!key.empty()) {
+                keys.push_back(makeVersion(table, key, h.groupKey ? h.groupKey(item) : string(), 0, self_peer, false));
+            }
+        }
+    } else if (op == TRAN_DATA_OP_DELETE && h.groupKey) {
+        string group = h.groupKey(payload);
+        if (!group.empty()) {
+            keys.push_back(makeVersion(table, SyncRowVersionImp::groupRowKey(group), group, 0, self_peer, true));
+        }
     } else {
-        auto it = _applied_ts.find(map_key);
-        if (it != _applied_ts.end()) {
-            prev_ts = it->second;
+        string key = h.rowKey(payload);
+        if (!key.empty()) {
+            keys.push_back(makeVersion(table, key, h.groupKey ? h.groupKey(payload) : string(), 0, self_peer,
+                                       op == TRAN_DATA_OP_DELETE));
         }
     }
-
-    if (prev_ts < 0) {
-        stage[map_key] = log_ts;
-        return ApplyDecision::Apply;
+    if (keys.empty()) {
+        return now_ms;
     }
-
-    if (log_ts <= prev_ts) {
-        TraceL << "shouldApply skip stale: " << map_key
-               << " incoming_ts=" << log_ts
-               << " local_ts=" << prev_ts;
-        return ApplyDecision::Skip;
-    }
-
-    TraceL << "shouldApply conflict winner: " << map_key
-           << " incoming_ts=" << log_ts
-           << " prev_ts=" << prev_ts;
-    stage[map_key] = log_ts;
-    return ApplyDecision::ApplyWinner;
+    return make_shared<SyncRowVersionImp>()->stampLocal(keys, now_ms, self_peer);
 }
 
 // ─── GC watermark ────────────────────────────────────────────────────────────
@@ -894,6 +1009,16 @@ void SyncManager::recordRelayAck(const Json::Value &ack_cursors_json) {
 
 void SyncManager::maybePruneLog() {
     GET_CONFIG(int, log_keep_num, Database::kTransactionLogKeepLast)
+    GET_CONFIG(int, tombstone_ttl_days, Database::kRowVersionTombstoneTtlDays)
+    if (tombstone_ttl_days > 0) {
+        int64_t cutoff_ms = static_cast<int64_t>(toolkit::getCurrentMillisecond(true)) -
+                            static_cast<int64_t>(tombstone_ttl_days) * 24 * 3600 * 1000;
+        try {
+            make_shared<SyncRowVersionImp>()->pruneTombstones(cutoff_ms);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to prune row version tombstones: " << ex.what();
+        }
+    }
     if (_single_node)  {
         auto seq_imp = make_shared<TransactionSequenceImp>();
         auto current_seq = seq_imp->findSeqByPeerIdAndDbGuid(_self_node_id, _self_db_id);

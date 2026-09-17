@@ -3,6 +3,7 @@
 
 #include <string>
 #include <mutex>
+#include <set>
 #include "DbStorage.h"
 #include "TransactionLog.h"
 #include "Util/util.h"
@@ -113,6 +114,25 @@ protected:
         return _executor->execDML(query) > 0;
     }
 
+    // Deletes the kv rows of a resource except the listed names.
+    bool removeByResourceIdExceptWithTxn(const std::string &guid, const std::set<std::string> &keep_names,
+                                         toolkit::SqliteTransaction::Ptr txn) {
+        if (keep_names.empty()) {
+            return removeByResourceIdWithTxn(guid, txn);
+        }
+        std::string where = "resource_guid = ? AND name NOT IN (";
+        std::vector<std::string> params{guid};
+        for (const auto &name : keep_names) {
+            where += params.size() > 1 ? ",?" : "?";
+            params.push_back(name);
+        }
+        where += ")";
+        auto query = toolkit::QueryBuilder()
+                            .deleteFrom(EntityTraits<VmsKvPair>::tableName())
+                            .where(where, params);
+        return execDMLWithTxn(txn, query);
+    }
+
     bool removeByResourceIdWithTxn(const std::string &guid, toolkit::SqliteTransaction::Ptr txn) {
         auto query = toolkit::QueryBuilder()
                             .deleteFrom(EntityTraits<VmsKvPair>::tableName())
@@ -196,11 +216,32 @@ public:
         return findByResourceId(resoure_id);
     }
 
+    static std::string syncRowKey(const std::string &resource_guid, const std::string &name) {
+        return resource_guid + ":" + name;
+    }
+
     static TableSyncHandler makeSyncHandler() {
         TableSyncHandler h;
+        // One LWW version per (resource, key), also for every item of an UPSERT_BATCH.
         h.rowKey = [](const Json::Value &p) -> std::string {
-            // Composite key; used only for single UPSERT (UPSERT_BATCH skips LWW)
-            return p["resource_guid"].asString() + ":" + p["name"].asString();
+            if (p["name"].asString().empty()) return "";
+            return syncRowKey(p["resource_guid"].asString(), p["name"].asString());
+        };
+        // DELETE removes every kv of a resource: the resource is the group.
+        h.groupKey = [](const Json::Value &p) -> std::string {
+            return p["resource_guid"].asString();
+        };
+        h.onGroupDeleteWithTxn = [](const Json::Value &p, const std::set<std::string> &keep, toolkit::SqliteTransaction::Ptr txn) {
+            const std::string resource_guid = p["resource_guid"].asString();
+            if (resource_guid.empty()) return;
+            const std::string prefix = syncRowKey(resource_guid, "");
+            std::set<std::string> keep_names;
+            for (const auto &key : keep) {
+                if (key.compare(0, prefix.size(), prefix) == 0) {
+                    keep_names.insert(key.substr(prefix.size()));
+                }
+            }
+            std::make_shared<VmsKvPairImp>()->removeByResourceIdExceptWithTxn(resource_guid, keep_names, txn);
         };
         h.onUpsert = [](const Json::Value &p) {
             auto imp = std::make_shared<VmsKvPairImp>();

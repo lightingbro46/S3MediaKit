@@ -37,6 +37,9 @@ extern const std::string kGossipFanout;
 extern const std::string kTransactionLogKeepLast;
 // Whether to keep migration SQL files after execution, default is false (do not keep)
 extern const std::string kKeepMigrationSqlFiles;
+// Days to keep sync_row_version tombstones (deleted rows) before pruning, default 30.
+// Must exceed the longest time a node may stay offline and still resume by incremental pull.
+extern const std::string kRowVersionTombstoneTtlDays;
 } // namespace Database
 
 namespace managerkit {

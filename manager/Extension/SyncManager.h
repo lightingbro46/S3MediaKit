@@ -6,12 +6,15 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
+#include <vector>
 #include <mutex>
 #include <functional>
 #include <json/json.h>
 #include "Poller/Timer.h"
 #include "Poller/EventPoller.h"
 #include "Extension/TableSyncHandler.h"
+#include "Storage/SyncRowVersion.h"
 
 namespace managerkit {
 
@@ -30,6 +33,8 @@ struct SnapshotData {
     Json::Value  vms_resource_status; // Json::arrayValue
     Json::Value  resource_assignment; // Json::arrayValue
     Json::Value  bookmark_index;      // Json::arrayValue — cluster-wide bookmark summary
+    // sync_row_version (LWW state). Optional: snapshots from older nodes do not carry it.
+    Json::Value  row_versions;        // Json::arrayValue
 
     bool empty() const { return sequences.empty(); }
 };
@@ -83,10 +88,17 @@ public:
 
     Json::Value getMiscData();
 
+    // Called for every local mutation before it is appended to transaction_log (ENABLE_SYNC_CHANGES).
+    // Records the LWW versions of the affected rows and returns the log timestamp to use:
+    // >= now_ms and newer than any version already known for those rows, so a lagging clock
+    // cannot make a local write lose against data this node has already accepted.
+    int64_t stampLocalMutation(const std::string &table, const std::string &op, const Json::Value &payload,
+                               int64_t now_ms, const std::string &self_peer);
+
 private:
     friend class SyncManagerTestPeer; // unit tests drive applyBatch/applySnapshot directly
 
-    SyncManager() = default;
+    SyncManager();
 
     // ── Pull tick ──────────────────────────────
     void onTick();
@@ -121,16 +133,19 @@ private:
     //   ApplyWinner — conflict detected, incoming wins; caller sets timestamp_hi=1
     enum class ApplyDecision : int { Skip = 0, Apply = 1, ApplyWinner = 2 };
 
-    // Last-Write-Wins by wall-clock timestamp (TransactionLog::timestamp, ms).
-    // Updates _applied_ts on accept (Apply / ApplyWinner).
-    // Pending LWW updates of one batch: key → accepted log_ts, or -1 to erase the key.
-    using LwwStage = std::unordered_map<std::string, int64_t>;
+    // Last-writer-wins on the persistent row version (log timestamp, origin peer_guid), read and
+    // written inside the batch transaction `txn`. Produces the payload to apply (stale items of an
+    // UPSERT_BATCH removed) and, for a group DELETE, the row keys that must survive it.
+    ApplyDecision resolveConflict(const std::string &table, const TableSyncHandler &h, const std::string &op,
+                                  const Json::Value &payload, int64_t ts, const std::string &peer,
+                                  SyncRowVersionImp &versions, toolkit::SqliteTransaction::Ptr txn,
+                                  Json::Value &apply_payload, std::set<std::string> &keep_keys);
 
-    // Stages its decision into `stage`; the caller merges it into _applied_ts after commit.
-    ApplyDecision shouldApply(const std::string &table_name, const std::string &op, const Json::Value &payload, int64_t log_ts, LwwStage &stage);
+    static SyncRowVersion makeVersion(const std::string &table, const std::string &key, const std::string &group,
+                                      int64_t ts, const std::string &peer, bool deleted);
 
-    // Register a sync handler for a table. Must be called before start().
-    // Replaces any previously registered handler for the same table name.
+    // Register a sync handler for a table. Called from the constructor, so handlers exist
+    // before any local mutation or remote batch is processed; read-only afterwards.
     void registerTable(const std::string &table_name, TableSyncHandler handler);
 
     // GC: compute safe prune watermark and delete old transaction_log entries.
@@ -140,8 +155,8 @@ private:
     toolkit::Timer::Ptr                          _timer;
     toolkit::EventPoller::Ptr                    _worker;
     std::mutex                                   _mtx;
-    // Serializes applyBatch/applySnapshot (and guards _applied_ts); normally they already run
-    // on _worker, the lock also covers direct callers such as unit tests.
+    // Serializes applyBatch/applySnapshot; normally they already run on _worker, the lock also
+    // covers direct callers such as unit tests.
     std::mutex                                   _apply_mtx;
     std::unordered_map<std::string, std::string> _peers; // node_id → base_url
     std::unordered_set<std::string>              _bootstrapping; // guard: bootstrap in progress
@@ -153,12 +168,6 @@ private:
     std::string                                  _self_db_id; // media server's own db_guid
     bool                                         _running      = false;
     uint64_t                                     _last_prune_time = 0;
-
-    // LWW map: key = "table:row_key" → last accepted log_ts (ms).
-    // Prevents stale writes when two nodes concurrently modify the same row.
-    // Volatile (cleared on restart); safe because the pull cursor prevents
-    // re-applying already-processed log entries after a clean restart.
-    std::unordered_map<std::string, int64_t>     _applied_ts;
 
     // Plugin registry: table_name → sync handler.
     std::unordered_map<std::string, TableSyncHandler> _table_handlers;

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
+#include <map>
 #include <thread>
 #include <unistd.h>
 
@@ -13,6 +14,7 @@
 #include "Storage/BookmarkIndex.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/MiscData.h"
+#include "Storage/SyncRowVersion.h"
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionSequence.h"
 #include "Storage/VmsKvPair.h"
@@ -87,16 +89,24 @@ public:
 
 ::testing::Environment *const g_env = ::testing::AddGlobalTestEnvironment(new SyncDbEnvironment);
 
+Json::Value makeRowFrom(const std::string &peer, const std::string &db, int seq, const std::string &tran_guid,
+                        const std::string &table, const std::string &op, const Json::Value &payload, int64_t ts_ms);
+
 Json::Value makeRow(int seq, const std::string &tran_guid, const std::string &table,
                     const std::string &op, const Json::Value &payload, int64_t ts_ms) {
+    return makeRowFrom(kRemotePeer, kRemoteDb, seq, tran_guid, table, op, payload, ts_ms);
+}
+
+Json::Value makeRowFrom(const std::string &peer, const std::string &db, int seq, const std::string &tran_guid,
+                        const std::string &table, const std::string &op, const Json::Value &payload, int64_t ts_ms) {
     Json::Value tran_data;
     tran_data["table"]   = table;
     tran_data["op"]      = op;
     tran_data["payload"] = payload;
 
     Json::Value row;
-    row["peer_guid"]    = kRemotePeer;
-    row["db_guid"]      = kRemoteDb;
+    row["peer_guid"]    = peer;
+    row["db_guid"]      = db;
     row["sequence"]     = seq;
     row["timestamp"]    = static_cast<Json::Int64>(ts_ms);
     row["tran_guid"]    = tran_guid;
@@ -323,4 +333,246 @@ TEST_F(SyncApplyTest, BatchWaitsForConcurrentWriter) {
     writer.join();
     EXPECT_EQ(base + 1, remoteCursor());
     EXPECT_EQ(2, std::make_shared<VmsResourceStatusImp>()->findStatus("cam-lock"));
+}
+
+// ─── Last-writer-wins (sync_row_version) ────────────────────────────────────
+
+namespace {
+
+const char *kPeer1 = "node-p1";
+const char *kDb1   = "db-p1";
+const char *kPeer2 = "node-p2";
+const char *kDb2   = "db-p2";
+
+// Emits rows for one peer with consecutive sequence numbers after its current cursor.
+class PeerFeed {
+public:
+    PeerFeed(const std::string &peer, const std::string &db) : _peer(peer), _db(db) {
+        _seq = std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(peer, db);
+    }
+
+    Json::Value row(const std::string &table, const std::string &op, const Json::Value &payload, int64_t ts_ms) {
+        return makeRowFrom(_peer, _db, ++_seq, makeUuidStr(), table, op, payload, ts_ms);
+    }
+
+    int lastSeq() const { return _seq; }
+
+private:
+    std::string _peer;
+    std::string _db;
+    int _seq = 0;
+};
+
+const std::string kStatusTable = "vms_resource_status";
+const std::string kKvTable = "vms_kvpair";
+
+Json::Value statusPayload(const std::string &guid, int status) {
+    Json::Value p;
+    p["guid"] = guid;
+    p["status"] = status;
+    return p;
+}
+
+Json::Value guidPayload(const std::string &guid) {
+    Json::Value p;
+    p["guid"] = guid;
+    return p;
+}
+
+Json::Value kvBatch(const std::string &resource, const std::vector<std::pair<std::string, std::string>> &items) {
+    Json::Value p;
+    p["resource_guid"] = resource;
+    p["items"] = Json::arrayValue;
+    for (const auto &kv : items) {
+        Json::Value item;
+        item["id"] = "";
+        item["resource_guid"] = resource;
+        item["name"] = kv.first;
+        item["value"] = kv.second;
+        p["items"].append(item);
+    }
+    return p;
+}
+
+std::map<std::string, std::string> kvOf(const std::string &resource) {
+    std::map<std::string, std::string> ret;
+    for (const auto &kv : std::make_shared<VmsKvPairImp>()->findAllKeyValue(resource)) {
+        ret[kv.name] = kv.value;
+    }
+    return ret;
+}
+
+int statusOf(const std::string &guid) {
+    return std::make_shared<VmsResourceStatusImp>()->findStatus(guid);
+}
+
+void apply(const Json::Value &row) {
+    Json::Value rows = Json::arrayValue;
+    rows.append(row);
+    SyncManagerTestPeer::applyBatch(SyncManager::Instance(), rows);
+}
+
+int auditFlag(const std::string &peer, const std::string &db, int seq) {
+    auto logs = std::make_shared<TransactionLogImp>()->findSinceSeq(peer, db, seq - 1, 1);
+    return logs.empty() ? -1 : logs[0].timestamp_hi;
+}
+
+int64_t nowMs() {
+    return static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
+}
+
+} // namespace
+
+// Regression: the in-memory LWW map only knew remote writes, so an older remote write could
+// overwrite a newer local one.
+TEST_F(SyncApplyTest, StaleRemoteUpsertLosesToNewerLocalWrite) {
+    VmsResourceStatus local;
+    local.guid = "lww-local";
+    local.status = 2;
+    std::make_shared<VmsResourceStatusImp>()->add(local);
+
+    PeerFeed p1(kPeer1, kDb1);
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-local", 1), nowMs() - 60000));
+    EXPECT_EQ(2, statusOf("lww-local"));
+    EXPECT_EQ(2, auditFlag(kPeer1, kDb1, p1.lastSeq())); // recorded as stale
+
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-local", 3), nowMs() + 60000));
+    EXPECT_EQ(3, statusOf("lww-local"));
+    EXPECT_EQ(1, auditFlag(kPeer1, kDb1, p1.lastSeq())); // conflict winner
+}
+
+// Regression: UPSERT_BATCH skipped LWW, so the last batch to arrive won for every item.
+TEST_F(SyncApplyTest, KvBatchResolvesPerItemRegardlessOfOrder) {
+    PeerFeed p1(kPeer1, kDb1);
+    PeerFeed p2(kPeer2, kDb2);
+    const std::vector<std::pair<std::string, std::string>> older = {{"a", "p1"}, {"b", "p1"}};
+    const std::vector<std::pair<std::string, std::string>> newer = {{"a", "p2"}, {"c", "p2"}};
+
+    // Resource 1: newer batch first. Resource 2: older batch first.
+    apply(p2.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-kv-1", newer), 2000));
+    apply(p1.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-kv-1", older), 1000));
+    apply(p1.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-kv-2", older), 1000));
+    apply(p2.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-kv-2", newer), 2000));
+
+    std::map<std::string, std::string> expected = {{"a", "p2"}, {"b", "p1"}, {"c", "p2"}};
+    EXPECT_EQ(expected, kvOf("lww-kv-1"));
+    EXPECT_EQ(expected, kvOf("lww-kv-2"));
+}
+
+TEST_F(SyncApplyTest, EqualTimestampsAreResolvedByPeerGuid) {
+    PeerFeed p1(kPeer1, kDb1);
+    PeerFeed p2(kPeer2, kDb2);
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-tie-1", 1), 5000));
+    apply(p2.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-tie-1", 2), 5000));
+    apply(p2.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-tie-2", 2), 5000));
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-tie-2", 1), 5000));
+
+    // "node-p2" > "node-p1": the node-p2 write wins in both orders.
+    EXPECT_EQ(2, statusOf("lww-tie-1"));
+    EXPECT_EQ(2, statusOf("lww-tie-2"));
+}
+
+// Regression: DELETE was always applied and left no trace, so a stale upsert resurrected the row
+// and a stale delete removed a newer one.
+TEST_F(SyncApplyTest, DeleteTombstoneBlocksOlderUpsert) {
+    PeerFeed p1(kPeer1, kDb1);
+    PeerFeed p2(kPeer2, kDb2);
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-del", 1), 100));
+    apply(p2.row(kStatusTable, TRAN_DATA_OP_DELETE, guidPayload("lww-del"), 300));
+    EXPECT_EQ(0, statusOf("lww-del"));
+
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-del", 2), 200));
+    EXPECT_EQ(0, statusOf("lww-del")) << "stale upsert resurrected a deleted row";
+
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-del", 3), 400));
+    EXPECT_EQ(3, statusOf("lww-del"));
+
+    apply(p2.row(kStatusTable, TRAN_DATA_OP_DELETE, guidPayload("lww-del"), 350));
+    EXPECT_EQ(3, statusOf("lww-del")) << "stale delete removed a newer row";
+}
+
+TEST_F(SyncApplyTest, GroupDeleteKeepsItemsWrittenAfterIt) {
+    PeerFeed p1(kPeer1, kDb1);
+    PeerFeed p2(kPeer2, kDb2);
+    apply(p1.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-group", {{"a", "1"}, {"b", "1"}}), 100));
+    apply(p2.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-group", {{"b", "2"}}), 300));
+
+    Json::Value del;
+    del["resource_guid"] = "lww-group";
+    apply(p1.row(kKvTable, TRAN_DATA_OP_DELETE, del, 200));
+
+    std::map<std::string, std::string> expected = {{"b", "2"}};
+    EXPECT_EQ(expected, kvOf("lww-group"));
+
+    // An item older than the group delete must not come back.
+    apply(p1.row(kKvTable, TRAN_DATA_OP_UPSERT_BATCH, kvBatch("lww-group", {{"a", "old"}}), 150));
+    EXPECT_EQ(expected, kvOf("lww-group"));
+}
+
+// A node whose clock lags behind an accepted remote version still produces a winning local write.
+TEST_F(SyncApplyTest, LocalWriteIsStampedAfterKnownVersion) {
+    PeerFeed p1(kPeer1, kDb1);
+    const int64_t future = nowMs() + 10 * 60 * 1000;
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("lww-clock", 1), future));
+
+    VmsResourceStatus local;
+    local.guid = "lww-clock";
+    local.status = 2;
+    std::make_shared<VmsResourceStatusImp>()->add(local);
+
+    auto &rm = ResourceManager::Instance();
+    int own = std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid());
+    auto logs = std::make_shared<TransactionLogImp>()->findSinceSeq(rm.getSelfNodeId(), rm.getSelfDbGuid(), own - 1, 1);
+    ASSERT_EQ(1u, logs.size());
+    EXPECT_GT(logs[0].timestamp, future);
+}
+
+TEST_F(SyncApplyTest, SnapshotAppliesRowVersionsAndKeepsNewerLocalRows) {
+    VmsResourceStatus local;
+    local.guid = "snap-local";
+    local.status = 2;
+    std::make_shared<VmsResourceStatusImp>()->add(local);
+
+    SnapshotData snap;
+    snap.peer_id = kPeer1;
+    snap.db_guid = kDb1;
+    snap.sequences           = Json::arrayValue;
+    snap.vms_resource        = Json::arrayValue;
+    snap.vms_kvpair          = Json::arrayValue;
+    snap.vms_resource_status = Json::arrayValue;
+    snap.resource_assignment = Json::arrayValue;
+    snap.bookmark_index      = Json::arrayValue;
+    snap.row_versions        = Json::arrayValue;
+    snap.vms_resource_status.append(statusPayload("snap-local", 1));
+    snap.vms_resource_status.append(statusPayload("snap-new", 3));
+
+    SyncRowVersion old_version;
+    old_version.table_name = kStatusTable;
+    old_version.row_key = "snap-local";
+    old_version.ts_ms = 1;
+    old_version.peer_guid = kPeer1;
+    SyncRowVersion new_version = old_version;
+    new_version.row_key = "snap-new";
+    new_version.ts_ms = 7;
+    SyncRowVersion tombstone = old_version;
+    tombstone.row_key = "snap-gone";
+    tombstone.ts_ms = 9;
+    tombstone.deleted = 1;
+    snap.row_versions.append(old_version.toJson());
+    snap.row_versions.append(new_version.toJson());
+    snap.row_versions.append(tombstone.toJson());
+
+    // Row versions survive the wire format.
+    auto decoded = SnapshotBuilder::deserialize(SnapshotBuilder::serialize(snap));
+    ASSERT_TRUE(decoded.row_versions.isArray());
+    ASSERT_EQ(3u, decoded.row_versions.size());
+
+    SyncManagerTestPeer::applySnapshot(SyncManager::Instance(), decoded);
+    EXPECT_EQ(2, statusOf("snap-local")) << "snapshot overwrote a newer local row";
+    EXPECT_EQ(3, statusOf("snap-new"));
+
+    // The snapshot tombstone blocks a stale upsert received later.
+    PeerFeed p2(kPeer2, kDb2);
+    apply(p2.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("snap-gone", 5), 5));
+    EXPECT_EQ(0, statusOf("snap-gone"));
 }
