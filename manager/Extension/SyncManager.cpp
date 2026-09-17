@@ -13,6 +13,7 @@
 #include "Common/config.h"
 #include "Extension/Resource.h"
 #include "Thread/WorkThreadPool.h"
+#include "Server/ClusterManager.h"
 #include <random>
 
 #ifdef ENABLE_SYNC_CHANGES
@@ -266,6 +267,18 @@ void SyncManager::start() {
         _bootstrapped = true;
         InfoL << "Database already populated, skipping bootstrap";
     }
+
+    // Entries this node could not apply with an older build (unknown table/op) are retried now.
+    weak_ptr<SyncManager> weak_retry = shared_from_this();
+    worker->async([weak_retry]() {
+        auto self = weak_retry.lock();
+        if (!self) return;
+        try {
+            self->reapplyDeferredEntries();
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to re-apply deferred sync entries: " << ex.what();
+        }
+    }, false);
 
     InfoL << "Sync database started, node=" << mediaServerId << ", bootstrapped=" << _bootstrapped << ", interval=" << interval_sec << "s";
 }
@@ -721,7 +734,7 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
             auto self = weak_self.lock();
             if (!self) return;
             try {
-                self->applyBatch(rows_copy);
+                self->handleGaps(self->applyBatch(rows_copy), toolkit::getCurrentMillisecond(true));
             } catch (const std::exception &e) {
                 WarnL << "Failed to apply batch from " << relay_peer_id << ": " << e.what();
             }
@@ -756,7 +769,7 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
     }
 }
 
-void SyncManager::applyBatch(const Json::Value &rows) {
+std::vector<SyncManager::SyncGap> SyncManager::applyBatch(const Json::Value &rows) {
     // Responses from several relays (gossip fanout) may arrive concurrently and carry
     // the same entries; apply them one batch at a time.
     lock_guard<mutex> apply_lock(_apply_mtx);
@@ -768,100 +781,198 @@ void SyncManager::applyBatch(const Json::Value &rows) {
     // transaction would fail with "database is locked" if another connection wrote meanwhile.
     auto txn = log_imp->getExecutor()->execTxn(true);
 
+    // Per source (peer_guid|db_guid): committed cursor and the next sequence this batch may apply.
     // Cursors only advance on commit, so a row at or below its cursor was already applied
     // (typically the same entries returned by several relays in one gossip round).
     unordered_map<string, int> cursors;
     for (const auto &c : make_shared<TransactionSequenceImp>()->findAllWithTxn(txn)) {
         cursors[c.peer_guid + "|" + c.db_guid] = c.sequence;
     }
+    unordered_map<string, int> next_seq;
+    unordered_set<string> blocked; // sources with a gap in this batch
+    vector<SyncGap> gaps;
     size_t skipped = 0;
+
     for (const auto &it : rows) {
-        auto cur = cursors.find(it["peer_guid"].asString() + "|" + it["db_guid"].asString());
-        if (cur != cursors.end() && it["sequence"].asInt() <= cur->second) {
+        const string peer = it["peer_guid"].asString();
+        const string db   = it["db_guid"].asString();
+        const string src  = peer + "|" + db;
+        const int seq     = it["sequence"].asInt();
+        if (blocked.count(src)) {
+            continue;
+        }
+        auto cur = cursors.find(src);
+        const int cursor = cur != cursors.end() ? cur->second : 0;
+        if (seq <= cursor) {
             ++skipped;
             continue;
         }
+        auto expected = next_seq.find(src);
+        const int want = expected != next_seq.end() ? expected->second : cursor + 1;
+        if (seq > want) {
+            // Entries want..seq-1 are missing from this relay (pruned, or never received by it).
+            // Applying seq would move the cursor past them and lose them for good.
+            WarnL << "SyncDB gap from " << peer << "/" << db << ": expected seq " << want << ", got " << seq
+                  << "; entries of this source are not applied";
+            SyncGap gap;
+            gap.peer_guid = peer;
+            gap.db_guid = db;
+            gap.cursor = want - 1;
+            gap.first_seq = seq;
+            gaps.push_back(gap);
+            blocked.insert(src);
+            continue;
+        }
+        next_seq[src] = seq + 1;
+
         // Dedup — exact duplicate check before any work (e.g. restart replay,
         // or same entry received via multiple relay paths).
-        string tran_guid_early = it["tran_guid"].asString();
-        if (!tran_guid_early.empty() && log_imp->existsByTranGuidWithTxn(tran_guid_early, txn)) {
-            TraceL << "applyBatch dedup: tran_guid=" << tran_guid_early << " already exists, skipping";
+        string tran_guid = it["tran_guid"].asString();
+        if (!tran_guid.empty() && log_imp->existsByTranGuidWithTxn(tran_guid, txn)) {
+            TraceL << "applyBatch dedup: tran_guid=" << tran_guid << " already exists, skipping";
             continue;
         }
 
-        int tran_type = it["tran_type"].asInt();
-        if (tran_type != static_cast<int>(TranType::DataMutation)) {
-            WarnL << "SyncDB applyBatch: unknown tran_type " << tran_type << ", skipping row";
-            continue;
-        }
-
-        // tran_data is a JSON string: {"table":"...","op":"UPSERT|UPSERT_BATCH|DELETE","payload":{...}}
-        string raw = it["tran_data"].asString();
-        Json::Value tran_data;
-        if (!StrJsonUtils::readJsonString(raw, tran_data)) {
-            WarnL << "SyncDB applyBatch: invalid tran_data JSON, skipping row";
-            continue;
-        }
-
-        string table               = tran_data["table"].asString();
-        string op                  = tran_data["op"].asString();
-        const Json::Value &payload = tran_data["payload"];
-        int64_t log_ts             = it["timestamp"].asInt64();
-        string origin_peer         = it["peer_guid"].asString();
-
-        auto hit = _table_handlers.find(table);
-        if (hit == _table_handlers.end()) {
-            WarnL << "SyncDB applyBatch: unknown table '" << table << "', skipping";
-            continue;
-        }
-        const TableSyncHandler &h = hit->second;
-        if (op != TRAN_DATA_OP_UPSERT && op != TRAN_DATA_OP_UPSERT_BATCH && op != TRAN_DATA_OP_DELETE) {
-            WarnL << "SyncDB applyBatch: unknown op '" << op << "' for " << table;
-            continue;
-        }
-        if (op == TRAN_DATA_OP_UPSERT_BATCH && !h.onUpsertBatchWithTxn && !h.onUpsertBatch) {
-            WarnL << "SyncDB applyBatch: table '" << table << "' has no UPSERT_BATCH handler, skipping";
-            continue;
-        }
-
-        Json::Value apply_payload;
-        set<string> keep_keys;
-        ApplyDecision apply_decision = resolveConflict(table, h, op, payload, log_ts, origin_peer,
-                                                       *version_imp, txn, apply_payload, keep_keys);
-        // Skip        => stale write, the stored version is newer
-        // ApplyWinner => incoming version is newer than a stored one
-        // Apply       => no stored version for this row
-        if (apply_decision != ApplyDecision::Skip) {
-            if (op == TRAN_DATA_OP_UPSERT) {
-                if (h.onUpsertWithTxn) h.onUpsertWithTxn(apply_payload, txn);
-                else if (h.onUpsert) h.onUpsert(apply_payload);
-            } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
-                if (h.onUpsertBatchWithTxn) h.onUpsertBatchWithTxn(apply_payload, txn);
-                else h.onUpsertBatch(apply_payload);
-            } else if (h.groupKey && h.onGroupDeleteWithTxn) {
-                h.onGroupDeleteWithTxn(apply_payload, keep_keys, txn);
-            } else {
-                if (h.onDeleteWithTxn) h.onDeleteWithTxn(apply_payload, txn);
-                else if (h.onDelete) h.onDelete(apply_payload);
-            }
-        }
-
-        // Record the transaction in the local log (for relaying) and advance the peer cursor.
-        // timestamp_hi is an audit flag: 1 = won a conflict, 2 = skipped as stale, 0 = normal.
+        // Record the transaction in the local log (for relaying) and advance the source cursor,
+        // whatever the outcome: stale and deferred entries are kept too (see TranAuditFlag).
         auto log = TransactionLog::fromJson(it);
-        if (apply_decision == ApplyDecision::ApplyWinner) {
-            log.timestamp_hi = 1;
-        } else if (apply_decision == ApplyDecision::Skip) {
-            log.timestamp_hi = 2;
-        } else {
-            log.timestamp_hi = 0;
-        }
+        log.timestamp_hi = applyEntryWithTxn(log, *version_imp, txn);
         log_imp->addWithTxn(log, txn);
     }
     txn->commit(); // on exception the transaction rolls back when it goes out of scope
     if (skipped) {
         TraceL << "applyBatch skipped " << skipped << " already-applied entries";
     }
+    return gaps;
+}
+
+int SyncManager::applyEntryWithTxn(const TransactionLog &log, SyncRowVersionImp &versions, SqliteTransaction::Ptr txn) {
+    if (log.tran_type != static_cast<int>(TranType::DataMutation)) {
+        WarnL << "SyncDB: unknown tran_type " << log.tran_type << " (tran_guid=" << log.tran_guid << "), deferred";
+        return TRAN_AUDIT_DEFERRED;
+    }
+    // tran_data is a JSON string: {"table":"...","op":"UPSERT|UPSERT_BATCH|DELETE","payload":{...}}
+    Json::Value tran_data;
+    if (!StrJsonUtils::readJsonString(log.tran_data, tran_data)) {
+        WarnL << "SyncDB: invalid tran_data JSON (tran_guid=" << log.tran_guid << "), deferred";
+        return TRAN_AUDIT_DEFERRED;
+    }
+    const string table          = tran_data["table"].asString();
+    const string op             = tran_data["op"].asString();
+    const Json::Value &payload  = tran_data["payload"];
+
+    auto hit = _table_handlers.find(table);
+    if (hit == _table_handlers.end()) {
+        WarnL << "SyncDB: unknown table '" << table << "' (tran_guid=" << log.tran_guid << "), deferred";
+        return TRAN_AUDIT_DEFERRED;
+    }
+    const TableSyncHandler &h = hit->second;
+    if (op != TRAN_DATA_OP_UPSERT && op != TRAN_DATA_OP_UPSERT_BATCH && op != TRAN_DATA_OP_DELETE) {
+        WarnL << "SyncDB: unknown op '" << op << "' for " << table << ", deferred";
+        return TRAN_AUDIT_DEFERRED;
+    }
+    if (op == TRAN_DATA_OP_UPSERT_BATCH && !h.onUpsertBatchWithTxn && !h.onUpsertBatch) {
+        WarnL << "SyncDB: table '" << table << "' has no UPSERT_BATCH handler, deferred";
+        return TRAN_AUDIT_DEFERRED;
+    }
+
+    Json::Value apply_payload;
+    set<string> keep_keys;
+    ApplyDecision decision = resolveConflict(table, h, op, payload, log.timestamp, log.peer_guid,
+                                             versions, txn, apply_payload, keep_keys);
+    if (decision == ApplyDecision::Skip) {
+        return TRAN_AUDIT_STALE;
+    }
+    if (op == TRAN_DATA_OP_UPSERT) {
+        if (h.onUpsertWithTxn) h.onUpsertWithTxn(apply_payload, txn);
+        else if (h.onUpsert) h.onUpsert(apply_payload);
+    } else if (op == TRAN_DATA_OP_UPSERT_BATCH) {
+        if (h.onUpsertBatchWithTxn) h.onUpsertBatchWithTxn(apply_payload, txn);
+        else h.onUpsertBatch(apply_payload);
+    } else if (h.groupKey && h.onGroupDeleteWithTxn) {
+        h.onGroupDeleteWithTxn(apply_payload, keep_keys, txn);
+    } else {
+        if (h.onDeleteWithTxn) h.onDeleteWithTxn(apply_payload, txn);
+        else if (h.onDelete) h.onDelete(apply_payload);
+    }
+    return decision == ApplyDecision::ApplyWinner ? TRAN_AUDIT_WINNER : TRAN_AUDIT_APPLIED;
+}
+
+size_t SyncManager::reapplyDeferredEntries() {
+    lock_guard<mutex> apply_lock(_apply_mtx);
+    auto log_imp = make_shared<TransactionLogImp>();
+    auto version_imp = make_shared<SyncRowVersionImp>();
+    auto txn = log_imp->getExecutor()->execTxn(true);
+    size_t applied = 0;
+    // Entries are applied in source order; LWW versions make the late apply safe even though
+    // newer entries of the same rows may already be in place.
+    for (const auto &log : log_imp->findByAuditFlagWithTxn(TRAN_AUDIT_DEFERRED, 0, txn)) {
+        int flag = applyEntryWithTxn(log, *version_imp, txn);
+        if (flag != TRAN_AUDIT_DEFERRED) {
+            log_imp->updateAuditFlagWithTxn(log.tran_guid, flag, txn);
+            ++applied;
+        }
+    }
+    txn->commit();
+    if (applied) {
+        InfoL << "SyncDB re-applied " << applied << " deferred entries";
+    }
+    return applied;
+}
+
+void SyncManager::handleGaps(const std::vector<SyncGap> &gaps, uint64_t now_ms) {
+    if (gaps.empty()) return;
+    GET_CONFIG(int, interval_sec, Database::kPullIntervalSec);
+    // Another relay may still hold the missing entries; only resync if the cursor stays stuck.
+    const uint64_t resync_after_ms = static_cast<uint64_t>(interval_sec > 0 ? interval_sec : 30) * 3 * 1000;
+    for (const auto &gap : gaps) {
+        const string src = gap.peer_guid + "|" + gap.db_guid;
+        auto it = _gap_state.find(src);
+        if (it == _gap_state.end() || it->second.first != gap.cursor) {
+            _gap_state[src] = std::make_pair(gap.cursor, now_ms);
+            continue;
+        }
+        if (now_ms - it->second.second >= resync_after_ms) {
+            _gap_state.clear();
+            requestResync(StrPrinter << "entries " << (gap.cursor + 1) << ".." << (gap.first_seq - 1) << " of "
+                                     << gap.peer_guid << "/" << gap.db_guid << " are no longer available from peers");
+            return;
+        }
+    }
+}
+
+void SyncManager::requestResync(const string &reason) {
+    WarnL << "SyncDB full resync requested: " << reason;
+    Json::Value state;
+    state["schema_version"] = 1;
+    state["status"] = "pending";
+    state["reason"] = reason;
+    state["requested_at_ms"] = static_cast<Json::Int64>(toolkit::getCurrentMillisecond(true));
+    auto imp = make_shared<MiscDataImp>();
+    MiscData data;
+    data.key = MISC_DATA_DB_BOOTSTRAP_DONE;
+    data.value = StrJsonUtils::writeJsonString(state);
+    imp->add(data);
+
+    lock_guard<mutex> lock(_mtx);
+    _bootstrapped = false;
+    _last_bootstrap_peer.clear();
+}
+
+std::unordered_set<std::string> SyncManager::selectPruneWatermarkPeers(
+    const std::unordered_set<std::string> &healthy, const std::vector<std::string> &known,
+    const std::unordered_map<std::string, int64_t> &last_ack_sec, int64_t now_sec, int64_t offline_ttl_sec) {
+    std::unordered_set<std::string> peers = healthy;
+    for (const auto &peer : known) {
+        auto it = last_ack_sec.find(peer);
+        // An offline peer holds the watermark back while it can still resume incrementally.
+        // A peer that never acked, or stayed away longer than the TTL, resyncs from a snapshot
+        // when it returns (gap detection), so it must not block pruning.
+        if (it != last_ack_sec.end() && now_sec - it->second <= offline_ttl_sec) {
+            peers.insert(peer);
+        }
+    }
+    return peers;
 }
 
 SyncManager::ApplyDecision SyncManager::resolveConflict(const string &table, const TableSyncHandler &h,
@@ -1030,17 +1141,31 @@ void SyncManager::maybePruneLog() {
         }
         return;
     }
-    // Collect active peer list under lock
-    unordered_set<string> active_peers;
+    // Watermark peers: healthy peers plus known peers that are offline but may still resume
+    // incrementally (see selectPruneWatermarkPeers).
+    unordered_set<string> healthy;
+    string self_id;
     {
         lock_guard<mutex> lock(_mtx);
         for (const auto &pair : _peers) {
-            active_peers.insert(pair.first);
+            healthy.insert(pair.first);
+        }
+        self_id = _self_node_id;
+    }
+    GET_CONFIG(int, self_group_id, "manager.serverLocationId");
+    GET_CONFIG(int, offline_ttl_days, Database::kPeerOfflineTtlDays);
+    vector<string> known;
+    for (const auto &id : ClusterManager::Instance().getMediaServerIds()) {
+        if (id != self_id && ClusterManager::Instance().getMediaServer(id).serverGroupId == self_group_id) {
+            known.push_back(id);
         }
     }
+    auto ack_imp = make_shared<PeerAckLogImp>();
+    auto active_peers = selectPruneWatermarkPeers(healthy, known, ack_imp->findLastAckTimes(),
+                                                  static_cast<int64_t>(time(nullptr)),
+                                                  static_cast<int64_t>(offline_ttl_days) * 24 * 3600);
     if (active_peers.empty()) return;
 
-    auto ack_imp = make_shared<PeerAckLogImp>();
     auto safe_seqs = ack_imp->findMinAckedSeq(active_peers);
 
     auto log_imp = make_shared<TransactionLogImp>();

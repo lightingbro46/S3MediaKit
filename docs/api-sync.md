@@ -214,7 +214,7 @@ Trả về danh sách transaction log kể từ các cursor được gửi lên.
 | `peer_guid` | `string` | GUID của node nguồn tạo ra transaction này |
 | `db_guid` | `string` | GUID của database chứa dữ liệu |
 | `timestamp` | `int64` | Thời điểm ghi (Unix epoch, millisecond). Cùng với `peer_guid`, đây là version dùng để giải quyết xung đột (xem [Giải quyết xung đột](#giải-quyết-xung-đột-last-writer-wins)) |
-| `timestamp_hi` | `int` | Cờ audit do node nhận ghi lại: `0` = áp dụng bình thường, `1` = thắng một version cũ hơn, `2` = bị bỏ qua vì đã có version mới hơn |
+| `timestamp_hi` | `int` | Cờ audit do node nhận ghi lại: `0` = áp dụng bình thường, `1` = thắng một version cũ hơn, `2` = bị bỏ qua vì đã có version mới hơn, `3` = bị hoãn vì bản build không hiểu được entry |
 | `tran_guid` | `string` | GUID duy nhất của transaction (dùng để dedup) |
 | `tran_type` | `string` | Loại transaction, ví dụ: `bookmark_create`, `bookmark_update`, `bookmark_delete` |
 | `tran_data` | `string` | JSON data của transaction (nội dung phụ thuộc `tran_type`) |
@@ -235,6 +235,21 @@ Mỗi dòng dữ liệu được đồng bộ có một version lưu bền vữn
 - **Dọn tombstone:** tombstone cũ hơn `database.row_version_tombstone_ttl_days` (mặc định 30 ngày) sẽ bị xoá. Giá trị này phải lớn hơn thời gian tối đa một node có thể offline mà vẫn tiếp tục bằng pull incremental.
 
 Version, dữ liệu, `transaction_log` và cursor được ghi trong cùng một transaction, nên một batch lỗi được áp dụng lại nguyên vẹn ở lần pull sau.
+
+#### Gap, entry bị hoãn và prune log
+
+- **Gap:** cursor của mỗi nguồn (`peer_guid/db_guid`) chỉ tiến tuần tự. Nếu relay trả về entry có `sequence` lớn hơn `cursor + 1` (relay đã prune phần giữa, hoặc chưa từng nhận được), node **không** áp dụng các entry của nguồn đó trong batch, và cursor giữ nguyên.
+  - Nếu relay khác bù được phần thiếu thì đồng bộ tiếp tục bình thường.
+  - Nếu cursor vẫn đứng yên sau 3 chu kỳ pull, node ghi trạng thái bootstrap `pending` (kèm lý do) và **resync toàn bộ từ snapshot** của một peer.
+- **Entry không hiểu được** (table, op hoặc `tran_type` lạ; `tran_data` hỏng): vẫn được lưu vào `transaction_log` với `timestamp_hi = 3` để relay tiếp cho node khác, và cursor vẫn tiến. Khi node khởi động bằng bản build hiểu được entry đó, `SyncManager` áp dụng lại chúng (LWW bảo đảm việc áp dụng muộn vẫn đúng).
+- **Ack:** `transaction_peer_ack_log` lưu theo khoá (`peer_guid`, `src_peer_guid`, `src_db_guid`) (migration `10_peer_ack_log_src_db_key.sql`). `updated_at` (unix giây) là lần cuối peer báo ack, dùng như "last seen".
+- **Prune:** watermark để xoá log gồm các peer đang healthy, cộng các peer đã biết trong cluster (cùng `serverGroupId`) đang offline nhưng đã ack trong vòng `database.peer_offline_ttl_days` ngày (mặc định 7). Peer offline lâu hơn thời hạn đó, hoặc chưa từng ack, không giữ log lại; khi quay lại, nó sẽ gặp gap và tự resync từ snapshot. Nên đặt `database.row_version_tombstone_ttl_days` ≥ `database.peer_offline_ttl_days`.
+
+| Config | Mặc định | Ý nghĩa |
+|---|---|---|
+| `database.transaction_log_keep_last` | 1000 | Số entry giữ lại dưới watermark ack |
+| `database.peer_offline_ttl_days` | 7 | Thời gian một peer offline còn giữ watermark prune |
+| `database.row_version_tombstone_ttl_days` | 30 | Thời gian giữ tombstone của `sync_row_version` |
 
 ---
 

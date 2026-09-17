@@ -40,6 +40,10 @@ extern const std::string kKeepMigrationSqlFiles;
 // Days to keep sync_row_version tombstones (deleted rows) before pruning, default 30.
 // Must exceed the longest time a node may stay offline and still resume by incremental pull.
 extern const std::string kRowVersionTombstoneTtlDays;
+// Days an offline peer (known cluster member) keeps holding back transaction_log pruning, measured
+// from its last ack, default 7. A peer away longer resyncs from a snapshot when it returns.
+// Should not exceed kRowVersionTombstoneTtlDays.
+extern const std::string kPeerOfflineTtlDays;
 } // namespace Database
 
 namespace managerkit {

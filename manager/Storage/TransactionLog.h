@@ -16,6 +16,15 @@ enum class TranType : uint8_t {
 #define TRAN_DATA_OP_UPSERT_BATCH "UPSERT_BATCH"
 #define TRAN_DATA_OP_DELETE "DELETE"
 
+// TransactionLog::timestamp_hi is an audit flag set by the receiving node.
+enum TranAuditFlag : int {
+    TRAN_AUDIT_APPLIED  = 0, // applied (or local write)
+    TRAN_AUDIT_WINNER   = 1, // applied, replaced an older version of the row
+    TRAN_AUDIT_STALE    = 2, // not applied, a newer version of the row was already stored
+    TRAN_AUDIT_DEFERRED = 3, // not applied: unknown table/op/type in this build; kept for relay and
+                             // re-applied at startup once a build understands it
+};
+
 /**
  * TransactionLog is the data structure used to store the transaction log of database.
  * It contains the peer_id and db_guid of the media server, the sequence number of the transaction, 
@@ -202,6 +211,29 @@ public:
                         .where(whereClause.str(), whereParams)
                         .limit(1);
         return !_executor->executeRaw(query).empty();
+    }
+
+    // Entries stored with the given audit flag (timestamp_hi), in source order.
+    std::vector<TransactionLog> findByAuditFlagWithTxn(int flag, int limit, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .select(EntityTraits<TransactionLog>::getColumns())
+                        .from(EntityTraits<TransactionLog>::tableName())
+                        .where("timestamp_hi = ?", {std::to_string(flag)})
+                        .orderBy("peer_guid ASC, sequence ASC");
+        if (limit > 0) query.limit(limit);
+        std::vector<TransactionLog> ret;
+        for (const auto &row : executeRawWithTxn(txn, query)) {
+            ret.push_back(EntityTraits<TransactionLog>::fromRow(row));
+        }
+        return ret;
+    }
+
+    bool updateAuditFlagWithTxn(const std::string &tran_guid, int flag, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .update(EntityTraits<TransactionLog>::tableName())
+                        .set({{"timestamp_hi", std::to_string(flag)}})
+                        .where("tran_guid = ?", {tran_guid});
+        return execDMLWithTxn(txn, query);
     }
 
     // Same as existsByTranGuid but sees rows written earlier in the same transaction.

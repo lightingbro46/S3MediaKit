@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <future>
 #include <map>
+#include <unordered_set>
 #include <thread>
 #include <unistd.h>
 
@@ -15,6 +16,7 @@
 #include "Storage/MigrationHistory.h"
 #include "Storage/MiscData.h"
 #include "Storage/SyncRowVersion.h"
+#include "Storage/TransactionPeerAckLog.h"
 #include "Storage/TransactionLog.h"
 #include "Storage/TransactionSequence.h"
 #include "Storage/VmsKvPair.h"
@@ -45,7 +47,46 @@ public:
         m.registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
     }
 
-    static void applyBatch(SyncManager &m, const Json::Value &rows) { m.applyBatch(rows); }
+    static std::vector<SyncManager::SyncGap> applyBatch(SyncManager &m, const Json::Value &rows) { return m.applyBatch(rows); }
+
+    static void handleGaps(SyncManager &m, const std::vector<SyncManager::SyncGap> &gaps, uint64_t now_ms) {
+        m.handleGaps(gaps, now_ms);
+    }
+
+    static bool needsBootstrap(SyncManager &m) { return m.needsBootstrap(); }
+
+    static void markBootstrapped(SyncManager &m) {
+        SnapshotData snap;
+        snap.sequences = Json::arrayValue;
+        m.markBootstrapDone(snap);
+        std::lock_guard<std::mutex> lock(m._mtx);
+        m._bootstrapped = true;
+    }
+
+    static bool isBootstrapped(SyncManager &m) {
+        std::lock_guard<std::mutex> lock(m._mtx);
+        return m._bootstrapped;
+    }
+
+    static size_t reapplyDeferred(SyncManager &m) { return m.reapplyDeferredEntries(); }
+
+    // Simulates an older build that does not know `table`.
+    static TableSyncHandler unregisterTable(SyncManager &m, const std::string &table) {
+        auto handler = m._table_handlers[table];
+        m._table_handlers.erase(table);
+        return handler;
+    }
+
+    static void registerTable(SyncManager &m, const std::string &table, const TableSyncHandler &h) {
+        m.registerTable(table, h);
+    }
+
+    static std::unordered_set<std::string> prunePeers(const std::unordered_set<std::string> &healthy,
+                                                      const std::vector<std::string> &known,
+                                                      const std::unordered_map<std::string, int64_t> &last_ack,
+                                                      int64_t now_sec, int64_t ttl_sec) {
+        return SyncManager::selectPruneWatermarkPeers(healthy, known, last_ack, now_sec, ttl_sec);
+    }
 
     static void applySnapshot(SyncManager &m, const SnapshotData &snap) { m.applySnapshot(snap); }
 };
@@ -575,4 +616,159 @@ TEST_F(SyncApplyTest, SnapshotAppliesRowVersionsAndKeepsNewerLocalRows) {
     PeerFeed p2(kPeer2, kDb2);
     apply(p2.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("snap-gone", 5), 5));
     EXPECT_EQ(0, statusOf("snap-gone"));
+}
+
+// ─── Gaps, deferred entries, prune watermark (phase 4) ─────────────────────
+
+namespace {
+
+Json::Value rowAt(const std::string &peer, const std::string &db, int seq, const std::string &guid, int status) {
+    return makeRowFrom(peer, db, seq, makeUuidStr(), kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload(guid, status),
+                       1000 + seq);
+}
+
+int cursorOf(const std::string &peer, const std::string &db) {
+    return std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(peer, db);
+}
+
+} // namespace
+
+// Regression: a relay whose log was pruned returned entries after the cursor with a hole; applying
+// them moved the cursor past the missing entries, which were then lost silently.
+TEST_F(SyncApplyTest, EntriesAfterGapAreNotApplied) {
+    const std::string peer = "node-gap", db = "db-gap";
+    Json::Value rows = Json::arrayValue;
+    rows.append(rowAt(peer, db, 2, "gap-2", 2));
+    auto gaps = SyncManagerTestPeer::applyBatch(SyncManager::Instance(), rows);
+    ASSERT_EQ(1u, gaps.size());
+    EXPECT_EQ(0, gaps[0].cursor);
+    EXPECT_EQ(2, gaps[0].first_seq);
+    EXPECT_EQ(0, statusOf("gap-2"));
+    EXPECT_EQ(0, cursorOf(peer, db));
+
+    // A relay that still has the full history fills the hole.
+    Json::Value full = Json::arrayValue;
+    full.append(rowAt(peer, db, 1, "gap-1", 1));
+    full.append(rowAt(peer, db, 2, "gap-2", 2));
+    EXPECT_TRUE(SyncManagerTestPeer::applyBatch(SyncManager::Instance(), full).empty());
+    EXPECT_EQ(1, statusOf("gap-1"));
+    EXPECT_EQ(2, statusOf("gap-2"));
+    EXPECT_EQ(2, cursorOf(peer, db));
+}
+
+TEST_F(SyncApplyTest, HoleInsideBatchStopsThatSourceOnly) {
+    const std::string peer = "node-hole", db = "db-hole";
+    const std::string other = "node-hole-ok", other_db = "db-hole-ok";
+    Json::Value rows = Json::arrayValue;
+    rows.append(rowAt(peer, db, 1, "hole-1", 1));
+    rows.append(rowAt(peer, db, 3, "hole-3", 3));   // seq 2 missing
+    rows.append(rowAt(peer, db, 4, "hole-4", 4));
+    rows.append(rowAt(other, other_db, 1, "hole-other", 1));
+    auto gaps = SyncManagerTestPeer::applyBatch(SyncManager::Instance(), rows);
+    ASSERT_EQ(1u, gaps.size());
+    EXPECT_EQ(1, gaps[0].cursor);
+    EXPECT_EQ(1, statusOf("hole-1"));
+    EXPECT_EQ(0, statusOf("hole-3"));
+    EXPECT_EQ(0, statusOf("hole-4"));
+    EXPECT_EQ(1, cursorOf(peer, db));
+    EXPECT_EQ(1, statusOf("hole-other"));
+    EXPECT_EQ(1, cursorOf(other, other_db));
+}
+
+TEST_F(SyncApplyTest, PersistentGapRequestsResync) {
+    auto &m = SyncManager::Instance();
+    SyncManagerTestPeer::markBootstrapped(m);
+    ASSERT_FALSE(SyncManagerTestPeer::needsBootstrap(m));
+
+    SyncManager::SyncGap gap;
+    gap.peer_guid = "node-stuck";
+    gap.db_guid = "db-stuck";
+    gap.cursor = 5;
+    gap.first_seq = 9;
+    const uint64_t t0 = 1000000;
+    const uint64_t delay = static_cast<uint64_t>(static_cast<int>(mINI::Instance()[Database::kPullIntervalSec])) * 3 * 1000;
+
+    SyncManagerTestPeer::handleGaps(m, {gap}, t0);
+    SyncManagerTestPeer::handleGaps(m, {gap}, t0 + delay - 1);
+    EXPECT_TRUE(SyncManagerTestPeer::isBootstrapped(m)) << "resync requested too early";
+
+    // Cursor moved (another relay filled part of the hole): the timer restarts.
+    gap.cursor = 6;
+    SyncManagerTestPeer::handleGaps(m, {gap}, t0 + delay);
+    EXPECT_TRUE(SyncManagerTestPeer::isBootstrapped(m));
+
+    SyncManagerTestPeer::handleGaps(m, {gap}, t0 + 2 * delay);
+    EXPECT_FALSE(SyncManagerTestPeer::isBootstrapped(m));
+    EXPECT_TRUE(SyncManagerTestPeer::needsBootstrap(m));
+
+    SyncManagerTestPeer::markBootstrapped(m);
+}
+
+// Regression: entries of a table unknown to this build were dropped and not relayed, while the
+// cursor moved past them, so they were lost even after upgrading.
+TEST_F(SyncApplyTest, UnknownTableEntriesAreKeptAndReappliedAfterUpgrade) {
+    auto &m = SyncManager::Instance();
+    PeerFeed p1(kPeer1, kDb1);
+    auto handler = SyncManagerTestPeer::unregisterTable(m, kStatusTable);
+    apply(p1.row(kStatusTable, TRAN_DATA_OP_UPSERT, statusPayload("deferred-1", 4), nowMs()));
+    EXPECT_EQ(0, statusOf("deferred-1"));
+    EXPECT_EQ(p1.lastSeq(), cursorOf(kPeer1, kDb1));
+    EXPECT_EQ(TRAN_AUDIT_DEFERRED, auditFlag(kPeer1, kDb1, p1.lastSeq())); // kept for relaying
+
+    SyncManagerTestPeer::registerTable(m, kStatusTable, handler); // "upgrade"
+    EXPECT_GE(SyncManagerTestPeer::reapplyDeferred(m), 1u);
+    EXPECT_EQ(4, statusOf("deferred-1"));
+    EXPECT_EQ(TRAN_AUDIT_APPLIED, auditFlag(kPeer1, kDb1, p1.lastSeq()));
+}
+
+// Regression: the ack key ignored src_db_guid, so after a source recreated its database the new
+// acks were rejected and its log was never pruned.
+TEST_F(SyncApplyTest, PeerAckIsKeptPerSourceDatabase) {
+    auto imp = std::make_shared<PeerAckLogImp>();
+    PeerAckLog ack;
+    ack.peer_guid = "acker";
+    ack.db_guid = "acker-db";
+    ack.src_peer_guid = "src";
+    ack.src_db_guid = "src-db-old";
+    ack.acked_seq = 50;
+    ack.updated_at = 1000;
+    imp->add(ack);
+
+    ack.src_db_guid = "src-db-new";
+    ack.acked_seq = 3;
+    ack.updated_at = 1001;
+    imp->add(ack);
+
+    std::unordered_set<std::string> peers = {"acker"};
+    std::map<std::string, int> watermark;
+    for (const auto &s : imp->findMinAckedSeq(peers)) {
+        if (s.peer_guid == "src") watermark[s.db_guid] = s.sequence;
+    }
+    EXPECT_EQ(50, watermark["src-db-old"]);
+    EXPECT_EQ(3, watermark["src-db-new"]);
+
+    // The acker recreated its own database: its lower ack replaces the old one.
+    ack.db_guid = "acker-db-2";
+    ack.acked_seq = 1;
+    ack.updated_at = 1002;
+    imp->add(ack);
+    watermark.clear();
+    for (const auto &s : imp->findMinAckedSeq(peers)) {
+        if (s.peer_guid == "src") watermark[s.db_guid] = s.sequence;
+    }
+    EXPECT_EQ(1, watermark["src-db-new"]);
+
+    EXPECT_EQ(1002, imp->findLastAckTimes()["acker"]);
+}
+
+// Regression: only healthy peers bounded pruning, so a peer that was briefly offline lost entries.
+TEST_F(SyncApplyTest, OfflinePeerHoldsPruneWatermarkUntilTtl) {
+    const int64_t now = 1000000, ttl = 7 * 24 * 3600;
+    auto peers = SyncManagerTestPeer::prunePeers(
+        {"healthy"},
+        {"healthy", "offline-recent", "offline-old", "never-acked"},
+        {{"offline-recent", now - 3600}, {"offline-old", now - ttl - 1}},
+        now, ttl);
+    std::unordered_set<std::string> expected = {"healthy", "offline-recent"};
+    EXPECT_EQ(expected, peers);
 }

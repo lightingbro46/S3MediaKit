@@ -15,6 +15,7 @@
 #include "Poller/EventPoller.h"
 #include "Extension/TableSyncHandler.h"
 #include "Storage/SyncRowVersion.h"
+#include "Storage/TransactionLog.h"
 
 namespace managerkit {
 
@@ -66,6 +67,14 @@ public:
     using Ptr         = std::shared_ptr<SyncManager>;
     using DoneCb      = std::function<void(bool ok)>;
 
+    // A relay returned entries of a source that do not follow the local cursor.
+    struct SyncGap {
+        std::string peer_guid;
+        std::string db_guid;
+        int cursor = 0;     // last sequence applied from this source
+        int first_seq = 0;  // first sequence the relay offered
+    };
+
     static SyncManager &Instance();
     ~SyncManager() = default;
 
@@ -109,7 +118,24 @@ private:
     // implicit: new peers appear as relay entries and their cursors are
     // automatically registered when applyBatch processes the entries.
     void pullFromRelay(const std::string &relay_peer_id, const std::string &base_url);
-    void applyBatch(const Json::Value &rows);
+
+    // Applies a relay batch. Entries after a gap are not applied (the cursor would jump past the
+    // missing ones); the detected gaps are returned.
+    std::vector<SyncGap> applyBatch(const Json::Value &rows);
+    // Applies one log entry inside `txn`; returns its TranAuditFlag.
+    int applyEntryWithTxn(const TransactionLog &log, SyncRowVersionImp &versions, toolkit::SqliteTransaction::Ptr txn);
+    // Re-applies entries stored as TRAN_AUDIT_DEFERRED that this build understands. Returns the count.
+    size_t reapplyDeferredEntries();
+    // A gap that persists (same cursor) for 3 pull intervals means no peer can provide the missing
+    // entries any more: request a full resync from a snapshot.
+    void handleGaps(const std::vector<SyncGap> &gaps, uint64_t now_ms);
+    // Marks the persisted bootstrap state pending; the next tick bootstraps from a peer.
+    void requestResync(const std::string &reason);
+    // Peers whose acks bound log pruning: healthy peers, plus known peers that acked within
+    // `offline_ttl_sec` (they can still resume incrementally).
+    static std::unordered_set<std::string> selectPruneWatermarkPeers(
+        const std::unordered_set<std::string> &healthy, const std::vector<std::string> &known,
+        const std::unordered_map<std::string, int64_t> &last_ack_sec, int64_t now_sec, int64_t offline_ttl_sec);
 
     // ── Bootstrap path ─────────────────────────
     // Returns true unless the persisted bootstrap state is "completed".
@@ -168,6 +194,8 @@ private:
     std::string                                  _self_db_id; // media server's own db_guid
     bool                                         _running      = false;
     uint64_t                                     _last_prune_time = 0;
+    // Gap tracking (sync worker only): source "peer|db" → (cursor when first seen, first seen ms).
+    std::unordered_map<std::string, std::pair<int, uint64_t>> _gap_state;
 
     // Plugin registry: table_name → sync handler.
     std::unordered_map<std::string, TableSyncHandler> _table_handlers;

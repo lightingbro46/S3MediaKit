@@ -99,8 +99,8 @@ TEST(StorageJsonTest, RoundTripsAuditResourceStatusAndAckLog) {
     PeerAckLog ack = {"peer", "db", "source", "source-db", 99, 1234};
     PeerAckLog ack_copy = PeerAckLog::fromJson(ack.toJson());
     EXPECT_EQ(99, ack_copy.acked_seq);
-    EXPECT_EQ((std::vector<std::string>{"peer_guid", "src_peer_guid"}),
+    EXPECT_EQ((std::vector<std::string>{"peer_guid", "src_peer_guid", "src_db_guid"}),
               EntityTraits<PeerAckLog>::getPrimaryKey());
-    EXPECT_EQ((std::vector<std::string>{"peer", "source"}),
+    EXPECT_EQ((std::vector<std::string>{"peer", "source", "source-db"}),
               EntityTraits<PeerAckLog>::getPrimaryKeyValue(ack));
 }
