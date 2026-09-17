@@ -78,8 +78,19 @@ set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
 if(ENABLE_SYNC_CHANGES)
   # Uses a temporary on-disk ESC database built from the real migrations.
-  add_s3_unit_test(unit_sync_apply manager/test_sync_apply.cpp)
-  target_link_libraries(unit_sync_apply PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
+  # CameraStatistic pulls in camera/stream code that references server/ symbols;
+  # reuse the tier-storage stubs for those.
+  add_s3_unit_test(unit_sync_apply
+    manager/test_sync_apply.cpp
+    manager/test_camera_statistic_sync.cpp
+    "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+  target_link_libraries(unit_sync_apply PRIVATE
+    -Wl,--start-group
+    S3MediaKit::MediaKit
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec
+    -Wl,--end-group)
+  target_include_directories(unit_sync_apply PRIVATE "${PROJECT_SOURCE_DIR}/server")
   target_compile_definitions(unit_sync_apply PRIVATE
     S3_ESC_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/updates"
     S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")

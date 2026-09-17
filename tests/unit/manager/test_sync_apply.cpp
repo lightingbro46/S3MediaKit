@@ -293,3 +293,34 @@ TEST_F(SyncApplyTest, SnapshotDoesNotRewindOwnCursor) {
     EXPECT_NO_THROW(log_imp->appendLocalDataMutation(EntityTraits<VmsResourceStatus>::tableName(), TRAN_DATA_OP_DELETE, payload));
     EXPECT_EQ(own + 1, seq_imp->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid()));
 }
+
+// Regression: applyBatch used a deferred transaction that reads before it writes. If another
+// connection committed in between, the write failed immediately with "database is locked"
+// (SQLITE_BUSY_SNAPSHOT) instead of waiting for busy_timeout.
+TEST_F(SyncApplyTest, BatchWaitsForConcurrentWriter) {
+    const std::string table = EntityTraits<VmsResourceStatus>::tableName();
+    const int base = remoteCursor();
+    Json::Value status;
+    status["guid"]   = "cam-lock";
+    status["status"] = 2;
+    Json::Value rows = Json::arrayValue;
+    rows.append(makeRow(base + 1, makeUuidStr(), table, TRAN_DATA_OP_UPSERT, status, 5000000));
+
+    // Another connection holds the write lock and commits a change while the batch is starting.
+    auto writer_ready = std::make_shared<std::promise<void>>();
+    auto ready_future = writer_ready->get_future();
+    std::thread writer([writer_ready]() {
+        auto executor = std::make_shared<SqliteQueryExecutor>(Database::kEdgeStorageControllerDb);
+        auto txn = executor->execTxn(true);
+        txn->execScript("INSERT INTO misc_data (key, data) VALUES ('sync_lock_test', '1');");
+        writer_ready->set_value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        txn->commit();
+    });
+    ready_future.wait();
+
+    EXPECT_NO_THROW(SyncManagerTestPeer::applyBatch(SyncManager::Instance(), rows));
+    writer.join();
+    EXPECT_EQ(base + 1, remoteCursor());
+    EXPECT_EQ(2, std::make_shared<VmsResourceStatusImp>()->findStatus("cam-lock"));
+}

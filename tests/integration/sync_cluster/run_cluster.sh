@@ -18,7 +18,8 @@ BIN_DIR="${MEDIASERVER_DIR:-$REPO/release/linux/Debug}"
 WAIT_SEC="${WAIT_SEC:-60}"
 NODES="node-a node-b"
 
-stop_all() {
+# Gracefully stop the MediaServer nodes (SIGINT, then SIGKILL after 30s).
+stop_nodes() {
     for pidfile in "$WORK"/node-*/server.pid; do
         [ -f "$pidfile" ] && kill -INT "$(cat "$pidfile")" 2>/dev/null
     done
@@ -31,19 +32,33 @@ stop_all() {
         [ "$alive" = 0 ] && break
         sleep 1
     done
-    for pidfile in "$WORK"/node-*/server.pid "$WORK"/mock_api.pid; do
-        [ -f "$pidfile" ] && kill -9 "$(cat "$pidfile")" 2>/dev/null
+    for pidfile in "$WORK"/node-*/server.pid; do
+        if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            echo "WARN: $(dirname "$pidfile") did not stop on SIGINT, killing"
+            kill -9 "$(cat "$pidfile")" 2>/dev/null
+        fi
         rm -f "$pidfile"
     done
+}
+
+stop_all() {
+    stop_nodes
+    if [ -f "$WORK/mock_api.pid" ]; then
+        kill "$(cat "$WORK/mock_api.pid")" 2>/dev/null
+        rm -f "$WORK/mock_api.pid"
+    fi
 }
 
 start_node() {
     local n="$1" tag="$2"
     local d="$WORK/$n"
     [ -f "$d/stdout.log" ] && mv "$d/stdout.log" "$d/stdout.$tag.log"
-    (cd "$d" && LD_LIBRARY_PATH="$BIN_DIR" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
+    # cd first so that $! is the MediaServer pid (not a background subshell, which ignores SIGINT).
+    cd "$d" || return 1
+    LD_LIBRARY_PATH="$BIN_DIR" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
         -s "$BIN_DIR/default.pem" -l 0 -t 4 --affinity 0 --log-dir "$d/log/" > "$d/stdout.log" 2>&1 &
-     echo $! > "$d/server.pid")
+    echo $! > "$d/server.pid"
+    cd - > /dev/null
 }
 
 report() {
@@ -51,6 +66,7 @@ report() {
     echo "---- $label"
     for n in $NODES; do
         local f="$WORK/$n/stdout.log"
+        grep -q "## signal:" "$f" && echo "CRASH: $n (see $f)"
         printf "%s locked=%s failed_apply=%s relay_recv=%s relay_fail=%s stale_skip=%s\n" "$n" \
             "$(grep -c 'database is locked' "$f")" "$(grep -c 'Failed to apply' "$f")" \
             "$(grep -c 'Relay received' "$f")" "$(grep -c 'Relay pull from .* failed' "$f")" \
@@ -69,7 +85,8 @@ stop_all
 mkdir -p "$WORK"
 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" || exit 1
 
-(cd "$WORK" && nohup python3 "$HERE/mock_api.py" 18090 > mock_api.log 2>&1 & echo $! > "$WORK/mock_api.pid")
+nohup python3 "$HERE/mock_api.py" 18090 > "$WORK/mock_api.log" 2>&1 &
+echo $! > "$WORK/mock_api.pid"
 for n in $NODES; do start_node "$n" init; done
 trap stop_all EXIT
 
@@ -80,8 +97,7 @@ python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" phase2
 sleep "$WAIT_SEC"; report phase2
 
 echo "restart both nodes (persisted bootstrap state)"
-for pidfile in "$WORK"/node-*/server.pid; do kill -INT "$(cat "$pidfile")" 2>/dev/null; done
-sleep 15
+stop_nodes
 for n in $NODES; do start_node "$n" before_restart; done
 sleep "$WAIT_SEC"; report restart
 

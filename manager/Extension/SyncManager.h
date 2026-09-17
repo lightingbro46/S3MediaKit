@@ -10,6 +10,7 @@
 #include <functional>
 #include <json/json.h>
 #include "Poller/Timer.h"
+#include "Poller/EventPoller.h"
 #include "Extension/TableSyncHandler.h"
 
 namespace managerkit {
@@ -106,6 +107,12 @@ private:
     // Full bootstrap from a single peer: fetches all tables, used for initial cluster join.
     void doBootstrap(const std::string &peer_id, const std::string &base_url, DoneCb cb = nullptr);
     void applySnapshot(const SnapshotData &snap);
+    // Runs on the sync worker: validates and applies a bootstrap snapshot response.
+    void onBootstrapResponse(const std::string &peer_id, const std::string &err, const Json::Value &data, const DoneCb &cb);
+
+    // Single WorkThreadPool poller that owns all SyncManager DB work (tick, apply, prune),
+    // so blocking SQLite calls never run on network pollers and batches are applied serially.
+    toolkit::EventPoller::Ptr getWorker();
 
     // ── Conflict resolution ─────────────────────
     // 3-way decision for incoming log entries:
@@ -131,8 +138,10 @@ private:
 
 private:
     toolkit::Timer::Ptr                          _timer;
+    toolkit::EventPoller::Ptr                    _worker;
     std::mutex                                   _mtx;
-    // Serializes applyBatch/applySnapshot (and guards _applied_ts) across HTTP callback threads.
+    // Serializes applyBatch/applySnapshot (and guards _applied_ts); normally they already run
+    // on _worker, the lock also covers direct callers such as unit tests.
     std::mutex                                   _apply_mtx;
     std::unordered_map<std::string, std::string> _peers; // node_id → base_url
     std::unordered_set<std::string>              _bootstrapping; // guard: bootstrap in progress

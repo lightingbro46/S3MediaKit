@@ -11,6 +11,7 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
+#include "Thread/WorkThreadPool.h"
 #include <random>
 
 #ifdef ENABLE_SYNC_CHANGES
@@ -212,6 +213,7 @@ void SyncManager::start() {
         return;
     }
 
+    auto worker = getWorker();
     {
         lock_guard<mutex> lock(_mtx);
         _self_node_id = ResourceManager::Instance().getSelfNodeId();
@@ -230,7 +232,7 @@ void SyncManager::start() {
         auto self = weak_self.lock();
         if (self) self->onTick();
         return true;
-    }, nullptr);
+    }, worker); // all sync DB work runs on the single sync worker, never on a network poller
 
     // Resume directly in pull mode when a previous bootstrap was persisted.
     if (!needsBootstrap()) {
@@ -249,6 +251,14 @@ void SyncManager::start() {
     registerTable(EntityTraits<BookmarkIndex>::tableName(),         BookmarkIndexImp::makeSyncHandler());
 
     InfoL << "Sync database started, node=" << mediaServerId << ", bootstrapped=" << _bootstrapped << ", interval=" << interval_sec << "s";
+}
+
+toolkit::EventPoller::Ptr SyncManager::getWorker() {
+    lock_guard<mutex> lock(_mtx);
+    if (!_worker) {
+        _worker = WorkThreadPool::Instance().getPoller();
+    }
+    return _worker;
 }
 
 void SyncManager::registerTable(const std::string &table_name, TableSyncHandler handler) {
@@ -467,39 +477,47 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
     Broadcast::OnResInvoker onRes = [weak_self, peer_id, cb](const string &err, const int &idx, const Json::Value &data) {
         auto self = weak_self.lock();
         if (!self) return;
-
-        if (!err.empty()) {
-            WarnL << "Bootstrap request to " << peer_id << " failed: " << err;
-            if (cb) cb(false);
-            return;
-        }
-        try {
-            auto snap = SnapshotBuilder::deserialize(data["data"].asString());
-            if (snap.peer_id.empty() || snap.db_guid.empty() ||
-                !snap.sequences.isArray() || !snap.vms_resource.isArray() ||
-                !snap.vms_kvpair.isArray() || !snap.resource_assignment.isArray() ||
-                !snap.vms_resource_status.isArray() ||
-                !snap.bookmark_index.isArray()) {
-                throw std::runtime_error("bootstrap response contains an invalid snapshot");
-            }
-            self->applySnapshot(snap);
-            self->markBootstrapDone(snap);
-            InfoL << "Bootstrap from " << peer_id << " done:"
-                  << " peer_id=" << snap.peer_id
-                  << " db_guid=" << snap.db_guid
-                  << " seq=" << snap.sequences.size()
-                  << " resource=" << snap.vms_resource.size()
-                  << " kv="  << snap.vms_kvpair.size();
-            if (cb) cb(true);
-        } catch (std::exception &ex) {
-            WarnL << "Failed to apply snapshot from " << peer_id << ": " << ex.what();
-            if (cb) cb(false);
-        }
+        // HTTP callbacks run on a network poller; applying the snapshot is blocking SQLite work.
+        self->getWorker()->async([weak_self, peer_id, cb, err, data]() {
+            auto self = weak_self.lock();
+            if (!self) return;
+            self->onBootstrapResponse(peer_id, err, data, cb);
+        }, false);
     };
 
     auto flag = NOTICE_EMIT(BroadcastSyncSnapshotArgs, Broadcast::kBroadcastSyncSnapshot, base_url, peer_id, onRes);
     if (!flag) {
         WarnL << "No listener for kBroadcastSyncSnapshot, cannot bootstrap from " << peer_id;
+        if (cb) cb(false);
+    }
+}
+
+void SyncManager::onBootstrapResponse(const string &peer_id, const string &err, const Json::Value &data, const DoneCb &cb) {
+    if (!err.empty()) {
+        WarnL << "Bootstrap request to " << peer_id << " failed: " << err;
+        if (cb) cb(false);
+        return;
+    }
+    try {
+        auto snap = SnapshotBuilder::deserialize(data["data"].asString());
+        if (snap.peer_id.empty() || snap.db_guid.empty() ||
+            !snap.sequences.isArray() || !snap.vms_resource.isArray() ||
+            !snap.vms_kvpair.isArray() || !snap.resource_assignment.isArray() ||
+            !snap.vms_resource_status.isArray() ||
+            !snap.bookmark_index.isArray()) {
+            throw std::runtime_error("bootstrap response contains an invalid snapshot");
+        }
+        applySnapshot(snap);
+        markBootstrapDone(snap);
+        InfoL << "Bootstrap from " << peer_id << " done:"
+              << " peer_id=" << snap.peer_id
+              << " db_guid=" << snap.db_guid
+              << " seq=" << snap.sequences.size()
+              << " resource=" << snap.vms_resource.size()
+              << " kv="  << snap.vms_kvpair.size();
+        if (cb) cb(true);
+    } catch (std::exception &ex) {
+        WarnL << "Failed to apply snapshot from " << peer_id << ": " << ex.what();
         if (cb) cb(false);
     }
 }
@@ -636,11 +654,18 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
         if (!rows.isArray() || rows.empty()) return;
 
         InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id << " (first tran_seq=" << rows[0]["sequence"].asString() << " last tran_seq=" << rows[rows.size()-1]["sequence"].asString() << ")";
-        try {
-            self->applyBatch(rows);
-        } catch (const std::exception &e) {
-            WarnL << "Failed to apply batch from " << relay_peer_id << ": " << e.what();
-        }
+        // Apply on the sync worker: blocking SQLite work must not run on the HTTP client poller,
+        // and responses from several relays are applied one after another.
+        Json::Value rows_copy = rows;
+        self->getWorker()->async([weak_self, relay_peer_id, rows_copy]() {
+            auto self = weak_self.lock();
+            if (!self) return;
+            try {
+                self->applyBatch(rows_copy);
+            } catch (const std::exception &e) {
+                WarnL << "Failed to apply batch from " << relay_peer_id << ": " << e.what();
+            }
+        }, false);
     };
 
     GET_CONFIG(int, batch_limit, Database::kBatchLimit);
@@ -679,12 +704,26 @@ void SyncManager::applyBatch(const Json::Value &rows) {
     // Wrap the entire batch in one SQLite transaction so that all data writes
     // and their transaction_log entries are committed atomically.
     // On any exception the transaction destructs without commit → auto-rollback.
-    auto txn = log_imp->getExecutor()->execTxn();
+    // IMMEDIATE: the batch reads (cursors, dedup, existing rows) before writing; a deferred
+    // transaction would fail with "database is locked" if another connection wrote meanwhile.
+    auto txn = log_imp->getExecutor()->execTxn(true);
     // LWW decisions are staged here and merged into _applied_ts only after commit,
     // so a rolled-back batch is not treated as "already applied" on retry.
     LwwStage lww_stage;
     try {
+        // Cursors only advance on commit, so a row at or below its cursor was already applied
+        // (typically the same entries returned by several relays in one gossip round).
+        unordered_map<string, int> cursors;
+        for (const auto &c : make_shared<TransactionSequenceImp>()->findAllWithTxn(txn)) {
+            cursors[c.peer_guid + "|" + c.db_guid] = c.sequence;
+        }
+        size_t skipped = 0;
         for (const auto &it : rows) {
+            auto cur = cursors.find(it["peer_guid"].asString() + "|" + it["db_guid"].asString());
+            if (cur != cursors.end() && it["sequence"].asInt() <= cur->second) {
+                ++skipped;
+                continue;
+            }
             // Dedup first — exact duplicate check before any work (e.g. restart replay,
             // or same entry received via multiple relay paths).
             string tran_guid_early = it["tran_guid"].asString();
@@ -760,6 +799,9 @@ void SyncManager::applyBatch(const Json::Value &rows) {
             log_imp->addWithTxn(log, txn);
         }
         txn->commit();
+        if (skipped) {
+            TraceL << "applyBatch skipped " << skipped << " already-applied entries";
+        }
     } catch (...) {
         // txn destructs without commit → auto-rollback; lww_stage is discarded
         throw;

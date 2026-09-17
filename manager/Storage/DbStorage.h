@@ -111,9 +111,18 @@ public:
         return Executor::executeRaw(pool, std::forward<ArgsType>(args)...);
     }
 
-    toolkit::SqliteTransaction::Ptr execTxn() {
+    // immediate=true takes the write lock up front (BEGIN IMMEDIATE). Use it for transactions that
+    // read before they write: a deferred transaction that has already read cannot be upgraded once
+    // another connection has written, and fails with "database is locked" without honoring busy_timeout.
+    toolkit::SqliteTransaction::Ptr execTxn(bool immediate = false) {
         auto pool = _helper->pool();
-        return std::make_shared<toolkit::SqliteTransaction>(pool);
+        auto txn = std::make_shared<toolkit::SqliteTransaction>(pool);
+        if (immediate) {
+            // SqliteTransaction always opens a deferred transaction; it holds no lock yet, so it can
+            // be swapped for an immediate one on the same connection (commit/rollback still apply).
+            txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
+        }
+        return txn;
     }
 
     template<typename ...ArgsType>
