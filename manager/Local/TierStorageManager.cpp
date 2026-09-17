@@ -3169,23 +3169,16 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
         static_cast<int64_t>(delete_policy.delete_after_days) * 86400;
 
     SegmentTierRangeImp range_imp;
-    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
-    if (max_ranges_per_cycle <= 0)
-        max_ranges_per_cycle = 64;
-    auto ranges = range_imp.queryByCamera(camera_id, 0, cutoff, max_ranges_per_cycle);
+    const bool move_external =
+        delete_policy.delete_mode == deleteModeToString(DeleteMode::MOVE_TO_EXTERNAL_STORAGE);
+    auto ranges = collectAgeRetentionPieces(
+        camera_id, cutoff, move_external ? delete_policy.external_pool_id : "");
     for (const auto &range : ranges) {
-        if (range.end_time > cutoff)
+        if (isRangeDeletionProtected(range))
             continue;
-        if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE))
-            continue;
-        if (isRangeDeletionProtected(range)) {
-            continue;
-        }
 
         if (delete_policy.delete_mode == deleteModeToString(DeleteMode::MARK_EXPIRED_WAIT_APPROVAL) ||
             delete_policy.require_approval_before_delete) {
-            if (TieringJobImp().hasActiveJobForRange(range.range_id))
-                continue;
             range_imp.updateStatusBySnapshotAt(range, segmentStatusToString(SegmentStatus::EXPIRED),
                                                static_cast<int64_t>(time(nullptr)));
             continue;
@@ -3469,17 +3462,45 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
     // otherwise available.
     if (!params.option.keepArchivedMaxForAuto && params.option.keepArchivedMaxFor > 0) {
         int64_t max_cutoff = now - static_cast<int64_t>(params.option.keepArchivedMaxFor);
-        SegmentTierRangeImp range_imp;
-        GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
-        if (max_ranges_per_cycle <= 0)
-            max_ranges_per_cycle = 64;
-        auto ranges = range_imp.queryByCamera(camera_id, 0, max_cutoff, max_ranges_per_cycle);
-        for (const auto &range : ranges) {
-            if (range.end_time > max_cutoff) continue;
-            if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
+        for (const auto &range : collectAgeRetentionPieces(camera_id, max_cutoff, ""))
             expireRangeBestEffort(range);
+    }
+}
+
+std::vector<SegmentTierRange> TierStorageManager::collectAgeRetentionPieces(
+        const std::string &camera_id,
+        int64_t cutoff,
+        const std::string &exclude_pool_id) {
+    std::vector<SegmentTierRange> pieces;
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
+    const int max_pages = 16;
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+
+    SegmentTierRangeImp range_imp;
+    int64_t after_start = std::numeric_limits<int64_t>::min();
+    std::string after_id;
+    for (int page = 0; page < max_pages && !_stopping; ++page) {
+        auto ranges = range_imp.findRetentionCandidatesAfter(
+            camera_id, cutoff, after_start, after_id, now, exclude_pool_id,
+            max_ranges_per_cycle);
+        if (ranges.empty())
+            break;
+        for (const auto &range : ranges) {
+            after_start = range.start_time;
+            after_id = range.range_id;
+            // Ranges are day-sized; cut at the cutoff so the old part expires
+            // on time. The newer remainder is picked up by later cycles.
+            SegmentTierRange piece;
+            if (!splitRangeForTieringThreshold(range, cutoff, piece))
+                continue;
+            pieces.push_back(piece);
+            if (static_cast<int>(pieces.size()) >= max_ranges_per_cycle)
+                return pieces;
         }
     }
+    return pieces;
 }
 
 void TierStorageManager::enforcePoolPressureRetention() {

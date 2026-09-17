@@ -717,7 +717,8 @@ public:
     // Filtering in SQL keeps undeletable rows from starving a LIMITed page.
     static void appendDeletableFilter(std::ostringstream &where,
                                       std::vector<std::string> &params,
-                                      int64_t now) {
+                                      int64_t now,
+                                      bool exclude_protected_video = true) {
         const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
         where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<TieringJob>::tableName()
               << " j WHERE j.range_id = " << ranges << ".range_id AND j.status IN (?, ?))";
@@ -727,6 +728,8 @@ public:
               << EntityTraits<SegmentRetentionOverride>::tableName()
               << " o WHERE o.range_id = " << ranges << ".range_id AND o.extend_until > ?)";
         params.push_back(std::to_string(now));
+        if (!exclude_protected_video)
+            return;
         where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<ProtectedVideo>::tableName()
               << " p WHERE p.camera_id = " << ranges << ".camera_id AND p.start_time <= "
               << ranges << ".end_time AND p.end_time >= " << ranges << ".start_time)";
@@ -761,6 +764,47 @@ public:
                 .from(EntityTraits<SegmentTierRange>::tableName())
                 .where(where.str(), params)
                 .orderBy("end_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // Age-retention candidates of one camera, paged by (start_time, range_id).
+    // Protected videos are not filtered here: a range is split at the cutoff
+    // first, and only the old piece is checked against protections.
+    std::vector<SegmentTierRange> findRetentionCandidatesAfter(const std::string &camera_id,
+                                                               int64_t started_before,
+                                                               int64_t after_start_time,
+                                                               const std::string &after_range_id,
+                                                               int64_t now,
+                                                               const std::string &exclude_pool_id,
+                                                               int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (camera_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND status = ? AND start_time < ?"
+              << " AND (start_time > ? OR (start_time = ? AND range_id > ?))";
+        params.push_back(camera_id);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(started_before));
+        params.push_back(std::to_string(after_start_time));
+        params.push_back(std::to_string(after_start_time));
+        params.push_back(after_range_id);
+        if (!exclude_pool_id.empty()) {
+            where << " AND pool_id <> ?";
+            params.push_back(exclude_pool_id);
+        }
+        appendDeletableFilter(where, params, now, false);
+
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC, range_id ASC");
         if (limit > 0)
             query = query.limit(limit);
         for (const auto &row : _executor->executeRaw(query))

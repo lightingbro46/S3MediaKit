@@ -358,6 +358,12 @@ private:
     void enforcePolicyDeleteRetention(const std::string &camera_id,
                                       const StoragePolicy &policy);
 
+    // Old pieces (split at `cutoff`) of a camera's AVAILABLE ranges that are
+    // due for age-based retention, oldest first and bounded per cycle.
+    std::vector<SegmentTierRange> collectAgeRetentionPieces(const std::string &camera_id,
+                                                            int64_t cutoff,
+                                                            const std::string &exclude_pool_id);
+
     // Oldest-first deletion across each HOT/WARM pool above its critical
     // watermark; stops once usage would drop below (high - 5)%.
     void enforcePoolPressureRetention();

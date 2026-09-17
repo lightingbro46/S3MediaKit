@@ -1660,6 +1660,104 @@ int scenarioPressureDeletesOldestAcrossPool(const std::string &root) {
     return 0;
 }
 
+int scenarioAgeRetentionSkipsBlockedRangesAndSplits(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const std::string hot_pool_id = hot_pools.front().id;
+    auto policy = makeRetentionPolicy(hot_pool_id, "retention-paged", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRangeImp range_imp;
+
+    // Older rows that can never be deleted this cycle must not hide a due range.
+    const std::string blocked_camera = "camera-retention-blocked";
+    require(manager.assignPolicyToCamera(blocked_camera, policy.id, "paged retention"),
+            "Retention policy assignment failed");
+    for (int index = 0; index < 80; ++index) {
+        SegmentTierRange blocked;
+        blocked.range_id = "blocked-" + std::to_string(index);
+        blocked.camera_id = blocked_camera;
+        blocked.stream_id = "main";
+        blocked.tier = tierTypeToString(HotTier);
+        blocked.pool_id = hot_pool_id;
+        blocked.status = index < 40 ? segmentStatusToString(SegmentStatus::EXPIRED)
+                                    : segmentStatusToString(SegmentStatus::AVAILABLE);
+        blocked.start_time = now - 20 * 86400 + index * 600;
+        blocked.end_time = blocked.start_time + 60;
+        blocked.segment_count = 1;
+        blocked.size_bytes = 1;
+        blocked.created_at = now;
+        blocked.updated_at = now;
+        require(range_imp.add(blocked), "Cannot seed blocked range");
+        if (index >= 40) {
+            SegmentRetentionOverride keep;
+            keep.range_id = blocked.range_id;
+            keep.extend_until = now + 86400;
+            keep.updated_at = now;
+            require(SegmentRetentionOverrideImp().upsert(keep), "Cannot seed retention override");
+        }
+    }
+    auto due = makeSegmentFixture(root, blocked_camera, "2026-08-10/14-00-00",
+                                  "due-after-blocked", now - 3 * 86400);
+    require(manager.registerHotSegmentRange(due.camera, due.stream, due.source_path,
+                                            due.start, due.end, due.payload.size()),
+            "Due range registration failed");
+
+    // One range straddling the cutoff: only its old segment is due.
+    const std::string split_camera = "camera-retention-split";
+    require(manager.assignPolicyToCamera(split_camera, policy.id, "split retention"),
+            "Retention policy assignment failed");
+    auto old_segment = makeSegmentFixture(root, split_camera, "2026-08-10/15-00-00",
+                                          "old-half", now - 3 * 86400);
+    auto new_segment = makeSegmentFixture(root, split_camera, "2026-08-12/15-00-00",
+                                          "new-half", now - 3600);
+    SegmentTierRange straddling;
+    straddling.range_id = "straddling-range";
+    straddling.camera_id = split_camera;
+    straddling.stream_id = "main";
+    straddling.tier = tierTypeToString(HotTier);
+    straddling.pool_id = hot_pool_id;
+    straddling.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    straddling.start_time = old_segment.start;
+    straddling.end_time = new_segment.end;
+    straddling.segment_count = 2;
+    straddling.size_bytes = static_cast<int64_t>(old_segment.payload.size() +
+                                                 new_segment.payload.size());
+    straddling.created_at = now;
+    straddling.updated_at = now;
+    require(range_imp.add(straddling), "Cannot seed straddling range");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        return !File::fileExist(due.source_path) && !File::fileExist(old_segment.source_path);
+    }, 5000), "Due retention data was not deleted");
+    drainWorkThreadPool();
+    require(File::fileExist(new_segment.source_path),
+            "Retention deleted the part of a range newer than the cutoff");
+    auto split_ranges = range_imp.queryByCamera(split_camera);
+    require(split_ranges.size() == 2 &&
+                split_ranges[0].range_id == straddling.range_id &&
+                split_ranges[0].status == "DELETED" &&
+                split_ranges[0].end_time == new_segment.start &&
+                split_ranges[1].status == "AVAILABLE" &&
+                split_ranges[1].start_time == new_segment.start &&
+                split_ranges[1].segment_count == 1,
+            "Straddling range was not split at the retention cutoff");
+    for (const auto &blocked : range_imp.queryByCamera(blocked_camera)) {
+        if (blocked.range_id.compare(0, 8, "blocked-") != 0)
+            continue;
+        const int index = std::atoi(blocked.range_id.c_str() + 8);
+        const std::string expected = index < 40 ? "EXPIRED" : "AVAILABLE";
+        require(blocked.status == expected,
+                "Blocked range status changed: " + blocked.range_id);
+    }
+    manager.stop();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -3667,6 +3765,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "delete-waits-active-transfer") return scenarioDeletionWaitsForActiveTransfer(root);
         if (name == "unreadable-timefile-pending") return scenarioUnreadableTimefileKeepsWorkPending(root);
         if (name == "pressure-oldest-across-pool") return scenarioPressureDeletesOldestAcrossPool(root);
+        if (name == "age-retention-paged-split") return scenarioAgeRetentionSkipsBlockedRangesAndSplits(root);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -3867,6 +3966,11 @@ TEST(TierStorageManagerIntegrationTest, KeepsWorkPendingWhenTimefileIsUnreadable
 TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestAcrossPoolAndStopsAtTarget) {
     TempRoot root;
     EXPECT_EQ(0, runChild("pressure-oldest-across-pool", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("age-retention-paged-split", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
