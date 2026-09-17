@@ -1376,6 +1376,91 @@ int scenarioProtectedRetention(const std::string &root) {
     return 0;
 }
 
+int scenarioDeletionWaitsForActiveTransfer(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    auto policy = makeRetentionPolicy(hot_pools.front().id, "retention-active-job", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-delete-active-job", "2026-08-10/12-00-00",
+                                      "active-transfer", now - 3 * 86400);
+    require(manager.assignPolicyToCamera(fixture.camera, policy.id, "active job deletion guard"),
+            "Retention policy assignment failed");
+    require(manager.registerHotSegmentRange(
+                fixture.camera, fixture.stream, fixture.source_path,
+                fixture.start, fixture.end, fixture.payload.size()),
+            "Range registration failed");
+    auto ranges = SegmentTierRangeImp().queryByCamera(
+        fixture.camera, fixture.start - 1, fixture.end + 1);
+    require(ranges.size() == 1, "Range was not persisted");
+    const SegmentTierRange range = ranges.front();
+
+    // start() recovers RUNNING jobs, so the in-flight transfer is seeded afterwards.
+    TieringJob job;
+    job.job_id = "active-transfer-job";
+    job.camera_id = range.camera_id;
+    job.stream_id = range.stream_id;
+    job.range_id = range.range_id;
+    job.source_tier = range.tier;
+    job.target_tier = tierTypeToString(WarmTier);
+    job.source_pool_id = range.pool_id;
+    job.target_pool_id = "some-warm-pool";
+    job.status = jobStatusToString(JobStatus::RUNNING);
+    job.segment_start_time = range.start_time;
+    job.segment_end_time = range.end_time;
+    job.bytes_total = range.size_bytes;
+    job.created_at = now;
+    job.updated_at = now;
+    require(TieringJobImp().add(job), "Cannot seed running tiering job");
+
+    manager.runTieringCycle();
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot_pools.front().id, health) &&
+               health.health_status != healthToString(StorageHealth::UNKNOWN);
+    }, 5000), "Retention cycle did not complete runtime health check");
+    drainWorkThreadPool();
+    require(TieringJobImp().findByJobId(job.job_id).front().status ==
+                jobStatusToString(JobStatus::RUNNING),
+            "Seeded running job was touched by the cycle");
+    require(File::fileExist(fixture.source_path),
+            "Retention deleted files while a transfer job was active");
+    auto current = SegmentTierRangeImp().findByRangeIds({range.range_id});
+    require(current.size() == 1 && current.front().status == "AVAILABLE",
+            "Retention changed a range owned by an active transfer");
+
+    // A snapshot that no longer matches the row must not be finalized.
+    SegmentTierRange stale = current.front();
+    stale.pool_id = "another-pool";
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = stale.range_id;
+    cleanup_job.camera_id = stale.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = now;
+    cleanup_job.updated_at = now;
+    require(!SegmentTierRangeImp().markDeletedBySnapshotAndEnqueue(stale, "DELETED", cleanup_job),
+            "Stale range snapshot was marked deleted");
+    require(SegmentTierRangeImp().findByRangeIds({range.range_id}).front().status == "AVAILABLE",
+            "Stale snapshot changed the range status");
+
+    require(TieringJobImp().updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED)),
+            "Cannot finish seeded tiering job");
+    require(waitUntil([&]() {
+        manager.runTieringCycle();
+        return !File::fileExist(fixture.source_path);
+    }, 5000), "Retention did not resume after the transfer finished");
+    require(waitUntil([&]() {
+        auto rows = SegmentTierRangeImp().findByRangeIds({range.range_id});
+        return rows.size() == 1 && rows.front().status == "DELETED";
+    }, 5000), "Range was not finalized after deletion resumed");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -3380,6 +3465,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "reuse-equivalent-restore-windows") return scenarioReusesEquivalentRestoreWindows(root);
         if (name == "retention-approval") return scenarioRetentionApproval(root);
         if (name == "protected-retention") return scenarioProtectedRetention(root);
+        if (name == "delete-waits-active-transfer") return scenarioDeletionWaitsForActiveTransfer(root);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -3565,6 +3651,11 @@ TEST(TierStorageManagerIntegrationTest, MarksExpiredAndDeletesAfterApproval) {
 TEST(TierStorageManagerIntegrationTest, ProtectsRetentionUntilGuardsExpire) {
     TempRoot root;
     EXPECT_EQ(0, runChild("protected-retention", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DefersDeletionWhileTransferIsActive) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("delete-waits-active-transfer", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {

@@ -66,6 +66,7 @@ foreach(manager_case
     ReusesEquivalentRestoreWindowJobsAndExtendsTtl
     MarksExpiredAndDeletesAfterApproval
     ProtectsRetentionUntilGuardsExpire
+    DefersDeletionWhileTransferIsActive
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

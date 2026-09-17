@@ -535,22 +535,6 @@ public:
         return saveWithTxn(job, txn, true);
     }
 
-    bool markRangeDeletedAndInsert(const TierMetadataCleanupJob &job,
-                                   const std::string &final_status) {
-        auto txn = _executor->execTxn();
-        if (!_executor->execDMLWithTxn(
-                txn,
-                toolkit::QueryBuilder()
-                    .update("segment_tier_ranges")
-                    .set({{"status", final_status}, {"updated_at", std::to_string(job.updated_at)}})
-                    .where("range_id = ?", {job.range_id})))
-            return false;
-        if (!saveWithTxn(job, txn, true))
-            return false;
-        txn->commit();
-        return true;
-    }
-
     std::vector<TierMetadataCleanupJob> queryPending(int limit = 100) {
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
@@ -862,21 +846,6 @@ public:
 class TierMetadataCleanupJobImp : public TierMetadataCleanupJobRepository {
 public:
     using Ptr = std::shared_ptr<TierMetadataCleanupJobImp>;
-
-    bool markRangeDeletedAndEnqueue(const std::string &range_id,
-                                    const std::string &camera_id,
-                                    const std::string &final_status) {
-        if (range_id.empty() || camera_id.empty())
-            return false;
-        const int64_t now = static_cast<int64_t>(time(nullptr));
-        TierMetadataCleanupJob job;
-        job.range_id = range_id;
-        job.camera_id = camera_id;
-        job.status = "PENDING";
-        job.created_at = now;
-        job.updated_at = now;
-        return markRangeDeletedAndInsert(job, final_status);
-    }
 
     bool updateResult(const std::string &range_id,
                       bool done,

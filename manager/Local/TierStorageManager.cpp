@@ -429,6 +429,14 @@ static std::set<std::string> restoreSegmentIdentities(
     return identities;
 }
 
+static bool sameRangeSnapshot(const SegmentTierRange &a, const SegmentTierRange &b) {
+    return a.range_id == b.range_id && a.camera_id == b.camera_id &&
+           a.stream_id == b.stream_id && a.tier == b.tier &&
+           a.pool_id == b.pool_id && a.status == b.status &&
+           a.start_time == b.start_time && a.end_time == b.end_time &&
+           a.segment_count == b.segment_count && a.size_bytes == b.size_bytes;
+}
+
 static bool isSameFileOnDisk(const std::string &a, const std::string &b) {
     if (a.empty() || b.empty())
         return false;
@@ -3127,7 +3135,10 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
 
         if (delete_policy.delete_mode == deleteModeToString(DeleteMode::MARK_EXPIRED_WAIT_APPROVAL) ||
             delete_policy.require_approval_before_delete) {
-            range_imp.updateStatusByRangeId(range.range_id, segmentStatusToString(SegmentStatus::EXPIRED));
+            if (TieringJobImp().hasActiveJobForRange(range.range_id))
+                continue;
+            range_imp.updateStatusBySnapshotAt(range, segmentStatusToString(SegmentStatus::EXPIRED),
+                                               static_cast<int64_t>(time(nullptr)));
             continue;
         }
 
@@ -3189,6 +3200,21 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         WarnL << "expireRangeBestEffort: range has empty pool_id, range=" << range.range_id
               << " camera=" << range.camera_id;
         return false;
+    }
+    // A transfer job owns the range's files until it finishes; deleting now
+    // would race its copy and final range update.
+    if (TieringJobImp().hasActiveJobForRange(range.range_id)) {
+        DebugL << "Defer range deletion because a tiering job is active, range="
+               << range.range_id;
+        return false;
+    }
+    {
+        auto current = SegmentTierRangeImp().findByRangeIds({range.range_id});
+        if (current.empty() || !sameRangeSnapshot(current.front(), range)) {
+            DebugL << "Skip range deletion because the range changed since it was selected, range="
+                   << range.range_id;
+            return false;
+        }
     }
 
     StoragePool pool;
@@ -3263,11 +3289,22 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         return false;
     }
 
-    TierMetadataCleanupJobImp cleanup_imp;
-    return cleanup_imp.markRangeDeletedAndEnqueue(
-        range.range_id,
-        range.camera_id,
-        final_status.empty() ? segmentStatusToString(SegmentStatus::DELETED) : final_status);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = range.range_id;
+    cleanup_job.camera_id = range.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = now;
+    cleanup_job.updated_at = now;
+    if (!SegmentTierRangeImp().markDeletedBySnapshotAndEnqueue(
+            range,
+            final_status.empty() ? segmentStatusToString(SegmentStatus::DELETED) : final_status,
+            cleanup_job)) {
+        WarnL << "Deleted range files but the range changed before it could be finalized, range="
+              << range.range_id;
+        return false;
+    }
+    return true;
 }
 
 bool TierStorageManager::isRangeDeletionProtected(const SegmentTierRange &range) const {
