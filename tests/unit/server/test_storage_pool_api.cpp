@@ -190,6 +190,49 @@ TEST(StoragePoolApiTest, ValidatesPolicyAgainstProvidedPoolMap) {
     EXPECT_NE(std::string::npos, error.find("must exist and be enabled"));
 }
 
+TEST(StoragePoolApiTest, RejectsPoliciesThatWouldNeverDeleteOrDeleteImmediately) {
+    StoragePool pool;
+    pool.id = "hot-pool";
+    pool.type = "LOCAL_DISK";
+    pool.tier = "HOT";
+    pool.enabled = 1;
+    TierStorageBase::StoragePoolMap pools;
+    pools[pool.id] = pool;
+
+    PolicyTierConfig hot;
+    hot.tier = "HOT";
+    hot.enabled = true;
+    hot.pool_id = pool.id;
+    hot.retain_until_days = 7;
+    hot.overflow_action = "MOVE_TO_NEXT_TIER";
+
+    PolicyDeleteConfig deletion;
+    deletion.delete_after_days = 7;
+    Json::FastWriter writer;
+
+    StoragePolicy policy;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot});
+    policy.delete_policy_json = writer.write(deletion.toJson());
+
+    std::string error;
+    EXPECT_FALSE(TierStorageBase::validateStoragePolicy(policy, pools, error));
+    EXPECT_NE(std::string::npos, error.find("last enabled tier")) << error;
+
+    hot.overflow_action = "DELETE_OLDEST";
+    hot.retain_until_days = 0;
+    deletion.delete_after_days = 0;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot});
+    policy.delete_policy_json = writer.write(deletion.toJson());
+    EXPECT_FALSE(TierStorageBase::validateStoragePolicy(policy, pools, error));
+    EXPECT_NE(std::string::npos, error.find("greater than 0 for DELETE_OLDEST")) << error;
+
+    hot.retain_until_days = 1;
+    deletion.delete_after_days = 1;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot});
+    policy.delete_policy_json = writer.write(deletion.toJson());
+    EXPECT_TRUE(TierStorageBase::validateStoragePolicy(policy, pools, error)) << error;
+}
+
 TEST(StoragePoolApiTest, SerializesJobViewsWithSharedRules) {
     RestoreJob restore;
     restore.job_id = "restore-1";

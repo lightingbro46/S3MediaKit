@@ -3019,6 +3019,11 @@ int scenarioCompactRangeRepository(const std::string &root) {
     terminal.updated_at = day;
     require(range_imp.add(terminal), "Cannot seed terminal range");
 
+    SegmentTierRange awaiting_approval = make_range("expired-range", "camera-terminal", "HOT", day + 600);
+    awaiting_approval.status = segmentStatusToString(SegmentStatus::EXPIRED);
+    awaiting_approval.updated_at = day;
+    require(range_imp.add(awaiting_approval), "Cannot seed expired range");
+
     TierMetadataCleanupJob cleanup_job;
     cleanup_job.range_id = terminal.range_id;
     cleanup_job.camera_id = terminal.camera_id;
@@ -3036,6 +3041,8 @@ int scenarioCompactRangeRepository(const std::string &root) {
     range_imp.pruneDeletedOlderThan(day + 1);
     require(range_imp.findByRangeIds({terminal.range_id}).empty(),
             "Terminal range retention did not prune old metadata");
+    require(!range_imp.findByRangeIds({awaiting_approval.range_id}).empty(),
+            "EXPIRED range awaiting approval was pruned with its files still on disk");
     cleanup_repo.pruneDoneOlderThan(day + 1);
     auto cleanup_rows = cleanup_repo.getExecutor()->executeRaw(
         toolkit::QueryBuilder()

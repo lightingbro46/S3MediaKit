@@ -28,6 +28,7 @@
 #include "Storage/TierBackfillTask.h"
 
 #include "TierStorageManager.h"
+#include "TierStorageBase.h"
 #include "StorageManager.h"
 
 #ifdef ENABLE_TIER_STORAGE
@@ -2450,6 +2451,8 @@ bool TierStorageManager::updatePolicy(const StoragePolicy &policy) {
 
 bool TierStorageManager::validatePolicyForExecution(const StoragePolicy &policy,
                                                      std::string &error) const {
+    if (!TierStorageBase::validatePolicyTierMoveChain(policy.parsedTiers(), error))
+        return false;
     bool has_hot = false;
     for (const auto &tier : policy.parsedTiers()) {
         if (!tier.enabled)
@@ -2470,6 +2473,11 @@ bool TierStorageManager::validatePolicyForExecution(const StoragePolicy &policy,
         }
         if (tier.overflow_action == overflowActionToString(OverflowAction::STOP_RECORDING_AND_ALERT)) {
             error = "STOP_RECORDING_AND_ALERT is not implemented";
+            return false;
+        }
+        if (tier.overflow_action == overflowActionToString(OverflowAction::DELETE_OLDEST) &&
+            tier.retain_until_days <= 0) {
+            error = tier.tier + ".retain_until_days must be greater than 0 for DELETE_OLDEST";
             return false;
         }
         StoragePool pool;

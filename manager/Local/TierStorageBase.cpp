@@ -157,6 +157,12 @@ bool TierStorageBase::validatePolicyTierMoveChain(
             return false;
         }
     }
+    // With no enabled tier after it, MOVE_TO_NEXT_TIER would keep data forever.
+    if (sorted.back().overflow_action == "MOVE_TO_NEXT_TIER") {
+        error = sorted.back().tier +
+                " is the last enabled tier and cannot use overflow_action MOVE_TO_NEXT_TIER";
+        return false;
+    }
     return true;
 }
 
@@ -181,6 +187,10 @@ bool TierStorageBase::validatePolicyTiers(const std::vector<PolicyTierConfig> &t
         if (previous_days >= 0 && previous_days >= tier.retain_until_days) {
             error = previous_tier + ".retain_until_days must be less than " +
                     tier.tier + ".retain_until_days";
+            return false;
+        }
+        if (tier.overflow_action == "DELETE_OLDEST" && tier.retain_until_days <= 0) {
+            error = tier.tier + ".retain_until_days must be greater than 0 for DELETE_OLDEST";
             return false;
         }
         if (tier.high_watermark_percent >= tier.critical_watermark_percent) {

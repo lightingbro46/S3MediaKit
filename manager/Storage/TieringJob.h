@@ -1336,9 +1336,10 @@ public:
                  "SELECT 1 FROM tier_metadata_cleanup_jobs "
                  "WHERE tier_metadata_cleanup_jobs.range_id = segment_tier_ranges.range_id "
                  "AND tier_metadata_cleanup_jobs.status = ?)";
+        // EXPIRED ranges still own files awaiting approval; never prune them.
         params.push_back(std::to_string(ts));
         params.push_back(segmentStatusToString(SegmentStatus::DELETED));
-        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+        params.push_back(segmentStatusToString(SegmentStatus::MISSING));
         params.push_back(jobStatusToString(JobStatus::PENDING));
         _executor->execDML(
             toolkit::QueryBuilder()

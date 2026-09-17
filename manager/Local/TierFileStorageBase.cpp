@@ -263,15 +263,48 @@ bool TierFileStorageBase::copyFile(const std::string &src,
         total += sent;
     }
 
-    ::fsync(dst_fd);
     ::close(src_fd);
-    ::close(dst_fd);
+    // Network filesystems often report write errors only at fsync/close. The
+    // caller deletes the source after a successful copy, so both must succeed.
+    if (::fsync(dst_fd) != 0) {
+        WarnL << storageName() << "::copyFile: fsync failed " << tmp
+              << ": " << strerror(errno);
+        ::close(dst_fd);
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    if (::close(dst_fd) != 0) {
+        WarnL << storageName() << "::copyFile: close failed " << tmp
+              << ": " << strerror(errno);
+        ::unlink(tmp.c_str());
+        return false;
+    }
 
     if (::rename(tmp.c_str(), dst.c_str()) != 0) {
         WarnL << storageName() << "::copyFile: rename failed " << tmp
               << " -> " << dst << ": " << strerror(errno);
         ::unlink(tmp.c_str());
         return false;
+    }
+
+    struct stat dst_st{};
+    if (::stat(dst.c_str(), &dst_st) != 0 || dst_st.st_size != st.st_size) {
+        WarnL << storageName() << "::copyFile: size mismatch after copy " << src
+              << " -> " << dst << " expected=" << st.st_size
+              << " actual=" << dst_st.st_size;
+        ::unlink(dst.c_str());
+        return false;
+    }
+
+    // Persist the rename itself; failure here is logged but not fatal
+    // because the data file was already flushed.
+    int dir_fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dir_fd >= 0) {
+        if (::fsync(dir_fd) != 0) {
+            WarnL << storageName() << "::copyFile: directory fsync failed " << dir
+                  << ": " << strerror(errno);
+        }
+        ::close(dir_fd);
     }
     return true;
 }
