@@ -301,6 +301,27 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         cb(result);
 }
 
+bool TimeQuery::queryBlocks(uint64_t start_time, uint64_t end_time,
+                            vector<TimeBlock> &out, string &error) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    out.clear();
+    error.clear();
+    try {
+        query(start_time, end_time, [&](const TimeBlock &block) {
+            out.push_back(block);
+        });
+        return true;
+    } catch (const std::exception &ex) {
+        error = ex.what();
+    } catch (...) {
+        error = "Unknown timefile read error";
+    }
+    out.clear();
+    if (error.empty())
+        error = "Unknown timefile read error";
+    return false;
+}
+
 int64_t TimeQuery::getOffsetOfDate(uint64_t pos_time) {
     lock_guard<recursive_mutex> lck(_mtx);
     int64_t ret = 0;

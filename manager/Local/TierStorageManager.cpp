@@ -976,12 +976,12 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
     }
     try {
         TimeQuery query(tuple, task.timeline_path);
-        query.getRecordedTimePeriod(
-            static_cast<uint64_t>(chunk.start_time),
-            static_cast<uint64_t>(chunk.end_time),
-            [&](std::vector<TimeBlock> &data) {
-                blocks = data;
-            });
+        // A read error must retry the chunk; a partial list would advance the
+        // cursor past blocks that were never indexed.
+        if (!query.queryBlocks(static_cast<uint64_t>(chunk.start_time),
+                               static_cast<uint64_t>(chunk.end_time), blocks, error)) {
+            return false;
+        }
     } catch (const std::exception &ex) {
         error = ex.what();
         return false;
@@ -1187,86 +1187,114 @@ void TierStorageManager::runBackfillCycle() {
 #endif
 }
 
-std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &range) {
-    std::vector<TierRangeSegmentFile> ret;
+bool TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &range,
+                                                     std::vector<TierRangeSegmentFile> &out,
+                                                     std::string &error) {
+    out.clear();
+    error.clear();
     if (range.camera_id.empty() || range.stream_id.empty() ||
         range.start_time <= 0 || range.end_time <= 0) {
-        return ret;
+        error = "Invalid tier range identity";
+        return false;
     }
 
+    std::vector<TimeBlock> blocks;
     try {
         mediakit::MediaTuple tuple;
         tuple.app = range.camera_id;
         tuple.stream = range.stream_id;
         TimeQuery query(tuple);
-        uint64_t start = static_cast<uint64_t>(range.start_time);
-        uint64_t end = static_cast<uint64_t>(range.end_time);
-        query.getRecordedTimePeriod(start, end, [&](std::vector<TimeBlock> &blocks) {
-            for (const auto &block : blocks) {
-                if (block.app() != range.camera_id || block.stream() != range.stream_id)
-                    continue;
-
-                int64_t block_start = static_cast<int64_t>(block.start_time());
-                int64_t block_end = block_start + std::max<int64_t>(1, static_cast<int64_t>(block.time_len()));
-                // A compact range owns segments by their start timestamp in
-                // the half-open interval [start_time, end_time). Media files
-                // may overlap at their edges and must still belong to one range.
-                if (block_start < range.start_time || block_start >= range.end_time)
-                    continue;
-
-                std::string timefile_path;
-                if (!block.file_path().empty())
-                    timefile_path = decodeBase64(block.file_path());
-
-                std::string segment_path;
-                if (!deriveSegmentPathFromFullPath(timefile_path, range.camera_id, range.stream_id, segment_path))
-                    continue;
-
-                TierRangeSegmentFile item;
-                item.camera_id = range.camera_id;
-                item.stream_id = range.stream_id;
-                item.segment_path = segment_path;
-                item.storage_key = TierFileStorageBase::makeStorageKey(item.camera_id, item.stream_id, item.segment_path);
-                item.start_time = block_start;
-                item.end_time = block_end;
-                item.file_size = static_cast<int64_t>(block.file_size());
-
-                if (!range.pool_id.empty()) {
-                    StoragePool pool;
-                    bool has_pool = false;
-                    {
-                        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
-                        auto it = _pool_cache.find(range.pool_id);
-                        if (it != _pool_cache.end()) {
-                            pool = it->second;
-                            has_pool = true;
-                        }
-                    }
-                    if (has_pool && !poolTypeIsObjectStorage(pool.type)) {
-                        auto storage = fileStorageForPoolType(pool.type);
-                        if (storage && (storage->isRegistered(pool.id) || registerPoolFileStorage(pool)))
-                            item.full_path = storage->resolvePath(pool.id, item.storage_key);
-                    }
-                }
-                if (item.full_path.empty())
-                    item.full_path = timefile_path;
-
-                ret.emplace_back(std::move(item));
-            }
-        });
+        if (!query.queryBlocks(static_cast<uint64_t>(range.start_time),
+                               static_cast<uint64_t>(range.end_time), blocks, error)) {
+            WarnL << "Cannot read timefile for tier range=" << range.range_id
+                  << " camera=" << range.camera_id << ": " << error;
+            return false;
+        }
     } catch (const std::exception &ex) {
-        WarnL << "collectSegmentFilesForRange failed range=" << range.range_id
-              << " camera=" << range.camera_id << ": " << ex.what();
+        error = ex.what();
     } catch (...) {
-        WarnL << "collectSegmentFilesForRange failed range=" << range.range_id
-              << " camera=" << range.camera_id;
+        error = "Unknown timefile open error";
     }
-    std::sort(ret.begin(), ret.end(), [](const TierRangeSegmentFile &a,
+    if (!error.empty()) {
+        WarnL << "Cannot open timefile for tier range=" << range.range_id
+              << " camera=" << range.camera_id << ": " << error;
+        return false;
+    }
+
+    StoragePool pool;
+    TierFileStorageBase *storage = nullptr;
+    if (!range.pool_id.empty()) {
+        bool has_pool = false;
+        {
+            std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+            auto it = _pool_cache.find(range.pool_id);
+            if (it != _pool_cache.end()) {
+                pool = it->second;
+                has_pool = true;
+            }
+        }
+        if (has_pool && !poolTypeIsObjectStorage(pool.type)) {
+            storage = fileStorageForPoolType(pool.type);
+            if (storage && !storage->isRegistered(pool.id) && !registerPoolFileStorage(pool))
+                storage = nullptr;
+        }
+    }
+
+    for (const auto &block : blocks) {
+        if (block.app() != range.camera_id || block.stream() != range.stream_id)
+            continue;
+
+        int64_t block_start = static_cast<int64_t>(block.start_time());
+        int64_t block_end = block_start + std::max<int64_t>(1, static_cast<int64_t>(block.time_len()));
+        // A compact range owns segments by their start timestamp in
+        // the half-open interval [start_time, end_time). Media files
+        // may overlap at their edges and must still belong to one range.
+        if (block_start < range.start_time || block_start >= range.end_time)
+            continue;
+
+        std::string timefile_path;
+        if (!block.file_path().empty())
+            timefile_path = decodeBase64(block.file_path());
+
+        std::string segment_path;
+        if (!deriveSegmentPathFromFullPath(timefile_path, range.camera_id, range.stream_id, segment_path)) {
+            // Skipping it would move or delete the rest while the range still
+            // claims this segment, leaving an untracked file behind.
+            out.clear();
+            error = "Cannot derive segment path from timefile entry: " + timefile_path;
+            WarnL << error << " range=" << range.range_id;
+            return false;
+        }
+
+        TierRangeSegmentFile item;
+        item.camera_id = range.camera_id;
+        item.stream_id = range.stream_id;
+        item.segment_path = segment_path;
+        item.storage_key = TierFileStorageBase::makeStorageKey(item.camera_id, item.stream_id, item.segment_path);
+        item.start_time = block_start;
+        item.end_time = block_end;
+        item.file_size = static_cast<int64_t>(block.file_size());
+        if (storage)
+            item.full_path = storage->resolvePath(pool.id, item.storage_key);
+        if (item.full_path.empty())
+            item.full_path = timefile_path;
+
+        out.emplace_back(std::move(item));
+    }
+
+    std::sort(out.begin(), out.end(), [](const TierRangeSegmentFile &a,
                                          const TierRangeSegmentFile &b) {
         if (a.start_time != b.start_time)
             return a.start_time < b.start_time;
         return a.segment_path < b.segment_path;
     });
+    return true;
+}
+
+std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &range) {
+    std::vector<TierRangeSegmentFile> ret;
+    std::string error;
+    collectSegmentFilesForRange(range, ret, error);
     return ret;
 }
 
@@ -1836,41 +1864,58 @@ ObjectReadPlan TierStorageManager::planObjectReadWindow(
     return plan;
 }
 
-std::vector<TierRangeSegmentFile> TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
-                                                                               SegmentTierRange &out_range) {
+bool TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
+                                                   SegmentTierRange &out_range,
+                                                   std::vector<TierRangeSegmentFile> &out,
+                                                   std::string &error) {
+    out.clear();
+    error.clear();
     SegmentTierRangeImp range_imp;
     if (!job.range_id.empty()) {
         auto ranges = range_imp.findByRangeIds({job.range_id});
-        if (!ranges.empty()) {
-            out_range = ranges.front();
-            if (out_range.camera_id != job.camera_id ||
-                out_range.tier != job.source_tier ||
-                out_range.pool_id != job.source_pool_id ||
-                out_range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
-                out_range.start_time != job.segment_start_time ||
-                out_range.end_time != job.segment_end_time ||
-                (job.bytes_total > 0 && out_range.size_bytes != job.bytes_total)) {
-                return {};
-            }
-            return collectSegmentFilesForRange(out_range);
+        if (ranges.empty()) {
+            error = "Tier range no longer exists: " + job.range_id;
+            return false;
         }
-        return {};
+        out_range = ranges.front();
+        if (out_range.camera_id != job.camera_id ||
+            out_range.tier != job.source_tier ||
+            out_range.pool_id != job.source_pool_id ||
+            out_range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
+            out_range.start_time != job.segment_start_time ||
+            out_range.end_time != job.segment_end_time ||
+            (job.bytes_total > 0 && out_range.size_bytes != job.bytes_total)) {
+            error = "STALE_RANGE_SNAPSHOT: tier range changed after the job was queued";
+            return false;
+        }
+    } else {
+        bool found = false;
+        auto ranges = range_imp.queryByCamera(job.camera_id, job.segment_start_time, job.segment_end_time);
+        for (const auto &range : ranges) {
+            if (range.tier != job.source_tier || range.pool_id != job.source_pool_id)
+                continue;
+            if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE))
+                continue;
+            if (!job.stream_id.empty() && range.stream_id != job.stream_id)
+                continue;
+            if (range.start_time < job.segment_start_time || range.end_time > job.segment_end_time)
+                continue;
+            out_range = range;
+            found = true;
+            break;
+        }
+        if (!found) {
+            error = "No matching tier range for legacy job window";
+            return false;
+        }
     }
-
-    auto ranges = range_imp.queryByCamera(job.camera_id, job.segment_start_time, job.segment_end_time);
-    for (const auto &range : ranges) {
-        if (range.tier != job.source_tier || range.pool_id != job.source_pool_id)
-            continue;
-        if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE))
-            continue;
-        if (!job.stream_id.empty() && range.stream_id != job.stream_id)
-            continue;
-        if (range.start_time < job.segment_start_time || range.end_time > job.segment_end_time)
-            continue;
-        out_range = range;
-        return collectSegmentFilesForRange(out_range);
+    if (!collectSegmentFilesForRange(out_range, out, error))
+        return false;
+    if (out.empty()) {
+        error = "No source segments found from tier ranges/timefile";
+        return false;
     }
-    return {};
+    return true;
 }
 
 bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &range,
@@ -1882,7 +1927,10 @@ bool TierStorageManager::splitRangeForTieringThreshold(const SegmentTierRange &r
     if (range.start_time >= move_threshold)
         return false;
 
-    auto segments = collectSegmentFilesForRange(range);
+    std::vector<TierRangeSegmentFile> segments;
+    std::string collect_error;
+    if (!collectSegmentFilesForRange(range, segments, collect_error))
+        return false;
     if (segments.empty()) {
         WarnL << "Cannot split tier range without timefile segments, range=" << range.range_id
               << " camera=" << range.camera_id;
@@ -3240,7 +3288,13 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         return false;
     }
 
-    auto segments = collectSegmentFilesForRange(range);
+    std::vector<TierRangeSegmentFile> segments;
+    std::string collect_error;
+    if (!collectSegmentFilesForRange(range, segments, collect_error)) {
+        WarnL << "Defer range deletion because its segments could not be enumerated, range="
+              << range.range_id << ": " << collect_error;
+        return false;
+    }
     if (segments.empty()) {
         WarnL << "Refuse to finalize deletion because no exact segments were enumerated, range="
               << range.range_id;
@@ -3330,7 +3384,13 @@ void TierStorageManager::processMetadataCleanupJobs() {
                 cleanup_imp.updateResult(job.range_id, false, "Camera ID mismatch for pending cleanup job");
                 continue;
             }
-            auto segments = collectSegmentFilesForRange(range);
+            std::vector<TierRangeSegmentFile> segments;
+            std::string collect_error;
+            if (!collectSegmentFilesForRange(range, segments, collect_error)) {
+                cleanup_imp.updateResult(job.range_id, false,
+                                         "Cannot read timefile: " + collect_error);
+                continue;
+            }
             std::vector<TimeBlockIdentity> identities;
             for (const auto &segment : segments) {
                 TimeBlockIdentity identity;
@@ -4064,10 +4124,11 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
     }
 
     SegmentTierRange job_range;
-    auto segments = collectSegmentFilesForJob(job, job_range);
-    if (segments.empty()) {
-        job.error_message = Optional<std::string>("No source segments found from tier ranges/timefile");
-        WarnL << job.error_message.value() << " job=" << job.job_id;
+    std::vector<TierRangeSegmentFile> segments;
+    std::string collect_error;
+    if (!collectSegmentFilesForJob(job, job_range, segments, collect_error)) {
+        job.error_message = Optional<std::string>(collect_error);
+        WarnL << collect_error << " job=" << job.job_id;
         return false;
     }
 
@@ -4215,11 +4276,11 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
     const std::string src_root = configuredPoolDataRoot(src_pool);
 
     SegmentTierRange job_range;
-    auto segments = collectSegmentFilesForJob(job, job_range);
-
-    if (segments.empty()) {
-        job.error_message = std::string("No source segments found from tier ranges/timefile");
-        WarnL << "executeObjectStorageUpload: " << job.error_message.value()
+    std::vector<TierRangeSegmentFile> segments;
+    std::string collect_error;
+    if (!collectSegmentFilesForJob(job, job_range, segments, collect_error)) {
+        job.error_message = Optional<std::string>(collect_error);
+        WarnL << "executeObjectStorageUpload: " << collect_error
               << " job=" << job.job_id;
         return false;
     }

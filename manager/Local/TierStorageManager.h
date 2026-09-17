@@ -400,10 +400,19 @@ private:
 
     bool cleanupRangeBookmarkMetadata(const SegmentTierRange &range);
 
+    // Lists the segments a range owns. Returns false (with `error`) when the
+    // timefile cannot be read completely; callers that change data must stop.
+    bool collectSegmentFilesForRange(const SegmentTierRange &range,
+                                     std::vector<TierRangeSegmentFile> &out,
+                                     std::string &error);
+
+    // Read-only convenience wrapper; yields an empty list on read errors.
     std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
 
-    std::vector<TierRangeSegmentFile> collectSegmentFilesForJob(const TieringJob &job,
-                                                                SegmentTierRange &out_range);
+    bool collectSegmentFilesForJob(const TieringJob &job,
+                                   SegmentTierRange &out_range,
+                                   std::vector<TierRangeSegmentFile> &out,
+                                   std::string &error);
 
     void executePendingJob(TieringJob &job);
 

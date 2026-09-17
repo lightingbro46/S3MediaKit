@@ -67,6 +67,7 @@ foreach(manager_case
     MarksExpiredAndDeletesAfterApproval
     ProtectsRetentionUntilGuardsExpire
     DefersDeletionWhileTransferIsActive
+    KeepsWorkPendingWhenTimefileIsUnreadable
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

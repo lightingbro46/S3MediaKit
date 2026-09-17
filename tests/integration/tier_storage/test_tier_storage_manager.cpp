@@ -1461,6 +1461,128 @@ int scenarioDeletionWaitsForActiveTransfer(const std::string &root) {
     return 0;
 }
 
+int scenarioUnreadableTimefileKeepsWorkPending(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillRetryBaseSeconds] = 60;
+    mINI::Instance()[Storage::kTierRangeBackfillMaxAttempts] = 3;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    auto policy = makeRetentionPolicy(hot_pools.front().id, "retention-corrupt-timefile", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-corrupt-timefile", "2026-08-10/13-00-00",
+                                      "corrupt-timefile", now - 3 * 86400);
+    require(manager.assignPolicyToCamera(fixture.camera, policy.id, "corrupt timefile guard"),
+            "Retention policy assignment failed");
+    require(manager.registerHotSegmentRange(
+                fixture.camera, fixture.stream, fixture.source_path,
+                fixture.start, fixture.end, fixture.payload.size()),
+            "Range registration failed");
+    const std::string range_id = SegmentTierRangeImp().queryByCamera(
+        fixture.camera, fixture.start - 1, fixture.end + 1).front().range_id;
+
+    // Append a length-prefixed record that cannot be parsed as a TimeBlock.
+    const std::string timefile = root + "/hot/record/" + fixture.camera + "/tier-test.s3db";
+    struct stat timefile_st{};
+    require(::stat(timefile.c_str(), &timefile_st) == 0, "Timefile was not created");
+    {
+        std::ofstream output(timefile.c_str(), std::ios::out | std::ios::binary | std::ios::app);
+        const uint32_t size = 4;
+        const char garbage[4] = {'\xff', '\xff', '\xff', '\xff'};
+        output.write(reinterpret_cast<const char *>(&size), sizeof(size));
+        output.write(garbage, sizeof(garbage));
+        require(output.good(), "Cannot corrupt timefile");
+    }
+
+    mediakit::MediaTuple tuple;
+    tuple.app = fixture.camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    require(!TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(fixture.start - 60),
+                                          static_cast<uint64_t>(now), blocks, error) &&
+                blocks.empty() && !error.empty(),
+            "queryBlocks did not report the corrupt timefile");
+
+    // A deleted range on another stream whose metadata cleanup is pending.
+    SegmentTierRange deleted;
+    deleted.range_id = "corrupt-cleanup-range";
+    deleted.camera_id = fixture.camera;
+    deleted.stream_id = "sub";
+    deleted.tier = tierTypeToString(HotTier);
+    deleted.pool_id = hot_pools.front().id;
+    deleted.status = segmentStatusToString(SegmentStatus::DELETED);
+    deleted.start_time = fixture.start;
+    deleted.end_time = fixture.end;
+    deleted.segment_count = 1;
+    deleted.size_bytes = 1;
+    deleted.created_at = now;
+    deleted.updated_at = now;
+    require(SegmentTierRangeImp().add(deleted), "Cannot seed deleted range");
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = deleted.range_id;
+    cleanup_job.camera_id = deleted.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = now;
+    cleanup_job.updated_at = now;
+    TierMetadataCleanupJobRepository cleanup_repo;
+    require(cleanup_repo.add(cleanup_job), "Cannot seed metadata cleanup job");
+    auto cleanup_state = [&]() {
+        return cleanup_repo.getExecutor()->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"status", "error_message"})
+                .from(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .where("range_id = ?", {deleted.range_id}));
+    };
+
+    TierBackfillTask desired;
+    desired.camera_id = fixture.camera;
+    desired.timeline_path = root + "/hot/record/" + fixture.camera;
+    desired.window_start = fixture.start - 60;
+    desired.cutoff_time = fixture.end + 60;
+    desired.cursor_time = desired.window_start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed backfill task");
+
+    manager.runTieringCycle();
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = cleanup_state();
+        return rows.size() == 1 && rows[0][1].find("Cannot read timefile") != std::string::npos;
+    }, 5000), "Metadata cleanup did not report the unreadable timefile");
+    require(cleanup_state()[0][0] == "PENDING",
+            "Metadata cleanup completed although the timefile could not be read");
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(fixture.camera);
+        return rows.size() == 1 && rows.front().status == "RETRY";
+    }, 5000), "Backfill did not retry an unreadable timefile chunk");
+    auto task_rows = TierBackfillTaskImp().findByCameraId(fixture.camera);
+    require(task_rows.front().cursor_time == desired.window_start &&
+                !task_rows.front().last_error.empty(),
+            "Backfill advanced past an unreadable timefile chunk");
+    drainWorkThreadPool();
+    require(File::fileExist(fixture.source_path),
+            "Retention deleted data although its timefile could not be read");
+    auto current = SegmentTierRangeImp().findByRangeIds({range_id});
+    require(current.size() == 1 && current.front().status == "AVAILABLE",
+            "Retention finalized a range whose timefile could not be read");
+
+    require(::truncate(timefile.c_str(), timefile_st.st_size) == 0, "Cannot repair timefile");
+    require(waitUntil([&]() {
+        manager.runTieringCycle();
+        return !File::fileExist(fixture.source_path);
+    }, 5000), "Retention did not resume after the timefile was repaired");
+    require(waitUntil([&]() {
+        auto rows = cleanup_state();
+        return rows.size() == 1 && rows[0][0] == "DONE";
+    }, 5000), "Metadata cleanup did not complete after the timefile was repaired");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -3466,6 +3588,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "retention-approval") return scenarioRetentionApproval(root);
         if (name == "protected-retention") return scenarioProtectedRetention(root);
         if (name == "delete-waits-active-transfer") return scenarioDeletionWaitsForActiveTransfer(root);
+        if (name == "unreadable-timefile-pending") return scenarioUnreadableTimefileKeepsWorkPending(root);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -3656,6 +3779,11 @@ TEST(TierStorageManagerIntegrationTest, ProtectsRetentionUntilGuardsExpire) {
 TEST(TierStorageManagerIntegrationTest, DefersDeletionWhileTransferIsActive) {
     TempRoot root;
     EXPECT_EQ(0, runChild("delete-waits-active-transfer", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, KeepsWorkPendingWhenTimefileIsUnreadable) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("unreadable-timefile-pending", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
