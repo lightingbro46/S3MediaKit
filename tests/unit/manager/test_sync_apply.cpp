@@ -13,6 +13,7 @@
 #include "Extension/Resource.h"
 #include "Extension/SyncManager.h"
 #include "Storage/BookmarkIndex.h"
+#include "Storage/ExtractJob.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/MiscData.h"
 #include "Storage/SyncRowVersion.h"
@@ -776,18 +777,29 @@ TEST_F(SyncApplyTest, OfflinePeerHoldsPruneWatermarkUntilTtl) {
 // Regression: recording a stream/device disconnection used a deferred read-then-write transaction on
 // the MediaServer DB and failed with "database is locked" when another connection committed meanwhile
 // (seen in the 2-node run while tier storage was writing).
-TEST_F(SyncApplyTest, StatusGapWaitsForConcurrentWriter) {
-    auto writer_ready = std::make_shared<std::promise<void>>();
-    auto ready_future = writer_ready->get_future();
-    std::thread writer([writer_ready]() {
-        auto executor = std::make_shared<SqliteQueryExecutor>(Database::kMediaServerDb);
+namespace {
+
+// Another connection takes the write lock of `db_tag`, and commits a change after `hold_ms`,
+// i.e. after the code under test has started its own transaction. Returns once the lock is held.
+std::thread holdWriteLock(const std::string &db_tag, int hold_ms) {
+    auto ready = std::make_shared<std::promise<void>>();
+    auto ready_future = ready->get_future();
+    std::thread writer([db_tag, hold_ms, ready]() {
+        auto executor = std::make_shared<SqliteQueryExecutor>(db_tag);
         auto txn = executor->execTxn(true);
-        txn->execScript("DELETE FROM migrationhistory WHERE 1 = 0;");
-        writer_ready->set_value();
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        txn->execScript("INSERT INTO migrationhistory (app_name, migration, applied) VALUES ('lock-test', 'lock-test', 'now');");
+        ready->set_value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
         txn->commit();
     });
     ready_future.wait();
+    return writer;
+}
+
+} // namespace
+
+TEST_F(SyncApplyTest, StatusGapWaitsForConcurrentWriter) {
+    auto writer = holdWriteLock(Database::kMediaServerDb, 300);
 
     const uint64_t now = static_cast<uint64_t>(time(nullptr));
     EXPECT_TRUE(ResourceStatusManager::Instance().onDisconnected("gap-lock-cam", "timeout", now));
@@ -796,4 +808,22 @@ TEST_F(SyncApplyTest, StatusGapWaitsForConcurrentWriter) {
     auto gaps = ResourceStatusManager::Instance().getResourceStatusGaps("gap-lock-cam", now - 10, now + 10);
     ASSERT_EQ(1u, gaps.size());
     EXPECT_EQ(now + 1, gaps[0].reconnect_time);
+}
+
+// Regression: createOrFind looked the job up in a deferred transaction and then failed to insert it
+// ("database is locked") when another connection committed meanwhile; the job was reported FAILED.
+TEST_F(SyncApplyTest, ExtractJobCreateWaitsForConcurrentWriter) {
+    ExtractJob job;
+    job.file_id = "lock-test-file";
+    job.request_hash = "hash";
+    job.camera_id = "cam";
+    job.stream_id = "cam-main";
+    job.format = "mp4";
+
+    auto writer = holdWriteLock(Database::kMediaServerDb, 300);
+    ExtractJob stored;
+    auto result = std::make_shared<ExtractJobImp>()->createOrFind(job, stored);
+    writer.join();
+    EXPECT_EQ(ExtractJobRepository::CreateResult::CREATED, result);
+    EXPECT_EQ(ExtractJobRepository::CreateResult::EXISTING, std::make_shared<ExtractJobImp>()->createOrFind(job, stored));
 }
