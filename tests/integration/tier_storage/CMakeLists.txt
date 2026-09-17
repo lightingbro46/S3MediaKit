@@ -68,6 +68,7 @@ foreach(manager_case
     ProtectsRetentionUntilGuardsExpire
     DefersDeletionWhileTransferIsActive
     KeepsWorkPendingWhenTimefileIsUnreadable
+    PressureDeletesOldestAcrossPoolAndStopsAtTarget
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

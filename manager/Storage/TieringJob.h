@@ -292,6 +292,23 @@ public:
         return !rows.empty();
     }
 
+    // Bytes still expected to leave a pool through queued or running transfers.
+    int64_t sumActiveBytesBySourcePool(const std::string &pool_id) {
+        if (pool_id.empty())
+            return 0;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(bytes_total), 0)"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("source_pool_id = ? AND status IN (?, ?)",
+                       {pool_id,
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)}));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
+    }
+
     // Newest first. error_prefix is compared literally, not as a LIKE pattern.
     std::vector<TieringJob> findRecentFailedByRange(const std::string &range_id,
                                                     const std::string &error_prefix,
@@ -693,6 +710,62 @@ public:
         if (!rows.empty() && !rows[0].empty())
             return std::stoi(rows[0][0]);
         return 0;
+    }
+
+    // Appends conditions that keep a range out of deletion candidates: an
+    // active transfer, an unexpired retention override or a protected video.
+    // Filtering in SQL keeps undeletable rows from starving a LIMITed page.
+    static void appendDeletableFilter(std::ostringstream &where,
+                                      std::vector<std::string> &params,
+                                      int64_t now) {
+        const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
+        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<TieringJob>::tableName()
+              << " j WHERE j.range_id = " << ranges << ".range_id AND j.status IN (?, ?))";
+        params.push_back(jobStatusToString(JobStatus::PENDING));
+        params.push_back(jobStatusToString(JobStatus::RUNNING));
+        where << " AND NOT EXISTS (SELECT 1 FROM "
+              << EntityTraits<SegmentRetentionOverride>::tableName()
+              << " o WHERE o.range_id = " << ranges << ".range_id AND o.extend_until > ?)";
+        params.push_back(std::to_string(now));
+        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<ProtectedVideo>::tableName()
+              << " p WHERE p.camera_id = " << ranges << ".camera_id AND p.start_time <= "
+              << ranges << ".end_time AND p.end_time >= " << ranges << ".start_time)";
+    }
+
+    // Oldest-first deletion candidates of one pool, paged by (end_time, range_id).
+    std::vector<SegmentTierRange> findDeletableByPoolAfter(const std::string &tier,
+                                                           const std::string &pool_id,
+                                                           int64_t ended_before,
+                                                           int64_t after_end_time,
+                                                           const std::string &after_range_id,
+                                                           int64_t now,
+                                                           int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND pool_id = ? AND status = ? AND end_time <= ?"
+              << " AND (end_time > ? OR (end_time = ? AND range_id > ?))";
+        params.push_back(tier);
+        params.push_back(pool_id);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(ended_before));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(after_range_id);
+        appendDeletableFilter(where, params, now);
+
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
     }
 
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {

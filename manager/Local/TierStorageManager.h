@@ -358,6 +358,10 @@ private:
     void enforcePolicyDeleteRetention(const std::string &camera_id,
                                       const StoragePolicy &policy);
 
+    // Oldest-first deletion across each HOT/WARM pool above its critical
+    // watermark; stops once usage would drop below (high - 5)%.
+    void enforcePoolPressureRetention();
+
     void ensureDefaultHotPool();
 
     void ensureSystemDefaultPolicy();
@@ -553,6 +557,8 @@ private:
     std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
+    // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
+    std::unordered_map<std::string, int64_t> _pressure_alerted_at;
     size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)

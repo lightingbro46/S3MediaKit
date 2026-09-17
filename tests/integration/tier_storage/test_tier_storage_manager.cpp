@@ -1583,6 +1583,83 @@ int scenarioUnreadableTimefileKeepsWorkPending(const std::string &root) {
     return 0;
 }
 
+int scenarioPressureDeletesOldestAcrossPool(const std::string &root) {
+    migrateDatabase(root);
+    // Any queued move from the pool defers deletion at every usage level.
+    mINI::Instance()[Storage::kTieringPressureDeleteMarginPercent] = 1000;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    StoragePool hot = hot_pools.front();
+    hot.high_watermark_percent = 0;
+    hot.critical_watermark_percent = 1;
+    require(manager.updatePool(hot), "Cannot lower HOT pool watermarks");
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot.id, health) &&
+               health.health_status == healthToString(StorageHealth::CRITICAL);
+    }, 5000), "HOT pool did not report CRITICAL after lowering its watermarks");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    // The oldest range alone covers the reclaim target, so deletion must stop after it.
+    const int64_t huge_size = static_cast<int64_t>(1) << 50;
+    auto oldest = makeSegmentFixture(root, "camera-pressure-a", "2026-08-01/10-00-00",
+                                     "pressure-oldest", now - 5 * 86400);
+    auto middle = makeSegmentFixture(root, "camera-pressure-b", "2026-08-01/22-00-00",
+                                     "pressure-middle", now - 4 * 86400 - 43200);
+    auto newest = makeSegmentFixture(root, "camera-pressure-a", "2026-08-02/10-00-00",
+                                     "pressure-newest", now - 4 * 86400);
+    require(manager.registerHotSegmentRange(oldest.camera, oldest.stream, oldest.source_path,
+                                            oldest.start, oldest.end, huge_size),
+            "Oldest range registration failed");
+    require(manager.registerHotSegmentRange(middle.camera, middle.stream, middle.source_path,
+                                            middle.start, middle.end, 2),
+            "Middle range registration failed");
+    require(manager.registerHotSegmentRange(newest.camera, newest.stream, newest.source_path,
+                                            newest.start, newest.end, 2),
+            "Newest range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(oldest.camera).size() == 2,
+            "Same-camera ranges on different days were merged");
+
+    TieringJob job;
+    job.job_id = "pressure-running-move";
+    job.camera_id = "camera-pressure-other";
+    job.stream_id = "main";
+    job.range_id = "pressure-unrelated-range";
+    job.source_tier = tierTypeToString(HotTier);
+    job.target_tier = tierTypeToString(WarmTier);
+    job.source_pool_id = hot.id;
+    job.target_pool_id = "some-warm-pool";
+    job.status = jobStatusToString(JobStatus::RUNNING);
+    job.bytes_total = 10;
+    job.created_at = now;
+    job.updated_at = now;
+    require(TieringJobImp().add(job), "Cannot seed running move job");
+
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    require(File::fileExist(oldest.source_path) && File::fileExist(middle.source_path) &&
+                File::fileExist(newest.source_path),
+            "Pressure deletion ran while a move from the pool was still queued");
+
+    require(TieringJobImp().updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED)),
+            "Cannot finish running move job");
+    manager.runTieringCycle();
+    require(waitUntil([&]() { return !File::fileExist(oldest.source_path); }, 5000),
+            "Pressure deletion did not remove the oldest range in the pool");
+    drainWorkThreadPool();
+    require(File::fileExist(middle.source_path) && File::fileExist(newest.source_path),
+            "Pressure deletion kept deleting after the reclaim target was met");
+    auto oldest_ranges = SegmentTierRangeImp().queryByCamera(
+        oldest.camera, oldest.start - 1, oldest.end + 1);
+    require(oldest_ranges.size() == 1 && oldest_ranges.front().status == "DELETED",
+            "Oldest pressure-deleted range was not finalized");
+    manager.stop();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -3589,6 +3666,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "protected-retention") return scenarioProtectedRetention(root);
         if (name == "delete-waits-active-transfer") return scenarioDeletionWaitsForActiveTransfer(root);
         if (name == "unreadable-timefile-pending") return scenarioUnreadableTimefileKeepsWorkPending(root);
+        if (name == "pressure-oldest-across-pool") return scenarioPressureDeletesOldestAcrossPool(root);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -3784,6 +3862,11 @@ TEST(TierStorageManagerIntegrationTest, DefersDeletionWhileTransferIsActive) {
 TEST(TierStorageManagerIntegrationTest, KeepsWorkPendingWhenTimefileIsUnreadable) {
     TempRoot root;
     EXPECT_EQ(0, runChild("unreadable-timefile-pending", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestAcrossPoolAndStopsAtTarget) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-oldest-across-pool", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {

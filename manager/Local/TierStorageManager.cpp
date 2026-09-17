@@ -2882,6 +2882,7 @@ void TierStorageManager::runTieringCycle() {
             }
         }
 
+            self->enforcePoolPressureRetention();
             self->processMetadataCleanupJobs();
             self->processRestoreJobs();
             self->pruneOldMetrics();
@@ -3479,48 +3480,122 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
             expireRangeBestEffort(range);
         }
     }
+}
 
-    // keepArchivedMinFor keeps its original meaning: data newer than this
-    // cutoff is protected from deletion under pressure. Pressure move is still
-    // allowed because it preserves the recording in another tier.
-    int64_t delete_protected_cutoff = params.option.keepArchivedMinForAuto
-        ? now
-        : now - static_cast<int64_t>(params.option.keepArchivedMinFor);
+void TierStorageManager::enforcePoolPressureRetention() {
+    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
+    GET_CONFIG(int, delete_margin_percent, Storage::kTieringPressureDeleteMarginPercent);
+    if (max_ranges_per_cycle <= 0)
+        max_ranges_per_cycle = 64;
+    if (delete_margin_percent < 0)
+        delete_margin_percent = 0;
+    const int max_pages = 16;
 
-    std::vector<StoragePool> hot_warm_pools;
+    std::vector<StoragePool> pools;
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         for (const auto &kv : _pool_cache) {
-            auto pool = kv.second;
-            if (!pool.enabled) continue;
+            const auto &pool = kv.second;
+            if (!pool.enabled || poolTypeIsObjectStorage(pool.type))
+                continue;
             if (pool.tier != tierTypeToString(HotTier) && pool.tier != tierTypeToString(WarmTier))
                 continue;
-            hot_warm_pools.push_back(pool);
+            pools.push_back(pool);
         }
     }
 
-    std::vector<StoragePool> pressured_pools;
-    for (auto pool : hot_warm_pools) {
-        fillPoolRuntimeStats(pool);
-        if (pool.usage_pct >= static_cast<float>(pool.critical_watermark_percent))
-            pressured_pools.push_back(pool);
-    }
-
-    if (pressured_pools.empty())
-        return;
+    // keepArchivedMinFor protects a camera's recent data from pressure deletion;
+    // pressure moves still apply because they preserve the recording.
+    std::unordered_map<std::string, int64_t> camera_cutoffs;
+    auto deleteCutoffFor = [&](const std::string &camera_id, int64_t now) -> int64_t {
+        auto it = camera_cutoffs.find(camera_id);
+        if (it != camera_cutoffs.end())
+            return it->second;
+        int64_t cutoff = now;
+        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        if (recorder) {
+            auto params = recorder->getParams();
+            if (!params.option.keepArchivedMinForAuto)
+                cutoff = now - static_cast<int64_t>(params.option.keepArchivedMinFor);
+        }
+        camera_cutoffs[camera_id] = cutoff;
+        return cutoff;
+    };
 
     SegmentTierRangeImp range_imp;
-    GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
-    if (max_ranges_per_cycle <= 0)
-        max_ranges_per_cycle = 64;
-    for (const auto &pool : pressured_pools) {
-        auto ranges = range_imp.findByCameraTierPoolAndAge(
-            camera_id, pool.tier, pool.id, delete_protected_cutoff,
-            max_ranges_per_cycle);
-        for (const auto &range : ranges) {
-            if (range.end_time > delete_protected_cutoff) continue;
-            if (range.status != segmentStatusToString(SegmentStatus::AVAILABLE)) continue;
-            expireRangeBestEffort(range);
+    TieringJobImp job_imp;
+    for (auto pool : pools) {
+        if (_stopping)
+            return;
+        fillPoolRuntimeStats(pool);
+        if (pool.total_bytes <= 0 ||
+            pool.usage_pct < static_cast<float>(pool.critical_watermark_percent)) {
+            continue;
+        }
+        if (!isPoolAvailableForTierOperation(pool, false))
+            continue;
+
+        const int64_t pending_move_bytes = job_imp.sumActiveBytesBySourcePool(pool.id);
+        if (pending_move_bytes > 0 &&
+            pool.usage_pct < static_cast<float>(pool.critical_watermark_percent + delete_margin_percent)) {
+            InfoL << "Pool " << pool.id << " is critical (" << pool.usage_pct
+                  << "%) but " << pending_move_bytes
+                  << " bytes are already queued to move; defer pressure deletion";
+            continue;
+        }
+
+        const float target_pct = std::max(0.0f, static_cast<float>(pool.high_watermark_percent) - 5.0f);
+        const int64_t target_used = static_cast<int64_t>(
+            static_cast<double>(pool.total_bytes) * target_pct / 100.0);
+        int64_t need = pool.used_bytes - target_used - pending_move_bytes;
+        if (need <= 0)
+            continue;
+
+        const int64_t now = static_cast<int64_t>(time(nullptr));
+        int64_t after_end = std::numeric_limits<int64_t>::min();
+        std::string after_id;
+        int deleted_count = 0;
+        int64_t deleted_bytes = 0;
+        for (int page = 0; page < max_pages && need > 0 && !_stopping; ++page) {
+            auto ranges = range_imp.findDeletableByPoolAfter(
+                pool.tier, pool.id, now, after_end, after_id, now, max_ranges_per_cycle);
+            if (ranges.empty())
+                break;
+            for (const auto &range : ranges) {
+                after_end = range.end_time;
+                after_id = range.range_id;
+                if (need <= 0 || _stopping)
+                    break;
+                if (range.end_time > deleteCutoffFor(range.camera_id, now))
+                    continue;
+                if (!expireRangeBestEffort(range))
+                    continue;
+                ++deleted_count;
+                const int64_t freed = std::max<int64_t>(0, range.size_bytes);
+                deleted_bytes += freed;
+                need -= freed;
+            }
+        }
+
+        if (deleted_count > 0) {
+            InfoL << "Pressure deletion on pool " << pool.id << " removed "
+                  << deleted_count << " range(s), " << deleted_bytes << " bytes";
+        }
+        if (need > 0) {
+            auto &alerted_at = _pressure_alerted_at[pool.id];
+            if (now - alerted_at >= 3600) {
+                alerted_at = now;
+                StorageAlert alert;
+                alert.id = StrUUID::make_guid(8, "alert");
+                alert.level = "ERROR";
+                alert.type = "POOL_CRITICAL_NO_DELETABLE";
+                alert.pool_id = pool.id;
+                alert.message = StrPrinter << "Pool is above its critical watermark ("
+                                           << pool.usage_pct << "%) and "
+                                           << need << " bytes could not be reclaimed";
+                alert.created_at = now;
+                StorageAlertImp().add(alert);
+            }
         }
     }
 }
