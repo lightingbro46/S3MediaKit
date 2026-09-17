@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cctype>
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -439,6 +440,92 @@ static bool sameRangeSnapshot(const SegmentTierRange &a, const SegmentTierRange 
            a.pool_id == b.pool_id && a.status == b.status &&
            a.start_time == b.start_time && a.end_time == b.end_time &&
            a.segment_count == b.segment_count && a.size_bytes == b.size_bytes;
+}
+
+struct ShapedPiece {
+    SegmentTierRange range;
+    int kind = 0;
+};
+
+// Rebuilds a range from its segments (sorted by start). Each segment has a
+// kind; kind 0 drops it. Segments sharing a start cannot be separated by
+// ownership, so a group takes the largest kind of its members, while stats
+// count only members with a non-zero kind. Consecutive groups of the same kind
+// form one piece unless `break_gap(previous_end, next_start)` says otherwise.
+// Piece windows are tightened to their own segments and never reach the next
+// group's start, so a piece never owns a segment of another piece.
+static bool shapeRangePieces(const SegmentTierRange &range,
+                             const std::vector<TierRangeSegmentFile> &segments,
+                             const std::vector<int> &kinds,
+                             const std::function<bool(int64_t, int64_t)> &break_gap,
+                             int64_t now,
+                             std::vector<ShapedPiece> &out) {
+    out.clear();
+    struct Group {
+        size_t first = 0;
+        size_t last = 0;
+        int kind = 0;
+    };
+    std::vector<Group> groups;
+    for (size_t index = 0; index < segments.size();) {
+        Group group;
+        group.first = index;
+        while (index < segments.size() &&
+               segments[index].start_time == segments[group.first].start_time) {
+            group.kind = std::max(group.kind, kinds[index]);
+            ++index;
+        }
+        group.last = index;
+        groups.push_back(group);
+    }
+
+    bool open = false;
+    int64_t open_end = 0;
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const auto &group = groups[g];
+        const int64_t group_start = segments[group.first].start_time;
+        if (open) {
+            // Never let a piece reach the start of the following group.
+            out.back().range.end_time = std::min(out.back().range.end_time, group_start);
+        }
+        const bool extend = open && group.kind != 0 && out.back().kind == group.kind &&
+                            !(break_gap && break_gap(open_end, group_start));
+        if (group.kind == 0) {
+            open = false;
+            continue;
+        }
+        if (!extend) {
+            ShapedPiece piece;
+            piece.kind = group.kind;
+            piece.range = range;
+            piece.range.range_id = out.empty() ? range.range_id : StrUUID::make_guid(8, "rng");
+            piece.range.start_time = group_start;
+            piece.range.end_time = group_start;
+            piece.range.segment_count = 0;
+            piece.range.size_bytes = 0;
+            piece.range.created_at = out.empty() ? range.created_at : now;
+            piece.range.updated_at = now;
+            out.push_back(piece);
+            open_end = group_start;
+        }
+        for (size_t i = group.first; i < group.last; ++i) {
+            if (kinds[i] == 0)
+                continue;
+            auto &piece = out.back().range;
+            piece.end_time = std::max(piece.end_time, segments[i].end_time);
+            open_end = std::max(open_end, segments[i].end_time);
+            ++piece.segment_count;
+            piece.size_bytes += std::max<int64_t>(0, segments[i].file_size);
+        }
+        open = true;
+    }
+    if (!out.empty())
+        out.back().range.end_time = std::min(out.back().range.end_time, range.end_time);
+    for (const auto &piece : out) {
+        if (piece.range.end_time <= piece.range.start_time)
+            return false;
+    }
+    return true;
 }
 
 static bool isSameFileOnDisk(const std::string &a, const std::string &b) {
@@ -1016,6 +1103,12 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         existing_by_stream[range.stream_id].push_back(range);
     }
 
+    GET_CONFIG(int64_t, reconcile_min_age, Storage::kTierReconcileMinAgeSeconds);
+    GET_CONFIG(bool, reconcile_enabled, Storage::kTierReconcileEnabled);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const int64_t verify_before = now - std::max<int64_t>(0, reconcile_min_age);
+    std::unordered_map<std::string, bool> pool_readable;
+
     std::unordered_set<std::string> seen_segments;
     std::map<std::string, PlannedGroup> groups;
     std::string first_orphan;
@@ -1064,6 +1157,34 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
         if (!seen_segments.insert(identity).second)
             continue;
 
+        // A block whose MP4 is gone (e.g. deleted by the pre-tier storage
+        // manager without its timefile rebuild completing) must not become
+        // tier metadata; drop it from the timeline once the chunk commits.
+        struct stat file_st{};
+        if (reconcile_enabled && block_end <= verify_before &&
+            ::stat(full_path.c_str(), &file_st) != 0) {
+            if (errno != ENOENT) {
+                error = std::string("Cannot stat timeline segment ") + full_path + ": " + strerror(errno);
+                return false;
+            }
+            auto readable_it = pool_readable.find(hot_pool.id);
+            if (readable_it == pool_readable.end())
+                readable_it = pool_readable.emplace(hot_pool.id, isFilePoolVerifiablyReadable(hot_pool)).first;
+            if (!readable_it->second) {
+                error = "HOT pool is not verifiably readable, cannot check timeline segment: " + hot_pool.id;
+                return false;
+            }
+            std::string segment_path;
+            if (deriveSegmentPathFromFullPath(full_path, task.camera_id, block.stream(), segment_path)) {
+                TierBackfillMissingBlock missing;
+                missing.stream_id = block.stream();
+                missing.start_time = block_start;
+                missing.segment_path = segment_path;
+                chunk.missing_blocks.push_back(missing);
+                continue;
+            }
+        }
+
         uint64_t raw_size = block.file_size();
         int64_t file_size = raw_size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
             ? std::numeric_limits<int64_t>::max()
@@ -1082,7 +1203,6 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
 
     const std::string hot_tier = tierTypeToString(HotTier);
     const std::string available = segmentStatusToString(SegmentStatus::AVAILABLE);
-    const int64_t now = static_cast<int64_t>(time(nullptr));
     for (auto &kv : groups) {
         auto &group = kv.second;
         std::sort(group.blocks.begin(), group.blocks.end(),
@@ -1095,6 +1215,7 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
             for (const auto &range : existing_it->second)
                 existing_starts.push_back(range.start_time);
         }
+
         std::sort(existing_starts.begin(), existing_starts.end());
         auto existingStartIn = [&](int64_t after, int64_t up_to) {
             auto it = std::upper_bound(existing_starts.begin(), existing_starts.end(), after);
@@ -1191,6 +1312,31 @@ bool TierStorageManager::processBackfillTask(const TierBackfillTask &task) {
             task_imp.markFailure(task, "Atomic backfill commit failed", 0, 0,
                                  max_attempts, retry_base_seconds);
             return false;
+        }
+        if (!chunk.missing_blocks.empty()) {
+            std::vector<TimeBlockIdentity> identities;
+            for (const auto &missing : chunk.missing_blocks) {
+                TimeBlockIdentity identity;
+                identity.camera_id = task.camera_id;
+                identity.stream_id = missing.stream_id;
+                identity.start_time = static_cast<uint64_t>(missing.start_time);
+                identity.segment_path = missing.segment_path;
+                identities.push_back(identity);
+            }
+            StorageManager::Instance().removeCameraTimeBlocks(task.camera_id, identities);
+            WarnL << "Tier backfill dropped " << identities.size()
+                  << " timeline block(s) without MP4 camera=" << task.camera_id
+                  << " first=" << chunk.missing_blocks.front().segment_path;
+            StorageAlert alert;
+            alert.id = StrUUID::make_guid(8, "alert");
+            alert.level = "WARNING";
+            alert.type = "TIER_BACKFILL_MISSING_FILE";
+            alert.message = StrPrinter << "Backfill removed " << identities.size()
+                                       << " timeline block(s) whose MP4 no longer exists, camera="
+                                       << task.camera_id << ", first="
+                                       << chunk.missing_blocks.front().segment_path;
+            alert.created_at = static_cast<int64_t>(time(nullptr));
+            StorageAlertImp().add(alert);
         }
         DebugL << "Tier backfill camera=" << task.camera_id
                << " chunk=" << getTimeStr("%Y-%m-%d %H:%M:%S", chunk.start_time)
@@ -2979,6 +3125,7 @@ void TierStorageManager::runTieringCycle() {
         }
 
             self->enforcePoolPressureRetention();
+            self->runRangeFileReconcile();
             self->processMetadataCleanupJobs();
             self->processRestoreJobs();
             self->pruneOldMetrics();
@@ -3642,96 +3789,175 @@ bool TierStorageManager::carveDeletablePieces(const SegmentTierRange &range,
         return false;
     };
 
-    struct Run {
-        bool deletable = false;
-        size_t first = 0;
-        size_t last = 0;  // exclusive
-    };
-    std::vector<Run> runs;
-    size_t index = 0;
-    while (index < segments.size()) {
-        // Segments sharing a start time cannot be separated by ownership.
-        size_t group_end = index;
-        bool group_protected = false;
-        while (group_end < segments.size() &&
-               segments[group_end].start_time == segments[index].start_time) {
-            if (touchesProtection(segments[group_end].start_time, segments[group_end].end_time))
-                group_protected = true;
-            ++group_end;
-        }
-        const bool deletable = !group_protected;
-        bool extend = !runs.empty() && runs.back().deletable == deletable;
-        if (extend && deletable) {
-            // A protection sitting in the gap would make the widened window touch it.
-            int64_t previous_end = 0;
-            for (size_t i = runs.back().first; i < runs.back().last; ++i)
-                previous_end = std::max(previous_end, segments[i].end_time);
-            if (touchesProtection(previous_end, segments[index].start_time))
-                extend = false;
-        }
-        if (extend) {
-            runs.back().last = group_end;
-        } else {
-            Run run;
-            run.deletable = deletable;
-            run.first = index;
-            run.last = group_end;
-            runs.push_back(run);
-        }
-        index = group_end;
-    }
-
+    const int kDeletable = 1;
+    const int kProtected = 2;
+    std::vector<int> kinds(segments.size(), kDeletable);
     bool any_deletable = false;
-    for (const auto &run : runs)
-        any_deletable = any_deletable || run.deletable;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        if (touchesProtection(segments[i].start_time, segments[i].end_time))
+            kinds[i] = kProtected;
+    }
+    std::vector<ShapedPiece> shaped;
+    // A protection sitting in a gap would make a widened window touch it.
+    if (!shapeRangePieces(range, segments, kinds, touchesProtection, now, shaped))
+        return false;
+    for (const auto &piece : shaped)
+        any_deletable = any_deletable || piece.kind == kDeletable;
     if (!any_deletable)
         return true;
 
-    // Tighten each piece to its own segments so a deletable window never
-    // reaches a protection, and never past the next piece's first start.
-    std::vector<SegmentTierRange> pieces;
-    std::vector<bool> piece_deletable;
-    for (size_t r = 0; r < runs.size(); ++r) {
-        const auto &run = runs[r];
-        SegmentTierRange piece = range;
-        piece.range_id = r == 0 ? range.range_id : StrUUID::make_guid(8, "rng");
-        piece.start_time = segments[run.first].start_time;
-        piece.end_time = 0;
-        piece.segment_count = 0;
-        piece.size_bytes = 0;
-        for (size_t i = run.first; i < run.last; ++i) {
-            piece.end_time = std::max(piece.end_time, segments[i].end_time);
-            ++piece.segment_count;
-            piece.size_bytes += std::max<int64_t>(0, segments[i].file_size);
-        }
-        const int64_t limit = r + 1 < runs.size()
-            ? segments[runs[r + 1].first].start_time : range.end_time;
-        piece.end_time = std::min(piece.end_time, limit);
-        if (piece.end_time <= piece.start_time)
-            return false;
-        piece.created_at = r == 0 ? range.created_at : now;
-        piece.updated_at = now;
-        pieces.push_back(piece);
-        piece_deletable.push_back(run.deletable);
-    }
     // A single piece whose window did not shrink needs no rewrite.
-    if (pieces.size() == 1 && pieces.front().start_time == range.start_time &&
-        pieces.front().end_time == range.end_time) {
-        if (piece_deletable.front())
-            out.push_back(range);
+    if (shaped.size() == 1 && shaped.front().range.start_time == range.start_time &&
+        shaped.front().range.end_time == range.end_time) {
+        out.push_back(range);
         return true;
     }
+    std::vector<SegmentTierRange> pieces;
+    for (const auto &piece : shaped)
+        pieces.push_back(piece.range);
     if (!SegmentTierRangeImp().replaceRangeWithPiecesIfUnchanged(range, pieces)) {
         WarnL << "Cannot split range around protected videos, range=" << range.range_id;
         return false;
     }
-    for (size_t i = 0; i < pieces.size(); ++i) {
-        if (piece_deletable[i])
-            out.push_back(pieces[i]);
+    for (const auto &piece : shaped) {
+        if (piece.kind == kDeletable)
+            out.push_back(piece.range);
     }
     DebugL << "Split range " << range.range_id << " around protected videos into "
            << pieces.size() << " piece(s), deletable=" << out.size();
     return true;
+}
+
+bool TierStorageManager::isFilePoolVerifiablyReadable(const StoragePool &pool) const {
+    if (!pool.enabled || poolTypeIsObjectStorage(pool.type))
+        return false;
+    if (!isPoolAvailableForTierOperation(pool, false))
+        return false;
+    // An unmounted NAS still shows an empty mount directory; the configured
+    // data root must exist before absent files can be trusted as lost.
+    const std::string root = configuredPoolDataRoot(pool);
+    struct stat root_st{};
+    return !root.empty() && ::stat(root.c_str(), &root_st) == 0 && S_ISDIR(root_st.st_mode);
+}
+
+bool TierStorageManager::reconcileRangeFiles(const SegmentTierRange &range, int64_t verify_before) {
+    StoragePool pool;
+    if (!getPoolById(range.pool_id, pool) || !isFilePoolVerifiablyReadable(pool))
+        return false;
+
+    std::vector<TierRangeSegmentFile> segments;
+    std::string error;
+    if (!collectSegmentFilesForRange(range, segments, error))
+        return false;
+    if (segments.empty())
+        return true;
+
+    const int kPresent = 1;
+    const int kMissing = 0;
+    std::vector<int> kinds(segments.size(), kPresent);
+    std::vector<TierRangeSegmentFile> missing;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        const auto &segment = segments[i];
+        if (segment.end_time > verify_before)
+            continue;
+        struct stat st{};
+        if (::stat(segment.full_path.c_str(), &st) == 0)
+            continue;
+        if (errno != ENOENT) {
+            WarnL << "Skip range reconciliation, cannot stat " << segment.full_path
+                  << ": " << strerror(errno);
+            return false;
+        }
+        kinds[i] = kMissing;
+        missing.push_back(segment);
+    }
+    if (missing.empty())
+        return true;
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    SegmentTierRangeImp range_imp;
+    std::vector<ShapedPiece> shaped;
+    if (!shapeRangePieces(range, segments, kinds, nullptr, now, shaped))
+        return false;
+    bool updated = false;
+    if (shaped.empty()) {
+        updated = range_imp.updateStatusBySnapshotAt(
+            range, segmentStatusToString(SegmentStatus::MISSING), now);
+    } else {
+        std::vector<SegmentTierRange> pieces;
+        for (const auto &piece : shaped)
+            pieces.push_back(piece.range);
+        updated = range_imp.replaceRangeWithPiecesIfUnchanged(range, pieces);
+    }
+    if (!updated) {
+        DebugL << "Range changed during reconciliation, retry later: " << range.range_id;
+        return false;
+    }
+    InfoL << "Reconciled range " << range.range_id << " camera=" << range.camera_id
+          << ": dropped " << missing.size() << " missing segment(s), pieces=" << shaped.size();
+    reportMissingSegments(range, missing);
+    return true;
+}
+
+void TierStorageManager::runRangeFileReconcile() {
+    GET_CONFIG(bool, enabled, Storage::kTierReconcileEnabled);
+    GET_CONFIG(int64_t, work_budget_ms, Storage::kTierReconcileWorkBudgetMs);
+    GET_CONFIG(int64_t, min_age_seconds, Storage::kTierReconcileMinAgeSeconds);
+    if (!enabled)
+        return;
+    if (work_budget_ms <= 0)
+        work_budget_ms = 2000;
+    if (min_age_seconds < 0)
+        min_age_seconds = 0;
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const int64_t verify_before = now - min_age_seconds;
+    std::unordered_map<std::string, bool> pool_readable;
+    auto readable = [&](const std::string &pool_id) {
+        auto it = pool_readable.find(pool_id);
+        if (it != pool_readable.end())
+            return it->second;
+        StoragePool pool;
+        const bool ok = getPoolById(pool_id, pool) && isFilePoolVerifiablyReadable(pool);
+        pool_readable[pool_id] = ok;
+        return ok;
+    };
+
+    // Newest first: recent inconsistencies (e.g. left by an upgrade) matter
+    // most, and old ranges are also fixed by retention deleting them.
+    SegmentTierRangeImp range_imp;
+    TieringJobImp job_imp;
+    Ticker budget;
+    size_t checked = 0;
+    bool wrapped = false;
+    while (!_stopping && budget.elapsedTime() < static_cast<uint64_t>(work_budget_ms)) {
+        auto ranges = range_imp.findReconcileCandidatesBefore(
+            _reconcile_cursor_start, _reconcile_cursor_id, 32);
+        if (ranges.empty()) {
+            _reconcile_cursor_start = std::numeric_limits<int64_t>::max();
+            _reconcile_cursor_id.clear();
+            if (wrapped)
+                break;
+            wrapped = true;
+            continue;
+        }
+        for (const auto &range : ranges) {
+            if (_stopping || budget.elapsedTime() >= static_cast<uint64_t>(work_budget_ms))
+                break;
+            _reconcile_cursor_start = range.start_time;
+            _reconcile_cursor_id = range.range_id;
+            if (range.start_time > verify_before || !readable(range.pool_id))
+                continue;
+            if (job_imp.hasActiveJobForRange(range.range_id))
+                continue;
+            reconcileRangeFiles(range, verify_before);
+            ++checked;
+        }
+    }
+    if (checked > 0) {
+        DebugL << "Range file reconciliation checked " << checked << " range(s) in "
+               << budget.elapsedTime() << " ms";
+    }
 }
 
 void TierStorageManager::enforcePoolPressureRetention() {

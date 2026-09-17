@@ -72,6 +72,8 @@ foreach(manager_case
     AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff
     PressureDeletionSplitsAroundProtectedVideo
     AgeRetentionSplitsAroundProtectedVideo
+    ReconcilesRangesWhoseFilesAreMissing
+    BackfillSkipsBlocksWithoutFiles
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

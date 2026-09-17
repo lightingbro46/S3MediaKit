@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <string>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -371,6 +372,19 @@ private:
     bool carveDeletablePieces(const SegmentTierRange &range,
                               std::vector<SegmentTierRange> &out);
 
+    // True when a filesystem pool passes the health gate and its data root
+    // exists, so an absent segment file can be trusted as really missing.
+    bool isFilePoolVerifiablyReadable(const StoragePool &pool) const;
+
+    // Drops segments older than `verify_before` whose MP4 is missing from the
+    // range's filesystem pool: removes their TimeBlocks and shrinks/splits the
+    // range (MISSING when nothing is left). Returns false if it could not check.
+    bool reconcileRangeFiles(const SegmentTierRange &range, int64_t verify_before);
+
+    // Time-budgeted, newest-first sweep of AVAILABLE ranges calling
+    // reconcileRangeFiles(); resumes from an in-memory cursor each cycle.
+    void runRangeFileReconcile();
+
     // Oldest-first deletion across each HOT/WARM pool above its critical
     // watermark; stops once usage would drop below (high - 5)%.
     void enforcePoolPressureRetention();
@@ -570,6 +584,9 @@ private:
     std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
+    // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.
+    int64_t _reconcile_cursor_start = std::numeric_limits<int64_t>::max();
+    std::string _reconcile_cursor_id;
     // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _pressure_alerted_at;
     size_t _temporary_mp4_next_camera_index = 0;

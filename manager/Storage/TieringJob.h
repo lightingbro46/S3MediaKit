@@ -813,6 +813,34 @@ public:
         return ret;
     }
 
+    // AVAILABLE ranges strictly before the (start_time, range_id) cursor, newest first.
+    std::vector<SegmentTierRange> findReconcileCandidatesBefore(int64_t before_start_time,
+                                                                const std::string &before_range_id,
+                                                                int limit) {
+        std::vector<SegmentTierRange> ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ? AND (start_time < ?";
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(before_start_time));
+        if (!before_range_id.empty()) {
+            where << " OR (start_time = ? AND range_id < ?)";
+            params.push_back(std::to_string(before_start_time));
+            params.push_back(before_range_id);
+        }
+        where << ")";
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time DESC, range_id DESC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
         std::vector<SegmentTierRange> ret;
         std::ostringstream where;

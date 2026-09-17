@@ -358,6 +358,7 @@ Quy tắc dựng range của một chunk:
 - Block được nhóm theo stream và HOT pool, sắp theo thời gian; range mới được tách khi sang ngày local khác, khi khoảng trống giữa hai block lớn hơn 90 giây, hoặc khi giữa hai block có `start_time` của một range đã tồn tại. `end_time` của range mới bị chặn tại `start_time` của range kế tiếp.
 - Lúc commit, nếu range mới chiếm quyền sở hữu của range khác (metadata vừa thay đổi) thì rollback và chunk được retry.
 - Block orphan (không có stream/file path hoặc path không thuộc HOT pool nào) được đếm vào `orphan_blocks`, ghi cảnh báo `TIER_BACKFILL_ORPHAN` và **không** chặn cursor.
+- Block đã kết thúc quá `tier_reconcile_min_age_seconds` mà file MP4 không còn trên HOT pool (pool qua health gate và thư mục dữ liệu tồn tại) không được đăng ký thành range; sau khi chunk commit, TimeBlock của nó bị gỡ khỏi timefile và ghi cảnh báo `TIER_BACKFILL_MISSING_FILE`. Nếu pool không kiểm chứng được là đọc được, chunk retry thay vì kết luận file đã mất. Trường hợp điển hình là file đã bị `StorageManager` cũ xóa nhưng việc rebuild timefile chưa hoàn tất trước khi nâng cấp.
 - Lỗi mở/đọc/parse timefile làm chunk retry, cursor không tiến.
 
 Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Mỗi phút, việc đồng bộ task chỉ trượt `window_start`/`cutoff_time` tới; task `FAILED`/`RETRY` giữ nguyên số lần thử, backoff và lỗi, task `COMPLETED` được mở lại `PENDING` khi cutoff mới vượt cursor. Chỉ khi đổi `timeline_path` hoặc mở rộng cửa sổ thì cursor mới được reset.
@@ -388,8 +389,9 @@ Luồng hiện tại theo code:
    - Chạy `enforcePolicyDeleteRetention(camera_id, policy)`.
    - Chạy `enforceCameraArchiveRetention(camera_id, policy)` (chỉ `keepArchivedMaxFor`).
 7. Chạy `enforcePoolPressureRetention()` một lần cho toàn bộ pool HOT/WARM (xem 5.4).
-8. Xử lý metadata cleanup, restore job, prune metric/range, dọn cache restore và MP4 orphan, rồi dispatch job lần nữa.
-9. Ghi log thời gian hoàn tất.
+8. Chạy `runRangeFileReconcile()` (xem 5.6).
+9. Xử lý metadata cleanup, restore job, prune metric/range, dọn cache restore và MP4 orphan, rồi dispatch job lần nữa.
+10. Ghi log thời gian hoàn tất.
 
 ### 5.2 Move Theo Tuổi Dữ Liệu
 
@@ -504,7 +506,19 @@ Xử lý segment thiếu nguồn:
 - Nguồn mất nhưng đích đã có file/object: dùng lại đích (trường hợp retry sau crash hoặc dữ liệu cũ bị lỗi 2 range).
 - Nguồn và đích đều mất: job fail với prefix `SOURCE_AND_TARGET_NOT_FOUND` và được retry có backoff. Khi số lần fail đạt `tiering_missing_segment_max_attempts` **và** pool nguồn đang đọc được (health gate + thư mục gốc tồn tại), segment bị loại khỏi range: range đích giảm `segment_count`/`size_bytes`, TimeBlock của segment bị xóa, ghi cảnh báo `TIER_SEGMENT_MISSING`. Nếu mọi segment của range đều mất, range chuyển `MISSING`.
 
-### 5.6 Move Sang Object Storage
+### 5.6 Đối Soát Range Với File Thực Tế
+
+`runRangeFileReconcile()` quét range `AVAILABLE` từ mới về cũ trong giới hạn `tier_reconcile_work_budget_ms` mỗi cycle, bằng con trỏ `(start_time, range_id)` giữ trong bộ nhớ (khởi động lại thì quét lại từ range mới nhất). Chỉ xét range thuộc pool filesystem đọc được (health gate + thư mục dữ liệu tồn tại) và không có job `PENDING/RUNNING`.
+
+Với mỗi range, `reconcileRangeFiles()` liệt kê segment theo timefile và `stat` các segment đã kết thúc quá `tier_reconcile_min_age_seconds`. Segment mất file (ENOENT) bị bỏ:
+
+- Range được dựng lại bằng các segment còn file: tách tại đoạn mất, thu hẹp khung sát segment, piece đầu giữ `range_id` (qua `replaceRangeWithPiecesIfUnchanged`, override được kế thừa). Không còn segment nào thì range chuyển `MISSING`.
+- TimeBlock của segment mất bị gỡ khỏi timefile và ghi cảnh báo `TIER_SEGMENT_MISSING`.
+- Lỗi `stat` khác ENOENT hoặc lỗi đọc timefile thì bỏ qua range ở lượt này.
+
+Khoảng trống ≤ 90 giây vẫn được coi là liền mạch như mọi luồng compact khác, nên khung range có thể phủ qua một đoạn mất file ngắn hơn 90 giây dù TimeBlock của đoạn đó đã bị gỡ.
+
+### 5.7 Move Sang Object Storage
 
 Nếu target pool là object storage (API hiện cho phép `MINIO`):
 
@@ -978,6 +992,9 @@ storage.tiering_max_ranges_per_camera_cycle=64
 storage.tiering_missing_segment_max_attempts=3
 storage.tiering_missing_segment_retry_base_seconds=3600
 storage.tiering_pressure_delete_margin_percent=3
+storage.tier_reconcile_enabled=1
+storage.tier_reconcile_work_budget_ms=2000
+storage.tier_reconcile_min_age_seconds=600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
 storage.tiering_job_retention_days=30
@@ -1014,6 +1031,9 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_missing_segment_max_attempts` | Tier transfer | Số lần job fail vì segment mất ở cả nguồn và đích trước khi segment bị loại khỏi range |
 | `tiering_missing_segment_retry_base_seconds` | `queueTierMoveJob()` | Backoff cơ sở cho range có segment mất, nhân đôi mỗi lần, tối đa 1 ngày |
 | `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
+| `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
+| `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
+| `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
 | `tiering_job_retention_days` | `pruneOldMetrics()` | Xóa lịch sử job `DONE`/`FAILED`/`CANCELLED` cũ |
@@ -1125,6 +1145,8 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
 - Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
 - Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
+- Gỡ TimeBlock là bất đồng bộ (swap khi file hết reader) và không bền qua restart. Block bỏ ở backfill mà chưa swap kịp sẽ còn trong timefile nhưng không có range; block trong range sẽ được vòng đối soát xử lý lại.
+- `StorageManager` cũ (bản không có tier) xóa file trước rồi mới rebuild timefile; nếu tiến trình dừng giữa chừng, timefile giữ block của file đã xóa. Sau khi nâng cấp, backfill và vòng đối soát dọn các block này.
 
 ## 14. Phần Còn Thiếu Theo Code Hiện Tại
 

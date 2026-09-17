@@ -1870,6 +1870,180 @@ int scenarioDeletionSplitsAroundProtectedVideo(const std::string &root, bool pre
     return 0;
 }
 
+void waitForDefaultHotPoolHealth(TierStorageManager &manager) {
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    drainWorkThreadPool();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot_pools.front().id, health) &&
+               health.health_status != healthToString(StorageHealth::UNKNOWN) &&
+               health.health_status != healthToString(StorageHealth::OFFLINE);
+    }, 5000), "Default HOT pool health was not recorded");
+}
+
+std::vector<int64_t> timelineStarts(const std::string &camera, int64_t from, int64_t to) {
+    mediakit::MediaTuple tuple;
+    tuple.app = camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(from), static_cast<uint64_t>(to), blocks, error);
+    std::vector<int64_t> starts;
+    for (const auto &block : blocks)
+        starts.push_back(static_cast<int64_t>(block.start_time()));
+    return starts;
+}
+
+bool hasAlert(const std::string &type, const std::string &needle) {
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100)) {
+        if (alert.type == type && alert.message.find(needle) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+int scenarioReconcileDropsSegmentsWithoutFiles(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    waitForDefaultHotPoolHealth(manager);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3600;
+
+    // Ghost blocks at the head of a range, as left behind when files were
+    // deleted but the timefile rebuild never completed.
+    const std::string camera = "camera-reconcile-ghost";
+    auto ghost_a = makeSegmentFixture(root, camera, "2026-08-05/00-00-00", "ghost-a", base);
+    auto ghost_b = makeSegmentFixture(root, camera, "2026-08-05/00-01-00", "ghost-b", base + 60);
+    auto kept = makeSegmentFixture(root, camera, "2026-08-05/00-02-00", "kept", base + 120);
+    // Too recent to be judged: must survive even without its file.
+    auto recent = makeSegmentFixture(root, camera, "2026-08-05/00-03-00", "recent", now - 60);
+    for (const auto *segment : {&ghost_a, &ghost_b, &kept, &recent}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(::unlink(ghost_a.source_path.c_str()) == 0 &&
+                ::unlink(ghost_b.source_path.c_str()) == 0 &&
+                ::unlink(recent.source_path.c_str()) == 0,
+            "Cannot remove ghost segment files");
+
+    // A pool whose data root vanished (like an unmounted NAS) proves nothing.
+    StoragePool unmounted = makeHotPool(root, "reconcile-unmounted-hot", "unmounted-hot");
+    require(manager.createPool(unmounted) == unmounted.id, "Cannot create second HOT pool");
+    drainWorkThreadPool();
+    const std::string unmounted_camera = "camera-reconcile-unmounted";
+    const std::string unmounted_path = root + "/unmounted-hot/record/" + unmounted_camera +
+                                       "/main/2026-08-05/02-00-00.mp4";
+    writeFile(unmounted_path, "unmounted");
+    writeTimeBlock(root, unmounted_camera, "main", unmounted_path, base, base + 60, 9);
+    require(manager.registerHotSegmentRange(unmounted_camera, "main", unmounted_path,
+                                            base, base + 60, 9),
+            "Unmounted pool range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(unmounted_camera).front().pool_id == unmounted.id,
+            "Range was not registered on the second HOT pool");
+    removeTree(root + "/unmounted-hot");
+
+    const std::string lost_camera = "camera-reconcile-lost";
+    auto lost = makeSegmentFixture(root, lost_camera, "2026-08-05/01-00-00", "lost", base);
+    require(manager.registerHotSegmentRange(lost.camera, lost.stream, lost.source_path,
+                                            lost.start, lost.end, lost.payload.size()),
+            "Lost range registration failed");
+    require(::unlink(lost.source_path.c_str()) == 0, "Cannot remove lost segment file");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+        return !ranges.empty() && ranges.front().start_time == kept.start;
+    }, 5000), "Ghost segments still define the start of the range");
+    drainWorkThreadPool();
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    int64_t counted = 0;
+    for (const auto &range : ranges) {
+        require(range.status == "AVAILABLE", "Reconciled range has unexpected status");
+        require(range.start_time >= kept.start, "A range still owns a ghost segment");
+        counted += range.segment_count;
+    }
+    require(counted == 2, "Reconciled ranges do not count exactly the kept and recent segments");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts(camera, base - 60, now + 60);
+        return starts.size() == 2 && starts[0] == kept.start && starts[1] == recent.start;
+    }, 5000), "Ghost blocks were not removed from the timefile");
+
+    auto unmounted_ranges = SegmentTierRangeImp().queryByCamera(unmounted_camera);
+    require(unmounted_ranges.size() == 1 && unmounted_ranges.front().status == "AVAILABLE" &&
+                unmounted_ranges.front().segment_count == 1 &&
+                timelineStarts(unmounted_camera, base - 60, base + 120).size() == 1,
+            "Reconciliation dropped segments of a pool whose data root is missing");
+
+    auto lost_ranges = SegmentTierRangeImp().queryByCamera(lost_camera);
+    require(lost_ranges.size() == 1 && lost_ranges.front().status == "MISSING",
+            "Range without any file was not marked MISSING");
+    // The first piece keeps the original range id used in the alert.
+    require(hasAlert("TIER_SEGMENT_MISSING", ranges.front().range_id),
+            "Reconciliation did not raise a storage alert");
+    manager.stop();
+    return 0;
+}
+
+int scenarioBackfillSkipsBlocksWithoutFiles(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    waitForDefaultHotPoolHealth(manager);
+
+    const std::string camera = "camera-backfill-no-file";
+    const std::string stream = "main";
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 7200;
+    const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/2026-08-06/";
+    // The missing stretch is longer than the 90 s merge gap, so the present
+    // blocks on either side must stay in separate ranges.
+    writeFile(prefix + "a.mp4", "present-a");
+    writeFile(prefix + "d.mp4", "present-d");
+    writeTimeBlock(root, camera, stream, prefix + "a.mp4", start, start + 60, 9);
+    writeTimeBlock(root, camera, stream, prefix + "b.mp4", start + 60, start + 120, 9);
+    writeTimeBlock(root, camera, stream, prefix + "c.mp4", start + 120, start + 180, 9);
+    writeTimeBlock(root, camera, stream, prefix + "d.mp4", start + 180, start + 240, 9);
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = start;
+    desired.cutoff_time = start + 3600;
+    desired.cursor_time = start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Backfill with a missing file did not complete");
+    auto rows = TierBackfillTaskImp().findByCameraId(camera);
+    require(rows.front().registered_blocks == 2, "Backfill registered a block without a file");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 2 &&
+                ranges[0].start_time == start && ranges[0].end_time == start + 60 &&
+                ranges[1].start_time == start + 180 && ranges[1].segment_count == 1,
+            "Backfilled ranges cover the block whose file is missing");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts(camera, start - 60, start + 300);
+        return starts.size() == 2 && starts[0] == start && starts[1] == start + 180;
+    }, 5000), "Block without a file was not removed from the timefile");
+    require(hasAlert("TIER_BACKFILL_MISSING_FILE", camera),
+            "Backfill did not raise a storage alert for the missing file");
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -3015,6 +3189,8 @@ int scenarioBackfillUsesLocalDayBuckets(const std::string &root) {
                                    stream + "/before-local-midnight.mp4";
     const std::string second_path = root + "/hot/record/" + camera + "/" +
                                     stream + "/after-local-midnight.mp4";
+    writeFile(first_path, "before-midnight");
+    writeFile(second_path, "after-midnight");
     writeTimeBlock(root, camera, stream, first_path, first_start, first_end, 100);
     writeTimeBlock(root, camera, stream, second_path, second_start, second_end, 100);
 
@@ -3199,6 +3375,7 @@ int scenarioBackfillSkipsOrphanWithAlert(const std::string &root) {
                                   "/main/2026-08-28_12-01-00.mp4";
     const std::string indexed = root + "/hot/record/" + camera +
                                 "/main/2026-08-28_12-01-01.mp4";
+    writeFile(indexed, "indexed");
     writeTimeBlock(root, camera, "main", unmatched, start, end, 128);
     writeTimeBlock(root, camera, "main", indexed, start + 1, start + 30, 64);
 
@@ -3296,6 +3473,7 @@ int scenarioBackfillShapesRangesAroundExistingOnes(const std::string &root) {
     const std::string stream = "main";
     const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/";
     auto block = [&](const std::string &name, int64_t start) {
+        writeFile(prefix + name + ".mp4", name);
         writeTimeBlock(root, camera, stream, prefix + name + ".mp4", start, start + 60, 10);
     };
     block("gap-a", day + 3600);
@@ -4014,6 +4192,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pressure-oldest-across-pool") return scenarioPressureDeletesOldestAcrossPool(root);
         if (name == "age-retention-paged-split") return scenarioAgeRetentionSkipsBlockedRangesAndSplits(root);
         if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
+        if (name == "reconcile-ghost-segments") return scenarioReconcileDropsSegmentsWithoutFiles(root);
+        if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
@@ -4231,6 +4411,16 @@ TEST(TierStorageManagerIntegrationTest, PressureDeletionSplitsAroundProtectedVid
 TEST(TierStorageManagerIntegrationTest, AgeRetentionSplitsAroundProtectedVideo) {
     TempRoot root;
     EXPECT_EQ(0, runChild("age-protected-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("reconcile-ghost-segments", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillSkipsBlocksWithoutFiles) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-skip-missing-file", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {

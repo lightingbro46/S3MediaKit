@@ -67,6 +67,13 @@ DECLARE_ENTITY(TierBackfillTask, "tier_backfill_tasks",
     &TierBackfillTask::updated_at,        "updated_at"
 )
 
+// A timeline block whose MP4 is gone from a reachable HOT pool.
+struct TierBackfillMissingBlock {
+    std::string stream_id;
+    int64_t start_time = 0;
+    std::string segment_path;
+};
+
 struct TierBackfillChunk {
     int64_t start_time = 0;
     int64_t end_time = 0;
@@ -75,6 +82,8 @@ struct TierBackfillChunk {
     int64_t orphan_blocks = 0;
     int64_t indexed_bytes = 0;
     std::vector<SegmentTierRange> ranges;
+    // Not persisted; removed from the timefile after the chunk commits.
+    std::vector<TierBackfillMissingBlock> missing_blocks;
 };
 
 class TierBackfillTaskRepository : public SqliteRepository<TierBackfillTask> {
