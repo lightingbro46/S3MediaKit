@@ -317,6 +317,52 @@ static bool deriveSegmentPathFromFullPath(const std::string &full_path,
     return !segment_path.empty();
 }
 
+// Floors an age threshold to the split granularity so tier moves and
+// retention cut ranges once per interval rather than on every cycle.
+static int64_t alignTierThreshold(int64_t threshold) {
+    GET_CONFIG(int64_t, granularity, Storage::kTieringSplitGranularitySeconds);
+    if (granularity <= 1 || threshold <= 0)
+        return threshold;
+    return threshold - threshold % granularity;
+}
+
+static std::string cameraTimelineDir(const std::string &camera_id) {
+    GET_CONFIG(std::string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    return File::absolutePath(app_name, record_path) + "/" + camera_id;
+}
+
+// Daily timefiles hold blocks by the local date of their start. Returns the
+// ';'-joined files that can hold blocks starting in [start_time, end_time],
+// plus any file whose name is not a date. Opening only these keeps a lookup
+// from touching every day of a camera's retention window.
+static std::string timelineFilesForWindow(const std::string &timeline_dir,
+                                          int64_t start_time,
+                                          int64_t end_time) {
+    const uint64_t first_day = StampUtils::getStartOfDay(static_cast<uint64_t>(std::max<int64_t>(0, start_time)));
+    const uint64_t last_day = StampUtils::getStartOfDay(static_cast<uint64_t>(std::max<int64_t>(0, end_time)));
+    std::vector<std::string> files;
+    File::scanDir(timeline_dir, [&](const std::string &path, bool is_dir) {
+        if (is_dir || !end_with(path, ".s3db"))
+            return true;
+        auto slash = path.rfind('/');
+        std::string name = path.substr(slash == std::string::npos ? 0 : slash + 1);
+        name.resize(name.size() - 5);
+        const uint64_t day = StrTimeUtils::getTsFromDateStr(name);
+        if (day == 0 || (day >= first_day && day <= last_day))
+            files.push_back(path);
+        return true;
+    });
+    std::sort(files.begin(), files.end());
+    std::string joined;
+    for (const auto &file : files) {
+        if (!joined.empty())
+            joined += ";";
+        joined += file;
+    }
+    return joined;
+}
+
 static std::string getRestoreRootPath() {
     GET_CONFIG(std::string, restore_save_path, Storage::kRestoreSavePath);
     return File::absolutePath("", restore_save_path);
@@ -1065,8 +1111,12 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
     if (!File::fileExist(task.timeline_path)) {
         return true;
     }
+    const std::string files = timelineFilesForWindow(task.timeline_path,
+                                                     chunk.start_time, chunk.end_time);
+    if (files.empty())
+        return true;
     try {
-        TimeQuery query(tuple, task.timeline_path);
+        TimeQuery query(tuple, files);
         // A read error must retry the chunk; a partial list would advance the
         // cursor past blocks that were never indexed.
         if (!query.queryBlocks(static_cast<uint64_t>(chunk.start_time),
@@ -1435,10 +1485,14 @@ bool TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &ran
 
     std::vector<TimeBlock> blocks;
     try {
+        const std::string files = timelineFilesForWindow(
+            cameraTimelineDir(range.camera_id), range.start_time, range.end_time);
+        if (files.empty())
+            return true;
         mediakit::MediaTuple tuple;
         tuple.app = range.camera_id;
         tuple.stream = range.stream_id;
-        TimeQuery query(tuple);
+        TimeQuery query(tuple, files);
         if (!query.queryBlocks(static_cast<uint64_t>(range.start_time),
                                static_cast<uint64_t>(range.end_time), blocks, error)) {
             WarnL << "Cannot read timefile for tier range=" << range.range_id
@@ -3188,6 +3242,7 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
         // Respect min_segment_age
         if (move_threshold > now - min_age_secs)
             move_threshold = now - min_age_secs;
+        move_threshold = alignTierThreshold(move_threshold);
         DebugL << "Processing tiering for camera=" << camera_id
                << " source_tier=" << src_tier_cfg.tier
                << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "")
@@ -3408,8 +3463,8 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
     if (delete_policy.delete_after_days <= 0)
         return;
 
-    int64_t cutoff = static_cast<int64_t>(time(nullptr)) -
-        static_cast<int64_t>(delete_policy.delete_after_days) * 86400;
+    int64_t cutoff = alignTierThreshold(static_cast<int64_t>(time(nullptr)) -
+        static_cast<int64_t>(delete_policy.delete_after_days) * 86400);
 
     SegmentTierRangeImp range_imp;
     const bool move_external =
@@ -3608,8 +3663,16 @@ bool TierStorageManager::isRangeDeletionProtected(const SegmentTierRange &range)
 void TierStorageManager::processMetadataCleanupJobs() {
     TierMetadataCleanupJobImp cleanup_imp;
     SegmentTierRangeImp range_imp;
-    auto jobs = cleanup_imp.queryPending();
+    // Each job needs two passes (remove, then verify). The limit must stay well
+    // above the ranges finished per cycle or the backlog grows without bound.
+    auto jobs = cleanup_imp.queryPending(2000);
+
+    // One timefile rewrite per camera per cycle, however many ranges it has.
+    std::map<std::string, std::vector<TimeBlockIdentity>> identities_by_camera;
+    std::map<std::string, std::vector<std::string>> jobs_by_camera;
     for (const auto &job : jobs) {
+        if (_stopping)
+            return;
         try {
             auto ranges = range_imp.findByRangeIds({job.range_id});
             if (ranges.empty()) {
@@ -3628,7 +3691,16 @@ void TierStorageManager::processMetadataCleanupJobs() {
                                          "Cannot read timefile: " + collect_error);
                 continue;
             }
-            std::vector<TimeBlockIdentity> identities;
+            // TimeRebuilder swaps files asynchronously after active readers
+            // drain. Do not run later metadata steps until a subsequent cycle
+            // verifies that every TimeBlock identity for this range is gone.
+            if (segments.empty()) {
+                bool completed = cleanupRangeMotionMetadata(range) &&
+                                 cleanupRangeBookmarkMetadata(range);
+                cleanup_imp.updateResult(job.range_id, completed, completed ? "" : "Invalid metadata cleanup range");
+                continue;
+            }
+            auto &identities = identities_by_camera[range.camera_id];
             for (const auto &segment : segments) {
                 TimeBlockIdentity identity;
                 identity.camera_id = segment.camera_id;
@@ -3637,22 +3709,25 @@ void TierStorageManager::processMetadataCleanupJobs() {
                 identity.segment_path = segment.segment_path;
                 identities.push_back(identity);
             }
-            // TimeRebuilder swaps files asynchronously after active readers
-            // drain. Do not run later metadata steps until a subsequent cycle
-            // verifies that every TimeBlock identity for this range is gone.
-            if (identities.empty()) {
-                bool completed = cleanupRangeMotionMetadata(range) &&
-                                 cleanupRangeBookmarkMetadata(range);
-                cleanup_imp.updateResult(job.range_id, completed, completed ? "" : "Invalid metadata cleanup range");
-                continue;
-            }
-            StorageManager::Instance().removeCameraTimeBlocks(range.camera_id, identities);
-            cleanup_imp.updateResult(job.range_id, false, "Awaiting timefile swap verification");
+            jobs_by_camera[range.camera_id].push_back(job.range_id);
         } catch (const std::exception &ex) {
             cleanup_imp.updateResult(job.range_id, false, ex.what());
         } catch (...) {
             cleanup_imp.updateResult(job.range_id, false, "Unknown metadata cleanup error");
         }
+    }
+
+    for (const auto &kv : identities_by_camera) {
+        std::string error = "Awaiting timefile swap verification";
+        try {
+            StorageManager::Instance().removeCameraTimeBlocks(kv.first, kv.second);
+        } catch (const std::exception &ex) {
+            error = ex.what();
+        } catch (...) {
+            error = "Unknown timefile cleanup error";
+        }
+        for (const auto &range_id : jobs_by_camera[kv.first])
+            cleanup_imp.updateResult(range_id, false, error);
     }
 }
 
@@ -3664,10 +3739,17 @@ bool TierStorageManager::cleanupRangeMotionMetadata(const SegmentTierRange &rang
 
     MediaTuple tuple;
     tuple.app = range.camera_id;
-    TimeQuery query(tuple);
+    const std::string timeline_dir = cameraTimelineDir(range.camera_id);
     std::vector<uint64_t> empty_days;
     for (auto day_start : range_days) {
         auto day_end = nextLocalDayStart(day_start);
+        const std::string files = timelineFilesForWindow(
+            timeline_dir, static_cast<int64_t>(day_start), static_cast<int64_t>(day_end) - 1);
+        if (files.empty()) {
+            empty_days.push_back(day_start);
+            continue;
+        }
+        TimeQuery query(tuple, files);
         query.getRecordedTimePeriod(day_start, day_end, [&](const std::vector<TimeBlock> &blocks) {
             if (blocks.empty())
                 empty_days.push_back(day_start);
@@ -3704,7 +3786,7 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
     // than this maximum retention is eligible for expiry even if storage is
     // otherwise available.
     if (!params.option.keepArchivedMaxForAuto && params.option.keepArchivedMaxFor > 0) {
-        int64_t max_cutoff = now - static_cast<int64_t>(params.option.keepArchivedMaxFor);
+        int64_t max_cutoff = alignTierThreshold(now - static_cast<int64_t>(params.option.keepArchivedMaxFor));
         for (const auto &range : collectAgeRetentionPieces(camera_id, max_cutoff, ""))
             expireRangeBestEffort(range);
     }

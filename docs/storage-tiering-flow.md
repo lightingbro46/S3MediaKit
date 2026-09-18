@@ -407,7 +407,10 @@ Backend sort tier theo thứ tự `HOT -> WARM -> COLD`, nhưng tier đích là 
 ```text
 move_threshold = now - source_tier.retain_until_days * 86400
 move_threshold không được mới hơn now - min_segment_age_minutes_before_move
+move_threshold được làm tròn xuống theo tiering_split_granularity_seconds (mặc định 3600)
 ```
+
+Làm tròn giúp mỗi stream chỉ bị split, tạo job và range DELETED tối đa một lần mỗi giờ thay vì mỗi cycle 5 phút; dữ liệu vì thế có thể chuyển/xóa trễ tối đa một khoảng bằng độ mịn. Mốc retention theo tuổi (`delete_after_days`, `keepArchivedMaxFor`) cũng được làm tròn như vậy; xóa khi vượt ngưỡng không bị ảnh hưởng.
 
 5. Query `segment_tier_ranges` theo source tier/source pool với `start_time < move_threshold`.
 6. Bỏ qua range đã có job `PENDING/RUNNING` (không đọc timefile lại).
@@ -479,6 +482,8 @@ segment_tier_ranges = DELETED
   -> xóa bookmark của camera có start_time nằm trong range
   -> mọi metadata step thành công mới đánh dấu job DONE
 ```
+
+Mỗi cycle lấy tối đa 2 000 cleanup job `PENDING`, gom TimeBlock cần gỡ theo camera và rebuild timefile một lần cho mỗi camera (chỉ các file ngày chứa block cần gỡ). Liệt kê segment của một range chỉ mở các file ngày trong khung của range (`timelineFilesForWindow()`), không mở toàn bộ timefile của camera.
 
 Pipeline không lưu phase: mỗi lần retry chạy lại từ bước TimeFile và dựa trên trạng thái dữ liệu thực tế làm checkpoint. Vì vậy mọi metadata step phải idempotent. Motion hiện có độ phân giải theo ngày: `TierStorageManager` lọc các ngày không còn TimeBlock rồi chuyển danh sách đó cho API hiện có của `MotionBlockManager`. Nếu stream/range khác vẫn còn TimeBlock trong ngày, motion ngày đó được giữ lại. Bookmark được cleanup bằng `BookmarkImp::removeByTimeRange()` sau bước motion; bookmark ngoài range hoặc thuộc camera khác được giữ lại. Move HOT/WARM/COLD không chạy metadata cleanup vì video vẫn còn được lưu giữ.
 Range terminal và cleanup job `PENDING` không bị TTL cleanup để giữ đủ `start_time/end_time` cho retry sau restart. Chỉ range `DELETED`/`MISSING` được prune, và chỉ khi không còn cleanup job `PENDING`; range `EXPIRED` vẫn còn file chờ duyệt nên không bao giờ bị prune. Cleanup job `DONE` được prune cùng thời hạn range terminal. Một range được kích hoạt lại rồi xóa lần nữa sẽ ghi đè cleanup job cũ.
@@ -995,10 +1000,11 @@ storage.tiering_pressure_delete_margin_percent=3
 storage.tier_reconcile_enabled=1
 storage.tier_reconcile_work_budget_ms=2000
 storage.tier_reconcile_min_age_seconds=600
+storage.tiering_split_granularity_seconds=3600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
 storage.tiering_job_retention_days=30
-storage.tiering_terminal_range_retention_days=180
+storage.tiering_terminal_range_retention_days=30
 storage.tier_range_backfill_enabled=1
 storage.tier_range_backfill_days=180
 storage.tier_range_backfill_chunk_seconds=86400
@@ -1034,6 +1040,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
 | `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
+| `tiering_split_granularity_seconds` | Move theo tuổi, retention theo tuổi | Độ mịn làm tròn mốc; `<= 1` tắt làm tròn |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
 | `tiering_job_retention_days` | `pruneOldMetrics()` | Xóa lịch sử job `DONE`/`FAILED`/`CANCELLED` cũ |
@@ -1155,3 +1162,17 @@ void TierStorageManager::executeRestoreSegment(...) {
 2. Bổ sung checksum/size verification và chuyển range sang `MISSING` khi object thực sự không còn.
 3. Sửa parser record path để hỗ trợ camera record root do policy điều phối.
 4. Bổ sung metrics/alert cho restore throughput, failure và queue depth; các metric dashboard placeholder hiện vẫn là `0`.
+
+## 15. Quy Mô Tham Chiếu
+
+Ước lượng cho 600 stream, segment MP4 1 phút, lưu 6 tháng, `tiering_split_granularity_seconds=3600`:
+
+| Hạng mục | Khối lượng |
+|---|---|
+| Segment MP4 | ~155 triệu |
+| Range `AVAILABLE` | ~108 nghìn (1 range/stream/ngày, cộng piece do split) |
+| Job chuyển tầng | ~14 400/ngày (1/stream/giờ) |
+| Range `DELETED` | ~14 400/ngày, giữ 30 ngày (~430 nghìn dòng) |
+| Timefile | 1 file/camera/ngày, ~2 880 block (~400 KB) |
+
+Migration `16_tier_performance_indexes.sql` thêm index cho các truy vấn nóng. Đo trên SQLite với 1,14 triệu range: `hasActiveJobForRange` 3,3 ms → 0,012 ms, `findDeletableByPoolAfter` 2 053 ms/trang → 2 ms, `findRetentionCandidatesAfter` 67 ms → 0,06 ms, `findReconcileCandidatesBefore` 15,6 ms → 0,5 ms.

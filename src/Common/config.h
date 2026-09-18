@@ -743,6 +743,9 @@ extern const std::string kTierReconcileEnabled;
 extern const std::string kTierReconcileWorkBudgetMs;
 // Segments newer than this (seconds since they ended) are never treated as missing.
 extern const std::string kTierReconcileMinAgeSeconds;
+// Age thresholds for tier moves and retention are floored to this many seconds
+// so a range is split at most once per interval instead of every cycle.
+extern const std::string kTieringSplitGranularitySeconds;
 // Maximum concurrent tier-transfer jobs across all storage pools.
 extern const std::string kTieringTransferMaxConcurrent;
 // Maximum concurrent tier-transfer jobs touching the same storage pool.

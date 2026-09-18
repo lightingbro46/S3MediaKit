@@ -75,6 +75,7 @@ foreach(manager_case
     ReconcilesRangesWhoseFilesAreMissing
     BackfillSkipsBlocksWithoutFiles
     RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks
+    AlignsMoveThresholdToSplitGranularity
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot

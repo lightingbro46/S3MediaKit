@@ -110,6 +110,8 @@ void configureProcess(const std::string &root) {
     mINI::Instance()[Storage::kRestoreSavePath] = root + "/restore";
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 0;
     mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 0;
+    // Scenarios expect moves right at "now"; the hourly default is covered separately.
+    mINI::Instance()[Storage::kTieringSplitGranularitySeconds] = 1;
     mINI::Instance()[Storage::kPoolHealthCheckIntervalSeconds] = 3600;
     mINI::Instance()[Storage::kPoolHealthFailureThreshold] = 2;
     mINI::Instance()[Storage::kPoolHealthRecoveryThreshold] = 2;
@@ -2191,6 +2193,54 @@ int scenarioTimefileRebuildSwap(const std::string &root) {
     require(::stat(file0.c_str(), &after) == 0 && after.st_ino == before.st_ino &&
                 after.st_mtime == before.st_mtime,
             "Removing a block rewrote a timefile of another day");
+    return 0;
+}
+
+int scenarioMoveThresholdAlignedToGranularity(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringSplitGranularitySeconds] = 3600;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-hourly-threshold";
+    require(manager.assignPolicyToCamera(camera, policy.id, "hourly threshold"),
+            "Policy assignment failed");
+    // retain 0 / min age 0 puts the raw threshold at "now"; aligned, it is the
+    // start of the current hour, so a segment starting at that hour stays HOT.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t hour = now - now % 3600;
+    auto before = makeSegmentFixture(root, camera, "2026-08-21/10-59-00", "before-hour", hour - 60);
+    auto at = makeSegmentFixture(root, camera, "2026-08-21/11-00-00", "at-hour", hour);
+    for (const auto *segment : {&before, &at}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(SegmentTierRangeImp().queryByCamera(camera).size() == 1,
+            "Contiguous segments across the hour were not one range");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Hourly-aligned move job did not finish");
+    drainWorkThreadPool();
+    require(!File::fileExist(before.source_path), "Segment before the hour was not moved");
+    require(File::fileExist(at.source_path),
+            "Segment starting at the aligned threshold was moved");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 2 && ranges[0].tier == tierTypeToString(WarmTier) &&
+                ranges[0].end_time == hour && ranges[1].tier == tierTypeToString(HotTier) &&
+                ranges[1].start_time == hour,
+            "Range was not split at the hour boundary");
+    manager.stop();
     return 0;
 }
 
@@ -4344,6 +4394,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
         if (name == "reconcile-ghost-segments") return scenarioReconcileDropsSegmentsWithoutFiles(root);
         if (name == "timefile-rebuild-swap") return scenarioTimefileRebuildSwap(root);
+        if (name == "hourly-move-threshold") return scenarioMoveThresholdAlignedToGranularity(root);
         if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
@@ -4577,6 +4628,11 @@ TEST(TierStorageManagerIntegrationTest, BackfillSkipsBlocksWithoutFiles) {
 TEST(TierStorageManagerIntegrationTest, RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks) {
     TempRoot root;
     EXPECT_EQ(0, runChild("timefile-rebuild-swap", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AlignsMoveThresholdToSplitGranularity) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("hourly-move-threshold", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
