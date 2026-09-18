@@ -3512,6 +3512,140 @@ int scenarioQuotaCapacityFollowsRangeSums(const std::string &root) {
     return 0;
 }
 
+void runMaintenanceCycle(TierStorageManager &manager) {
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+}
+
+int scenarioPressureDeletesOnColdNasPool(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeNasPool(root);
+    cold.id = "cold-nas";
+    cold.tier = tierTypeToString(ColdTier);
+    cold.high_watermark_percent = 0;
+    cold.critical_watermark_percent = 1;
+    require(manager.createPool(cold) == cold.id, "COLD NAS pool creation failed");
+    drainWorkThreadPool();
+
+    // The oldest range alone covers the reclaim target, so deletion stops after it.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> old_keys;
+    std::vector<std::string> new_keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-cold-a", now - 5 * 86400, 1,
+                                        static_cast<int64_t>(1) << 50, old_keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-cold-b", now - 4 * 86400, 1,
+                                        2, new_keys);
+    const std::string old_file = root + "/nas/record/" + old_keys.front();
+    const std::string new_file = root + "/nas/record/" + new_keys.front();
+    writeFile(old_file, "cold-oldest");
+    writeFile(new_file, "cold-newest");
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Pressure deletion did not run on the critical COLD pool");
+    drainWorkThreadPool();
+    require(!File::fileExist(old_file), "Oldest COLD file was not deleted");
+    require(File::fileExist(new_file) &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "COLD pressure deletion kept deleting after the reclaim target was met");
+    manager.stop();
+    return 0;
+}
+
+int scenarioPressureDeletesOnQuotaObjectPool(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(1000);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+
+    // 900 of 1000 bytes is critical; reclaiming down to 75% needs 150 bytes,
+    // which the oldest 300-byte range covers.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> old_keys;
+    std::vector<std::string> new_keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-quota-old",
+                                        now - 3 * 86400, 3, 100, old_keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-quota-new",
+                                        now - 2 * 86400, 2, 300, new_keys);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Pressure deletion did not run on the critical QUOTA pool");
+    drainWorkThreadPool();
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "QUOTA pressure deletion went past the reclaim target");
+    auto batches = server.requests("POST", "?delete");
+    require(batches.size() == 1, "Expected one DeleteObjects request for the oldest range");
+    for (const auto &key : old_keys) {
+        require(batches.front().body.find(key) != std::string::npos,
+                "Oldest range key missing from DeleteObjects: " + key);
+    }
+
+    // Usage is now 60%: another cycle deletes nothing.
+    runMaintenanceCycle(manager);
+    require(server.requests("POST", "?delete").size() == 1 &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "QUOTA pool below its watermarks was still pressure-deleted");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectPressureWaitsForLaggingMetrics(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringObjectPressureCooldownSeconds] = 2;
+    FakeS3Server server;
+    // The raw metric reports 99% used and never catches up with the deletes.
+    auto raw_free = std::make_shared<std::atomic<int64_t>>(10);
+    server.setHandler(rawClusterMetrics(raw_free));
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    require(manager.createPool(cold) == cold.id, "METRICS pool creation failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-metrics-old",
+                                        now - 3 * 86400, 3, 100, keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-metrics-new",
+                                        now - 2 * 86400, 2, 300, keys);
+
+    runMaintenanceCycle(manager);
+    require(rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED) &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "First pressure pass on the METRICS pool did not delete only the oldest range");
+
+    runMaintenanceCycle(manager);
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Pressure deletion trusted the lagging metric during the cooldown");
+
+    ::usleep(2100000);
+    runMaintenanceCycle(manager);
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::DELETED),
+            "Pressure deletion did not resume after the cooldown");
+    manager.stop();
+    return 0;
+}
+
 int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -4895,6 +5029,9 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
+        if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
+        if (name == "pressure-quota-object") return scenarioPressureDeletesOnQuotaObjectPool(root);
+        if (name == "pressure-metrics-cooldown") return scenarioObjectPressureWaitsForLaggingMetrics(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -5198,6 +5335,21 @@ TEST(TierStorageManagerIntegrationTest, AlertsWhenObjectBucketVersioningIsEnable
 TEST(TierStorageManagerIntegrationTest, QuotaCapacityFollowsStoredRangeBytes) {
     TempRoot root;
     EXPECT_EQ(0, runChild("quota-capacity-range-sums", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestOnCriticalColdNasPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-cold-nas", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOnCriticalQuotaObjectPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-quota-object", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectPressureWaitsForLaggingMetrics) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-metrics-cooldown", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {

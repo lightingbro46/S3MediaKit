@@ -4186,12 +4186,8 @@ void TierStorageManager::enforcePoolPressureRetention() {
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         for (const auto &kv : _pool_cache) {
-            const auto &pool = kv.second;
-            if (!pool.enabled || poolTypeIsObjectStorage(pool.type))
-                continue;
-            if (pool.tier != tierTypeToString(HotTier) && pool.tier != tierTypeToString(WarmTier))
-                continue;
-            pools.push_back(pool);
+            if (kv.second.enabled)
+                pools.push_back(kv.second);
         }
     }
 
@@ -4213,11 +4209,24 @@ void TierStorageManager::enforcePoolPressureRetention() {
         return cutoff;
     };
 
+    GET_CONFIG(int64_t, object_cooldown_seconds, Storage::kTieringObjectPressureCooldownSeconds);
     SegmentTierRangeImp range_imp;
     TieringJobImp job_imp;
     for (auto pool : pools) {
         if (_stopping)
             return;
+        // The backend metric of a METRICS-mode object pool lags behind
+        // deletes; wait before trusting it again to avoid overshooting.
+        const bool lagging_metrics = poolTypeIsObjectStorage(pool.type) &&
+                                     pool.capacity_source != kPoolCapacitySourceQuota;
+        if (lagging_metrics) {
+            auto cooldown = _pressure_cooldown_until.find(pool.id);
+            if (cooldown != _pressure_cooldown_until.end() &&
+                static_cast<int64_t>(time(nullptr)) < cooldown->second) {
+                continue;
+            }
+        }
+        // Without capacity (e.g. METRICS unavailable) total_bytes stays 0.
         fillPoolRuntimeStats(pool);
         if (pool.total_bytes <= 0 ||
             pool.usage_pct < static_cast<float>(pool.critical_watermark_percent)) {
@@ -4278,6 +4287,10 @@ void TierStorageManager::enforcePoolPressureRetention() {
         if (deleted_count > 0) {
             InfoL << "Pressure deletion on pool " << pool.id << " removed "
                   << deleted_count << " range(s), " << deleted_bytes << " bytes";
+            if (lagging_metrics && object_cooldown_seconds > 0)
+                _pressure_cooldown_until[pool.id] = now + object_cooldown_seconds;
+            std::lock_guard<std::mutex> lk(_quota_usage_mtx);
+            _quota_usage.erase(pool.id);
         }
         if (need > 0) {
             auto &alerted_at = _pressure_alerted_at[pool.id];

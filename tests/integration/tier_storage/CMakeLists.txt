@@ -91,6 +91,9 @@ foreach(manager_case
     DeletesObjectRangeInOneBatchRequest
     AlertsWhenObjectBucketVersioningIsEnabled
     QuotaCapacityFollowsStoredRangeBytes
+    PressureDeletesOldestOnCriticalColdNasPool
+    PressureDeletesOnCriticalQuotaObjectPool
+    ObjectPressureWaitsForLaggingMetrics
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers

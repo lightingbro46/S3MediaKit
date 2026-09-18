@@ -739,6 +739,9 @@ extern const std::string kTieringPressureDeleteMarginPercent;
 // Seconds a QUOTA-mode object pool reuses its summed range bytes before
 // querying segment_tier_ranges again; 0 disables the cache.
 extern const std::string kTieringQuotaUsageCacheSeconds;
+// Seconds to wait after pressure deletion on a METRICS-mode object pool before
+// deleting again, since the backend capacity metric lags behind deletes.
+extern const std::string kTieringObjectPressureCooldownSeconds;
 // Enable the background check that drops timefile entries and range coverage
 // for recorded segments whose MP4 no longer exists on a reachable pool.
 extern const std::string kTierReconcileEnabled;

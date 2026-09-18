@@ -561,6 +561,7 @@ const string kTieringMissingSegmentMaxAttempts = STORAGE_FIELD "tiering_missing_
 const string kTieringMissingSegmentRetryBaseSeconds = STORAGE_FIELD "tiering_missing_segment_retry_base_seconds";
 const string kTieringPressureDeleteMarginPercent = STORAGE_FIELD "tiering_pressure_delete_margin_percent";
 const string kTieringQuotaUsageCacheSeconds = STORAGE_FIELD "tiering_quota_usage_cache_seconds";
+const string kTieringObjectPressureCooldownSeconds = STORAGE_FIELD "tiering_object_pressure_cooldown_seconds";
 const string kTierReconcileEnabled = STORAGE_FIELD "tier_reconcile_enabled";
 const string kTierReconcileWorkBudgetMs = STORAGE_FIELD "tier_reconcile_work_budget_ms";
 const string kTierReconcileMinAgeSeconds = STORAGE_FIELD "tier_reconcile_min_age_seconds";
@@ -609,6 +610,7 @@ static onceToken token([]() {
     mINI::Instance()[kTieringMissingSegmentRetryBaseSeconds] = 3600;
     mINI::Instance()[kTieringPressureDeleteMarginPercent] = 3;
     mINI::Instance()[kTieringQuotaUsageCacheSeconds] = 30;
+    mINI::Instance()[kTieringObjectPressureCooldownSeconds] = 900;
     mINI::Instance()[kTierReconcileEnabled] = 1;
     mINI::Instance()[kTierReconcileWorkBudgetMs] = 2000;
     mINI::Instance()[kTierReconcileMinAgeSeconds] = 600;

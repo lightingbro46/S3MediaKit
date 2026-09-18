@@ -401,7 +401,7 @@ Luồng hiện tại theo code:
    - Chạy `processCameraPressureTiering(camera_id, policy)`.
    - Chạy `enforcePolicyDeleteRetention(camera_id, policy)`.
    - Chạy `enforceCameraArchiveRetention(camera_id, policy)` (chỉ `keepArchivedMaxFor`).
-7. Chạy `enforcePoolPressureRetention()` một lần cho toàn bộ pool HOT/WARM (xem 5.4).
+7. Chạy `enforcePoolPressureRetention()` một lần cho mọi pool enabled, gồm HOT/WARM/COLD và object storage (xem 5.4).
 8. Chạy `runRangeFileReconcile()` (xem 5.6).
 9. Xử lý metadata cleanup, restore job, prune metric/range, dọn cache restore và MP4 orphan, rồi dispatch job lần nữa.
 10. Ghi log thời gian hoàn tất.
@@ -467,9 +467,11 @@ Retention theo tuổi (`keepArchivedMaxFor` và `delete_after_days`) dùng chung
 - Range vượt qua cutoff được split; chỉ phần cũ bị xử lý, phần mới được lượt sau xử lý khi đủ tuổi.
 - Phần đã split được cắt tiếp quanh video được bảo vệ (`carveDeletablePieces()`): segment chạm video bảo vệ nằm trong piece riêng giữ `AVAILABLE`, các piece còn lại được thu hẹp sát segment để không chạm video bảo vệ và được xử lý bình thường.
 
-Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một lần mỗi cycle cho từng pool HOT/WARM kiểu filesystem:
+Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một lần mỗi cycle cho từng pool enabled ở mọi tier (HOT/WARM/COLD), kể cả object storage:
 
-- Chỉ chạy khi usage thực tế ≥ `critical_watermark_percent` và pool đọc/xóa được.
+- Chỉ chạy khi usage thực tế ≥ `critical_watermark_percent` và pool đọc/xóa được. Pool không đo được dung lượng (`total_bytes = 0`, ví dụ object storage `METRICS` khi metric không đọc được) bị bỏ qua.
+- Tier cuối và object storage không có job move đi nên `pending_move_bytes = 0` và nhánh hoãn xóa không áp dụng.
+- Pool object storage `METRICS`: metric MinIO trễ so với thao tác xóa, nên sau một lượt đã xóa được dữ liệu, pool bị tạm dừng xóa theo áp lực trong `storage.tiering_object_pressure_cooldown_seconds` (mặc định 900 giây) để không xóa quá tay dựa trên số liệu cũ. Pool `QUOTA` tính usage từ DB nên không cần cooldown; cache tổng byte của pool bị xóa ngay sau lượt xóa.
 - Ưu tiên chuyển tầng: nếu pool còn job move `PENDING/RUNNING` và usage < `critical + tiering_pressure_delete_margin_percent` thì hoãn xóa; nếu vẫn xóa thì trừ số byte đang chờ move khỏi lượng cần giải phóng.
 - Lượng cần giải phóng = `used - total * (high - 5)%`; range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng.
 - Nếu không giải phóng đủ, ghi cảnh báo `POOL_CRITICAL_NO_DELETABLE` (tối đa một lần/giờ/pool).
@@ -1015,6 +1017,7 @@ storage.tiering_missing_segment_max_attempts=3
 storage.tiering_missing_segment_retry_base_seconds=3600
 storage.tiering_pressure_delete_margin_percent=3
 storage.tiering_quota_usage_cache_seconds=30
+storage.tiering_object_pressure_cooldown_seconds=900
 storage.tier_reconcile_enabled=1
 storage.tier_reconcile_work_budget_ms=2000
 storage.tier_reconcile_min_age_seconds=600
@@ -1056,6 +1059,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_missing_segment_retry_base_seconds` | `queueTierMoveJob()` | Backoff cơ sở cho range có segment mất, nhân đôi mỗi lần, tối đa 1 ngày |
 | `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
 | `tiering_quota_usage_cache_seconds` | `quotaUsedBytes()` | Thời gian dùng lại tổng byte range của pool `QUOTA`; `0` tắt cache |
+| `tiering_object_pressure_cooldown_seconds` | `enforcePoolPressureRetention()` | Thời gian chờ giữa hai lượt xóa theo áp lực trên pool object storage `METRICS`; `0` tắt cooldown |
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
 | `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |

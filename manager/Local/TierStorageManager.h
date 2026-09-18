@@ -385,8 +385,9 @@ private:
     // reconcileRangeFiles(); resumes from an in-memory cursor each cycle.
     void runRangeFileReconcile();
 
-    // Oldest-first deletion across each HOT/WARM pool above its critical
-    // watermark; stops once usage would drop below (high - 5)%.
+    // Oldest-first deletion across every pool (HOT/WARM/COLD, filesystem or
+    // object storage) above its critical watermark; stops once usage would
+    // drop below (high - 5)%. METRICS-mode object pools cool down between runs.
     void enforcePoolPressureRetention();
 
     void ensureDefaultHotPool();
@@ -594,6 +595,8 @@ private:
     std::string _reconcile_cursor_id;
     // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _pressure_alerted_at;
+    // Earliest next pressure deletion per METRICS-mode object pool; maintenance-cycle only.
+    std::unordered_map<std::string, int64_t> _pressure_cooldown_until;
     // Destination capacity probed during the current maintenance cycle and the
     // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
     struct DestinationPoolCheck {
