@@ -573,6 +573,17 @@ Chặn mất hàng loạt (mass-loss guard): range mất toàn bộ object khôn
 
 Bucket bật versioning: object đã xoá (delete marker) không có trong `ListObjectsV2` nên được coi là mất đúng như mong muốn.
 
+#### Báo cáo object mồ côi
+
+Sau lượt đối soát range, mỗi pool object còn dùng được (không bị pause) chạy `runObjectOrphanSweep()` trong `tier_object_orphan_work_budget_ms` (mặc định 1 000 ms, `0` tắt), tối đa một lượt mỗi `tier_object_orphan_sweep_interval_seconds` (mặc định 1 ngày):
+
+1. Duyệt `base_path/` bằng `listCommonPrefixes` xuống `camera/stream/YYYY-MM-DD/`; thư mục cấp ngày không đúng dạng ngày bị bỏ qua. Trạng thái lượt quét giữ trong bộ nhớ, list lỗi thì thử lại prefix đó ở cycle sau.
+2. Với mỗi day prefix: list object, lấy các range `AVAILABLE/RESTORING/EXPIRED` của pool cho camera/stream đó chồng lên ngày (±1 giờ), đọc segment từ timefile để dựng tập key sở hữu. Timefile đọc lỗi thì coi cả ngày là có chủ.
+3. Object không thuộc tập đó và có `LastModified` cũ hơn `tier_object_orphan_min_age_seconds` (mặc định 1 ngày, vì upload ghi object trước khi range chuyển sang pool) được đếm là mồ côi.
+4. Hết lượt: nếu có, ghi một cảnh báo `POOL_ORPHAN_OBJECTS` (WARNING) với số object, tổng byte và key đầu tiên.
+
+Báo cáo không bao giờ xoá object. Object mồ côi thường đến từ lỗi xoá giữa chừng, upload bị huỷ sau khi đã ghi object, hoặc dữ liệu ghi ngoài hệ thống. Người vận hành tự xác nhận rồi xoá.
+
 ### 5.7 Move Sang Object Storage
 
 Nếu target pool là object storage (API hiện cho phép `MINIO`):
@@ -1057,6 +1068,9 @@ storage.tier_object_reconcile_mode=FIX
 storage.tier_object_reconcile_work_budget_ms=2000
 storage.tier_object_reconcile_mass_loss_threshold=20
 storage.tier_object_reconcile_pause_seconds=3600
+storage.tier_object_orphan_work_budget_ms=1000
+storage.tier_object_orphan_min_age_seconds=86400
+storage.tier_object_orphan_sweep_interval_seconds=86400
 storage.tiering_split_granularity_seconds=3600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
@@ -1104,6 +1118,9 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tier_object_reconcile_work_budget_ms` | `runObjectRangeReconcile()` | Thời gian tối đa đối soát object storage mỗi cycle (chung cho mọi pool object) |
 | `tier_object_reconcile_mass_loss_threshold` | `runObjectRangeReconcile()` | Số range liên tiếp mất toàn bộ object bị coi là cấu hình sai (`POOL_OBJECTS_MISSING_SUSPECT`) |
 | `tier_object_reconcile_pause_seconds` | `runObjectRangeReconcile()` | Thời gian dừng đối soát pool sau khi mass-loss guard kích hoạt |
+| `tier_object_orphan_work_budget_ms` | `runObjectOrphanSweep()` | Thời gian tối đa cho báo cáo object mồ côi mỗi cycle; `0` tắt |
+| `tier_object_orphan_min_age_seconds` | `runObjectOrphanSweep()` | Object mới hơn ngưỡng này không bị coi là mồ côi |
+| `tier_object_orphan_sweep_interval_seconds` | `runObjectOrphanSweep()` | Khoảng cách giữa hai lượt báo cáo của cùng một pool |
 | `tiering_split_granularity_seconds` | Move theo tuổi, retention theo tuổi | Độ mịn làm tròn mốc; `<= 1` tắt làm tròn |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
@@ -1212,7 +1229,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
 - Object MinIO mất (xoá tay, ILM, reset bucket) được đối soát theo lượt quét (mục 5.6): quét hết ~90 nghìn range COLD (600 stream × 150 ngày, ~1–2 LIST/range) mất khoảng 1–3 ngày với budget 2 s mỗi cycle 300 s; range có restore thất bại vì object trả 404 được đối soát ngay ở cycle kế tiếp.
 - Không đổi `base_path`/bucket của pool đang chứa dữ liệu: mọi key cũ sẽ lệch. Mass-loss guard chặn việc chuyển hàng loạt range sang `MISSING` trong trường hợp này, nhưng dữ liệu cũ vẫn không đọc được cho tới khi trả lại cấu hình.
-- Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
+- Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Object còn sót quá 1 ngày được báo qua `POOL_ORPHAN_OBJECTS` (mục 5.6) nhưng không được tự xoá. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
 - Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.

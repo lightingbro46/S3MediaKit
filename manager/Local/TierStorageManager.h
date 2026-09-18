@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
+#include <functional>
 #include <string>
 #include <limits>
 #include <memory>
@@ -423,6 +425,14 @@ private:
         // sane (a present object); N of them in a row trip the mass-loss guard.
         std::vector<ObjectRangeFinding> pending_all_missing;
         int64_t paused_until = 0;
+        // Orphan-object report: prefixes left to visit with their depth
+        // below base_path (0 lists cameras, 3 is a day of one stream).
+        std::deque<std::pair<std::string, int>> orphan_queue;
+        bool orphan_active = false;
+        int64_t orphan_next_sweep = 0;
+        int64_t orphan_objects = 0;
+        int64_t orphan_bytes = 0;
+        std::string orphan_first;
     };
     ObjectRangeCheck checkObjectRange(const StoragePool &pool,
                                       const SegmentTierRange &range,
@@ -438,6 +448,19 @@ private:
     // Priority ranges (see requestObjectRangeReconcile), then a time-budgeted,
     // newest-first sweep of each object pool's AVAILABLE ranges.
     void runObjectRangeReconcile();
+    // Report-only sweep of camera/stream/day prefixes for objects that no
+    // AVAILABLE/RESTORING/EXPIRED range of the pool owns; raises
+    // POOL_ORPHAN_OBJECTS once per completed sweep and never deletes.
+    void runObjectOrphanSweep(const StoragePool &pool,
+                              ObjectReconcilePoolState &state,
+                              const std::function<bool()> &exhausted);
+    // False when listing failed; the day is then retried next cycle.
+    bool scanOrphanDayPrefix(const StoragePool &pool,
+                             const std::string &prefix,
+                             const std::string &camera_id,
+                             const std::string &stream_id,
+                             const std::string &day,
+                             ObjectReconcilePoolState &state);
     // Queues a range for object reconciliation at the start of the next
     // maintenance cycle, ahead of the sweep; any thread.
     void requestObjectRangeReconcile(const std::string &range_id);

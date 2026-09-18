@@ -4190,6 +4190,57 @@ int scenarioRestoreOfMissingObjectPrioritizesReconcile(const std::string &root) 
     return 0;
 }
 
+int scenarioReportsOrphanObjectsWithoutDeleting(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const std::string base_path = cold.base_path.value_or("");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    const int64_t two_days = 2 * 86400;
+
+    // Owned objects, older than a day: never orphans.
+    std::vector<std::string> owned_keys;
+    const auto range = seedRangeOnPool(manager, root, cold, "camera-orphan", base, 2, 100, owned_keys);
+    for (const auto &key : owned_keys)
+        server.putObject(bucket, key, 100, two_days);
+    // Same stream, a time no range covers: an old orphan and a fresh upload.
+    const std::string old_orphan = TierObjectStorage::makeS3Key(
+        base_path, "camera-orphan", "main",
+        getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 7200)));
+    server.putObject(bucket, old_orphan, 500, two_days);
+    const std::string fresh_upload = TierObjectStorage::makeS3Key(
+        base_path, "camera-orphan", "main",
+        getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 9000)));
+    server.putObject(bucket, fresh_upload, 300, 60);
+    // A camera without any range, plus a directory that is not a day.
+    const std::string ghost = base_path + "/camera-ghost/main/2026-09-01/10-00-00.mp4";
+    server.putObject(bucket, ghost, 700, two_days);
+    const std::string not_a_day = base_path + "/camera-ghost/main/thumbnails/10-00-00.jpg";
+    server.putObject(bucket, not_a_day, 50, two_days);
+
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_ORPHAN_OBJECTS", cold.id) == 1, "Orphan objects were not reported");
+    require(hasAlert("POOL_ORPHAN_OBJECTS", "2 object(s), 1200 bytes"),
+            "Orphan report does not count exactly the old unowned objects");
+    for (const auto &key : {owned_keys[0], owned_keys[1], old_orphan, fresh_upload, ghost, not_a_day})
+        require(server.hasObject(bucket, key), "The orphan report deleted " + key);
+    require(server.requests("POST", "?delete").empty() && server.requests("DELETE", "/").empty(),
+            "The orphan report sent a delete request");
+    require(rangeStatus(range.range_id) == "AVAILABLE", "The orphan report changed a range");
+
+    // The next sweep waits for the interval.
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_ORPHAN_OBJECTS", cold.id) == 1, "Orphan report repeated before its interval");
+    manager.stop();
+    return 0;
+}
+
 int countRanges(const std::string &camera, const std::string &status) {
     int count = 0;
     for (const auto &range : SegmentTierRangeImp().queryByCamera(camera))
@@ -5807,6 +5858,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
         if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
         if (name == "restore-missing-object-reconcile") return scenarioRestoreOfMissingObjectPrioritizesReconcile(root);
+        if (name == "object-orphan-report") return scenarioReportsOrphanObjectsWithoutDeleting(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
         if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
@@ -6046,6 +6098,11 @@ TEST(TierStorageManagerIntegrationTest, ObjectReconcileMassLossGuardPausesPool) 
 TEST(TierStorageManagerIntegrationTest, RestoreOfMissingObjectPrioritizesReconcile) {
     TempRoot root;
     EXPECT_EQ(0, runChild("restore-missing-object-reconcile", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReportsOrphanObjectsWithoutDeleting) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-orphan-report", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {

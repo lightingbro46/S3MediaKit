@@ -4532,6 +4532,139 @@ TierStorageManager::reconcileObjectRange(const StoragePool &pool,
     return check;
 }
 
+// Local midnight bounds of a "YYYY-MM-DD" day directory; false for any other name.
+static bool parseLocalDay(const std::string &day, int64_t &out_start, int64_t &out_end) {
+    int year = 0, month = 0, mday = 0;
+    char tail = 0;
+    if (day.size() != 10 || std::sscanf(day.c_str(), "%4d-%2d-%2d%c", &year, &month, &mday, &tail) != 3)
+        return false;
+    if (month < 1 || month > 12 || mday < 1 || mday > 31)
+        return false;
+    struct tm tm_day{};
+    tm_day.tm_year = year - 1900;
+    tm_day.tm_mon = month - 1;
+    tm_day.tm_mday = mday;
+    tm_day.tm_isdst = -1;
+    struct tm tm_next = tm_day;
+    ++tm_next.tm_mday;
+    out_start = static_cast<int64_t>(mktime(&tm_day));
+    out_end = static_cast<int64_t>(mktime(&tm_next));
+    return out_start > 0 && out_end > out_start;
+}
+
+bool TierStorageManager::scanOrphanDayPrefix(const StoragePool &pool,
+                                             const std::string &prefix,
+                                             const std::string &camera_id,
+                                             const std::string &stream_id,
+                                             const std::string &day,
+                                             ObjectReconcilePoolState &state) {
+    int64_t day_start = 0;
+    int64_t day_end = 0;
+    if (!parseLocalDay(day, day_start, day_end))
+        return true;
+    std::map<std::string, TierObjectInfo> objects;
+    std::string error;
+    if (!_obj_storage.listObjects(pool.id, prefix, objects, error))
+        return false;
+    if (objects.empty())
+        return true;
+
+    // Keys owned by the pool's ranges around this day (an hour of slack for
+    // clock changes); an unreadable timefile makes the whole day owned.
+    const std::string base_path = pool.base_path.value_or("");
+    std::set<std::string> owned;
+    for (const auto &range : SegmentTierRangeImp().findStoredByCameraStreamPool(
+             camera_id, stream_id, pool.id, day_start - 3600, day_end + 3600)) {
+        std::vector<TierRangeSegmentFile> segments;
+        if (!collectSegmentFilesForRange(range, segments, error))
+            return true;
+        for (const auto &segment : segments) {
+            owned.insert(TierObjectStorage::makeS3Key(base_path, segment.camera_id,
+                                                      segment.stream_id, segment.segment_path));
+        }
+    }
+
+    // Uploads write the object before the range moves to this pool.
+    GET_CONFIG(int64_t, min_age_seconds, Storage::kTierObjectOrphanMinAgeSeconds);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    for (const auto &object : objects) {
+        if (owned.count(object.first) || now - object.second.last_modified < min_age_seconds)
+            continue;
+        if (state.orphan_first.empty())
+            state.orphan_first = object.first;
+        ++state.orphan_objects;
+        state.orphan_bytes += std::max<int64_t>(0, object.second.size);
+    }
+    return true;
+}
+
+void TierStorageManager::runObjectOrphanSweep(const StoragePool &pool,
+                                              ObjectReconcilePoolState &state,
+                                              const std::function<bool()> &exhausted) {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    std::string root = pool.base_path.value_or("");
+    if (!root.empty() && root.back() != '/')
+        root += '/';
+    if (!state.orphan_active) {
+        if (now < state.orphan_next_sweep)
+            return;
+        state.orphan_active = true;
+        state.orphan_queue.clear();
+        state.orphan_queue.push_back(std::make_pair(root, 0));
+        state.orphan_objects = 0;
+        state.orphan_bytes = 0;
+        state.orphan_first.clear();
+    }
+
+    while (!state.orphan_queue.empty() && !exhausted()) {
+        const std::pair<std::string, int> item = state.orphan_queue.front();
+        if (item.second < 3) {
+            std::vector<std::string> children;
+            std::string error;
+            if (!_obj_storage.listCommonPrefixes(pool.id, item.first, children, error))
+                return;
+            state.orphan_queue.pop_front();
+            for (const auto &child : children)
+                state.orphan_queue.push_back(std::make_pair(child, item.second + 1));
+            continue;
+        }
+        // "<root>camera/stream/YYYY-MM-DD/"
+        std::vector<std::string> parts;
+        std::string rest = item.first.substr(root.size());
+        size_t pos = 0;
+        while (pos < rest.size()) {
+            const size_t slash = rest.find('/', pos);
+            if (slash == std::string::npos)
+                break;
+            parts.push_back(rest.substr(pos, slash - pos));
+            pos = slash + 1;
+        }
+        if (parts.size() == 3 &&
+            !scanOrphanDayPrefix(pool, item.first, parts[0], parts[1], parts[2], state)) {
+            return;
+        }
+        state.orphan_queue.pop_front();
+    }
+    if (!state.orphan_queue.empty())
+        return;
+
+    GET_CONFIG(int64_t, min_age_seconds, Storage::kTierObjectOrphanMinAgeSeconds);
+    GET_CONFIG(int64_t, sweep_interval_seconds, Storage::kTierObjectOrphanSweepIntervalSeconds);
+    if (state.orphan_objects > 0) {
+        WarnL << "Pool " << pool.id << " holds " << state.orphan_objects << " orphan object(s), "
+              << state.orphan_bytes << " bytes, first=" << state.orphan_first;
+        addStorageAlert("WARNING", "POOL_ORPHAN_OBJECTS", pool.id,
+                        StrPrinter << state.orphan_objects << " object(s), " << state.orphan_bytes
+                                   << " bytes under '" << root << "' in bucket '"
+                                   << pool.bucket.value_or("")
+                                   << "' belong to no range of this pool and are older than "
+                                   << min_age_seconds << " s (first=" << state.orphan_first
+                                   << "). They were not deleted");
+    }
+    state.orphan_active = false;
+    state.orphan_next_sweep = now + std::max<int64_t>(0, sweep_interval_seconds);
+}
+
 void TierStorageManager::requestObjectRangeReconcile(const std::string &range_id) {
     if (range_id.empty())
         return;
@@ -4674,6 +4807,20 @@ void TierStorageManager::runObjectRangeReconcile() {
     if (checked > 0) {
         DebugL << "Object range reconciliation checked " << checked << " range(s) in "
                << budget.elapsedTime() << " ms";
+    }
+
+    GET_CONFIG(int64_t, orphan_budget_ms, Storage::kTierObjectOrphanWorkBudgetMs);
+    if (orphan_budget_ms <= 0)
+        return;
+    Ticker orphan_budget;
+    auto orphan_exhausted = [&]() {
+        return _stopping || orphan_budget.elapsedTime() >= static_cast<uint64_t>(orphan_budget_ms);
+    };
+    for (size_t n = 0; n < pools.size() && !orphan_exhausted(); ++n) {
+        const StoragePool &pool = pools[(first_pool + n) % pools.size()];
+        ObjectReconcilePoolState &state = _object_reconcile[pool.id];
+        if (usable(pool, state))
+            runObjectOrphanSweep(pool, state, orphan_exhausted);
     }
 }
 

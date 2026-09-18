@@ -983,6 +983,30 @@ public:
         return ret;
     }
 
+    // Ranges of one camera stream on a pool whose objects should still exist
+    // (AVAILABLE, RESTORING, EXPIRED) overlapping [from, to).
+    std::vector<SegmentTierRange> findStoredByCameraStreamPool(const std::string &camera_id,
+                                                               const std::string &stream_id,
+                                                               const std::string &pool_id,
+                                                               int64_t from,
+                                                               int64_t to) {
+        std::vector<SegmentTierRange> ret;
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND pool_id = ? AND stream_id = ? AND status IN (?, ?, ?)"
+                       " AND end_time > ? AND start_time < ?",
+                       {camera_id, pool_id, stream_id,
+                        segmentStatusToString(SegmentStatus::AVAILABLE),
+                        segmentStatusToString(SegmentStatus::RESTORING),
+                        segmentStatusToString(SegmentStatus::EXPIRED),
+                        std::to_string(from), std::to_string(to)})
+                .orderBy("start_time ASC");
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
         std::vector<SegmentTierRange> ret;
         std::ostringstream where;

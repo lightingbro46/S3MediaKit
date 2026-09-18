@@ -94,6 +94,7 @@ foreach(manager_case
     ObjectReconcileKeepsRangesOnListFailureAndInReportMode
     ObjectReconcileMassLossGuardPausesPool
     RestoreOfMissingObjectPrioritizesReconcile
+    ReportsOrphanObjectsWithoutDeleting
     AlertsWhenObjectBucketVersioningIsEnabled
     QuotaCapacityFollowsStoredRangeBytes
     PressureDeletesOldestOnCriticalColdNasPool

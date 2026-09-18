@@ -763,6 +763,14 @@ extern const std::string kTierObjectReconcileWorkBudgetMs;
 extern const std::string kTierObjectReconcileMassLossThreshold;
 // Seconds object reconciliation of a pool pauses after the mass-loss guard trips.
 extern const std::string kTierObjectReconcilePauseSeconds;
+// Time budget in milliseconds for the orphan-object report per maintenance
+// cycle; 0 disables the report.
+extern const std::string kTierObjectOrphanWorkBudgetMs;
+// Objects modified more recently than this are never reported as orphans
+// (uploads write objects before the range moves to the pool).
+extern const std::string kTierObjectOrphanMinAgeSeconds;
+// Seconds between two orphan-object sweeps of the same pool.
+extern const std::string kTierObjectOrphanSweepIntervalSeconds;
 // Age thresholds for tier moves and retention are floored to this many seconds
 // so a range is split at most once per interval instead of every cycle.
 extern const std::string kTieringSplitGranularitySeconds;
