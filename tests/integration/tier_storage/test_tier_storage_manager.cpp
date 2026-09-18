@@ -5,8 +5,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <set>
+#include <sstream>
 #include <algorithm>
 #include <atomic>
 #include <memory>
@@ -508,12 +512,14 @@ struct FakeS3Request {
 struct FakeS3Response {
     int status = 200;
     std::string body;
+    std::string content_type = "application/xml";
 };
 
 // Minimal path-style S3 endpoint for manager scenarios that need object
 // storage without MinIO. Every request is recorded; `handler` may override
-// the default answers (HeadBucket 200, versioning unset, DeleteObjects OK,
-// no capacity metrics).
+// the default answers (HeadBucket 200, versioning unset, no capacity
+// metrics). Objects live in memory: PUT stores, GET/HEAD read (404 when
+// absent), DELETE and DeleteObjects remove, ListObjectsV2 pages them.
 class FakeS3Server {
 public:
     typedef std::function<bool(const FakeS3Request &, FakeS3Response &)> Handler;
@@ -558,6 +564,31 @@ public:
         _handler = handler;
     }
 
+    // Stores an object directly, as if uploaded `age_seconds` ago.
+    void putObject(const std::string &bucket, const std::string &key, int64_t size,
+                   int64_t age_seconds = 0) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        Object &object = _objects[bucket + "/" + key];
+        object.body.assign(static_cast<size_t>(size), 'x');
+        object.last_modified = static_cast<int64_t>(::time(nullptr)) - age_seconds;
+    }
+
+    void removeObject(const std::string &bucket, const std::string &key) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _objects.erase(bucket + "/" + key);
+    }
+
+    bool hasObject(const std::string &bucket, const std::string &key) const {
+        std::lock_guard<std::mutex> lk(_mtx);
+        return _objects.count(bucket + "/" + key) > 0;
+    }
+
+    // Keys per ListObjectsV2 page, to exercise continuation tokens.
+    void setListPageSize(size_t page_size) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _list_page_size = std::max<size_t>(1, page_size);
+    }
+
     std::vector<FakeS3Request> requests(const std::string &method,
                                         const std::string &target_part) const {
         std::lock_guard<std::mutex> lk(_mtx);
@@ -570,9 +601,152 @@ public:
     }
 
 private:
+    struct Object {
+        std::string body;
+        int64_t last_modified = 0;
+    };
+
     static std::string lower(std::string value) {
         std::transform(value.begin(), value.end(), value.begin(), ::tolower);
         return value;
+    }
+
+    static std::string urlDecode(const std::string &value) {
+        std::string out;
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '%' && i + 2 < value.size()) {
+                out += static_cast<char>(std::strtol(value.substr(i + 1, 2).c_str(), nullptr, 16));
+                i += 2;
+            } else {
+                out += value[i] == '+' ? ' ' : value[i];
+            }
+        }
+        return out;
+    }
+
+    static std::map<std::string, std::string> queryParams(const std::string &query) {
+        std::map<std::string, std::string> params;
+        size_t pos = 0;
+        while (pos <= query.size()) {
+            size_t end = query.find('&', pos);
+            if (end == std::string::npos)
+                end = query.size();
+            const std::string item = query.substr(pos, end - pos);
+            const size_t eq = item.find('=');
+            if (!item.empty())
+                params[urlDecode(item.substr(0, eq))] =
+                    eq == std::string::npos ? std::string() : urlDecode(item.substr(eq + 1));
+            pos = end + 1;
+        }
+        return params;
+    }
+
+    static std::string isoTime(int64_t seconds) {
+        const time_t value = static_cast<time_t>(seconds);
+        struct tm tm_value{};
+        ::gmtime_r(&value, &tm_value);
+        char buffer[32];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &tm_value);
+        return buffer;
+    }
+
+    // Default object API over `_objects`; false when the request is not one.
+    bool serveObjectApi(const FakeS3Request &request, FakeS3Response &response) {
+        const size_t query_pos = request.target.find('?');
+        const std::string path = urlDecode(request.target.substr(1, query_pos == std::string::npos
+                                                                     ? std::string::npos
+                                                                     : query_pos - 1));
+        const std::string query = query_pos == std::string::npos
+                                      ? std::string() : request.target.substr(query_pos + 1);
+        const size_t slash = path.find('/');
+        const std::string bucket = path.substr(0, slash);
+        const std::string key = slash == std::string::npos ? std::string() : path.substr(slash + 1);
+        std::lock_guard<std::mutex> lk(_mtx);
+        if (request.method == "GET" && key.empty() && query.find("list-type=2") != std::string::npos) {
+            auto params = queryParams(query);
+            const std::string prefix = params["prefix"];
+            const std::string delimiter = params["delimiter"];
+            const std::string after = params["continuation-token"];
+            std::ostringstream xml;
+            xml << "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                << "<Name>" << bucket << "</Name><Prefix>" << prefix << "</Prefix>";
+            std::set<std::string> common;
+            std::ostringstream contents;
+            size_t count = 0;
+            std::string last_key;
+            bool truncated = false;
+            const std::string scope = bucket + "/" + prefix;
+            for (auto it = _objects.lower_bound(scope);
+                 it != _objects.end() && it->first.compare(0, scope.size(), scope) == 0; ++it) {
+                const std::string object_key = it->first.substr(bucket.size() + 1);
+                if (!after.empty() && object_key <= after)
+                    continue;
+                if (!delimiter.empty()) {
+                    const size_t cut = object_key.find(delimiter, prefix.size());
+                    if (cut != std::string::npos) {
+                        common.insert(object_key.substr(0, cut + delimiter.size()));
+                        continue;
+                    }
+                }
+                if (count == _list_page_size) {
+                    truncated = true;
+                    break;
+                }
+                contents << "<Contents><Key>" << object_key << "</Key><LastModified>"
+                         << isoTime(it->second.last_modified) << "</LastModified>"
+                         << "<ETag>&quot;fake&quot;</ETag><Size>" << it->second.body.size()
+                         << "</Size><StorageClass>STANDARD</StorageClass></Contents>";
+                last_key = object_key;
+                ++count;
+            }
+            xml << "<KeyCount>" << count << "</KeyCount><MaxKeys>" << _list_page_size
+                << "</MaxKeys><IsTruncated>" << (truncated ? "true" : "false") << "</IsTruncated>"
+                << contents.str();
+            for (const auto &item : common)
+                xml << "<CommonPrefixes><Prefix>" << item << "</Prefix></CommonPrefixes>";
+            if (truncated)
+                xml << "<NextContinuationToken>" << last_key << "</NextContinuationToken>";
+            xml << "</ListBucketResult>";
+            response.body = xml.str();
+            return true;
+        }
+        if (request.method == "POST" && query.find("delete") != std::string::npos) {
+            for (size_t pos = request.body.find("<Key>"); pos != std::string::npos;
+                 pos = request.body.find("<Key>", pos + 5)) {
+                const size_t end = request.body.find("</Key>", pos);
+                if (end == std::string::npos)
+                    break;
+                _objects.erase(bucket + "/" + request.body.substr(pos + 5, end - pos - 5));
+            }
+            response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            return true;
+        }
+        if (key.empty() || !query.empty())
+            return false;
+        auto found = _objects.find(path);
+        if (request.method == "PUT") {
+            Object &object = _objects[path];
+            object.body = request.body;
+            object.last_modified = static_cast<int64_t>(::time(nullptr));
+            return true;
+        }
+        if (request.method == "DELETE") {
+            _objects.erase(path);
+            response.status = 204;
+            return true;
+        }
+        if (request.method == "GET" || request.method == "HEAD") {
+            if (found == _objects.end()) {
+                response.status = 404;
+                if (request.method == "GET")
+                    response.body = "<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>";
+                return true;
+            }
+            response.body = found->second.body;
+            response.content_type = "application/octet-stream";
+            return true;
+        }
+        return false;
     }
 
     void serve(int client) {
@@ -627,14 +801,14 @@ private:
                 response.status = 404;
             } else if (request.method == "GET" && request.target.find("?versioning") != std::string::npos) {
                 response.body = "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
-            } else if (request.method == "POST" && request.target.find("?delete") != std::string::npos) {
-                response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            } else {
+                serveObjectApi(request, response);
             }
         }
         std::string reply = "HTTP/1.1 " + std::to_string(response.status) +
-                            (response.status == 200 ? " OK" : " Error") + "\r\n";
+                            (response.status / 100 == 2 ? " OK" : " Error") + "\r\n";
         if (!response.body.empty())
-            reply += "Content-Type: application/xml\r\n";
+            reply += "Content-Type: " + response.content_type + "\r\n";
         reply += "Content-Length: " + std::to_string(response.body.size()) +
                  "\r\nConnection: close\r\n\r\n";
         if (request.method != "HEAD")
@@ -666,6 +840,9 @@ private:
     mutable std::mutex _mtx;
     Handler _handler;
     std::vector<FakeS3Request> _requests;
+    // "bucket/key" -> object.
+    std::map<std::string, Object> _objects;
+    size_t _list_page_size = 1000;
 };
 
 StoragePool makeFakeObjectPool(const std::string &root, const FakeS3Server &server) {
@@ -3381,6 +3558,63 @@ int scenarioObjectRetentionDeletesInOneBatch(const std::string &root) {
     return 0;
 }
 
+int scenarioObjectListAndHeadApi(const std::string &root) {
+    (void)root;
+    FakeS3Server server;
+    server.setListPageSize(2);
+    TierObjectStorage storage;
+    require(storage.registerPool("list-pool", "MINIO", server.endpoint(), "list-bucket", "base",
+                                 "fake-access", "fake-secret"),
+            "Fake pool registration failed");
+    const std::string day = "base/cam/main/2026-09-15/";
+    for (int i = 0; i < 5; ++i)
+        server.putObject("list-bucket", day + "10-0" + std::to_string(i) + "-00.mp4", 10 + i, 7200);
+    server.putObject("list-bucket", "base/cam/main/2026-09-16/00-00-00.mp4", 1);
+    server.putObject("list-bucket", "base/cam/sub/2026-09-15/00-00-00.mp4", 1);
+
+    std::map<std::string, TierObjectInfo> objects;
+    std::string error;
+    require(storage.listObjects("list-pool", day, objects, error), "Listing failed: " + error);
+    require(objects.size() == 5, "Paged listing did not return every object of the prefix");
+    require(server.requests("GET", "list-type=2").size() == 3,
+            "Five keys with two per page must take three ListObjectsV2 requests");
+    const auto &first = objects[day + "10-00-00.mp4"];
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    require(first.size == 10 && std::llabs(now - 7200 - first.last_modified) <= 5,
+            "Listing lost the object size or LastModified");
+
+    std::vector<std::string> prefixes;
+    require(storage.listCommonPrefixes("list-pool", "base/cam/", prefixes, error) &&
+                prefixes.size() == 2 && prefixes[0] == "base/cam/main/" &&
+                prefixes[1] == "base/cam/sub/",
+            "Delimiter listing did not return the stream prefixes");
+
+    require(storage.headSegment("list-pool", day + "10-00-00.mp4") == TierObjectPresence::PRESENT,
+            "Existing object is not PRESENT");
+    require(storage.headSegment("list-pool", day + "11-00-00.mp4") == TierObjectPresence::ABSENT,
+            "HTTP 404 is not ABSENT");
+    require(storage.headSegment("unknown-pool", day) == TierObjectPresence::UNKNOWN,
+            "An unregistered pool must be UNKNOWN");
+
+    // Any failure, even on a later page, leaves no partial listing behind.
+    std::shared_ptr<std::atomic<int>> list_calls = std::make_shared<std::atomic<int>>(0);
+    server.setHandler([list_calls](const FakeS3Request &request, FakeS3Response &response) {
+        const bool list = request.target.find("list-type=2") != std::string::npos;
+        if (request.method == "HEAD" || (list && ++*list_calls > 1)) {
+            response.status = 500;
+            response.body = "<Error><Code>InternalError</Code><Message>injected</Message></Error>";
+            return true;
+        }
+        return false;
+    });
+    require(!storage.listObjects("list-pool", day, objects, error) && objects.empty() &&
+                !error.empty(),
+            "A failed later page still returned a listing");
+    require(storage.headSegment("list-pool", day + "10-00-00.mp4") == TierObjectPresence::UNKNOWN,
+            "HTTP 500 must be UNKNOWN, not a proof of absence");
+    return 0;
+}
+
 int countAlerts(const std::string &type, const std::string &pool_id) {
     int count = 0;
     for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
@@ -5281,6 +5515,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
         if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
+        if (name == "object-list-head-api") return scenarioObjectListAndHeadApi(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
         if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
@@ -5495,6 +5730,11 @@ TEST(TierStorageManagerIntegrationTest, PressureDeletionSplitsAroundProtectedVid
 TEST(TierStorageManagerIntegrationTest, AgeRetentionSplitsAroundProtectedVideo) {
     TempRoot root;
     EXPECT_EQ(0, runChild("age-protected-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ListsObjectsAndProvesAbsenceOnlyOn404) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-list-head-api", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {

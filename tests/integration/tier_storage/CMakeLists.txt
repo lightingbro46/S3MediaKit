@@ -89,6 +89,7 @@ foreach(manager_case
     DefersTierMoveUntilDestinationPoolRecovers
     SkipsMoveWhenDestinationPoolIsCritical
     DeletesObjectRangeInOneBatchRequest
+    ListsObjectsAndProvesAbsenceOnlyOn404
     AlertsWhenObjectBucketVersioningIsEnabled
     QuotaCapacityFollowsStoredRangeBytes
     PressureDeletesOldestOnCriticalColdNasPool

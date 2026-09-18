@@ -191,6 +191,9 @@ Các hàm quan trọng:
 - `deleteSegment(pool_id, s3_key)`
 - `deleteSegmentsBatch(pool_id, s3_keys)`: `DeleteObjects` ở chế độ quiet, tối đa 1 000 key/request; trả `false` khi request lỗi hoặc có bất kỳ key nào nằm trong `Errors`.
 - `segmentExists(pool_id, s3_key)`
+- `headSegment(pool_id, s3_key)`: `HeadObject` trả `PRESENT`, `ABSENT` (chỉ khi HTTP 404) hoặc `UNKNOWN` (mọi lỗi khác). `segmentExists` gộp mọi lỗi thành `false` nên không dùng được để chứng minh object đã mất.
+- `listObjects(pool_id, prefix, out, error)`: `ListObjectsV2` theo continuation token, trả key đầy đủ kèm size và `LastModified`. Lỗi ở bất kỳ trang nào trả `false` và để `out` rỗng, không bao giờ trả danh sách thiếu.
+- `listCommonPrefixes(pool_id, prefix, out, error)`: như trên với delimiter `/`, trả các "thư mục" con ngay dưới `prefix`.
 - `bucketVersioningStatus(pool_id, status)`: đọc `GetBucketVersioning` (`Enabled`, `Suspended` hoặc rỗng).
 - `makeS3Key(base_path, camera_id, stream_id, segment_path)`
 
