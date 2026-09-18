@@ -1,6 +1,7 @@
 #include <ctime>
 #include <cstring>
 #include <cmath>
+#include <deque>
 #include <cctype>
 #include <algorithm>
 #include <functional>
@@ -9,6 +10,7 @@
 #include <set>
 #include <unordered_set>
 #include <sys/stat.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "Util/base64.h"
@@ -4210,6 +4212,8 @@ void TierStorageManager::enforcePoolPressureRetention() {
     };
 
     GET_CONFIG(int64_t, object_cooldown_seconds, Storage::kTieringObjectPressureCooldownSeconds);
+    GET_CONFIG(std::string, delete_mode, Storage::kTieringPressureDeleteMode);
+    const bool oldest_mode = strcasecmp(delete_mode.c_str(), "OLDEST") == 0;
     SegmentTierRangeImp range_imp;
     TieringJobImp job_imp;
     for (auto pool : pools) {
@@ -4256,7 +4260,11 @@ void TierStorageManager::enforcePoolPressureRetention() {
         std::string after_id;
         int deleted_count = 0;
         int64_t deleted_bytes = 0;
-        for (int page = 0; page < max_pages && need > 0 && !_stopping; ++page) {
+        if (!oldest_mode) {
+            reclaimPoolBalanced(pool, now, max_pages * max_ranges_per_cycle, need,
+                                deleted_count, deleted_bytes);
+        }
+        for (int page = 0; oldest_mode && page < max_pages && need > 0 && !_stopping; ++page) {
             auto ranges = range_imp.findDeletableByPoolAfter(
                 pool.tier, pool.id, now, after_end, after_id, now, max_ranges_per_cycle);
             if (ranges.empty())
@@ -4309,6 +4317,166 @@ void TierStorageManager::enforcePoolPressureRetention() {
             }
         }
     }
+}
+
+void TierStorageManager::reclaimPoolBalanced(const StoragePool &pool,
+                                             int64_t now,
+                                             int max_pieces,
+                                             int64_t &need,
+                                             int &deleted_count,
+                                             int64_t &deleted_bytes) {
+    SegmentTierRangeImp range_imp;
+    std::vector<PressureCameraWindow> orphans;
+    std::vector<PressureCameraWindow> recorded;
+    for (const auto &camera_id : range_imp.findDistinctAvailableCameras()) {
+        if (_stopping)
+            return;
+        PressureCameraWindow window;
+        window.camera_id = camera_id;
+        if (!range_imp.findOldestStartByCameraPool(camera_id, pool.id, pool.tier, window.lo))
+            continue;
+        window.hi = now;
+        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        if (recorder) {
+            auto params = recorder->getParams();
+            if (!params.option.keepArchivedMinForAuto)
+                window.hi = now - static_cast<int64_t>(params.option.keepArchivedMinFor);
+        }
+        if (window.hi <= window.lo)
+            continue;
+        (recorder ? recorded : orphans).push_back(window);
+    }
+
+    // Data of cameras that no longer record goes before anyone's live window.
+    int remaining = max_pieces;
+    for (const auto *group : {&orphans, &recorded}) {
+        if (need <= 0 || remaining <= 0 || _stopping)
+            break;
+        if (group->empty())
+            continue;
+        remaining -= reclaimCamerasBalanced(pool, *group, now, remaining, need,
+                                            deleted_count, deleted_bytes);
+    }
+}
+
+int TierStorageManager::reclaimCamerasBalanced(const StoragePool &pool,
+                                                const std::vector<PressureCameraWindow> &cameras,
+                                                int64_t now,
+                                                int max_pieces,
+                                                int64_t &need,
+                                                int &deleted_count,
+                                                int64_t &deleted_bytes) {
+    SegmentTierRangeImp range_imp;
+    auto cutoffAt = [](const PressureCameraWindow &window, int kp) -> int64_t {
+        return window.hi - (window.hi - window.lo) * kp / 100;
+    };
+    std::map<int, int64_t> freed_cache;
+    auto freedAt = [&](int kp) -> int64_t {
+        auto it = freed_cache.find(kp);
+        if (it != freed_cache.end())
+            return it->second;
+        int64_t freed = 0;
+        for (const auto &window : cameras) {
+            freed += range_imp.sumDeletableBytesByCameraPoolEndedBy(
+                window.camera_id, pool.id, pool.tier, cutoffAt(window, kp), now);
+        }
+        freed_cache[kp] = freed;
+        return freed;
+    };
+
+    // Largest kp whose cutoffs free `need`. Probe downward from 100 with
+    // doubling steps so the common small reclaim reads little data, then
+    // bisect between the last failing and the first satisfying kp.
+    int ok = -1;
+    int bad = 100;
+    for (int step = 1; !_stopping; step *= 2) {
+        const int probe = std::max(0, 100 - step);
+        if (freedAt(probe) >= need) {
+            ok = probe;
+            break;
+        }
+        bad = probe;
+        if (probe == 0)
+            break;
+    }
+    while (ok >= 0 && bad - ok > 1 && !_stopping) {
+        const int mid = (ok + bad) / 2;
+        if (freedAt(mid) >= need)
+            ok = mid;
+        else
+            bad = mid;
+    }
+    if (_stopping)
+        return 0;
+    // Not even kp = 0 frees enough: take everything deletable.
+    const int keep_percent = ok >= 0 ? ok : 0;
+    DebugL << "Balanced pressure deletion on pool " << pool.id << ": keep " << keep_percent
+           << "% of " << cameras.size() << " camera window(s), need " << need
+           << " bytes, estimated " << freedAt(keep_percent) << " bytes";
+
+    // Round-robin one range per camera so an early stop at `need` does not
+    // spare the cameras visited last.
+    struct Cursor {
+        const PressureCameraWindow *window;
+        int64_t cutoff;
+        int64_t after_end;
+        std::string after_id;
+        std::deque<SegmentTierRange> pending;
+        bool done;
+    };
+    std::vector<Cursor> cursors;
+    for (const auto &window : cameras) {
+        Cursor cursor;
+        cursor.window = &window;
+        cursor.cutoff = cutoffAt(window, keep_percent);
+        cursor.after_end = std::numeric_limits<int64_t>::min();
+        cursor.done = cursor.cutoff <= window.lo;
+        cursors.push_back(cursor);
+    }
+    int processed = 0;
+    bool progressed = true;
+    while (need > 0 && processed < max_pieces && progressed && !_stopping) {
+        progressed = false;
+        for (auto &cursor : cursors) {
+            if (need <= 0 || processed >= max_pieces || _stopping)
+                break;
+            if (cursor.done)
+                continue;
+            if (cursor.pending.empty()) {
+                auto page = range_imp.findPoolRetentionCandidatesAfter(
+                    cursor.window->camera_id, pool.id, pool.tier, cursor.cutoff,
+                    cursor.after_end, cursor.after_id, now, 16);
+                if (page.empty()) {
+                    cursor.done = true;
+                    continue;
+                }
+                cursor.after_end = page.back().end_time;
+                cursor.after_id = page.back().range_id;
+                cursor.pending.insert(cursor.pending.end(), page.begin(), page.end());
+            }
+            const SegmentTierRange range = cursor.pending.front();
+            cursor.pending.pop_front();
+            ++processed;
+            progressed = true;
+            SegmentTierRange piece;
+            if (!splitRangeForTieringThreshold(range, cursor.cutoff, piece))
+                continue;
+            std::vector<SegmentTierRange> deletable;
+            if (!carveDeletablePieces(piece, deletable))
+                continue;
+            for (const auto &item : deletable) {
+                if (_stopping)
+                    break;
+                if (!expireRangeBestEffort(item))
+                    continue;
+                ++deleted_count;
+                const int64_t freed = std::max<int64_t>(0, item.size_bytes);
+                deleted_bytes += freed;
+                need -= freed;
+            }
+        }
+    }
+    return processed;
 }
 
 bool TierStorageManager::loadEffectiveStoragePolicy(const std::string &camera_id,

@@ -742,6 +742,10 @@ extern const std::string kTieringQuotaUsageCacheSeconds;
 // Seconds to wait after pressure deletion on a METRICS-mode object pool before
 // deleting again, since the backend capacity metric lags behind deletes.
 extern const std::string kTieringObjectPressureCooldownSeconds;
+// How pressure deletion picks data on a critical pool: BALANCED removes the
+// same fraction of every camera's retention window (cameras without a recorder
+// first); OLDEST removes the pool's oldest ranges regardless of camera.
+extern const std::string kTieringPressureDeleteMode;
 // Enable the background check that drops timefile entries and range coverage
 // for recorded segments whose MP4 no longer exists on a reachable pool.
 extern const std::string kTierReconcileEnabled;

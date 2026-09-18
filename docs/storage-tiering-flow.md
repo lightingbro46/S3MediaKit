@@ -473,7 +473,9 @@ Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một 
 - Tier cuối và object storage không có job move đi nên `pending_move_bytes = 0` và nhánh hoãn xóa không áp dụng.
 - Pool object storage `METRICS`: metric MinIO trễ so với thao tác xóa, nên sau một lượt đã xóa được dữ liệu, pool bị tạm dừng xóa theo áp lực trong `storage.tiering_object_pressure_cooldown_seconds` (mặc định 900 giây) để không xóa quá tay dựa trên số liệu cũ. Pool `QUOTA` tính usage từ DB nên không cần cooldown; cache tổng byte của pool bị xóa ngay sau lượt xóa.
 - Ưu tiên chuyển tầng: nếu pool còn job move `PENDING/RUNNING` và usage < `critical + tiering_pressure_delete_margin_percent` thì hoãn xóa; nếu vẫn xóa thì trừ số byte đang chờ move khỏi lượng cần giải phóng.
-- Lượng cần giải phóng = `used - total * (high - 5)%`; range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng.
+- Lượng cần giải phóng = `used - total * (high - 5)%`. Cách chọn dữ liệu theo `storage.tiering_pressure_delete_mode`:
+  - `OLDEST`: range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng. Camera có retention dài chịu toàn bộ phần xóa vì dữ liệu của nó cũ nhất.
+  - `BALANCED` (mặc định): mỗi camera có dữ liệu trên pool được xét trên cửa sổ `[lo, hi)`, với `lo` là `start_time` cũ nhất của camera trên pool và `hi = now - keepArchivedMinFor` (`now` khi auto). Với tỉ lệ giữ `kp`, mốc cắt của camera là `hi - (hi - lo) * kp / 100`. Backend tìm `kp` lớn nhất (bước 1%) sao cho tổng byte các range deletable kết thúc trước mốc cắt ≥ lượng cần giải phóng (`sumDeletableBytesByCameraPoolEndedBy()`, dò từ 99 xuống với bước gấp đôi rồi chia đôi), sau đó xóa luân phiên từng range của mỗi camera tới mốc cắt của nó (split tại mốc, cắt quanh video bảo vệ) và dừng khi đủ. Mọi camera vì vậy mất cùng tỉ lệ cửa sổ lưu trữ thay vì camera retention dài mất hết. Camera không còn statistic recorder (đã bị gỡ khỏi hệ thống) được xử lý trước như một nhóm riêng: chỉ khi toàn bộ dữ liệu deletable của nhóm này không đủ thì mới cắt vào cửa sổ của camera đang ghi. Ước lượng bỏ qua range vắt qua mốc cắt nên luôn thiên thấp; phần thiếu được bù ở vòng luân phiên. Trên DB tổng hợp 1,14 triệu range (600 camera), mỗi bước `kp` tốn khoảng 20–60 ms khi `kp` ≥ 90 và khoảng 220 ms ở `kp = 50`.
 - Nếu không giải phóng đủ, ghi cảnh báo `POOL_CRITICAL_NO_DELETABLE` (tối đa một lần/giờ/pool).
 
 Với pool object storage, `expireRangeBestEffort()` gom mọi key của range rồi gọi `deleteSegmentsBatch()` một lần thay vì một `DeleteObject` cho mỗi segment. Range chỉ chuyển `DELETED` khi cả batch thành công; một key lỗi giữ range `AVAILABLE`, ghi `TIER_DELETE_FAILED`, và lượt sau gửi lại toàn bộ key (xóa key đã mất là idempotent).
@@ -1018,6 +1020,7 @@ storage.tiering_missing_segment_retry_base_seconds=3600
 storage.tiering_pressure_delete_margin_percent=3
 storage.tiering_quota_usage_cache_seconds=30
 storage.tiering_object_pressure_cooldown_seconds=900
+storage.tiering_pressure_delete_mode=BALANCED
 storage.tier_reconcile_enabled=1
 storage.tier_reconcile_work_budget_ms=2000
 storage.tier_reconcile_min_age_seconds=600
@@ -1060,6 +1063,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
 | `tiering_quota_usage_cache_seconds` | `quotaUsedBytes()` | Thời gian dùng lại tổng byte range của pool `QUOTA`; `0` tắt cache |
 | `tiering_object_pressure_cooldown_seconds` | `enforcePoolPressureRetention()` | Thời gian chờ giữa hai lượt xóa theo áp lực trên pool object storage `METRICS`; `0` tắt cooldown |
+| `tiering_pressure_delete_mode` | `enforcePoolPressureRetention()` | `BALANCED` (mặc định): mọi camera mất cùng tỉ lệ cửa sổ lưu trữ, camera không còn recorder trước; `OLDEST`: xóa range cũ nhất của pool bất kể camera |
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
 | `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
@@ -1175,6 +1179,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
+- `BALANCED` chỉ cân bằng khi xóa; move sớm theo áp lực (`processCameraPressureTiering()`) vẫn lấy tối đa `tiering_max_ranges_per_camera_cycle` range đầu tiên của từng camera.
 - Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
 - Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
 - Rebuild timefile ghi ra file tạm rồi swap trên một luồng riêng ("timefile swap") khi file hết reader; swap thay file bằng `rename()` nguyên tử. Với file ngày cũ, nếu có block mới được ghi trong lúc chờ swap (ví dụ nhập từ thẻ SD), swap bị hủy để không mất block và file vẫn dirty cho lần rebuild sau. Dấu dirty chỉ được xóa sau khi swap thành công. File ngày hiện tại đang ghi dùng cơ chế mirror block mới sang file tạm.

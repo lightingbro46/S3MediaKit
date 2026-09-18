@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1770,6 +1771,7 @@ int scenarioUnreadableTimefileKeepsWorkPending(const std::string &root) {
 
 int scenarioPressureDeletesOldestAcrossPool(const std::string &root) {
     migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
     // Any queued move from the pool defers deletion at every usage level.
     mINI::Instance()[Storage::kTieringPressureDeleteMarginPercent] = 1000;
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -3295,12 +3297,16 @@ SegmentTierRange seedRangeOnPool(TierStorageManager &manager,
     for (int i = 0; i < count; ++i) {
         const int64_t segment_start = start + i * 60;
         const std::string key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(segment_start));
-        auto fixture = makeSegmentFixture(root, camera, key, "object-segment", segment_start);
-        require(manager.registerHotSegmentRange(fixture.camera, fixture.stream, fixture.source_path,
-                                                fixture.start, fixture.end, segment_size),
+        const std::string stream = "main";
+        const std::string path = root + "/hot/record/" + camera + "/" + stream + "/" + key + ".mp4";
+        // The timefile carries the declared size; splits refresh size_bytes from it.
+        writeFile(path, "object-segment");
+        writeTimeBlock(root, camera, stream, path, segment_start, segment_start + 60, segment_size);
+        require(manager.registerHotSegmentRange(camera, stream, path, segment_start,
+                                                segment_start + 60, segment_size),
                 "Range registration failed");
         out_keys.push_back(TierObjectStorage::makeS3Key(pool.base_path.value_or(""), camera,
-                                                        fixture.stream, key));
+                                                        stream, key));
     }
     auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, start + count * 60 + 1);
     require(ranges.size() == 1, "Contiguous segments did not form one range");
@@ -3520,6 +3526,8 @@ void runMaintenanceCycle(TierStorageManager &manager) {
 
 int scenarioPressureDeletesOnColdNasPool(const std::string &root) {
     migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
     drainWorkThreadPool();
@@ -3560,6 +3568,8 @@ int scenarioPressureDeletesOnColdNasPool(const std::string &root) {
 
 int scenarioPressureDeletesOnQuotaObjectPool(const std::string &root) {
     migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
     mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
     FakeS3Server server;
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -3608,6 +3618,8 @@ int scenarioPressureDeletesOnQuotaObjectPool(const std::string &root) {
 
 int scenarioObjectPressureWaitsForLaggingMetrics(const std::string &root) {
     migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
     mINI::Instance()[Storage::kTieringObjectPressureCooldownSeconds] = 2;
     FakeS3Server server;
     // The raw metric reports 99% used and never catches up with the deletes.
@@ -3642,6 +3654,148 @@ int scenarioObjectPressureWaitsForLaggingMetrics(const std::string &root) {
     runMaintenanceCycle(manager);
     require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::DELETED),
             "Pressure deletion did not resume after the cooldown");
+    manager.stop();
+    return 0;
+}
+
+// Seeds one single-segment range per day, `first_day_ago` .. `first_day_ago + days - 1`
+// days back, each `size` bytes, all on `pool`.
+void seedDailyRanges(TierStorageManager &manager, const std::string &root, const StoragePool &pool,
+                     const std::string &camera, int first_day_ago, int days, int64_t size) {
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    // Timefiles take blocks in time order, so seed the oldest day first.
+    for (int day = first_day_ago + days - 1; day >= first_day_ago; --day)
+        seedRangeOnPool(manager, root, pool, camera, now - day * 86400, 1, size, keys);
+}
+
+int countRanges(const std::string &camera, const std::string &status) {
+    int count = 0;
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(camera))
+        count += range.status == status ? 1 : 0;
+    return count;
+}
+
+void recordWithMinRetention(const std::string &camera, uint64_t keep_min_seconds) {
+    auto recorder = StatisticRecorder::Instance().getRecorder(camera, true);
+    require(recorder != nullptr, "Cannot create camera statistics for " + camera);
+    CameraOption option;
+    option.keepArchivedMinForAuto = false;
+    option.keepArchivedMinFor = keep_min_seconds;
+    recorder->setCameraOption(option);
+}
+
+// A QUOTA pool sized so `used` bytes sit exactly at its 90% critical watermark;
+// reclaiming to (80 - 5)% needs used / 6 bytes.
+StoragePool createCriticalQuotaPool(TierStorageManager &manager, const std::string &root,
+                                    const FakeS3Server &server, int64_t used) {
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(used * 10 / 9);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+    return cold;
+}
+
+int scenarioBalancedPressureDeletesProportionally(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // 30 and 180 days of 100-byte daily ranges; the last 12 hours are protected.
+    const std::string short_camera = "camera-balanced-30d";
+    const std::string long_camera = "camera-balanced-180d";
+    recordWithMinRetention(short_camera, 12 * 3600);
+    recordWithMinRetention(long_camera, 12 * 3600);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 210 * 100);
+    seedDailyRanges(manager, root, cold, short_camera, 1, 30, 100);
+    seedDailyRanges(manager, root, cold, long_camera, 1, 180, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return countRanges(short_camera, "DELETED") + countRanges(long_camera, "DELETED") >= 35;
+    }, 15000), "Balanced pressure deletion did not reclaim the needed 3500 bytes");
+    drainWorkThreadPool();
+
+    // OLDEST would take all 35 ranges from the 180-day camera.
+    const int short_deleted = countRanges(short_camera, "DELETED");
+    const int long_deleted = countRanges(long_camera, "DELETED");
+    const double short_fraction = short_deleted / 30.0;
+    const double long_fraction = long_deleted / 180.0;
+    require(short_deleted > 0, "Balanced deletion spared the short-retention camera");
+    require(std::fabs(short_fraction - long_fraction) <= 0.05,
+            "Cameras lost different fractions: 30d camera " + std::to_string(short_deleted) +
+                "/30, 180d camera " + std::to_string(long_deleted) + "/180");
+    require(short_deleted + long_deleted <= 40, "Balanced deletion overshot the reclaim target");
+    // Each camera loses its oldest days first.
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(long_camera)) {
+        if (range.status == "DELETED") {
+            for (const auto &kept : SegmentTierRangeImp().queryByCamera(long_camera)) {
+                require(kept.status == "DELETED" || kept.start_time > range.start_time,
+                        "Balanced deletion removed a newer range before an older one");
+            }
+        }
+    }
+    manager.stop();
+    return 0;
+}
+
+int scenarioBalancedPressureDeletesOrphansFirst(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // The recorded camera holds the oldest data, yet the camera that no longer
+    // records (no statistic recorder) must pay first.
+    const std::string recorded = "camera-balanced-recorded";
+    const std::string orphan = "camera-balanced-orphan";
+    recordWithMinRetention(recorded, 0);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 40 * 100);
+    seedDailyRanges(manager, root, cold, recorded, 11, 30, 100);
+    seedDailyRanges(manager, root, cold, orphan, 1, 10, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() { return countRanges(orphan, "DELETED") >= 7; }, 15000),
+            "Balanced deletion did not reclaim from the orphan camera");
+    drainWorkThreadPool();
+    require(countRanges(recorded, "DELETED") == 0,
+            "Balanced deletion touched a recorded camera while orphan data was left");
+    require(countRanges(orphan, "AVAILABLE") > 0,
+            "Balanced deletion removed more orphan data than needed");
+    manager.stop();
+    return 0;
+}
+
+int scenarioBalancedPressureRespectsMinRetention(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // Everything is protected by keepArchivedMinFor except the oldest day,
+    // which cannot cover the 167 bytes needed.
+    const std::string camera = "camera-balanced-min-retention";
+    recordWithMinRetention(camera, 9 * 86400 + 3600);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 10 * 100);
+    seedDailyRanges(manager, root, cold, camera, 1, 10, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() { return countRanges(camera, "DELETED") >= 1; }, 15000),
+            "Balanced deletion did not take the unprotected day");
+    runMaintenanceCycle(manager);
+    require(countRanges(camera, "DELETED") == 1,
+            "Balanced deletion removed data inside keepArchivedMinFor");
+    require(hasAlert("POOL_CRITICAL_NO_DELETABLE", "could not be reclaimed"),
+            "Unreclaimable pressure did not raise POOL_CRITICAL_NO_DELETABLE");
     manager.stop();
     return 0;
 }
@@ -5032,6 +5186,9 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
         if (name == "pressure-quota-object") return scenarioPressureDeletesOnQuotaObjectPool(root);
         if (name == "pressure-metrics-cooldown") return scenarioObjectPressureWaitsForLaggingMetrics(root);
+        if (name == "balanced-pressure-proportional") return scenarioBalancedPressureDeletesProportionally(root);
+        if (name == "balanced-pressure-orphans-first") return scenarioBalancedPressureDeletesOrphansFirst(root);
+        if (name == "balanced-pressure-min-retention") return scenarioBalancedPressureRespectsMinRetention(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -5350,6 +5507,21 @@ TEST(TierStorageManagerIntegrationTest, PressureDeletesOnCriticalQuotaObjectPool
 TEST(TierStorageManagerIntegrationTest, ObjectPressureWaitsForLaggingMetrics) {
     TempRoot root;
     EXPECT_EQ(0, runChild("pressure-metrics-cooldown", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureDeletesProportionally) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-proportional", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureDeletesOrphanCamerasFirst) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-orphans-first", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureRespectsMinRetention) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-min-retention", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {

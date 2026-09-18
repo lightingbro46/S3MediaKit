@@ -776,6 +776,91 @@ public:
         return ret;
     }
 
+    // Start of the camera's oldest AVAILABLE range on one pool; false when it
+    // has none. Uses the (camera_id, pool_id, tier, status, end_time) index.
+    bool findOldestStartByCameraPool(const std::string &camera_id,
+                                     const std::string &pool_id,
+                                     const std::string &tier,
+                                     int64_t &out_start) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"start_time"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND pool_id = ? AND tier = ? AND status = ?",
+                       {camera_id, pool_id, tier,
+                        segmentStatusToString(SegmentStatus::AVAILABLE)})
+                .orderBy("end_time ASC")
+                .limit(1));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return false;
+        out_start = std::stoll(rows[0][0]);
+        return true;
+    }
+
+    // Bytes of the camera's deletable ranges on one pool that end by `ended_by`.
+    // Ranges straddling it are left out, so the estimate errs low.
+    int64_t sumDeletableBytesByCameraPoolEndedBy(const std::string &camera_id,
+                                                 const std::string &pool_id,
+                                                 const std::string &tier,
+                                                 int64_t ended_by,
+                                                 int64_t now) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND pool_id = ? AND tier = ? AND status = ? AND end_time <= ?";
+        params.push_back(camera_id);
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(ended_by));
+        appendDeletableFilter(where, params, now, false);
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(size_bytes), 0)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
+    }
+
+    // Deletion candidates of one camera on one pool that start before
+    // `started_before`, oldest first, paged by (end_time, range_id).
+    std::vector<SegmentTierRange> findPoolRetentionCandidatesAfter(const std::string &camera_id,
+                                                                   const std::string &pool_id,
+                                                                   const std::string &tier,
+                                                                   int64_t started_before,
+                                                                   int64_t after_end_time,
+                                                                   const std::string &after_range_id,
+                                                                   int64_t now,
+                                                                   int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (camera_id.empty() || pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND pool_id = ? AND tier = ? AND status = ? AND start_time < ?"
+              << " AND (end_time > ? OR (end_time = ? AND range_id > ?))";
+        params.push_back(camera_id);
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(started_before));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(after_range_id);
+        appendDeletableFilter(where, params, now, false);
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     // Age-retention candidates of one camera, paged by (start_time, range_id).
     // Protected videos are not filtered here: a range is split at the cutoff
     // first, and only the old piece is checked against protections.

@@ -385,10 +385,39 @@ private:
     // reconcileRangeFiles(); resumes from an in-memory cursor each cycle.
     void runRangeFileReconcile();
 
-    // Oldest-first deletion across every pool (HOT/WARM/COLD, filesystem or
-    // object storage) above its critical watermark; stops once usage would
-    // drop below (high - 5)%. METRICS-mode object pools cool down between runs.
+    // Pressure deletion on every pool (HOT/WARM/COLD, filesystem or object
+    // storage) above its critical watermark; stops once usage would drop
+    // below (high - 5)%. Picks data per storage.tiering_pressure_delete_mode
+    // (BALANCED or OLDEST). METRICS-mode object pools cool down between runs.
     void enforcePoolPressureRetention();
+
+    // One camera's deletable window on a pool for balanced pressure deletion:
+    // [lo, hi) where hi excludes the camera's keepArchivedMinFor.
+    struct PressureCameraWindow {
+        std::string camera_id;
+        int64_t lo = 0;
+        int64_t hi = 0;
+    };
+
+    // BALANCED pressure deletion: finds the largest keep percent kp (1%
+    // steps) whose per-camera cutoffs hi - (hi - lo) * kp / 100 free `need`
+    // bytes, then deletes up to those cutoffs round-robin across cameras.
+    // Cameras without a recorder are reclaimed before the others.
+    void reclaimPoolBalanced(const StoragePool &pool,
+                             int64_t now,
+                             int max_pieces,
+                             int64_t &need,
+                             int &deleted_count,
+                             int64_t &deleted_bytes);
+
+    // Returns the number of candidate ranges it examined.
+    int reclaimCamerasBalanced(const StoragePool &pool,
+                               const std::vector<PressureCameraWindow> &cameras,
+                               int64_t now,
+                               int max_pieces,
+                               int64_t &need,
+                               int &deleted_count,
+                               int64_t &deleted_bytes);
 
     void ensureDefaultHotPool();
 

@@ -94,6 +94,9 @@ foreach(manager_case
     PressureDeletesOldestOnCriticalColdNasPool
     PressureDeletesOnCriticalQuotaObjectPool
     ObjectPressureWaitsForLaggingMetrics
+    BalancedPressureDeletesProportionally
+    BalancedPressureDeletesOrphanCamerasFirst
+    BalancedPressureRespectsMinRetention
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers
