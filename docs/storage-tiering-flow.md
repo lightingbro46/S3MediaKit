@@ -181,6 +181,7 @@ Các hàm quan trọng:
 - `uploadSegment(pool_id, local_path, s3_key)`
 - `downloadSegment(pool_id, s3_key, local_path)`
 - `deleteSegment(pool_id, s3_key)`
+- `deleteSegmentsBatch(pool_id, s3_keys)`: `DeleteObjects` ở chế độ quiet, tối đa 1 000 key/request; trả `false` khi request lỗi hoặc có bất kỳ key nào nằm trong `Errors`.
 - `segmentExists(pool_id, s3_key)`
 - `makeS3Key(base_path, camera_id, stream_id, segment_path)`
 
@@ -460,6 +461,8 @@ Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một 
 - Ưu tiên chuyển tầng: nếu pool còn job move `PENDING/RUNNING` và usage < `critical + tiering_pressure_delete_margin_percent` thì hoãn xóa; nếu vẫn xóa thì trừ số byte đang chờ move khỏi lượng cần giải phóng.
 - Lượng cần giải phóng = `used - total * (high - 5)%`; range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng.
 - Nếu không giải phóng đủ, ghi cảnh báo `POOL_CRITICAL_NO_DELETABLE` (tối đa một lần/giờ/pool).
+
+Với pool object storage, `expireRangeBestEffort()` gom mọi key của range rồi gọi `deleteSegmentsBatch()` một lần thay vì một `DeleteObject` cho mỗi segment. Range chỉ chuyển `DELETED` khi cả batch thành công; một key lỗi giữ range `AVAILABLE`, ghi `TIER_DELETE_FAILED`, và lượt sau gửi lại toàn bộ key (xóa key đã mất là idempotent).
 
 Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại và sẵn sàng cho thao tác xóa. Nếu range thiếu pool, pool không tồn tại hoặc health gate chưa cho phép, backend return mà không đổi trạng thái range và không fallback sang `kMP4SavePath`.
 

@@ -3656,13 +3656,17 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         std::string base_path = pool.base_path.value_or("");
         if (!_obj_storage.isRegistered(pool.id))
             registerPoolObjStorage(pool);
+        std::vector<std::string> keys;
+        keys.reserve(segments.size());
         for (const auto &seg : segments) {
             if (seg.stream_id != range.stream_id) continue;
-            auto key = TierObjectStorage::makeS3Key(base_path, seg.camera_id, seg.stream_id, seg.segment_path);
-            // S3 DeleteObject is idempotent; a false result means an actual I/O failure.
-            if (!_obj_storage.deleteSegment(pool.id, key))
-                all_deleted = false;
+            keys.push_back(TierObjectStorage::makeS3Key(base_path, seg.camera_id, seg.stream_id,
+                                                        seg.segment_path));
         }
+        // DeleteObjects is idempotent for absent keys; any request or per-key
+        // error keeps the range AVAILABLE so the next cycle retries every key.
+        if (!_obj_storage.deleteSegmentsBatch(pool.id, keys))
+            all_deleted = false;
     } else if (has_pool) {
         auto storage = fileStorageForPoolType(pool.type);
         if (!storage) {

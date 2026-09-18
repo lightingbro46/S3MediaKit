@@ -497,6 +497,183 @@ private:
     std::vector<std::thread> _workers;
 };
 
+struct FakeS3Request {
+    std::string method;
+    std::string target;
+    std::string body;
+};
+
+struct FakeS3Response {
+    int status = 200;
+    std::string body;
+};
+
+// Minimal path-style S3 endpoint for manager scenarios that need object
+// storage without MinIO. Every request is recorded; `handler` may override
+// the default answers (HeadBucket 200, versioning unset, DeleteObjects OK,
+// no capacity metrics).
+class FakeS3Server {
+public:
+    typedef std::function<bool(const FakeS3Request &, FakeS3Response &)> Handler;
+
+    FakeS3Server() {
+        _listener = ::socket(AF_INET, SOCK_STREAM, 0);
+        require(_listener >= 0, "Cannot create fake S3 socket");
+        int reuse = 1;
+        ::setsockopt(_listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        struct sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        require(::bind(_listener, reinterpret_cast<struct sockaddr *>(&address), sizeof(address)) == 0,
+                "Cannot bind fake S3 socket");
+        require(::listen(_listener, 16) == 0, "Cannot listen on fake S3 socket");
+        socklen_t length = sizeof(address);
+        require(::getsockname(_listener, reinterpret_cast<struct sockaddr *>(&address), &length) == 0,
+                "Cannot resolve fake S3 port");
+        _port = ntohs(address.sin_port);
+        _thread = std::thread([this]() { acceptLoop(); });
+    }
+
+    ~FakeS3Server() {
+        _stopping = true;
+        ::shutdown(_listener, SHUT_RDWR);
+        ::close(_listener);
+        if (_thread.joinable())
+            _thread.join();
+        for (auto &worker : _workers) {
+            if (worker.joinable())
+                worker.join();
+        }
+    }
+
+    std::string endpoint() const {
+        return "http://127.0.0.1:" + std::to_string(_port);
+    }
+
+    void setHandler(const Handler &handler) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _handler = handler;
+    }
+
+    std::vector<FakeS3Request> requests(const std::string &method,
+                                        const std::string &target_part) const {
+        std::lock_guard<std::mutex> lk(_mtx);
+        std::vector<FakeS3Request> out;
+        for (const auto &request : _requests) {
+            if (request.method == method && request.target.find(target_part) != std::string::npos)
+                out.push_back(request);
+        }
+        return out;
+    }
+
+private:
+    static std::string lower(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+        return value;
+    }
+
+    void serve(int client) {
+        struct timeval timeout{};
+        timeout.tv_sec = 2;
+        ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        std::string data;
+        char buffer[4096];
+        size_t header_end = std::string::npos;
+        while (header_end == std::string::npos) {
+            const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
+            if (received <= 0)
+                return;
+            data.append(buffer, static_cast<size_t>(received));
+            header_end = data.find("\r\n\r\n");
+        }
+        FakeS3Request request;
+        const std::string headers = data.substr(0, header_end);
+        const size_t first_space = headers.find(' ');
+        const size_t second_space = headers.find(' ', first_space + 1);
+        request.method = headers.substr(0, first_space);
+        request.target = headers.substr(first_space + 1, second_space - first_space - 1);
+        size_t content_length = 0;
+        const std::string lowered = lower(headers);
+        const size_t length_pos = lowered.find("\r\ncontent-length:");
+        if (length_pos != std::string::npos)
+            content_length = static_cast<size_t>(std::strtoull(
+                headers.c_str() + length_pos + std::strlen("\r\ncontent-length:"), nullptr, 10));
+        request.body = data.substr(header_end + 4);
+        if (lowered.find("\r\nexpect: 100-continue") != std::string::npos && request.body.empty()) {
+            static const char kContinue[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            ::send(client, kContinue, std::strlen(kContinue), MSG_NOSIGNAL);
+        }
+        while (request.body.size() < content_length) {
+            const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
+            if (received <= 0)
+                break;
+            request.body.append(buffer, static_cast<size_t>(received));
+        }
+
+        FakeS3Response response;
+        Handler handler;
+        {
+            std::lock_guard<std::mutex> lk(_mtx);
+            _requests.push_back(request);
+            handler = _handler;
+        }
+        if (!handler || !handler(request, response)) {
+            response = FakeS3Response();
+            if (request.target.find("/minio/") == 0) {
+                response.status = 404;
+            } else if (request.method == "GET" && request.target.find("?versioning") != std::string::npos) {
+                response.body = "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            } else if (request.method == "POST" && request.target.find("?delete") != std::string::npos) {
+                response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            }
+        }
+        std::string reply = "HTTP/1.1 " + std::to_string(response.status) +
+                            (response.status == 200 ? " OK" : " Error") + "\r\n";
+        if (!response.body.empty())
+            reply += "Content-Type: application/xml\r\n";
+        reply += "Content-Length: " + std::to_string(response.body.size()) +
+                 "\r\nConnection: close\r\n\r\n";
+        if (request.method != "HEAD")
+            reply += response.body;
+        ::send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
+    }
+
+    void acceptLoop() {
+        while (!_stopping) {
+            int client = ::accept(_listener, nullptr, nullptr);
+            if (client < 0) {
+                if (_stopping)
+                    return;
+                continue;
+            }
+            _workers.emplace_back([this, client]() {
+                serve(client);
+                ::shutdown(client, SHUT_RDWR);
+                ::close(client);
+            });
+        }
+    }
+
+    int _listener = -1;
+    uint16_t _port = 0;
+    std::atomic<bool> _stopping{false};
+    std::thread _thread;
+    std::vector<std::thread> _workers;
+    mutable std::mutex _mtx;
+    Handler _handler;
+    std::vector<FakeS3Request> _requests;
+};
+
+StoragePool makeFakeObjectPool(const std::string &root, const FakeS3Server &server) {
+    StoragePool pool = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                      "fake-bucket");
+    pool.id = "fake-cold";
+    pool.name = "Fake COLD object storage";
+    return pool;
+}
+
 struct SegmentFixture {
     std::string camera;
     std::string stream;
@@ -1851,10 +2028,14 @@ int scenarioDeletionSplitsAroundProtectedVideo(const std::string &root, bool pre
     require(ProtectedVideoImp().add(gap_video), "Cannot protect edge gap");
 
     manager.runTieringCycle();
+    // Files go first and the range is finalized right after; wait for both.
     require(waitUntil([&]() {
+        auto rows = SegmentTierRangeImp().findByRangeIds({edge_range.range_id});
         return !File::fileExist(first.source_path) && !File::fileExist(last.source_path) &&
-               !File::fileExist(edge.source_path);
+               !File::fileExist(edge.source_path) &&
+               rows.size() == 1 && rows.front().status == "DELETED";
     }, 5000), "Unprotected segments of a partly protected range were not deleted");
+    drainWorkThreadPool();
     auto edge_rows = SegmentTierRangeImp().findByRangeIds({edge_range.range_id});
     require(edge_rows.size() == 1 && edge_rows.front().status == "DELETED" &&
                 edge_rows.front().start_time == edge.start,
@@ -3094,6 +3275,100 @@ int scenarioSkipsMoveToCriticalDestination(const std::string &root) {
         return jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::DONE);
     }, 5000), "Tier move did not run after the destination recovered");
     drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+// Registers `count` contiguous one-minute segments as a single range and
+// retargets its metadata to `pool`; returns the object keys it owns there.
+SegmentTierRange seedRangeOnPool(TierStorageManager &manager,
+                                 const std::string &root,
+                                 const StoragePool &pool,
+                                 const std::string &camera,
+                                 int64_t start,
+                                 int count,
+                                 int64_t segment_size,
+                                 std::vector<std::string> &out_keys) {
+    out_keys.clear();
+    for (int i = 0; i < count; ++i) {
+        const int64_t segment_start = start + i * 60;
+        const std::string key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(segment_start));
+        auto fixture = makeSegmentFixture(root, camera, key, "object-segment", segment_start);
+        require(manager.registerHotSegmentRange(fixture.camera, fixture.stream, fixture.source_path,
+                                                fixture.start, fixture.end, segment_size),
+                "Range registration failed");
+        out_keys.push_back(TierObjectStorage::makeS3Key(pool.base_path.value_or(""), camera,
+                                                        fixture.stream, key));
+    }
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, start + count * 60 + 1);
+    require(ranges.size() == 1, "Contiguous segments did not form one range");
+    require(SegmentTierRangeImp().updateTierByRangeId(
+                ranges.front().range_id, pool.tier, pool.id,
+                segmentStatusToString(SegmentStatus::AVAILABLE)),
+            "Cannot move range metadata to the seeded pool");
+    return SegmentTierRangeImp().findByRangeIds({ranges.front().range_id}).front();
+}
+
+std::string rangeStatus(const std::string &range_id) {
+    auto ranges = SegmentTierRangeImp().findByRangeIds({range_id});
+    return ranges.empty() ? std::string() : ranges.front().status;
+}
+
+int scenarioObjectRetentionDeletesInOneBatch(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+
+    const std::string camera = "camera-object-batch";
+    const StoragePolicy policy = makeRetentionPolicy(hot_pools.front().id, "object-batch-policy", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    require(manager.assignPolicyToCamera(camera, policy.id, "object batch delete"),
+            "Retention policy assignment failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto range = seedRangeOnPool(manager, root, cold, camera, now - 3 * 86400, 3, 100, keys);
+
+    // One key fails: nothing may be finalized, the range keeps every key for a retry.
+    const std::string failing_key = keys[1];
+    server.setHandler([failing_key](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "POST" || request.target.find("?delete") == std::string::npos)
+            return false;
+        response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<Error><Key>" + failing_key + "</Key><Code>InternalError</Code>"
+                        "<Message>injected</Message></Error></DeleteResult>";
+        return true;
+    });
+    manager.runTieringCycle();
+    require(waitUntil([&]() { return !server.requests("POST", "?delete").empty(); }, 5000),
+            "Retention did not send a DeleteObjects request");
+    drainWorkThreadPool();
+    require(rangeStatus(range.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range was finalized although one object failed to delete");
+    require(hasAlert("TIER_DELETE_FAILED", range.range_id), "TIER_DELETE_FAILED alert missing");
+
+    server.setHandler(FakeS3Server::Handler());
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        return rangeStatus(range.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Range was not deleted after the batch succeeded");
+    drainWorkThreadPool();
+
+    auto batches = server.requests("POST", "?delete");
+    require(batches.size() == 2, "Each retention attempt must send exactly one DeleteObjects request");
+    for (const auto &key : keys) {
+        require(batches.back().body.find("<Key>" + key + "</Key>") != std::string::npos,
+                "DeleteObjects request is missing key " + key);
+    }
+    require(batches.back().body.find("<Quiet>true</Quiet>") != std::string::npos,
+            "DeleteObjects request is not in quiet mode");
+    require(server.requests("DELETE", "/").empty(), "Objects were deleted one request at a time");
     manager.stop();
     return 0;
 }
@@ -4478,6 +4753,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
         if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
+        if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -4768,6 +5044,11 @@ TEST(TierStorageManagerIntegrationTest, SkipsMoveWhenDestinationPoolIsCritical) 
     EXPECT_EQ(0, runChild("critical-destination-skip", root.path));
 }
 
+TEST(TierStorageManagerIntegrationTest, DeletesObjectRangeInOneBatchRequest) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-retention-batch-delete", root.path));
+}
+
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {
     TempRoot root;
     EXPECT_EQ(0, runChild("policy-reassignment-cancels-job", root.path));
@@ -4852,6 +5133,8 @@ TEST(TierStorageManagerIntegrationTest, DoesNotDeleteTemporaryMp4ImmediatelyAfte
 
 int main(int argc, char **argv) {
     g_executable = argv[0];
+    // Off EC2 the AWS SDK spends seconds probing instance metadata for a region.
+    ::setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
     std::string scenario;
     std::string root;
     for (int i = 1; i + 1 < argc; ++i) {

@@ -510,6 +510,8 @@ bool TierObjectStorage::deleteSegmentsBatch(const std::string &pool_id,
             identifiers.push_back(oi);
         }
         del.SetObjects(identifiers);
+        // Quiet mode lists only the keys that failed.
+        del.SetQuiet(true);
 
         Aws::S3::Model::DeleteObjectsRequest req;
         req.SetBucket(entry.bucket.c_str());
@@ -517,12 +519,15 @@ bool TierObjectStorage::deleteSegmentsBatch(const std::string &pool_id,
 
         auto out = entry.client->DeleteObjects(req);
         if (!out.IsSuccess()) {
-            WarnL << "TierObjectStorage::deleteSegmentsBatch: "
+            WarnL << "TierObjectStorage::deleteSegmentsBatch: pool " << pool_id << ": "
                   << out.GetError().GetMessage();
             all_ok = false;
         } else if (!out.GetResult().GetErrors().empty()) {
-            WarnL << "TierObjectStorage::deleteSegmentsBatch: "
-                  << out.GetResult().GetErrors().size() << " errors";
+            const auto &errors = out.GetResult().GetErrors();
+            WarnL << "TierObjectStorage::deleteSegmentsBatch: pool " << pool_id << ": "
+                  << errors.size() << " of " << (end - i) << " key(s) failed, first "
+                  << errors.front().GetKey() << ": " << errors.front().GetCode()
+                  << " " << errors.front().GetMessage();
             all_ok = false;
         }
     }

@@ -88,6 +88,7 @@ foreach(manager_case
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     DefersTierMoveUntilDestinationPoolRecovers
     SkipsMoveWhenDestinationPoolIsCritical
+    DeletesObjectRangeInOneBatchRequest
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers
