@@ -136,6 +136,11 @@ void TimeFileDirtyTracker::loadFromDisk(const string &record_path) {
             if (!File::fileExist(line)) {
                 continue;
             }
+            // Keep versions already tracked in memory: bumping them would make an
+            // in-flight rebuild believe the file was written and discard its swap.
+            if (state.files.count(line) != 0) {
+                continue;
+            }
             state.files[line] = state.next_version++;
             ++count;
         }

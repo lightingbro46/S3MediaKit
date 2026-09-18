@@ -125,7 +125,7 @@ Các luồng tiering, timeline, summary, playback và restore phải lấy `segm
    - `MP4Recorder` emit `Broadcast::kBroadcastRecordMP4` sau khi file `.tmp` đã close và rename sang `.mp4`.
    - `TierStorageManager` nhận `RecordInfo`, lấy `camera_id`, `stream_id`, `start_time`, `time_len`, `file_size`, `file_path`.
    - Backend resolve HOT pool bằng longest-prefix match từ `file_path` với `mount_path/network_path` của các HOT pool enabled.
-   - Backend tạo `SegmentTierRange` tier `HOT`, đúng `pool_id`, status `AVAILABLE`, rồi gọi `registerIfUncovered(...)`: nếu `start_time` của segment đã thuộc một range thì bỏ qua (idempotent), ngược lại gộp với range liền kề (khoảng trống ≤ 90 giây, cùng ngày local) thành range compact.
+   - Backend tạo `SegmentTierRange` tier `HOT`, đúng `pool_id`, status `AVAILABLE`, rồi gọi `registerIfUncovered(...)`: nếu `start_time` của segment đã thuộc một range thì bỏ qua (idempotent), ngược lại gộp với range liền kề (khoảng trống ≤ 10 giây — `kSegmentMergeGapSeconds`, cùng ngày local) thành range compact.
    - Nếu không match được HOT pool, segment không được ghi vào `segment_tier_ranges`.
    - Timefile vẫn được ghi dưới `Protocol::kMP4SavePath`; `file_path` trong `TimeBlock` trỏ tới segment MP4 thật, có thể nằm ở HOT pool khác.
 
@@ -355,7 +355,7 @@ Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`,
 Quy tắc dựng range của một chunk:
 
 - Chunk sở hữu các block có `start_time` trong `[cursor, chunk_end)`; block đã thuộc một range (bất kỳ tier/status) thì bỏ qua.
-- Block được nhóm theo stream và HOT pool, sắp theo thời gian; range mới được tách khi sang ngày local khác, khi khoảng trống giữa hai block lớn hơn 90 giây, hoặc khi giữa hai block có `start_time` của một range đã tồn tại. `end_time` của range mới bị chặn tại `start_time` của range kế tiếp.
+- Block được nhóm theo stream và HOT pool, sắp theo thời gian; range mới được tách khi sang ngày local khác, khi khoảng trống giữa hai block lớn hơn 10 giây, hoặc khi giữa hai block có `start_time` của một range đã tồn tại. `end_time` của range mới bị chặn tại `start_time` của range kế tiếp.
 - Lúc commit, nếu range mới chiếm quyền sở hữu của range khác (metadata vừa thay đổi) thì rollback và chunk được retry.
 - Block orphan (không có stream/file path hoặc path không thuộc HOT pool nào) được đếm vào `orphan_blocks`, ghi cảnh báo `TIER_BACKFILL_ORPHAN` và **không** chặn cursor.
 - Block đã kết thúc quá `tier_reconcile_min_age_seconds` mà file MP4 không còn trên HOT pool (pool qua health gate và thư mục dữ liệu tồn tại) không được đăng ký thành range; sau khi chunk commit, TimeBlock của nó bị gỡ khỏi timefile và ghi cảnh báo `TIER_BACKFILL_MISSING_FILE`. Nếu pool không kiểm chứng được là đọc được, chunk retry thay vì kết luận file đã mất. Trường hợp điển hình là file đã bị `StorageManager` cũ xóa nhưng việc rebuild timefile chưa hoàn tất trước khi nâng cấp.
@@ -516,7 +516,7 @@ Với mỗi range, `reconcileRangeFiles()` liệt kê segment theo timefile và 
 - TimeBlock của segment mất bị gỡ khỏi timefile và ghi cảnh báo `TIER_SEGMENT_MISSING`.
 - Lỗi `stat` khác ENOENT hoặc lỗi đọc timefile thì bỏ qua range ở lượt này.
 
-Khoảng trống ≤ 90 giây vẫn được coi là liền mạch như mọi luồng compact khác, nên khung range có thể phủ qua một đoạn mất file ngắn hơn 90 giây dù TimeBlock của đoạn đó đã bị gỡ.
+Khoảng trống ≤ 10 giây (`kSegmentMergeGapSeconds`) vẫn được coi là liền mạch như mọi luồng compact khác; đoạn mất file dài hơn luôn tách range.
 
 ### 5.7 Move Sang Object Storage
 
@@ -1145,6 +1145,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
 - Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
 - Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
+- Rebuild timefile ghi ra file tạm rồi swap trên một luồng riêng ("timefile swap") khi file hết reader; swap thay file bằng `rename()` nguyên tử. Với file ngày cũ, nếu có block mới được ghi trong lúc chờ swap (ví dụ nhập từ thẻ SD), swap bị hủy để không mất block và file vẫn dirty cho lần rebuild sau. Dấu dirty chỉ được xóa sau khi swap thành công. File ngày hiện tại đang ghi dùng cơ chế mirror block mới sang file tạm.
 - Gỡ TimeBlock là bất đồng bộ (swap khi file hết reader) và không bền qua restart. Block bỏ ở backfill mà chưa swap kịp sẽ còn trong timefile nhưng không có range; block trong range sẽ được vòng đối soát xử lý lại.
 - `StorageManager` cũ (bản không có tier) xóa file trước rồi mới rebuild timefile; nếu tiến trình dừng giữa chừng, timefile giữ block của file đã xóa. Sau khi nâng cấp, backfill và vòng đối soát dọn các block này.
 

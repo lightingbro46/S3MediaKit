@@ -1083,7 +1083,7 @@ bool TierStorageManager::prepareBackfillChunk(const TierBackfillTask &task,
 
     // Keep backfilled ranges shaped like recorder-registered ones: split at
     // gaps larger than the merge gap and never across an existing range.
-    const int64_t merge_gap_seconds = 90;
+    const int64_t merge_gap_seconds = kSegmentMergeGapSeconds;
     struct PlannedBlock {
         int64_t start_time;
         int64_t end_time;
@@ -4634,7 +4634,7 @@ bool TierStorageManager::commitTierTransfer(TieringJob &job,
               << " job=" << job.job_id;
         return false;
     }
-    if (!all_missing && !range_imp.normalizeRangeById(range.range_id, 90, now)) {
+    if (!all_missing && !range_imp.normalizeRangeById(range.range_id, kSegmentMergeGapSeconds, now)) {
         WarnL << "Transferred tier range but could not merge adjacent destination ranges: "
               << range.range_id;
     }

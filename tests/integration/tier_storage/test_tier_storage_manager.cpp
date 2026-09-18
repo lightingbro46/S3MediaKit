@@ -6,10 +6,12 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <vector>
 #include <arpa/inet.h>
@@ -28,8 +30,11 @@
 #include "Local/SearchEngine.h"
 #include "Local/StatisticRecorder.h"
 #include "Local/TierStorageManager.h"
+#include "Local/TimeFileDirtyTracker.h"
 #include "Local/TimeMuxer.h"
 #include "Local/TimeQuery.h"
+#include "Local/TimeRebuilder.h"
+#include "Local/TimeRecorderManager.h"
 #include "Storage/DbStorage.h"
 #include "Storage/Bookmark.h"
 #include "Storage/ExtractJob.h"
@@ -2002,14 +2007,13 @@ int scenarioBackfillSkipsBlocksWithoutFiles(const std::string &root) {
     const int64_t now = static_cast<int64_t>(::time(nullptr));
     const int64_t start = now - 7200;
     const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/2026-08-06/";
-    // The missing stretch is longer than the 90 s merge gap, so the present
-    // blocks on either side must stay in separate ranges.
+    // The one-minute missing stretch exceeds the 10 s merge gap, so the
+    // present blocks on either side must stay in separate ranges.
     writeFile(prefix + "a.mp4", "present-a");
-    writeFile(prefix + "d.mp4", "present-d");
+    writeFile(prefix + "c.mp4", "present-c");
     writeTimeBlock(root, camera, stream, prefix + "a.mp4", start, start + 60, 9);
     writeTimeBlock(root, camera, stream, prefix + "b.mp4", start + 60, start + 120, 9);
     writeTimeBlock(root, camera, stream, prefix + "c.mp4", start + 120, start + 180, 9);
-    writeTimeBlock(root, camera, stream, prefix + "d.mp4", start + 180, start + 240, 9);
 
     TierBackfillTask desired;
     desired.camera_id = camera;
@@ -2031,16 +2035,162 @@ int scenarioBackfillSkipsBlocksWithoutFiles(const std::string &root) {
     auto ranges = SegmentTierRangeImp().queryByCamera(camera);
     require(ranges.size() == 2 &&
                 ranges[0].start_time == start && ranges[0].end_time == start + 60 &&
-                ranges[1].start_time == start + 180 && ranges[1].segment_count == 1,
+                ranges[1].start_time == start + 120 && ranges[1].segment_count == 1,
             "Backfilled ranges cover the block whose file is missing");
     require(waitUntil([&]() {
-        auto starts = timelineStarts(camera, start - 60, start + 300);
-        return starts.size() == 2 && starts[0] == start && starts[1] == start + 180;
+        auto starts = timelineStarts(camera, start - 60, start + 240);
+        return starts.size() == 2 && starts[0] == start && starts[1] == start + 120;
     }, 5000), "Block without a file was not removed from the timefile");
     require(hasAlert("TIER_BACKFILL_MISSING_FILE", camera),
             "Backfill did not raise a storage alert for the missing file");
     manager.stop();
     drainWorkThreadPool();
+    return 0;
+}
+
+std::vector<int64_t> fileBlockStarts(const std::string &camera, const std::string &file,
+                                     int64_t from, int64_t to) {
+    std::vector<int64_t> starts;
+    if (!File::fileExist(file))
+        return starts;
+    mediakit::MediaTuple tuple;
+    tuple.app = camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    TimeQuery(tuple, file).queryBlocks(static_cast<uint64_t>(from), static_cast<uint64_t>(to),
+                                       blocks, error);
+    for (const auto &block : blocks)
+        starts.push_back(static_cast<int64_t>(block.start_time()));
+    return starts;
+}
+
+int scenarioTimefileRebuildSwap(const std::string &root) {
+    // One worker thread keeps rebuild, swap and follow-up queries serialized;
+    // the watchdog turns any hang into a failure instead of a ctest timeout.
+    WorkThreadPool::setPoolSize(1);
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        std::fprintf(stderr, "timefile rebuild swap scenario timed out\n");
+        std::_Exit(3);
+    }).detach();
+    migrateDatabase(root);
+    require(WorkThreadPool::Instance().getExecutorSize() == 1,
+            "WorkThreadPool was created before it could be limited to one thread");
+
+    const std::string camera = "camera-rebuild-swap";
+    const std::string device_path = root + "/hot/record/" + camera;
+    const int64_t day1 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 3 * 86400)));
+    const int64_t day2 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(day1 + 36 * 3600)));
+    // Untouched by any step below except as a bystander of the removal in 3).
+    const int64_t day0 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(day2 + 36 * 3600)));
+    const std::string date0 = getTimeStr("%Y-%m-%d", day0);
+    const std::string file0 = device_path + "/" + date0 + ".s3db";
+    const std::string date1 = getTimeStr("%Y-%m-%d", day1);
+    const std::string date2 = getTimeStr("%Y-%m-%d", day2);
+    const std::string file1 = device_path + "/" + date1 + ".s3db";
+    const std::string file2 = device_path + "/" + date2 + ".s3db";
+    const std::string media = device_path + "/main/";
+    writeDailyTimeBlock(root, camera, "main", date1, media + date1 + "/01-00-00.mp4",
+                        day1 + 3600, day1 + 3660, 1);
+    writeDailyTimeBlock(root, camera, "main", date1, media + date1 + "/02-00-00.mp4",
+                        day1 + 7200, day1 + 7260, 1);
+    writeDailyTimeBlock(root, camera, "main", date2, media + date2 + "/01-00-00.mp4",
+                        day2 + 3600, day2 + 3660, 1);
+    writeDailyTimeBlock(root, camera, "main", date0, media + date0 + "/01-00-00.mp4",
+                        day0 + 3600, day0 + 3660, 1);
+
+    // 1) A dirty file is rebuilt, swapped, and only then loses its dirty mark.
+    // A reader held during the rebuild forces the swap to wait, so clearing the
+    // dirty mark before the swap would make the swap discard itself.
+    TimeFileDirtyTracker::Instance().markDirty(device_path, file1);
+    std::atomic<bool> rebuilt{false};
+    {
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        TimeQuery held_reader(tuple, file1);
+        WorkThreadPool::Instance().getExecutor()->async([&]() {
+            TimeRebuilder::KeepTimeMap keep;
+            keep[camera + "/main"] = static_cast<uint64_t>(day1 + 7200);
+            MultiTimeRebuilder(device_path).rebuildTimeLine(keep);
+            rebuilt = true;
+        });
+        require(waitUntil([&]() { return rebuilt.load(); }, 5000),
+                "Rebuild did not return while a reader held the file");
+    }
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, file1, day1, day1 + 86400);
+        return rebuilt && starts.size() == 1 && starts[0] == day1 + 7200 &&
+               TimeFileDirtyTracker::Instance().currentVersion(device_path, file1) == 0;
+    }, 5000), "Dirty rebuild was discarded or left the file marked dirty");
+
+    // 2) A block written to a past-day file while its rebuild waits for a
+    // reader must survive: the swap has to be discarded, not drop the block.
+    TimeFileDirtyTracker::Instance().markDirty(device_path, file1);
+    std::atomic<bool> rebuilt_again{false};
+    {
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        TimeQuery held_reader(tuple, file1);
+        WorkThreadPool::Instance().getExecutor()->async([&]() {
+            TimeRebuilder::KeepTimeMap keep;
+            keep[camera + "/main"] = static_cast<uint64_t>(day1);
+            MultiTimeRebuilder(device_path).rebuildTimeLine(keep);
+            rebuilt_again = true;
+        });
+        require(waitUntil([&]() { return rebuilt_again.load(); }, 5000),
+                "Second rebuild did not return while a reader held the file");
+        TimeBlock late;
+        late.set_app(camera);
+        late.set_stream("main");
+        late.set_start_time(static_cast<uint64_t>(day1 + 10800));
+        late.set_time_len(60);
+        late.set_file_size(1);
+        late.set_file_path(encodeBase64(media + date1 + "/03-00-00.mp4"));
+        require(TimeRecorderManager::Instance().addBlock(late),
+                "Cannot append a late block to the past-day file");
+    }
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, file1, day1, day1 + 86400);
+        return std::find(starts.begin(), starts.end(), day1 + 10800) != starts.end();
+    }, 5000), "Block written during a pending rebuild swap was lost");
+
+    // 3) Removing a block rewrites only its day's file, and a timefile query on
+    // the same worker right after the removal completes.
+    // Reading through the read guard waits for the step 2 swaps to finish.
+    require(fileBlockStarts(camera, file0, day0, day0 + 86400).size() == 1,
+            "Bystander timefile lost its block");
+    struct stat before{};
+    require(::stat(file0.c_str(), &before) == 0, "Day 0 timefile missing");
+    std::atomic<bool> removed{false};
+    std::atomic<size_t> queried_blocks{99};
+    WorkThreadPool::Instance().getExecutor()->async([&]() {
+        TimeBlockIdentity identity;
+        identity.camera_id = camera;
+        identity.stream_id = "main";
+        identity.start_time = static_cast<uint64_t>(day2 + 3600);
+        identity.segment_path = date2 + "/01-00-00";
+        MultiTimeRebuilder(device_path).removeTimeBlocks({identity});
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        std::vector<TimeBlock> blocks;
+        std::string error;
+        TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(day1), static_cast<uint64_t>(day0 + 86400),
+                                     blocks, error);
+        queried_blocks = blocks.size();
+        removed = true;
+    });
+    require(waitUntil([&]() { return removed.load(); }, 5000),
+            "Timefile query after block removal did not finish");
+    require(queried_blocks == 3, "Query after removal did not see exactly the remaining blocks");
+    require(fileBlockStarts(camera, file2, day2, day2 + 86400).empty(),
+            "Removed block is still in its timefile");
+    struct stat after{};
+    require(::stat(file0.c_str(), &after) == 0 && after.st_ino == before.st_ino &&
+                after.st_mtime == before.st_mtime,
+            "Removing a block rewrote a timefile of another day");
     return 0;
 }
 
@@ -4193,6 +4343,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "age-retention-paged-split") return scenarioAgeRetentionSkipsBlockedRangesAndSplits(root);
         if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
         if (name == "reconcile-ghost-segments") return scenarioReconcileDropsSegmentsWithoutFiles(root);
+        if (name == "timefile-rebuild-swap") return scenarioTimefileRebuildSwap(root);
         if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
@@ -4421,6 +4572,11 @@ TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {
 TEST(TierStorageManagerIntegrationTest, BackfillSkipsBlocksWithoutFiles) {
     TempRoot root;
     EXPECT_EQ(0, runChild("backfill-skip-missing-file", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("timefile-rebuild-swap", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {

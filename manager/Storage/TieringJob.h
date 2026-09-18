@@ -16,6 +16,10 @@
 
 namespace managerkit {
 
+// Largest gap between recorded segments that compact ranges still treat as
+// continuous. Anything longer splits ranges so the timeline shows the gap.
+static const int64_t kSegmentMergeGapSeconds = 10;
+
 // ===================================================================
 // TieringJob entity — one row per data-movement job
 // ===================================================================
@@ -1499,7 +1503,7 @@ public:
     using Ptr = std::shared_ptr<SegmentTierRangeImp>;
 
     bool registerIfUncovered(SegmentTierRange range,
-                             int64_t merge_gap_seconds = 90) {
+                             int64_t merge_gap_seconds = kSegmentMergeGapSeconds) {
         if (range.pool_id.empty())
             return false;
         const int64_t now = static_cast<int64_t>(time(nullptr));
@@ -1511,7 +1515,7 @@ public:
         return mergeIfUncovered(range, merge_gap_seconds, now);
     }
 
-    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = 90) {
+    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = kSegmentMergeGapSeconds) {
         if (range.pool_id.empty())
             return false;
         const int64_t now = static_cast<int64_t>(time(nullptr));

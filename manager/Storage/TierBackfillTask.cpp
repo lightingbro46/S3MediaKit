@@ -258,7 +258,7 @@ bool TierBackfillTaskRepository::commitChunkAt(const TierBackfillTask &task,
                 return false;
             }
             if (!range_repository.mergeNormalizedRangeWithTxn(
-                    range, 90, updated_at, txn)) {
+                    range, kSegmentMergeGapSeconds, updated_at, txn)) {
                 txn->rollback();
                 return false;
             }
