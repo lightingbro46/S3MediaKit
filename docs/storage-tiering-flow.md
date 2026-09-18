@@ -552,6 +552,27 @@ Với mỗi range, `reconcileRangeFiles()` liệt kê segment theo timefile và 
 
 Khoảng trống ≤ 10 giây (`kSegmentMergeGapSeconds`) vẫn được coi là liền mạch như mọi luồng compact khác; đoạn mất file dài hơn luôn tách range.
 
+#### Đối soát range trên object storage
+
+Pool object storage không `stat` được, nên `runObjectRangeReconcile()` (chạy ngay sau `runRangeFileReconcile()`) đối soát bằng `ListObjectsV2`, theo `storage.tier_object_reconcile_mode`:
+
+- `FIX` (mặc định): bỏ segment mà object đã mất, giống đối soát file (tách/thu hẹp range hoặc chuyển `MISSING`, gỡ TimeBlock, cảnh báo `TIER_SEGMENT_MISSING` với "missing from object storage") và xoá cache usage `QUOTA` của pool.
+- `REPORT`: chỉ ghi `TIER_OBJECT_MISSING` (một lần/range/tiến trình), không đổi range.
+- `OFF`: không chạy. Giá trị không hợp lệ được hiểu là `REPORT`.
+
+Mỗi pool object (enabled, qua health gate, đăng ký được client) có con trỏ riêng `(end_time, range_id)` giảm dần trên index `(pool_id, tier, status, end_time)`; các pool chia chung `tier_object_reconcile_work_budget_ms` (mặc định 2 000 ms), pool bắt đầu được xoay vòng mỗi cycle. Bỏ qua range bắt đầu gần hơn `tier_reconcile_min_age_seconds` và range có job `PENDING/RUNNING` (kiểm lại ngay trước khi sửa).
+
+Với mỗi range, `checkObjectRange()`:
+
+1. Đọc segment từ timefile, dựng key bằng `makeS3Key(base_path, ...)`.
+2. List các day prefix `base_path/camera/stream/YYYY-MM-DD/` của segment đã kết thúc quá `tier_reconcile_min_age_seconds` (range tách ở nửa đêm địa phương nên thường 1–2 prefix). List lỗi (bất kỳ trang nào) thì dừng pool ở lượt này, không đổi gì và không tiến con trỏ.
+3. Key không có trong listing chỉ bị coi là mất khi `headSegment()` trả `ABSENT` (HTTP 404); `PRESENT` thì giữ (listing trễ), lỗi khác thì dừng như trên.
+4. Object có size khác `file_size` của TimeBlock chỉ ghi `TIER_OBJECT_SIZE_MISMATCH` (một lần/range/tiến trình), không đổi range.
+
+Chặn mất hàng loạt (mass-loss guard): range mất toàn bộ object không bị sửa ngay mà chờ trong bộ nhớ đến khi pool chứng minh cấu hình đúng, tức là gặp một range còn ít nhất một object (lúc đó các range chờ được áp dụng), hoặc hết lượt quét mà đã từng gặp object. Nếu `tier_object_reconcile_mass_loss_threshold` (mặc định 20) range liên tiếp mất toàn bộ, hoặc hết lượt quét mà pool không có object nào, backend coi là cấu hình sai (đổi `base_path`, sai bucket/credential, bucket bị reset): không đổi gì, ghi `POOL_OBJECTS_MISSING_SUSPECT` (ERROR) và dừng đối soát pool đó `tier_object_reconcile_pause_seconds` (mặc định 3 600 s). Đổi endpoint/bucket/`base_path` của pool xoá toàn bộ trạng thái đang chờ. Hệ quả: pool chỉ có vài range và đã mất hết object luôn bị giữ nguyên kèm cảnh báo, cần người vận hành xác nhận.
+
+Bucket bật versioning: object đã xoá (delete marker) không có trong `ListObjectsV2` nên được coi là mất đúng như mong muốn.
+
 ### 5.7 Move Sang Object Storage
 
 Nếu target pool là object storage (API hiện cho phép `MINIO`):
@@ -1032,6 +1053,10 @@ storage.tiering_pressure_delete_mode=BALANCED
 storage.tier_reconcile_enabled=1
 storage.tier_reconcile_work_budget_ms=2000
 storage.tier_reconcile_min_age_seconds=600
+storage.tier_object_reconcile_mode=FIX
+storage.tier_object_reconcile_work_budget_ms=2000
+storage.tier_object_reconcile_mass_loss_threshold=20
+storage.tier_object_reconcile_pause_seconds=3600
 storage.tiering_split_granularity_seconds=3600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
@@ -1074,7 +1099,11 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_pressure_delete_mode` | `enforcePoolPressureRetention()`, `planBalancedPressureMoves()` | `BALANCED` (mặc định): khi xóa và khi move sớm, mọi camera chịu cùng tỉ lệ cửa sổ lưu trữ (khi xóa, camera không còn recorder trước); `OLDEST`: hành vi cũ, lấy range cũ nhất |
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
-| `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
+| `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()`, `runObjectRangeReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file/object |
+| `tier_object_reconcile_mode` | `runObjectRangeReconcile()` | `FIX` (mặc định) bỏ segment có object mất; `REPORT` chỉ cảnh báo `TIER_OBJECT_MISSING`; `OFF` tắt |
+| `tier_object_reconcile_work_budget_ms` | `runObjectRangeReconcile()` | Thời gian tối đa đối soát object storage mỗi cycle (chung cho mọi pool object) |
+| `tier_object_reconcile_mass_loss_threshold` | `runObjectRangeReconcile()` | Số range liên tiếp mất toàn bộ object bị coi là cấu hình sai (`POOL_OBJECTS_MISSING_SUSPECT`) |
+| `tier_object_reconcile_pause_seconds` | `runObjectRangeReconcile()` | Thời gian dừng đối soát pool sau khi mass-loss guard kích hoạt |
 | `tiering_split_granularity_seconds` | Move theo tuổi, retention theo tuổi | Độ mịn làm tròn mốc; `<= 1` tắt làm tròn |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
@@ -1181,7 +1210,8 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; cleanup chỉ xóa thư mục của job hết TTL rồi chuyển job đó sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
-- Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.
+- Object MinIO mất (xoá tay, ILM, reset bucket) được đối soát theo lượt quét (mục 5.6): quét hết ~90 nghìn range COLD (600 stream × 150 ngày, ~1–2 LIST/range) mất khoảng 1–3 ngày với budget 2 s mỗi cycle 300 s. Trong lúc chờ, child restore của object mất vẫn `FAILED`.
+- Không đổi `base_path`/bucket của pool đang chứa dữ liệu: mọi key cũ sẽ lệch. Mass-loss guard chặn việc chuyển hàng loạt range sang `MISSING` trong trường hợp này, nhưng dữ liệu cũ vẫn không đọc được cho tới khi trả lại cấu hình.
 - Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
 - Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
@@ -1196,7 +1226,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 ## 14. Phần Còn Thiếu Theo Code Hiện Tại
 
 1. Quyết định có hỗ trợ direct HTTP static-file restore hay chỉ giữ resolver `TimeBlock`; nếu hỗ trợ cần contract HTTP mới.
-2. Bổ sung checksum/size verification và chuyển range sang `MISSING` khi object thực sự không còn.
+2. Bổ sung checksum nội dung object; hiện chỉ so size với TimeBlock (`TIER_OBJECT_SIZE_MISMATCH`, không tự sửa).
 3. Sửa parser record path để hỗ trợ camera record root do policy điều phối.
 4. Bổ sung metrics/alert cho restore throughput, failure và queue depth; các metric dashboard placeholder hiện vẫn là `0`.
 

@@ -948,6 +948,41 @@ public:
         return ret;
     }
 
+    // AVAILABLE ranges of one pool strictly before the (end_time, range_id)
+    // cursor, newest first; uses the (pool_id, tier, status, end_time) index.
+    std::vector<SegmentTierRange> findPoolReconcileCandidatesBefore(const std::string &pool_id,
+                                                                    const std::string &tier,
+                                                                    int64_t before_end_time,
+                                                                    const std::string &before_range_id,
+                                                                    int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "pool_id = ? AND tier = ? AND status = ? AND (end_time < ?";
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(before_end_time));
+        if (!before_range_id.empty()) {
+            where << " OR (end_time = ? AND range_id < ?)";
+            params.push_back(std::to_string(before_end_time));
+            params.push_back(before_range_id);
+        }
+        where << ")";
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time DESC, range_id DESC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
         std::vector<SegmentTierRange> ret;
         std::ostringstream where;

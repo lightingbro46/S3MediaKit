@@ -9,8 +9,10 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include "Poller/EventPoller.h"
 #include "Poller/Timer.h"
 #include "Util/TimeTicker.h"
@@ -385,6 +387,58 @@ private:
     // reconcileRangeFiles(); resumes from an in-memory cursor each cycle.
     void runRangeFileReconcile();
 
+    // Removes `missing` segments (kind 0 in `kinds`) from `range`: shrinks or
+    // splits it, or marks it MISSING when nothing is left, then drops their
+    // TimeBlocks and raises TIER_SEGMENT_MISSING. False if the range changed.
+    bool dropMissingSegments(const SegmentTierRange &range,
+                             const std::vector<TierRangeSegmentFile> &segments,
+                             const std::vector<int> &kinds,
+                             const std::vector<TierRangeSegmentFile> &missing,
+                             const std::string &missing_from);
+
+    // Object-storage counterpart of reconcileRangeFiles(): compares a range's
+    // segments with ListObjectsV2 of its day prefix(es); a key absent from
+    // the listing is missing only when HeadObject answers 404.
+    enum class ObjectRangeCheck {
+        SKIPPED,        // timefile unreadable; nothing to judge
+        ERROR,          // listing/HEAD failed; retry later
+        CONSISTENT,
+        PARTIAL,        // some objects missing, at least one present
+        ALL_MISSING
+    };
+    struct ObjectRangeFinding {
+        SegmentTierRange range;
+        std::vector<TierRangeSegmentFile> segments;
+        std::vector<int> kinds;                    // 1 present (or too recent), 0 missing
+        std::vector<TierRangeSegmentFile> missing;
+        std::string first_missing_key;
+    };
+    // Per object pool sweep state; maintenance-cycle only.
+    struct ObjectReconcilePoolState {
+        std::string fingerprint;                   // endpoint|bucket|base_path
+        int64_t cursor_end = std::numeric_limits<int64_t>::max();
+        std::string cursor_id;
+        bool seen_present = false;                 // current sweep saw a present object
+        // Ranges with no object at all wait here until the pool proves it is
+        // sane (a present object); N of them in a row trip the mass-loss guard.
+        std::vector<ObjectRangeFinding> pending_all_missing;
+        int64_t paused_until = 0;
+    };
+    ObjectRangeCheck checkObjectRange(const StoragePool &pool,
+                                      const SegmentTierRange &range,
+                                      int64_t verify_before,
+                                      ObjectRangeFinding &out);
+    ObjectRangeCheck reconcileObjectRange(const StoragePool &pool,
+                                          ObjectReconcilePoolState &state,
+                                          const SegmentTierRange &range,
+                                          int64_t verify_before);
+    void applyObjectFinding(const StoragePool &pool, const ObjectRangeFinding &finding);
+    void flushPendingObjectFindings(const StoragePool &pool, ObjectReconcilePoolState &state);
+    void tripObjectMassLossGuard(const StoragePool &pool, ObjectReconcilePoolState &state);
+    // Priority ranges (see requestObjectRangeReconcile), then a time-budgeted,
+    // newest-first sweep of each object pool's AVAILABLE ranges.
+    void runObjectRangeReconcile();
+
     // Pressure deletion on every pool (HOT/WARM/COLD, filesystem or object
     // storage) above its critical watermark; stops once usage would drop
     // below (high - 5)%. Picks data per storage.tiering_pressure_delete_mode
@@ -536,7 +590,8 @@ private:
                             const std::string &target_pool_id);
 
     void reportMissingSegments(const SegmentTierRange &range,
-                               const std::vector<TierRangeSegmentFile> &missing);
+                               const std::vector<TierRangeSegmentFile> &missing,
+                               const std::string &missing_from = "source and target");
 
     void executeRestoreSegment(const RestoreJobSegment &segment);
 
@@ -650,6 +705,10 @@ private:
     // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.
     int64_t _reconcile_cursor_start = std::numeric_limits<int64_t>::max();
     std::string _reconcile_cursor_id;
+    std::unordered_map<std::string, ObjectReconcilePoolState> _object_reconcile;
+    size_t _object_reconcile_next_pool = 0;
+    // Ranges already reported (REPORT mode, size mismatch); maintenance-cycle only.
+    std::unordered_set<std::string> _object_reconcile_reported;
     // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _pressure_alerted_at;
     // Earliest next pressure deletion per METRICS-mode object pool; maintenance-cycle only.

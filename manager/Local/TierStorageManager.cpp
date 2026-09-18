@@ -3268,6 +3268,7 @@ void TierStorageManager::runTieringCycle() {
 
             self->enforcePoolPressureRetention();
             self->runRangeFileReconcile();
+            self->runObjectRangeReconcile();
             self->processMetadataCleanupJobs();
             self->processRestoreJobs();
             self->pruneOldMetrics();
@@ -4252,7 +4253,14 @@ bool TierStorageManager::reconcileRangeFiles(const SegmentTierRange &range, int6
     }
     if (missing.empty())
         return true;
+    return dropMissingSegments(range, segments, kinds, missing, "source and target");
+}
 
+bool TierStorageManager::dropMissingSegments(const SegmentTierRange &range,
+                                             const std::vector<TierRangeSegmentFile> &segments,
+                                             const std::vector<int> &kinds,
+                                             const std::vector<TierRangeSegmentFile> &missing,
+                                             const std::string &missing_from) {
     const int64_t now = static_cast<int64_t>(time(nullptr));
     SegmentTierRangeImp range_imp;
     std::vector<ShapedPiece> shaped;
@@ -4273,8 +4281,9 @@ bool TierStorageManager::reconcileRangeFiles(const SegmentTierRange &range, int6
         return false;
     }
     InfoL << "Reconciled range " << range.range_id << " camera=" << range.camera_id
-          << ": dropped " << missing.size() << " missing segment(s), pieces=" << shaped.size();
-    reportMissingSegments(range, missing);
+          << ": dropped " << missing.size() << " segment(s) missing from " << missing_from
+          << ", pieces=" << shaped.size();
+    reportMissingSegments(range, missing, missing_from);
     return true;
 }
 
@@ -4335,6 +4344,292 @@ void TierStorageManager::runRangeFileReconcile() {
     }
     if (checked > 0) {
         DebugL << "Range file reconciliation checked " << checked << " range(s) in "
+               << budget.elapsedTime() << " ms";
+    }
+}
+
+// Unknown values fall back to REPORT: never change data on a typo.
+static const char *objectReconcileMode() {
+    GET_CONFIG(std::string, mode, Storage::kTierObjectReconcileMode);
+    if (strcasecmp(mode.c_str(), "OFF") == 0)
+        return "OFF";
+    if (strcasecmp(mode.c_str(), "FIX") == 0)
+        return "FIX";
+    return "REPORT";
+}
+
+static void addStorageAlert(const std::string &level,
+                            const std::string &type,
+                            const std::string &pool_id,
+                            const std::string &message) {
+    StorageAlert alert;
+    alert.id = StrUUID::make_guid(8, "alert");
+    alert.level = level;
+    alert.type = type;
+    alert.pool_id = pool_id;
+    alert.message = message;
+    alert.created_at = static_cast<int64_t>(time(nullptr));
+    StorageAlertImp().add(alert);
+}
+
+TierStorageManager::ObjectRangeCheck
+TierStorageManager::checkObjectRange(const StoragePool &pool,
+                                     const SegmentTierRange &range,
+                                     int64_t verify_before,
+                                     ObjectRangeFinding &out) {
+    out = ObjectRangeFinding();
+    out.range = range;
+    std::string error;
+    if (!collectSegmentFilesForRange(range, out.segments, error))
+        return ObjectRangeCheck::SKIPPED;
+    if (out.segments.empty())
+        return ObjectRangeCheck::CONSISTENT;
+
+    // Ranges split at local midnight, so their keys span one or two day prefixes.
+    const std::string base_path = pool.base_path.value_or("");
+    std::vector<std::string> keys;
+    std::set<std::string> prefixes;
+    for (const auto &segment : out.segments) {
+        keys.push_back(TierObjectStorage::makeS3Key(base_path, segment.camera_id,
+                                                    segment.stream_id, segment.segment_path));
+        if (segment.end_time <= verify_before)
+            prefixes.insert(keys.back().substr(0, keys.back().rfind('/') + 1));
+    }
+    std::map<std::string, TierObjectInfo> listed;
+    for (const auto &prefix : prefixes) {
+        std::map<std::string, TierObjectInfo> objects;
+        if (!_obj_storage.listObjects(pool.id, prefix, objects, error))
+            return ObjectRangeCheck::ERROR;
+        listed.insert(objects.begin(), objects.end());
+    }
+
+    out.kinds.assign(out.segments.size(), 1);
+    size_t size_mismatches = 0;
+    std::string first_mismatch;
+    for (size_t i = 0; i < out.segments.size(); ++i) {
+        const auto &segment = out.segments[i];
+        if (segment.end_time > verify_before)
+            continue;
+        auto it = listed.find(keys[i]);
+        if (it != listed.end()) {
+            if (segment.file_size > 0 && it->second.size != segment.file_size) {
+                if (first_mismatch.empty())
+                    first_mismatch = keys[i];
+                ++size_mismatches;
+            }
+            continue;
+        }
+        // A listing can lag behind writes; only a 404 proves the loss.
+        switch (_obj_storage.headSegment(pool.id, keys[i])) {
+        case TierObjectPresence::PRESENT:
+            continue;
+        case TierObjectPresence::ABSENT:
+            out.kinds[i] = 0;
+            out.missing.push_back(segment);
+            if (out.first_missing_key.empty())
+                out.first_missing_key = keys[i];
+            break;
+        default:
+            return ObjectRangeCheck::ERROR;
+        }
+    }
+    if (size_mismatches > 0 && _object_reconcile_reported.insert("size:" + range.range_id).second) {
+        addStorageAlert("WARNING", "TIER_OBJECT_SIZE_MISMATCH", pool.id,
+                        StrPrinter << size_mismatches
+                                   << " object(s) differ in size from the recorded segment, range="
+                                   << range.range_id << ", first=" << first_mismatch);
+    }
+    if (out.missing.empty())
+        return ObjectRangeCheck::CONSISTENT;
+    return out.missing.size() == out.segments.size() ? ObjectRangeCheck::ALL_MISSING
+                                                     : ObjectRangeCheck::PARTIAL;
+}
+
+void TierStorageManager::applyObjectFinding(const StoragePool &pool, const ObjectRangeFinding &finding) {
+    const auto &range = finding.range;
+    // A job queued since the check owns the range now.
+    if (TieringJobImp().hasActiveJobForRange(range.range_id))
+        return;
+    if (strcmp(objectReconcileMode(), "FIX") != 0) {
+        if (_object_reconcile_reported.insert("missing:" + range.range_id).second) {
+            addStorageAlert("WARNING", "TIER_OBJECT_MISSING", pool.id,
+                            StrPrinter << finding.missing.size() << " of " << finding.segments.size()
+                                       << " segment(s) missing from object storage, range="
+                                       << range.range_id << ", first=" << finding.first_missing_key
+                                       << " (REPORT mode, range unchanged)");
+        }
+        return;
+    }
+    if (dropMissingSegments(range, finding.segments, finding.kinds, finding.missing,
+                            "object storage")) {
+        std::lock_guard<std::mutex> lk(_quota_usage_mtx);
+        _quota_usage.erase(pool.id);
+    }
+}
+
+void TierStorageManager::flushPendingObjectFindings(const StoragePool &pool,
+                                                    ObjectReconcilePoolState &state) {
+    std::vector<ObjectRangeFinding> pending;
+    pending.swap(state.pending_all_missing);
+    for (const auto &finding : pending) {
+        if (_stopping)
+            return;
+        applyObjectFinding(pool, finding);
+    }
+}
+
+void TierStorageManager::tripObjectMassLossGuard(const StoragePool &pool,
+                                                 ObjectReconcilePoolState &state) {
+    GET_CONFIG(int64_t, pause_seconds, Storage::kTierObjectReconcilePauseSeconds);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const std::string first = state.pending_all_missing.empty()
+                                  ? std::string()
+                                  : state.pending_all_missing.front().first_missing_key;
+    const size_t count = state.pending_all_missing.size();
+    WarnL << "Object reconciliation paused on pool " << pool.id << ": " << count
+          << " range(s) in a row have no object at all, first=" << first;
+    addStorageAlert("ERROR", "POOL_OBJECTS_MISSING_SUSPECT", pool.id,
+                    StrPrinter << count << " range(s) in a row have no object in bucket '"
+                               << pool.bucket.value_or("") << "' under base_path '"
+                               << pool.base_path.value_or("") << "' (first=" << first
+                               << "). Nothing was changed; check the bucket, base_path and "
+                                  "credentials. Reconciliation of this pool is paused for "
+                               << pause_seconds << " s");
+    const std::string fingerprint = state.fingerprint;
+    state = ObjectReconcilePoolState();
+    state.fingerprint = fingerprint;
+    state.paused_until = now + std::max<int64_t>(0, pause_seconds);
+}
+
+TierStorageManager::ObjectRangeCheck
+TierStorageManager::reconcileObjectRange(const StoragePool &pool,
+                                         ObjectReconcilePoolState &state,
+                                         const SegmentTierRange &range,
+                                         int64_t verify_before) {
+    GET_CONFIG(int, mass_loss_threshold, Storage::kTierObjectReconcileMassLossThreshold);
+    if (mass_loss_threshold <= 0)
+        mass_loss_threshold = 20;
+    ObjectRangeFinding finding;
+    const ObjectRangeCheck check = checkObjectRange(pool, range, verify_before, finding);
+    switch (check) {
+    case ObjectRangeCheck::CONSISTENT:
+    case ObjectRangeCheck::PARTIAL:
+        // A present object shows the bucket and base_path are right, so the
+        // fully missing ranges seen before it are real losses.
+        state.seen_present = true;
+        flushPendingObjectFindings(pool, state);
+        if (check == ObjectRangeCheck::PARTIAL)
+            applyObjectFinding(pool, finding);
+        break;
+    case ObjectRangeCheck::ALL_MISSING:
+        state.pending_all_missing.push_back(finding);
+        if (state.pending_all_missing.size() >= static_cast<size_t>(mass_loss_threshold))
+            tripObjectMassLossGuard(pool, state);
+        break;
+    default:
+        break;
+    }
+    return check;
+}
+
+void TierStorageManager::runObjectRangeReconcile() {
+    if (strcmp(objectReconcileMode(), "OFF") == 0)
+        return;
+    GET_CONFIG(int64_t, work_budget_ms, Storage::kTierObjectReconcileWorkBudgetMs);
+    GET_CONFIG(int64_t, min_age_seconds, Storage::kTierReconcileMinAgeSeconds);
+    if (work_budget_ms <= 0)
+        work_budget_ms = 2000;
+    if (min_age_seconds < 0)
+        min_age_seconds = 0;
+
+    std::vector<StoragePool> pools;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        for (const auto &kv : _pool_cache) {
+            if (kv.second.enabled && poolTypeIsObjectStorage(kv.second.type))
+                pools.push_back(kv.second);
+        }
+    }
+    std::sort(pools.begin(), pools.end(),
+              [](const StoragePool &a, const StoragePool &b) { return a.id < b.id; });
+    for (auto it = _object_reconcile.begin(); it != _object_reconcile.end();) {
+        const bool known = std::any_of(pools.begin(), pools.end(),
+                                       [&](const StoragePool &pool) { return pool.id == it->first; });
+        it = known ? std::next(it) : _object_reconcile.erase(it);
+    }
+    if (_object_reconcile_reported.size() > 100000)
+        _object_reconcile_reported.clear();
+    if (pools.empty())
+        return;
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const int64_t verify_before = now - min_age_seconds;
+    // A changed endpoint/bucket/base_path invalidates everything seen so far,
+    // in particular fully missing ranges found under the old location.
+    auto usable = [&](const StoragePool &pool, ObjectReconcilePoolState &state) {
+        const std::string fingerprint = pool.endpoint.value_or("") + "|" + pool.bucket.value_or("") +
+                                        "|" + pool.base_path.value_or("");
+        if (state.fingerprint != fingerprint) {
+            state = ObjectReconcilePoolState();
+            state.fingerprint = fingerprint;
+        }
+        if (now < state.paused_until)
+            return false;
+        if (!_obj_storage.isRegistered(pool.id) && !registerPoolObjStorage(pool))
+            return false;
+        return isPoolAvailableForTierOperation(pool, false);
+    };
+
+    SegmentTierRangeImp range_imp;
+    TieringJobImp job_imp;
+    Ticker budget;
+    auto exhausted = [&]() {
+        return _stopping || budget.elapsedTime() >= static_cast<uint64_t>(work_budget_ms);
+    };
+    size_t checked = 0;
+    const size_t first_pool = _object_reconcile_next_pool++ % pools.size();
+    for (size_t n = 0; n < pools.size() && !exhausted(); ++n) {
+        const StoragePool &pool = pools[(first_pool + n) % pools.size()];
+        ObjectReconcilePoolState &state = _object_reconcile[pool.id];
+        if (!usable(pool, state))
+            continue;
+        bool pool_done = false;
+        while (!pool_done && !exhausted()) {
+            auto ranges = range_imp.findPoolReconcileCandidatesBefore(
+                pool.id, pool.tier, state.cursor_end, state.cursor_id, 16);
+            if (ranges.empty()) {
+                // End of the sweep: without a single present object the whole
+                // pool looks gone, which is a misconfiguration until proven otherwise.
+                if (!state.pending_all_missing.empty()) {
+                    if (state.seen_present)
+                        flushPendingObjectFindings(pool, state);
+                    else
+                        tripObjectMassLossGuard(pool, state);
+                }
+                state.cursor_end = std::numeric_limits<int64_t>::max();
+                state.cursor_id.clear();
+                state.seen_present = false;
+                break;
+            }
+            for (const auto &range : ranges) {
+                if (exhausted())
+                    break;
+                if (range.start_time <= verify_before && !job_imp.hasActiveJobForRange(range.range_id)) {
+                    const ObjectRangeCheck check = reconcileObjectRange(pool, state, range, verify_before);
+                    ++checked;
+                    // Retry this range next cycle rather than skip it.
+                    if (check == ObjectRangeCheck::ERROR || now < state.paused_until) {
+                        pool_done = true;
+                        break;
+                    }
+                }
+                state.cursor_end = range.end_time;
+                state.cursor_id = range.range_id;
+            }
+        }
+    }
+    if (checked > 0) {
+        DebugL << "Object range reconciliation checked " << checked << " range(s) in "
                << budget.elapsedTime() << " ms";
     }
 }
@@ -5135,7 +5430,8 @@ bool TierStorageManager::canDropMissingSegments(const TieringJob &job,
 }
 
 void TierStorageManager::reportMissingSegments(const SegmentTierRange &range,
-                                               const std::vector<TierRangeSegmentFile> &missing) {
+                                               const std::vector<TierRangeSegmentFile> &missing,
+                                               const std::string &missing_from) {
     if (missing.empty())
         return;
     StorageAlert alert;
@@ -5144,7 +5440,7 @@ void TierStorageManager::reportMissingSegments(const SegmentTierRange &range,
     alert.type = "TIER_SEGMENT_MISSING";
     alert.pool_id = range.pool_id;
     alert.message = StrPrinter << "Dropped " << missing.size()
-                               << " segment(s) missing from source and target, range="
+                               << " segment(s) missing from " << missing_from << ", range="
                                << range.range_id << ", first="
                                << missing.front().segment_path;
     alert.created_at = static_cast<int64_t>(time(nullptr));

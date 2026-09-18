@@ -753,6 +753,16 @@ extern const std::string kTierReconcileEnabled;
 extern const std::string kTierReconcileWorkBudgetMs;
 // Segments newer than this (seconds since they ended) are never treated as missing.
 extern const std::string kTierReconcileMinAgeSeconds;
+// Object-storage range reconciliation against ListObjectsV2: OFF, REPORT
+// (alerts only) or FIX (drop segments whose object is proven gone).
+extern const std::string kTierObjectReconcileMode;
+// Time budget in milliseconds for object-storage reconciliation per maintenance cycle.
+extern const std::string kTierObjectReconcileWorkBudgetMs;
+// Consecutive ranges of one pool with no object at all that are read as a
+// misconfiguration (wrong bucket/base_path/credentials, bucket reset).
+extern const std::string kTierObjectReconcileMassLossThreshold;
+// Seconds object reconciliation of a pool pauses after the mass-loss guard trips.
+extern const std::string kTierObjectReconcilePauseSeconds;
 // Age thresholds for tier moves and retention are floored to this many seconds
 // so a range is split at most once per interval instead of every cycle.
 extern const std::string kTieringSplitGranularitySeconds;

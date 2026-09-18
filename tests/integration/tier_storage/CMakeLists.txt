@@ -90,6 +90,9 @@ foreach(manager_case
     SkipsMoveWhenDestinationPoolIsCritical
     DeletesObjectRangeInOneBatchRequest
     ListsObjectsAndProvesAbsenceOnlyOn404
+    ReconcilesRangesWhoseObjectsAreMissing
+    ObjectReconcileKeepsRangesOnListFailureAndInReportMode
+    ObjectReconcileMassLossGuardPausesPool
     AlertsWhenObjectBucketVersioningIsEnabled
     QuotaCapacityFollowsStoredRangeBytes
     PressureDeletesOldestOnCriticalColdNasPool

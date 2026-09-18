@@ -3903,6 +3903,246 @@ void seedDailyRanges(TierStorageManager &manager, const std::string &root, const
         seedRangeOnPool(manager, root, pool, camera, now - day * 86400, 1, size, keys);
 }
 
+// Stores every seeded key in the fake bucket with the segment's declared size.
+void putSeededObjects(FakeS3Server &server, const StoragePool &pool,
+                      const std::vector<std::string> &keys, int64_t size) {
+    for (const auto &key : keys)
+        server.putObject(pool.bucket.value_or(""), key, size, 7200);
+}
+
+int countAlertsOfType(const std::string &type) {
+    int count = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        count += alert.type == type ? 1 : 0;
+    return count;
+}
+
+// Changes a config value at runtime the way the config API does.
+void reloadConfigValue(const std::string &key, const std::string &value) {
+    mINI::Instance()[key] = value;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+}
+
+int scenarioObjectReconcileFixesMissingObjects(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+
+    // Middle object lost: the range splits around it.
+    std::vector<std::string> split_keys;
+    const auto split = seedRangeOnPool(manager, root, cold, "camera-obj-split", base, 3, 100, split_keys);
+    putSeededObjects(server, cold, split_keys, 100);
+    server.removeObject(bucket, split_keys[1]);
+    // Every object lost: the range becomes MISSING.
+    std::vector<std::string> gone_keys;
+    const auto gone = seedRangeOnPool(manager, root, cold, "camera-obj-gone", base + 600, 2, 100, gone_keys);
+    // Wrong size: alert only.
+    std::vector<std::string> size_keys;
+    const auto sized = seedRangeOnPool(manager, root, cold, "camera-obj-size", base + 1200, 2, 100, size_keys);
+    putSeededObjects(server, cold, size_keys, 100);
+    server.putObject(bucket, size_keys[0], 90, 7200);
+    // Listed nowhere but HEAD finds it (a lagging listing): kept.
+    std::vector<std::string> lag_keys;
+    const auto lagging = seedRangeOnPool(manager, root, cold, "camera-obj-lag", base + 1800, 1, 100, lag_keys);
+    putSeededObjects(server, cold, lag_keys, 100);
+    const std::string lag_prefix = lag_keys[0].substr(0, lag_keys[0].rfind('/') + 1);
+    server.setHandler([lag_prefix](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "GET" || request.target.find("list-type=2") == std::string::npos)
+            return false;
+        std::string encoded;
+        for (char c : lag_prefix)
+            encoded += c == '/' ? std::string("%2F") : std::string(1, c);
+        if (request.target.find("prefix=" + encoded) == std::string::npos &&
+            request.target.find("prefix=" + lag_prefix) == std::string::npos) {
+            return false;
+        }
+        response.body = "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>";
+        return true;
+    });
+
+    runMaintenanceCycle(manager);
+
+    auto split_ranges = SegmentTierRangeImp().queryByCamera("camera-obj-split");
+    require(split_ranges.size() == 2, "Range with a lost middle object was not split in two");
+    for (const auto &range : split_ranges) {
+        require(range.status == "AVAILABLE" && range.segment_count == 1 && range.pool_id == cold.id,
+                "Split pieces do not keep exactly one present object each");
+    }
+    require(split_ranges[0].start_time == split.start_time &&
+                split_ranges[1].start_time == split.start_time + 120,
+            "Split pieces do not start at the remaining segments");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts("camera-obj-split", base - 60, base + 240);
+        return starts.size() == 2 && starts[0] == base && starts[1] == base + 120;
+    }, 5000), "Timeline still shows the lost object");
+    require(hasAlert("TIER_SEGMENT_MISSING", split.range_id) &&
+                hasAlert("TIER_SEGMENT_MISSING", "object storage"),
+            "Dropping a lost object did not raise TIER_SEGMENT_MISSING");
+    require(!server.requests("HEAD", split_keys[1]).empty(),
+            "A key absent from the listing was dropped without a HEAD confirmation");
+
+    require(rangeStatus(gone.range_id) == "MISSING", "Range without any object was not marked MISSING");
+    require(timelineStarts("camera-obj-gone", base, base + 1000).empty(),
+            "Timeline still shows a range whose objects are all gone");
+
+    require(rangeStatus(sized.range_id) == "AVAILABLE" &&
+                SegmentTierRangeImp().queryByCamera("camera-obj-size").size() == 1,
+            "A size mismatch changed the range");
+    require(hasAlert("TIER_OBJECT_SIZE_MISMATCH", sized.range_id),
+            "Size mismatch did not raise TIER_OBJECT_SIZE_MISMATCH");
+
+    require(rangeStatus(lagging.range_id) == "AVAILABLE",
+            "An object missing only from the listing was dropped although HEAD found it");
+
+    // A second cycle neither repeats the size alert nor changes anything.
+    runMaintenanceCycle(manager);
+    require(countAlertsOfType("TIER_OBJECT_SIZE_MISMATCH") == 1, "Size mismatch alert was repeated");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-split").size() == 2,
+            "A consistent range changed on the next cycle");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectReconcileListFailureAndReportMode(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    std::vector<std::string> kept_keys;
+    seedRangeOnPool(manager, root, cold, "camera-obj-kept", base, 1, 100, kept_keys);
+    putSeededObjects(server, cold, kept_keys, 100);
+    std::vector<std::string> lost_keys;
+    const auto lost = seedRangeOnPool(manager, root, cold, "camera-obj-lost", base + 600, 2, 100, lost_keys);
+    putSeededObjects(server, cold, lost_keys, 100);
+    server.removeObject(cold.bucket.value_or(""), lost_keys[1]);
+
+    // A failing listing proves nothing.
+    server.setHandler([](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.target.find("list-type=2") == std::string::npos)
+            return false;
+        response.status = 500;
+        response.body = "<Error><Code>InternalError</Code><Message>injected</Message></Error>";
+        return true;
+    });
+    runMaintenanceCycle(manager);
+    require(!server.requests("GET", "list-type=2").empty(), "Object reconciliation did not list the pool");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-lost").size() == 1 &&
+                rangeStatus(lost.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "A failed listing changed a range");
+    server.setHandler(FakeS3Server::Handler());
+
+    // REPORT only alerts, once.
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "REPORT");
+    runMaintenanceCycle(manager);
+    runMaintenanceCycle(manager);
+    require(countAlertsOfType("TIER_OBJECT_MISSING") == 1 && hasAlert("TIER_OBJECT_MISSING", lost.range_id),
+            "REPORT mode did not raise exactly one TIER_OBJECT_MISSING alert");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-lost").size() == 1 &&
+                rangeStatus(lost.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "REPORT mode changed a range");
+
+    // OFF does not even list.
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "OFF");
+    const size_t lists_before = server.requests("GET", "list-type=2").size();
+    runMaintenanceCycle(manager);
+    require(server.requests("GET", "list-type=2").size() == lists_before, "OFF mode still listed objects");
+
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "FIX");
+    runMaintenanceCycle(manager);
+    auto ranges = SegmentTierRangeImp().queryByCamera("camera-obj-lost");
+    require(ranges.size() == 1 && ranges.front().segment_count == 1 &&
+                ranges.front().end_time <= base + 660,
+            "FIX mode did not drop the lost object");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectReconcileMassLossGuard(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierObjectReconcileMassLossThreshold] = 3;
+    mINI::Instance()[Storage::kTierObjectReconcilePauseSeconds] = 3;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    // A pool whose only range has no object: the sweep ends without any proof
+    // that the bucket is right.
+    StoragePool lonely = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                        "lonely-bucket");
+    lonely.id = "fake-cold-lonely";
+    require(manager.createPool(lonely) == lonely.id, "Second fake pool creation failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    std::vector<SegmentTierRange> ranges;
+    std::vector<std::vector<std::string>> keys(6);
+    for (int i = 0; i < 6; ++i) {
+        ranges.push_back(seedRangeOnPool(manager, root, cold, "camera-mass-" + std::to_string(i),
+                                         base + i * 600, 1, 100, keys[i]));
+    }
+    // Newest first: L5 L4 L3 L2 P1 L0. The guard must trip at L3, before the
+    // present range could vouch for the losses.
+    putSeededObjects(server, cold, keys[1], 100);
+    std::vector<std::string> lonely_keys;
+    const auto lonely_range = seedRangeOnPool(manager, root, lonely, "camera-lonely", base, 1, 100,
+                                              lonely_keys);
+
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", cold.id) == 1,
+            "Three fully missing ranges in a row did not trip the guard");
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", lonely.id) == 1,
+            "A pool without any present object did not trip the guard at the end of its sweep");
+    for (const auto &range : ranges)
+        require(rangeStatus(range.range_id) == "AVAILABLE", "The mass-loss guard let a range change");
+    require(rangeStatus(lonely_range.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "The mass-loss guard let a range change");
+
+    // Paused: the pool is not listed again.
+    const size_t lists_before = server.requests("GET", "/fake-bucket?").size();
+    runMaintenanceCycle(manager);
+    require(server.requests("GET", "/fake-bucket?").size() == lists_before,
+            "A paused pool was listed again");
+
+    // Objects back for ranges 5 and 3 (P5 L4 P3 L2 P1 L0): three losses, but
+    // not in a row. L4 and L2 are confirmed by the present range after them,
+    // L0 at the end of the sweep.
+    putSeededObjects(server, cold, keys[5], 100);
+    putSeededObjects(server, cold, keys[3], 100);
+    ::usleep(3200000);
+    runMaintenanceCycle(manager);
+    for (int i : {5, 3, 1}) {
+        require(rangeStatus(ranges[i].range_id) == "AVAILABLE",
+                "A range with its object present changed");
+    }
+    require(rangeStatus(ranges[4].range_id) == "MISSING" &&
+                rangeStatus(ranges[2].range_id) == "MISSING",
+            "A fully missing range followed by a present one was not marked MISSING");
+    require(rangeStatus(ranges[0].range_id) == "MISSING",
+            "A fully missing range at the end of a sane sweep was not marked MISSING");
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", cold.id) == 1,
+            "The guard tripped again although the pool proved sane");
+    manager.stop();
+    return 0;
+}
+
 int countRanges(const std::string &camera, const std::string &status) {
     int count = 0;
     for (const auto &range : SegmentTierRangeImp().queryByCamera(camera))
@@ -5516,6 +5756,9 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
         if (name == "object-list-head-api") return scenarioObjectListAndHeadApi(root);
+        if (name == "object-reconcile-fix") return scenarioObjectReconcileFixesMissingObjects(root);
+        if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
+        if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
         if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
@@ -5735,6 +5978,21 @@ TEST(TierStorageManagerIntegrationTest, AgeRetentionSplitsAroundProtectedVideo) 
 TEST(TierStorageManagerIntegrationTest, ListsObjectsAndProvesAbsenceOnlyOn404) {
     TempRoot root;
     EXPECT_EQ(0, runChild("object-list-head-api", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseObjectsAreMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-fix", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsRangesOnListFailureAndInReportMode) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-list-failure-report", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectReconcileMassLossGuardPausesPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-mass-loss", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {
