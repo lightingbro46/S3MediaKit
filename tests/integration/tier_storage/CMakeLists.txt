@@ -93,6 +93,7 @@ foreach(manager_case
     ReconcilesRangesWhoseObjectsAreMissing
     ObjectReconcileKeepsRangesOnListFailureAndInReportMode
     ObjectReconcileMassLossGuardPausesPool
+    RestoreOfMissingObjectPrioritizesReconcile
     AlertsWhenObjectBucketVersioningIsEnabled
     QuotaCapacityFollowsStoredRangeBytes
     PressureDeletesOldestOnCriticalColdNasPool

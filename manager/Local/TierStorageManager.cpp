@@ -4532,6 +4532,13 @@ TierStorageManager::reconcileObjectRange(const StoragePool &pool,
     return check;
 }
 
+void TierStorageManager::requestObjectRangeReconcile(const std::string &range_id) {
+    if (range_id.empty())
+        return;
+    std::lock_guard<std::mutex> lk(_object_reconcile_priority_mtx);
+    _object_reconcile_priority.insert(range_id);
+}
+
 void TierStorageManager::runObjectRangeReconcile() {
     if (strcmp(objectReconcileMode(), "OFF") == 0)
         return;
@@ -4587,6 +4594,42 @@ void TierStorageManager::runObjectRangeReconcile() {
         return _stopping || budget.elapsedTime() >= static_cast<uint64_t>(work_budget_ms);
     };
     size_t checked = 0;
+
+    // Ranges queued by a failed restore go first (at most 32 per cycle); one
+    // that cannot be checked now (listing error) stays queued, anything else
+    // the sweep covers later.
+    std::vector<std::string> priority;
+    {
+        std::lock_guard<std::mutex> lk(_object_reconcile_priority_mtx);
+        while (!_object_reconcile_priority.empty() && priority.size() < 32) {
+            priority.push_back(*_object_reconcile_priority.begin());
+            _object_reconcile_priority.erase(_object_reconcile_priority.begin());
+        }
+    }
+    std::vector<std::string> retry;
+    for (const auto &range : priority.empty() ? std::vector<SegmentTierRange>()
+                                              : range_imp.findByRangeIds(priority)) {
+        if (_stopping)
+            break;
+        auto pool_it = std::find_if(pools.begin(), pools.end(), [&](const StoragePool &pool) {
+            return pool.id == range.pool_id;
+        });
+        if (pool_it == pools.end() || range.status != segmentStatusToString(SegmentStatus::AVAILABLE) ||
+            range.start_time > verify_before || job_imp.hasActiveJobForRange(range.range_id)) {
+            continue;
+        }
+        ObjectReconcilePoolState &state = _object_reconcile[pool_it->id];
+        if (!usable(*pool_it, state))
+            continue;
+        if (reconcileObjectRange(*pool_it, state, range, verify_before) == ObjectRangeCheck::ERROR)
+            retry.push_back(range.range_id);
+        ++checked;
+    }
+    if (!retry.empty()) {
+        std::lock_guard<std::mutex> lk(_object_reconcile_priority_mtx);
+        _object_reconcile_priority.insert(retry.begin(), retry.end());
+    }
+
     const size_t first_pool = _object_reconcile_next_pool++ % pools.size();
     for (size_t n = 0; n < pools.size() && !exhausted(); ++n) {
         const StoragePool &pool = pools[(first_pool + n) % pools.size()];
@@ -6133,7 +6176,13 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
 
     bool ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
     if (!ok) {
-        segment_imp.updateStatus(segment, "FAILED", 0, "Download from object storage failed");
+        std::string error = "Download from object storage failed";
+        // A proven loss should not wait for the sweep to reach this range.
+        if (_obj_storage.headSegment(source_pool.id, s3_key) == TierObjectPresence::ABSENT) {
+            error = "Object is missing from object storage";
+            requestObjectRangeReconcile(segment.range_id);
+        }
+        segment_imp.updateStatus(segment, "FAILED", 0, error);
         updateRestoreParent(segment.job_id);
         ::unlink(tmp_path.c_str());
         return;

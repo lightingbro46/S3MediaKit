@@ -560,7 +560,7 @@ Pool object storage không `stat` được, nên `runObjectRangeReconcile()` (ch
 - `REPORT`: chỉ ghi `TIER_OBJECT_MISSING` (một lần/range/tiến trình), không đổi range.
 - `OFF`: không chạy. Giá trị không hợp lệ được hiểu là `REPORT`.
 
-Mỗi pool object (enabled, qua health gate, đăng ký được client) có con trỏ riêng `(end_time, range_id)` giảm dần trên index `(pool_id, tier, status, end_time)`; các pool chia chung `tier_object_reconcile_work_budget_ms` (mặc định 2 000 ms), pool bắt đầu được xoay vòng mỗi cycle. Bỏ qua range bắt đầu gần hơn `tier_reconcile_min_age_seconds` và range có job `PENDING/RUNNING` (kiểm lại ngay trước khi sửa).
+Range do restore xếp hàng (mục 8.6) được đối soát trước, rồi mới tới lượt quét. Mỗi pool object (enabled, qua health gate, đăng ký được client) có con trỏ riêng `(end_time, range_id)` giảm dần trên index `(pool_id, tier, status, end_time)`; các pool chia chung `tier_object_reconcile_work_budget_ms` (mặc định 2 000 ms), pool bắt đầu được xoay vòng mỗi cycle. Bỏ qua range bắt đầu gần hơn `tier_reconcile_min_age_seconds` và range có job `PENDING/RUNNING` (kiểm lại ngay trước khi sửa).
 
 Với mỗi range, `checkObjectRange()`:
 
@@ -839,7 +839,7 @@ Khi register/download/mkdir/rename lỗi:
 - Child chuyển `FAILED`, parent được tổng hợp thành `FAILED` và ghi `error_message`.
 - Range COLD vẫn giữ `AVAILABLE` vì trạng thái restore thuộc durable child queue.
 - Partial file `.part` trong thư mục job được xóa ở các nhánh download/rename thất bại.
-- Code hiện không chuyển range sang `MISSING` khi object download thất bại.
+- Download lỗi thì worker `HeadObject` lại key: chỉ khi HTTP 404 (`ABSENT`) child ghi lỗi "Object is missing from object storage" và range được xếp vào hàng ưu tiên của đối soát object (`requestObjectRangeReconcile`, tối đa 32 range/cycle, chạy trước lượt quét ở cycle kế tiếp, xem 5.6). Restore không tự đổi range; mọi thay đổi vẫn đi qua đối soát và mass-loss guard.
 
 ### 8.7 Object Key Và Restore Path
 
@@ -1210,7 +1210,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; cleanup chỉ xóa thư mục của job hết TTL rồi chuyển job đó sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
-- Object MinIO mất (xoá tay, ILM, reset bucket) được đối soát theo lượt quét (mục 5.6): quét hết ~90 nghìn range COLD (600 stream × 150 ngày, ~1–2 LIST/range) mất khoảng 1–3 ngày với budget 2 s mỗi cycle 300 s. Trong lúc chờ, child restore của object mất vẫn `FAILED`.
+- Object MinIO mất (xoá tay, ILM, reset bucket) được đối soát theo lượt quét (mục 5.6): quét hết ~90 nghìn range COLD (600 stream × 150 ngày, ~1–2 LIST/range) mất khoảng 1–3 ngày với budget 2 s mỗi cycle 300 s; range có restore thất bại vì object trả 404 được đối soát ngay ở cycle kế tiếp.
 - Không đổi `base_path`/bucket của pool đang chứa dữ liệu: mọi key cũ sẽ lệch. Mass-loss guard chặn việc chuyển hàng loạt range sang `MISSING` trong trường hợp này, nhưng dữ liệu cũ vẫn không đọc được cho tới khi trả lại cấu hình.
 - Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
 - Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.

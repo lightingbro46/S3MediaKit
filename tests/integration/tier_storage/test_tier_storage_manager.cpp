@@ -4143,6 +4143,53 @@ int scenarioObjectReconcileMassLossGuard(const std::string &root) {
     return 0;
 }
 
+int scenarioRestoreOfMissingObjectPrioritizesReconcile(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+
+    // The lost range is older, so the newest-first sweep alone would reach it last.
+    std::vector<std::string> lost_keys;
+    const auto lost = seedRangeOnPool(manager, root, cold, "camera-restore-lost", base, 2, 100, lost_keys);
+    putSeededObjects(server, cold, lost_keys, 100);
+    server.removeObject(cold.bucket.value_or(""), lost_keys[1]);
+    std::vector<std::string> newer_keys;
+    seedRangeOnPool(manager, root, cold, "camera-restore-newer", base + 3600, 1, 100, newer_keys);
+    putSeededObjects(server, cold, newer_keys, 100);
+
+    const std::string segment_key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 60));
+    const std::string timefile_path = root + "/hot/record/camera-restore-lost/main/" + segment_key + ".mp4";
+    auto request = manager.requestRestoreSegment("camera-restore-lost", "main", base + 60,
+                                                 timefile_path, "integration test", 100);
+    require(request.handled && !request.job_id.empty(), "Restore request was not accepted");
+    require(waitUntil([&]() {
+        auto jobs = manager.getRestoreJob(request.job_id);
+        return !jobs.empty() && jobs.front().status == "FAILED";
+    }, 15000), "Restore of a lost object did not fail");
+    auto children = RestoreJobSegmentImp().queryByJob(request.job_id);
+    require(children.size() == 1 &&
+                children.front().error_message.value_or("").find("missing") != std::string::npos,
+            "Failed restore does not say the object is missing");
+    require(server.requests("GET", "list-type=2").empty(), "Reconciliation ran before the cycle");
+
+    runMaintenanceCycle(manager);
+    auto lists = server.requests("GET", "list-type=2");
+    require(!lists.empty() && lists.front().target.find("camera-restore-lost") != std::string::npos,
+            "The range of the failed restore was not reconciled first");
+    auto ranges = SegmentTierRangeImp().queryByCamera("camera-restore-lost");
+    require(ranges.size() == 1 && ranges.front().range_id == lost.range_id &&
+                ranges.front().segment_count == 1 && ranges.front().end_time <= base + 60,
+            "The lost segment was not dropped from the range");
+    manager.stop();
+    return 0;
+}
+
 int countRanges(const std::string &camera, const std::string &status) {
     int count = 0;
     for (const auto &range : SegmentTierRangeImp().queryByCamera(camera))
@@ -5759,6 +5806,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "object-reconcile-fix") return scenarioObjectReconcileFixesMissingObjects(root);
         if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
         if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
+        if (name == "restore-missing-object-reconcile") return scenarioRestoreOfMissingObjectPrioritizesReconcile(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
         if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
@@ -5993,6 +6041,11 @@ TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsRangesOnListFailureA
 TEST(TierStorageManagerIntegrationTest, ObjectReconcileMassLossGuardPausesPool) {
     TempRoot root;
     EXPECT_EQ(0, runChild("object-reconcile-mass-loss", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RestoreOfMissingObjectPrioritizesReconcile) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("restore-missing-object-reconcile", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {

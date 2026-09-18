@@ -438,6 +438,9 @@ private:
     // Priority ranges (see requestObjectRangeReconcile), then a time-budgeted,
     // newest-first sweep of each object pool's AVAILABLE ranges.
     void runObjectRangeReconcile();
+    // Queues a range for object reconciliation at the start of the next
+    // maintenance cycle, ahead of the sweep; any thread.
+    void requestObjectRangeReconcile(const std::string &range_id);
 
     // Pressure deletion on every pool (HOT/WARM/COLD, filesystem or object
     // storage) above its critical watermark; stops once usage would drop
@@ -706,6 +709,9 @@ private:
     int64_t _reconcile_cursor_start = std::numeric_limits<int64_t>::max();
     std::string _reconcile_cursor_id;
     std::unordered_map<std::string, ObjectReconcilePoolState> _object_reconcile;
+    // Ranges whose restore found the object gone (HTTP 404); any thread.
+    std::mutex _object_reconcile_priority_mtx;
+    std::set<std::string> _object_reconcile_priority;
     size_t _object_reconcile_next_pool = 0;
     // Ranges already reported (REPORT mode, size mismatch); maintenance-cycle only.
     std::unordered_set<std::string> _object_reconcile_reported;
