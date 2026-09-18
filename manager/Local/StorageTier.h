@@ -69,6 +69,10 @@ inline bool poolTypeIsObjectStorage(const std::string &type) {
     return (type == "MINIO" || type == "S3" || type == "ARCHIVE");
 }
 
+// StoragePool::capacity_source values.
+static const char kPoolCapacitySourceMetrics[] = "METRICS";
+static const char kPoolCapacitySourceQuota[] = "QUOTA";
+
 inline Json::Value poolTypeSupport(TierType t) {
     Json::Value v;
     if (t == HotTier) {

@@ -34,6 +34,10 @@ struct StoragePool {
     int     health_check_enabled       = 1;
     int     high_watermark_percent     = 85;
     int     critical_watermark_percent = 90;
+    // Object storage only: QUOTA measures usage as the sum of stored range
+    // bytes against capacity_quota_bytes; METRICS uses the backend metric.
+    Optional<int64_t> capacity_quota_bytes;
+    std::string capacity_source        = "METRICS";
     int64_t created_at                 = 0;
     int64_t updated_at                 = 0;
 
@@ -64,6 +68,11 @@ struct StoragePool {
         v["health_check_enabled"]      = (health_check_enabled != 0);
         v["high_watermark_percent"]    = high_watermark_percent;
         v["critical_watermark_percent"] = critical_watermark_percent;
+        if (capacity_quota_bytes.has_value())
+            v["capacity_quota_bytes"]  = static_cast<Json::Int64>(capacity_quota_bytes.value());
+        else
+            v["capacity_quota_bytes"]  = Json::nullValue;
+        v["capacity_source"]           = capacity_source;
         v["created_at"]                = static_cast<Json::Int64>(created_at);
         v["updated_at"]                = static_cast<Json::Int64>(updated_at);
         v["health_status"]             = health_status.empty() ? "OK" : health_status;
@@ -95,6 +104,8 @@ DECLARE_ENTITY(StoragePool, "storage_pools",
     &StoragePool::health_check_enabled,   "health_check_enabled",
     &StoragePool::high_watermark_percent, "high_watermark_percent",
     &StoragePool::critical_watermark_percent, "critical_watermark_percent",
+    &StoragePool::capacity_quota_bytes,   "capacity_quota_bytes",
+    &StoragePool::capacity_source,        "capacity_source",
     &StoragePool::created_at,             "created_at",
     &StoragePool::updated_at,             "updated_at"
 )

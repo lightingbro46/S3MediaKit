@@ -90,6 +90,7 @@ foreach(manager_case
     SkipsMoveWhenDestinationPoolIsCritical
     DeletesObjectRangeInOneBatchRequest
     AlertsWhenObjectBucketVersioningIsEnabled
+    QuotaCapacityFollowsStoredRangeBytes
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers

@@ -632,6 +632,21 @@ bool TierStorageManager::registerPoolObjStorage(const StoragePool &pool) {
     return registered;
 }
 
+int64_t TierStorageManager::quotaUsedBytes(const std::string &pool_id) {
+    GET_CONFIG(int64_t, cache_seconds, Storage::kTieringQuotaUsageCacheSeconds);
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (cache_seconds > 0) {
+        std::lock_guard<std::mutex> lk(_quota_usage_mtx);
+        auto it = _quota_usage.find(pool_id);
+        if (it != _quota_usage.end() && now - it->second.first < cache_seconds)
+            return it->second.second;
+    }
+    const int64_t used = SegmentTierRangeImp().sumStoredBytesByPool(pool_id);
+    std::lock_guard<std::mutex> lk(_quota_usage_mtx);
+    _quota_usage[pool_id] = std::make_pair(now, used);
+    return used;
+}
+
 std::string TierStorageManager::refreshPoolVersioning(const StoragePool &pool, bool force) {
     static const int64_t kCheckIntervalSeconds = 3600;
     static const int64_t kAlertIntervalSeconds = 86400;
@@ -683,6 +698,8 @@ void TierStorageManager::unregisterPoolObjStorage(const std::string &pool_id) {
     _obj_storage.unregisterPool(pool_id);
     std::lock_guard<std::mutex> lk(_pool_versioning_mtx);
     _pool_versioning.erase(pool_id);
+    std::lock_guard<std::mutex> quota_lk(_quota_usage_mtx);
+    _quota_usage.erase(pool_id);
 }
 
 TierFileStorageBase *TierStorageManager::fileStorageForPoolType(const std::string &type) {
@@ -5512,6 +5529,40 @@ bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &o
             registerPoolObjStorage(pool);
         if (_obj_storage.isRegistered(pool.id)) {
             auto stats = _obj_storage.getPoolStats(pool.id);
+            const bool quota_mode = pool.capacity_source == kPoolCapacitySourceQuota &&
+                                    pool.capacity_quota_bytes.has_value() &&
+                                    pool.capacity_quota_bytes.value() > 0;
+            if (stats.is_online && quota_mode) {
+                // The cluster metric includes EC parity, other buckets and lags;
+                // count what this pool stores against its quota instead.
+                const int64_t quota = pool.capacity_quota_bytes.value();
+                double usage = static_cast<double>(quotaUsedBytes(pool.id)) * 100.0 /
+                               static_cast<double>(quota);
+                std::string raw_note;
+                if (stats.capacity_available && stats.total_bytes > 0) {
+                    const double raw_usage = static_cast<double>(stats.used_bytes) * 100.0 /
+                                             static_cast<double>(stats.total_bytes);
+                    // The raw metric still guards against the cluster itself filling up.
+                    if (raw_usage >= static_cast<double>(pool.critical_watermark_percent) &&
+                        raw_usage > usage) {
+                        usage = raw_usage;
+                        raw_note = StrPrinter << "; raw cluster usage " << raw_usage
+                                              << "% is above the critical watermark";
+                    }
+                }
+                pool.capacity_available = true;
+                pool.capacity_status = "AVAILABLE";
+                pool.total_bytes = quota;
+                pool.used_bytes = static_cast<int64_t>(static_cast<double>(quota) * usage / 100.0);
+                pool.usage_pct = static_cast<float>(usage);
+                pool.capacity_message = StrPrinter << "Logical quota usage: " << pool.used_bytes
+                                                   << " of " << quota << " bytes" << raw_note;
+                if (refreshPoolVersioning(pool, false) == "Enabled")
+                    pool.capacity_message += "; bucket versioning is Enabled";
+                pool.health_status = healthToString(computePoolHealth(pool, pool.usage_pct));
+                out_message = "Object storage probe succeeded; capacity from logical quota";
+                return true;
+            }
             if (stats.is_online) {
                 pool.capacity_available = stats.capacity_available;
                 pool.capacity_status = stats.capacity_status;

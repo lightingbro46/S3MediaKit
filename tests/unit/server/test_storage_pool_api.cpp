@@ -137,6 +137,93 @@ TEST(StoragePoolApiTest, ParsesAdHocObjectPoolAndValidatesRequiredFields) {
     EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error));
 }
 
+TEST(StoragePoolApiTest, ValidatesQuotaCapacitySource) {
+    Json::Value body;
+    body["name"] = "Quota pool";
+    body["type"] = "MINIO";
+    body["tier"] = "COLD";
+    body["endpoint"] = "http://minio:9000";
+    body["bucket"] = "recordings";
+    body["base_path"] = "archive";
+    body["access_key"] = "access";
+    body["secret_key"] = "secret";
+
+    StoragePool pool = TierStorageBase::poolFromJson(body);
+    std::string error;
+    EXPECT_EQ("METRICS", pool.capacity_source);
+    EXPECT_FALSE(pool.capacity_quota_bytes.has_value());
+    EXPECT_TRUE(TierStorageBase::validatePoolByType(pool, error)) << error;
+
+    body["capacity_source"] = "quota";
+    pool = TierStorageBase::poolFromJson(body);
+    EXPECT_EQ("QUOTA", pool.capacity_source);
+    EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error));
+    EXPECT_NE(std::string::npos, error.find("capacity_quota_bytes is required")) << error;
+
+    body["capacity_quota_bytes"] = "5000000000000";
+    pool = TierStorageBase::poolFromJson(body);
+    ASSERT_TRUE(pool.capacity_quota_bytes.has_value());
+    EXPECT_EQ(5000000000000LL, pool.capacity_quota_bytes.value());
+    EXPECT_TRUE(TierStorageBase::validatePoolByType(pool, error)) << error;
+
+    for (const char *bad : {"0", "-5", "12abc", "1.5"}) {
+        body["capacity_quota_bytes"] = bad;
+        pool = TierStorageBase::poolFromJson(body);
+        EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error)) << bad;
+    }
+    body["capacity_quota_bytes"] = 1.5;
+    pool = TierStorageBase::poolFromJson(body);
+    EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error));
+
+    body["capacity_quota_bytes"] = Json::Int64(1000);
+    body["capacity_source"] = "BOTH";
+    pool = TierStorageBase::poolFromJson(body);
+    EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, error));
+    EXPECT_NE(std::string::npos, error.find("METRICS or QUOTA")) << error;
+
+    StoragePool local;
+    local.type = "LOCAL_DISK";
+    local.tier = "HOT";
+    local.mount_path = Optional<std::string>("/data");
+    local.capacity_source = "QUOTA";
+    local.capacity_quota_bytes = Optional<int64_t>(1000);
+    EXPECT_FALSE(TierStorageBase::validatePoolByType(local, error));
+    EXPECT_NE(std::string::npos, error.find("only supported for object storage")) << error;
+}
+
+TEST(StoragePoolApiTest, PatchesAndSerializesQuotaFields) {
+    StoragePool pool;
+    pool.type = "MINIO";
+    pool.tier = "COLD";
+    pool.capacity_source = "QUOTA";
+    pool.capacity_quota_bytes = Optional<int64_t>(1000);
+
+    Json::Value unrelated;
+    unrelated["name"] = "Renamed";
+    TierStorageBase::applyPoolPatch(pool, unrelated);
+    EXPECT_EQ("QUOTA", pool.capacity_source);
+    ASSERT_TRUE(pool.capacity_quota_bytes.has_value());
+    EXPECT_EQ(1000, pool.capacity_quota_bytes.value());
+
+    Json::Value detail = TierStorageBase::poolDetailToJson(pool);
+    EXPECT_EQ("QUOTA", detail["capacity_source"].asString());
+    EXPECT_EQ(1000, detail["capacity_quota_bytes"].asInt64());
+    EXPECT_EQ(1000, pool.toJson()["capacity_quota_bytes"].asInt64());
+
+    Json::Value body;
+    body["capacity_quota_bytes"] = Json::Int64(2000);
+    TierStorageBase::applyPoolPatch(pool, body);
+    EXPECT_EQ(2000, pool.capacity_quota_bytes.value());
+
+    body = Json::Value();
+    body["capacity_source"] = "METRICS";
+    body["capacity_quota_bytes"] = Json::nullValue;
+    TierStorageBase::applyPoolPatch(pool, body);
+    EXPECT_EQ("METRICS", pool.capacity_source);
+    EXPECT_FALSE(pool.capacity_quota_bytes.has_value());
+    EXPECT_TRUE(TierStorageBase::poolDetailToJson(pool)["capacity_quota_bytes"].isNull());
+}
+
 TEST(StoragePoolApiTest, SerializesPoolDetailWithoutExposingCredentials) {
     StoragePool pool;
     pool.id = "pool-1";

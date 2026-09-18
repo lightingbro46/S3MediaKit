@@ -610,6 +610,9 @@ private:
     };
     mutable std::mutex _pool_versioning_mtx;
     std::unordered_map<std::string, PoolVersioningState> _pool_versioning;
+    // QUOTA-mode usage per pool: {computed_at, bytes}; any thread.
+    mutable std::mutex _quota_usage_mtx;
+    std::unordered_map<std::string, std::pair<int64_t, int64_t>> _quota_usage;
     size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)
@@ -642,6 +645,10 @@ private:
     // hour (always when `force`) and raises POOL_VERSIONING_BLOCKS_RECLAIM
     // at most once a day while it is Enabled. Returns the last known state.
     std::string refreshPoolVersioning(const StoragePool &pool, bool force);
+
+    // Summed bytes of the ranges stored on a QUOTA-mode pool, cached for
+    // storage.tiering_quota_usage_cache_seconds.
+    int64_t quotaUsedBytes(const std::string &pool_id);
     void mergePoolRuntimeStats(StoragePool &pool) const;
 };
 

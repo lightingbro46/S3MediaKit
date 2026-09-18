@@ -8,6 +8,7 @@
 #include <functional>
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -3432,6 +3433,85 @@ int scenarioAlertsWhenBucketVersioningEnabled(const std::string &root) {
     return 0;
 }
 
+// Serves MinIO cluster capacity metrics with the given raw free bytes out of 1000.
+FakeS3Server::Handler rawClusterMetrics(const std::shared_ptr<std::atomic<int64_t>> &raw_free) {
+    return [raw_free](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.target != "/minio/v2/metrics/cluster")
+            return false;
+        response.body = "minio_cluster_capacity_raw_total_bytes 1000\n"
+                        "minio_cluster_capacity_raw_free_bytes " +
+                        std::to_string(static_cast<long long>(raw_free->load())) + "\n";
+        return true;
+    };
+}
+
+int scenarioQuotaCapacityFollowsRangeSums(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    auto raw_free = std::make_shared<std::atomic<int64_t>>(900);
+    server.setHandler(rawClusterMetrics(raw_free));
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.health_check_enabled = 1;
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(1000);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+    drainWorkThreadPool();
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto first = seedRangeOnPool(manager, root, cold, "camera-quota-a",
+                                       now - 3 * 86400, 3, 100, keys);
+    const auto second = seedRangeOnPool(manager, root, cold, "camera-quota-b",
+                                        now - 2 * 86400, 2, 300, keys);
+    // Ranges on other pools or already deleted do not count.
+    SegmentTierRange deleted = first;
+    deleted.range_id = "quota-deleted-range";
+    deleted.start_time = now - 5 * 86400;
+    deleted.end_time = deleted.start_time + 60;
+    deleted.size_bytes = 5000;
+    deleted.status = segmentStatusToString(SegmentStatus::DELETED);
+    require(SegmentTierRangeImp().add(deleted), "Cannot seed deleted range");
+
+    PoolHealthInfo health;
+    auto probe = [&]() {
+        manager.checkAndRecordPoolHealth();
+        require(manager.getPoolHealth(cold.id, health), "QUOTA pool health missing");
+    };
+    probe();
+    require(health.capacity_available && health.total_bytes == 1000 && health.used_bytes == 900,
+            "QUOTA usage does not equal the summed range bytes: used=" +
+                std::to_string(static_cast<long long>(health.used_bytes)));
+    require(health.health_status == healthToString(StorageHealth::CRITICAL),
+            "QUOTA pool at 90% is not CRITICAL: " + health.health_status);
+    require(health.capacity_message.find("Logical quota") != std::string::npos,
+            "Capacity message does not name the logical quota");
+
+    require(SegmentTierRangeImp().updateTierByRangeId(
+                second.range_id, cold.tier, cold.id, segmentStatusToString(SegmentStatus::DELETED)),
+            "Cannot delete the second range");
+    probe();
+    require(health.used_bytes == 300 && health.health_status == healthToString(StorageHealth::OK),
+            "QUOTA usage did not drop after a range was deleted");
+
+    // The raw cluster metric only overrides when the cluster itself is critical.
+    raw_free->store(10);
+    probe();
+    require(health.used_bytes == 990 && health.health_status == healthToString(StorageHealth::CRITICAL),
+            "A critical raw cluster metric did not override the logical quota usage");
+    raw_free->store(500);
+    probe();
+    require(health.used_bytes == 300, "A non-critical raw metric overrode the logical usage");
+    manager.stop();
+    return 0;
+}
+
 int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -4814,6 +4894,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
         if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
+        if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -5112,6 +5193,11 @@ TEST(TierStorageManagerIntegrationTest, DeletesObjectRangeInOneBatchRequest) {
 TEST(TierStorageManagerIntegrationTest, AlertsWhenObjectBucketVersioningIsEnabled) {
     TempRoot root;
     EXPECT_EQ(0, runChild("bucket-versioning-alert", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, QuotaCapacityFollowsStoredRangeBytes) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("quota-capacity-range-sums", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {

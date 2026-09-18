@@ -45,8 +45,16 @@ Các trường quan trọng:
 - `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key_enc`
 - `high_watermark_percent`, `critical_watermark_percent`
 - `enabled`, `health_check_enabled`
+- `capacity_source` (`METRICS` | `QUOTA`, mặc định `METRICS`) và `capacity_quota_bytes` (nullable), thêm ở migration `17_storage_pool_capacity_quota.sql`
 
 Khi trả về client, `access_key` và `secret_key` phải được mask bằng `***********`.
+
+Dung lượng pool object storage có hai nguồn:
+
+- `METRICS`: dùng metric cluster của MinIO (`/minio/v2/metrics/cluster`). Số này là raw capacity của cả cluster: gồm parity erasure coding, mọi bucket khác và có độ trễ, nên không phản ánh đúng phần dung lượng của pool.
+- `QUOTA`: usage = tổng `size_bytes` của các range `AVAILABLE`/`RESTORING`/`EXPIRED` trên pool (`SegmentTierRangeRepository::sumStoredBytesByPool()`), total = `capacity_quota_bytes`. HeadBucket vẫn quyết định pool online hay không. Nếu metric raw cũng đọc được và raw usage ≥ `critical_watermark_percent` thì lấy giá trị lớn hơn, để metric raw vẫn là lưới an toàn khi chính cluster sắp đầy. Tổng byte được cache `storage.tiering_quota_usage_cache_seconds` (mặc định 30 giây) vì probe dung lượng chạy nhiều lần mỗi cycle.
+
+Khuyến nghị khi dùng `QUOTA`: đặt hard quota cho bucket trên MinIO (`mc quota set <alias>/<bucket> --size ...`) cao hơn `capacity_quota_bytes` khoảng 5%, để MinIO chặn ghi nếu metadata và dữ liệu thực tế lệch nhau (ví dụ object được ghi ngoài hệ thống).
 
 ### 2.2 StoragePolicy
 
@@ -223,6 +231,7 @@ Backend kiểm tra:
 - `NAS` cần `mount_path` hoặc `network_path`, path phải được mount/writable và được xử lý qua `TierNASStorage`.
 - `MINIO` cần `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key`.
 - `high_watermark_percent < critical_watermark_percent`.
+- `capacity_source` là `METRICS` hoặc `QUOTA` (không phân biệt hoa thường); `QUOTA` chỉ dành cho object storage và bắt buộc `capacity_quota_bytes` là số nguyên dương. `pool/update` với `capacity_quota_bytes: null` xóa quota, bỏ trống field thì giữ nguyên.
 
 `mount_path`/`network_path` của filesystem pool lưu logical recorder root, không
 chứa `Record::kAppName`. `TierStorageManager::resolveFilePoolDataRoot()` nối app
@@ -1005,6 +1014,7 @@ storage.tiering_max_ranges_per_camera_cycle=64
 storage.tiering_missing_segment_max_attempts=3
 storage.tiering_missing_segment_retry_base_seconds=3600
 storage.tiering_pressure_delete_margin_percent=3
+storage.tiering_quota_usage_cache_seconds=30
 storage.tier_reconcile_enabled=1
 storage.tier_reconcile_work_budget_ms=2000
 storage.tier_reconcile_min_age_seconds=600
@@ -1045,6 +1055,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_missing_segment_max_attempts` | Tier transfer | Số lần job fail vì segment mất ở cả nguồn và đích trước khi segment bị loại khỏi range |
 | `tiering_missing_segment_retry_base_seconds` | `queueTierMoveJob()` | Backoff cơ sở cho range có segment mất, nhân đôi mỗi lần, tối đa 1 ngày |
 | `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
+| `tiering_quota_usage_cache_seconds` | `quotaUsedBytes()` | Thời gian dùng lại tổng byte range của pool `QUOTA`; `0` tắt cache |
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
 | `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
@@ -1155,6 +1166,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
 - Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.
+- Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
 - Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.

@@ -736,6 +736,9 @@ extern const std::string kTieringMissingSegmentRetryBaseSeconds;
 // Extra usage percent above a pool's critical watermark before pressure deletion
 // runs while tier moves from that pool are still pending.
 extern const std::string kTieringPressureDeleteMarginPercent;
+// Seconds a QUOTA-mode object pool reuses its summed range bytes before
+// querying segment_tier_ranges again; 0 disables the cache.
+extern const std::string kTieringQuotaUsageCacheSeconds;
 // Enable the background check that drops timefile entries and range coverage
 // for recorded segments whose MP4 no longer exists on a reachable pool.
 extern const std::string kTierReconcileEnabled;

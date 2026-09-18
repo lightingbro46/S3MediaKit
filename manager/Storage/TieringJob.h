@@ -1396,6 +1396,24 @@ public:
             if (!row.empty()) ids.push_back(row[0]);
         return ids;
     }
+
+    // Bytes of every range whose files still occupy the pool.
+    int64_t sumStoredBytesByPool(const std::string &pool_id) {
+        if (pool_id.empty())
+            return 0;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(size_bytes), 0)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("pool_id = ? AND status IN (?, ?, ?)",
+                       {pool_id,
+                        segmentStatusToString(SegmentStatus::AVAILABLE),
+                        segmentStatusToString(SegmentStatus::RESTORING),
+                        segmentStatusToString(SegmentStatus::EXPIRED)}));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
+    }
 };
 
 // ===================================================================
