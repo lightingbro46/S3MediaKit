@@ -2224,7 +2224,8 @@ int scenarioBackfillSkipsBlocksWithoutFiles(const std::string &root) {
         auto starts = timelineStarts(camera, start - 60, start + 240);
         return starts.size() == 2 && starts[0] == start && starts[1] == start + 120;
     }, 5000), "Block without a file was not removed from the timefile");
-    require(hasAlert("TIER_BACKFILL_MISSING_FILE", camera),
+    // The alert is written after the block removal is queued, which may swap first.
+    require(waitUntil([&]() { return hasAlert("TIER_BACKFILL_MISSING_FILE", camera); }, 5000),
             "Backfill did not raise a storage alert for the missing file");
     manager.stop();
     drainWorkThreadPool();
@@ -3369,6 +3370,64 @@ int scenarioObjectRetentionDeletesInOneBatch(const std::string &root) {
     require(batches.back().body.find("<Quiet>true</Quiet>") != std::string::npos,
             "DeleteObjects request is not in quiet mode");
     require(server.requests("DELETE", "/").empty(), "Objects were deleted one request at a time");
+    manager.stop();
+    return 0;
+}
+
+int countAlerts(const std::string &type, const std::string &pool_id) {
+    int count = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        count += alert.type == type && alert.pool_id == pool_id ? 1 : 0;
+    return count;
+}
+
+int scenarioAlertsWhenBucketVersioningEnabled(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    server.setHandler([](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "GET" || request.target != "/versioned-bucket?versioning")
+            return false;
+        response.body = "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<Status>Enabled</Status></VersioningConfiguration>";
+        return true;
+    });
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool versioned = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                           "versioned-bucket");
+    versioned.id = "versioned-cold";
+    versioned.health_check_enabled = 1;
+    StoragePool plain = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                       "plain-bucket");
+    plain.id = "plain-cold";
+    plain.health_check_enabled = 1;
+    require(manager.createPool(versioned) == versioned.id, "Versioned pool creation failed");
+    require(manager.createPool(plain) == plain.id, "Plain pool creation failed");
+    drainWorkThreadPool();
+
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", versioned.id) == 1,
+            "Registering a versioned bucket did not raise POOL_VERSIONING_BLOCKS_RECLAIM");
+    require(hasAlert("POOL_VERSIONING_BLOCKS_RECLAIM", "NoncurrentVersionExpiration"),
+            "Versioning alert does not recommend a lifecycle rule");
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", plain.id) == 0,
+            "An unversioned bucket raised the versioning alert");
+
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(manager.getPoolHealth(versioned.id, health) &&
+                health.capacity_message.find("versioning is Enabled") != std::string::npos,
+            "Health capacity message does not mention bucket versioning");
+    require(manager.getPoolHealth(plain.id, health) &&
+                health.capacity_message.find("versioning") == std::string::npos,
+            "Unversioned pool health mentions versioning");
+    // Health cycles reuse the hourly check and never repeat the daily alert.
+    require(server.requests("GET", "/versioned-bucket?versioning").size() == 1,
+            "Health checks re-read bucket versioning before the check interval");
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", versioned.id) == 1,
+            "Versioning alert was not rate-limited");
     manager.stop();
     return 0;
 }
@@ -4754,6 +4813,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
         if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
+        if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -5047,6 +5107,11 @@ TEST(TierStorageManagerIntegrationTest, SkipsMoveWhenDestinationPoolIsCritical) 
 TEST(TierStorageManagerIntegrationTest, DeletesObjectRangeInOneBatchRequest) {
     TempRoot root;
     EXPECT_EQ(0, runChild("object-retention-batch-delete", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AlertsWhenObjectBucketVersioningIsEnabled) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("bucket-versioning-alert", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {

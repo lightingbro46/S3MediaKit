@@ -183,9 +183,12 @@ Các hàm quan trọng:
 - `deleteSegment(pool_id, s3_key)`
 - `deleteSegmentsBatch(pool_id, s3_keys)`: `DeleteObjects` ở chế độ quiet, tối đa 1 000 key/request; trả `false` khi request lỗi hoặc có bất kỳ key nào nằm trong `Errors`.
 - `segmentExists(pool_id, s3_key)`
+- `bucketVersioningStatus(pool_id, status)`: đọc `GetBucketVersioning` (`Enabled`, `Suspended` hoặc rỗng).
 - `makeS3Key(base_path, camera_id, stream_id, segment_path)`
 
 Đây là lớp dùng chung cho cả upload khi chuyển sang COLD và download khi restore segment.
+
+Bucket bật versioning không giải phóng dung lượng khi xóa: `DeleteObjects` chỉ tạo delete marker, bản cũ thành noncurrent version và vẫn chiếm chỗ. `TierStorageManager::refreshPoolVersioning()` đọc trạng thái versioning ngay khi đăng ký pool và tối đa một lần/giờ trong probe dung lượng (health cycle và maintenance). Khi `Enabled`, backend ghi cảnh báo `POOL_VERSIONING_BLOCKS_RECLAIM` (tối đa một lần/ngày/pool) khuyến nghị thêm lifecycle rule `NoncurrentVersionExpiration` (kèm dọn expired delete marker) hoặc tắt versioning, và thêm ghi chú vào `capacity_message` của health. Backend không chặn thao tác nào vì trạng thái này.
 
 ### 2.8 Job Tables
 
@@ -1152,6 +1155,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
 - Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.
+- Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.

@@ -550,6 +550,39 @@ bool TierObjectStorage::segmentExists(const std::string &pool_id,
     return entry.client->HeadObject(req).IsSuccess();
 }
 
+bool TierObjectStorage::bucketVersioningStatus(const std::string &pool_id,
+                                               std::string &out_status) {
+    out_status.clear();
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) return false;
+        entry = it->second;
+    }
+
+    Aws::S3::Model::GetBucketVersioningRequest req;
+    req.SetBucket(entry.bucket.c_str());
+    auto client = entry.health_client ? entry.health_client : entry.client;
+    auto out = client->GetBucketVersioning(req);
+    if (!out.IsSuccess()) {
+        DebugL << "TierObjectStorage::bucketVersioningStatus: pool " << pool_id << ": "
+               << out.GetError().GetMessage();
+        return false;
+    }
+    switch (out.GetResult().GetStatus()) {
+    case Aws::S3::Model::BucketVersioningStatus::Enabled:
+        out_status = "Enabled";
+        break;
+    case Aws::S3::Model::BucketVersioningStatus::Suspended:
+        out_status = "Suspended";
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
 bool TierObjectStorage::supportsPresignedRead(const std::string &pool_id) const {
     std::lock_guard<std::mutex> lk(_mtx);
     return _pool_map.count(pool_id) > 0;
@@ -673,6 +706,10 @@ bool TierObjectStorage::deleteSegment(const std::string &, const std::string &) 
 bool TierObjectStorage::deleteSegmentsBatch(const std::string &,
                                               const std::vector<std::string> &) { return false; }
 bool TierObjectStorage::segmentExists(const std::string &, const std::string &) { return false; }
+bool TierObjectStorage::bucketVersioningStatus(const std::string &, std::string &out_status) {
+    out_status.clear();
+    return false;
+}
 bool TierObjectStorage::supportsPresignedRead(const std::string &) const { return false; }
 bool TierObjectStorage::createPresignedGetUrl(const std::string &, const std::string &,
                                                uint32_t, std::string &,

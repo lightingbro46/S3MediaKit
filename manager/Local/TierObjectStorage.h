@@ -32,6 +32,7 @@
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/DeleteObjectRequest.h>
 #include <aws/s3/model/DeleteObjectsRequest.h>
+#include <aws/s3/model/GetBucketVersioningRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/HeadBucketRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
@@ -138,6 +139,13 @@ public:
      * Check whether an object exists without downloading it.
      */
     bool segmentExists(const std::string &pool_id, const std::string &s3_key);
+
+    /**
+     * Read the bucket versioning state via GetBucketVersioning.
+     * @param out_status "Enabled", "Suspended", or "" when never enabled.
+     * @return false when the request fails or the pool is not registered.
+     */
+    bool bucketVersioningStatus(const std::string &pool_id, std::string &out_status);
 
     bool supportsPresignedRead(const std::string &pool_id) const;
     bool createPresignedGetUrl(const std::string &pool_id,

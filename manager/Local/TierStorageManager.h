@@ -602,6 +602,14 @@ private:
     };
     std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
     std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
+    // Bucket versioning per object pool; touched by API, health and maintenance threads.
+    struct PoolVersioningState {
+        int64_t checked_at = 0;
+        int64_t alerted_at = 0;
+        std::string status;
+    };
+    mutable std::mutex _pool_versioning_mtx;
+    std::unordered_map<std::string, PoolVersioningState> _pool_versioning;
     size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)
@@ -629,6 +637,11 @@ private:
     const TierFileStorageBase *fileStorageForPoolType(const std::string &type) const;
 
     bool probePoolRuntimeStats(StoragePool &pool, std::string &out_message);
+
+    // Reads the bucket versioning state of an object pool at most once an
+    // hour (always when `force`) and raises POOL_VERSIONING_BLOCKS_RECLAIM
+    // at most once a day while it is Enabled. Returns the last known state.
+    std::string refreshPoolVersioning(const StoragePool &pool, bool force);
     void mergePoolRuntimeStats(StoragePool &pool) const;
 };
 

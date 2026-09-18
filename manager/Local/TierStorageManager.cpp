@@ -620,17 +620,69 @@ bool TierStorageManager::registerPoolObjStorage(const StoragePool &pool) {
     std::string secret = decryptPoolSecret(pool.secret_key_enc.value());
     std::string base   = pool.base_path.has_value() ? pool.base_path.value() : "";
 
-    return _obj_storage.registerPool(
+    const bool registered = _obj_storage.registerPool(
         pool.id, pool.type,
         pool.endpoint.value(),
         pool.bucket.value(),
         base,
         pool.access_key.value(),
         secret);
+    if (registered)
+        refreshPoolVersioning(pool, true);
+    return registered;
+}
+
+std::string TierStorageManager::refreshPoolVersioning(const StoragePool &pool, bool force) {
+    static const int64_t kCheckIntervalSeconds = 3600;
+    static const int64_t kAlertIntervalSeconds = 86400;
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    {
+        std::lock_guard<std::mutex> lk(_pool_versioning_mtx);
+        auto &state = _pool_versioning[pool.id];
+        if (!force && now - state.checked_at < kCheckIntervalSeconds)
+            return state.status;
+        // Claim the check so concurrent callers do not repeat the request.
+        state.checked_at = now;
+    }
+
+    std::string status;
+    if (!_obj_storage.bucketVersioningStatus(pool.id, status)) {
+        std::lock_guard<std::mutex> lk(_pool_versioning_mtx);
+        return _pool_versioning[pool.id].status;
+    }
+
+    bool alert = false;
+    {
+        std::lock_guard<std::mutex> lk(_pool_versioning_mtx);
+        auto &state = _pool_versioning[pool.id];
+        state.status = status;
+        if (status == "Enabled" && now - state.alerted_at >= kAlertIntervalSeconds) {
+            state.alerted_at = now;
+            alert = true;
+        }
+    }
+    if (alert) {
+        WarnL << "Bucket versioning is enabled on object pool " << pool.id
+              << "; deleted recordings stay as noncurrent versions and do not free space";
+        StorageAlert item;
+        item.id = StrUUID::make_guid(8, "alert");
+        item.level = "WARNING";
+        item.type = "POOL_VERSIONING_BLOCKS_RECLAIM";
+        item.pool_id = pool.id;
+        item.message = "Bucket versioning is Enabled on bucket " + pool.bucket.value_or("") +
+                       ": deleted recordings remain as noncurrent versions and still use "
+                       "capacity. Add a lifecycle rule with NoncurrentVersionExpiration "
+                       "(and expired delete-marker cleanup) or disable versioning.";
+        item.created_at = now;
+        StorageAlertImp().add(item);
+    }
+    return status;
 }
 
 void TierStorageManager::unregisterPoolObjStorage(const std::string &pool_id) {
     _obj_storage.unregisterPool(pool_id);
+    std::lock_guard<std::mutex> lk(_pool_versioning_mtx);
+    _pool_versioning.erase(pool_id);
 }
 
 TierFileStorageBase *TierStorageManager::fileStorageForPoolType(const std::string &type) {
@@ -5464,6 +5516,13 @@ bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &o
                 pool.capacity_available = stats.capacity_available;
                 pool.capacity_status = stats.capacity_status;
                 pool.capacity_message = stats.capacity_message;
+                if (refreshPoolVersioning(pool, false) == "Enabled") {
+                    if (!pool.capacity_message.empty())
+                        pool.capacity_message += "; ";
+                    pool.capacity_message += "bucket versioning is Enabled, deleted recordings "
+                                             "keep noncurrent versions until a lifecycle rule "
+                                             "expires them";
+                }
                 if (stats.capacity_available) {
                     pool.used_bytes  = static_cast<int64_t>(stats.used_bytes);
                     pool.total_bytes = static_cast<int64_t>(stats.total_bytes);
