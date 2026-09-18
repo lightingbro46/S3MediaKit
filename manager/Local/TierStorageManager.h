@@ -399,6 +399,11 @@ private:
                           const StoragePolicy &policy,
                           TieringJobTrigger trigger);
 
+    // True when the destination pool is at or above its critical watermark.
+    // Probes each pool at most once per maintenance cycle and raises a
+    // rate-limited TIER_DEST_POOL_CRITICAL alert. Unknown capacity is not critical.
+    bool isDestinationPoolCritical(const std::string &pool_id);
+
     enum class PendingJobPolicyDecision {
         VALID,
         STALE,
@@ -589,6 +594,14 @@ private:
     std::string _reconcile_cursor_id;
     // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _pressure_alerted_at;
+    // Destination capacity probed during the current maintenance cycle and the
+    // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
+    struct DestinationPoolCheck {
+        bool critical = false;
+        float usage_pct = 0.0f;
+    };
+    std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
+    std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
     size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)

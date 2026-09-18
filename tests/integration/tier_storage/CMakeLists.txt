@@ -87,6 +87,7 @@ foreach(manager_case
     CleansOnlyExpiredJobScopedRestoreCache
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     DefersTierMoveUntilDestinationPoolRecovers
+    SkipsMoveWhenDestinationPoolIsCritical
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers

@@ -3150,6 +3150,7 @@ void TierStorageManager::runTieringCycle() {
             for (const auto &p : all_pools)
                 self->_pool_cache[p.id] = p;
         }
+        self->_dest_pool_checks.clear();
 
         self->ensureSystemDefaultPolicy();
 
@@ -3247,6 +3248,12 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
                << " source_tier=" << src_tier_cfg.tier
                << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "")
                << " move_threshold=" << getTimeStr("%Y-%m-%d %H:%M:%S", move_threshold);
+        // Splitting rewrites ranges; skip it when no move could be queued anyway.
+        if (src_tier_cfg.overflow_action == overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER) &&
+            dst_tier_cfg && !dst_tier_cfg->pool_id.empty() &&
+            isDestinationPoolCritical(dst_tier_cfg->pool_id)) {
+            continue;
+        }
         auto ranges = range_imp.findByCameraTierStartedBefore(
             camera_id, src_tier_cfg.tier, move_threshold, max_ranges_per_cycle);
 
@@ -3306,6 +3313,12 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
         return false;
     }
 
+    if (isDestinationPoolCritical(dst_tier_cfg.pool_id)) {
+        DebugL << "Skip tiering job because the destination pool is critical, pool="
+               << dst_tier_cfg.pool_id << " range=" << range.range_id;
+        return false;
+    }
+
     int64_t now = static_cast<int64_t>(time(nullptr));
     int64_t retry_at = 0;
     if (missingSegmentRetryAt(range.range_id, retry_at) && now < retry_at) {
@@ -3343,6 +3356,51 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
            << " for camera " << range.camera_id
            << " [" << src_tier_cfg.tier << " -> " << dst_tier_cfg.tier << "]"
            << " range: " << range.start_time << "-" << range.end_time;
+    return true;
+}
+
+bool TierStorageManager::isDestinationPoolCritical(const std::string &pool_id) {
+    auto cached = _dest_pool_checks.find(pool_id);
+    if (cached != _dest_pool_checks.end())
+        return cached->second.critical;
+
+    StoragePool pool;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        auto it = _pool_cache.find(pool_id);
+        if (it == _pool_cache.end())
+            return false;
+        pool = it->second;
+    }
+    DestinationPoolCheck check;
+    if (pool.enabled) {
+        fillPoolRuntimeStats(pool);
+        check.usage_pct = pool.usage_pct;
+        check.critical = pool.total_bytes > 0 &&
+            pool.usage_pct >= static_cast<float>(pool.critical_watermark_percent);
+    }
+    _dest_pool_checks[pool_id] = check;
+    if (!check.critical)
+        return false;
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    auto &alerted_at = _dest_critical_alerted_at[pool_id];
+    if (now - alerted_at >= 3600) {
+        alerted_at = now;
+        WarnL << "Destination pool " << pool_id << " is above its critical watermark ("
+              << check.usage_pct << "%); tier moves into it are paused";
+        StorageAlert alert;
+        alert.id = StrUUID::make_guid(8, "alert");
+        alert.level = "ERROR";
+        alert.type = "TIER_DEST_POOL_CRITICAL";
+        alert.pool_id = pool_id;
+        alert.message = StrPrinter << "Destination pool is above its critical watermark ("
+                                   << check.usage_pct << "% >= "
+                                   << pool.critical_watermark_percent
+                                   << "%); tier moves into it are paused";
+        alert.created_at = now;
+        StorageAlertImp().add(alert);
+    }
     return true;
 }
 

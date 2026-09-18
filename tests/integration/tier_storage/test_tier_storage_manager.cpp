@@ -3029,6 +3029,75 @@ int scenarioPoolHealthDefersTierMove(const std::string &root) {
     return 0;
 }
 
+int scenarioSkipsMoveToCriticalDestination(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    // Any real filesystem is above 1% usage, so the destination is critical.
+    StoragePool warm = makeHotPool(root, "critical-warm", "critical-warm");
+    warm.name = "Critical WARM pool";
+    warm.tier = tierTypeToString(WarmTier);
+    warm.high_watermark_percent = 0;
+    warm.critical_watermark_percent = 1;
+    require(manager.createPool(warm) == warm.id, "Critical WARM pool creation failed");
+    drainWorkThreadPool();
+
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, warm.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+    const std::string camera = "camera-critical-destination";
+    require(manager.assignPolicyToCamera(camera, policy.id, "critical destination integration"),
+            "Policy assignment failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, camera, "2026-08-20/18-00-00",
+                                      "critical-destination-move", now - 180);
+    require(manager.registerHotSegmentRange(fixture.camera, fixture.stream, fixture.source_path,
+                                            fixture.start, fixture.end,
+                                            static_cast<int64_t>(fixture.payload.size())),
+            "HOT range registration failed");
+
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    require(manager.listTieringJobs(camera).empty(),
+            "A tiering job was queued into a critical destination pool");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, fixture.start - 1, fixture.end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(HotTier) &&
+                ranges.front().status == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range left HOT while the destination was critical");
+    require(File::fileExist(fixture.source_path), "HOT source was touched");
+    require(hasAlert("TIER_DEST_POOL_CRITICAL", "critical watermark"),
+            "TIER_DEST_POOL_CRITICAL alert was not raised");
+
+    // The alert is rate-limited per pool across cycles.
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    int alerts = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        alerts += alert.type == "TIER_DEST_POOL_CRITICAL" ? 1 : 0;
+    require(alerts == 1, "TIER_DEST_POOL_CRITICAL alert was not rate-limited");
+
+    // Once the destination has room again, the move is queued and completes.
+    warm.high_watermark_percent = 99;
+    warm.critical_watermark_percent = 100;
+    require(manager.updatePool(warm), "Cannot raise WARM pool watermarks");
+    drainWorkThreadPool();
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::DONE);
+    }, 5000), "Tier move did not run after the destination recovered");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
 int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -4408,6 +4477,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "job-scoped-restore-cache-cleanup") return scenarioCleansJobScopedRestoreCache(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
+        if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -4691,6 +4761,11 @@ TEST(TierStorageManagerIntegrationTest, TracksPoolHealthAndBlocksPlaybackWhenOff
 TEST(TierStorageManagerIntegrationTest, DefersTierMoveUntilDestinationPoolRecovers) {
     TempRoot root;
     EXPECT_EQ(0, runChild("pool-health-tier-move", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, SkipsMoveWhenDestinationPoolIsCritical) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("critical-destination-skip", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {
