@@ -3232,19 +3232,35 @@ void TierStorageManager::runTieringCycle() {
         SegmentTierRangeImp range_imp;
         auto camera_ids = range_imp.findDistinctAvailableCameras();
 
+        std::vector<std::pair<std::string, StoragePolicy>> camera_policies;
         for (const auto &cam_id : camera_ids) {
             try {
                 auto eff = self->getEffectivePolicy(cam_id);
                 if (!eff.policy_id.empty()) {
                     auto policies = self->getPolicy(eff.policy_id);
-                    if (!policies.empty()) {
-                        const auto &policy = policies.front();
-                        self->processCameraTiering(cam_id, policy);
-                        self->processCameraPressureTiering(cam_id, policy);
-                        self->enforcePolicyDeleteRetention(cam_id, policy);
-                        self->enforceCameraArchiveRetention(cam_id, policy);
-                    }
+                    if (!policies.empty())
+                        camera_policies.emplace_back(cam_id, policies.front());
                 }
+            } catch (const std::exception &e) {
+                WarnL << "Error loading policy of camera " << cam_id << ": " << e.what();
+            }
+        }
+
+        // Early moves are balanced across cameras, so plan them per pool first.
+        try {
+            self->planBalancedPressureMoves(camera_policies);
+        } catch (const std::exception &e) {
+            WarnL << "Error planning pressure moves: " << e.what();
+        }
+
+        for (const auto &item : camera_policies) {
+            const auto &cam_id = item.first;
+            const auto &policy = item.second;
+            try {
+                self->processCameraTiering(cam_id, policy);
+                self->processCameraPressureTiering(cam_id, policy);
+                self->enforcePolicyDeleteRetention(cam_id, policy);
+                self->enforceCameraArchiveRetention(cam_id, policy);
             } catch (const std::exception &e) {
                 WarnL << "Error processing camera " << cam_id << ": " << e.what();
             }
@@ -3430,29 +3446,40 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
     return true;
 }
 
-bool TierStorageManager::isDestinationPoolCritical(const std::string &pool_id) {
+TierStorageManager::DestinationPoolCheck
+TierStorageManager::destinationPoolCheck(const std::string &pool_id) {
     auto cached = _dest_pool_checks.find(pool_id);
     if (cached != _dest_pool_checks.end())
-        return cached->second.critical;
+        return cached->second;
 
+    DestinationPoolCheck check;
     StoragePool pool;
+    bool found = false;
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         auto it = _pool_cache.find(pool_id);
-        if (it == _pool_cache.end())
-            return false;
-        pool = it->second;
+        if (it != _pool_cache.end()) {
+            pool = it->second;
+            found = true;
+        }
     }
-    DestinationPoolCheck check;
-    if (pool.enabled) {
+    if (found && pool.enabled) {
         fillPoolRuntimeStats(pool);
         check.usage_pct = pool.usage_pct;
-        check.critical = pool.total_bytes > 0 &&
+        check.has_capacity = pool.total_bytes > 0;
+        check.critical = check.has_capacity &&
             pool.usage_pct >= static_cast<float>(pool.critical_watermark_percent);
     }
     _dest_pool_checks[pool_id] = check;
+    return check;
+}
+
+bool TierStorageManager::isDestinationPoolCritical(const std::string &pool_id) {
+    const DestinationPoolCheck check = destinationPoolCheck(pool_id);
     if (!check.critical)
         return false;
+    StoragePool pool;
+    getPoolById(pool_id, pool);
 
     const int64_t now = static_cast<int64_t>(time(nullptr));
     auto &alerted_at = _dest_critical_alerted_at[pool_id];
@@ -3473,6 +3500,117 @@ bool TierStorageManager::isDestinationPoolCritical(const std::string &pool_id) {
         StorageAlertImp().add(alert);
     }
     return true;
+}
+
+void TierStorageManager::planBalancedPressureMoves(
+        const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies) {
+    _pressure_move_cutoffs.clear();
+    GET_CONFIG(std::string, delete_mode, Storage::kTieringPressureDeleteMode);
+    if (strcasecmp(delete_mode.c_str(), "OLDEST") == 0)
+        return;
+
+    // Cameras whose policy moves a tier out early: source tier -> (camera,
+    // newest movable time, destination pool).
+    struct MoveRoute {
+        std::string camera_id;
+        int64_t stable_before;
+        std::string dst_pool_id;
+    };
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    std::unordered_map<std::string, std::vector<MoveRoute>> routes_by_tier;
+    for (const auto &item : camera_policies) {
+        const auto &policy = item.second;
+        if (policy.enabled == 0)
+            continue;
+        const auto rules = policy.parsedAdvancedRules();
+        if (!rules.enable_early_move_when_pool_high)
+            continue;
+        auto tiers = policy.parsedTiers();
+        std::sort(tiers.begin(), tiers.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+            return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+        });
+        const int64_t min_age_secs = static_cast<int64_t>(rules.min_segment_age_minutes_before_move) * 60;
+        for (size_t i = 0; i < tiers.size(); ++i) {
+            const auto &src = tiers[i];
+            if (!src.enabled || src.pool_id.empty() ||
+                src.overflow_action != overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER)) {
+                continue;
+            }
+            const PolicyTierConfig *dst = nullptr;
+            for (size_t j = i + 1; j < tiers.size() && !dst; ++j) {
+                if (tiers[j].enabled)
+                    dst = &tiers[j];
+            }
+            if (!dst || dst->pool_id.empty())
+                continue;
+            const DestinationPoolCheck check = destinationPoolCheck(dst->pool_id);
+            if (check.critical || (rules.skip_move_if_pool_offline && !check.has_capacity))
+                continue;
+            MoveRoute route;
+            route.camera_id = item.first;
+            route.stable_before = now - std::max<int64_t>(min_age_secs, 60);
+            route.dst_pool_id = dst->pool_id;
+            routes_by_tier[src.tier].push_back(route);
+        }
+    }
+    if (routes_by_tier.empty())
+        return;
+
+    std::vector<StoragePool> pools;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        for (const auto &kv : _pool_cache) {
+            if (kv.second.enabled && routes_by_tier.count(kv.second.tier))
+                pools.push_back(kv.second);
+        }
+    }
+    SegmentTierRangeImp range_imp;
+    TieringJobImp job_imp;
+    for (auto pool : pools) {
+        if (_stopping)
+            return;
+        fillPoolRuntimeStats(pool);
+        if (pool.total_bytes <= 0 ||
+            pool.usage_pct < static_cast<float>(pool.high_watermark_percent) ||
+            !isPoolAvailableForTierOperation(pool, false)) {
+            continue;
+        }
+        // Moves already queued from this pool count towards the target.
+        const float target_pct = std::max(0.0f, static_cast<float>(pool.high_watermark_percent) - 5.0f);
+        const int64_t target_used = static_cast<int64_t>(
+            static_cast<double>(pool.total_bytes) * target_pct / 100.0);
+        const int64_t need = pool.used_bytes - target_used - job_imp.sumActiveBytesBySourcePool(pool.id);
+        if (need <= 0)
+            continue;
+
+        std::vector<PressureCameraWindow> windows;
+        for (const auto &route : routes_by_tier[pool.tier]) {
+            if (route.dst_pool_id == pool.id)
+                continue;
+            PressureCameraWindow window;
+            window.camera_id = route.camera_id;
+            window.hi = route.stable_before;
+            if (!range_imp.findOldestStartByCameraPool(route.camera_id, pool.id, pool.tier, window.lo) ||
+                window.hi <= window.lo) {
+                continue;
+            }
+            windows.push_back(window);
+        }
+        if (windows.empty())
+            continue;
+
+        int64_t estimated = 0;
+        const int keep_percent = findBalancedKeepPercent(pool, windows, now, need, true, estimated);
+        auto &cutoffs = _pressure_move_cutoffs[pool.id];
+        for (const auto &window : windows) {
+            const int64_t cutoff = balancedCutoff(window, keep_percent);
+            if (cutoff > window.lo)
+                cutoffs[window.camera_id] = cutoff;
+        }
+        DebugL << "Balanced pressure moves from pool " << pool.id << ": keep " << keep_percent
+               << "% of " << windows.size() << " camera window(s), need " << need
+               << " bytes, estimated " << estimated << " bytes";
+    }
 }
 
 void TierStorageManager::processCameraPressureTiering(const std::string &camera_id,
@@ -3497,6 +3635,8 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
     GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
     if (max_ranges_per_cycle <= 0)
         max_ranges_per_cycle = 64;
+    GET_CONFIG(std::string, delete_mode, Storage::kTieringPressureDeleteMode);
+    const bool balanced = strcasecmp(delete_mode.c_str(), "OLDEST") != 0;
     auto next_enabled_tier = [&](size_t index) -> const PolicyTierConfig * {
         for (size_t j = index + 1; j < tiers.size(); ++j) {
             if (tiers[j].enabled)
@@ -3515,6 +3655,30 @@ void TierStorageManager::processCameraPressureTiering(const std::string &camera_
             WarnL << "Skip pressure tiering config with empty pool_id camera=" << camera_id
                   << " source_tier=" << src_tier_cfg.tier
                   << " target_tier=" << (dst_tier_cfg ? dst_tier_cfg->tier : "");
+            continue;
+        }
+
+        if (balanced) {
+            // planBalancedPressureMoves() already applied the destination and
+            // source watermark checks; move each planned pool's share up to
+            // this camera's cutoff.
+            for (const auto &planned : _pressure_move_cutoffs) {
+                auto cutoff_it = planned.second.find(camera_id);
+                if (cutoff_it == planned.second.end() || planned.first == dst_tier_cfg->pool_id)
+                    continue;
+                auto ranges = range_imp.findPoolRetentionCandidatesAfter(
+                    camera_id, planned.first, src_tier_cfg.tier, cutoff_it->second,
+                    std::numeric_limits<int64_t>::min(), "", now, max_ranges_per_cycle, true);
+                for (const auto &range : ranges) {
+                    if (_stopping)
+                        return;
+                    SegmentTierRange piece;
+                    if (!splitRangeForTieringThreshold(range, cutoff_it->second, piece))
+                        continue;
+                    queueTierMoveJob(piece, src_tier_cfg, *dst_tier_cfg, policy,
+                                     TieringJobTrigger::PRESSURE);
+                }
+            }
             continue;
         }
 
@@ -4319,6 +4483,59 @@ void TierStorageManager::enforcePoolPressureRetention() {
     }
 }
 
+int64_t TierStorageManager::balancedCutoff(const PressureCameraWindow &window, int keep_percent) {
+    return window.hi - (window.hi - window.lo) * keep_percent / 100;
+}
+
+int TierStorageManager::findBalancedKeepPercent(const StoragePool &pool,
+                                                const std::vector<PressureCameraWindow> &cameras,
+                                                int64_t now,
+                                                int64_t need,
+                                                bool for_move,
+                                                int64_t &out_estimated) {
+    SegmentTierRangeImp range_imp;
+    std::map<int, int64_t> freed_cache;
+    auto freedAt = [&](int kp) -> int64_t {
+        auto it = freed_cache.find(kp);
+        if (it != freed_cache.end())
+            return it->second;
+        int64_t freed = 0;
+        for (const auto &window : cameras) {
+            freed += range_imp.sumDeletableBytesByCameraPoolEndedBy(
+                window.camera_id, pool.id, pool.tier, balancedCutoff(window, kp), now, for_move);
+        }
+        freed_cache[kp] = freed;
+        return freed;
+    };
+
+    // Largest kp whose cutoffs free `need`. Probe downward from 100 with
+    // doubling steps so the common small reclaim reads little data, then
+    // bisect between the last failing and the first satisfying kp.
+    int ok = -1;
+    int bad = 100;
+    for (int step = 1; !_stopping; step *= 2) {
+        const int probe = std::max(0, 100 - step);
+        if (freedAt(probe) >= need) {
+            ok = probe;
+            break;
+        }
+        bad = probe;
+        if (probe == 0)
+            break;
+    }
+    while (ok >= 0 && bad - ok > 1 && !_stopping) {
+        const int mid = (ok + bad) / 2;
+        if (freedAt(mid) >= need)
+            ok = mid;
+        else
+            bad = mid;
+    }
+    // Not even kp = 0 frees enough: take everything.
+    const int keep_percent = ok >= 0 ? ok : 0;
+    out_estimated = _stopping ? 0 : freedAt(keep_percent);
+    return keep_percent;
+}
+
 void TierStorageManager::reclaimPoolBalanced(const StoragePool &pool,
                                              int64_t now,
                                              int max_pieces,
@@ -4367,52 +4584,13 @@ int TierStorageManager::reclaimCamerasBalanced(const StoragePool &pool,
                                                 int &deleted_count,
                                                 int64_t &deleted_bytes) {
     SegmentTierRangeImp range_imp;
-    auto cutoffAt = [](const PressureCameraWindow &window, int kp) -> int64_t {
-        return window.hi - (window.hi - window.lo) * kp / 100;
-    };
-    std::map<int, int64_t> freed_cache;
-    auto freedAt = [&](int kp) -> int64_t {
-        auto it = freed_cache.find(kp);
-        if (it != freed_cache.end())
-            return it->second;
-        int64_t freed = 0;
-        for (const auto &window : cameras) {
-            freed += range_imp.sumDeletableBytesByCameraPoolEndedBy(
-                window.camera_id, pool.id, pool.tier, cutoffAt(window, kp), now);
-        }
-        freed_cache[kp] = freed;
-        return freed;
-    };
-
-    // Largest kp whose cutoffs free `need`. Probe downward from 100 with
-    // doubling steps so the common small reclaim reads little data, then
-    // bisect between the last failing and the first satisfying kp.
-    int ok = -1;
-    int bad = 100;
-    for (int step = 1; !_stopping; step *= 2) {
-        const int probe = std::max(0, 100 - step);
-        if (freedAt(probe) >= need) {
-            ok = probe;
-            break;
-        }
-        bad = probe;
-        if (probe == 0)
-            break;
-    }
-    while (ok >= 0 && bad - ok > 1 && !_stopping) {
-        const int mid = (ok + bad) / 2;
-        if (freedAt(mid) >= need)
-            ok = mid;
-        else
-            bad = mid;
-    }
+    int64_t estimated = 0;
+    const int keep_percent = findBalancedKeepPercent(pool, cameras, now, need, false, estimated);
     if (_stopping)
         return 0;
-    // Not even kp = 0 frees enough: take everything deletable.
-    const int keep_percent = ok >= 0 ? ok : 0;
     DebugL << "Balanced pressure deletion on pool " << pool.id << ": keep " << keep_percent
            << "% of " << cameras.size() << " camera window(s), need " << need
-           << " bytes, estimated " << freedAt(keep_percent) << " bytes";
+           << " bytes, estimated " << estimated << " bytes";
 
     // Round-robin one range per camera so an early stop at `need` does not
     // spare the cameras visited last.
@@ -4428,7 +4606,7 @@ int TierStorageManager::reclaimCamerasBalanced(const StoragePool &pool,
     for (const auto &window : cameras) {
         Cursor cursor;
         cursor.window = &window;
-        cursor.cutoff = cutoffAt(window, keep_percent);
+        cursor.cutoff = balancedCutoff(window, keep_percent);
         cursor.after_end = std::numeric_limits<int64_t>::min();
         cursor.done = cursor.cutoff <= window.lo;
         cursors.push_back(cursor);

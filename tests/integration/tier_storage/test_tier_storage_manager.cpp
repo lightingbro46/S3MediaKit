@@ -3800,6 +3800,106 @@ int scenarioBalancedPressureRespectsMinRetention(const std::string &root) {
     return 0;
 }
 
+int countPressureJobs(TierStorageManager &manager, const std::string &camera) {
+    int count = 0;
+    for (const auto &job : manager.listTieringJobs(camera, "", "", "", 0, 0, 0, 1000))
+        count += job.job_trigger == "PRESSURE" ? 1 : 0;
+    return count;
+}
+
+int scenarioBalancedPressureMovesProportionally(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    // Source: a WARM pool at 90% of its quota, above high (80%) but below
+    // critical (95%), so only early moves apply. Reaching 75% needs 3500 bytes.
+    StoragePool warm = makeFakeObjectPool(root, server);
+    warm.id = "fake-warm";
+    warm.tier = tierTypeToString(WarmTier);
+    warm.high_watermark_percent = 80;
+    warm.critical_watermark_percent = 95;
+    warm.capacity_source = "QUOTA";
+    warm.capacity_quota_bytes = Optional<int64_t>(210 * 100 * 10 / 9);
+    require(manager.createPool(warm) == warm.id, "WARM source pool creation failed");
+
+    // Destination stays OFFLINE so queued jobs remain PENDING and countable.
+    StoragePool cold = makeNasPool(root);
+    cold.id = "offline-cold";
+    cold.tier = tierTypeToString(ColdTier);
+    cold.health_check_enabled = 1;
+    require(manager.createPool(cold) == cold.id, "COLD destination pool creation failed");
+    drainWorkThreadPool();
+    removeTree(root + "/nas");
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+
+    PolicyTierConfig hot_tier;
+    hot_tier.tier = tierTypeToString(HotTier);
+    hot_tier.enabled = true;
+    hot_tier.pool_id = hot_pools.front().id;
+    hot_tier.retain_until_days = 3650;
+    hot_tier.overflow_action = overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER);
+    PolicyTierConfig warm_tier = hot_tier;
+    warm_tier.tier = warm.tier;
+    warm_tier.pool_id = warm.id;
+    PolicyTierConfig cold_tier = hot_tier;
+    cold_tier.tier = cold.tier;
+    cold_tier.pool_id = cold.id;
+    cold_tier.overflow_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
+    PolicyAdvancedRules rules;
+    rules.enable_early_move_when_pool_high = true;
+    rules.min_segment_age_minutes_before_move = 0;
+    rules.skip_move_if_pool_offline = false;
+    StoragePolicy policy;
+    policy.id = "balanced-move-policy";
+    policy.name = "Balanced early move policy";
+    policy.enabled = 1;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot_tier, warm_tier, cold_tier});
+    policy.delete_policy_json = PolicyDeleteConfig().toJson().toStyledString();
+    policy.advanced_rules_json = rules.toJson().toStyledString();
+    require(manager.createPolicy(policy) == policy.id, "Early move policy creation failed");
+
+    const std::string short_camera = "camera-move-30d";
+    const std::string long_camera = "camera-move-180d";
+    for (const auto &camera : {short_camera, long_camera}) {
+        require(manager.assignPolicyToCamera(camera, policy.id, "balanced early move"),
+                "Early move policy assignment failed");
+    }
+    seedDailyRanges(manager, root, warm, short_camera, 1, 30, 100);
+    seedDailyRanges(manager, root, warm, long_camera, 1, 180, 100);
+
+    runMaintenanceCycle(manager);
+    const int short_moves = countPressureJobs(manager, short_camera);
+    const int long_moves = countPressureJobs(manager, long_camera);
+    // OLDEST would queue the first 64 ranges of both cameras.
+    require(short_moves > 0, "Balanced early moves spared the short-retention camera");
+    require(short_moves + long_moves >= 35 && short_moves + long_moves <= 40,
+            "Balanced early moves did not queue just the needed 3500 bytes: " +
+                std::to_string(short_moves) + " + " + std::to_string(long_moves));
+    require(std::fabs(short_moves / 30.0 - long_moves / 180.0) <= 0.05,
+            "Cameras queued different fractions: 30d camera " + std::to_string(short_moves) +
+                "/30, 180d camera " + std::to_string(long_moves) + "/180");
+    for (const auto &job : manager.listTieringJobs(long_camera, "", "", "", 0, 0, 0, 1000)) {
+        require(job.status == jobStatusToString(JobStatus::PENDING) &&
+                    job.source_pool_id == warm.id && job.target_pool_id == cold.id,
+                "Early move job does not wait on the WARM -> COLD route");
+    }
+
+    // Queued moves already cover the target, so the next cycle adds none.
+    runMaintenanceCycle(manager);
+    require(countPressureJobs(manager, short_camera) == short_moves &&
+                countPressureJobs(manager, long_camera) == long_moves,
+            "Early moves were queued again although pending jobs cover the target");
+    manager.stop();
+    return 0;
+}
+
 int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -5189,6 +5289,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "balanced-pressure-proportional") return scenarioBalancedPressureDeletesProportionally(root);
         if (name == "balanced-pressure-orphans-first") return scenarioBalancedPressureDeletesOrphansFirst(root);
         if (name == "balanced-pressure-min-retention") return scenarioBalancedPressureRespectsMinRetention(root);
+        if (name == "balanced-pressure-moves") return scenarioBalancedPressureMovesProportionally(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
@@ -5522,6 +5623,11 @@ TEST(TierStorageManagerIntegrationTest, BalancedPressureDeletesOrphanCamerasFirs
 TEST(TierStorageManagerIntegrationTest, BalancedPressureRespectsMinRetention) {
     TempRoot root;
     EXPECT_EQ(0, runChild("balanced-pressure-min-retention", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureMovesProportionally) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-moves", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {

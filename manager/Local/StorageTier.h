@@ -358,6 +358,8 @@ struct PolicyAdvancedRules {
         v["enable_early_move_when_pool_high"]     = enable_early_move_when_pool_high;
         v["prefer_move_no_event_video_first"]     = prefer_move_no_event_video_first;
         v["prefer_keep_event_video_longer"]       = prefer_keep_event_video_longer;
+        v["skip_move_if_pool_offline"]            = skip_move_if_pool_offline;
+        v["alert_when_pool_critical"]             = alert_when_pool_critical;
         v["min_segment_age_minutes_before_move"]  = min_segment_age_minutes_before_move;
         return v;
     }

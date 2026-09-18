@@ -410,6 +410,24 @@ private:
                              int &deleted_count,
                              int64_t &deleted_bytes);
 
+    static int64_t balancedCutoff(const PressureCameraWindow &window, int keep_percent);
+
+    // Largest keep percent (0..99, 1% steps) whose per-camera cutoffs cover
+    // `need` bytes of deletable (or, with `for_move`, movable) ranges on
+    // `pool`; 0 when nothing covers it. `out_estimated` gets the bytes covered.
+    int findBalancedKeepPercent(const StoragePool &pool,
+                                const std::vector<PressureCameraWindow> &cameras,
+                                int64_t now,
+                                int64_t need,
+                                bool for_move,
+                                int64_t &out_estimated);
+
+    // BALANCED early moves: for every pool above its high watermark, picks one
+    // keep percent across the cameras whose policy moves data out of it early
+    // and stores each camera's move cutoff for processCameraPressureTiering().
+    void planBalancedPressureMoves(
+        const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
+
     // Returns the number of candidate ranges it examined.
     int reclaimCamerasBalanced(const StoragePool &pool,
                                const std::vector<PressureCameraWindow> &cameras,
@@ -429,10 +447,20 @@ private:
                           const StoragePolicy &policy,
                           TieringJobTrigger trigger);
 
+    struct DestinationPoolCheck {
+        bool critical = false;
+        bool has_capacity = false;
+        float usage_pct = 0.0f;
+    };
+
     // True when the destination pool is at or above its critical watermark.
     // Probes each pool at most once per maintenance cycle and raises a
     // rate-limited TIER_DEST_POOL_CRITICAL alert. Unknown capacity is not critical.
     bool isDestinationPoolCritical(const std::string &pool_id);
+
+    // Same per-cycle probe; `has_capacity` is false when the pool is unknown,
+    // disabled or reports no capacity (e.g. offline).
+    DestinationPoolCheck destinationPoolCheck(const std::string &pool_id);
 
     enum class PendingJobPolicyDecision {
         VALID,
@@ -626,12 +654,11 @@ private:
     std::unordered_map<std::string, int64_t> _pressure_alerted_at;
     // Earliest next pressure deletion per METRICS-mode object pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _pressure_cooldown_until;
+    // BALANCED early-move cutoffs of this cycle: source pool -> camera ->
+    // move ranges starting before it; maintenance-cycle only.
+    std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> _pressure_move_cutoffs;
     // Destination capacity probed during the current maintenance cycle and the
     // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
-    struct DestinationPoolCheck {
-        bool critical = false;
-        float usage_pct = 0.0f;
-    };
     std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
     std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
     // Bucket versioning per object pool; touched by API, health and maintenance threads.

@@ -454,6 +454,11 @@ Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNI
 
 Luồng này cũng tạo `tiering_jobs` với `job_trigger=PRESSURE`. Mục tiêu reclaim xấp xỉ tới dưới high watermark 5%.
 
+Cách chọn range theo `storage.tiering_pressure_delete_mode` (dùng chung cho move sớm và xóa theo áp lực):
+
+- `OLDEST`: mỗi camera tự lấy tối đa `tiering_max_ranges_per_camera_cycle` range cũ nhất đã ổn định và queue move cho tới khi riêng phần của camera đó đủ kéo pool xuống mục tiêu; nhiều camera cùng pool vì vậy có thể move vượt nhu cầu.
+- `BALANCED` (mặc định): trước vòng camera, `planBalancedPressureMoves()` gom các camera có policy bật move sớm ra khỏi tier của từng pool (destination không critical; không offline nếu `skip_move_if_pool_offline`). Với mỗi pool vượt high watermark, lượng cần move = `used - total * (high - 5)% - byte job đang PENDING/RUNNING từ pool`; nếu còn dương thì tìm `kp` giống xóa cân bằng trên cửa sổ `[lo, now - max(min_segment_age, 60s))` của từng camera (range có override vẫn được move vì move không làm mất dữ liệu). `processCameraPressureTiering()` sau đó queue move các range bắt đầu trước mốc cắt của camera (split tại mốc), tối đa `tiering_max_ranges_per_camera_cycle` range mỗi camera mỗi cycle. Job đã queue được trừ vào nhu cầu ở cycle sau nên không queue lặp.
+
 ### 5.4 Retention Theo CameraOption
 
 `enforceCameraArchiveRetention()` giữ ý nghĩa hiện tại của cấu hình từng camera:
@@ -1063,7 +1068,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
 | `tiering_quota_usage_cache_seconds` | `quotaUsedBytes()` | Thời gian dùng lại tổng byte range của pool `QUOTA`; `0` tắt cache |
 | `tiering_object_pressure_cooldown_seconds` | `enforcePoolPressureRetention()` | Thời gian chờ giữa hai lượt xóa theo áp lực trên pool object storage `METRICS`; `0` tắt cooldown |
-| `tiering_pressure_delete_mode` | `enforcePoolPressureRetention()` | `BALANCED` (mặc định): mọi camera mất cùng tỉ lệ cửa sổ lưu trữ, camera không còn recorder trước; `OLDEST`: xóa range cũ nhất của pool bất kể camera |
+| `tiering_pressure_delete_mode` | `enforcePoolPressureRetention()`, `planBalancedPressureMoves()` | `BALANCED` (mặc định): khi xóa và khi move sớm, mọi camera chịu cùng tỉ lệ cửa sổ lưu trữ (khi xóa, camera không còn recorder trước); `OLDEST`: hành vi cũ, lấy range cũ nhất |
 | `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
 | `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
 | `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file |
@@ -1179,7 +1184,6 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
 - Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
-- `BALANCED` chỉ cân bằng khi xóa; move sớm theo áp lực (`processCameraPressureTiering()`) vẫn lấy tối đa `tiering_max_ranges_per_camera_cycle` range đầu tiên của từng camera.
 - Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
 - Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
 - Rebuild timefile ghi ra file tạm rồi swap trên một luồng riêng ("timefile swap") khi file hết reader; swap thay file bằng `rename()` nguyên tử. Với file ngày cũ, nếu có block mới được ghi trong lúc chờ swap (ví dụ nhập từ thẻ SD), swap bị hủy để không mất block và file vẫn dirty cho lần rebuild sau. Dấu dirty chỉ được xóa sau khi swap thành công. File ngày hiện tại đang ghi dùng cơ chế mirror block mới sang file tạm.

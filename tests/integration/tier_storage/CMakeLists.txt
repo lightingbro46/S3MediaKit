@@ -97,6 +97,7 @@ foreach(manager_case
     BalancedPressureDeletesProportionally
     BalancedPressureDeletesOrphanCamerasFirst
     BalancedPressureRespectsMinRetention
+    BalancedPressureMovesProportionally
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers

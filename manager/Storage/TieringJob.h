@@ -716,6 +716,16 @@ public:
         return 0;
     }
 
+    // Keeps ranges that a PENDING/RUNNING transfer already owns out of a query.
+    static void appendNoActiveJobFilter(std::ostringstream &where,
+                                        std::vector<std::string> &params) {
+        const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
+        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<TieringJob>::tableName()
+              << " j WHERE j.range_id = " << ranges << ".range_id AND j.status IN (?, ?))";
+        params.push_back(jobStatusToString(JobStatus::PENDING));
+        params.push_back(jobStatusToString(JobStatus::RUNNING));
+    }
+
     // Appends conditions that keep a range out of deletion candidates: an
     // active transfer, an unexpired retention override or a protected video.
     // Filtering in SQL keeps undeletable rows from starving a LIMITed page.
@@ -724,10 +734,7 @@ public:
                                       int64_t now,
                                       bool exclude_protected_video = true) {
         const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
-        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<TieringJob>::tableName()
-              << " j WHERE j.range_id = " << ranges << ".range_id AND j.status IN (?, ?))";
-        params.push_back(jobStatusToString(JobStatus::PENDING));
-        params.push_back(jobStatusToString(JobStatus::RUNNING));
+        appendNoActiveJobFilter(where, params);
         where << " AND NOT EXISTS (SELECT 1 FROM "
               << EntityTraits<SegmentRetentionOverride>::tableName()
               << " o WHERE o.range_id = " << ranges << ".range_id AND o.extend_until > ?)";
@@ -797,13 +804,16 @@ public:
         return true;
     }
 
-    // Bytes of the camera's deletable ranges on one pool that end by `ended_by`.
-    // Ranges straddling it are left out, so the estimate errs low.
+    // Bytes of the camera's candidate ranges on one pool that end by `ended_by`.
+    // Ranges straddling it are left out, so the estimate errs low. Move
+    // candidates (`for_move`) only skip active transfers: a retention override
+    // blocks deletion, not a move.
     int64_t sumDeletableBytesByCameraPoolEndedBy(const std::string &camera_id,
                                                  const std::string &pool_id,
                                                  const std::string &tier,
                                                  int64_t ended_by,
-                                                 int64_t now) {
+                                                 int64_t now,
+                                                 bool for_move = false) {
         std::ostringstream where;
         std::vector<std::string> params;
         where << "camera_id = ? AND pool_id = ? AND tier = ? AND status = ? AND end_time <= ?";
@@ -812,7 +822,10 @@ public:
         params.push_back(tier);
         params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
         params.push_back(std::to_string(ended_by));
-        appendDeletableFilter(where, params, now, false);
+        if (for_move)
+            appendNoActiveJobFilter(where, params);
+        else
+            appendDeletableFilter(where, params, now, false);
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
                 .select({"COALESCE(SUM(size_bytes), 0)"})
@@ -823,8 +836,9 @@ public:
         return std::stoll(rows[0][0]);
     }
 
-    // Deletion candidates of one camera on one pool that start before
-    // `started_before`, oldest first, paged by (end_time, range_id).
+    // Deletion (or, with `for_move`, move) candidates of one camera on one
+    // pool that start before `started_before`, oldest first, paged by
+    // (end_time, range_id).
     std::vector<SegmentTierRange> findPoolRetentionCandidatesAfter(const std::string &camera_id,
                                                                    const std::string &pool_id,
                                                                    const std::string &tier,
@@ -832,7 +846,8 @@ public:
                                                                    int64_t after_end_time,
                                                                    const std::string &after_range_id,
                                                                    int64_t now,
-                                                                   int limit) {
+                                                                   int limit,
+                                                                   bool for_move = false) {
         std::vector<SegmentTierRange> ret;
         if (camera_id.empty() || pool_id.empty())
             return ret;
@@ -848,7 +863,10 @@ public:
         params.push_back(std::to_string(after_end_time));
         params.push_back(std::to_string(after_end_time));
         params.push_back(after_range_id);
-        appendDeletableFilter(where, params, now, false);
+        if (for_move)
+            appendNoActiveJobFilter(where, params);
+        else
+            appendDeletableFilter(where, params, now, false);
         auto query = toolkit::QueryBuilder()
                 .select(EntityTraits<SegmentTierRange>::getColumns())
                 .from(EntityTraits<SegmentTierRange>::tableName())
