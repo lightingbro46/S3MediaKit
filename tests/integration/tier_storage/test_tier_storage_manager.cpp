@@ -1,15 +1,23 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <set>
+#include <sstream>
+#include <algorithm>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <vector>
 #include <arpa/inet.h>
@@ -28,8 +36,11 @@
 #include "Local/SearchEngine.h"
 #include "Local/StatisticRecorder.h"
 #include "Local/TierStorageManager.h"
+#include "Local/TimeFileDirtyTracker.h"
 #include "Local/TimeMuxer.h"
 #include "Local/TimeQuery.h"
+#include "Local/TimeRebuilder.h"
+#include "Local/TimeRecorderManager.h"
 #include "Storage/DbStorage.h"
 #include "Storage/Bookmark.h"
 #include "Storage/ExtractJob.h"
@@ -105,6 +116,8 @@ void configureProcess(const std::string &root) {
     mINI::Instance()[Storage::kRestoreSavePath] = root + "/restore";
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 0;
     mINI::Instance()[Storage::kTierTmpCleanupEnabled] = 0;
+    // Scenarios expect moves right at "now"; the hourly default is covered separately.
+    mINI::Instance()[Storage::kTieringSplitGranularitySeconds] = 1;
     mINI::Instance()[Storage::kPoolHealthCheckIntervalSeconds] = 3600;
     mINI::Instance()[Storage::kPoolHealthFailureThreshold] = 2;
     mINI::Instance()[Storage::kPoolHealthRecoveryThreshold] = 2;
@@ -490,6 +503,356 @@ private:
     std::vector<std::thread> _workers;
 };
 
+struct FakeS3Request {
+    std::string method;
+    std::string target;
+    std::string body;
+};
+
+struct FakeS3Response {
+    int status = 200;
+    std::string body;
+    std::string content_type = "application/xml";
+};
+
+// Minimal path-style S3 endpoint for manager scenarios that need object
+// storage without MinIO. Every request is recorded; `handler` may override
+// the default answers (HeadBucket 200, versioning unset, no capacity
+// metrics). Objects live in memory: PUT stores, GET/HEAD read (404 when
+// absent), DELETE and DeleteObjects remove, ListObjectsV2 pages them.
+class FakeS3Server {
+public:
+    typedef std::function<bool(const FakeS3Request &, FakeS3Response &)> Handler;
+
+    FakeS3Server() {
+        _listener = ::socket(AF_INET, SOCK_STREAM, 0);
+        require(_listener >= 0, "Cannot create fake S3 socket");
+        int reuse = 1;
+        ::setsockopt(_listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        struct sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        require(::bind(_listener, reinterpret_cast<struct sockaddr *>(&address), sizeof(address)) == 0,
+                "Cannot bind fake S3 socket");
+        require(::listen(_listener, 16) == 0, "Cannot listen on fake S3 socket");
+        socklen_t length = sizeof(address);
+        require(::getsockname(_listener, reinterpret_cast<struct sockaddr *>(&address), &length) == 0,
+                "Cannot resolve fake S3 port");
+        _port = ntohs(address.sin_port);
+        _thread = std::thread([this]() { acceptLoop(); });
+    }
+
+    ~FakeS3Server() {
+        _stopping = true;
+        ::shutdown(_listener, SHUT_RDWR);
+        ::close(_listener);
+        if (_thread.joinable())
+            _thread.join();
+        for (auto &worker : _workers) {
+            if (worker.joinable())
+                worker.join();
+        }
+    }
+
+    std::string endpoint() const {
+        return "http://127.0.0.1:" + std::to_string(_port);
+    }
+
+    void setHandler(const Handler &handler) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _handler = handler;
+    }
+
+    // Stores an object directly, as if uploaded `age_seconds` ago.
+    void putObject(const std::string &bucket, const std::string &key, int64_t size,
+                   int64_t age_seconds = 0) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        Object &object = _objects[bucket + "/" + key];
+        object.body.assign(static_cast<size_t>(size), 'x');
+        object.last_modified = static_cast<int64_t>(::time(nullptr)) - age_seconds;
+    }
+
+    void removeObject(const std::string &bucket, const std::string &key) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _objects.erase(bucket + "/" + key);
+    }
+
+    bool hasObject(const std::string &bucket, const std::string &key) const {
+        std::lock_guard<std::mutex> lk(_mtx);
+        return _objects.count(bucket + "/" + key) > 0;
+    }
+
+    // Keys per ListObjectsV2 page, to exercise continuation tokens.
+    void setListPageSize(size_t page_size) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _list_page_size = std::max<size_t>(1, page_size);
+    }
+
+    std::vector<FakeS3Request> requests(const std::string &method,
+                                        const std::string &target_part) const {
+        std::lock_guard<std::mutex> lk(_mtx);
+        std::vector<FakeS3Request> out;
+        for (const auto &request : _requests) {
+            if (request.method == method && request.target.find(target_part) != std::string::npos)
+                out.push_back(request);
+        }
+        return out;
+    }
+
+private:
+    struct Object {
+        std::string body;
+        int64_t last_modified = 0;
+    };
+
+    static std::string lower(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+        return value;
+    }
+
+    static std::string urlDecode(const std::string &value) {
+        std::string out;
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '%' && i + 2 < value.size()) {
+                out += static_cast<char>(std::strtol(value.substr(i + 1, 2).c_str(), nullptr, 16));
+                i += 2;
+            } else {
+                out += value[i] == '+' ? ' ' : value[i];
+            }
+        }
+        return out;
+    }
+
+    static std::map<std::string, std::string> queryParams(const std::string &query) {
+        std::map<std::string, std::string> params;
+        size_t pos = 0;
+        while (pos <= query.size()) {
+            size_t end = query.find('&', pos);
+            if (end == std::string::npos)
+                end = query.size();
+            const std::string item = query.substr(pos, end - pos);
+            const size_t eq = item.find('=');
+            if (!item.empty())
+                params[urlDecode(item.substr(0, eq))] =
+                    eq == std::string::npos ? std::string() : urlDecode(item.substr(eq + 1));
+            pos = end + 1;
+        }
+        return params;
+    }
+
+    static std::string isoTime(int64_t seconds) {
+        const time_t value = static_cast<time_t>(seconds);
+        struct tm tm_value{};
+        ::gmtime_r(&value, &tm_value);
+        char buffer[32];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S.000Z", &tm_value);
+        return buffer;
+    }
+
+    // Default object API over `_objects`; false when the request is not one.
+    bool serveObjectApi(const FakeS3Request &request, FakeS3Response &response) {
+        const size_t query_pos = request.target.find('?');
+        const std::string path = urlDecode(request.target.substr(1, query_pos == std::string::npos
+                                                                     ? std::string::npos
+                                                                     : query_pos - 1));
+        const std::string query = query_pos == std::string::npos
+                                      ? std::string() : request.target.substr(query_pos + 1);
+        const size_t slash = path.find('/');
+        const std::string bucket = path.substr(0, slash);
+        const std::string key = slash == std::string::npos ? std::string() : path.substr(slash + 1);
+        std::lock_guard<std::mutex> lk(_mtx);
+        if (request.method == "GET" && key.empty() && query.find("list-type=2") != std::string::npos) {
+            auto params = queryParams(query);
+            const std::string prefix = params["prefix"];
+            const std::string delimiter = params["delimiter"];
+            const std::string after = params["continuation-token"];
+            std::ostringstream xml;
+            xml << "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                << "<Name>" << bucket << "</Name><Prefix>" << prefix << "</Prefix>";
+            std::set<std::string> common;
+            std::ostringstream contents;
+            size_t count = 0;
+            std::string last_key;
+            bool truncated = false;
+            const std::string scope = bucket + "/" + prefix;
+            for (auto it = _objects.lower_bound(scope);
+                 it != _objects.end() && it->first.compare(0, scope.size(), scope) == 0; ++it) {
+                const std::string object_key = it->first.substr(bucket.size() + 1);
+                if (!after.empty() && object_key <= after)
+                    continue;
+                if (!delimiter.empty()) {
+                    const size_t cut = object_key.find(delimiter, prefix.size());
+                    if (cut != std::string::npos) {
+                        common.insert(object_key.substr(0, cut + delimiter.size()));
+                        continue;
+                    }
+                }
+                if (count == _list_page_size) {
+                    truncated = true;
+                    break;
+                }
+                contents << "<Contents><Key>" << object_key << "</Key><LastModified>"
+                         << isoTime(it->second.last_modified) << "</LastModified>"
+                         << "<ETag>&quot;fake&quot;</ETag><Size>" << it->second.body.size()
+                         << "</Size><StorageClass>STANDARD</StorageClass></Contents>";
+                last_key = object_key;
+                ++count;
+            }
+            xml << "<KeyCount>" << count << "</KeyCount><MaxKeys>" << _list_page_size
+                << "</MaxKeys><IsTruncated>" << (truncated ? "true" : "false") << "</IsTruncated>"
+                << contents.str();
+            for (const auto &item : common)
+                xml << "<CommonPrefixes><Prefix>" << item << "</Prefix></CommonPrefixes>";
+            if (truncated)
+                xml << "<NextContinuationToken>" << last_key << "</NextContinuationToken>";
+            xml << "</ListBucketResult>";
+            response.body = xml.str();
+            return true;
+        }
+        if (request.method == "POST" && query.find("delete") != std::string::npos) {
+            for (size_t pos = request.body.find("<Key>"); pos != std::string::npos;
+                 pos = request.body.find("<Key>", pos + 5)) {
+                const size_t end = request.body.find("</Key>", pos);
+                if (end == std::string::npos)
+                    break;
+                _objects.erase(bucket + "/" + request.body.substr(pos + 5, end - pos - 5));
+            }
+            response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            return true;
+        }
+        if (key.empty() || !query.empty())
+            return false;
+        auto found = _objects.find(path);
+        if (request.method == "PUT") {
+            Object &object = _objects[path];
+            object.body = request.body;
+            object.last_modified = static_cast<int64_t>(::time(nullptr));
+            return true;
+        }
+        if (request.method == "DELETE") {
+            _objects.erase(path);
+            response.status = 204;
+            return true;
+        }
+        if (request.method == "GET" || request.method == "HEAD") {
+            if (found == _objects.end()) {
+                response.status = 404;
+                if (request.method == "GET")
+                    response.body = "<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>";
+                return true;
+            }
+            response.body = found->second.body;
+            response.content_type = "application/octet-stream";
+            return true;
+        }
+        return false;
+    }
+
+    void serve(int client) {
+        struct timeval timeout{};
+        timeout.tv_sec = 2;
+        ::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        ::setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        std::string data;
+        char buffer[4096];
+        size_t header_end = std::string::npos;
+        while (header_end == std::string::npos) {
+            const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
+            if (received <= 0)
+                return;
+            data.append(buffer, static_cast<size_t>(received));
+            header_end = data.find("\r\n\r\n");
+        }
+        FakeS3Request request;
+        const std::string headers = data.substr(0, header_end);
+        const size_t first_space = headers.find(' ');
+        const size_t second_space = headers.find(' ', first_space + 1);
+        request.method = headers.substr(0, first_space);
+        request.target = headers.substr(first_space + 1, second_space - first_space - 1);
+        size_t content_length = 0;
+        const std::string lowered = lower(headers);
+        const size_t length_pos = lowered.find("\r\ncontent-length:");
+        if (length_pos != std::string::npos)
+            content_length = static_cast<size_t>(std::strtoull(
+                headers.c_str() + length_pos + std::strlen("\r\ncontent-length:"), nullptr, 10));
+        request.body = data.substr(header_end + 4);
+        if (lowered.find("\r\nexpect: 100-continue") != std::string::npos && request.body.empty()) {
+            static const char kContinue[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            ::send(client, kContinue, std::strlen(kContinue), MSG_NOSIGNAL);
+        }
+        while (request.body.size() < content_length) {
+            const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
+            if (received <= 0)
+                break;
+            request.body.append(buffer, static_cast<size_t>(received));
+        }
+
+        FakeS3Response response;
+        Handler handler;
+        {
+            std::lock_guard<std::mutex> lk(_mtx);
+            _requests.push_back(request);
+            handler = _handler;
+        }
+        if (!handler || !handler(request, response)) {
+            response = FakeS3Response();
+            if (request.target.find("/minio/") == 0) {
+                response.status = 404;
+            } else if (request.method == "GET" && request.target.find("?versioning") != std::string::npos) {
+                response.body = "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+            } else {
+                serveObjectApi(request, response);
+            }
+        }
+        std::string reply = "HTTP/1.1 " + std::to_string(response.status) +
+                            (response.status / 100 == 2 ? " OK" : " Error") + "\r\n";
+        if (!response.body.empty())
+            reply += "Content-Type: " + response.content_type + "\r\n";
+        reply += "Content-Length: " + std::to_string(response.body.size()) +
+                 "\r\nConnection: close\r\n\r\n";
+        if (request.method != "HEAD")
+            reply += response.body;
+        ::send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
+    }
+
+    void acceptLoop() {
+        while (!_stopping) {
+            int client = ::accept(_listener, nullptr, nullptr);
+            if (client < 0) {
+                if (_stopping)
+                    return;
+                continue;
+            }
+            _workers.emplace_back([this, client]() {
+                serve(client);
+                ::shutdown(client, SHUT_RDWR);
+                ::close(client);
+            });
+        }
+    }
+
+    int _listener = -1;
+    uint16_t _port = 0;
+    std::atomic<bool> _stopping{false};
+    std::thread _thread;
+    std::vector<std::thread> _workers;
+    mutable std::mutex _mtx;
+    Handler _handler;
+    std::vector<FakeS3Request> _requests;
+    // "bucket/key" -> object.
+    std::map<std::string, Object> _objects;
+    size_t _list_page_size = 1000;
+};
+
+StoragePool makeFakeObjectPool(const std::string &root, const FakeS3Server &server) {
+    StoragePool pool = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                      "fake-bucket");
+    pool.id = "fake-cold";
+    pool.name = "Fake COLD object storage";
+    return pool;
+}
+
 struct SegmentFixture {
     std::string camera;
     std::string stream;
@@ -625,10 +988,267 @@ int scenarioHotToNas(const std::string &root) {
     require(!jobs.empty() && jobs.front().status == "DONE",
             jobs.empty() ? "Tiering job was not created" : "Tiering job failed: " + jobs.front().error_message.value_or(""));
     require(!File::fileExist(source), "HOT source was not removed after successful move");
+    require(!File::is_dir(File::parentDir(source)),
+            "Empty HOT date directory was not removed after successful move");
     require(File::loadFile(destination) == payload, "NAS destination content mismatch");
     auto ranges = SegmentTierRangeImp().queryByCamera(camera, now - 240, now);
     require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier) &&
             ranges.front().pool_id == nas.id, "Tier range was not updated to NAS/WARM");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioOverlappingSegmentsUseStartOwnership(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-overlap-ownership";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "overlap ownership test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t first_start = now - 63;
+    const int64_t first_end = now - 1;
+    const int64_t second_start = now - 2;
+    const int64_t second_end = now + 60;
+    const std::string first_key = "2026-08-20/12-00-00";
+    const std::string second_key = "2026-08-20/12-01-01";
+    const std::string first_source = root + "/hot/record/" + camera + "/" + stream + "/" + first_key + ".mp4";
+    const std::string second_source = root + "/hot/record/" + camera + "/" + stream + "/" + second_key + ".mp4";
+    const std::string first_target = root + "/nas/record/" + camera + "/" + stream + "/" + first_key + ".mp4";
+    const std::string second_target = root + "/nas/record/" + camera + "/" + stream + "/" + second_key + ".mp4";
+    const std::string first_payload = "overlap-first";
+    const std::string second_payload = "overlap-second";
+    writeFile(first_source, first_payload);
+    writeFile(second_source, second_payload);
+    writeTimeBlock(root, camera, stream, first_source, first_start, first_end,
+                   static_cast<int64_t>(first_payload.size()));
+    writeTimeBlock(root, camera, stream, second_source, second_start, second_end,
+                   static_cast<int64_t>(second_payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, first_source, first_start, first_end,
+                                            static_cast<int64_t>(first_payload.size())),
+            "First HOT range registration failed");
+    require(manager.registerHotSegmentRange(camera, stream, second_source, second_start, second_end,
+                                            static_cast<int64_t>(second_payload.size())),
+            "Second HOT range registration failed");
+
+    auto registered = SegmentTierRangeImp().queryByCamera(camera, first_start - 1, second_end + 1);
+    require(registered.size() == 1, "Overlapping segments were not registered as one range");
+    require(manager.extendRangeRetention(registered.front().range_id, now + 86400,
+                                         "split keeps override"),
+            "Cannot extend overlap range retention");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Overlap tiering job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Overlap tiering job was not created"
+                         : "Overlap tiering job failed: " + jobs.front().error_message.value_or(""));
+    require(!File::fileExist(first_source) && File::loadFile(first_target) == first_payload,
+            "Eligible first segment was not moved");
+    require(File::fileExist(second_source) && !File::fileExist(second_target),
+            "Overlapping second segment was owned by both ranges");
+    require(File::is_dir(File::parentDir(first_source)),
+            "Date directory was removed while the second segment remained");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, first_start - 1, second_end + 1);
+    require(ranges.size() == 2, "Overlap range was not split into two ownership windows");
+    require(ranges[0].tier == tierTypeToString(WarmTier) &&
+                ranges[0].end_time == second_start && ranges[0].segment_count == 1 &&
+                ranges[1].tier == tierTypeToString(HotTier) &&
+                ranges[1].start_time == second_start && ranges[1].segment_count == 1,
+            "Split ranges do not follow segment start-time ownership");
+    require(SegmentRetentionOverrideImp().isActive(ranges[0].range_id, now) &&
+                SegmentRetentionOverrideImp().isActive(ranges[1].range_id, now),
+            "Split range pieces did not keep the retention override");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioReusesExistingNasTarget(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-reuse-nas";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "reuse target test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 180;
+    const int64_t end = now - 120;
+    const std::string key = "2026-08-20/13-00-00";
+    const std::string source = root + "/hot/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string target = root + "/nas/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string payload = "already-copied-to-nas";
+    writeFile(source, payload);
+    writeFile(target, payload);
+    writeTimeBlock(root, camera, stream, source, start, end,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, start, end,
+                                            static_cast<int64_t>(payload.size())),
+            "HOT range registration failed");
+    require(::unlink(source.c_str()) == 0, "Cannot simulate missing source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Reused-target tiering job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Reused-target job was not created"
+                         : "Reused-target job failed: " + jobs.front().error_message.value_or(""));
+    require(File::loadFile(target) == payload, "Existing NAS target was changed or removed");
+    require(!File::is_dir(File::parentDir(source)),
+            "Empty source date directory was not pruned after target reuse");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier),
+            "Reused-target range was not moved to WARM");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioBacksOffMissingSegmentJob(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-missing-both";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "missing segment test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 180;
+    const int64_t end = now - 120;
+    const std::string source = root + "/hot/record/" + camera + "/" + stream +
+                               "/2026-08-20/14-00-00.mp4";
+    const std::string payload = "missing-from-both-pools";
+    writeFile(source, payload);
+    writeTimeBlock(root, camera, stream, source, start, end,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, start, end,
+                                            static_cast<int64_t>(payload.size())),
+            "HOT range registration failed");
+    require(::unlink(source.c_str()) == 0, "Cannot simulate missing source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && jobs.front().status == "FAILED";
+    }, 5000), "Missing segment job did not fail");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().error_message.has_value() &&
+                jobs.front().error_message.value().find("SOURCE_AND_TARGET_NOT_FOUND") == 0,
+            "Missing source/target did not produce a retryable missing-segment error");
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    require(manager.listTieringJobs(camera).size() == 1,
+            "Missing segment job was queued again before its retry backoff elapsed");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(HotTier) &&
+                ranges.front().status == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range changed before missing-segment retries were exhausted");
+    manager.stop();
+    return 0;
+}
+
+int scenarioDropsMissingSegmentAfterMaxAttempts(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringMissingSegmentMaxAttempts] = 1;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-missing-dropped";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "drop missing segment test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t lost_start = now - 300;
+    const int64_t kept_start = now - 240;
+    const int64_t kept_end = now - 180;
+    const std::string lost_key = "2026-08-20/15-00-00";
+    const std::string kept_key = "2026-08-20/15-01-00";
+    const std::string lost_source = root + "/hot/record/" + camera + "/" + stream + "/" + lost_key + ".mp4";
+    const std::string kept_source = root + "/hot/record/" + camera + "/" + stream + "/" + kept_key + ".mp4";
+    const std::string lost_target = root + "/nas/record/" + camera + "/" + stream + "/" + lost_key + ".mp4";
+    const std::string kept_target = root + "/nas/record/" + camera + "/" + stream + "/" + kept_key + ".mp4";
+    const std::string lost_payload = "lost-segment";
+    const std::string kept_payload = "kept-segment-payload";
+    writeFile(lost_source, lost_payload);
+    writeFile(kept_source, kept_payload);
+    writeTimeBlock(root, camera, stream, lost_source, lost_start, kept_start,
+                   static_cast<int64_t>(lost_payload.size()));
+    writeTimeBlock(root, camera, stream, kept_source, kept_start, kept_end,
+                   static_cast<int64_t>(kept_payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, lost_source, lost_start, kept_start,
+                                            static_cast<int64_t>(lost_payload.size())),
+            "Lost segment range registration failed");
+    require(manager.registerHotSegmentRange(camera, stream, kept_source, kept_start, kept_end,
+                                            static_cast<int64_t>(kept_payload.size())),
+            "Kept segment range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(camera, lost_start - 1, kept_end + 1).size() == 1,
+            "Adjacent segments were not registered as one range");
+    require(::unlink(lost_source.c_str()) == 0, "Cannot simulate lost source segment");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Missing-segment drop job did not finish");
+    auto jobs = manager.listTieringJobs(camera);
+    require(jobs.size() == 1 && jobs.front().status == "DONE",
+            jobs.empty() ? "Missing-segment drop job was not created"
+                         : "Missing-segment drop job failed: " + jobs.front().error_message.value_or(""));
+    require(!File::fileExist(kept_source) && File::loadFile(kept_target) == kept_payload,
+            "Present segment was not moved when its sibling was missing");
+    require(!File::fileExist(lost_target), "A target was invented for the lost segment");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, lost_start - 1, kept_end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier) &&
+                ranges.front().segment_count == 1 &&
+                ranges.front().size_bytes == static_cast<int64_t>(kept_payload.size()),
+            "Range stats still include the dropped segment");
+
+    bool alerted = false;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 50)) {
+        if (alert.type == "TIER_SEGMENT_MISSING" &&
+            alert.message.find(ranges.front().range_id) != std::string::npos) {
+            alerted = true;
+        }
+    }
+    require(alerted, "Dropping a missing segment did not raise a storage alert");
     drainWorkThreadPool();
     manager.stop();
     return 0;
@@ -1115,6 +1735,873 @@ int scenarioProtectedRetention(const std::string &root) {
         return !File::fileExist(fixture.source_path);
     }, 5000), "Range was not deleted after protections expired");
     drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioDeletionWaitsForActiveTransfer(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    auto policy = makeRetentionPolicy(hot_pools.front().id, "retention-active-job", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-delete-active-job", "2026-08-10/12-00-00",
+                                      "active-transfer", now - 3 * 86400);
+    require(manager.assignPolicyToCamera(fixture.camera, policy.id, "active job deletion guard"),
+            "Retention policy assignment failed");
+    require(manager.registerHotSegmentRange(
+                fixture.camera, fixture.stream, fixture.source_path,
+                fixture.start, fixture.end, fixture.payload.size()),
+            "Range registration failed");
+    auto ranges = SegmentTierRangeImp().queryByCamera(
+        fixture.camera, fixture.start - 1, fixture.end + 1);
+    require(ranges.size() == 1, "Range was not persisted");
+    const SegmentTierRange range = ranges.front();
+
+    // start() recovers RUNNING jobs, so the in-flight transfer is seeded afterwards.
+    TieringJob job;
+    job.job_id = "active-transfer-job";
+    job.camera_id = range.camera_id;
+    job.stream_id = range.stream_id;
+    job.range_id = range.range_id;
+    job.source_tier = range.tier;
+    job.target_tier = tierTypeToString(WarmTier);
+    job.source_pool_id = range.pool_id;
+    job.target_pool_id = "some-warm-pool";
+    job.status = jobStatusToString(JobStatus::RUNNING);
+    job.segment_start_time = range.start_time;
+    job.segment_end_time = range.end_time;
+    job.bytes_total = range.size_bytes;
+    job.created_at = now;
+    job.updated_at = now;
+    require(TieringJobImp().add(job), "Cannot seed running tiering job");
+
+    manager.runTieringCycle();
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot_pools.front().id, health) &&
+               health.health_status != healthToString(StorageHealth::UNKNOWN);
+    }, 5000), "Retention cycle did not complete runtime health check");
+    drainWorkThreadPool();
+    require(TieringJobImp().findByJobId(job.job_id).front().status ==
+                jobStatusToString(JobStatus::RUNNING),
+            "Seeded running job was touched by the cycle");
+    require(File::fileExist(fixture.source_path),
+            "Retention deleted files while a transfer job was active");
+    auto current = SegmentTierRangeImp().findByRangeIds({range.range_id});
+    require(current.size() == 1 && current.front().status == "AVAILABLE",
+            "Retention changed a range owned by an active transfer");
+
+    // A snapshot that no longer matches the row must not be finalized.
+    SegmentTierRange stale = current.front();
+    stale.pool_id = "another-pool";
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = stale.range_id;
+    cleanup_job.camera_id = stale.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = now;
+    cleanup_job.updated_at = now;
+    require(!SegmentTierRangeImp().markDeletedBySnapshotAndEnqueue(stale, "DELETED", cleanup_job),
+            "Stale range snapshot was marked deleted");
+    require(SegmentTierRangeImp().findByRangeIds({range.range_id}).front().status == "AVAILABLE",
+            "Stale snapshot changed the range status");
+
+    require(TieringJobImp().updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED)),
+            "Cannot finish seeded tiering job");
+    require(waitUntil([&]() {
+        manager.runTieringCycle();
+        return !File::fileExist(fixture.source_path);
+    }, 5000), "Retention did not resume after the transfer finished");
+    require(waitUntil([&]() {
+        auto rows = SegmentTierRangeImp().findByRangeIds({range.range_id});
+        return rows.size() == 1 && rows.front().status == "DELETED";
+    }, 5000), "Range was not finalized after deletion resumed");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioUnreadableTimefileKeepsWorkPending(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillRetryBaseSeconds] = 60;
+    mINI::Instance()[Storage::kTierRangeBackfillMaxAttempts] = 3;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    auto policy = makeRetentionPolicy(hot_pools.front().id, "retention-corrupt-timefile", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-corrupt-timefile", "2026-08-10/13-00-00",
+                                      "corrupt-timefile", now - 3 * 86400);
+    require(manager.assignPolicyToCamera(fixture.camera, policy.id, "corrupt timefile guard"),
+            "Retention policy assignment failed");
+    require(manager.registerHotSegmentRange(
+                fixture.camera, fixture.stream, fixture.source_path,
+                fixture.start, fixture.end, fixture.payload.size()),
+            "Range registration failed");
+    const std::string range_id = SegmentTierRangeImp().queryByCamera(
+        fixture.camera, fixture.start - 1, fixture.end + 1).front().range_id;
+
+    // Append a length-prefixed record that cannot be parsed as a TimeBlock.
+    const std::string timefile = root + "/hot/record/" + fixture.camera + "/tier-test.s3db";
+    struct stat timefile_st{};
+    require(::stat(timefile.c_str(), &timefile_st) == 0, "Timefile was not created");
+    {
+        std::ofstream output(timefile.c_str(), std::ios::out | std::ios::binary | std::ios::app);
+        const uint32_t size = 4;
+        const char garbage[4] = {'\xff', '\xff', '\xff', '\xff'};
+        output.write(reinterpret_cast<const char *>(&size), sizeof(size));
+        output.write(garbage, sizeof(garbage));
+        require(output.good(), "Cannot corrupt timefile");
+    }
+
+    mediakit::MediaTuple tuple;
+    tuple.app = fixture.camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    require(!TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(fixture.start - 60),
+                                          static_cast<uint64_t>(now), blocks, error) &&
+                blocks.empty() && !error.empty(),
+            "queryBlocks did not report the corrupt timefile");
+
+    // A deleted range on another stream whose metadata cleanup is pending.
+    SegmentTierRange deleted;
+    deleted.range_id = "corrupt-cleanup-range";
+    deleted.camera_id = fixture.camera;
+    deleted.stream_id = "sub";
+    deleted.tier = tierTypeToString(HotTier);
+    deleted.pool_id = hot_pools.front().id;
+    deleted.status = segmentStatusToString(SegmentStatus::DELETED);
+    deleted.start_time = fixture.start;
+    deleted.end_time = fixture.end;
+    deleted.segment_count = 1;
+    deleted.size_bytes = 1;
+    deleted.created_at = now;
+    deleted.updated_at = now;
+    require(SegmentTierRangeImp().add(deleted), "Cannot seed deleted range");
+    TierMetadataCleanupJob cleanup_job;
+    cleanup_job.range_id = deleted.range_id;
+    cleanup_job.camera_id = deleted.camera_id;
+    cleanup_job.status = "PENDING";
+    cleanup_job.created_at = now;
+    cleanup_job.updated_at = now;
+    TierMetadataCleanupJobRepository cleanup_repo;
+    require(cleanup_repo.add(cleanup_job), "Cannot seed metadata cleanup job");
+    auto cleanup_state = [&]() {
+        return cleanup_repo.getExecutor()->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"status", "error_message"})
+                .from(EntityTraits<TierMetadataCleanupJob>::tableName())
+                .where("range_id = ?", {deleted.range_id}));
+    };
+
+    TierBackfillTask desired;
+    desired.camera_id = fixture.camera;
+    desired.timeline_path = root + "/hot/record/" + fixture.camera;
+    desired.window_start = fixture.start - 60;
+    desired.cutoff_time = fixture.end + 60;
+    desired.cursor_time = desired.window_start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed backfill task");
+
+    manager.runTieringCycle();
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = cleanup_state();
+        return rows.size() == 1 && rows[0][1].find("Cannot read timefile") != std::string::npos;
+    }, 5000), "Metadata cleanup did not report the unreadable timefile");
+    require(cleanup_state()[0][0] == "PENDING",
+            "Metadata cleanup completed although the timefile could not be read");
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(fixture.camera);
+        return rows.size() == 1 && rows.front().status == "RETRY";
+    }, 5000), "Backfill did not retry an unreadable timefile chunk");
+    auto task_rows = TierBackfillTaskImp().findByCameraId(fixture.camera);
+    require(task_rows.front().cursor_time == desired.window_start &&
+                !task_rows.front().last_error.empty(),
+            "Backfill advanced past an unreadable timefile chunk");
+    drainWorkThreadPool();
+    require(File::fileExist(fixture.source_path),
+            "Retention deleted data although its timefile could not be read");
+    auto current = SegmentTierRangeImp().findByRangeIds({range_id});
+    require(current.size() == 1 && current.front().status == "AVAILABLE",
+            "Retention finalized a range whose timefile could not be read");
+
+    require(::truncate(timefile.c_str(), timefile_st.st_size) == 0, "Cannot repair timefile");
+    require(waitUntil([&]() {
+        manager.runTieringCycle();
+        return !File::fileExist(fixture.source_path);
+    }, 5000), "Retention did not resume after the timefile was repaired");
+    require(waitUntil([&]() {
+        auto rows = cleanup_state();
+        return rows.size() == 1 && rows[0][0] == "DONE";
+    }, 5000), "Metadata cleanup did not complete after the timefile was repaired");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+int scenarioPressureDeletesOldestAcrossPool(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
+    // Any queued move from the pool defers deletion at every usage level.
+    mINI::Instance()[Storage::kTieringPressureDeleteMarginPercent] = 1000;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    StoragePool hot = hot_pools.front();
+    hot.high_watermark_percent = 0;
+    hot.critical_watermark_percent = 1;
+    // Let the startup health cycle finish; otherwise the one queued by
+    // updatePool() is skipped as overlapping and health stays UNKNOWN.
+    drainWorkThreadPool();
+    require(manager.updatePool(hot), "Cannot lower HOT pool watermarks");
+    drainWorkThreadPool();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot.id, health) &&
+               health.health_status == healthToString(StorageHealth::CRITICAL);
+    }, 5000), "HOT pool did not report CRITICAL after lowering its watermarks");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    // The oldest range alone covers the reclaim target, so deletion must stop after it.
+    const int64_t huge_size = static_cast<int64_t>(1) << 50;
+    auto oldest = makeSegmentFixture(root, "camera-pressure-a", "2026-08-01/10-00-00",
+                                     "pressure-oldest", now - 5 * 86400);
+    auto middle = makeSegmentFixture(root, "camera-pressure-b", "2026-08-01/22-00-00",
+                                     "pressure-middle", now - 4 * 86400 - 43200);
+    auto newest = makeSegmentFixture(root, "camera-pressure-a", "2026-08-02/10-00-00",
+                                     "pressure-newest", now - 4 * 86400);
+    require(manager.registerHotSegmentRange(oldest.camera, oldest.stream, oldest.source_path,
+                                            oldest.start, oldest.end, huge_size),
+            "Oldest range registration failed");
+    require(manager.registerHotSegmentRange(middle.camera, middle.stream, middle.source_path,
+                                            middle.start, middle.end, 2),
+            "Middle range registration failed");
+    require(manager.registerHotSegmentRange(newest.camera, newest.stream, newest.source_path,
+                                            newest.start, newest.end, 2),
+            "Newest range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(oldest.camera).size() == 2,
+            "Same-camera ranges on different days were merged");
+
+    TieringJob job;
+    job.job_id = "pressure-running-move";
+    job.camera_id = "camera-pressure-other";
+    job.stream_id = "main";
+    job.range_id = "pressure-unrelated-range";
+    job.source_tier = tierTypeToString(HotTier);
+    job.target_tier = tierTypeToString(WarmTier);
+    job.source_pool_id = hot.id;
+    job.target_pool_id = "some-warm-pool";
+    job.status = jobStatusToString(JobStatus::RUNNING);
+    job.bytes_total = 10;
+    job.created_at = now;
+    job.updated_at = now;
+    require(TieringJobImp().add(job), "Cannot seed running move job");
+
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    require(File::fileExist(oldest.source_path) && File::fileExist(middle.source_path) &&
+                File::fileExist(newest.source_path),
+            "Pressure deletion ran while a move from the pool was still queued");
+
+    require(TieringJobImp().updateStatus(job.job_id, jobStatusToString(JobStatus::FAILED)),
+            "Cannot finish running move job");
+    manager.runTieringCycle();
+    require(waitUntil([&]() { return !File::fileExist(oldest.source_path); }, 5000),
+            "Pressure deletion did not remove the oldest range in the pool");
+    drainWorkThreadPool();
+    require(File::fileExist(middle.source_path) && File::fileExist(newest.source_path),
+            "Pressure deletion kept deleting after the reclaim target was met");
+    auto oldest_ranges = SegmentTierRangeImp().queryByCamera(
+        oldest.camera, oldest.start - 1, oldest.end + 1);
+    require(oldest_ranges.size() == 1 && oldest_ranges.front().status == "DELETED",
+            "Oldest pressure-deleted range was not finalized");
+    manager.stop();
+    return 0;
+}
+
+int scenarioAgeRetentionSkipsBlockedRangesAndSplits(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const std::string hot_pool_id = hot_pools.front().id;
+    auto policy = makeRetentionPolicy(hot_pool_id, "retention-paged", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    SegmentTierRangeImp range_imp;
+
+    // Older rows that can never be deleted this cycle must not hide a due range.
+    const std::string blocked_camera = "camera-retention-blocked";
+    require(manager.assignPolicyToCamera(blocked_camera, policy.id, "paged retention"),
+            "Retention policy assignment failed");
+    for (int index = 0; index < 80; ++index) {
+        SegmentTierRange blocked;
+        blocked.range_id = "blocked-" + std::to_string(index);
+        blocked.camera_id = blocked_camera;
+        blocked.stream_id = "main";
+        blocked.tier = tierTypeToString(HotTier);
+        blocked.pool_id = hot_pool_id;
+        blocked.status = index < 40 ? segmentStatusToString(SegmentStatus::EXPIRED)
+                                    : segmentStatusToString(SegmentStatus::AVAILABLE);
+        blocked.start_time = now - 20 * 86400 + index * 600;
+        blocked.end_time = blocked.start_time + 60;
+        blocked.segment_count = 1;
+        blocked.size_bytes = 1;
+        blocked.created_at = now;
+        blocked.updated_at = now;
+        require(range_imp.add(blocked), "Cannot seed blocked range");
+        if (index >= 40) {
+            SegmentRetentionOverride keep;
+            keep.range_id = blocked.range_id;
+            keep.extend_until = now + 86400;
+            keep.updated_at = now;
+            require(SegmentRetentionOverrideImp().upsert(keep), "Cannot seed retention override");
+        }
+    }
+    auto due = makeSegmentFixture(root, blocked_camera, "2026-08-10/14-00-00",
+                                  "due-after-blocked", now - 3 * 86400);
+    require(manager.registerHotSegmentRange(due.camera, due.stream, due.source_path,
+                                            due.start, due.end, due.payload.size()),
+            "Due range registration failed");
+
+    // One range straddling the cutoff: only its old segment is due.
+    const std::string split_camera = "camera-retention-split";
+    require(manager.assignPolicyToCamera(split_camera, policy.id, "split retention"),
+            "Retention policy assignment failed");
+    auto old_segment = makeSegmentFixture(root, split_camera, "2026-08-10/15-00-00",
+                                          "old-half", now - 3 * 86400);
+    auto new_segment = makeSegmentFixture(root, split_camera, "2026-08-12/15-00-00",
+                                          "new-half", now - 3600);
+    SegmentTierRange straddling;
+    straddling.range_id = "straddling-range";
+    straddling.camera_id = split_camera;
+    straddling.stream_id = "main";
+    straddling.tier = tierTypeToString(HotTier);
+    straddling.pool_id = hot_pool_id;
+    straddling.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    straddling.start_time = old_segment.start;
+    straddling.end_time = new_segment.end;
+    straddling.segment_count = 2;
+    straddling.size_bytes = static_cast<int64_t>(old_segment.payload.size() +
+                                                 new_segment.payload.size());
+    straddling.created_at = now;
+    straddling.updated_at = now;
+    require(range_imp.add(straddling), "Cannot seed straddling range");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        return !File::fileExist(due.source_path) && !File::fileExist(old_segment.source_path);
+    }, 5000), "Due retention data was not deleted");
+    drainWorkThreadPool();
+    require(File::fileExist(new_segment.source_path),
+            "Retention deleted the part of a range newer than the cutoff");
+    auto split_ranges = range_imp.queryByCamera(split_camera);
+    require(split_ranges.size() == 2 &&
+                split_ranges[0].range_id == straddling.range_id &&
+                split_ranges[0].status == "DELETED" &&
+                split_ranges[0].end_time == new_segment.start &&
+                split_ranges[1].status == "AVAILABLE" &&
+                split_ranges[1].start_time == new_segment.start &&
+                split_ranges[1].segment_count == 1,
+            "Straddling range was not split at the retention cutoff");
+    for (const auto &blocked : range_imp.queryByCamera(blocked_camera)) {
+        if (blocked.range_id.compare(0, 8, "blocked-") != 0)
+            continue;
+        const int index = std::atoi(blocked.range_id.c_str() + 8);
+        const std::string expected = index < 40 ? "EXPIRED" : "AVAILABLE";
+        require(blocked.status == expected,
+                "Blocked range status changed: " + blocked.range_id);
+    }
+    manager.stop();
+    return 0;
+}
+
+int scenarioDeletionSplitsAroundProtectedVideo(const std::string &root, bool pressure) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    StoragePool hot = hot_pools.front();
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const std::string camera = pressure ? "camera-protected-pressure" : "camera-protected-age";
+
+    if (pressure) {
+        hot.high_watermark_percent = 0;
+        hot.critical_watermark_percent = 1;
+        drainWorkThreadPool();
+        require(manager.updatePool(hot), "Cannot lower HOT pool watermarks");
+        drainWorkThreadPool();
+        manager.checkAndRecordPoolHealth();
+        PoolHealthInfo health;
+        require(waitUntil([&]() {
+            return manager.getPoolHealth(hot.id, health) &&
+                   health.health_status == healthToString(StorageHealth::CRITICAL);
+        }, 5000), "HOT pool did not report CRITICAL after lowering its watermarks");
+    } else {
+        auto policy = makeRetentionPolicy(hot.id, "retention-protected-split", false);
+        require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+        require(manager.assignPolicyToCamera(camera, policy.id, "protected split"),
+                "Retention policy assignment failed");
+        require(manager.assignPolicyToCamera(camera + "-edge", policy.id, "protected edge"),
+                "Retention policy assignment failed");
+    }
+
+    const int64_t base = now - 5 * 86400;
+    auto first = makeSegmentFixture(root, camera, "2026-08-01/10-00-00", "first-free", base);
+    auto middle = makeSegmentFixture(root, camera, "2026-08-01/10-01-00", "middle-kept", base + 60);
+    auto last = makeSegmentFixture(root, camera, "2026-08-01/10-02-00", "last-free", base + 120);
+    for (const auto *segment : {&first, &middle, &last}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(SegmentTierRangeImp().queryByCamera(camera).size() == 1,
+            "Contiguous segments were not registered as one range");
+
+    ProtectedVideo video;
+    video.protected_id = std::string("protected-") + camera;
+    video.camera_id = camera;
+    video.start_time = base + 70;
+    video.end_time = base + 100;
+    video.type = "EVIDENCE";
+    video.created_at = now;
+    require(ProtectedVideoImp().add(video), "Cannot protect middle segment");
+
+    // A protection inside the leading gap of a range touches no segment; the
+    // range window must be tightened instead of being skipped forever.
+    const std::string edge_camera = camera + "-edge";
+    auto edge = makeSegmentFixture(root, edge_camera, "2026-08-01/11-00-00", "edge-free", base + 600);
+    SegmentTierRange edge_range;
+    edge_range.range_id = "edge-" + camera;
+    edge_range.camera_id = edge_camera;
+    edge_range.stream_id = edge.stream;
+    edge_range.tier = tierTypeToString(HotTier);
+    edge_range.pool_id = hot.id;
+    edge_range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    edge_range.start_time = edge.start - 30;
+    edge_range.end_time = edge.end;
+    edge_range.segment_count = 1;
+    edge_range.size_bytes = static_cast<int64_t>(edge.payload.size());
+    edge_range.created_at = now;
+    edge_range.updated_at = now;
+    require(SegmentTierRangeImp().add(edge_range), "Cannot seed edge range");
+    ProtectedVideo gap_video;
+    gap_video.protected_id = std::string("gap-protected-") + camera;
+    gap_video.camera_id = edge_camera;
+    gap_video.start_time = edge.start - 20;
+    gap_video.end_time = edge.start - 10;
+    gap_video.type = "EVIDENCE";
+    gap_video.created_at = now;
+    require(ProtectedVideoImp().add(gap_video), "Cannot protect edge gap");
+
+    manager.runTieringCycle();
+    // Files go first and the range is finalized right after; wait for both.
+    require(waitUntil([&]() {
+        auto rows = SegmentTierRangeImp().findByRangeIds({edge_range.range_id});
+        return !File::fileExist(first.source_path) && !File::fileExist(last.source_path) &&
+               !File::fileExist(edge.source_path) &&
+               rows.size() == 1 && rows.front().status == "DELETED";
+    }, 5000), "Unprotected segments of a partly protected range were not deleted");
+    drainWorkThreadPool();
+    auto edge_rows = SegmentTierRangeImp().findByRangeIds({edge_range.range_id});
+    require(edge_rows.size() == 1 && edge_rows.front().status == "DELETED" &&
+                edge_rows.front().start_time == edge.start,
+            "Range with a protection in its leading gap was not tightened and deleted");
+    drainWorkThreadPool();
+    require(File::fileExist(middle.source_path), "Protected segment was deleted");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 3 &&
+                ranges[0].status == "DELETED" && ranges[0].start_time == first.start &&
+                ranges[1].status == "AVAILABLE" && ranges[1].start_time == middle.start &&
+                ranges[1].segment_count == 1 &&
+                ranges[2].status == "DELETED" && ranges[2].start_time == last.start,
+            "Range was not split around the protected video");
+    require(ProtectedVideoImp().overlaps(camera, ranges[1].start_time, ranges[1].end_time) &&
+                !ProtectedVideoImp().overlaps(camera, ranges[0].start_time, ranges[0].end_time) &&
+                !ProtectedVideoImp().overlaps(camera, ranges[2].start_time, ranges[2].end_time),
+            "Split piece windows do not isolate the protected video");
+    manager.stop();
+    return 0;
+}
+
+void waitForDefaultHotPoolHealth(TierStorageManager &manager) {
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    drainWorkThreadPool();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(waitUntil([&]() {
+        return manager.getPoolHealth(hot_pools.front().id, health) &&
+               health.health_status != healthToString(StorageHealth::UNKNOWN) &&
+               health.health_status != healthToString(StorageHealth::OFFLINE);
+    }, 5000), "Default HOT pool health was not recorded");
+}
+
+std::vector<int64_t> timelineStarts(const std::string &camera, int64_t from, int64_t to) {
+    mediakit::MediaTuple tuple;
+    tuple.app = camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(from), static_cast<uint64_t>(to), blocks, error);
+    std::vector<int64_t> starts;
+    for (const auto &block : blocks)
+        starts.push_back(static_cast<int64_t>(block.start_time()));
+    return starts;
+}
+
+bool hasAlert(const std::string &type, const std::string &needle) {
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100)) {
+        if (alert.type == type && alert.message.find(needle) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+int scenarioReconcileDropsSegmentsWithoutFiles(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    waitForDefaultHotPoolHealth(manager);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3600;
+
+    // Ghost blocks at the head of a range, as left behind when files were
+    // deleted but the timefile rebuild never completed.
+    const std::string camera = "camera-reconcile-ghost";
+    auto ghost_a = makeSegmentFixture(root, camera, "2026-08-05/00-00-00", "ghost-a", base);
+    auto ghost_b = makeSegmentFixture(root, camera, "2026-08-05/00-01-00", "ghost-b", base + 60);
+    auto kept = makeSegmentFixture(root, camera, "2026-08-05/00-02-00", "kept", base + 120);
+    // Too recent to be judged: must survive even without its file.
+    auto recent = makeSegmentFixture(root, camera, "2026-08-05/00-03-00", "recent", now - 60);
+    for (const auto *segment : {&ghost_a, &ghost_b, &kept, &recent}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(::unlink(ghost_a.source_path.c_str()) == 0 &&
+                ::unlink(ghost_b.source_path.c_str()) == 0 &&
+                ::unlink(recent.source_path.c_str()) == 0,
+            "Cannot remove ghost segment files");
+
+    // A pool whose data root vanished (like an unmounted NAS) proves nothing.
+    StoragePool unmounted = makeHotPool(root, "reconcile-unmounted-hot", "unmounted-hot");
+    require(manager.createPool(unmounted) == unmounted.id, "Cannot create second HOT pool");
+    drainWorkThreadPool();
+    const std::string unmounted_camera = "camera-reconcile-unmounted";
+    const std::string unmounted_path = root + "/unmounted-hot/record/" + unmounted_camera +
+                                       "/main/2026-08-05/02-00-00.mp4";
+    writeFile(unmounted_path, "unmounted");
+    writeTimeBlock(root, unmounted_camera, "main", unmounted_path, base, base + 60, 9);
+    require(manager.registerHotSegmentRange(unmounted_camera, "main", unmounted_path,
+                                            base, base + 60, 9),
+            "Unmounted pool range registration failed");
+    require(SegmentTierRangeImp().queryByCamera(unmounted_camera).front().pool_id == unmounted.id,
+            "Range was not registered on the second HOT pool");
+    removeTree(root + "/unmounted-hot");
+
+    const std::string lost_camera = "camera-reconcile-lost";
+    auto lost = makeSegmentFixture(root, lost_camera, "2026-08-05/01-00-00", "lost", base);
+    require(manager.registerHotSegmentRange(lost.camera, lost.stream, lost.source_path,
+                                            lost.start, lost.end, lost.payload.size()),
+            "Lost range registration failed");
+    require(::unlink(lost.source_path.c_str()) == 0, "Cannot remove lost segment file");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+        return !ranges.empty() && ranges.front().start_time == kept.start;
+    }, 5000), "Ghost segments still define the start of the range");
+    drainWorkThreadPool();
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    int64_t counted = 0;
+    for (const auto &range : ranges) {
+        require(range.status == "AVAILABLE", "Reconciled range has unexpected status");
+        require(range.start_time >= kept.start, "A range still owns a ghost segment");
+        counted += range.segment_count;
+    }
+    require(counted == 2, "Reconciled ranges do not count exactly the kept and recent segments");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts(camera, base - 60, now + 60);
+        return starts.size() == 2 && starts[0] == kept.start && starts[1] == recent.start;
+    }, 5000), "Ghost blocks were not removed from the timefile");
+
+    auto unmounted_ranges = SegmentTierRangeImp().queryByCamera(unmounted_camera);
+    require(unmounted_ranges.size() == 1 && unmounted_ranges.front().status == "AVAILABLE" &&
+                unmounted_ranges.front().segment_count == 1 &&
+                timelineStarts(unmounted_camera, base - 60, base + 120).size() == 1,
+            "Reconciliation dropped segments of a pool whose data root is missing");
+
+    auto lost_ranges = SegmentTierRangeImp().queryByCamera(lost_camera);
+    require(lost_ranges.size() == 1 && lost_ranges.front().status == "MISSING",
+            "Range without any file was not marked MISSING");
+    // The first piece keeps the original range id used in the alert.
+    require(hasAlert("TIER_SEGMENT_MISSING", ranges.front().range_id),
+            "Reconciliation did not raise a storage alert");
+    manager.stop();
+    return 0;
+}
+
+int scenarioBackfillSkipsBlocksWithoutFiles(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    waitForDefaultHotPoolHealth(manager);
+
+    const std::string camera = "camera-backfill-no-file";
+    const std::string stream = "main";
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 7200;
+    const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/2026-08-06/";
+    // The one-minute missing stretch exceeds the 10 s merge gap, so the
+    // present blocks on either side must stay in separate ranges.
+    writeFile(prefix + "a.mp4", "present-a");
+    writeFile(prefix + "c.mp4", "present-c");
+    writeTimeBlock(root, camera, stream, prefix + "a.mp4", start, start + 60, 9);
+    writeTimeBlock(root, camera, stream, prefix + "b.mp4", start + 60, start + 120, 9);
+    writeTimeBlock(root, camera, stream, prefix + "c.mp4", start + 120, start + 180, 9);
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = start;
+    desired.cutoff_time = start + 3600;
+    desired.cursor_time = start;
+    require(!TierBackfillTaskImp().ensureTask(desired).task_id.empty(),
+            "Cannot seed backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = TierBackfillTaskImp().findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Backfill with a missing file did not complete");
+    auto rows = TierBackfillTaskImp().findByCameraId(camera);
+    require(rows.front().registered_blocks == 2, "Backfill registered a block without a file");
+
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 2 &&
+                ranges[0].start_time == start && ranges[0].end_time == start + 60 &&
+                ranges[1].start_time == start + 120 && ranges[1].segment_count == 1,
+            "Backfilled ranges cover the block whose file is missing");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts(camera, start - 60, start + 240);
+        return starts.size() == 2 && starts[0] == start && starts[1] == start + 120;
+    }, 5000), "Block without a file was not removed from the timefile");
+    // The alert is written after the block removal is queued, which may swap first.
+    require(waitUntil([&]() { return hasAlert("TIER_BACKFILL_MISSING_FILE", camera); }, 5000),
+            "Backfill did not raise a storage alert for the missing file");
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
+std::vector<int64_t> fileBlockStarts(const std::string &camera, const std::string &file,
+                                     int64_t from, int64_t to) {
+    std::vector<int64_t> starts;
+    if (!File::fileExist(file))
+        return starts;
+    mediakit::MediaTuple tuple;
+    tuple.app = camera;
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    TimeQuery(tuple, file).queryBlocks(static_cast<uint64_t>(from), static_cast<uint64_t>(to),
+                                       blocks, error);
+    for (const auto &block : blocks)
+        starts.push_back(static_cast<int64_t>(block.start_time()));
+    return starts;
+}
+
+int scenarioTimefileRebuildSwap(const std::string &root) {
+    // One worker thread keeps rebuild, swap and follow-up queries serialized;
+    // the watchdog turns any hang into a failure instead of a ctest timeout.
+    WorkThreadPool::setPoolSize(1);
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        std::fprintf(stderr, "timefile rebuild swap scenario timed out\n");
+        std::_Exit(3);
+    }).detach();
+    migrateDatabase(root);
+    require(WorkThreadPool::Instance().getExecutorSize() == 1,
+            "WorkThreadPool was created before it could be limited to one thread");
+
+    const std::string camera = "camera-rebuild-swap";
+    const std::string device_path = root + "/hot/record/" + camera;
+    const int64_t day1 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 3 * 86400)));
+    const int64_t day2 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(day1 + 36 * 3600)));
+    // Untouched by any step below except as a bystander of the removal in 3).
+    const int64_t day0 = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(day2 + 36 * 3600)));
+    const std::string date0 = getTimeStr("%Y-%m-%d", day0);
+    const std::string file0 = device_path + "/" + date0 + ".s3db";
+    const std::string date1 = getTimeStr("%Y-%m-%d", day1);
+    const std::string date2 = getTimeStr("%Y-%m-%d", day2);
+    const std::string file1 = device_path + "/" + date1 + ".s3db";
+    const std::string file2 = device_path + "/" + date2 + ".s3db";
+    const std::string media = device_path + "/main/";
+    writeDailyTimeBlock(root, camera, "main", date1, media + date1 + "/01-00-00.mp4",
+                        day1 + 3600, day1 + 3660, 1);
+    writeDailyTimeBlock(root, camera, "main", date1, media + date1 + "/02-00-00.mp4",
+                        day1 + 7200, day1 + 7260, 1);
+    writeDailyTimeBlock(root, camera, "main", date2, media + date2 + "/01-00-00.mp4",
+                        day2 + 3600, day2 + 3660, 1);
+    writeDailyTimeBlock(root, camera, "main", date0, media + date0 + "/01-00-00.mp4",
+                        day0 + 3600, day0 + 3660, 1);
+
+    // 1) A dirty file is rebuilt, swapped, and only then loses its dirty mark.
+    // A reader held during the rebuild forces the swap to wait, so clearing the
+    // dirty mark before the swap would make the swap discard itself.
+    TimeFileDirtyTracker::Instance().markDirty(device_path, file1);
+    std::atomic<bool> rebuilt{false};
+    {
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        TimeQuery held_reader(tuple, file1);
+        WorkThreadPool::Instance().getExecutor()->async([&]() {
+            TimeRebuilder::KeepTimeMap keep;
+            keep[camera + "/main"] = static_cast<uint64_t>(day1 + 7200);
+            MultiTimeRebuilder(device_path).rebuildTimeLine(keep);
+            rebuilt = true;
+        });
+        require(waitUntil([&]() { return rebuilt.load(); }, 5000),
+                "Rebuild did not return while a reader held the file");
+    }
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, file1, day1, day1 + 86400);
+        return rebuilt && starts.size() == 1 && starts[0] == day1 + 7200 &&
+               TimeFileDirtyTracker::Instance().currentVersion(device_path, file1) == 0;
+    }, 5000), "Dirty rebuild was discarded or left the file marked dirty");
+
+    // 2) A block written to a past-day file while its rebuild waits for a
+    // reader must survive: the swap has to be discarded, not drop the block.
+    TimeFileDirtyTracker::Instance().markDirty(device_path, file1);
+    std::atomic<bool> rebuilt_again{false};
+    {
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        TimeQuery held_reader(tuple, file1);
+        WorkThreadPool::Instance().getExecutor()->async([&]() {
+            TimeRebuilder::KeepTimeMap keep;
+            keep[camera + "/main"] = static_cast<uint64_t>(day1);
+            MultiTimeRebuilder(device_path).rebuildTimeLine(keep);
+            rebuilt_again = true;
+        });
+        require(waitUntil([&]() { return rebuilt_again.load(); }, 5000),
+                "Second rebuild did not return while a reader held the file");
+        TimeBlock late;
+        late.set_app(camera);
+        late.set_stream("main");
+        late.set_start_time(static_cast<uint64_t>(day1 + 10800));
+        late.set_time_len(60);
+        late.set_file_size(1);
+        late.set_file_path(encodeBase64(media + date1 + "/03-00-00.mp4"));
+        require(TimeRecorderManager::Instance().addBlock(late),
+                "Cannot append a late block to the past-day file");
+    }
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, file1, day1, day1 + 86400);
+        return std::find(starts.begin(), starts.end(), day1 + 10800) != starts.end();
+    }, 5000), "Block written during a pending rebuild swap was lost");
+
+    // 3) Removing a block rewrites only its day's file, and a timefile query on
+    // the same worker right after the removal completes.
+    // Reading through the read guard waits for the step 2 swaps to finish.
+    require(fileBlockStarts(camera, file0, day0, day0 + 86400).size() == 1,
+            "Bystander timefile lost its block");
+    struct stat before{};
+    require(::stat(file0.c_str(), &before) == 0, "Day 0 timefile missing");
+    std::atomic<bool> removed{false};
+    std::atomic<size_t> queried_blocks{99};
+    WorkThreadPool::Instance().getExecutor()->async([&]() {
+        TimeBlockIdentity identity;
+        identity.camera_id = camera;
+        identity.stream_id = "main";
+        identity.start_time = static_cast<uint64_t>(day2 + 3600);
+        identity.segment_path = date2 + "/01-00-00";
+        MultiTimeRebuilder(device_path).removeTimeBlocks({identity});
+        mediakit::MediaTuple tuple;
+        tuple.app = camera;
+        std::vector<TimeBlock> blocks;
+        std::string error;
+        TimeQuery(tuple).queryBlocks(static_cast<uint64_t>(day1), static_cast<uint64_t>(day0 + 86400),
+                                     blocks, error);
+        queried_blocks = blocks.size();
+        removed = true;
+    });
+    require(waitUntil([&]() { return removed.load(); }, 5000),
+            "Timefile query after block removal did not finish");
+    require(queried_blocks == 3, "Query after removal did not see exactly the remaining blocks");
+    require(fileBlockStarts(camera, file2, day2, day2 + 86400).empty(),
+            "Removed block is still in its timefile");
+    struct stat after{};
+    require(::stat(file0.c_str(), &after) == 0 && after.st_ino == before.st_ino &&
+                after.st_mtime == before.st_mtime,
+            "Removing a block rewrote a timefile of another day");
+    return 0;
+}
+
+int scenarioMoveThresholdAlignedToGranularity(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringSplitGranularitySeconds] = 3600;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+
+    const std::string camera = "camera-hourly-threshold";
+    require(manager.assignPolicyToCamera(camera, policy.id, "hourly threshold"),
+            "Policy assignment failed");
+    // retain 0 / min age 0 puts the raw threshold at "now"; aligned, it is the
+    // start of the current hour, so a segment starting at that hour stays HOT.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t hour = now - now % 3600;
+    auto before = makeSegmentFixture(root, camera, "2026-08-21/10-59-00", "before-hour", hour - 60);
+    auto at = makeSegmentFixture(root, camera, "2026-08-21/11-00-00", "at-hour", hour);
+    for (const auto *segment : {&before, &at}) {
+        require(manager.registerHotSegmentRange(segment->camera, segment->stream,
+                                                segment->source_path, segment->start,
+                                                segment->end, segment->payload.size()),
+                "Range registration failed");
+    }
+    require(SegmentTierRangeImp().queryByCamera(camera).size() == 1,
+            "Contiguous segments across the hour were not one range");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 5000), "Hourly-aligned move job did not finish");
+    drainWorkThreadPool();
+    require(!File::fileExist(before.source_path), "Segment before the hour was not moved");
+    require(File::fileExist(at.source_path),
+            "Segment starting at the aligned threshold was moved");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 2 && ranges[0].tier == tierTypeToString(WarmTier) &&
+                ranges[0].end_time == hour && ranges[1].tier == tierTypeToString(HotTier) &&
+                ranges[1].start_time == hour,
+            "Range was not split at the hour boundary");
     manager.stop();
     return 0;
 }
@@ -1904,6 +3391,1087 @@ int scenarioPoolHealthDefersTierMove(const std::string &root) {
     return 0;
 }
 
+int scenarioSkipsMoveToCriticalDestination(const std::string &root) {
+    migrateDatabase(root);
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    // Any real filesystem is above 1% usage, so the destination is critical.
+    StoragePool warm = makeHotPool(root, "critical-warm", "critical-warm");
+    warm.name = "Critical WARM pool";
+    warm.tier = tierTypeToString(WarmTier);
+    warm.high_watermark_percent = 0;
+    warm.critical_watermark_percent = 1;
+    require(manager.createPool(warm) == warm.id, "Critical WARM pool creation failed");
+    drainWorkThreadPool();
+
+    const StoragePolicy policy = makeMovePolicy(hot_pools.front().id, warm.id);
+    require(manager.createPolicy(policy) == policy.id, "Move policy creation failed");
+    const std::string camera = "camera-critical-destination";
+    require(manager.assignPolicyToCamera(camera, policy.id, "critical destination integration"),
+            "Policy assignment failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, camera, "2026-08-20/18-00-00",
+                                      "critical-destination-move", now - 180);
+    require(manager.registerHotSegmentRange(fixture.camera, fixture.stream, fixture.source_path,
+                                            fixture.start, fixture.end,
+                                            static_cast<int64_t>(fixture.payload.size())),
+            "HOT range registration failed");
+
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    require(manager.listTieringJobs(camera).empty(),
+            "A tiering job was queued into a critical destination pool");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, fixture.start - 1, fixture.end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(HotTier) &&
+                ranges.front().status == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range left HOT while the destination was critical");
+    require(File::fileExist(fixture.source_path), "HOT source was touched");
+    require(hasAlert("TIER_DEST_POOL_CRITICAL", "critical watermark"),
+            "TIER_DEST_POOL_CRITICAL alert was not raised");
+
+    // The alert is rate-limited per pool across cycles.
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+    int alerts = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        alerts += alert.type == "TIER_DEST_POOL_CRITICAL" ? 1 : 0;
+    require(alerts == 1, "TIER_DEST_POOL_CRITICAL alert was not rate-limited");
+
+    // Once the destination has room again, the move is queued and completes.
+    warm.high_watermark_percent = 99;
+    warm.critical_watermark_percent = 100;
+    require(manager.updatePool(warm), "Cannot raise WARM pool watermarks");
+    drainWorkThreadPool();
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return jobs.size() == 1 && jobs.front().status == jobStatusToString(JobStatus::DONE);
+    }, 5000), "Tier move did not run after the destination recovered");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
+// Registers `count` contiguous one-minute segments as a single range and
+// retargets its metadata to `pool`; returns the object keys it owns there.
+SegmentTierRange seedRangeOnPool(TierStorageManager &manager,
+                                 const std::string &root,
+                                 const StoragePool &pool,
+                                 const std::string &camera,
+                                 int64_t start,
+                                 int count,
+                                 int64_t segment_size,
+                                 std::vector<std::string> &out_keys) {
+    out_keys.clear();
+    for (int i = 0; i < count; ++i) {
+        const int64_t segment_start = start + i * 60;
+        const std::string key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(segment_start));
+        const std::string stream = "main";
+        const std::string path = root + "/hot/record/" + camera + "/" + stream + "/" + key + ".mp4";
+        // The timefile carries the declared size; splits refresh size_bytes from it.
+        writeFile(path, "object-segment");
+        writeTimeBlock(root, camera, stream, path, segment_start, segment_start + 60, segment_size);
+        require(manager.registerHotSegmentRange(camera, stream, path, segment_start,
+                                                segment_start + 60, segment_size),
+                "Range registration failed");
+        out_keys.push_back(TierObjectStorage::makeS3Key(pool.base_path.value_or(""), camera,
+                                                        stream, key));
+    }
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, start + count * 60 + 1);
+    require(ranges.size() == 1, "Contiguous segments did not form one range");
+    require(SegmentTierRangeImp().updateTierByRangeId(
+                ranges.front().range_id, pool.tier, pool.id,
+                segmentStatusToString(SegmentStatus::AVAILABLE)),
+            "Cannot move range metadata to the seeded pool");
+    return SegmentTierRangeImp().findByRangeIds({ranges.front().range_id}).front();
+}
+
+std::string rangeStatus(const std::string &range_id) {
+    auto ranges = SegmentTierRangeImp().findByRangeIds({range_id});
+    return ranges.empty() ? std::string() : ranges.front().status;
+}
+
+int scenarioObjectRetentionDeletesInOneBatch(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+
+    const std::string camera = "camera-object-batch";
+    const StoragePolicy policy = makeRetentionPolicy(hot_pools.front().id, "object-batch-policy", false);
+    require(manager.createPolicy(policy) == policy.id, "Retention policy creation failed");
+    require(manager.assignPolicyToCamera(camera, policy.id, "object batch delete"),
+            "Retention policy assignment failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto range = seedRangeOnPool(manager, root, cold, camera, now - 3 * 86400, 3, 100, keys);
+
+    // One key fails: nothing may be finalized, the range keeps every key for a retry.
+    const std::string failing_key = keys[1];
+    server.setHandler([failing_key](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "POST" || request.target.find("?delete") == std::string::npos)
+            return false;
+        response.body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<Error><Key>" + failing_key + "</Key><Code>InternalError</Code>"
+                        "<Message>injected</Message></Error></DeleteResult>";
+        return true;
+    });
+    manager.runTieringCycle();
+    require(waitUntil([&]() { return !server.requests("POST", "?delete").empty(); }, 5000),
+            "Retention did not send a DeleteObjects request");
+    drainWorkThreadPool();
+    require(rangeStatus(range.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Range was finalized although one object failed to delete");
+    require(hasAlert("TIER_DELETE_FAILED", range.range_id), "TIER_DELETE_FAILED alert missing");
+
+    server.setHandler(FakeS3Server::Handler());
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        return rangeStatus(range.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Range was not deleted after the batch succeeded");
+    drainWorkThreadPool();
+
+    auto batches = server.requests("POST", "?delete");
+    require(batches.size() == 2, "Each retention attempt must send exactly one DeleteObjects request");
+    for (const auto &key : keys) {
+        require(batches.back().body.find("<Key>" + key + "</Key>") != std::string::npos,
+                "DeleteObjects request is missing key " + key);
+    }
+    require(batches.back().body.find("<Quiet>true</Quiet>") != std::string::npos,
+            "DeleteObjects request is not in quiet mode");
+    require(server.requests("DELETE", "/").empty(), "Objects were deleted one request at a time");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectListAndHeadApi(const std::string &root) {
+    (void)root;
+    FakeS3Server server;
+    server.setListPageSize(2);
+    TierObjectStorage storage;
+    require(storage.registerPool("list-pool", "MINIO", server.endpoint(), "list-bucket", "base",
+                                 "fake-access", "fake-secret"),
+            "Fake pool registration failed");
+    const std::string day = "base/cam/main/2026-09-15/";
+    for (int i = 0; i < 5; ++i)
+        server.putObject("list-bucket", day + "10-0" + std::to_string(i) + "-00.mp4", 10 + i, 7200);
+    server.putObject("list-bucket", "base/cam/main/2026-09-16/00-00-00.mp4", 1);
+    server.putObject("list-bucket", "base/cam/sub/2026-09-15/00-00-00.mp4", 1);
+
+    std::map<std::string, TierObjectInfo> objects;
+    std::string error;
+    require(storage.listObjects("list-pool", day, objects, error), "Listing failed: " + error);
+    require(objects.size() == 5, "Paged listing did not return every object of the prefix");
+    require(server.requests("GET", "list-type=2").size() == 3,
+            "Five keys with two per page must take three ListObjectsV2 requests");
+    const auto &first = objects[day + "10-00-00.mp4"];
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    require(first.size == 10 && std::llabs(now - 7200 - first.last_modified) <= 5,
+            "Listing lost the object size or LastModified");
+
+    std::vector<std::string> prefixes;
+    require(storage.listCommonPrefixes("list-pool", "base/cam/", prefixes, error) &&
+                prefixes.size() == 2 && prefixes[0] == "base/cam/main/" &&
+                prefixes[1] == "base/cam/sub/",
+            "Delimiter listing did not return the stream prefixes");
+
+    require(storage.headSegment("list-pool", day + "10-00-00.mp4") == TierObjectPresence::PRESENT,
+            "Existing object is not PRESENT");
+    require(storage.headSegment("list-pool", day + "11-00-00.mp4") == TierObjectPresence::ABSENT,
+            "HTTP 404 is not ABSENT");
+    require(storage.headSegment("unknown-pool", day) == TierObjectPresence::UNKNOWN,
+            "An unregistered pool must be UNKNOWN");
+
+    // Any failure, even on a later page, leaves no partial listing behind.
+    std::shared_ptr<std::atomic<int>> list_calls = std::make_shared<std::atomic<int>>(0);
+    server.setHandler([list_calls](const FakeS3Request &request, FakeS3Response &response) {
+        const bool list = request.target.find("list-type=2") != std::string::npos;
+        if (request.method == "HEAD" || (list && ++*list_calls > 1)) {
+            response.status = 500;
+            response.body = "<Error><Code>InternalError</Code><Message>injected</Message></Error>";
+            return true;
+        }
+        return false;
+    });
+    require(!storage.listObjects("list-pool", day, objects, error) && objects.empty() &&
+                !error.empty(),
+            "A failed later page still returned a listing");
+    require(storage.headSegment("list-pool", day + "10-00-00.mp4") == TierObjectPresence::UNKNOWN,
+            "HTTP 500 must be UNKNOWN, not a proof of absence");
+    return 0;
+}
+
+int countAlerts(const std::string &type, const std::string &pool_id) {
+    int count = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        count += alert.type == type && alert.pool_id == pool_id ? 1 : 0;
+    return count;
+}
+
+int scenarioAlertsWhenBucketVersioningEnabled(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    server.setHandler([](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "GET" || request.target != "/versioned-bucket?versioning")
+            return false;
+        response.body = "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<Status>Enabled</Status></VersioningConfiguration>";
+        return true;
+    });
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool versioned = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                           "versioned-bucket");
+    versioned.id = "versioned-cold";
+    versioned.health_check_enabled = 1;
+    StoragePool plain = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                       "plain-bucket");
+    plain.id = "plain-cold";
+    plain.health_check_enabled = 1;
+    require(manager.createPool(versioned) == versioned.id, "Versioned pool creation failed");
+    require(manager.createPool(plain) == plain.id, "Plain pool creation failed");
+    drainWorkThreadPool();
+
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", versioned.id) == 1,
+            "Registering a versioned bucket did not raise POOL_VERSIONING_BLOCKS_RECLAIM");
+    require(hasAlert("POOL_VERSIONING_BLOCKS_RECLAIM", "NoncurrentVersionExpiration"),
+            "Versioning alert does not recommend a lifecycle rule");
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", plain.id) == 0,
+            "An unversioned bucket raised the versioning alert");
+
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+    PoolHealthInfo health;
+    require(manager.getPoolHealth(versioned.id, health) &&
+                health.capacity_message.find("versioning is Enabled") != std::string::npos,
+            "Health capacity message does not mention bucket versioning");
+    require(manager.getPoolHealth(plain.id, health) &&
+                health.capacity_message.find("versioning") == std::string::npos,
+            "Unversioned pool health mentions versioning");
+    // Health cycles reuse the hourly check and never repeat the daily alert.
+    require(server.requests("GET", "/versioned-bucket?versioning").size() == 1,
+            "Health checks re-read bucket versioning before the check interval");
+    require(countAlerts("POOL_VERSIONING_BLOCKS_RECLAIM", versioned.id) == 1,
+            "Versioning alert was not rate-limited");
+    manager.stop();
+    return 0;
+}
+
+// Serves MinIO cluster capacity metrics with the given raw free bytes out of 1000.
+FakeS3Server::Handler rawClusterMetrics(const std::shared_ptr<std::atomic<int64_t>> &raw_free) {
+    return [raw_free](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.target != "/minio/v2/metrics/cluster")
+            return false;
+        response.body = "minio_cluster_capacity_raw_total_bytes 1000\n"
+                        "minio_cluster_capacity_raw_free_bytes " +
+                        std::to_string(static_cast<long long>(raw_free->load())) + "\n";
+        return true;
+    };
+}
+
+int scenarioQuotaCapacityFollowsRangeSums(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    auto raw_free = std::make_shared<std::atomic<int64_t>>(900);
+    server.setHandler(rawClusterMetrics(raw_free));
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.health_check_enabled = 1;
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(1000);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+    drainWorkThreadPool();
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto first = seedRangeOnPool(manager, root, cold, "camera-quota-a",
+                                       now - 3 * 86400, 3, 100, keys);
+    const auto second = seedRangeOnPool(manager, root, cold, "camera-quota-b",
+                                        now - 2 * 86400, 2, 300, keys);
+    // Ranges on other pools or already deleted do not count.
+    SegmentTierRange deleted = first;
+    deleted.range_id = "quota-deleted-range";
+    deleted.start_time = now - 5 * 86400;
+    deleted.end_time = deleted.start_time + 60;
+    deleted.size_bytes = 5000;
+    deleted.status = segmentStatusToString(SegmentStatus::DELETED);
+    require(SegmentTierRangeImp().add(deleted), "Cannot seed deleted range");
+
+    PoolHealthInfo health;
+    auto probe = [&]() {
+        manager.checkAndRecordPoolHealth();
+        require(manager.getPoolHealth(cold.id, health), "QUOTA pool health missing");
+    };
+    probe();
+    require(health.capacity_available && health.total_bytes == 1000 && health.used_bytes == 900,
+            "QUOTA usage does not equal the summed range bytes: used=" +
+                std::to_string(static_cast<long long>(health.used_bytes)));
+    require(health.health_status == healthToString(StorageHealth::CRITICAL),
+            "QUOTA pool at 90% is not CRITICAL: " + health.health_status);
+    require(health.capacity_message.find("Logical quota") != std::string::npos,
+            "Capacity message does not name the logical quota");
+
+    require(SegmentTierRangeImp().updateTierByRangeId(
+                second.range_id, cold.tier, cold.id, segmentStatusToString(SegmentStatus::DELETED)),
+            "Cannot delete the second range");
+    probe();
+    require(health.used_bytes == 300 && health.health_status == healthToString(StorageHealth::OK),
+            "QUOTA usage did not drop after a range was deleted");
+
+    // The raw cluster metric only overrides when the cluster itself is critical.
+    raw_free->store(10);
+    probe();
+    require(health.used_bytes == 990 && health.health_status == healthToString(StorageHealth::CRITICAL),
+            "A critical raw cluster metric did not override the logical quota usage");
+    raw_free->store(500);
+    probe();
+    require(health.used_bytes == 300, "A non-critical raw metric overrode the logical usage");
+    manager.stop();
+    return 0;
+}
+
+void runMaintenanceCycle(TierStorageManager &manager) {
+    manager.runTieringCycle();
+    ::usleep(100000);
+    drainWorkThreadPool();
+}
+
+int scenarioPressureDeletesOnColdNasPool(const std::string &root) {
+    migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeNasPool(root);
+    cold.id = "cold-nas";
+    cold.tier = tierTypeToString(ColdTier);
+    cold.high_watermark_percent = 0;
+    cold.critical_watermark_percent = 1;
+    require(manager.createPool(cold) == cold.id, "COLD NAS pool creation failed");
+    drainWorkThreadPool();
+
+    // The oldest range alone covers the reclaim target, so deletion stops after it.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> old_keys;
+    std::vector<std::string> new_keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-cold-a", now - 5 * 86400, 1,
+                                        static_cast<int64_t>(1) << 50, old_keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-cold-b", now - 4 * 86400, 1,
+                                        2, new_keys);
+    const std::string old_file = root + "/nas/record/" + old_keys.front();
+    const std::string new_file = root + "/nas/record/" + new_keys.front();
+    writeFile(old_file, "cold-oldest");
+    writeFile(new_file, "cold-newest");
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Pressure deletion did not run on the critical COLD pool");
+    drainWorkThreadPool();
+    require(!File::fileExist(old_file), "Oldest COLD file was not deleted");
+    require(File::fileExist(new_file) &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "COLD pressure deletion kept deleting after the reclaim target was met");
+    manager.stop();
+    return 0;
+}
+
+int scenarioPressureDeletesOnQuotaObjectPool(const std::string &root) {
+    migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(1000);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+
+    // 900 of 1000 bytes is critical; reclaiming down to 75% needs 150 bytes,
+    // which the oldest 300-byte range covers.
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> old_keys;
+    std::vector<std::string> new_keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-quota-old",
+                                        now - 3 * 86400, 3, 100, old_keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-quota-new",
+                                        now - 2 * 86400, 2, 300, new_keys);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED);
+    }, 5000), "Pressure deletion did not run on the critical QUOTA pool");
+    drainWorkThreadPool();
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "QUOTA pressure deletion went past the reclaim target");
+    auto batches = server.requests("POST", "?delete");
+    require(batches.size() == 1, "Expected one DeleteObjects request for the oldest range");
+    for (const auto &key : old_keys) {
+        require(batches.front().body.find(key) != std::string::npos,
+                "Oldest range key missing from DeleteObjects: " + key);
+    }
+
+    // Usage is now 60%: another cycle deletes nothing.
+    runMaintenanceCycle(manager);
+    require(server.requests("POST", "?delete").size() == 1 &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "QUOTA pool below its watermarks was still pressure-deleted");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectPressureWaitsForLaggingMetrics(const std::string &root) {
+    migrateDatabase(root);
+    // Pool coverage does not depend on how candidates are picked; OLDEST keeps it deterministic.
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
+    mINI::Instance()[Storage::kTieringObjectPressureCooldownSeconds] = 2;
+    FakeS3Server server;
+    // The raw metric reports 99% used and never catches up with the deletes.
+    auto raw_free = std::make_shared<std::atomic<int64_t>>(10);
+    server.setHandler(rawClusterMetrics(raw_free));
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    require(manager.createPool(cold) == cold.id, "METRICS pool creation failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    const auto oldest = seedRangeOnPool(manager, root, cold, "camera-metrics-old",
+                                        now - 3 * 86400, 3, 100, keys);
+    const auto newest = seedRangeOnPool(manager, root, cold, "camera-metrics-new",
+                                        now - 2 * 86400, 2, 300, keys);
+
+    runMaintenanceCycle(manager);
+    require(rangeStatus(oldest.range_id) == segmentStatusToString(SegmentStatus::DELETED) &&
+                rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "First pressure pass on the METRICS pool did not delete only the oldest range");
+
+    runMaintenanceCycle(manager);
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::AVAILABLE),
+            "Pressure deletion trusted the lagging metric during the cooldown");
+
+    ::usleep(2100000);
+    runMaintenanceCycle(manager);
+    require(rangeStatus(newest.range_id) == segmentStatusToString(SegmentStatus::DELETED),
+            "Pressure deletion did not resume after the cooldown");
+    manager.stop();
+    return 0;
+}
+
+// Seeds one single-segment range per day, `first_day_ago` .. `first_day_ago + days - 1`
+// days back, each `size` bytes, all on `pool`.
+void seedDailyRanges(TierStorageManager &manager, const std::string &root, const StoragePool &pool,
+                     const std::string &camera, int first_day_ago, int days, int64_t size) {
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    std::vector<std::string> keys;
+    // Timefiles take blocks in time order, so seed the oldest day first.
+    for (int day = first_day_ago + days - 1; day >= first_day_ago; --day)
+        seedRangeOnPool(manager, root, pool, camera, now - day * 86400, 1, size, keys);
+}
+
+// Stores every seeded key in the fake bucket with the segment's declared size.
+void putSeededObjects(FakeS3Server &server, const StoragePool &pool,
+                      const std::vector<std::string> &keys, int64_t size) {
+    for (const auto &key : keys)
+        server.putObject(pool.bucket.value_or(""), key, size, 7200);
+}
+
+int countAlertsOfType(const std::string &type) {
+    int count = 0;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        count += alert.type == type ? 1 : 0;
+    return count;
+}
+
+// Changes a config value at runtime the way the config API does.
+void reloadConfigValue(const std::string &key, const std::string &value) {
+    mINI::Instance()[key] = value;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+}
+
+int scenarioObjectReconcileFixesMissingObjects(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+
+    // Middle object lost: the range splits around it.
+    std::vector<std::string> split_keys;
+    const auto split = seedRangeOnPool(manager, root, cold, "camera-obj-split", base, 3, 100, split_keys);
+    putSeededObjects(server, cold, split_keys, 100);
+    server.removeObject(bucket, split_keys[1]);
+    // Every object lost: the range becomes MISSING.
+    std::vector<std::string> gone_keys;
+    const auto gone = seedRangeOnPool(manager, root, cold, "camera-obj-gone", base + 600, 2, 100, gone_keys);
+    // Wrong size: alert only.
+    std::vector<std::string> size_keys;
+    const auto sized = seedRangeOnPool(manager, root, cold, "camera-obj-size", base + 1200, 2, 100, size_keys);
+    putSeededObjects(server, cold, size_keys, 100);
+    server.putObject(bucket, size_keys[0], 90, 7200);
+    // Listed nowhere but HEAD finds it (a lagging listing): kept.
+    std::vector<std::string> lag_keys;
+    const auto lagging = seedRangeOnPool(manager, root, cold, "camera-obj-lag", base + 1800, 1, 100, lag_keys);
+    putSeededObjects(server, cold, lag_keys, 100);
+    const std::string lag_prefix = lag_keys[0].substr(0, lag_keys[0].rfind('/') + 1);
+    server.setHandler([lag_prefix](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "GET" || request.target.find("list-type=2") == std::string::npos)
+            return false;
+        std::string encoded;
+        for (char c : lag_prefix)
+            encoded += c == '/' ? std::string("%2F") : std::string(1, c);
+        if (request.target.find("prefix=" + encoded) == std::string::npos &&
+            request.target.find("prefix=" + lag_prefix) == std::string::npos) {
+            return false;
+        }
+        response.body = "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>";
+        return true;
+    });
+
+    runMaintenanceCycle(manager);
+
+    auto split_ranges = SegmentTierRangeImp().queryByCamera("camera-obj-split");
+    require(split_ranges.size() == 2, "Range with a lost middle object was not split in two");
+    for (const auto &range : split_ranges) {
+        require(range.status == "AVAILABLE" && range.segment_count == 1 && range.pool_id == cold.id,
+                "Split pieces do not keep exactly one present object each");
+    }
+    require(split_ranges[0].start_time == split.start_time &&
+                split_ranges[1].start_time == split.start_time + 120,
+            "Split pieces do not start at the remaining segments");
+    require(waitUntil([&]() {
+        auto starts = timelineStarts("camera-obj-split", base - 60, base + 240);
+        return starts.size() == 2 && starts[0] == base && starts[1] == base + 120;
+    }, 5000), "Timeline still shows the lost object");
+    require(hasAlert("TIER_SEGMENT_MISSING", split.range_id) &&
+                hasAlert("TIER_SEGMENT_MISSING", "object storage"),
+            "Dropping a lost object did not raise TIER_SEGMENT_MISSING");
+    require(!server.requests("HEAD", split_keys[1]).empty(),
+            "A key absent from the listing was dropped without a HEAD confirmation");
+
+    require(rangeStatus(gone.range_id) == "MISSING", "Range without any object was not marked MISSING");
+    require(timelineStarts("camera-obj-gone", base, base + 1000).empty(),
+            "Timeline still shows a range whose objects are all gone");
+
+    require(rangeStatus(sized.range_id) == "AVAILABLE" &&
+                SegmentTierRangeImp().queryByCamera("camera-obj-size").size() == 1,
+            "A size mismatch changed the range");
+    require(hasAlert("TIER_OBJECT_SIZE_MISMATCH", sized.range_id),
+            "Size mismatch did not raise TIER_OBJECT_SIZE_MISMATCH");
+
+    require(rangeStatus(lagging.range_id) == "AVAILABLE",
+            "An object missing only from the listing was dropped although HEAD found it");
+
+    // A second cycle neither repeats the size alert nor changes anything.
+    runMaintenanceCycle(manager);
+    require(countAlertsOfType("TIER_OBJECT_SIZE_MISMATCH") == 1, "Size mismatch alert was repeated");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-split").size() == 2,
+            "A consistent range changed on the next cycle");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectReconcileListFailureAndReportMode(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    std::vector<std::string> kept_keys;
+    seedRangeOnPool(manager, root, cold, "camera-obj-kept", base, 1, 100, kept_keys);
+    putSeededObjects(server, cold, kept_keys, 100);
+    std::vector<std::string> lost_keys;
+    const auto lost = seedRangeOnPool(manager, root, cold, "camera-obj-lost", base + 600, 2, 100, lost_keys);
+    putSeededObjects(server, cold, lost_keys, 100);
+    server.removeObject(cold.bucket.value_or(""), lost_keys[1]);
+
+    // A failing listing proves nothing.
+    server.setHandler([](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.target.find("list-type=2") == std::string::npos)
+            return false;
+        response.status = 500;
+        response.body = "<Error><Code>InternalError</Code><Message>injected</Message></Error>";
+        return true;
+    });
+    runMaintenanceCycle(manager);
+    require(!server.requests("GET", "list-type=2").empty(), "Object reconciliation did not list the pool");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-lost").size() == 1 &&
+                rangeStatus(lost.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "A failed listing changed a range");
+    server.setHandler(FakeS3Server::Handler());
+
+    // REPORT only alerts, once.
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "REPORT");
+    runMaintenanceCycle(manager);
+    runMaintenanceCycle(manager);
+    require(countAlertsOfType("TIER_OBJECT_MISSING") == 1 && hasAlert("TIER_OBJECT_MISSING", lost.range_id),
+            "REPORT mode did not raise exactly one TIER_OBJECT_MISSING alert");
+    require(SegmentTierRangeImp().queryByCamera("camera-obj-lost").size() == 1 &&
+                rangeStatus(lost.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "REPORT mode changed a range");
+
+    // OFF does not even list.
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "OFF");
+    const size_t lists_before = server.requests("GET", "list-type=2").size();
+    runMaintenanceCycle(manager);
+    require(server.requests("GET", "list-type=2").size() == lists_before, "OFF mode still listed objects");
+
+    reloadConfigValue(Storage::kTierObjectReconcileMode, "FIX");
+    runMaintenanceCycle(manager);
+    auto ranges = SegmentTierRangeImp().queryByCamera("camera-obj-lost");
+    require(ranges.size() == 1 && ranges.front().segment_count == 1 &&
+                ranges.front().end_time <= base + 660,
+            "FIX mode did not drop the lost object");
+    manager.stop();
+    return 0;
+}
+
+int scenarioObjectReconcileMassLossGuard(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierObjectReconcileMassLossThreshold] = 3;
+    mINI::Instance()[Storage::kTierObjectReconcilePauseSeconds] = 3;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    // A pool whose only range has no object: the sweep ends without any proof
+    // that the bucket is right.
+    StoragePool lonely = makeObjectPool(root, server.endpoint(), "fake-access", "fake-secret",
+                                        "lonely-bucket");
+    lonely.id = "fake-cold-lonely";
+    require(manager.createPool(lonely) == lonely.id, "Second fake pool creation failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    std::vector<SegmentTierRange> ranges;
+    std::vector<std::vector<std::string>> keys(6);
+    for (int i = 0; i < 6; ++i) {
+        ranges.push_back(seedRangeOnPool(manager, root, cold, "camera-mass-" + std::to_string(i),
+                                         base + i * 600, 1, 100, keys[i]));
+    }
+    // Newest first: L5 L4 L3 L2 P1 L0. The guard must trip at L3, before the
+    // present range could vouch for the losses.
+    putSeededObjects(server, cold, keys[1], 100);
+    std::vector<std::string> lonely_keys;
+    const auto lonely_range = seedRangeOnPool(manager, root, lonely, "camera-lonely", base, 1, 100,
+                                              lonely_keys);
+
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", cold.id) == 1,
+            "Three fully missing ranges in a row did not trip the guard");
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", lonely.id) == 1,
+            "A pool without any present object did not trip the guard at the end of its sweep");
+    for (const auto &range : ranges)
+        require(rangeStatus(range.range_id) == "AVAILABLE", "The mass-loss guard let a range change");
+    require(rangeStatus(lonely_range.range_id) == "AVAILABLE" &&
+                countAlertsOfType("TIER_SEGMENT_MISSING") == 0,
+            "The mass-loss guard let a range change");
+
+    // Paused: the pool is not listed again.
+    const size_t lists_before = server.requests("GET", "/fake-bucket?").size();
+    runMaintenanceCycle(manager);
+    require(server.requests("GET", "/fake-bucket?").size() == lists_before,
+            "A paused pool was listed again");
+
+    // Objects back for ranges 5 and 3 (P5 L4 P3 L2 P1 L0): three losses, but
+    // not in a row. L4 and L2 are confirmed by the present range after them,
+    // L0 at the end of the sweep.
+    putSeededObjects(server, cold, keys[5], 100);
+    putSeededObjects(server, cold, keys[3], 100);
+    ::usleep(3200000);
+    runMaintenanceCycle(manager);
+    for (int i : {5, 3, 1}) {
+        require(rangeStatus(ranges[i].range_id) == "AVAILABLE",
+                "A range with its object present changed");
+    }
+    require(rangeStatus(ranges[4].range_id) == "MISSING" &&
+                rangeStatus(ranges[2].range_id) == "MISSING",
+            "A fully missing range followed by a present one was not marked MISSING");
+    require(rangeStatus(ranges[0].range_id) == "MISSING",
+            "A fully missing range at the end of a sane sweep was not marked MISSING");
+    require(countAlerts("POOL_OBJECTS_MISSING_SUSPECT", cold.id) == 1,
+            "The guard tripped again although the pool proved sane");
+    manager.stop();
+    return 0;
+}
+
+int scenarioRestoreOfMissingObjectPrioritizesReconcile(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+
+    // The lost range is older, so the newest-first sweep alone would reach it last.
+    std::vector<std::string> lost_keys;
+    const auto lost = seedRangeOnPool(manager, root, cold, "camera-restore-lost", base, 2, 100, lost_keys);
+    putSeededObjects(server, cold, lost_keys, 100);
+    server.removeObject(cold.bucket.value_or(""), lost_keys[1]);
+    std::vector<std::string> newer_keys;
+    seedRangeOnPool(manager, root, cold, "camera-restore-newer", base + 3600, 1, 100, newer_keys);
+    putSeededObjects(server, cold, newer_keys, 100);
+
+    const std::string segment_key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 60));
+    const std::string timefile_path = root + "/hot/record/camera-restore-lost/main/" + segment_key + ".mp4";
+    auto request = manager.requestRestoreSegment("camera-restore-lost", "main", base + 60,
+                                                 timefile_path, "integration test", 100);
+    require(request.handled && !request.job_id.empty(), "Restore request was not accepted");
+    require(waitUntil([&]() {
+        auto jobs = manager.getRestoreJob(request.job_id);
+        return !jobs.empty() && jobs.front().status == "FAILED";
+    }, 15000), "Restore of a lost object did not fail");
+    auto children = RestoreJobSegmentImp().queryByJob(request.job_id);
+    require(children.size() == 1 &&
+                children.front().error_message.value_or("").find("missing") != std::string::npos,
+            "Failed restore does not say the object is missing");
+    require(server.requests("GET", "list-type=2").empty(), "Reconciliation ran before the cycle");
+
+    runMaintenanceCycle(manager);
+    auto lists = server.requests("GET", "list-type=2");
+    require(!lists.empty() && lists.front().target.find("camera-restore-lost") != std::string::npos,
+            "The range of the failed restore was not reconciled first");
+    auto ranges = SegmentTierRangeImp().queryByCamera("camera-restore-lost");
+    require(ranges.size() == 1 && ranges.front().range_id == lost.range_id &&
+                ranges.front().segment_count == 1 && ranges.front().end_time <= base + 60,
+            "The lost segment was not dropped from the range");
+    manager.stop();
+    return 0;
+}
+
+int scenarioReportsOrphanObjectsWithoutDeleting(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const std::string base_path = cold.base_path.value_or("");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    const int64_t two_days = 2 * 86400;
+
+    // Owned objects, older than a day: never orphans.
+    std::vector<std::string> owned_keys;
+    const auto range = seedRangeOnPool(manager, root, cold, "camera-orphan", base, 2, 100, owned_keys);
+    for (const auto &key : owned_keys)
+        server.putObject(bucket, key, 100, two_days);
+    // Same stream, a time no range covers: an old orphan and a fresh upload.
+    const std::string old_orphan = TierObjectStorage::makeS3Key(
+        base_path, "camera-orphan", "main",
+        getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 7200)));
+    server.putObject(bucket, old_orphan, 500, two_days);
+    const std::string fresh_upload = TierObjectStorage::makeS3Key(
+        base_path, "camera-orphan", "main",
+        getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(base + 9000)));
+    server.putObject(bucket, fresh_upload, 300, 60);
+    // A camera without any range, plus a directory that is not a day.
+    const std::string ghost = base_path + "/camera-ghost/main/2026-09-01/10-00-00.mp4";
+    server.putObject(bucket, ghost, 700, two_days);
+    const std::string not_a_day = base_path + "/camera-ghost/main/thumbnails/10-00-00.jpg";
+    server.putObject(bucket, not_a_day, 50, two_days);
+
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_ORPHAN_OBJECTS", cold.id) == 1, "Orphan objects were not reported");
+    require(hasAlert("POOL_ORPHAN_OBJECTS", "2 object(s), 1200 bytes"),
+            "Orphan report does not count exactly the old unowned objects");
+    for (const auto &key : {owned_keys[0], owned_keys[1], old_orphan, fresh_upload, ghost, not_a_day})
+        require(server.hasObject(bucket, key), "The orphan report deleted " + key);
+    require(server.requests("POST", "?delete").empty() && server.requests("DELETE", "/").empty(),
+            "The orphan report sent a delete request");
+    require(rangeStatus(range.range_id) == "AVAILABLE", "The orphan report changed a range");
+
+    // The next sweep waits for the interval.
+    runMaintenanceCycle(manager);
+    require(countAlerts("POOL_ORPHAN_OBJECTS", cold.id) == 1, "Orphan report repeated before its interval");
+    manager.stop();
+    return 0;
+}
+
+int countRanges(const std::string &camera, const std::string &status) {
+    int count = 0;
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(camera))
+        count += range.status == status ? 1 : 0;
+    return count;
+}
+
+void recordWithMinRetention(const std::string &camera, uint64_t keep_min_seconds) {
+    auto recorder = StatisticRecorder::Instance().getRecorder(camera, true);
+    require(recorder != nullptr, "Cannot create camera statistics for " + camera);
+    CameraOption option;
+    option.keepArchivedMinForAuto = false;
+    option.keepArchivedMinFor = keep_min_seconds;
+    recorder->setCameraOption(option);
+}
+
+// A QUOTA pool sized so `used` bytes sit exactly at its 90% critical watermark;
+// reclaiming to (80 - 5)% needs used / 6 bytes.
+StoragePool createCriticalQuotaPool(TierStorageManager &manager, const std::string &root,
+                                    const FakeS3Server &server, int64_t used) {
+    StoragePool cold = makeFakeObjectPool(root, server);
+    cold.high_watermark_percent = 80;
+    cold.critical_watermark_percent = 90;
+    cold.capacity_source = "QUOTA";
+    cold.capacity_quota_bytes = Optional<int64_t>(used * 10 / 9);
+    require(manager.createPool(cold) == cold.id, "QUOTA pool creation failed");
+    return cold;
+}
+
+int scenarioBalancedPressureDeletesProportionally(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // 30 and 180 days of 100-byte daily ranges; the last 12 hours are protected.
+    const std::string short_camera = "camera-balanced-30d";
+    const std::string long_camera = "camera-balanced-180d";
+    recordWithMinRetention(short_camera, 12 * 3600);
+    recordWithMinRetention(long_camera, 12 * 3600);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 210 * 100);
+    seedDailyRanges(manager, root, cold, short_camera, 1, 30, 100);
+    seedDailyRanges(manager, root, cold, long_camera, 1, 180, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() {
+        return countRanges(short_camera, "DELETED") + countRanges(long_camera, "DELETED") >= 35;
+    }, 15000), "Balanced pressure deletion did not reclaim the needed 3500 bytes");
+    drainWorkThreadPool();
+
+    // OLDEST would take all 35 ranges from the 180-day camera.
+    const int short_deleted = countRanges(short_camera, "DELETED");
+    const int long_deleted = countRanges(long_camera, "DELETED");
+    const double short_fraction = short_deleted / 30.0;
+    const double long_fraction = long_deleted / 180.0;
+    require(short_deleted > 0, "Balanced deletion spared the short-retention camera");
+    require(std::fabs(short_fraction - long_fraction) <= 0.05,
+            "Cameras lost different fractions: 30d camera " + std::to_string(short_deleted) +
+                "/30, 180d camera " + std::to_string(long_deleted) + "/180");
+    require(short_deleted + long_deleted <= 40, "Balanced deletion overshot the reclaim target");
+    // Each camera loses its oldest days first.
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(long_camera)) {
+        if (range.status == "DELETED") {
+            for (const auto &kept : SegmentTierRangeImp().queryByCamera(long_camera)) {
+                require(kept.status == "DELETED" || kept.start_time > range.start_time,
+                        "Balanced deletion removed a newer range before an older one");
+            }
+        }
+    }
+    manager.stop();
+    return 0;
+}
+
+int scenarioBalancedPressureDeletesOrphansFirst(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // The recorded camera holds the oldest data, yet the camera that no longer
+    // records (no statistic recorder) must pay first.
+    const std::string recorded = "camera-balanced-recorded";
+    const std::string orphan = "camera-balanced-orphan";
+    recordWithMinRetention(recorded, 0);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 40 * 100);
+    seedDailyRanges(manager, root, cold, recorded, 11, 30, 100);
+    seedDailyRanges(manager, root, cold, orphan, 1, 10, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() { return countRanges(orphan, "DELETED") >= 7; }, 15000),
+            "Balanced deletion did not reclaim from the orphan camera");
+    drainWorkThreadPool();
+    require(countRanges(recorded, "DELETED") == 0,
+            "Balanced deletion touched a recorded camera while orphan data was left");
+    require(countRanges(orphan, "AVAILABLE") > 0,
+            "Balanced deletion removed more orphan data than needed");
+    manager.stop();
+    return 0;
+}
+
+int scenarioBalancedPressureRespectsMinRetention(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+
+    // Everything is protected by keepArchivedMinFor except the oldest day,
+    // which cannot cover the 167 bytes needed.
+    const std::string camera = "camera-balanced-min-retention";
+    recordWithMinRetention(camera, 9 * 86400 + 3600);
+    const StoragePool cold = createCriticalQuotaPool(manager, root, server, 10 * 100);
+    seedDailyRanges(manager, root, cold, camera, 1, 10, 100);
+
+    runMaintenanceCycle(manager);
+    require(waitUntil([&]() { return countRanges(camera, "DELETED") >= 1; }, 15000),
+            "Balanced deletion did not take the unprotected day");
+    runMaintenanceCycle(manager);
+    require(countRanges(camera, "DELETED") == 1,
+            "Balanced deletion removed data inside keepArchivedMinFor");
+    require(hasAlert("POOL_CRITICAL_NO_DELETABLE", "could not be reclaimed"),
+            "Unreclaimable pressure did not raise POOL_CRITICAL_NO_DELETABLE");
+    manager.stop();
+    return 0;
+}
+
+int countPressureJobs(TierStorageManager &manager, const std::string &camera) {
+    int count = 0;
+    for (const auto &job : manager.listTieringJobs(camera, "", "", "", 0, 0, 0, 1000))
+        count += job.job_trigger == "PRESSURE" ? 1 : 0;
+    return count;
+}
+
+int scenarioBalancedPressureMovesProportionally(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTieringQuotaUsageCacheSeconds] = 0;
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    // Source: a WARM pool at 90% of its quota, above high (80%) but below
+    // critical (95%), so only early moves apply. Reaching 75% needs 3500 bytes.
+    StoragePool warm = makeFakeObjectPool(root, server);
+    warm.id = "fake-warm";
+    warm.tier = tierTypeToString(WarmTier);
+    warm.high_watermark_percent = 80;
+    warm.critical_watermark_percent = 95;
+    warm.capacity_source = "QUOTA";
+    warm.capacity_quota_bytes = Optional<int64_t>(210 * 100 * 10 / 9);
+    require(manager.createPool(warm) == warm.id, "WARM source pool creation failed");
+
+    // Destination stays OFFLINE so queued jobs remain PENDING and countable.
+    StoragePool cold = makeNasPool(root);
+    cold.id = "offline-cold";
+    cold.tier = tierTypeToString(ColdTier);
+    cold.health_check_enabled = 1;
+    require(manager.createPool(cold) == cold.id, "COLD destination pool creation failed");
+    drainWorkThreadPool();
+    removeTree(root + "/nas");
+    manager.checkAndRecordPoolHealth();
+    manager.checkAndRecordPoolHealth();
+
+    PolicyTierConfig hot_tier;
+    hot_tier.tier = tierTypeToString(HotTier);
+    hot_tier.enabled = true;
+    hot_tier.pool_id = hot_pools.front().id;
+    hot_tier.retain_until_days = 3650;
+    hot_tier.overflow_action = overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER);
+    PolicyTierConfig warm_tier = hot_tier;
+    warm_tier.tier = warm.tier;
+    warm_tier.pool_id = warm.id;
+    PolicyTierConfig cold_tier = hot_tier;
+    cold_tier.tier = cold.tier;
+    cold_tier.pool_id = cold.id;
+    cold_tier.overflow_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
+    PolicyAdvancedRules rules;
+    rules.enable_early_move_when_pool_high = true;
+    rules.min_segment_age_minutes_before_move = 0;
+    rules.skip_move_if_pool_offline = false;
+    StoragePolicy policy;
+    policy.id = "balanced-move-policy";
+    policy.name = "Balanced early move policy";
+    policy.enabled = 1;
+    policy.tiers_json = StoragePolicy::tiersToJson({hot_tier, warm_tier, cold_tier});
+    policy.delete_policy_json = PolicyDeleteConfig().toJson().toStyledString();
+    policy.advanced_rules_json = rules.toJson().toStyledString();
+    require(manager.createPolicy(policy) == policy.id, "Early move policy creation failed");
+
+    const std::string short_camera = "camera-move-30d";
+    const std::string long_camera = "camera-move-180d";
+    for (const auto &camera : {short_camera, long_camera}) {
+        require(manager.assignPolicyToCamera(camera, policy.id, "balanced early move"),
+                "Early move policy assignment failed");
+    }
+    seedDailyRanges(manager, root, warm, short_camera, 1, 30, 100);
+    seedDailyRanges(manager, root, warm, long_camera, 1, 180, 100);
+
+    runMaintenanceCycle(manager);
+    const int short_moves = countPressureJobs(manager, short_camera);
+    const int long_moves = countPressureJobs(manager, long_camera);
+    // OLDEST would queue the first 64 ranges of both cameras.
+    require(short_moves > 0, "Balanced early moves spared the short-retention camera");
+    require(short_moves + long_moves >= 35 && short_moves + long_moves <= 40,
+            "Balanced early moves did not queue just the needed 3500 bytes: " +
+                std::to_string(short_moves) + " + " + std::to_string(long_moves));
+    require(std::fabs(short_moves / 30.0 - long_moves / 180.0) <= 0.05,
+            "Cameras queued different fractions: 30d camera " + std::to_string(short_moves) +
+                "/30, 180d camera " + std::to_string(long_moves) + "/180");
+    for (const auto &job : manager.listTieringJobs(long_camera, "", "", "", 0, 0, 0, 1000)) {
+        require(job.status == jobStatusToString(JobStatus::PENDING) &&
+                    job.source_pool_id == warm.id && job.target_pool_id == cold.id,
+                "Early move job does not wait on the WARM -> COLD route");
+    }
+
+    // Queued moves already cover the target, so the next cycle adds none.
+    runMaintenanceCycle(manager);
+    require(countPressureJobs(manager, short_camera) == short_moves &&
+                countPressureJobs(manager, long_camera) == long_moves,
+            "Early moves were queued again although pending jobs cover the target");
+    manager.stop();
+    return 0;
+}
+
 int scenarioPolicyReassignmentCancelsPendingJob(const std::string &root) {
     migrateDatabase(root);
     TierStorageManager &manager = TierStorageManager::Instance();
@@ -2264,6 +4832,8 @@ int scenarioBackfillUsesLocalDayBuckets(const std::string &root) {
                                    stream + "/before-local-midnight.mp4";
     const std::string second_path = root + "/hot/record/" + camera + "/" +
                                     stream + "/after-local-midnight.mp4";
+    writeFile(first_path, "before-midnight");
+    writeFile(second_path, "after-midnight");
     writeTimeBlock(root, camera, stream, first_path, first_start, first_end, 100);
     writeTimeBlock(root, camera, stream, second_path, second_start, second_end, 100);
 
@@ -2380,6 +4950,11 @@ int scenarioCompactRangeRepository(const std::string &root) {
     terminal.updated_at = day;
     require(range_imp.add(terminal), "Cannot seed terminal range");
 
+    SegmentTierRange awaiting_approval = make_range("expired-range", "camera-terminal", "HOT", day + 600);
+    awaiting_approval.status = segmentStatusToString(SegmentStatus::EXPIRED);
+    awaiting_approval.updated_at = day;
+    require(range_imp.add(awaiting_approval), "Cannot seed expired range");
+
     TierMetadataCleanupJob cleanup_job;
     cleanup_job.range_id = terminal.range_id;
     cleanup_job.camera_id = terminal.camera_id;
@@ -2397,6 +4972,8 @@ int scenarioCompactRangeRepository(const std::string &root) {
     range_imp.pruneDeletedOlderThan(day + 1);
     require(range_imp.findByRangeIds({terminal.range_id}).empty(),
             "Terminal range retention did not prune old metadata");
+    require(!range_imp.findByRangeIds({awaiting_approval.range_id}).empty(),
+            "EXPIRED range awaiting approval was pruned with its files still on disk");
     cleanup_repo.pruneDoneOlderThan(day + 1);
     auto cleanup_rows = cleanup_repo.getExecutor()->executeRaw(
         toolkit::QueryBuilder()
@@ -2424,7 +5001,7 @@ int scenarioCompactRangeRepository(const std::string &root) {
     return 0;
 }
 
-int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
+int scenarioBackfillSkipsOrphanWithAlert(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
     mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 3600;
@@ -2439,7 +5016,11 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     const int64_t end = start + 60;
     const std::string unmatched = root + "/unmapped/record/" + camera +
                                   "/main/2026-08-28_12-01-00.mp4";
+    const std::string indexed = root + "/hot/record/" + camera +
+                                "/main/2026-08-28_12-01-01.mp4";
+    writeFile(indexed, "indexed");
     writeTimeBlock(root, camera, "main", unmatched, start, end, 128);
+    writeTimeBlock(root, camera, "main", indexed, start + 1, start + 30, 64);
 
     TierBackfillTask desired;
     desired.camera_id = camera;
@@ -2453,14 +5034,140 @@ int scenarioBackfillOrphanRetriesWithoutAdvancing(const std::string &root) {
     manager.runBackfillCycle();
     require(waitUntil([&]() {
         auto rows = TierBackfillTaskImp().findByCameraId(camera);
-        return rows.size() == 1 && rows.front().status == "RETRY";
-    }, 5000), "Orphan backfill task did not enter RETRY");
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Orphan block stalled the backfill task");
     auto rows = TierBackfillTaskImp().findByCameraId(camera);
-    require(rows.front().cursor_time == start && rows.front().attempt_count == 1 &&
-                rows.front().orphan_blocks == 1 && !rows.front().last_error.empty(),
-            "Orphan retry advanced cursor or lost diagnostic counters");
-    require(SegmentTierRangeImp().queryByCamera(camera).empty(),
-            "Orphan chunk partially committed range metadata");
+    require(rows.front().cursor_time == end && rows.front().attempt_count == 0 &&
+                rows.front().orphan_blocks == 1 && rows.front().registered_blocks == 1,
+            "Orphan backfill did not advance with accurate counters");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera);
+    require(ranges.size() == 1 && ranges.front().start_time == start + 1 &&
+                ranges.front().segment_count == 1 && ranges.front().size_bytes == 64,
+            "Backfill did not index the valid block next to the orphan");
+    bool alerted = false;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 50)) {
+        if (alert.type == "TIER_BACKFILL_ORPHAN" &&
+            alert.message.find(camera) != std::string::npos) {
+            alerted = true;
+        }
+    }
+    require(alerted, "Skipped orphan block did not raise a storage alert");
+
+    manager.stop();
+    drainWorkThreadPool();
+    return 0;
+}
+
+int scenarioBackfillShapesRangesAroundExistingOnes(const std::string &root) {
+    migrateDatabase(root);
+    mINI::Instance()[Storage::kTierRangeBackfillEnabled] = 1;
+    mINI::Instance()[Storage::kTierRangeBackfillChunkSeconds] = 86400;
+    mINI::Instance()[Storage::kTierRangeBackfillWorkBudgetMs] = 5000;
+    const int64_t day = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 86400)));
+
+    // The window slides forward on every sync; retry state must survive it.
+    TierBackfillTaskImp task_imp;
+    TierBackfillTask failed_desired;
+    failed_desired.camera_id = "camera-backfill-failed";
+    failed_desired.timeline_path = root + "/hot/record/camera-backfill-failed";
+    failed_desired.window_start = day;
+    failed_desired.cutoff_time = day + 60;
+    failed_desired.cursor_time = day;
+    TierBackfillTask failed = task_imp.ensureTask(failed_desired);
+    require(!failed.task_id.empty(), "Cannot seed failed backfill task");
+    failed.status = "FAILED";
+    failed.attempt_count = 5;
+    failed.last_error = "persistent failure";
+    failed.updated_at = day;
+    require(task_imp.updateDefinitionAt(failed), "Cannot mark backfill task FAILED");
+    failed_desired.window_start = day + 30;
+    failed_desired.cutoff_time = day + 120;
+    task_imp.ensureTask(failed_desired);
+    auto failed_rows = task_imp.findByCameraId(failed_desired.camera_id);
+    require(failed_rows.size() == 1 && failed_rows.front().status == "FAILED" &&
+                failed_rows.front().attempt_count == 5 &&
+                failed_rows.front().last_error == "persistent failure" &&
+                failed_rows.front().cutoff_time == day + 120 &&
+                failed_rows.front().cursor_time == day + 30,
+            "Sliding the backfill window reset a FAILED task");
+
+    TierBackfillTask done_desired;
+    done_desired.camera_id = "camera-backfill-done";
+    done_desired.timeline_path = root + "/hot/record/camera-backfill-done";
+    done_desired.window_start = day;
+    done_desired.cutoff_time = day + 60;
+    done_desired.cursor_time = day;
+    TierBackfillTask done = task_imp.ensureTask(done_desired);
+    done.status = "COMPLETED";
+    done.cursor_time = day + 60;
+    done.completed_at = day;
+    require(task_imp.updateDefinitionAt(done), "Cannot mark backfill task COMPLETED");
+    done_desired.window_start = day + 30;
+    done_desired.cutoff_time = day + 120;
+    done = task_imp.ensureTask(done_desired);
+    require(done.status == "PENDING" && done.cursor_time == day + 60 &&
+                done.cutoff_time == day + 120,
+            "Extending the cutoff did not reopen a completed backfill task");
+
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const std::string camera = "camera-backfill-shape";
+    const std::string stream = "main";
+    const std::string prefix = root + "/hot/record/" + camera + "/" + stream + "/";
+    auto block = [&](const std::string &name, int64_t start) {
+        writeFile(prefix + name + ".mp4", name);
+        writeTimeBlock(root, camera, stream, prefix + name + ".mp4", start, start + 60, 10);
+    };
+    block("gap-a", day + 3600);
+    block("gap-b", day + 4200);
+    block("around-a", day + 7200);
+    block("owned", day + 7260);
+    block("around-b", day + 7320);
+
+    SegmentTierRange warm;
+    warm.range_id = "existing-warm";
+    warm.camera_id = camera;
+    warm.stream_id = stream;
+    warm.tier = tierTypeToString(WarmTier);
+    warm.pool_id = "some-warm-pool";
+    warm.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    warm.start_time = day + 7260;
+    warm.end_time = day + 7320;
+    warm.segment_count = 1;
+    warm.size_bytes = 10;
+    warm.created_at = day;
+    warm.updated_at = day;
+    require(SegmentTierRangeImp().add(warm), "Cannot seed existing WARM range");
+
+    TierBackfillTask desired;
+    desired.camera_id = camera;
+    desired.timeline_path = root + "/hot/record/" + camera;
+    desired.window_start = day;
+    desired.cutoff_time = day + 86400;
+    desired.cursor_time = day;
+    require(!task_imp.ensureTask(desired).task_id.empty(), "Cannot seed shape backfill task");
+
+    manager.runBackfillCycle();
+    require(waitUntil([&]() {
+        auto rows = task_imp.findByCameraId(camera);
+        return rows.size() == 1 && rows.front().status == "COMPLETED";
+    }, 5000), "Shape backfill task did not complete");
+
+    std::vector<SegmentTierRange> hot;
+    for (const auto &range : SegmentTierRangeImp().queryByCamera(camera)) {
+        if (range.tier != tierTypeToString(HotTier))
+            continue;
+        require(range.end_time <= warm.start_time || range.start_time >= warm.end_time,
+                "Backfilled HOT range overlaps an existing WARM range");
+        hot.push_back(range);
+    }
+    require(hot.size() == 4 &&
+                hot[0].start_time == day + 3600 && hot[0].end_time == day + 3660 &&
+                hot[1].start_time == day + 4200 &&
+                hot[2].start_time == day + 7200 && hot[2].end_time == day + 7260 &&
+                hot[3].start_time == day + 7320 && hot[3].segment_count == 1,
+            "Backfill did not split ranges at gaps and existing ranges");
 
     manager.stop();
     drainWorkThreadPool();
@@ -3111,6 +5818,10 @@ int runScenario(const std::string &name, const std::string &root) {
     try {
         if (name == "register-idempotent") return scenarioRegisterIdempotent(root);
         if (name == "hot-to-nas") return scenarioHotToNas(root);
+        if (name == "overlap-start-ownership") return scenarioOverlappingSegmentsUseStartOwnership(root);
+        if (name == "reuse-existing-nas-target") return scenarioReusesExistingNasTarget(root);
+        if (name == "backoff-missing-segment-job") return scenarioBacksOffMissingSegmentJob(root);
+        if (name == "drop-missing-segment") return scenarioDropsMissingSegmentAfterMaxAttempts(root);
         if (name == "hot-to-minio") return scenarioHotToMinio(root);
         if (name == "restore-from-minio") return scenarioRestoreFromMinio(root);
         if (name == "duplicate-restore") return scenarioDuplicateRestore(root);
@@ -3119,6 +5830,16 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "reuse-equivalent-restore-windows") return scenarioReusesEquivalentRestoreWindows(root);
         if (name == "retention-approval") return scenarioRetentionApproval(root);
         if (name == "protected-retention") return scenarioProtectedRetention(root);
+        if (name == "delete-waits-active-transfer") return scenarioDeletionWaitsForActiveTransfer(root);
+        if (name == "unreadable-timefile-pending") return scenarioUnreadableTimefileKeepsWorkPending(root);
+        if (name == "pressure-oldest-across-pool") return scenarioPressureDeletesOldestAcrossPool(root);
+        if (name == "age-retention-paged-split") return scenarioAgeRetentionSkipsBlockedRangesAndSplits(root);
+        if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
+        if (name == "reconcile-ghost-segments") return scenarioReconcileDropsSegmentsWithoutFiles(root);
+        if (name == "timefile-rebuild-swap") return scenarioTimefileRebuildSwap(root);
+        if (name == "hourly-move-threshold") return scenarioMoveThresholdAlignedToGranularity(root);
+        if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
+        if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
@@ -3130,13 +5851,31 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "job-scoped-restore-cache-cleanup") return scenarioCleansJobScopedRestoreCache(root);
         if (name == "pool-health-playback") return scenarioTracksPoolHealthAndBlocksPlayback(root);
         if (name == "pool-health-tier-move") return scenarioPoolHealthDefersTierMove(root);
+        if (name == "critical-destination-skip") return scenarioSkipsMoveToCriticalDestination(root);
+        if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
+        if (name == "object-list-head-api") return scenarioObjectListAndHeadApi(root);
+        if (name == "object-reconcile-fix") return scenarioObjectReconcileFixesMissingObjects(root);
+        if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
+        if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
+        if (name == "restore-missing-object-reconcile") return scenarioRestoreOfMissingObjectPrioritizesReconcile(root);
+        if (name == "object-orphan-report") return scenarioReportsOrphanObjectsWithoutDeleting(root);
+        if (name == "bucket-versioning-alert") return scenarioAlertsWhenBucketVersioningEnabled(root);
+        if (name == "quota-capacity-range-sums") return scenarioQuotaCapacityFollowsRangeSums(root);
+        if (name == "pressure-cold-nas") return scenarioPressureDeletesOnColdNasPool(root);
+        if (name == "pressure-quota-object") return scenarioPressureDeletesOnQuotaObjectPool(root);
+        if (name == "pressure-metrics-cooldown") return scenarioObjectPressureWaitsForLaggingMetrics(root);
+        if (name == "balanced-pressure-proportional") return scenarioBalancedPressureDeletesProportionally(root);
+        if (name == "balanced-pressure-orphans-first") return scenarioBalancedPressureDeletesOrphansFirst(root);
+        if (name == "balanced-pressure-min-retention") return scenarioBalancedPressureRespectsMinRetention(root);
+        if (name == "balanced-pressure-moves") return scenarioBalancedPressureMovesProportionally(root);
         if (name == "policy-reassignment-cancels-job") return scenarioPolicyReassignmentCancelsPendingJob(root);
         if (name == "policy-retention-cancels-job") return scenarioPolicyRetentionChangeCancelsPendingJob(root);
         if (name == "pool-health-tier-delete") return scenarioPoolHealthGuardsDeletion(root);
         if (name == "backfill-atomic-idempotent") return scenarioBackfillAtomicIdempotent(root);
         if (name == "backfill-local-day") return scenarioBackfillUsesLocalDayBuckets(root);
         if (name == "compact-range-repository") return scenarioCompactRangeRepository(root);
-        if (name == "backfill-orphan-retry") return scenarioBackfillOrphanRetriesWithoutAdvancing(root);
+        if (name == "backfill-orphan-skip") return scenarioBackfillSkipsOrphanWithAlert(root);
+        if (name == "backfill-shape") return scenarioBackfillShapesRangesAroundExistingOnes(root);
         if (name == "backfill-missing-timeline") return scenarioBackfillMissingTimelineCompletes(root);
         if (name == "recovery-prepare") return scenarioRecoveryPrepare(root);
         if (name == "recovery-verify") return scenarioRecoveryVerify(root);
@@ -3242,6 +5981,26 @@ TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToNas) {
     EXPECT_EQ(0, runChild("hot-to-nas", root.path));
 }
 
+TEST(TierStorageManagerIntegrationTest, MovesOnlyStartOwnedSegmentsAcrossOverlappingBoundary) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("overlap-start-ownership", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReusesExistingNasTargetWhenSourceIsMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("reuse-existing-nas-target", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BacksOffMissingSegmentJob) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backoff-missing-segment-job", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DropsMissingSegmentAfterMaxAttempts) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("drop-missing-segment", root.path));
+}
+
 TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToMinio) {
     if (!hasMinioEnvironment())
         GTEST_SKIP() << "TIER_TEST_S3_* environment is required";
@@ -3284,6 +6043,86 @@ TEST(TierStorageManagerIntegrationTest, MarksExpiredAndDeletesAfterApproval) {
 TEST(TierStorageManagerIntegrationTest, ProtectsRetentionUntilGuardsExpire) {
     TempRoot root;
     EXPECT_EQ(0, runChild("protected-retention", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DefersDeletionWhileTransferIsActive) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("delete-waits-active-transfer", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, KeepsWorkPendingWhenTimefileIsUnreadable) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("unreadable-timefile-pending", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestAcrossPoolAndStopsAtTarget) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-oldest-across-pool", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("age-retention-paged-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletionSplitsAroundProtectedVideo) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-protected-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AgeRetentionSplitsAroundProtectedVideo) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("age-protected-split", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ListsObjectsAndProvesAbsenceOnlyOn404) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-list-head-api", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseObjectsAreMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-fix", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsRangesOnListFailureAndInReportMode) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-list-failure-report", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectReconcileMassLossGuardPausesPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-mass-loss", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RestoreOfMissingObjectPrioritizesReconcile) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("restore-missing-object-reconcile", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReportsOrphanObjectsWithoutDeleting) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-orphan-report", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseFilesAreMissing) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("reconcile-ghost-segments", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillSkipsBlocksWithoutFiles) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-skip-missing-file", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("timefile-rebuild-swap", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AlignsMoveThresholdToSplitGranularity) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("hourly-move-threshold", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
@@ -3344,6 +6183,61 @@ TEST(TierStorageManagerIntegrationTest, DefersTierMoveUntilDestinationPoolRecove
     EXPECT_EQ(0, runChild("pool-health-tier-move", root.path));
 }
 
+TEST(TierStorageManagerIntegrationTest, SkipsMoveWhenDestinationPoolIsCritical) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("critical-destination-skip", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, DeletesObjectRangeInOneBatchRequest) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-retention-batch-delete", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, AlertsWhenObjectBucketVersioningIsEnabled) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("bucket-versioning-alert", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, QuotaCapacityFollowsStoredRangeBytes) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("quota-capacity-range-sums", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOldestOnCriticalColdNasPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-cold-nas", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PressureDeletesOnCriticalQuotaObjectPool) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-quota-object", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectPressureWaitsForLaggingMetrics) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("pressure-metrics-cooldown", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureDeletesProportionally) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-proportional", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureDeletesOrphanCamerasFirst) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-orphans-first", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureRespectsMinRetention) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-min-retention", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BalancedPressureMovesProportionally) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("balanced-pressure-moves", root.path));
+}
+
 TEST(TierStorageManagerIntegrationTest, CancelsPendingJobAfterPolicyReassignment) {
     TempRoot root;
     EXPECT_EQ(0, runChild("policy-reassignment-cancels-job", root.path));
@@ -3374,9 +6268,14 @@ TEST(TierStorageManagerIntegrationTest, BoundsAndCompactsTierMetadata) {
     EXPECT_EQ(0, runChild("compact-range-repository", root.path));
 }
 
-TEST(TierStorageManagerIntegrationTest, RetriesOrphanChunkWithoutAdvancingCursor) {
+TEST(TierStorageManagerIntegrationTest, SkipsOrphanBlockAndAdvancesCursor) {
     TempRoot root;
-    EXPECT_EQ(0, runChild("backfill-orphan-retry", root.path));
+    EXPECT_EQ(0, runChild("backfill-orphan-skip", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, BackfillShapesRangesAroundExistingOnes) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("backfill-shape", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, CompletesEmptyBackfillWhenCameraHasNoTimeFile) {
@@ -3423,6 +6322,8 @@ TEST(TierStorageManagerIntegrationTest, DoesNotDeleteTemporaryMp4ImmediatelyAfte
 
 int main(int argc, char **argv) {
     g_executable = argv[0];
+    // Off EC2 the AWS SDK spends seconds probing instance metadata for a region.
+    ::setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
     std::string scenario;
     std::string root;
     for (int i = 1; i + 1 < argc; ++i) {

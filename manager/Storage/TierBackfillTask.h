@@ -67,6 +67,13 @@ DECLARE_ENTITY(TierBackfillTask, "tier_backfill_tasks",
     &TierBackfillTask::updated_at,        "updated_at"
 )
 
+// A timeline block whose MP4 is gone from a reachable HOT pool.
+struct TierBackfillMissingBlock {
+    std::string stream_id;
+    int64_t start_time = 0;
+    std::string segment_path;
+};
+
 struct TierBackfillChunk {
     int64_t start_time = 0;
     int64_t end_time = 0;
@@ -75,6 +82,8 @@ struct TierBackfillChunk {
     int64_t orphan_blocks = 0;
     int64_t indexed_bytes = 0;
     std::vector<SegmentTierRange> ranges;
+    // Not persisted; removed from the timefile after the chunk commits.
+    std::vector<TierBackfillMissingBlock> missing_blocks;
 };
 
 class TierBackfillTaskRepository : public SqliteRepository<TierBackfillTask> {
@@ -86,6 +95,8 @@ public:
     std::vector<TierBackfillTask> findAll();
     bool insertTask(const TierBackfillTask &task);
     bool updateDefinitionAt(const TierBackfillTask &task);
+    // Slides the backfill window without touching retry state.
+    bool updateWindowAt(const TierBackfillTask &task);
     bool retryFailedAt(const std::string &camera_id, int64_t updated_at);
     bool hasDueAt(int64_t now);
     std::vector<TierBackfillTask> claimNextDueAt(int64_t now);

@@ -30,6 +30,10 @@ public:
     // Remove only the durable catalog entries whose exact identities are supplied.
     size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
 
+    // Invoked on the swap thread after the rebuilt file replaced the source.
+    // Not invoked when the swap is discarded because the source changed.
+    void setOnSwapped(const std::function<void()> &cb) { _on_swapped = cb; }
+
 private:
     /**
      * Create template file 
@@ -58,6 +62,7 @@ private:
     // dirty version of the source file captured right before reading it, used by the
     // simple (non-mirrored) swap to detect concurrent writes.
     uint64_t _dirty_version_at_start = 0;
+    std::function<void()> _on_swapped;
 };
 
 class MultiTimeRebuilder {

@@ -167,6 +167,26 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     EXPECT_TRUE(metric_json["disks"].isArray());
 }
 
+#if defined(ENABLE_TIER_STORAGE)
+TEST(StorageModelsTest, RoundTripsEveryPolicyAdvancedRule) {
+    PolicyAdvancedRules rules;
+    rules.enable_early_move_when_pool_high = false;
+    rules.prefer_move_no_event_video_first = false;
+    rules.prefer_keep_event_video_longer = false;
+    rules.skip_move_if_pool_offline = false;
+    rules.alert_when_pool_critical = false;
+    rules.min_segment_age_minutes_before_move = 7;
+
+    const PolicyAdvancedRules parsed = PolicyAdvancedRules::fromJson(rules.toJson());
+    EXPECT_FALSE(parsed.enable_early_move_when_pool_high);
+    EXPECT_FALSE(parsed.prefer_move_no_event_video_first);
+    EXPECT_FALSE(parsed.prefer_keep_event_video_longer);
+    EXPECT_FALSE(parsed.skip_move_if_pool_offline);
+    EXPECT_FALSE(parsed.alert_when_pool_critical);
+    EXPECT_EQ(7, parsed.min_segment_age_minutes_before_move);
+}
+#endif
+
 TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<BookmarkIndex>("bookmark_index");
 #if defined(ENABLE_TIER_STORAGE)

@@ -5,6 +5,8 @@
 #include "StorageTier.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 
 namespace managerkit {
 
@@ -35,6 +37,30 @@ void applyOptionalString(Optional<std::string> &target,
     }
 }
 
+// Absent or null yields no value; a malformed or fractional number yields -1
+// so validation rejects it instead of silently dropping the quota.
+Optional<int64_t> optionalBytes(const Json::Value &value) {
+    if (value.isNull())
+        return Optional<int64_t>();
+    if (value.isIntegral())
+        return Optional<int64_t>(value.asInt64());
+    if (value.isString() && !value.asString().empty()) {
+        const std::string text = value.asString();
+        char *end = nullptr;
+        errno = 0;
+        const long long parsed = std::strtoll(text.c_str(), &end, 10);
+        if (errno == 0 && end && *end == '\0')
+            return Optional<int64_t>(static_cast<int64_t>(parsed));
+    }
+    return Optional<int64_t>(-1);
+}
+
+std::string capacitySourceFromJson(const Json::Value &value) {
+    std::string source = value.asString();
+    std::transform(source.begin(), source.end(), source.begin(), ::toupper);
+    return source.empty() ? std::string(kPoolCapacitySourceMetrics) : source;
+}
+
 } // namespace
 
 StoragePool TierStorageBase::poolFromJson(const Json::Value &body) {
@@ -54,6 +80,10 @@ StoragePool TierStorageBase::poolFromJson(const Json::Value &body) {
     pool.health_check_enabled = body.get("health_check_enabled", true).asBool() ? 1 : 0;
     pool.high_watermark_percent = body.get("high_watermark_percent", 85).asInt();
     pool.critical_watermark_percent = body.get("critical_watermark_percent", 90).asInt();
+    if (body.isMember("capacity_quota_bytes"))
+        pool.capacity_quota_bytes = optionalBytes(body["capacity_quota_bytes"]);
+    if (body.isMember("capacity_source"))
+        pool.capacity_source = capacitySourceFromJson(body["capacity_source"]);
     return pool;
 }
 
@@ -72,6 +102,11 @@ void TierStorageBase::applyPoolPatch(StoragePool &pool, const Json::Value &body)
         pool.high_watermark_percent = body["high_watermark_percent"].asInt();
     if (body.isMember("critical_watermark_percent"))
         pool.critical_watermark_percent = body["critical_watermark_percent"].asInt();
+    // null clears the quota; an absent key keeps it.
+    if (body.isMember("capacity_quota_bytes"))
+        pool.capacity_quota_bytes = optionalBytes(body["capacity_quota_bytes"]);
+    if (body.isMember("capacity_source"))
+        pool.capacity_source = capacitySourceFromJson(body["capacity_source"]);
 
     applyOptionalString(pool.endpoint, body, "endpoint");
     applyOptionalString(pool.bucket, body, "bucket");
@@ -109,6 +144,23 @@ bool TierStorageBase::validatePoolByType(const StoragePool &pool, std::string &e
             error = "endpoint, bucket, base_path, access_key and secret_key are required for MINIO/S3";
             return false;
         }
+    }
+    if (pool.capacity_quota_bytes.has_value() && pool.capacity_quota_bytes.value() <= 0) {
+        error = "capacity_quota_bytes must be a positive integer";
+        return false;
+    }
+    if (pool.capacity_source == kPoolCapacitySourceQuota) {
+        if (!poolTypeIsObjectStorage(pool.type)) {
+            error = "capacity_source QUOTA is only supported for object storage pools";
+            return false;
+        }
+        if (!pool.capacity_quota_bytes.has_value()) {
+            error = "capacity_quota_bytes is required when capacity_source is QUOTA";
+            return false;
+        }
+    } else if (pool.capacity_source != kPoolCapacitySourceMetrics) {
+        error = "capacity_source must be METRICS or QUOTA";
+        return false;
     }
     return true;
 }
@@ -157,6 +209,12 @@ bool TierStorageBase::validatePolicyTierMoveChain(
             return false;
         }
     }
+    // With no enabled tier after it, MOVE_TO_NEXT_TIER would keep data forever.
+    if (sorted.back().overflow_action == "MOVE_TO_NEXT_TIER") {
+        error = sorted.back().tier +
+                " is the last enabled tier and cannot use overflow_action MOVE_TO_NEXT_TIER";
+        return false;
+    }
     return true;
 }
 
@@ -181,6 +239,10 @@ bool TierStorageBase::validatePolicyTiers(const std::vector<PolicyTierConfig> &t
         if (previous_days >= 0 && previous_days >= tier.retain_until_days) {
             error = previous_tier + ".retain_until_days must be less than " +
                     tier.tier + ".retain_until_days";
+            return false;
+        }
+        if (tier.overflow_action == "DELETE_OLDEST" && tier.retain_until_days <= 0) {
+            error = tier.tier + ".retain_until_days must be greater than 0 for DELETE_OLDEST";
             return false;
         }
         if (tier.high_watermark_percent >= tier.critical_watermark_percent) {
@@ -307,6 +369,11 @@ Json::Value TierStorageBase::poolDetailToJson(const StoragePool &pool) {
     value["mount_path"] = pool.mount_path.value_or("");
     value["network_path"] = pool.network_path.value_or("");
     value["updated_at"] = static_cast<Json::Int64>(pool.updated_at);
+    value["capacity_source"] = pool.capacity_source;
+    if (pool.capacity_quota_bytes.has_value())
+        value["capacity_quota_bytes"] = static_cast<Json::Int64>(pool.capacity_quota_bytes.value());
+    else
+        value["capacity_quota_bytes"] = Json::nullValue;
     value["used_percent"] = pool.total_bytes > 0
         ? static_cast<double>(pool.used_bytes) * 100.0 / static_cast<double>(pool.total_bytes)
         : static_cast<double>(pool.usage_pct);

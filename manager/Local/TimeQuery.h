@@ -54,6 +54,11 @@ public:
     void getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         const std::function<void(std::vector<TimeBlock> &data)> &cb);
 
+    // Unlike getRecordedTimePeriod(), reports timefile parse/read exceptions
+    // instead of returning a silently truncated block list. `out` is empty on failure.
+    bool queryBlocks(uint64_t start_time, uint64_t end_time,
+                     std::vector<TimeBlock> &out, std::string &error);
+
     int64_t getOffsetOfDate(uint64_t pos_time);
 
     std::shared_ptr<TimeBlock> getLastBlock(uint64_t last_archived_time = 0, uint32_t interval_sec = 600);

@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <unistd.h>
 
 #include "Record/MP4.h"
 
@@ -76,8 +79,17 @@ TEST(MP4FileDiskTest, OpensWritesReadsAndClosesFile) {
 }
 
 TEST(MP4FileDiskTest, RejectsUnopenablePath) {
+    // The parent is a regular file, so opening fails with ENOTDIR even as root
+    // (a missing directory would just be created by File::create_file).
+    char invalid_parent[] = "/tmp/s3mediakit-invalid-mp4-parent-XXXXXX";
+    int invalid_parent_fd = ::mkstemp(invalid_parent);
+    ASSERT_NE(-1, invalid_parent_fd);
+    EXPECT_EQ(0, ::close(invalid_parent_fd));
+
     auto file = std::make_shared<TestDiskFile>();
-    EXPECT_THROW(file->openFile("/nonexistent-s3mediakit-dir/file.mp4", "wb"), std::runtime_error);
+    const std::string invalid_path = std::string(invalid_parent) + "/file.mp4";
+    EXPECT_THROW(file->openFile(invalid_path.c_str(), "wb"), std::runtime_error);
+    EXPECT_EQ(0, std::remove(invalid_parent));
 }
 
 #endif

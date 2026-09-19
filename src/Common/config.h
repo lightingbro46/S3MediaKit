@@ -728,6 +728,52 @@ extern const std::string kDefaultHotHighWatermarkPercent;
 extern const std::string kDefaultHotCriticalWatermarkPercent;
 // Maximum compact ranges processed for one camera/tier in a maintenance cycle.
 extern const std::string kTieringMaxRangesPerCameraCycle;
+// Number of failed attempts before a segment missing from both source and
+// target pools is treated as lost and dropped from its tier range.
+extern const std::string kTieringMissingSegmentMaxAttempts;
+// Base retry delay for tier jobs with missing segments; doubles per attempt, capped at one day.
+extern const std::string kTieringMissingSegmentRetryBaseSeconds;
+// Extra usage percent above a pool's critical watermark before pressure deletion
+// runs while tier moves from that pool are still pending.
+extern const std::string kTieringPressureDeleteMarginPercent;
+// Seconds a QUOTA-mode object pool reuses its summed range bytes before
+// querying segment_tier_ranges again; 0 disables the cache.
+extern const std::string kTieringQuotaUsageCacheSeconds;
+// Seconds to wait after pressure deletion on a METRICS-mode object pool before
+// deleting again, since the backend capacity metric lags behind deletes.
+extern const std::string kTieringObjectPressureCooldownSeconds;
+// How pressure deletion picks data on a critical pool: BALANCED removes the
+// same fraction of every camera's retention window (cameras without a recorder
+// first); OLDEST removes the pool's oldest ranges regardless of camera.
+extern const std::string kTieringPressureDeleteMode;
+// Enable the background check that drops timefile entries and range coverage
+// for recorded segments whose MP4 no longer exists on a reachable pool.
+extern const std::string kTierReconcileEnabled;
+// Time budget in milliseconds for the reconciliation sweep in each maintenance cycle.
+extern const std::string kTierReconcileWorkBudgetMs;
+// Segments newer than this (seconds since they ended) are never treated as missing.
+extern const std::string kTierReconcileMinAgeSeconds;
+// Object-storage range reconciliation against ListObjectsV2: OFF, REPORT
+// (alerts only) or FIX (drop segments whose object is proven gone).
+extern const std::string kTierObjectReconcileMode;
+// Time budget in milliseconds for object-storage reconciliation per maintenance cycle.
+extern const std::string kTierObjectReconcileWorkBudgetMs;
+// Consecutive ranges of one pool with no object at all that are read as a
+// misconfiguration (wrong bucket/base_path/credentials, bucket reset).
+extern const std::string kTierObjectReconcileMassLossThreshold;
+// Seconds object reconciliation of a pool pauses after the mass-loss guard trips.
+extern const std::string kTierObjectReconcilePauseSeconds;
+// Time budget in milliseconds for the orphan-object report per maintenance
+// cycle; 0 disables the report.
+extern const std::string kTierObjectOrphanWorkBudgetMs;
+// Objects modified more recently than this are never reported as orphans
+// (uploads write objects before the range moves to the pool).
+extern const std::string kTierObjectOrphanMinAgeSeconds;
+// Seconds between two orphan-object sweeps of the same pool.
+extern const std::string kTierObjectOrphanSweepIntervalSeconds;
+// Age thresholds for tier moves and retention are floored to this many seconds
+// so a range is split at most once per interval instead of every cycle.
+extern const std::string kTieringSplitGranularitySeconds;
 // Maximum concurrent tier-transfer jobs across all storage pools.
 extern const std::string kTieringTransferMaxConcurrent;
 // Maximum concurrent tier-transfer jobs touching the same storage pool.

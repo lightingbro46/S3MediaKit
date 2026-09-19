@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,6 +33,7 @@
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/DeleteObjectRequest.h>
 #include <aws/s3/model/DeleteObjectsRequest.h>
+#include <aws/s3/model/GetBucketVersioningRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/HeadBucketRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
@@ -47,6 +49,19 @@ namespace managerkit {
 #ifdef ENABLE_AWS_SDK
 class ObjectStorageMetricsProvider;
 #endif
+
+// One listed object: size in bytes and LastModified (unix seconds).
+struct TierObjectInfo {
+    int64_t size = 0;
+    int64_t last_modified = 0;
+};
+
+// HeadObject result; only an HTTP 404 proves the object is gone.
+enum class TierObjectPresence {
+    PRESENT,
+    ABSENT,
+    UNKNOWN
+};
 
 // ============================================================================
 // TierObjectStorage
@@ -138,6 +153,38 @@ public:
      * Check whether an object exists without downloading it.
      */
     bool segmentExists(const std::string &pool_id, const std::string &s3_key);
+
+    /**
+     * HeadObject that separates a proven absence (HTTP 404) from any other
+     * failure, which segmentExists() cannot.
+     */
+    TierObjectPresence headSegment(const std::string &pool_id, const std::string &s3_key);
+
+    /**
+     * List every object under `prefix` (ListObjectsV2, following continuation
+     * tokens). Keys are full bucket keys. Returns false on any error and then
+     * leaves `out` empty: a partial listing must never be read as a loss.
+     */
+    bool listObjects(const std::string &pool_id,
+                     const std::string &prefix,
+                     std::map<std::string, TierObjectInfo> &out,
+                     std::string &error);
+
+    /**
+     * List the "sub-directories" directly under `prefix` (delimiter '/').
+     * Each returned prefix ends with '/'. Same all-or-nothing contract.
+     */
+    bool listCommonPrefixes(const std::string &pool_id,
+                            const std::string &prefix,
+                            std::vector<std::string> &out,
+                            std::string &error);
+
+    /**
+     * Read the bucket versioning state via GetBucketVersioning.
+     * @param out_status "Enabled", "Suspended", or "" when never enabled.
+     * @return false when the request fails or the pool is not registered.
+     */
+    bool bucketVersioningStatus(const std::string &pool_id, std::string &out_status);
 
     bool supportsPresignedRead(const std::string &pool_id) const;
     bool createPresignedGetUrl(const std::string &pool_id,

@@ -3,8 +3,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <unistd.h>
 #include <curl/curl.h>
 
@@ -146,4 +148,68 @@ TEST(TierObjectStorageIntegrationTest, UploadsDownloadsAndDeletesExactSegment) {
     ASSERT_TRUE(storage.deleteSegment(pool_id, object_key));
     cleanup.object_key.clear();
     EXPECT_FALSE(storage.segmentExists(pool_id, object_key));
+}
+
+TEST(TierObjectStorageIntegrationTest, ListsRemainingObjectsAfterOneIsDeleted) {
+    const char *endpoint = requiredEnv("TIER_TEST_S3_ENDPOINT");
+    const char *access_key = requiredEnv("TIER_TEST_S3_ACCESS_KEY");
+    const char *secret_key = requiredEnv("TIER_TEST_S3_SECRET_KEY");
+    if (!endpoint || !access_key || !secret_key) {
+        GTEST_SKIP() << "Set TIER_TEST_S3_ENDPOINT, TIER_TEST_S3_ACCESS_KEY and "
+                        "TIER_TEST_S3_SECRET_KEY to run the MinIO integration test";
+    }
+
+    const char *bucket_env = requiredEnv("TIER_TEST_S3_BUCKET");
+    const std::string bucket = bucket_env ? bucket_env : "s3mediakit-tier-test";
+    const std::string pool_id = "integration-minio-list";
+    const std::string unique_id = std::to_string(static_cast<long long>(::getpid()));
+    const std::string base_path = "agent-runs/" + unique_id + "-list";
+    const std::string day_prefix = base_path + "/agent-camera/main/2026-08-27/";
+
+    char temp_template[] = "/tmp/s3mediakit-tier-minio-XXXXXX";
+    char *temp_dir_raw = ::mkdtemp(temp_template);
+    ASSERT_NE(nullptr, temp_dir_raw);
+    const std::string temp_dir(temp_dir_raw);
+    const std::string source_path = temp_dir + "/source.mp4";
+    {
+        std::ofstream output(source_path.c_str(), std::ios::out | std::ios::binary);
+        output << "list payload";
+        ASSERT_TRUE(output.good());
+    }
+
+    TierObjectStorage storage;
+    ASSERT_TRUE(storage.registerPool(
+        pool_id, "MINIO", endpoint, bucket, base_path, access_key, secret_key));
+    std::vector<ObjectCleanup> cleanups(3);
+    std::vector<std::string> keys;
+    for (int i = 0; i < 3; ++i) {
+        keys.push_back(TierObjectStorage::makeS3Key(base_path, "agent-camera", "main",
+                                                    "2026-08-27/10-0" + std::to_string(i) + "-00"));
+        cleanups[i].storage = &storage;
+        cleanups[i].pool_id = pool_id;
+        cleanups[i].object_key = keys.back();
+        ASSERT_TRUE(storage.uploadSegment(pool_id, source_path, keys.back()));
+    }
+    cleanups.back().source_path = source_path;
+    cleanups.back().temp_dir = temp_dir;
+
+    ASSERT_TRUE(storage.deleteSegment(pool_id, keys[1]));
+    cleanups[1].object_key.clear();
+
+    std::map<std::string, TierObjectInfo> objects;
+    std::string error;
+    ASSERT_TRUE(storage.listObjects(pool_id, day_prefix, objects, error)) << error;
+    ASSERT_EQ(2U, objects.size());
+    EXPECT_EQ(1U, objects.count(keys[0]));
+    EXPECT_EQ(1U, objects.count(keys[2]));
+    EXPECT_EQ(static_cast<int64_t>(std::string("list payload").size()), objects[keys[0]].size);
+    EXPECT_GT(objects[keys[0]].last_modified, 0);
+    EXPECT_EQ(TierObjectPresence::ABSENT, storage.headSegment(pool_id, keys[1]));
+    EXPECT_EQ(TierObjectPresence::PRESENT, storage.headSegment(pool_id, keys[0]));
+
+    std::vector<std::string> prefixes;
+    ASSERT_TRUE(storage.listCommonPrefixes(pool_id, base_path + "/agent-camera/", prefixes, error))
+        << error;
+    ASSERT_EQ(1U, prefixes.size());
+    EXPECT_EQ(base_path + "/agent-camera/main/", prefixes.front());
 }

@@ -526,20 +526,13 @@ public:
 
     bool add(const TierMetadataCleanupJob &job) { return save(job, true); }
 
-    bool markRangeDeletedAndInsert(const TierMetadataCleanupJob &job,
-                                   const std::string &final_status) {
-        auto txn = _executor->execTxn();
-        if (!_executor->execDMLWithTxn(
-                txn,
-                toolkit::QueryBuilder()
-                    .update("segment_tier_ranges")
-                    .set({{"status", final_status}, {"updated_at", std::to_string(job.updated_at)}})
-                    .where("range_id = ?", {job.range_id})))
+    // A range can be reactivated and deleted again, so replace any prior job row.
+    bool upsertWithTxn(const TierMetadataCleanupJob &job,
+                       const toolkit::SqliteTransaction::Ptr &txn) {
+        if (!txn || job.range_id.empty())
             return false;
-        if (!saveWithTxn(job, txn, true))
-            return false;
-        txn->commit();
-        return true;
+        removeByIdWithTxn(job, txn);
+        return saveWithTxn(job, txn, true);
     }
 
     std::vector<TierMetadataCleanupJob> queryPending(int limit = 100) {
@@ -619,6 +612,29 @@ public:
                     .where("range_id = ?", {item.range_id})))
             return false;
         txn->commit();
+        return true;
+    }
+
+    // Splitting a range gives new pieces fresh ids; they inherit its override.
+    bool copyToRangesWithTxn(const std::string &from_range_id,
+                             const std::vector<std::string> &to_range_ids,
+                             const toolkit::SqliteTransaction::Ptr &txn) {
+        if (!txn || from_range_id.empty())
+            return false;
+        SegmentRetentionOverride key;
+        key.range_id = from_range_id;
+        auto existing = findByIdWithTxn(key, txn);
+        if (existing.empty())
+            return true;
+        for (const auto &range_id : to_range_ids) {
+            if (range_id.empty() || range_id == from_range_id)
+                continue;
+            SegmentRetentionOverride copy = existing.front();
+            copy.range_id = range_id;
+            removeByIdWithTxn(copy, txn);
+            if (!saveWithTxn(copy, txn, true))
+                return false;
+        }
         return true;
     }
 
@@ -769,6 +785,23 @@ public:
         return rows.empty() || rows[0].empty() ? 0 : std::stoi(rows[0][0]);
     }
 
+    // Every protection touching [start_time, end_time] (inclusive, like overlaps()).
+    std::vector<ProtectedVideo> findOverlapping(const std::string &camera_id,
+                                                int64_t start_time,
+                                                int64_t end_time) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<ProtectedVideo>::getColumns())
+                .from(EntityTraits<ProtectedVideo>::tableName())
+                .where("camera_id = ? AND start_time <= ? AND end_time >= ?",
+                       {camera_id, std::to_string(end_time), std::to_string(start_time)})
+                .orderBy("start_time ASC"));
+        std::vector<ProtectedVideo> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<ProtectedVideo>::fromRow(row));
+        return ret;
+    }
+
     bool overlaps(const std::string &camera_id, int64_t start_time, int64_t end_time) {
         auto rows = _executor->executeRaw(
             toolkit::QueryBuilder()
@@ -830,21 +863,6 @@ public:
 class TierMetadataCleanupJobImp : public TierMetadataCleanupJobRepository {
 public:
     using Ptr = std::shared_ptr<TierMetadataCleanupJobImp>;
-
-    bool markRangeDeletedAndEnqueue(const std::string &range_id,
-                                    const std::string &camera_id,
-                                    const std::string &final_status) {
-        if (range_id.empty() || camera_id.empty())
-            return false;
-        const int64_t now = static_cast<int64_t>(time(nullptr));
-        TierMetadataCleanupJob job;
-        job.range_id = range_id;
-        job.camera_id = camera_id;
-        job.status = "PENDING";
-        job.created_at = now;
-        job.updated_at = now;
-        return markRangeDeletedAndInsert(job, final_status);
-    }
 
     bool updateResult(const std::string &range_id,
                       bool done,

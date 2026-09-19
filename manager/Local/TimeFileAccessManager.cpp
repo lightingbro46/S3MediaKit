@@ -3,6 +3,7 @@
 #include <chrono>
 
 #include "Poller/EventPoller.h"
+#include "Thread/ThreadPool.h"
 #include "Util/logger.h"
 
 using namespace std;
@@ -85,8 +86,19 @@ void TimeFileAccessManager::beginPendingSwap(const string &file) {
     state->cv.notify_all();
 }
 
+TaskExecutor::Ptr TimeFileAccessManager::swapExecutor() {
+    lock_guard<mutex> lock(_executor_mutex);
+    if (!_swap_executor) {
+        _swap_executor = make_shared<ThreadPool>(1, ThreadPool::PRIORITY_LOW, true, false,
+                                                 "timefile swap");
+    }
+    return _swap_executor;
+}
+
 void TimeFileAccessManager::finalizeSwapWhenReadableIdle(const string &file, const function<void()> &cb) {
-    tryFinalizeSwap(file, cb, 0);
+    swapExecutor()->async([file, cb]() {
+        TimeFileAccessManager::Instance().tryFinalizeSwap(file, cb, 0);
+    });
 }
 
 void TimeFileAccessManager::tryFinalizeSwap(const string &file, const function<void()> &cb, uint64_t attempts) {
@@ -104,11 +116,13 @@ void TimeFileAccessManager::tryFinalizeSwap(const string &file, const function<v
             WarnL << "Waiting for readers to finish before swapping time file: " << file
                   << ", waited ~" << (attempts * kFinalizeRetryMs) / 1000 << "s";
         }
-        // Re-schedule on a poller timer so we do not pin a worker thread while readers
-        // are still active.
+        // Re-schedule with a poller timer so the swap thread is free for other files
+        // while readers are still active; the retry itself runs on the swap thread.
         auto next_attempt = attempts + 1;
         EventPollerPool::Instance().getPoller()->doDelayTask(kFinalizeRetryMs, [file, cb, next_attempt]() {
-            TimeFileAccessManager::Instance().tryFinalizeSwap(file, cb, next_attempt);
+            TimeFileAccessManager::Instance().swapExecutor()->async([file, cb, next_attempt]() {
+                TimeFileAccessManager::Instance().tryFinalizeSwap(file, cb, next_attempt);
+            });
             return 0;
         });
         return;
