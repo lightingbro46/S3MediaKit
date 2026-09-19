@@ -49,7 +49,7 @@ public:
     }
 
     bool replaceByCameraId(const CameraPolicyAssignment &assignment) {
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             // A first assignment legitimately deletes zero rows. The executor
             // reports that as false, so this delete is intentionally best-effort;

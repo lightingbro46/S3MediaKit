@@ -289,7 +289,7 @@ TEST_F(SyncApplyTest, DuplicateBatchIsIdempotent) {
 
 TEST_F(SyncApplyTest, CursorNeverMovesBackwardsInTxn) {
     auto imp = std::make_shared<TransactionSequenceImp>();
-    auto txn = imp->getExecutor()->execTxn();
+    auto txn = imp->getExecutor()->beginWriteTxn();
     TransactionSequence seq;
     seq.peer_guid = "node-cursor";
     seq.db_guid   = "db-cursor";
@@ -363,7 +363,7 @@ TEST_F(SyncApplyTest, BatchWaitsForConcurrentWriter) {
     auto ready_future = writer_ready->get_future();
     std::thread writer([writer_ready]() {
         auto executor = std::make_shared<SqliteQueryExecutor>(Database::kEdgeStorageControllerDb);
-        auto txn = executor->execTxn(true);
+        auto txn = executor->beginWriteTxn();
         txn->execScript("INSERT INTO misc_data (key, data) VALUES ('sync_lock_test', '1');");
         writer_ready->set_value();
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -786,7 +786,7 @@ std::thread holdWriteLock(const std::string &db_tag, int hold_ms) {
     auto ready_future = ready->get_future();
     std::thread writer([db_tag, hold_ms, ready]() {
         auto executor = std::make_shared<SqliteQueryExecutor>(db_tag);
-        auto txn = executor->execTxn(true);
+        auto txn = executor->beginWriteTxn();
         txn->execScript("INSERT INTO migrationhistory (app_name, migration, applied) VALUES ('lock-test', 'lock-test', 'now');");
         ready->set_value();
         std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));

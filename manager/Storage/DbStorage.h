@@ -118,18 +118,22 @@ public:
         return Executor::executeRaw(pool, std::forward<ArgsType>(args)...);
     }
 
-    // immediate=true takes the write lock up front (BEGIN IMMEDIATE). Use it for transactions that
-    // read before they write: a deferred transaction that has already read cannot be upgraded once
-    // another connection has written, and fails with "database is locked" without honoring busy_timeout.
-    toolkit::SqliteTransaction::Ptr execTxn(bool immediate = false) {
-        auto pool = _helper->pool();
-        auto txn = std::make_shared<toolkit::SqliteTransaction>(pool);
-        if (immediate) {
-            // SqliteTransaction always opens a deferred transaction; it holds no lock yet, so it can
-            // be swapped for an immediate one on the same connection (commit/rollback still apply).
-            txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
-        }
+    // Transaction that writes (BEGIN IMMEDIATE): takes the write lock up front, waiting up to
+    // busy_timeout for other writers. Use it for every transaction that may write, including ones
+    // that read first: a deferred transaction that has already read cannot be upgraded once another
+    // connection has written, and fails with "database is locked" without honoring busy_timeout.
+    toolkit::SqliteTransaction::Ptr beginWriteTxn() {
+        auto txn = std::make_shared<toolkit::SqliteTransaction>(_helper->pool());
+        // SqliteTransaction always opens a deferred transaction; it holds no lock yet, so it can
+        // be swapped for an immediate one on the same connection (commit/rollback still apply).
+        txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
         return txn;
+    }
+
+    // Read-only transaction (deferred): a consistent snapshot that never blocks writers. Never
+    // write through it; a long snapshot read holding the write lock would stall every writer.
+    toolkit::SqliteTransaction::Ptr beginReadTxn() {
+        return std::make_shared<toolkit::SqliteTransaction>(_helper->pool());
     }
 
     template<typename ...ArgsType>
@@ -158,7 +162,7 @@ public:
 
     std::string getTag() { return _tag; }
 
-    // Expose executor so callers can create/share transactions with execTxn()
+    // Expose executor so callers can create/share transactions with beginWriteTxn()/beginReadTxn()
     // and pass them to WithTxn methods across multiple Imp instances on the same DB.
     SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
 

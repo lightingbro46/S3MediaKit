@@ -108,7 +108,7 @@ SnapshotData SnapshotBuilder::build(const string &peer_id,
     auto executor = make_shared<SqliteQueryExecutor>(db_tag);
 
     // Read all tables in one transaction for snapshot consistency
-    auto txn = executor->execTxn();
+    auto txn = executor->beginReadTxn();
     try {
         // Step 1: transaction_sequence – receiver uses this to detect stale data
         {
@@ -590,7 +590,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
         // finished) is kept unless the snapshot carries a newer version of it.
         Json::Value rows = Json::arrayValue;
         {
-            auto txn = version_imp->getExecutor()->execTxn();
+            auto txn = version_imp->getExecutor()->beginReadTxn();
             for (const auto &row : arr) {
                 string key = h.rowKey ? h.rowKey(row) : string();
                 SyncRowVersion local;
@@ -612,7 +612,7 @@ void SyncManager::applySnapshot(const SnapshotData &snap) {
 
     // Adopt the snapshot's LWW state (only versions newer than what is stored locally).
     if (!snap_versions.empty()) {
-        auto txn = version_imp->getExecutor()->execTxn(true);
+        auto txn = version_imp->getExecutor()->beginWriteTxn();
         for (const auto &v : snap_versions) {
             version_imp->recordWithTxn(v.second, txn);
         }
@@ -660,7 +660,7 @@ Json::Value SyncManager::getCurrentCursors(const Json::Value &cursors_json, int 
     // otherwise the peer will never get any log because the server doesn't know the peer's cursor and thinks the peer has already got all logs
     auto seq_impl = make_shared<TransactionSequenceImp>();
     auto log_impl = make_shared<TransactionLogImp>();
-    auto txn = log_impl->getExecutor()->execTxn();
+    auto txn = log_impl->getExecutor()->beginReadTxn();
     Json::Value log_rows = Json::arrayValue;
 
     try {
@@ -777,9 +777,7 @@ std::vector<SyncManager::SyncGap> SyncManager::applyBatch(const Json::Value &row
     auto version_imp = make_shared<SyncRowVersionImp>();
     // Wrap the entire batch in one SQLite transaction: data rows, row versions (LWW state),
     // transaction_log entries and cursors are committed atomically, or not at all.
-    // IMMEDIATE: the batch reads (cursors, dedup, versions, existing rows) before writing; a deferred
-    // transaction would fail with "database is locked" if another connection wrote meanwhile.
-    auto txn = log_imp->getExecutor()->execTxn(true);
+    auto txn = log_imp->getExecutor()->beginWriteTxn();
 
     // Per source (peer_guid|db_guid): committed cursor and the next sequence this batch may apply.
     // Cursors only advance on commit, so a row at or below its cursor was already applied
@@ -902,7 +900,7 @@ size_t SyncManager::reapplyDeferredEntries() {
     lock_guard<mutex> apply_lock(_apply_mtx);
     auto log_imp = make_shared<TransactionLogImp>();
     auto version_imp = make_shared<SyncRowVersionImp>();
-    auto txn = log_imp->getExecutor()->execTxn(true);
+    auto txn = log_imp->getExecutor()->beginWriteTxn();
     size_t applied = 0;
     // Entries are applied in source order; LWW versions make the late apply safe even though
     // newer entries of the same rows may already be in place.

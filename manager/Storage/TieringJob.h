@@ -370,8 +370,7 @@ public:
     }
 
     std::vector<TieringJob> claimPendingAt(int limit, int64_t updated_at) {
-        // IMMEDIATE: selects PENDING jobs before claiming them (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         std::vector<TieringJob> claimed;
         auto rows = _executor->executeRawWithTxn(
             txn,
@@ -1080,8 +1079,7 @@ public:
     bool mergeIfUncovered(const SegmentTierRange &range,
                           int64_t merge_gap_seconds,
                           int64_t updated_at) {
-        // IMMEDIATE: checks for an owning range before merging (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         try {
             if (hasOwningRangeWithTxn(txn, range.camera_id, range.stream_id,
                                       range.start_time)) {
@@ -1104,8 +1102,7 @@ public:
     bool mergeNormalizedRange(const SegmentTierRange &range,
                               int64_t merge_gap_seconds,
                               int64_t updated_at) {
-        // IMMEDIATE: mergeNormalizedRangeWithTxn reads neighbours before writing (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         try {
             if (!mergeNormalizedRangeWithTxn(range, merge_gap_seconds,
                                              updated_at, txn)) {
@@ -1229,8 +1226,7 @@ public:
                             int64_t updated_at) {
         if (range_id.empty())
             return false;
-        // IMMEDIATE: reads the range before replacing it (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         try {
             auto rows = _executor->executeRawWithTxn(
                 txn,
@@ -1344,7 +1340,7 @@ public:
                                          const TierMetadataCleanupJob &cleanup_job) {
         if (expected.range_id.empty() || cleanup_job.range_id != expected.range_id)
             return false;
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             if (!_executor->execDMLWithTxn(
                     txn,
@@ -1467,7 +1463,7 @@ public:
                 return false;
         }
 
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         if (!_executor->execDMLWithTxn(
             txn,
             toolkit::QueryBuilder()
@@ -1494,7 +1490,7 @@ public:
                 return false;
         }
 
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             if (!_executor->execDMLWithTxn(
                     txn,

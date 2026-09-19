@@ -210,8 +210,7 @@ public:
 
     CreateResult createOrFind(const ExtractJob &job, ExtractJob &stored) {
         try {
-            // IMMEDIATE: looks the job up before inserting it (see DbStorage::execTxn).
-            auto txn = _executor->execTxn(true);
+            auto txn = _executor->beginWriteTxn();
             ExtractJob lookup;
             lookup.file_id = job.file_id;
             auto rows = findByIdWithTxn(lookup, txn);

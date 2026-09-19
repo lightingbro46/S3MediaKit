@@ -35,7 +35,7 @@ int main() {
     mINI::Instance()[General::kMediaServerId] = std::string("status-gap-test");
 
     LocalResourceStatusGapImp repository;
-    auto schema_txn = repository.getExecutor()->execTxn();
+    auto schema_txn = repository.getExecutor()->beginWriteTxn();
     schema_txn->execScript(
         "CREATE TABLE local_resource_status_gap ("
         "resource_id TEXT NOT NULL, gap_id TEXT NOT NULL, disconnect_time INTEGER NOT NULL, "

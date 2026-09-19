@@ -174,7 +174,7 @@ public:
     // version governing `keys` (hybrid-clock style, so a lagging wall clock cannot make a local
     // write lose), and records the keys with that version. Runs in its own write transaction.
     int64_t stampLocal(std::vector<SyncRowVersion> keys, int64_t now_ms, const std::string &peer_guid) {
-        auto txn = getExecutor()->execTxn(true);
+        auto txn = getExecutor()->beginWriteTxn();
         int64_t ts = now_ms;
         for (const auto &k : keys) {
             SyncRowVersion current;
@@ -195,7 +195,7 @@ public:
     // Tombstones older than the cut-off can no longer block anything useful: every peer has
     // long since received the delete (see Database::kRowVersionTombstoneTtlDays).
     void pruneTombstones(int64_t before_ts_ms) {
-        auto txn = getExecutor()->execTxn(true);
+        auto txn = getExecutor()->beginWriteTxn();
         removeTombstonesBeforeWithTxn(before_ts_ms, txn);
         txn->commit();
     }

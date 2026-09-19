@@ -106,9 +106,7 @@ bool ResourceStatusManager::onDisconnected(const std::string &resource_id, const
     }
 
     try {
-        // IMMEDIATE: reads the open gap before writing; a deferred transaction fails with
-        // "database is locked" when another connection commits in between.
-        auto txn = _gap_imp->getExecutor()->execTxn(true);
+        auto txn = _gap_imp->getExecutor()->beginWriteTxn();
         LocalResourceStatusGap gap;
         if (_gap_imp->findOpenGapWithTxn(resource_id, gap, txn)) {
             // A reason change is metadata for the same outage, not a new gap.
@@ -147,7 +145,7 @@ bool ResourceStatusManager::onReconnected(const std::string &resource_id, uint64
     }
 
     try {
-        auto txn = _gap_imp->getExecutor()->execTxn(true); // read-then-write, see onDisconnected
+        auto txn = _gap_imp->getExecutor()->beginWriteTxn();
         LocalResourceStatusGap gap;
         if (!_gap_imp->findOpenGapWithTxn(resource_id, gap, txn)) {
             txn->commit();
@@ -212,7 +210,7 @@ void ResourceStatusManager::cleanupExpiredGaps(uint64_t now) {
         while (true) {
             auto gaps = _gap_imp->findClosedBefore(threshold, kCleanupBatchSize);
             if (gaps.empty()) break;
-            auto transaction = _gap_imp->getExecutor()->execTxn();
+            auto transaction = _gap_imp->getExecutor()->beginWriteTxn();
             for (const auto &gap : gaps) {
                 // Missing child rows are valid (for short or non-media gaps), so
                 // only deletion of the owning status gap is mandatory.

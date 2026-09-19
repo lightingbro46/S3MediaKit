@@ -54,7 +54,7 @@ public:
         auto ready_future = ready->get_future();
         _writer = std::thread([hold_ms, ready]() {
             auto executor = std::make_shared<SqliteQueryExecutor>(Database::kMediaServerDb);
-            auto txn = executor->execTxn(true);
+            auto txn = executor->beginWriteTxn();
             txn->execScript("INSERT INTO migrationhistory (app_name, migration, applied) VALUES ('lock-test', 'lock-test', 'now');");
             ready->set_value();
             std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));

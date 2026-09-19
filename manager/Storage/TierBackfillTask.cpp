@@ -146,8 +146,7 @@ bool TierBackfillTaskRepository::hasDueAt(int64_t now) {
 
 std::vector<TierBackfillTask> TierBackfillTaskRepository::claimNextDueAt(int64_t now) {
     std::vector<TierBackfillTask> claimed;
-    // IMMEDIATE: selects the due task before claiming it (see DbStorage::execTxn).
-    auto txn = _executor->execTxn(true);
+    auto txn = _executor->beginWriteTxn();
     try {
         auto rows = _executor->executeRawWithTxn(
             txn,
@@ -227,8 +226,7 @@ bool TierBackfillTaskRepository::commitChunkAt(const TierBackfillTask &task,
                                                const std::string &status,
                                                int64_t completed_at,
                                                int64_t updated_at) {
-    // IMMEDIATE: re-checks the RUNNING task before writing the chunk (see DbStorage::execTxn).
-    auto txn = _executor->execTxn(true);
+    auto txn = _executor->beginWriteTxn();
     try {
         auto task_rows = _executor->executeRawWithTxn(
             txn,

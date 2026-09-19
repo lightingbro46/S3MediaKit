@@ -612,8 +612,7 @@ size_t MediaGapFillManager::fillDevice(const std::string &device_id,
             requests.emplace_back(std::move(request));
         }
 
-        // IMMEDIATE: addOrUpdateWithTxn reads before it writes (see DbStorage::execTxn).
-        auto transaction = session_repository.getExecutor()->execTxn(true);
+        auto transaction = session_repository.getExecutor()->beginWriteTxn();
         bool committed = true;
         for (const auto &request : requests) {
             auto task = makeTask(request, request.begin_time, 0, GapFillState::Pending, "");

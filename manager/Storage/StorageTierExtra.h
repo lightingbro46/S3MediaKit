@@ -386,7 +386,7 @@ public:
 
     bool addWithSegments(const RestoreJob &job,
                          const std::vector<RestoreJobSegment> &segments) {
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             if (!saveWithTxn(job, txn, true))
                 return false;
@@ -460,8 +460,7 @@ public:
 
     std::vector<RestoreJobSegment> claimPendingAt(int limit, int64_t updated_at) {
         std::vector<RestoreJobSegment> claimed;
-        // IMMEDIATE: selects PENDING segments before claiming them (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         try {
             auto rows = _executor->executeRawWithTxn(
                 txn,
@@ -589,8 +588,7 @@ public:
     }
 
     bool persistAndReactivateRange(const SegmentRetentionOverride &item) {
-        // IMMEDIATE: looks the override up before writing it (see DbStorage::execTxn).
-        auto txn = _executor->execTxn(true);
+        auto txn = _executor->beginWriteTxn();
         auto existing = _executor->executeRawWithTxn(
             txn,
             toolkit::QueryBuilder()

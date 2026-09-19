@@ -79,6 +79,18 @@ SyncManager::Instance().registerTable("my_table", h);
 All SQLite access is blocking — it belongs on `WorkThreadPool`, never on an `EventPoller`.
 Keep transactions short; a long transaction blocks every other writer on that database.
 
+Open transactions through the executor (`getExecutor()`):
+
+- `beginWriteTxn()` — `BEGIN IMMEDIATE`. Use it for every transaction that may write, including
+  ones that SELECT first (claim, find-or-create, merge). A deferred transaction that has read
+  cannot be upgraded after another connection commits and fails with "database is locked"
+  without honoring `busy_timeout`.
+- `beginReadTxn()` — deferred, read-only (snapshot build, filtering). Never write through it; it
+  must not hold the write lock during a long read.
+
+Regression pattern: hold the write lock from another connection for ~300ms while calling the
+function under test (`WriteLockHolder` in `tests/unit/storage/test_tier_txn_lock.cpp`).
+
 ## Tests
 
 Storage tests live in `tests/unit/storage/` (`test_db_schema.cpp`, `test_storage_entities.cpp`,

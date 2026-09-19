@@ -83,7 +83,7 @@ int main() {
     mINI::Instance()[Database::kDbSavePath] = std::string(temp_dir);
 
     MediaGapFillTaskImpl repository;
-    auto transaction = repository.getExecutor()->execTxn();
+    auto transaction = repository.getExecutor()->beginWriteTxn();
     transaction->execScript(
         "CREATE TABLE media_gap_fill_task ("
         "connection_id TEXT NOT NULL PRIMARY KEY, gap_id TEXT NOT NULL, session_id TEXT NOT NULL, "

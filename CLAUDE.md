@@ -114,6 +114,9 @@ sync-off builds (`build-sync-off/`).
 - Persistence layering: `*Repository` = SQL only; `*Imp` = validation, defaults, IDs,
   timestamps, domain decisions; managers = orchestration. Production code calls `*Imp`.
 - Schema changes are **new** numbered migration files. Never edit an applied migration.
+- SQLite transactions: `beginWriteTxn()` (BEGIN IMMEDIATE) for any transaction that may write,
+  even if it reads first; `beginReadTxn()` only for read-only snapshots. A deferred transaction
+  that reads then writes fails with "database is locked" when another connection commits meanwhile.
 - REST handlers use the `API_ARGS_*` macros, `ApiErrCode::CODE_*`, and one `invoker(...)`
   call per async request. Internal sync APIs intentionally have a different trust boundary.
 - `Track::clone()` copies codec metadata only — never ring buffers, listeners or
