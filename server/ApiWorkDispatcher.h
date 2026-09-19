@@ -89,6 +89,19 @@ void runApiWork(const toolkit::EventPoller::Ptr &owner,
                 const std::function<void(const std::exception_ptr &error)> &done,
                 const ApiWorkLimit &limit = ApiWorkLimit());
 
+// Posts `respond` to the request poller. Only the first call of a request has an effect.
+using ApiReply = std::function<void(const std::function<void()> &respond)>;
+
+// For services that answer through a callback, possibly later and from another thread (e.g. after
+// querying remote peers): `start(reply)` runs on the API worker; the service calls `reply(respond)`
+// once and `respond` (which calls the invoker) runs on `owner`. If `start` throws before replying,
+// the error is answered like in dispatchApiWork. Session/limit handling as in runApiWork.
+void runApiCallbackWork(const toolkit::EventPoller::Ptr &owner,
+                        const std::weak_ptr<toolkit::SocketHelper> &session,
+                        const mediakit::HttpSession::HttpResponseInvoker &invoker,
+                        const std::function<void(const ApiReply &reply)> &start,
+                        const ApiWorkLimit &limit = ApiWorkLimit());
+
 // Typical handler form: runs `work`, then `completion` on the request poller, then replies
 // `200 + val` (or the mapped error). `headerOut` / `val` are copied.
 void dispatchApiWork(toolkit::SockInfo &sender,

@@ -334,3 +334,71 @@ TEST(ApiWorkDispatcherTest, ReadsGroupLimitsFromConfig) {
     EXPECT_EQ(0, unknown.max_inflight);
     EXPECT_EQ(0, unknown.max_queue_ms);
 }
+
+TEST(ApiWorkDispatcherTest, CallbackWorkRepliesOnceOnOwner) {
+    auto owner = ownerPoller();
+    ReplyProbe probe;
+    auto invoker = probe.invoker(owner);
+    std::atomic<bool> start_on_poller{true};
+    runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), invoker,
+        [invoker, &start_on_poller](const ApiReply &reply) {
+            start_on_poller = static_cast<bool>(EventPoller::getCurrentPoller());
+            reply([invoker]() { invoker(200, jsonHeader(), "{\"code\":0,\"data\":1}"); });
+            // A second reply (e.g. a service calling back twice) is ignored.
+            reply([invoker]() { invoker(500, jsonHeader(), "{\"code\":-1}"); });
+        });
+    ASSERT_TRUE(probe.waitFirst());
+    auto replies = probe.settle();
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(200, replies[0].status);
+    EXPECT_TRUE(replies[0].on_owner);
+    EXPECT_FALSE(start_on_poller.load());
+}
+
+TEST(ApiWorkDispatcherTest, CallbackWorkReplyLaterFromAnotherThread) {
+    auto owner = ownerPoller();
+    ReplyProbe probe;
+    auto invoker = probe.invoker(owner);
+    std::thread later;
+    runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), invoker,
+        [invoker, &later](const ApiReply &reply) {
+            // Like a remote peer query: the worker returns, the answer arrives on another thread.
+            later = std::thread([reply, invoker]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                reply([invoker]() { invoker(200, jsonHeader(), "{\"code\":0}"); });
+            });
+        });
+    ASSERT_TRUE(probe.waitFirst());
+    later.join();
+    auto replies = probe.settle();
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(200, replies[0].status);
+    EXPECT_TRUE(replies[0].on_owner);
+}
+
+TEST(ApiWorkDispatcherTest, CallbackWorkExceptionIsAnsweredOnlyWithoutReply) {
+    auto owner = ownerPoller();
+    {
+        ReplyProbe probe;
+        runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), probe.invoker(owner),
+            [](const ApiReply &) { throw std::runtime_error("query failed"); });
+        ASSERT_TRUE(probe.waitFirst());
+        auto replies = probe.settle();
+        ASSERT_EQ(1u, replies.size());
+        EXPECT_EQ(500, replies[0].status);
+        EXPECT_EQ("query failed", replies[0].body["msg"].asString());
+    }
+    {
+        ReplyProbe probe;
+        auto invoker = probe.invoker(owner);
+        runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), invoker,
+            [invoker](const ApiReply &reply) {
+                reply([invoker]() { invoker(200, jsonHeader(), "{\"code\":0}"); });
+                throw std::runtime_error("after reply");
+            });
+        ASSERT_TRUE(probe.waitFirst());
+        auto replies = probe.settle();
+        ASSERT_EQ(1u, replies.size());
+        EXPECT_EQ(200, replies[0].status);
+    }
+}

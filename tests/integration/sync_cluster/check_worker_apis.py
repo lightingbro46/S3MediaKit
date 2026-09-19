@@ -147,5 +147,37 @@ check("discovery over the limit gets 503/902012", len(busy) == 2 and all(r[2] < 
       "statuses=%s" % [(r[0], r[1].get("code"), round(r[2], 1)) for r in results])
 check("discovery within the limit still runs", len(slow_ones) == 4, "slow=%d" % len(slow_ones))
 
+# 7. Search/bookmark/playback metadata (worker.md step 2) now run on the API worker: status and
+#    error codes are unchanged. PROBE_ONLY=1 prints the answers instead of checking them.
+import os
+probe_only = os.environ.get("PROBE_ONLY") == "1"
+step2 = [
+    # (name, path, params, expected status, expected code)
+    ("bookmark/search", "/media/esc/bookmark/search",
+     {"start_time": 0, "end_time": 2000000000, "page": 0, "size": 10, "sort": "desc"}, 200, 0),
+    ("bookmark/detail", "/media/esc/bookmark/detail", {"ids": "no-such-bookmark"}, 200, 0),
+    ("bookmark/recent", "/media/esc/bookmark/recent", {"size": 5, "sort": "desc"}, 200, 0),
+    ("bookmark/mostUsedTags", "/media/esc/bookmark/mostUsedTags", {"size": 5}, 200, 0),
+    ("bookmark/create(unknown camera)", "/media/esc/bookmark/create",
+     {"name": "n", "camera_id": "no-such-camera", "start_time": 1, "duration": 5}, 404, 905001),
+    ("bookmark/update(unknown)", "/media/esc/bookmark/update",
+     {"id": "no-such-bookmark", "camera_id": "no-such-camera", "start_time": 1, "duration": 5}, 404, 908001),
+    ("bookmark/delete(unknown)", "/media/esc/bookmark/delete", {"id": "no-such-bookmark"}, 404, 908001),
+    ("bookmark/recordThumbnail(unknown)", "/media/esc/bookmark/recordThumbnail",
+     {"id": "no-such-bookmark"}, 404, 908001),
+    ("recordedTimePeriod", "/media/esc/recordedTimePeriod",
+     {"cameraId": "no-such-camera", "startTime": 1, "endTime": 100, "periodType": 0, "detail": 0}, 200, 0),
+    ("searchMotion", "/media/esc/searchMotion",
+     {"cameraId": "no-such-camera", "startTime": 1, "endTime": 100, "roiMask": "ff"}, 200, 0),
+    ("bookmark/search(missing args)", "/media/esc/bookmark/search", {"end_time": 1}, 400, 902001),
+]
+for name, path, params, want_status, want_code in step2:
+    status, data, elapsed = call(path, params, timeout=30)
+    if probe_only:
+        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:160]))
+        continue
+    check("step2 %s" % name, status == want_status and data.get("code") == want_code,
+          "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
+
 print("FAILED: %s" % failures if failures else "ALL PASSED")
 sys.exit(1 if failures else 0)

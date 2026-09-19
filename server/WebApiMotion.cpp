@@ -1,3 +1,4 @@
+#include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 
@@ -21,7 +22,9 @@ void registerMotionDetectionApis() {
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE);
         CHECK_ARGS_("cameraId", "startTime", "endTime", "roiMask");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string camera_id = allArgs["cameraId"];
             uint64_t start_time = allArgs["startTime"];
             uint64_t end_time = allArgs["endTime"];
@@ -37,14 +40,19 @@ void registerMotionDetectionApis() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            SearchEngine::findMotionPeriodByRoi(tuple, start_time, end_time, roi_mask, edge, [&](const SockException &ex, const Value &data) {
-                if (ex) {
-                    RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                } else {
-                    val["data"] = data;
-                    InfoL << "Search motion time by ROI success";
-                    invoker(200, headerOut, val.toStyledString());
-                }
+            // Timeline/motion files are read on the API worker; the answer is sent from the request poller.
+            runApiCallbackWork(owner, session, invoker, [tuple, start_time, end_time, roi_mask, edge, val, headerOut, invoker](const ApiReply &reply) mutable {
+                SearchEngine::findMotionPeriodByRoi(tuple, start_time, end_time, roi_mask, edge, [reply, val, headerOut, invoker](const SockException &ex, const Value &data) mutable {
+                    reply([ex, data, val, headerOut, invoker]() mutable {
+                        if (ex) {
+                            RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                        } else {
+                            val["data"] = data;
+                            InfoL << "Search motion time by ROI success";
+                            invoker(200, headerOut, val.toStyledString());
+                        }
+                    });
+                });
             });
         };
 

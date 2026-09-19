@@ -221,6 +221,27 @@ void dispatchApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper>
         }, limit);
 }
 
+void runApiCallbackWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,
+                        const HttpSession::HttpResponseInvoker &invoker,
+                        const function<void(const ApiReply &reply)> &start, const ApiWorkLimit &limit) {
+    auto replied = std::make_shared<atomic<bool>>(false);
+    ApiReply reply = [owner, replied](const function<void()> &respond) {
+        if (replied->exchange(true)) {
+            WarnL << "API reply ignored: the request was already answered";
+            return;
+        }
+        owner->async(respond, false);
+    };
+    runApiWork(owner, session,
+        [start, reply]() { start(reply); },
+        [replied, invoker, session](const exception_ptr &error) {
+            // Without an error the service replies through `reply` (maybe later).
+            if (error && !replied->exchange(true)) {
+                responseApiException(error, invoker, session);
+            }
+        }, limit);
+}
+
 EventPoller::Ptr apiRequestPoller(SockInfo &sender) {
     // The HTTP API dispatch passes the session itself as SockInfo (see WebApi.cpp).
     return static_cast<SocketHelper &>(sender).getPoller();
