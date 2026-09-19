@@ -303,6 +303,7 @@ void SyncManager::stop() {
     _peers.clear();
     _bootstrapping.clear();
     _last_bootstrap_peer.clear();
+    _bootstrap_probes.clear();
     InfoL << "Sync manager has been stopped";
 }
 
@@ -322,6 +323,7 @@ void SyncManager::removePeer(const string &peer_id) {
     lock_guard<mutex> lock(_mtx);
     _peers.erase(peer_id);
     _bootstrapping.erase(peer_id);
+    _bootstrap_probes.erase(peer_id);
     if (_last_bootstrap_peer == peer_id) {
         _last_bootstrap_peer.clear();
     }
@@ -330,6 +332,11 @@ void SyncManager::removePeer(const string &peer_id) {
     // 1) If the peer is re-added later, the old cursor is still valid and can be resumed from.
     // 2) If the peer is permanently removed, the transaction_sequence entries for that peer will 
     // be orphaned but harmless (they won't match any incoming peer_id) and can be ignored or cleaned up manually if desired.
+}
+
+bool SyncManager::isBootstrapped() {
+    lock_guard<mutex> lock(_mtx);
+    return _bootstrapped;
 }
 
 SnapshotData SyncManager::buildLocalSnapshot() {
@@ -370,6 +377,33 @@ void SyncManager::onTick() {
         // ── Bootstrap phase: try exactly ONE peer ──────────────────────────
         if (bootstrap_in_progress) {
             return; // already waiting for an in-flight bootstrap response
+        }
+
+        // Only a peer that completed its own bootstrap may serve the snapshot. When no peer has
+        // (a new cluster starting at once), the lowest node id among the answering ones seeds it.
+        {
+            GET_CONFIG(int, seed_rounds, Database::kBootstrapSeedRounds);
+            string self_id;
+            vector<string> peer_ids;
+            unordered_map<string, BootstrapProbe> probes;
+            {
+                lock_guard<mutex> lock(_mtx);
+                self_id = _self_node_id;
+                probes = _bootstrap_probes;
+            }
+            for (const auto &p : peers_copy) {
+                peer_ids.push_back(p.first);
+            }
+            if (shouldSeedBootstrap(self_id, peer_ids, probes, seed_rounds > 0 ? seed_rounds : 3)) {
+                InfoL << "No peer has completed bootstrap after " << seed_rounds
+                      << " rounds; seeding the cluster database from this node (" << self_id << ")";
+                markBootstrapSeeded(self_id);
+                lock_guard<mutex> lock(_mtx);
+                _bootstrapped = true;
+                _last_bootstrap_peer.clear();
+                _bootstrap_probes.clear();
+                return;
+            }
         }
 
         // Sort peer IDs for deterministic rotation order
@@ -413,21 +447,28 @@ void SyncManager::onTick() {
         if (target_id.empty()) return; // no peers available
         InfoL << "Need bootstrap from peer " << target_id << " (rotating)";
         weak_ptr<SyncManager> weak_self = shared_from_this();
-        doBootstrap(target_id, target_url, [weak_self, target_id](bool ok) {
+        doBootstrap(target_id, target_url, [weak_self, target_id](BootstrapResult result) {
             auto self = weak_self.lock();
             if (!self) return;
             {
                 lock_guard<mutex> lock(self->_mtx);
                 self->_bootstrapping.erase(target_id);
-                if (ok) {
+                if (result == BootstrapResult::Done) {
                     self->_bootstrapped = true;
                     self->_last_bootstrap_peer.clear(); // reset on success
+                    self->_bootstrap_probes.clear();
+                } else if (result == BootstrapResult::NotReady) {
+                    ++self->_bootstrap_probes[target_id].not_ready;
+                } else {
+                    ++self->_bootstrap_probes[target_id].failed;
                 }
-                // on failure: _last_bootstrap_peer = target_id stays
+                // otherwise _last_bootstrap_peer = target_id stays
                 // → next tick picks the peer AFTER target_id
             }
-            if (ok) {
+            if (result == BootstrapResult::Done) {
                 InfoL << "Bootstrap done, peer=" << target_id;
+            } else if (result == BootstrapResult::NotReady) {
+                InfoL << "Peer " << target_id << " has not completed bootstrap yet, will try next peer on next tick";
             } else {
                 WarnL << "Bootstrap failed, peer=" << target_id << ", will try next peer on next tick";
             }
@@ -501,6 +542,42 @@ void SyncManager::markBootstrapDone(const SnapshotData &snap) {
     imp->add(data);
 }
 
+void SyncManager::markBootstrapSeeded(const string &self_id) {
+    Json::Value state;
+    state["schema_version"]  = 1;
+    state["status"]          = "completed";
+    state["seeded"]          = true;
+    state["source_peer_id"]  = self_id;
+    state["completed_at_ms"] = static_cast<Json::Int64>(toolkit::getCurrentMillisecond(true));
+
+    auto imp = make_shared<MiscDataImp>();
+    MiscData data;
+    data.key = MISC_DATA_DB_BOOTSTRAP_DONE;
+    data.value = StrJsonUtils::writeJsonString(state);
+    imp->add(data);
+}
+
+bool SyncManager::shouldSeedBootstrap(const string &self_id, const vector<string> &peers,
+                                      const unordered_map<string, BootstrapProbe> &probes, int rounds) {
+    if (self_id.empty() || peers.empty()) {
+        return false;
+    }
+    bool any_not_ready = false;
+    for (const auto &peer : peers) {
+        auto it = probes.find(peer);
+        if (it == probes.end() || it->second.not_ready + it->second.failed < rounds) {
+            return false; // not every peer has been asked often enough yet
+        }
+        if (it->second.not_ready > 0) {
+            any_not_ready = true;
+            if (peer < self_id) {
+                return false; // a lower answering peer is the seed
+            }
+        }
+    }
+    return any_not_ready;
+}
+
 void SyncManager::doBootstrap(const string &peer_id, const string &base_url, DoneCb cb) {
     InfoL << "Bootstrapping from " << peer_id << " (base_url=" << base_url << ")";
 
@@ -519,14 +596,20 @@ void SyncManager::doBootstrap(const string &peer_id, const string &base_url, Don
     auto flag = NOTICE_EMIT(BroadcastSyncSnapshotArgs, Broadcast::kBroadcastSyncSnapshot, base_url, peer_id, onRes);
     if (!flag) {
         WarnL << "No listener for kBroadcastSyncSnapshot, cannot bootstrap from " << peer_id;
-        if (cb) cb(false);
+        if (cb) cb(BootstrapResult::Failed);
     }
 }
 
 void SyncManager::onBootstrapResponse(const string &peer_id, const string &err, const Json::Value &data, const DoneCb &cb) {
     if (!err.empty()) {
         WarnL << "Bootstrap request to " << peer_id << " failed: " << err;
-        if (cb) cb(false);
+        if (cb) cb(BootstrapResult::Failed);
+        return;
+    }
+    // A peer that has not completed its own bootstrap answers without a snapshot; its data may be
+    // empty or partial. Responses of older builds have no such field and are complete.
+    if (data.isMember("bootstrapped") && !data["bootstrapped"].asBool()) {
+        if (cb) cb(BootstrapResult::NotReady);
         return;
     }
     try {
@@ -546,10 +629,10 @@ void SyncManager::onBootstrapResponse(const string &peer_id, const string &err, 
               << " seq=" << snap.sequences.size()
               << " resource=" << snap.vms_resource.size()
               << " kv="  << snap.vms_kvpair.size();
-        if (cb) cb(true);
+        if (cb) cb(BootstrapResult::Done);
     } catch (std::exception &ex) {
         WarnL << "Failed to apply snapshot from " << peer_id << ": " << ex.what();
-        if (cb) cb(false);
+        if (cb) cb(BootstrapResult::Failed);
     }
 }
 
@@ -955,6 +1038,7 @@ void SyncManager::requestResync(const string &reason) {
     lock_guard<mutex> lock(_mtx);
     _bootstrapped = false;
     _last_bootstrap_peer.clear();
+    _bootstrap_probes.clear();
 }
 
 std::unordered_set<std::string> SyncManager::selectPruneWatermarkPeers(

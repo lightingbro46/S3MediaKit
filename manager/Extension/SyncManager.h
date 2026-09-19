@@ -65,7 +65,16 @@ public:
 class SyncManager : public std::enable_shared_from_this<SyncManager> {
 public:
     using Ptr         = std::shared_ptr<SyncManager>;
-    using DoneCb      = std::function<void(bool ok)>;
+    // Outcome of one bootstrap attempt: done, the peer has not completed its own bootstrap yet,
+    // or the request/apply failed.
+    enum class BootstrapResult : int { Done = 0, NotReady = 1, Failed = 2 };
+    using DoneCb      = std::function<void(BootstrapResult result)>;
+
+    // Answers of each peer to bootstrap attempts since the last successful bootstrap.
+    struct BootstrapProbe {
+        int not_ready = 0;
+        int failed = 0;
+    };
 
     // A relay returned entries of a source that do not follow the local cursor.
     struct SyncGap {
@@ -88,6 +97,16 @@ public:
 
     // Expose for HTTP handler: build snapshot of local DB
     SnapshotData buildLocalSnapshot();
+
+    // Whether this node's ESC database is complete (bootstrap done or seeded). A node that is not
+    // must not serve its snapshot for another node's bootstrap.
+    bool isBootstrapped();
+
+    // Seed election when no peer has completed bootstrap: true once every peer was tried at least
+    // `rounds` times, at least one answered "not bootstrapped yet", and `self_id` is lower than the
+    // id of every peer that answered so. Peers that only failed to connect do not take part.
+    static bool shouldSeedBootstrap(const std::string &self_id, const std::vector<std::string> &peers,
+                                    const std::unordered_map<std::string, BootstrapProbe> &probes, int rounds);
 
     Json::Value getCurrentCursors(const Json::Value &cursors_json, int limit);
 
@@ -142,6 +161,8 @@ private:
     bool needsBootstrap();
     // Persist completion metadata, including snapshot source and row counts.
     void markBootstrapDone(const SnapshotData &snap);
+    // Persist completion as the seed of a new cluster (no peer had completed bootstrap).
+    void markBootstrapSeeded(const std::string &self_id);
     // Full bootstrap from a single peer: fetches all tables, used for initial cluster join.
     void doBootstrap(const std::string &peer_id, const std::string &base_url, DoneCb cb = nullptr);
     void applySnapshot(const SnapshotData &snap);
@@ -187,6 +208,8 @@ private:
     std::unordered_map<std::string, std::string> _peers; // node_id → base_url
     std::unordered_set<std::string>              _bootstrapping; // guard: bootstrap in progress
     std::string                                  _last_bootstrap_peer; // for logging
+    // Answers per peer while bootstrapping, for the seed election (cleared once bootstrapped).
+    std::unordered_map<std::string, BootstrapProbe> _bootstrap_probes;
     // Set to true once the initial full-snapshot bootstrap has completed.
     // After this, onTick() only does incremental pulls from all peers.
     bool                                         _bootstrapped = false;

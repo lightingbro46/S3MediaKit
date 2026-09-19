@@ -253,6 +253,12 @@ Version, dữ liệu, `transaction_log` và cursor được ghi trong cùng mộ
 | `database.transaction_log_keep_last` | 1000 | Số entry giữ lại dưới watermark ack |
 | `database.peer_offline_ttl_days` | 7 | Thời gian một peer offline còn giữ watermark prune |
 | `database.row_version_tombstone_ttl_days` | 30 | Thời gian giữ tombstone của `sync_row_version` |
+| `database.bootstrap_seed_rounds` | 3 | Số lượt thử mỗi peer trước khi cluster mới (chưa node nào hoàn tất bootstrap) chọn seed |
+
+#### Bootstrap chỉ từ peer đã hoàn tất
+
+- Node chỉ lấy snapshot từ peer đã hoàn tất bootstrap của chính nó. Peer chưa hoàn tất (vừa khởi động lần đầu, hoặc đang resync) trả `bootstrapped: false` và không kèm snapshot; node gọi thử peer kế tiếp ở tick sau.
+- Cluster mới, chưa node nào hoàn tất (ví dụ hai node khởi động cùng lúc): khi mọi peer đã được thử ít nhất `database.bootstrap_seed_rounds` lượt mà không có peer nào hoàn tất, node có `mediaServerId` nhỏ nhất trong số các node đã trả lời "chưa hoàn tất" (kể cả chính nó) tự đánh dấu hoàn tất (`seeded: true` trong trạng thái bootstrap). Các node còn lại bootstrap từ node đó. Peer không kết nối được không tham gia so sánh.
 
 ---
 
@@ -271,6 +277,8 @@ Trả về toàn bộ dữ liệu hiện tại của node dưới dạng snapsho
 > Nếu `peer` không khớp với `mediaServerId` của node đang nhận request → lỗi `902006` (Media server not found). Điều này ngăn node B request snapshot của node C thông qua node A.
 
 ### Response thành công (`200`)
+
+`bootstrapped` (bool) cho biết node đã hoàn tất bootstrap chưa. Nếu `false` thì response không có `data`: node gọi không được dùng node này làm nguồn bootstrap. Response của bản build cũ không có trường này và luôn kèm snapshot.
 
 `data` là một chuỗi JSON (`SnapshotBuilder::serialize()`) có dạng:
 
@@ -438,7 +446,7 @@ Các loại `tran_type` hiện tại trong hệ thống:
 
 ## Lưu ý quan trọng
 
-1. **API này là internal**: Không authenticate bằng JWT user. Bảo vệ bằng network firewall/VPN giữa các node. **Không expose ra Internet.**
+1. **API này là internal**: Không authenticate bằng JWT user. Bảo vệ bằng network firewall/VPN giữa các node. **Không expose ra Internet.** Dữ liệu đồng bộ (`vms_kvpair` trong `changes` và `snapshot`) có chứa thông tin đăng nhập camera, gồm cả mật khẩu (quyết định ngày 2026-09-19: giữ nguyên để các node và hệ thống ESC dùng chung cấu hình camera). Vì vậy kênh giữa các node và file DB ESC phải được bảo vệ như dữ liệu nhạy cảm.
 
 2. **`peer` phải đúng**: API `snapshot` và `misc` kiểm tra `peer == mediaServerId` của node nhận. Nếu sai sẽ trả về lỗi 404. Điều này tránh node A làm proxy cho node B khi gọi node C.
 

@@ -24,6 +24,7 @@ const string kTransactionLogKeepLast = DATABASE_FIELD"transaction_log_keep_last"
 const string kKeepMigrationSqlFiles = DATABASE_FIELD"keep_migration_sql_files";
 const string kRowVersionTombstoneTtlDays = DATABASE_FIELD"row_version_tombstone_ttl_days";
 const string kPeerOfflineTtlDays = DATABASE_FIELD"peer_offline_ttl_days";
+const string kBootstrapSeedRounds = DATABASE_FIELD"bootstrap_seed_rounds";
 
 static onceToken token([]() { 
     mINI::Instance()[kDbSavePath] = "./db";
@@ -37,6 +38,7 @@ static onceToken token([]() {
     mINI::Instance()[kKeepMigrationSqlFiles] = false;
     mINI::Instance()[kRowVersionTombstoneTtlDays] = 30;
     mINI::Instance()[kPeerOfflineTtlDays] = 7;
+    mINI::Instance()[kBootstrapSeedRounds] = 3;
 });
 
 } // namespace Database

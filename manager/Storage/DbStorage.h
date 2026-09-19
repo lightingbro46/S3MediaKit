@@ -44,6 +44,9 @@ extern const std::string kRowVersionTombstoneTtlDays;
 // from its last ack, default 7. A peer away longer resyncs from a snapshot when it returns.
 // Should not exceed kRowVersionTombstoneTtlDays.
 extern const std::string kPeerOfflineTtlDays;
+// Bootstrap attempts per peer (answers "not bootstrapped yet" or connection failures) before a
+// cluster where no node has completed bootstrap elects a seed (lowest mediaServerId), default 3.
+extern const std::string kBootstrapSeedRounds;
 } // namespace Database
 
 namespace managerkit {

@@ -90,6 +90,14 @@ public:
     }
 
     static void applySnapshot(SyncManager &m, const SnapshotData &snap) { m.applySnapshot(snap); }
+
+    static void requestResync(SyncManager &m, const std::string &reason) { m.requestResync(reason); }
+
+    static SyncManager::BootstrapResult bootstrapResponse(SyncManager &m, const Json::Value &data) {
+        auto result = std::make_shared<SyncManager::BootstrapResult>(SyncManager::BootstrapResult::Failed);
+        m.onBootstrapResponse("node-bootstrap-src", "", data, [result](SyncManager::BootstrapResult r) { *result = r; });
+        return *result;
+    }
 };
 
 } // namespace managerkit
@@ -826,4 +834,66 @@ TEST_F(SyncApplyTest, ExtractJobCreateWaitsForConcurrentWriter) {
     writer.join();
     EXPECT_EQ(ExtractJobRepository::CreateResult::CREATED, result);
     EXPECT_EQ(ExtractJobRepository::CreateResult::EXISTING, std::make_shared<ExtractJobImp>()->createOrFind(job, stored));
+}
+
+// A peer that has not completed its own bootstrap must not seed this node: its answer is "not
+// ready", nothing is applied and this node stays pending. Old responses (no field) still apply.
+TEST_F(SyncApplyTest, BootstrapSkipsPeerThatIsNotBootstrapped) {
+    auto &m = SyncManager::Instance();
+    SyncManagerTestPeer::requestResync(m, "test");
+    ASSERT_TRUE(SyncManagerTestPeer::needsBootstrap(m));
+
+    Json::Value not_ready;
+    not_ready["code"] = 0;
+    not_ready["bootstrapped"] = false;
+    EXPECT_EQ(SyncManager::BootstrapResult::NotReady, SyncManagerTestPeer::bootstrapResponse(m, not_ready));
+    EXPECT_TRUE(SyncManagerTestPeer::needsBootstrap(m));
+
+    SnapshotData snap;
+    snap.peer_id = "node-bootstrap-src";
+    snap.db_guid = "db-bootstrap-src";
+    snap.sequences = Json::arrayValue;
+    snap.vms_resource = Json::arrayValue;
+    snap.vms_kvpair = Json::arrayValue;
+    snap.vms_resource_status = Json::arrayValue;
+    snap.resource_assignment = Json::arrayValue;
+    snap.bookmark_index = Json::arrayValue;
+    snap.row_versions = Json::arrayValue;
+    Json::Value old_format;
+    old_format["code"] = 0;
+    old_format["data"] = SnapshotBuilder::serialize(snap);
+    EXPECT_EQ(SyncManager::BootstrapResult::Done, SyncManagerTestPeer::bootstrapResponse(m, old_format));
+    EXPECT_FALSE(SyncManagerTestPeer::needsBootstrap(m));
+
+    SyncManagerTestPeer::requestResync(m, "test");
+    Json::Value ready = old_format;
+    ready["bootstrapped"] = true;
+    EXPECT_EQ(SyncManager::BootstrapResult::Done, SyncManagerTestPeer::bootstrapResponse(m, ready));
+    EXPECT_FALSE(SyncManagerTestPeer::needsBootstrap(m));
+    SyncManagerTestPeer::markBootstrapped(m);
+}
+
+TEST(SyncBootstrapSeedTest, LowestAnsweringNodeSeedsAfterEnoughRounds) {
+    using Probe = SyncManager::BootstrapProbe;
+    auto probe = [](int not_ready, int failed) {
+        Probe p;
+        p.not_ready = not_ready;
+        p.failed = failed;
+        return p;
+    };
+    const std::vector<std::string> peers = {"node-b", "node-c"};
+
+    // Not every peer tried often enough yet.
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-a", peers, {{"node-b", probe(3, 0)}, {"node-c", probe(2, 0)}}, 3));
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-a", peers, {{"node-b", probe(3, 0)}}, 3));
+    // Lowest id among the answering nodes seeds; the others wait for it.
+    EXPECT_TRUE(SyncManager::shouldSeedBootstrap("node-a", peers, {{"node-b", probe(3, 0)}, {"node-c", probe(3, 0)}}, 3));
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-d", peers, {{"node-b", probe(3, 0)}, {"node-c", probe(3, 0)}}, 3));
+    // An unreachable lower peer does not block the election; failures count as attempts.
+    EXPECT_TRUE(SyncManager::shouldSeedBootstrap("node-c", {"node-a", "node-d"}, {{"node-a", probe(0, 3)}, {"node-d", probe(1, 2)}}, 3));
+    // Only connection failures: nobody answered, no seed (this node may simply be isolated).
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-a", peers, {{"node-b", probe(0, 3)}, {"node-c", probe(0, 5)}}, 3));
+    // No peers or unknown self id.
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-a", {}, {}, 3));
+    EXPECT_FALSE(SyncManager::shouldSeedBootstrap("", peers, {{"node-b", probe(3, 0)}, {"node-c", probe(3, 0)}}, 3));
 }

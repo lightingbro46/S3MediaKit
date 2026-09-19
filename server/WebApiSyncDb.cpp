@@ -59,6 +59,12 @@ void registerSyncDbApis() {
         }
 
         dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
+            // A node whose own bootstrap is not complete must not seed another node: its data may
+            // be empty or partial. The caller then tries another peer.
+            val["bootstrapped"] = SyncManager::Instance().isBootstrapped();
+            if (!val["bootstrapped"].asBool()) {
+                return;
+            }
             auto snap = SyncManager::Instance().buildLocalSnapshot();
             // if (snap.empty()) {
             //     RETURN_API_RESPONSE(ApiErrCode::CODE_SNAPSHOT_EMPTY, "Snapshot is empty");
