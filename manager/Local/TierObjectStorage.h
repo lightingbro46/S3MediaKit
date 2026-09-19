@@ -71,6 +71,11 @@ public:
     TierObjectStorage();
     ~TierObjectStorage();
 
+    // Drops every registered pool and shuts the AWS SDK down (once; later calls and the destructor
+    // do nothing). Call it at a controlled point of the shutdown, before static destruction: the
+    // SDK's own statics may already be gone when the owning singleton is destroyed.
+    void shutdownSdk();
+
     // ------------------------------------------------------------------
     // Pool lifecycle
     // ------------------------------------------------------------------

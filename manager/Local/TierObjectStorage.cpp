@@ -84,15 +84,18 @@ TierObjectStorage::TierObjectStorage() {
 }
 
 TierObjectStorage::~TierObjectStorage() {
+    shutdownSdk();
+}
+
+void TierObjectStorage::shutdownSdk() {
 #ifdef ENABLE_AWS_SDK
-    {
-        std::lock_guard<std::mutex> lk(_mtx);
-        _pool_map.clear();
-        _metrics_providers.clear();
-    }
+    std::lock_guard<std::mutex> lk(_mtx);
+    // Clients must be released before ShutdownAPI.
+    _pool_map.clear();
+    _metrics_providers.clear();
     if (_sdk_initialized) {
-        Aws::ShutdownAPI(_sdk_options);
         _sdk_initialized = false;
+        Aws::ShutdownAPI(_sdk_options);
         DebugL << "TierObjectStorage: AWS SDK shut down";
     }
 #endif

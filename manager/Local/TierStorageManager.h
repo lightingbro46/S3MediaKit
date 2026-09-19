@@ -111,6 +111,9 @@ public:
 
     void start();
     void stop();
+    // Process exit: stop() and shut the object storage SDK down. Called explicitly on shutdown
+    // (also after a failed startup) so none of it runs during static destruction.
+    void shutdown();
 
     // ------------------------------------------------------------------
     // Section 1 — Storage Pool APIs

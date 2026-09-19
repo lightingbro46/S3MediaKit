@@ -302,3 +302,21 @@ TEST_F(CameraStatisticSyncTest, ReloadKeepsMotionAndTierThresholds) {
     EXPECT_EQ(789u, params.tier_storage_map[HotTier].archiveStartTime);
 #endif
 }
+
+// Status history (SQLite) is written on the camera's ESC queue instead of the camera poller; the
+// gap still carries the time of the event, not the time the queued write ran.
+TEST_F(CameraStatisticSyncTest, StreamStatusHistoryIsWrittenFromEscQueue) {
+    const std::string guid = "cam-stat-history";
+    auto stats = makeCamera(guid, false);
+    const uint64_t before = static_cast<uint64_t>(time(nullptr));
+    stats->addStreamStatistic(PrimaryStream, false, "connection timeout");
+    const uint64_t after = static_cast<uint64_t>(time(nullptr));
+
+    std::vector<LocalResourceStatusGap> gaps;
+    ASSERT_TRUE(waitFor([&] {
+        gaps = ResourceStatusManager::Instance().getResourceStatusGaps(guid + "-main", before - 10, after + 10);
+        return !gaps.empty();
+    }));
+    EXPECT_GE(gaps[0].disconnect_time, before);
+    EXPECT_LE(gaps[0].disconnect_time, after);
+}

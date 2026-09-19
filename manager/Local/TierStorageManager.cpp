@@ -1025,6 +1025,11 @@ void TierStorageManager::stop() {
     InfoL << "TierStorageManager stopped";
 }
 
+void TierStorageManager::shutdown() {
+    stop();
+    _obj_storage.shutdownSdk();
+}
+
 bool TierStorageManager::resolveHotPoolForPath(const std::string &file_path, StoragePool &out_pool, std::string &out_pool_root) const {
     std::string normalized_file = TierFileStorageBase::normalizeBasePath(file_path);
     size_t best_len = 0;

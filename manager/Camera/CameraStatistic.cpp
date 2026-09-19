@@ -1571,26 +1571,35 @@ void CameraStatisticImp::saveStreamStatusHistory(const std::string &stream_id, c
         WarnL << "Cannot save local status history for an empty stream id";
         return;
     }
-    const bool saved = connect
-        ? ResourceStatusManager::Instance().onReconnected(stream_id, time(nullptr))
-        : ResourceStatusManager::Instance().onDisconnected(stream_id, reason, time(nullptr));
-    if (saved) {
-        DebugL << "Saved local resource status for stream " << stream_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
-    } else {
-        WarnL << "Failed to save local resource status for stream " << stream_url;
-    }
+    // SQLite write: runs on the camera's ESC queue (ordered with its other ESC writes), not on the
+    // camera poller. The event time is taken now so the gap boundaries stay exact.
+    const uint64_t event_time = time(nullptr);
+    postEscTask([stream_id, stream_url, connect, reason, event_time]() {
+        const bool saved = connect
+            ? ResourceStatusManager::Instance().onReconnected(stream_id, event_time)
+            : ResourceStatusManager::Instance().onDisconnected(stream_id, reason, event_time);
+        if (saved) {
+            DebugL << "Saved local resource status for stream " << stream_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+        } else {
+            WarnL << "Failed to save local resource status for stream " << stream_url;
+        }
+    });
 }
 
 void CameraStatisticImp::saveDeviceStatusHistory(const std::string &device_id, const std::string &device_url,
                                                  bool connect, const std::string &reason) {
-    const bool saved = connect
-        ? ResourceStatusManager::Instance().onReconnected(device_id, time(nullptr))
-        : ResourceStatusManager::Instance().onDisconnected(device_id, reason, time(nullptr));
-    if (saved) {
-        DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
-    } else {
-        WarnL << "Failed to save local resource status for camera " << device_url;
-    }
+    // Same as saveStreamStatusHistory: ESC queue, event time taken now.
+    const uint64_t event_time = time(nullptr);
+    postEscTask([device_id, device_url, connect, reason, event_time]() {
+        const bool saved = connect
+            ? ResourceStatusManager::Instance().onReconnected(device_id, event_time)
+            : ResourceStatusManager::Instance().onDisconnected(device_id, reason, event_time);
+        if (saved) {
+            DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+        } else {
+            WarnL << "Failed to save local resource status for camera " << device_url;
+        }
+    });
 }
 
 } // namespace managerkit

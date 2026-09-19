@@ -465,6 +465,13 @@ static void releaseActiveJobs() {
     ExtractJobManager::Instance().stop();
 }
 
+void releaseStorageManagers() {
+#ifdef ENABLE_TIER_STORAGE
+    // Stops tier cycles and shuts the AWS SDK down now instead of during static destruction.
+    TierStorageManager::Instance().shutdown();
+#endif
+}
+
 void unInstallManagerHook() {
     releaseSyncDatabase();
     releaseAllDevice();
@@ -475,6 +482,7 @@ void unInstallManagerHook() {
 
     // Note: Comment the following code in order to save last segments when program exit
     NoticeCenter::Instance().delListener(&manager_hook_tag);
+    releaseStorageManagers();
 }
 
 void migrateDatabase() {
