@@ -234,5 +234,27 @@ for name, path, params, want_status, want_code in step3:
     check("step3 %s" % name, status == want_status and data.get("code") == want_code,
           "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
 
+# 9. Extraction previews / job / job list (worker.md step 5): status and codes unchanged.
+E = "/media/esc/extractArchived"
+step5 = [
+    ("previews(unknown camera)", E + "/previews", {"cameraId": "no-such-camera", "startTime": 1, "endTime": 5}, 404, 905001),
+    ("previews(bad range)", E + "/previews", {"cameraId": "no-such-camera", "startTime": 5, "endTime": 1}, 404, 902009),
+    ("job/list", E + "/job/list", {}, 200, 0),
+    ("job/list(bad range)", E + "/job/list", {"start_time_from": 5, "start_time_to": 1}, 400, 902009),
+]
+for name, path, params, want_status, want_code in step5:
+    status, data, elapsed = call(path, params, timeout=30)
+    if probe_only or want_status is None:
+        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:160]))
+        continue
+    check("step5 %s" % name, status == want_status and data.get("code") == want_code,
+          "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
+job = {"fileId": "worker-test-file", "cameraId": "no-such-camera", "startTime": 1, "endTime": 5,
+       "uploadUrl": "https://example.com/upload", "format": "mp4"}
+status, data, _ = post_json(E + "/job", job)
+check("step5 job(unknown camera)", status == 404 and data.get("code") == 905001, "status=%s code=%s" % (status, data.get("code")))
+status, data, _ = post_json(E + "/job", dict(job, format="mov"))
+check("step5 job(bad format)", status == 400 and data.get("code") == 902003, "status=%s code=%s" % (status, data.get("code")))
+
 print("FAILED: %s" % failures if failures else "ALL PASSED")
 sys.exit(1 if failures else 0)
