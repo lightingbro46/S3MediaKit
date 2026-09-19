@@ -6,6 +6,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "Common/BlockingExecutors.h"
+#include "Common/SerialTaskQueue.h"
 #include "Common/config.h"
 #include "Common/macros.h"
 #include "Util/logger.h"
@@ -54,6 +55,17 @@ int readLimit(const string &key) {
         return 0;
     }
     return it->second.as<int>();
+}
+
+managerkit::SerialTaskQueue::Ptr serialQueue(const string &group) {
+    static mutex s_mtx;
+    static unordered_map<string, managerkit::SerialTaskQueue::Ptr> s_queues;
+    lock_guard<mutex> lck(s_mtx);
+    auto &queue = s_queues[group];
+    if (!queue) {
+        queue = std::make_shared<managerkit::SerialTaskQueue>(getApiWorkExecutor(), "api " + group);
+    }
+    return queue;
 }
 
 shared_ptr<atomic<int>> inflightCounter(const string &group) {
@@ -164,6 +176,10 @@ ApiWorkLimit apiWorkLimit(const string &group) {
     return ApiWorkLimit(group, readLimit(limitKey(group, "maxInflight")), readLimit(limitKey(group, "maxQueueMs")));
 }
 
+ApiWorkLimit apiWorkSerial(const string &group) {
+    return ApiWorkLimit(group, 0, 0, true);
+}
+
 int apiWorkInflight(const string &group) {
     return inflightCounter(group)->load();
 }
@@ -191,7 +207,7 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
     const string group = limit.group;
     const int max_queue_ms = limit.group.empty() ? 0 : limit.max_queue_ms;
 
-    getApiWorkExecutor()->async([owner, session, check_session, work, done, slot, queued_at, group, max_queue_ms]() {
+    auto task = [owner, session, check_session, work, done, slot, queued_at, group, max_queue_ms]() {
         if (check_session && session.expired()) {
             // Client is gone: nobody will read the response, skip the blocking work.
             return;
@@ -211,7 +227,12 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
         }
         // Completion and response always run on the request poller.
         owner->async([done, error]() { done(error); }, false);
-    }, false);
+    };
+    if (limit.serial && !limit.group.empty()) {
+        serialQueue(limit.group)->post(task);
+    } else {
+        getApiWorkExecutor()->async(task, false);
+    }
 }
 
 void dispatchApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,

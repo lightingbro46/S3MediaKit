@@ -443,3 +443,38 @@ TEST(ApiWorkDispatcherTest, ApiResponseExceptionUsesDefaultMessage) {
     EXPECT_EQ(static_cast<int>(managerkit::ApiErrCode::CODE_MSERVER_NOT_FOUND), replies[0].body["code"].asInt());
     EXPECT_EQ(managerkit::getDefaultMessage(managerkit::ApiErrCode::CODE_MSERVER_NOT_FOUND), replies[0].body["msg"].asString());
 }
+
+TEST(ApiWorkDispatcherTest, SerialGroupRunsOneRequestAtATimeInOrder) {
+    auto owner = ownerPoller();
+    const int kRequests = 6;
+    std::mutex mtx;
+    std::vector<int> order;
+    std::atomic<int> running{0};
+    std::atomic<int> max_running{0};
+    std::vector<std::unique_ptr<ReplyProbe>> probes;
+    for (int i = 0; i < kRequests; ++i) {
+        probes.emplace_back(new ReplyProbe());
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), probes.back()->invoker(owner),
+            [i, &mtx, &order, &running, &max_running](Json::Value &val) {
+                int now = ++running;
+                int seen = max_running.load();
+                while (now > seen && !max_running.compare_exchange_weak(seen, now)) {}
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                {
+                    std::lock_guard<std::mutex> lck(mtx);
+                    order.push_back(i);
+                }
+                --running;
+                val["data"] = i;
+            }, nullptr, apiWorkSerial("test.serial"));
+    }
+    for (int i = 0; i < kRequests; ++i) {
+        ASSERT_TRUE(probes[i]->waitFirst()) << i;
+        EXPECT_EQ(i, probes[i]->settle(0)[0].body["data"].asInt());
+    }
+    EXPECT_EQ(1, max_running.load());
+    ASSERT_EQ(static_cast<size_t>(kRequests), order.size());
+    for (int i = 0; i < kRequests; ++i) {
+        EXPECT_EQ(i, order[i]);
+    }
+}

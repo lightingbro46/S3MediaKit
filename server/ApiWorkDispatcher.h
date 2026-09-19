@@ -42,16 +42,22 @@ toolkit::TaskExecutor::Ptr getApiWorkExecutor();
 // 503 CODE_SERVER_BUSY without running its work, and the connection is kept:
 //   - max_inflight: requests of the group queued or running at the same time (<= 0: unlimited);
 //   - max_queue_ms: a request that waited longer in the worker queue is dropped (<= 0: unlimited).
+//   - serial: requests of the group run one at a time, in arrival order (a SerialTaskQueue per
+//     group on the API pool), e.g. mutations of shared caches/registrations.
 // An empty group means no limit (the default, so existing handlers are unchanged).
 struct ApiWorkLimit {
     ApiWorkLimit() = default;
-    ApiWorkLimit(std::string group_in, int max_inflight_in, int max_queue_ms_in)
-        : group(std::move(group_in)), max_inflight(max_inflight_in), max_queue_ms(max_queue_ms_in) {}
+    ApiWorkLimit(std::string group_in, int max_inflight_in, int max_queue_ms_in, bool serial_in = false)
+        : group(std::move(group_in)), max_inflight(max_inflight_in), max_queue_ms(max_queue_ms_in), serial(serial_in) {}
 
     std::string group;
     int max_inflight = 0;
     int max_queue_ms = 0;
+    bool serial = false;
 };
+
+// Serialized group: its requests run one at a time, in order (no in-flight/queue limit).
+ApiWorkLimit apiWorkSerial(const std::string &group);
 
 // Limit of `group` from config `api.limit.<group>.maxInflight` / `api.limit.<group>.maxQueueMs`,
 // read on every call. Registered groups: sync.snapshot, sync.changes, device.discovery.

@@ -256,5 +256,49 @@ check("step5 job(unknown camera)", status == 404 and data.get("code") == 905001,
 status, data, _ = post_json(E + "/job", dict(job, format="mov"))
 check("step5 job(bad format)", status == 400 and data.get("code") == 902003, "status=%s code=%s" % (status, data.get("code")))
 
+# 10. Storage mutations (worker.md step 4) run on the API worker, serialized: a NAS pool
+#     create/update/test/delete cycle and the error paths keep their status and codes.
+import tempfile
+pool_dir = tempfile.mkdtemp(prefix="worker_api_pool_")
+step4 = []
+
+
+def step4_call(name, path, body, want_status, want_code, as_json=True):
+    status, data, elapsed = post_json(path, body) if as_json else call(path, body, timeout=30)
+    if probe_only or want_status is None:
+        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:200]))
+    else:
+        check("step4 %s" % name, status == want_status and data.get("code") == want_code,
+              "status=%s code=%s body=%s" % (status, data.get("code"), json.dumps(data)[:120]))
+    return status, data
+
+
+pool = {"name": "worker-test-pool", "type": "NAS", "tier": "WARM", "mount_path": pool_dir, "health_check_enabled": False}
+status, data = step4_call("pool/create", S + "/pool/create", pool, 200, 0)
+pool_id = data.get("data", {}).get("id", "") if status == 200 else ""
+step4_call("pool/create(missing mount)", S + "/pool/create", dict(pool, mount_path=""), 400, 902001)
+step4_call("pool/create(bad watermark)", S + "/pool/create",
+           dict(pool, high_watermark_percent=95, critical_watermark_percent=90), 404, 902008)
+if pool_id:
+    step4_call("pool/update", S + "/pool/update", {"id": pool_id, "name": "worker-test-pool-2"}, 200, 0)
+    status, data, _ = call(S + "/pool/detail", {"id": pool_id})
+    check("step4 pool/detail shows the update", data.get("data", {}).get("name") == "worker-test-pool-2",
+          "name=%s" % data.get("data", {}).get("name"))
+    step4_call("pool/testConnection", S + "/pool/testConnection", {"pool_id": pool_id}, 200, 0)
+    step4_call("pool/delete", S + "/pool/delete", {"id": pool_id}, 200, 0, as_json=False)
+    status, data = step4_call("pool/delete(again)", S + "/pool/delete", {"id": pool_id}, 500, 914012, as_json=False)
+    check("step4 pool/delete(again) keeps data fields", data.get("data", {}).get("ref_count") == 0,
+          json.dumps(data)[:120])
+step4_call("pool/update(unknown)", S + "/pool/update", {"id": "no-such-pool", "name": "x"}, 404, 914001)
+step4_call("policy/delete(unknown)", S + "/policy/delete", {"id": "no-such-policy"}, 404, 914002, as_json=False)
+step4_call("policy/assignCamera(unknown)", S + "/policy/assignCamera",
+           {"camera_id": "no-such-camera", "policy_id": "no-such-policy"}, 404, 905001, as_json=False)
+step4_call("tieringJob/retry(unknown)", S + "/tieringJob/retry", {"job_id": "no-such-job"}, 404, 914020, as_json=False)
+step4_call("tieringJob/cancel(unknown)", S + "/tieringJob/cancel", {"job_id": "no-such-job"}, 500, 914022, as_json=False)
+step4_call("alert/ack(unknown)", S + "/alert/ack", {"alert_id": "no-such-alert"}, 404, 914023, as_json=False)
+step4_call("protected/delete(unknown)", S + "/protected/delete", {"protected_id": "no-such-protected"}, 404, 914024, as_json=False)
+step4_call("restoreJob/create(unknown camera)", S + "/restoreJob/create",
+           {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001, as_json=False)
+
 print("FAILED: %s" % failures if failures else "ALL PASSED")
 sys.exit(1 if failures else 0)

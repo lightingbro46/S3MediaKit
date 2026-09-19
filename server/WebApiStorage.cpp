@@ -179,29 +179,28 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("name", "type", "tier");
-    
-        auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
 
-        std::string pool_err;
-        if (!TierStorageBase::validatePoolByType(pool, pool_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, pool_err);
-            return;
-        }
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
 
-        // Validate watermarks
-        if (pool.high_watermark_percent >= pool.critical_watermark_percent) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
-            return;
-        }
+            std::string pool_err;
+            if (!TierStorageBase::validatePoolByType(pool, pool_err)) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
+            }
 
-        auto id = TierStorageManager::Instance().createPool(pool);
-        if (id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
-            return;
-        }
+            // Validate watermarks
+            if (pool.high_watermark_percent >= pool.critical_watermark_percent) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
+            }
 
-        val["data"]["id"] = id;
-        invoker(200, headerOut, val.toStyledString());
+            auto id = TierStorageManager::Instance().createPool(pool);
+            if (id.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
+            }
+
+            val["data"]["id"] = id;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/pool/update
@@ -210,34 +209,32 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        string pool_id = allArgs["id"];
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string pool_id = allArgs["id"];
 
-        auto existing = TierStorageManager::Instance().getPool(pool_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
-            return;
-        }
-        auto body = allArgs.getArgs();
+            auto existing = TierStorageManager::Instance().getPool(pool_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+            }
+            auto body = allArgs.getArgs();
 
-        auto &base = existing.front();
-        TierStorageBase::applyPoolPatch(base, body);
+            auto &base = existing.front();
+            TierStorageBase::applyPoolPatch(base, body);
 
-        if (base.high_watermark_percent >= base.critical_watermark_percent) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
-            return;
-        }
-        std::string pool_err;
-        if (!TierStorageBase::validatePoolByType(base, pool_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, pool_err);
-            return;
-        }
+            if (base.high_watermark_percent >= base.critical_watermark_percent) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
+            }
+            std::string pool_err;
+            if (!TierStorageBase::validatePoolByType(base, pool_err)) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
+            }
 
-        if (!TierStorageManager::Instance().updatePool(base)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
-            return;
-        }
-        val["data"]["id"] = pool_id;
-        invoker(200, headerOut, val.toStyledString());
+            if (!TierStorageManager::Instance().updatePool(base)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
+            }
+            val["data"]["id"] = pool_id;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/pool/delete
@@ -246,24 +243,23 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        string pool_id = allArgs["id"];
-        int ref_count = 0;
-        bool is_default_pool = false;
-        if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
-            val["data"]["ref_count"] = ref_count;
-            val["data"]["is_default_pool"] = is_default_pool;
-            if (is_default_pool) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage pool");
-                return;
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string pool_id = allArgs["id"];
+            int ref_count = 0;
+            bool is_default_pool = false;
+            if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
+                val["data"]["ref_count"] = ref_count;
+                val["data"]["is_default_pool"] = is_default_pool;
+                if (is_default_pool) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage pool");
+                }
+                if (ref_count > 0) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_IN_USE, "Storage pool is referenced by " + std::to_string(ref_count) + " policies or segment ranges");
+                }
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
             }
-            if (ref_count > 0) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_IN_USE, "Storage pool is referenced by " + std::to_string(ref_count) + " policies or segment ranges");
-                return;
-            }
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/pool/testConnection
@@ -271,45 +267,44 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        const Json::Value &body = allArgs.getArgs();
-        string pool_id = body.get("pool_id", "").asString();
-        StoragePool pool;
-        if (!pool_id.empty()) {
-            // Test an existing saved pool
-            auto existing = TierStorageManager::Instance().getPool(pool_id);
-            if (existing.empty()) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
-                return;
+        // The connection test (filesystem/S3 round trip) runs on the API worker.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            const Json::Value &body = allArgs.getArgs();
+            string pool_id = body.get("pool_id", "").asString();
+            StoragePool pool;
+            if (!pool_id.empty()) {
+                // Test an existing saved pool
+                auto existing = TierStorageManager::Instance().getPool(pool_id);
+                if (existing.empty()) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+                }
+                pool = existing.front();
+                TierStorageBase::applyPoolPatch(pool, body);
+            } else {
+                // Ad-hoc test (before pool is saved)
+                pool = TierStorageBase::poolFromJson(body);
             }
-            pool = existing.front();
-            TierStorageBase::applyPoolPatch(pool, body);
-        } else {
-            // Ad-hoc test (before pool is saved)
-            pool = TierStorageBase::poolFromJson(body);
-        }
 
-        std::string validation_error;
-        if (!TierStorageBase::validatePoolByType(pool, validation_error)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, validation_error);
-            return;
-        }
+            std::string validation_error;
+            if (!TierStorageBase::validatePoolByType(pool, validation_error)) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, validation_error);
+            }
 
-        string message;
-        int latency_ms = 0;
-        bool ok = TierStorageManager::Instance().testPoolConnection(pool, message, latency_ms);
+            string message;
+            int latency_ms = 0;
+            bool ok = TierStorageManager::Instance().testPoolConnection(pool, message, latency_ms);
 
-        Json::Value data;
-        data["status"]     = ok ? "OK" : "ERROR";
-        data["latency_ms"] = latency_ms;
-        data["can_read"]   = ok;
-        data["can_write"]  = ok;
-        data["message"]    = message;
-        val["data"] = data;
-        if (!ok) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POOL_CONN_FAILED, message);
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+            Json::Value data;
+            data["status"]     = ok ? "OK" : "ERROR";
+            data["latency_ms"] = latency_ms;
+            data["can_read"]   = ok;
+            data["can_write"]  = ok;
+            data["message"]    = message;
+            val["data"] = data;
+            if (!ok) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CONN_FAILED, message);
+            }
+        });
     });
 
     // ================================================================
@@ -385,23 +380,23 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("name", "total_retention_days");
 
-        auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
 
-        std::string tier_err;
-        if (!TierStorageBase::validateStoragePolicy(
-                policy, TierStorageBase::loadPoolMap(), tier_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
-            return;
-        }
+            std::string tier_err;
+            if (!TierStorageBase::validateStoragePolicy(
+                    policy, TierStorageBase::loadPoolMap(), tier_err)) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
+            }
 
-        auto id = TierStorageManager::Instance().createPolicy(policy);
-        if (id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
-            return;
-        }
+            auto id = TierStorageManager::Instance().createPolicy(policy);
+            if (id.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
+            }
 
-        val["data"]["id"] = id;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"]["id"] = id;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/update
@@ -410,29 +405,28 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        string policy_id = allArgs["id"];
-        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            return;
-        }
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string policy_id = allArgs["id"];
+            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            }
 
-        auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
+            auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
 
-        std::string tier_err;
-        if (!TierStorageBase::validateStoragePolicy(
-                policy, TierStorageBase::loadPoolMap(), tier_err)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, tier_err);
-            return;
-        }
+            std::string tier_err;
+            if (!TierStorageBase::validateStoragePolicy(
+                    policy, TierStorageBase::loadPoolMap(), tier_err)) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
+            }
 
-        if (!TierStorageManager::Instance().updatePolicy(policy)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
-            return;
-        }
+            if (!TierStorageManager::Instance().updatePolicy(policy)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
+            }
 
-        val["data"]["id"] = policy_id;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"]["id"] = policy_id;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/clone
@@ -441,23 +435,23 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id", "name");
 
-        string policy_id = allArgs["id"];
-        string new_name  = allArgs["name"];
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string policy_id = allArgs["id"];
+            string new_name  = allArgs["name"];
 
-        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            return;
-        }
+            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            }
 
-        auto new_id = TierStorageManager::Instance().clonePolicy(policy_id, new_name);
-        if (new_id.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_CLONE_FAILED, "Clone storage policy failed");
-            return;
-        }
+            auto new_id = TierStorageManager::Instance().clonePolicy(policy_id, new_name);
+            if (new_id.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CLONE_FAILED, "Clone storage policy failed");
+            }
 
-        val["data"]["id"] = new_id;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"]["id"] = new_id;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/delete
@@ -466,31 +460,29 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        string policy_id = allArgs["id"];
-        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            return;
-        }
-        
-        int camera_count = 0;
-        bool is_default_policy = false;
-        if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count, is_default_policy)) {
-            val["data"]["camera_count"] = camera_count;
-            val["data"]["is_default_policy"] = is_default_policy;
-            if (is_default_policy) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage policy");
-                return;
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string policy_id = allArgs["id"];
+            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
             }
-            if (camera_count > 0) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_IN_USE, "Policy is applied to " + std::to_string(camera_count) + " cameras");
-                return;
+
+            int camera_count = 0;
+            bool is_default_policy = false;
+            if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count, is_default_policy)) {
+                val["data"]["camera_count"] = camera_count;
+                val["data"]["is_default_policy"] = is_default_policy;
+                if (is_default_policy) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage policy");
+                }
+                if (camera_count > 0) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_IN_USE, "Policy is applied to " + std::to_string(camera_count) + " cameras");
+                }
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED, "Policy not found or could not be deleted");
             }
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED, "Policy not found or could not be deleted");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
-     });
+        }, nullptr, apiWorkSerial("storage.mutation"));
+    });
 
     // ================================================================
     // === Section 3: Policy Assignment APIs (camera level) ============
@@ -502,28 +494,26 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id", "policy_id");
 
-        string camera_id = allArgs["camera_id"];
-        string policy_id = allArgs["policy_id"];
-        string reason = allArgs["override_reason"];
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string camera_id = allArgs["camera_id"];
+            string policy_id = allArgs["policy_id"];
+            string reason = allArgs["override_reason"];
 
-        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        if (!device) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            return;
-        }
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            }
 
-        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            return;
-        }
+            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            }
 
-        if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED, "Assign policy to camera failed");
-            return;
-        }
-
-        invoker(200, headerOut, val.toStyledString());
+            if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED, "Assign policy to camera failed");
+            }
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/assignCameras
@@ -532,52 +522,51 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("policy_id");
 
-        std::string policy_id = allArgs["policy_id"];
-        Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
-        if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
-            return;
-        }
-
-        std::vector<std::string> camera_ids;
-        std::vector<std::string> non_existed_camera_ids;
-        for (const auto &c : camera_ids_arr) {
-            std::string camera_id = c.asString();
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                non_existed_camera_ids.push_back(camera_id);
-                continue;  // Skip invalid camera IDs
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            std::string policy_id = allArgs["policy_id"];
+            Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+            if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
             }
-            camera_ids.push_back(camera_id);
-        }
 
-        if (camera_ids.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "No valid camera IDs provided");
-            return;
-        }
+            std::vector<std::string> camera_ids;
+            std::vector<std::string> non_existed_camera_ids;
+            for (const auto &c : camera_ids_arr) {
+                std::string camera_id = c.asString();
+                auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+                if (!device) {
+                    non_existed_camera_ids.push_back(camera_id);
+                    continue;  // Skip invalid camera IDs
+                }
+                camera_ids.push_back(camera_id);
+            }
 
-        auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-        if (existing.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            return;
-        }
+            if (camera_ids.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "No valid camera IDs provided");
+            }
 
-        std::vector<std::string> failed;
-        int assigned = TierStorageManager::Instance().assignPolicyToCameras(camera_ids, policy_id, failed);
+            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+            if (existing.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+            }
 
-        Json::Value data;
-        data["assigned_count"] = assigned;
-        Json::Value failed_arr(Json::arrayValue);
-        for (const auto &id : non_existed_camera_ids) {
-            failed_arr.append(id);
-        }
-        for (const auto &id : failed) {
-            failed_arr.append(id);
-        }
-        data["failed_ids"] = failed_arr;
-        
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            std::vector<std::string> failed;
+            int assigned = TierStorageManager::Instance().assignPolicyToCameras(camera_ids, policy_id, failed);
+
+            Json::Value data;
+            data["assigned_count"] = assigned;
+            Json::Value failed_arr(Json::arrayValue);
+            for (const auto &id : non_existed_camera_ids) {
+                failed_arr.append(id);
+            }
+            for (const auto &id : failed) {
+                failed_arr.append(id);
+            }
+            data["failed_ids"] = failed_arr;
+
+            val["data"] = data;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/removeCamera
@@ -586,17 +575,17 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id");
 
-        string camera_id = allArgs["camera_id"];
-        auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-        if (!device) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            return;
-        }
-        if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Failed to unassign storage policy from camera");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string camera_id = allArgs["camera_id"];
+            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+            if (!device) {
+                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+            }
+            if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Failed to unassign storage policy from camera");
+            }
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // POST /media/mserver/storage/policy/removeCameras
@@ -604,38 +593,39 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
-        if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
-            return;
-        }
-
-        std::vector<std::string> camera_ids;
-        std::vector<std::string> non_existed_camera_ids;
-        for (const auto &c : camera_ids_arr) {
-            std::string camera_id = c.asString();
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                non_existed_camera_ids.push_back(camera_id);
-                continue;  // Skip invalid camera IDs
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+            if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
             }
-            camera_ids.push_back(camera_id);
-        }
 
-        std::vector<std::string> failed;
-        int removed = TierStorageManager::Instance().removeCamerasOverride(camera_ids, failed);
-        Json::Value data;
-        data["removed_count"] = removed;
-        Json::Value failed_arr(Json::arrayValue);
-        for (const auto &id : non_existed_camera_ids) {
-            failed_arr.append(id);
-        }
-        for (const auto &id : failed) {
-            failed_arr.append(id);
-        }
-        data["failed_ids"] = failed_arr;
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            std::vector<std::string> camera_ids;
+            std::vector<std::string> non_existed_camera_ids;
+            for (const auto &c : camera_ids_arr) {
+                std::string camera_id = c.asString();
+                auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+                if (!device) {
+                    non_existed_camera_ids.push_back(camera_id);
+                    continue;  // Skip invalid camera IDs
+                }
+                camera_ids.push_back(camera_id);
+            }
+
+            std::vector<std::string> failed;
+            int removed = TierStorageManager::Instance().removeCamerasOverride(camera_ids, failed);
+            Json::Value data;
+            data["removed_count"] = removed;
+            Json::Value failed_arr(Json::arrayValue);
+            for (const auto &id : non_existed_camera_ids) {
+                failed_arr.append(id);
+            }
+            for (const auto &id : failed) {
+                failed_arr.append(id);
+            }
+            data["failed_ids"] = failed_arr;
+            val["data"] = data;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // GET/POST /media/mserver/storage/camera/effectivePolicy
@@ -1091,34 +1081,36 @@ void registerStorageApis() {
             return;
         }
 
+        auto poller = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
         auto on_access = [val, invoker, headerOut, camera_id, stream_id,
-                          start_time, end_time, reason]() mutable {
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-                return;
-            }
+                          start_time, end_time, reason, poller, session]() mutable {
+            // Restore planning runs on the API worker, serialized with the other storage mutations.
+            dispatchApiWork(poller, session, headerOut, val, invoker,
+                [camera_id, stream_id, start_time, end_time, reason](Json::Value &val) {
+                auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+                if (!device) {
+                    throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                }
 
-            auto restore = TierStorageManager::Instance().requestRestoreWindow(
-                camera_id, stream_id, start_time, end_time,
-                reason.empty() ? "MANUAL" : reason);
-            if (!restore.handled) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
-                                    "Failed to create restore job");
-                return;
-            }
+                auto restore = TierStorageManager::Instance().requestRestoreWindow(
+                    camera_id, stream_id, start_time, end_time,
+                    reason.empty() ? "MANUAL" : reason);
+                if (!restore.handled) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                                               "Failed to create restore job");
+                }
 
-            RestoreJobSnapshot snapshot;
-            if (!TierStorageManager::Instance().getRestoreJobSnapshot(
-                    restore.job_id, snapshot)) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
-                                    "Restore job was created but its status is unavailable");
-                return;
-            }
-            Json::Value data = TierStorageBase::restoreJobSnapshotToJson(snapshot);
-            data["job_created"] = restore.job_created;
-            val["data"] = data;
-            invoker(200, headerOut, val.toStyledString());
+                RestoreJobSnapshot snapshot;
+                if (!TierStorageManager::Instance().getRestoreJobSnapshot(
+                        restore.job_id, snapshot)) {
+                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                                               "Restore job was created but its status is unavailable");
+                }
+                Json::Value data = TierStorageBase::restoreJobSnapshotToJson(snapshot);
+                data["job_created"] = restore.job_created;
+                val["data"] = data;
+            }, nullptr, apiWorkSerial("storage.mutation"));
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(camera_id, on_access);
@@ -1260,19 +1252,19 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("job_id");
-        string job_id = allArgs["job_id"];
 
-        auto jobs = TierStorageManager::Instance().getTieringJob(job_id);
-        if (jobs.empty()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
-            return;
-        }
-        if (!TierStorageManager::Instance().retryTieringJob(job_id)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Failed to retry tiering job");
-            return;
-        }   
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string job_id = allArgs["job_id"];
 
-        invoker(200, headerOut, val.toStyledString());
+            auto jobs = TierStorageManager::Instance().getTieringJob(job_id);
+            if (jobs.empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
+            }
+            if (!TierStorageManager::Instance().retryTieringJob(job_id)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Failed to retry tiering job");
+            }   
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     api_regist("/media/mserver/storage/tieringJob/cancel", [](API_ARGS_MAP_ASYNC) {
@@ -1280,12 +1272,13 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("job_id");
 
-        string job_id = allArgs["job_id"];
-        if (!TierStorageManager::Instance().cancelTieringJob(job_id)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Failed to cancel tiering job");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string job_id = allArgs["job_id"];
+            if (!TierStorageManager::Instance().cancelTieringJob(job_id)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Failed to cancel tiering job");
+            }
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // ================================================================
@@ -1338,13 +1331,14 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("alert_id");
 
-        string alert_id = allArgs["alert_id"];
-        StorageAlertImp imp;
-        if (!imp.acknowledge(alert_id)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_ALERT_NOT_FOUND, "Alert not found or could not be acknowledged");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string alert_id = allArgs["alert_id"];
+            StorageAlertImp imp;
+            if (!imp.acknowledge(alert_id)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_ALERT_NOT_FOUND, "Alert not found or could not be acknowledged");
+            }
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // ================================================================
@@ -1389,60 +1383,61 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        Json::Value range_ids = allArgs.getArgs()["range_ids"];
-        if (range_ids.empty() || !range_ids.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
-            return;
-        }
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            Json::Value range_ids = allArgs.getArgs()["range_ids"];
+            if (range_ids.empty() || !range_ids.isArray()) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
+            }
 
-        int approved = 0;
-        for (const auto &idv : range_ids) {
-            std::string range_id = idv.asString();
-            if (range_id.empty())
-                continue;
-            if (TierStorageManager::Instance().approveExpiredRange(range_id))
-                ++approved;
-        }
+            int approved = 0;
+            for (const auto &idv : range_ids) {
+                std::string range_id = idv.asString();
+                if (range_id.empty())
+                    continue;
+                if (TierStorageManager::Instance().approveExpiredRange(range_id))
+                    ++approved;
+            }
 
-        Json::Value data;
-        data["approved_count"] = approved;
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            Json::Value data;
+            data["approved_count"] = approved;
+            val["data"] = data;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     api_regist("/media/mserver/storage/expiredSegment/extend", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        Json::Value range_ids = allArgs.getArgs()["range_ids"];
-        if (range_ids.empty())
-            range_ids = allArgs.getArgs()["segment_ids"];
-        int64_t extend_until = allArgs["extend_until"].empty() ? 0 : std::stoll(allArgs["extend_until"]);
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            Json::Value range_ids = allArgs.getArgs()["range_ids"];
+            if (range_ids.empty())
+                range_ids = allArgs.getArgs()["segment_ids"];
+            int64_t extend_until = allArgs["extend_until"].empty() ? 0 : std::stoll(allArgs["extend_until"]);
 
-        if (range_ids.empty() || !range_ids.isArray()) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
-            return;
-        }
+            if (range_ids.empty() || !range_ids.isArray()) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "range_ids must be an array");
+            }
 
-        if (extend_until <= 0) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "extend_until is required");
-            return;
-        }
+            if (extend_until <= 0) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "extend_until is required");
+            }
 
-        std::string reason = allArgs["reason"];
-        int extended = 0;
-        for (const auto &idv : range_ids) {
-            std::string range_id = idv.asString();
-            if (range_id.empty())
-                continue;
-            if (TierStorageManager::Instance().extendRangeRetention(range_id, extend_until, reason))
-                ++extended;
-        }
+            std::string reason = allArgs["reason"];
+            int extended = 0;
+            for (const auto &idv : range_ids) {
+                std::string range_id = idv.asString();
+                if (range_id.empty())
+                    continue;
+                if (TierStorageManager::Instance().extendRangeRetention(range_id, extend_until, reason))
+                    ++extended;
+            }
 
-        Json::Value data;
-        data["extended_count"] = extended;
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            Json::Value data;
+            data["extended_count"] = extended;
+            val["data"] = data;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     // ================================================================
@@ -1453,37 +1448,37 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE, MODIFY_MSERVER_PERMISSION_CODE);
 
-        std::string camera_id = allArgs["camera_id"];
-        int64_t start_time = allArgs["start_time"].empty() ? 0 : std::stoll(allArgs["start_time"]);
-        int64_t end_time = allArgs["end_time"].empty() ? 0 : std::stoll(allArgs["end_time"]);
-        std::string type = allArgs["type"].empty() ? "PROTECTED" : allArgs["type"];
-        std::string reason = allArgs["reason"];
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            std::string camera_id = allArgs["camera_id"];
+            int64_t start_time = allArgs["start_time"].empty() ? 0 : std::stoll(allArgs["start_time"]);
+            int64_t end_time = allArgs["end_time"].empty() ? 0 : std::stoll(allArgs["end_time"]);
+            std::string type = allArgs["type"].empty() ? "PROTECTED" : allArgs["type"];
+            std::string reason = allArgs["reason"];
 
-        if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
-            return;
-        }
+            if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
+                throw ApiResponseException(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
+            }
 
-        ProtectedVideo video;
-        video.protected_id = StrUUID::make_guid(8, "prot");
-        video.camera_id = camera_id;
-        video.start_time = start_time;
-        video.end_time = end_time;
-        video.type = type.empty() ? "PROTECTED" : type;
-        video.reason = Optional<std::string>(reason);
-        video.created_at = static_cast<int64_t>(time(nullptr));
+            ProtectedVideo video;
+            video.protected_id = StrUUID::make_guid(8, "prot");
+            video.camera_id = camera_id;
+            video.start_time = start_time;
+            video.end_time = end_time;
+            video.type = type.empty() ? "PROTECTED" : type;
+            video.reason = Optional<std::string>(reason);
+            video.created_at = static_cast<int64_t>(time(nullptr));
 
-        ProtectedVideoImp imp;
-        if (!imp.add(video)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_CREATE_FAILED, "Failed to create protected video");
-            return;
-        }
+            ProtectedVideoImp imp;
+            if (!imp.add(video)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_CREATE_FAILED, "Failed to create protected video");
+            }
 
-        Json::Value data;
-        data["protected_id"] = video.protected_id;
+            Json::Value data;
+            data["protected_id"] = video.protected_id;
 
-        val["data"] = data;
-        invoker(200, headerOut, val.toStyledString());
+            val["data"] = data;
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     api_regist("/media/mserver/storage/protected/delete", [](API_ARGS_MAP_ASYNC) {
@@ -1491,14 +1486,15 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE, MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("protected_id");
 
-        std::string protected_id = allArgs["protected_id"];
+        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            std::string protected_id = allArgs["protected_id"];
 
-        ProtectedVideoImp imp;
-        if (!imp.remove(protected_id)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_NOT_FOUND, "Failed to delete protected video");
-            return;
-        }
-        invoker(200, headerOut, val.toStyledString());
+            ProtectedVideoImp imp;
+            if (!imp.remove(protected_id)) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_NOT_FOUND, "Failed to delete protected video");
+            }
+        }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
     api_regist("/media/mserver/storage/protected/list", [](API_ARGS_MAP_ASYNC) {
