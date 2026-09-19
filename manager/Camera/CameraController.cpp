@@ -17,6 +17,11 @@ CameraController::CameraController(const DeviceTuple &tuple, const toolkit::Even
     : _tuple(tuple), _poller(poller),
       _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
 
+OnvifControl::Ptr CameraController::createOnvifControl(const std::string &address, const std::string &username,
+                                                       const std::string &password) {
+    return std::make_shared<OnvifControl>(address, username, password);
+}
+
 void CameraController::postDeviceTask(SerialTaskQueue::Task task) {
     _device_queue->post(std::move(task));
 }
@@ -116,7 +121,7 @@ void CameraController::setupController(const CameraOption &option) {
     // create new controller, currently only support onvif controller
     // todo: create plugin from manufactor and model
     // todo: support PSI controller
-    _onvif_ctr = std::make_shared<OnvifControl>(address, option.username, option.password);
+    _onvif_ctr = createOnvifControl(address, option.username, option.password);
     DebugL << "Created Onvif controller for device: " << _tuple.shortUrl() << " (" << address << ")"
         << ", username: " << (option.username.empty() ? "empty" : "******")
         << ", password: " << (option.password.empty() ? "empty" : "******");
@@ -181,7 +186,8 @@ void CameraController::onManager() {
             InfoL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connected";
             // set camera time manual
             onvif_ctr->setCameraTimeManual();
-            strong_self->syncMediaProfile();
+            // Reads the profiles here; decisions on _poller, queued before onControllerReady below.
+            strong_self->syncMediaProfile(onvif_ctr);
             
             // get device capabilities after connected
             auto caps = std::make_shared<DeviceCapabilities>();
@@ -762,74 +768,125 @@ void CameraController::addProfileConfig(const std::string &profileToken, const V
     }
 }
 
-void CameraController::syncMediaProfile() {
-    // This function is called by timer to retry setting media profile for profiles in NEW state. 
-    // It does not need to check current state before setting because the state will be updated after setMediaProfileAsync called, 
-    // and the retry logic is based on retry_time which will be reset to 5 after each try.
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
-        auto current_profiles = _onvif_ctr->getMediaProfilesInfo();
-        for (const auto &profile : current_profiles) {
-            auto token = profile.token;
-            auto it = _profileConfigMap.find(token);
-            if (it == _profileConfigMap.end()) {
-                TraceL << "Profile token: " << token << " not found in current profile config map, skip syncing";
-                continue;
-            }
+void CameraController::syncMediaProfile(const OnvifControl::Ptr &onvif_ctr) {
+    // Runs on the device queue: only the SOAP read happens here, the decisions use _profileConfigMap
+    // and are made on _poller.
+    if (!onvif_ctr || !onvif_ctr->isConnected()) {
+        WarnL << "Device controller is not ready when retrying set media profile";
+        return;
+    }
+    auto profiles = onvif_ctr->getMediaProfilesInfo();
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    _poller->async([weak_self, onvif_ctr, profiles]() {
+        if (auto self = weak_self.lock()) {
+            self->applyMediaProfileSync(onvif_ctr, profiles);
+        }
+    }, false);
+}
 
-            VideoEncoderConfig f_config = it->second;
-            if (profile.isVideoConfigEqual(f_config)) {
-                f_config.state.retry_time = 5;
-                if (f_config.state.status != configStateToString[VideoConfigSetState::EXTERNAL]) {
-                    f_config.state.status = configStateToString[VideoConfigSetState::SUCCESS];
-                    InfoL << "Profile token: " << token << " config is consistent with camera, mark as SUCCESS";
-                }
-            } else {
-                // The config in camera is different from the config in map, which means the config is changed by camera or failed to set to camera. 
-                // We will retry setting config to camera if retry_time > 0, otherwise we will consider it as failed and update the state to FAILED. 
-                // If the config is changed by camera, we will update the config in map to keep it consistent with camera, and set the state to EXTERNAL 
-                // to indicate the config is changed by external and we will not try to set it to camera until next time when we detect the config is changed again.
-                if (f_config.state.retry_time == 0 && f_config.state.status == configStateToString[VideoConfigSetState::PROCESSING]) {
-                    f_config.state.retry_time = 0;
-                    f_config.state.status = configStateToString[VideoConfigSetState::FAILED];
-                    InfoL << "Profile token: " << token << " config failed to set to camera after retrying, mark as FAILED";
-                } else if (f_config.state.retry_time > 0 && (f_config.state.status == configStateToString[VideoConfigSetState::PROCESSING] || f_config.state.status == configStateToString[VideoConfigSetState::NEW]) ) {
-                    if (_onvif_ctr->setVideoEncoderConfigByToken(token, f_config)) {
-                        f_config.state.retry_time--;
-                        f_config.state.status = configStateToString[VideoConfigSetState::PROCESSING];
-                        InfoL << "Retry set config to camera; retries left: " << f_config.state.retry_time;
-                    } else {
-                        f_config.state.retry_time = 0;
-                        f_config.state.status = configStateToString[VideoConfigSetState::FAILED];
-                        WarnL << "Failed to retry set config to camera: " << _onvif_ctr->getSoapErrMsg();
-                    }
-                } else {
-                    InfoL << "Profile token: " << token << " config changed by camera";
-                    // If the previous config update failed after 5 retry attempts,
-                    // update the user with the current camera config instead of
-                    // retrying the same failed config again.
-                    if (!_keepConfigProfileAndStream) {
-                        f_config.state.retry_time = 4;
-                        f_config.state.status = configStateToString[VideoConfigSetState::PROCESSING];
-                        if (!_onvif_ctr->setVideoEncoderConfigByToken(token, f_config)) {
-                            WarnL << "Failed to set new config to camera: " << _onvif_ctr->getSoapErrMsg();
-                        }
-                    } else {
-                        f_config.vcodec = profile.vcodec;
-                        f_config.fps = profile.fps;
-                        f_config.bitrate = profile.bitrate;
-                        f_config.width = profile.width;
-                        f_config.height = profile.height;
-                        f_config.state.retry_time = 5;
-                        f_config.state.status = configStateToString[VideoConfigSetState::EXTERNAL];
-                        InfoL << "Keep the config in map consistent with camera for profile token: " << token;
-                    }
-                }
+void CameraController::applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles) {
+    // Retries setting media profiles in NEW/PROCESSING state; the retry logic is based on
+    // retry_time, which is reset to 5 once the camera config matches.
+    CHECK(_poller->isCurrentThread(), "applyMediaProfileSync must run on the owner poller");
+    std::vector<ProfileSetRequest> requests;
+    for (const auto &profile : profiles) {
+        auto token = profile.token;
+        auto it = _profileConfigMap.find(token);
+        if (it == _profileConfigMap.end()) {
+            TraceL << "Profile token: " << token << " not found in current profile config map, skip syncing";
+            continue;
+        }
+
+        VideoEncoderConfig f_config = it->second;
+        if (profile.isVideoConfigEqual(f_config)) {
+            f_config.state.retry_time = 5;
+            if (f_config.state.status != configStateToString[VideoConfigSetState::EXTERNAL]) {
+                f_config.state.status = configStateToString[VideoConfigSetState::SUCCESS];
+                InfoL << "Profile token: " << token << " config is consistent with camera, mark as SUCCESS";
             }
             addProfileConfig(token, f_config);
+            continue;
         }
-    } else {
-        WarnL << "Device controller is not ready when retrying set media profile";
+        // The config in camera is different from the config in map, which means the config is changed by camera or failed to set to camera.
+        // We will retry setting config to camera if retry_time > 0, otherwise we will consider it as failed and update the state to FAILED.
+        // If the config is changed by camera, we will update the config in map to keep it consistent with camera, and set the state to EXTERNAL
+        // to indicate the config is changed by external and we will not try to set it to camera until next time when we detect the config is changed again.
+        if (f_config.state.retry_time == 0 && f_config.state.status == configStateToString[VideoConfigSetState::PROCESSING]) {
+            f_config.state.status = configStateToString[VideoConfigSetState::FAILED];
+            InfoL << "Profile token: " << token << " config failed to set to camera after retrying, mark as FAILED";
+            addProfileConfig(token, f_config);
+        } else if (f_config.state.retry_time > 0 && (f_config.state.status == configStateToString[VideoConfigSetState::PROCESSING] || f_config.state.status == configStateToString[VideoConfigSetState::NEW])) {
+            ProfileSetRequest request;
+            request.token = token;
+            request.based_on = f_config;
+            request.on_success = f_config;
+            request.on_success.state.retry_time--;
+            request.on_success.state.status = configStateToString[VideoConfigSetState::PROCESSING];
+            request.on_failure = f_config;
+            request.on_failure.state.retry_time = 0;
+            request.on_failure.state.status = configStateToString[VideoConfigSetState::FAILED];
+            requests.push_back(request);
+        } else if (!_keepConfigProfileAndStream) {
+            InfoL << "Profile token: " << token << " config changed by camera";
+            // If the previous config update failed after 5 retry attempts, update the user with the
+            // current camera config instead of retrying the same failed config again.
+            ProfileSetRequest request;
+            request.token = token;
+            request.based_on = f_config;
+            f_config.state.retry_time = 4;
+            f_config.state.status = configStateToString[VideoConfigSetState::PROCESSING];
+            request.on_success = f_config;
+            request.on_failure = f_config;
+            requests.push_back(request);
+        } else {
+            InfoL << "Profile token: " << token << " config changed by camera";
+            f_config.vcodec = profile.vcodec;
+            f_config.fps = profile.fps;
+            f_config.bitrate = profile.bitrate;
+            f_config.width = profile.width;
+            f_config.height = profile.height;
+            f_config.state.retry_time = 5;
+            f_config.state.status = configStateToString[VideoConfigSetState::EXTERNAL];
+            InfoL << "Keep the config in map consistent with camera for profile token: " << token;
+            addProfileConfig(token, f_config);
+        }
     }
+    if (requests.empty()) {
+        return;
+    }
+
+    // The set commands are blocking SOAP: send them on the device queue, store results on _poller.
+    auto poller = _poller;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    postDeviceTask([weak_self, onvif_ctr, poller, requests]() {
+        for (const auto &request : requests) {
+            const bool ok = onvif_ctr->setVideoEncoderConfigByToken(request.token, request.on_success);
+            if (ok) {
+                InfoL << "Retry set config to camera for profile token: " << request.token
+                      << "; retries left: " << request.on_success.state.retry_time;
+            } else {
+                WarnL << "Failed to set config to camera for profile token: " << request.token << ": " << onvif_ctr->getSoapErrMsg();
+            }
+            poller->async([weak_self, request, ok]() {
+                if (auto self = weak_self.lock()) {
+                    self->storeProfileSetResult(request, ok);
+                }
+            }, false);
+        }
+    });
+}
+
+void CameraController::storeProfileSetResult(const ProfileSetRequest &request, bool ok) {
+    auto it = _profileConfigMap.find(request.token);
+    if (it != _profileConfigMap.end()) {
+        const auto &current = it->second;
+        if (current != request.based_on || current.state.status != request.based_on.state.status ||
+            current.state.retry_time != request.based_on.state.retry_time) {
+            DebugL << "Profile token: " << request.token << " changed while its config was being set, keep the newer entry";
+            return;
+        }
+    }
+    addProfileConfig(request.token, ok ? request.on_success : request.on_failure);
 }
 
 } // namespace managerkit

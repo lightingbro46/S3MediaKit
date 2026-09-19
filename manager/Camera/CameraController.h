@@ -13,7 +13,7 @@ public:
 
     CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller);
 
-    ~CameraController() = default;
+    virtual ~CameraController() = default;
 
     void setListener(const std::shared_ptr<DeviceSourceEvent> &listener);
 
@@ -47,12 +47,32 @@ public:
 
     void getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
 
+protected:
+    // Creates the device control for `address`; unit tests override it to return a fake device.
+    virtual OnvifControl::Ptr createOnvifControl(const std::string &address, const std::string &username,
+                                                 const std::string &password);
+
 private:
+    friend class CameraControllerTestPeer; // unit tests drive the media profile sync directly
+
     void onManager();
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
-    void syncMediaProfile();
+    // Media profile sync after (re)connect, in three steps so _profileConfigMap is only touched on
+    // _poller: read the camera profiles (device queue) → decide per profile (_poller) → send the
+    // needed set commands (device queue) → store the results (_poller).
+    struct ProfileSetRequest {
+        std::string token;
+        VideoEncoderConfig based_on;   // map entry the decision was made from
+        VideoEncoderConfig on_success; // stored when the set command succeeds
+        VideoEncoderConfig on_failure; // stored when it fails
+    };
+    // Device queue: reads the profiles and hands them to applyMediaProfileSync on _poller.
+    void syncMediaProfile(const OnvifControl::Ptr &onvif_ctr);
+    void applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles);
+    // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
+    void storeProfileSetResult(const ProfileSetRequest &request, bool ok);
 
     // Runs a blocking device call (ONVIF SOAP) on this camera's serial queue.
     void postDeviceTask(SerialTaskQueue::Task task);

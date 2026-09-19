@@ -311,6 +311,8 @@ struct SDCardInformation {
 
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
 
+// The operations CameraController uses are virtual so unit tests can substitute a fake device
+// (see CameraController::createOnvifControl).
 class OnvifControl : public DeviceControl {
 public:
     using Ptr = std::shared_ptr<OnvifControl>;
@@ -330,7 +332,7 @@ public:
     /**
      * Get onvif media profiles
      */
-    OnvifMediaProfileMap getMediaProfilesInfo() { return _mediaProfile; }
+    virtual OnvifMediaProfileMap getMediaProfilesInfo() { return _mediaProfile; }
 
     /**
      * Select primary/secondary stream in media profile
@@ -340,7 +342,7 @@ public:
     /**
      * If device has PTZ capability
      */
-    bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
+    virtual bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
 
     /**
      * If device has Audio Output capability
@@ -370,12 +372,12 @@ public:
     /**
      * Get onvif ptz profile
      */
-    OnvifPTZProfile getPTZProfile() { return _ptzProfile; }
+    virtual OnvifPTZProfile getPTZProfile() { return _ptzProfile; }
 
     /**
      * Check whether the SOAP session is still active (not disconnected)
      */
-    bool isConnected() const { return _m_soap != nullptr; }
+    virtual bool isConnected() const { return _m_soap != nullptr; }
 
     /**
      * Check whether a PTZ or relay control operation is in progress
@@ -405,52 +407,52 @@ public:
     /**
      * Execute PTZ Absolute Move 
      */
-    bool PTZ_AbsoluteMove(float pan, float tilt, float zoom);
+    virtual bool PTZ_AbsoluteMove(float pan, float tilt, float zoom);
 
     /**
      * Execute PTZ Absolute Move with speed
      */
-    bool PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
+    virtual bool PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
 
     /**
      * Get current cordinates of len
      */
-    tt__MoveStatus PTZ_GetStatus(float &pan, float &tilt, float &zoom);
+    virtual tt__MoveStatus PTZ_GetStatus(float &pan, float &tilt, float &zoom);
 
     /**
      * Execute PTZ Continuous Move, timeout in second
      */
-    bool PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout = 0);
+    virtual bool PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout = 0);
 
     /**
      * Execute Stop PTZ Continuous Move
      */
-    bool PTZ_Stop(bool panTilt, bool zoom);
+    virtual bool PTZ_Stop(bool panTilt, bool zoom);
 
     /**
      * Execute PTZ Relative Move 
      */
-    bool PTZ_RelativeMove(float pan, float tilt, float zoom);
+    virtual bool PTZ_RelativeMove(float pan, float tilt, float zoom);
 
     /**
      * Execute PTZ Relative Move with speed
      */
-    bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
+    virtual bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
 
     /**
      * Execute PTZ Goto Home Position
      */
-    bool PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed);
+    virtual bool PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed);
 
     /**
      * Get last soap error message
      */
-    std::string getSoapErrMsg() { return _soapErrMsg; }
+    virtual std::string getSoapErrMsg() { return _soapErrMsg; }
 
     /**
      * Execute PTZ Goto Preset
      */
-    bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
+    virtual bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
 
     /**
      * Execute PTZ Set Preset
@@ -464,7 +466,7 @@ public:
     * @param vConfigNew New video encoder configuration.
     * @return true if the request is sent successfully; otherwise, false.
     */
-    bool setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew);
+    virtual bool setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew);
 
     /**
     * @brief Get the video encoder configuration by profile token.
