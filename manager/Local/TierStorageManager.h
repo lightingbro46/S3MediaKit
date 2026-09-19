@@ -686,6 +686,10 @@ private:
         std::condition_variable completed;
         int active_total = 0;
         std::unordered_map<std::string, int> active_by_pool;
+        // Transfer callbacks not yet finished. Unlike active_total it drops only
+        // after the callback released the manager, so stop() never returns while
+        // a work poller could still destroy the manager.
+        int callbacks_in_flight = 0;
     };
 
     struct TemporaryMp4Observation {

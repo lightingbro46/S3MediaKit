@@ -1013,7 +1013,7 @@ void TierStorageManager::stop() {
     }
     {
         std::unique_lock<std::mutex> lk(_transfer_dispatch_state->mutex);
-        while (_transfer_dispatch_state->active_total > 0)
+        while (_transfer_dispatch_state->callbacks_in_flight > 0)
             _transfer_dispatch_state->completed.wait(lk);
     }
     _backfill_tasks_initialized = false;
@@ -5426,6 +5426,7 @@ void TierStorageManager::dispatchPendingTieringJobs() {
             }
             job.status = jobStatusToString(JobStatus::RUNNING);
             ++state->active_total;
+            ++state->callbacks_in_flight;
             ++state->active_by_pool[job.source_pool_id];
             if (!same_pool)
                 ++state->active_by_pool[job.target_pool_id];
@@ -5438,39 +5439,47 @@ void TierStorageManager::dispatchPendingTieringJobs() {
     for (auto job : dispatch_jobs) {
         WorkThreadPool::Instance().getPoller()->async(
             [weak_self, state, job]() mutable {
-                auto self = weak_self.lock();
-                if (self) {
-                    try {
-                        self->executePendingJob(job);
-                    } catch (const std::exception &ex) {
-                        TieringJobImp().updateStatus(
-                            job.job_id, jobStatusToString(JobStatus::FAILED),
-                            job.bytes_moved, ex.what());
-                    } catch (...) {
-                        TieringJobImp().updateStatus(
-                            job.job_id, jobStatusToString(JobStatus::FAILED),
-                            job.bytes_moved, "Unknown tier transfer error");
-                    }
-                }
-
                 {
-                    std::lock_guard<std::mutex> lk(state->mutex);
-                    --state->active_total;
-                    auto release_pool = [&](const std::string &pool_id) {
-                        auto it = state->active_by_pool.find(pool_id);
-                        if (it == state->active_by_pool.end())
-                            return;
-                        if (--it->second <= 0)
-                            state->active_by_pool.erase(it);
-                    };
-                    release_pool(job.source_pool_id);
-                    if (job.target_pool_id != job.source_pool_id)
-                        release_pool(job.target_pool_id);
-                    state->completed.notify_all();
+                    auto self = weak_self.lock();
+                    if (self) {
+                        try {
+                            self->executePendingJob(job);
+                        } catch (const std::exception &ex) {
+                            TieringJobImp().updateStatus(
+                                job.job_id, jobStatusToString(JobStatus::FAILED),
+                                job.bytes_moved, ex.what());
+                        } catch (...) {
+                            TieringJobImp().updateStatus(
+                                job.job_id, jobStatusToString(JobStatus::FAILED),
+                                job.bytes_moved, "Unknown tier transfer error");
+                        }
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lk(state->mutex);
+                        --state->active_total;
+                        auto release_pool = [&](const std::string &pool_id) {
+                            auto it = state->active_by_pool.find(pool_id);
+                            if (it == state->active_by_pool.end())
+                                return;
+                            if (--it->second <= 0)
+                                state->active_by_pool.erase(it);
+                        };
+                        release_pool(job.source_pool_id);
+                        if (job.target_pool_id != job.source_pool_id)
+                            release_pool(job.target_pool_id);
+                    }
+
+                    if (self && !self->_stopping)
+                        self->dispatchPendingTieringJobs();
                 }
 
-                if (self && !self->_stopping)
-                    self->dispatchPendingTieringJobs();
+                // Signal stop() only after self is released; otherwise the last
+                // reference could drop here and destroy the manager on this poller
+                // while the process is tearing down.
+                std::lock_guard<std::mutex> lk(state->mutex);
+                --state->callbacks_in_flight;
+                state->completed.notify_all();
             });
     }
 }

@@ -2,11 +2,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <unistd.h>
 
 #include "Local/TimeFile.h"
 #include "Local/TimeMaker.h"
 #include "Local/TimeDemuxer.h"
+#include "Local/TimeFileAccessManager.h"
 #include "Local/TimeQuery.h"
 
 using namespace managerkit;
@@ -261,6 +263,47 @@ TEST(MultiTimeDemuxerTest, SwitchesAcrossTimelineFiles) {
 
     std::remove(first.c_str());
     std::remove(second.c_str());
+}
+
+TEST(MultiTimeDemuxerTest, SkipsFileDeletedByPendingSwap) {
+    const std::string removed = "/tmp/s3mediakit-unit-swap-removed.s3db";
+    const std::string kept = "/tmp/s3mediakit-unit-swap-kept.s3db";
+    writeTimeline(removed, {makeBlock("main", 100, 10)}, false);
+    writeTimeline(kept, {makeBlock("main", 300, 10)}, false);
+
+    // The list is taken while a swap is pending; that swap kept no block, so it
+    // deletes the file before the blocked reader can open it.
+    TimeFileAccessManager::Instance().beginPendingSwap(removed);
+    MultiTimeDemuxer demuxer;
+    std::string open_error;
+    std::thread reader([&]() {
+        try {
+            demuxer.openFile(removed + ";" + kept);
+        } catch (const std::exception &ex) {
+            open_error = ex.what();
+        }
+    });
+    ::usleep(50000);
+    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(removed, [removed]() {
+        std::remove(removed.c_str());
+    });
+    reader.join();
+
+    EXPECT_EQ("", open_error);
+    EXPECT_EQ(300U, demuxer.getFirstStamp());
+    TimeBlock block;
+    bool eof = false;
+    demuxer.readBlock(block, eof);
+    EXPECT_FALSE(eof);
+    EXPECT_EQ(300U, block.start_time());
+    demuxer.readBlock(block, eof);
+    EXPECT_TRUE(eof);
+    demuxer.closeFile();
+
+    // With every listed file gone the timeline is empty, not unreadable.
+    MultiTimeDemuxer empty;
+    EXPECT_THROW(empty.openFile(removed), NoTimeFileError);
+    std::remove(kept.c_str());
 }
 
 TEST(TimeQueryTest, ReadsTimelineWithoutStatisticState) {

@@ -81,6 +81,12 @@ void TimeDemuxer::openFile(const string &file) {
     _file_name = file;
     _read_limit_bytes = 0;
     _read_guard = TimeFileAccessManager::Instance().acquireRead(_file_name);
+    // acquireRead() waits for a pending swap, and a swap whose rebuild kept no
+    // block deletes the file. It then holds no timeline, which is not a read error.
+    if (!File::fileExist(_file_name)) {
+        _read_guard.reset();
+        throw NoTimeFileError("Time file was removed: " + _file_name);
+    }
     _file = std::make_shared<TimeFileDisk>();
     _file->openFile(_file_name.data(), "rb");
     _reader = _file->createReader();
@@ -151,7 +157,13 @@ void MultiTimeDemuxer::openFile(const string &files_string) {
 
     for (auto &file : files) {
         auto demuxer = std::make_shared<TimeDemuxer>();
-        demuxer->openFile(file);
+        try {
+            demuxer->openFile(file);
+        } catch (const NoTimeFileError &ex) {
+            // Listed before a timefile swap deleted it.
+            DebugL << ex.what();
+            continue;
+        }
         auto start_stamp = demuxer->getFirstStamp();
         _demuxers.emplace(start_stamp, demuxer);
     }
