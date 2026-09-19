@@ -306,6 +306,33 @@ TEST(MultiTimeDemuxerTest, SkipsFileDeletedByPendingSwap) {
     std::remove(kept.c_str());
 }
 
+TEST(MultiTimeDemuxerTest, DirectoryScanIgnoresRebuildTempFile) {
+    char dir_template[] = "/tmp/s3mediakit-unit-rebuild-scan-XXXXXX";
+    ASSERT_NE(nullptr, ::mkdtemp(dir_template));
+    const std::string dir = dir_template;
+    const std::string timeline = dir + "/2026-09-09.s3db";
+    // TimeRebuilder writes ".<name>.s3db" beside the source until the swap.
+    const std::string rebuild_tmp = dir + "/.2026-09-09.s3db";
+    writeTimeline(timeline, {makeBlock("main", 300, 10)}, false);
+    writeTimeline(rebuild_tmp, {makeBlock("main", 100, 10)}, false);
+
+    MultiTimeDemuxer demuxer;
+    demuxer.openFile(dir);
+    EXPECT_EQ(300U, demuxer.getFirstStamp());
+    TimeBlock block;
+    bool eof = false;
+    demuxer.readBlock(block, eof);
+    EXPECT_FALSE(eof);
+    EXPECT_EQ(300U, block.start_time());
+    demuxer.readBlock(block, eof);
+    EXPECT_TRUE(eof);
+    demuxer.closeFile();
+
+    EXPECT_EQ(0, std::remove(timeline.c_str()));
+    EXPECT_EQ(0, std::remove(rebuild_tmp.c_str()));
+    EXPECT_EQ(0, ::rmdir(dir.c_str()));
+}
+
 TEST(TimeQueryTest, ReadsTimelineWithoutStatisticState) {
     const std::string path = "/tmp/s3mediakit-unit-time-query.s3db";
     writeTimeline(path,
