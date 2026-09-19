@@ -24,8 +24,9 @@ TEST(StorageTierTest, ConvertsEnumsAndReportsCapabilities) {
     EXPECT_TRUE(poolTypeSupport(HotTier)["LOCAL_DISK"].asBool());
 #if defined(ENABLE_AWS_SDK)
     EXPECT_TRUE(poolTypeSupport(ColdTier)["MINIO"].asBool());
-    EXPECT_TRUE(poolTypeSupport(ColdTier)["S3"].asBool());
-    EXPECT_TRUE(poolTypeSupport(ColdTier)["ARCHIVE"].asBool());
+    // S3/ARCHIVE are temporarily disabled for COLD even with the AWS SDK (04ef7a48).
+    EXPECT_FALSE(poolTypeSupport(ColdTier)["S3"].asBool());
+    EXPECT_FALSE(poolTypeSupport(ColdTier)["ARCHIVE"].asBool());
 #else
     EXPECT_FALSE(poolTypeSupport(ColdTier)["MINIO"].asBool());
     EXPECT_FALSE(poolTypeSupport(ColdTier)["S3"].asBool());
