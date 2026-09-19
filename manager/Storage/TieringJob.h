@@ -370,7 +370,8 @@ public:
     }
 
     std::vector<TieringJob> claimPendingAt(int limit, int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: selects PENDING jobs before claiming them (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         std::vector<TieringJob> claimed;
         auto rows = _executor->executeRawWithTxn(
             txn,
@@ -1079,7 +1080,8 @@ public:
     bool mergeIfUncovered(const SegmentTierRange &range,
                           int64_t merge_gap_seconds,
                           int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: checks for an owning range before merging (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         try {
             if (hasOwningRangeWithTxn(txn, range.camera_id, range.stream_id,
                                       range.start_time)) {
@@ -1102,7 +1104,8 @@ public:
     bool mergeNormalizedRange(const SegmentTierRange &range,
                               int64_t merge_gap_seconds,
                               int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: mergeNormalizedRangeWithTxn reads neighbours before writing (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         try {
             if (!mergeNormalizedRangeWithTxn(range, merge_gap_seconds,
                                              updated_at, txn)) {
@@ -1226,7 +1229,8 @@ public:
                             int64_t updated_at) {
         if (range_id.empty())
             return false;
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: reads the range before replacing it (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         try {
             auto rows = _executor->executeRawWithTxn(
                 txn,

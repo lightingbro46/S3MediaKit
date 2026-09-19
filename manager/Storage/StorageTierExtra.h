@@ -460,7 +460,8 @@ public:
 
     std::vector<RestoreJobSegment> claimPendingAt(int limit, int64_t updated_at) {
         std::vector<RestoreJobSegment> claimed;
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: selects PENDING segments before claiming them (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         try {
             auto rows = _executor->executeRawWithTxn(
                 txn,
@@ -588,7 +589,8 @@ public:
     }
 
     bool persistAndReactivateRange(const SegmentRetentionOverride &item) {
-        auto txn = _executor->execTxn();
+        // IMMEDIATE: looks the override up before writing it (see DbStorage::execTxn).
+        auto txn = _executor->execTxn(true);
         auto existing = _executor->executeRawWithTxn(
             txn,
             toolkit::QueryBuilder()

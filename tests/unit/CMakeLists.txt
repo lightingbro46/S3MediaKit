@@ -123,6 +123,16 @@ if(ENABLE_TIER_STORAGE)
     "${PROJECT_SOURCE_DIR}/server")
   add_test(NAME unit.storage_pool_api_all COMMAND unit_storage_pool_api)
   set_tests_properties(unit.storage_pool_api_all PROPERTIES LABELS unit TIMEOUT 15)
+
+  # Tier read-then-write transactions against a temporary mserver DB built from the real migrations.
+  add_s3_unit_test(unit_tier_txn_lock storage/test_tier_txn_lock.cpp)
+  target_link_libraries(unit_tier_txn_lock PRIVATE
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec)
+  target_compile_definitions(unit_tier_txn_lock PRIVATE
+    S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+  add_test(NAME unit.tier_txn_lock_all COMMAND unit_tier_txn_lock)
+  set_tests_properties(unit.tier_txn_lock_all PROPERTIES LABELS unit TIMEOUT 30)
 endif()
 
 if(ENABLE_SERVER_LIB)
