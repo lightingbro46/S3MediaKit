@@ -133,6 +133,27 @@ target_include_directories(unit_subnet_scan PRIVATE "${PROJECT_SOURCE_DIR}/serve
 add_test(NAME unit.subnet_scan_all COMMAND unit_subnet_scan)
 set_tests_properties(unit.subnet_scan_all PROPERTIES LABELS unit TIMEOUT 30)
 
+# FFmpegExtractor start/cancel (server/FFmpegSource.cpp compiled directly); remaining server/
+# symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_extract_start
+  server/test_extract_start.cpp
+  "${PROJECT_SOURCE_DIR}/server/FFmpegSource.cpp"
+  "${PROJECT_SOURCE_DIR}/server/Process.cpp"
+  "${PROJECT_SOURCE_DIR}/server/System.cpp"
+  "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp"
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_extract_start PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_extract_start PRIVATE "${PROJECT_SOURCE_DIR}/server")
+target_compile_definitions(unit_extract_start PRIVATE
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+add_test(NAME unit.extract_start_all COMMAND unit_extract_start)
+set_tests_properties(unit.extract_start_all PROPERTIES LABELS unit TIMEOUT 30)
+
 if(ENABLE_TIER_STORAGE)
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp

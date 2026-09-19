@@ -1333,7 +1333,16 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         return;
     }
     updateLifecycleStatus(Stage::QUEUED, 0.0f);
-    prepareExtractSource();
+    // The timefile query, restore planning and ffmpeg start run on the extractor's own poller
+    // (where its restore/ffmpeg timers already run), not on the caller's thread, which is an
+    // HTTP request poller for extractArchived/create.
+    weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
+    _poller->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (self) {
+            self->prepareExtractSource();
+        }
+    }, false);
 }
 
 const char *FFmpegExtractor::stageToString(Stage stage) {
@@ -1388,6 +1397,16 @@ void FFmpegExtractor::notifyStartOnce(const SockException &ex) {
 }
 
 void FFmpegExtractor::prepareExtractSource() {
+    bool cancelled;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        cancelled = _cancelled;
+    }
+    if (cancelled) {
+        // cancel() already closed the task; still answer the start callback once.
+        notifyStartOnce(SockException(Err_other, "Extraction task was cancelled", ApiErrCode::CODE_EXTRACT_FAILED));
+        return;
+    }
     vector<TimeBlock> blocks;
     queryExtractTimeBlocks(_tuple.app, _tuple.stream, _options.start_time,
                            _options.end_time, [&blocks](const TimeBlock &block) {
@@ -1924,6 +1943,7 @@ void FFmpegExtractor::cancel() {
     {
         lock_guard<mutex> lock(_status_mtx);
         _onComplete = nullptr;
+        _cancelled = true;
     }
     _timer.reset();
     _process.kill(2000);

@@ -340,6 +340,8 @@ private:
     bool _success = false;
     bool _complete_emitted = false;
     bool _started = false;
+    // Set by cancel(); a prepare step still queued on _poller then does nothing.
+    bool _cancelled = false;
     bool _start_emitted = false;
     bool _restore_cache_retained = false;
     bool _restore_started = false;
