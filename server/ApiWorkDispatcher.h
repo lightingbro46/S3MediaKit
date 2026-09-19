@@ -66,6 +66,18 @@ public:
     explicit ApiBusyException(const std::string &msg) : std::runtime_error(msg) {}
 };
 
+// Thrown from API work to answer like RETURN_API_RESPONSE(code, msg): HTTP status of `code`,
+// `code`/`msg` (default message when empty) added to the response, connection kept. With
+// dispatchApiWork, fields already set on `val` by the work are kept in the response.
+class ApiResponseException : public std::runtime_error {
+public:
+    ApiResponseException(int code, const std::string &msg) : std::runtime_error(msg), _code(code) {}
+    int code() const { return _code; }
+
+private:
+    int _code;
+};
+
 // Sends the error response for an exception thrown while serving an API request, using the same
 // mapping as the synchronous dispatch (ApiRetException / SqliteException / std::exception).
 // As in the synchronous path, the connection is shut down after an ApiRetException (but not after

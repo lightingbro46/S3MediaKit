@@ -92,6 +92,19 @@ void sendApiError(int code, const string &msg, int status_code, const HttpSessio
     invoker(status_code, headerOut, res.toStyledString());
 }
 
+// Same answer as RETURN_API_RESPONSE(ex.code(), ex.what()) on `val`.
+void sendApiResponse(const ApiResponseException &ex, Json::Value val, const HttpSession::KeyValue &headerOut,
+                     const HttpSession::HttpResponseInvoker &invoker) {
+    const auto code = static_cast<managerkit::ApiErrCode>(ex.code());
+    string msg = ex.what();
+    if (msg.empty()) {
+        msg = managerkit::getDefaultMessage(code);
+    }
+    val["code"] = static_cast<int>(code);
+    val["msg"] = msg;
+    invoker(managerkit::getStatusCode(code), headerOut, val.toStyledString());
+}
+
 bool isEmptyWeak(const weak_ptr<SocketHelper> &ptr) {
     weak_ptr<SocketHelper> empty;
     return !ptr.owner_before(empty) && !empty.owner_before(ptr);
@@ -108,6 +121,11 @@ void responseApiException(const exception_ptr &error, const HttpSession::HttpRes
     // Keep in sync with the synchronous dispatch in WebApi.cpp (installWebApi / http request listener).
     try {
         rethrow_exception(error);
+    } catch (ApiResponseException &ex) {
+        GET_CONFIG(string, charSet, Http::kCharSet);
+        HttpSession::KeyValue headerOut;
+        headerOut["Content-Type"] = string("application/json; charset=") + charSet;
+        sendApiResponse(ex, Json::Value(), headerOut, invoker);
     } catch (ApiBusyException &ex) {
         // Backpressure: the client may retry, keep the connection.
         sendApiError(static_cast<int>(managerkit::ApiErrCode::CODE_SERVER_BUSY), ex.what(), 503, invoker);
@@ -214,6 +232,14 @@ void dispatchApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper>
                 }
             }
             if (failure) {
+                try {
+                    rethrow_exception(failure);
+                } catch (ApiResponseException &ex) {
+                    // Keep what the work already put in `val` (e.g. data.flag = false).
+                    sendApiResponse(ex, *result, headerOut, invoker);
+                    return;
+                } catch (...) {
+                }
                 responseApiException(failure, invoker, session);
                 return;
             }

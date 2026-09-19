@@ -36,6 +36,22 @@ def call(path, params=None, timeout=120):
     return status, data, elapsed
 
 
+def post_json(path, body, timeout=30):
+    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    start = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as err:
+        status, raw = err.code, err.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = {"raw": raw[:200].decode(errors="replace")}
+    return status, data, time.time() - start
+
+
 def check(name, ok, detail=""):
     print("%s %s %s" % ("PASS" if ok else "FAIL", name, detail))
     if not ok:
@@ -177,6 +193,45 @@ for name, path, params, want_status, want_code in step2:
         print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:160]))
         continue
     check("step2 %s" % name, status == want_status and data.get("code") == want_code,
+          "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
+
+# 8. Storage read-only APIs (worker.md step 3) run on the API worker: status and codes unchanged.
+S = "/media/mserver/storage"
+step3 = [
+    ("pool/list", S + "/pool/list", {}, 200, 0),
+    ("pool/detail(unknown)", S + "/pool/detail", {"id": "no-such-pool"}, 404, 914001),
+    ("policy/list", S + "/policy/list", {}, 200, 0),
+    ("policy/detail(unknown)", S + "/policy/detail", {"id": "no-such-policy"}, 404, 914002),
+    ("camera/effectivePolicy(unknown)", S + "/camera/effectivePolicy", {"camera_id": "no-such-camera"}, 404, 905001),
+    ("camera/effectivePolicy/list", S + "/camera/effectivePolicy/list", {}, 200, 0),
+    ("camera/timeline(bad range)", S + "/camera/timeline",
+     {"camera_id": "no-such-camera", "start_time": 5, "end_time": 1}, 404, 902009),
+    ("camera/timeline(unknown)", S + "/camera/timeline",
+     {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001),
+    ("camera/summary(unknown)", S + "/camera/summary", {"camera_id": "no-such-camera"}, 404, 905001),
+    ("camera/summary/list", S + "/camera/summary/list", {}, 200, 0),
+    ("restoreJob/list", S + "/restoreJob/list", {}, 200, 0),
+    ("restoreJob/detail(unknown)", S + "/restoreJob/detail", {"job_id": "no-such-job"}, 404, 914018),
+    ("tieringJob/list", S + "/tieringJob/list", {}, 200, 0),
+    ("tieringJob/detail(unknown)", S + "/tieringJob/detail", {"job_id": "no-such-job"}, 404, 914020),
+    ("dashboard/summary", S + "/dashboard/summary", {}, 200, 0),
+    ("dashboard/detail", S + "/dashboard/detail", "json", 200, 0),
+    ("alert/list", S + "/alert/list", {}, 200, 0),
+    ("expiredSegment/list", S + "/expiredSegment/list", {}, 200, 0),
+    ("protected/list", S + "/protected/list", {}, 200, 0),
+    ("mountpoint/available", S + "/mountpoint/available", {}, 200, 0),
+    ("systemStatisticHistory", "/media/mserver/systemStatisticHistory", {"from": 0, "to": 2000000000, "limit": 5}, 200, 0),
+    ("storage/list", "/media/mserver/storage/list", {"mediaServerId": NODE_ID}, 200, 0),
+    ("storage/list(other node)", "/media/mserver/storage/list", {"mediaServerId": "someone-else"}, 404, 902006),
+    ("device/storage", "/media/mserver/device/storage", {"mediaServerId": NODE_ID}, 200, 0),
+    ("camera/timeline(missing args)", S + "/camera/timeline", {"camera_id": "x"}, 400, 902001),
+]
+for name, path, params, want_status, want_code in step3:
+    status, data, elapsed = post_json(path, {}) if params == "json" else call(path, params, timeout=30)
+    if probe_only or want_status is None:
+        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:160]))
+        continue
+    check("step3 %s" % name, status == want_status and data.get("code") == want_code,
           "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
 
 print("FAILED: %s" % failures if failures else "ALL PASSED")

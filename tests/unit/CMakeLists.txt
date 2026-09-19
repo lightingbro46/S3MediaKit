@@ -101,7 +101,8 @@ endif()
 # API worker dispatcher (server/ApiWorkDispatcher.cpp), compiled directly like the storage API test.
 add_s3_unit_test(unit_api_work_dispatcher
   server/test_api_work_dispatcher.cpp
-  "${PROJECT_SOURCE_DIR}/server/ApiWorkDispatcher.cpp")
+  "${PROJECT_SOURCE_DIR}/server/ApiWorkDispatcher.cpp"
+  "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp")
 target_link_libraries(unit_api_work_dispatcher PRIVATE
   -Wl,--start-group
   S3MediaKit::MediaKit

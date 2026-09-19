@@ -402,3 +402,44 @@ TEST(ApiWorkDispatcherTest, CallbackWorkExceptionIsAnsweredOnlyWithoutReply) {
         EXPECT_EQ(200, replies[0].status);
     }
 }
+
+TEST(ApiWorkDispatcherTest, ApiResponseExceptionAnswersLikeReturnApiResponse) {
+    auto owner = ownerPoller();
+    auto session = std::make_shared<DummySession>(owner);
+    std::weak_ptr<SocketHelper> weak_session = session;
+    ReplyProbe probe;
+    dispatchApiWork(owner, weak_session, jsonHeader(), successVal(), probe.invoker(owner),
+        [](Json::Value &val) {
+            val["data"]["flag"] = false;
+            throw ApiResponseException(managerkit::ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+        });
+    ASSERT_TRUE(probe.waitFirst());
+    auto replies = probe.settle();
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(404, replies[0].status);
+    EXPECT_EQ(static_cast<int>(managerkit::ApiErrCode::CODE_DEVICE_NOT_FOUND), replies[0].body["code"].asInt());
+    EXPECT_EQ("Camera not found", replies[0].body["msg"].asString());
+    EXPECT_FALSE(replies[0].body["data"]["flag"].asBool());
+    EXPECT_TRUE(replies[0].body["data"].isMember("flag"));
+
+    // Unlike ApiRetException, the connection is kept.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(session->getSock() != nullptr);
+    EXPECT_FALSE(weak_session.expired());
+}
+
+TEST(ApiWorkDispatcherTest, ApiResponseExceptionUsesDefaultMessage) {
+    auto owner = ownerPoller();
+    ReplyProbe probe;
+    runApiWork(owner, std::weak_ptr<SocketHelper>(),
+        []() { throw ApiResponseException(managerkit::ApiErrCode::CODE_MSERVER_NOT_FOUND, ""); },
+        [&probe, owner](const std::exception_ptr &error) {
+            responseApiException(error, probe.invoker(owner), std::weak_ptr<SocketHelper>());
+        });
+    ASSERT_TRUE(probe.waitFirst());
+    auto replies = probe.settle();
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(404, replies[0].status);
+    EXPECT_EQ(static_cast<int>(managerkit::ApiErrCode::CODE_MSERVER_NOT_FOUND), replies[0].body["code"].asInt());
+    EXPECT_EQ(managerkit::getDefaultMessage(managerkit::ApiErrCode::CODE_MSERVER_NOT_FOUND), replies[0].body["msg"].asString());
+}
