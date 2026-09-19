@@ -44,7 +44,7 @@ void registerSyncDbApis() {
                 log_rows = SyncManager::Instance().getCurrentCursors(cursors, limit);
             }
             val["data"] = log_rows;
-        });
+        }, nullptr, apiWorkLimit("sync.changes"));
     });
 
     api_regist("/media/esc/sync/snapshot", [](API_ARGS_MAP_ASYNC) {
@@ -65,7 +65,7 @@ void registerSyncDbApis() {
             //     return;
             // }
             val["data"] = SnapshotBuilder::serialize(snap);
-        });
+        }, nullptr, apiWorkLimit("sync.snapshot"));
     });
 
     api_regist("/media/esc/sync/misc", [](API_ARGS_MAP_ASYNC) {

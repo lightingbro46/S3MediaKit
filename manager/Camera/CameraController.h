@@ -3,6 +3,7 @@
 
 #include "GenericRtspCamera.h"
 #include "Control/OnvifDeviceControl.h"
+#include "Common/SerialTaskQueue.h"
 
 namespace managerkit {
 
@@ -53,9 +54,23 @@ private:
 
     void syncMediaProfile();
 
+    // Runs a blocking device call (ONVIF SOAP) on this camera's serial queue.
+    void postDeviceTask(SerialTaskQueue::Task task);
+
+    // Posts `task` to the serial queue after `delay_ms`; callable from any thread. The delay runs on
+    // _poller. `on_cancel` runs instead when the controller is gone or, if `ptz_generation` is not
+    // 0, when a newer PTZ command was issued meanwhile.
+    void postDeviceTaskAfter(int delay_ms, uint64_t ptz_generation,
+                             const SerialTaskQueue::Task &task, const SerialTaskQueue::Task &on_cancel);
+
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
+    // Serializes all blocking calls to this camera on the shared `device` pool.
+    SerialTaskQueue::Ptr _device_queue;
+    // Incremented (on _poller) by every PTZ command; a pending continuous-move stop only fires
+    // while it is unchanged, so it cannot stop a newer PTZ command.
+    uint64_t _ptz_generation = 0;
     std::atomic<bool> _ready { false };
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;

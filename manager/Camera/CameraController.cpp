@@ -1,5 +1,5 @@
 #include "CameraController.h"
-#include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
 #include "Local/MediaGapFillManager.h"
 #include "Util/onceToken.h"
@@ -10,7 +10,31 @@ using namespace mediakit;
 
 namespace managerkit {
 
-CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
+// Posts a device task after a delay; `on_cancel` runs instead if the task no longer applies.
+using DelayedDeviceTask = function<void(int delay_ms, const function<void()> &task, const function<void()> &on_cancel)>;
+
+CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
+    : _tuple(tuple), _poller(poller),
+      _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
+
+void CameraController::postDeviceTask(SerialTaskQueue::Task task) {
+    _device_queue->post(std::move(task));
+}
+
+void CameraController::postDeviceTaskAfter(int delay_ms, uint64_t ptz_generation,
+                                           const SerialTaskQueue::Task &task, const SerialTaskQueue::Task &on_cancel) {
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    // Only the timer runs on _poller; the task itself goes through the serial queue.
+    _poller->doDelayTask(delay_ms, [weak_self, ptz_generation, task, on_cancel]() {
+        auto self = weak_self.lock();
+        if (!self || (ptz_generation != 0 && self->_ptz_generation != ptz_generation)) {
+            on_cancel();
+            return 0;
+        }
+        self->postDeviceTask(task);
+        return 0;
+    });
+}
 
 void CameraController::createTimer() {
     weak_ptr<CameraController> weak_self = shared_from_this();
@@ -144,9 +168,8 @@ void CameraController::onManager() {
     auto onvif_ctr = _onvif_ctr;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
 
-    // ONVIF connect() is a blocking SOAP/HTTP call — dispatch on WorkThreadPool,
-    // not EventPollerPool, to avoid blocking stream I/O pollers.
-    WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
+    // ONVIF connect() is a blocking SOAP/HTTP call: run it on the camera's serial device queue.
+    postDeviceTask([weak_self, onvif_ctr]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
@@ -188,7 +211,7 @@ void CameraController::onManager() {
 
 // ── Imaging control (focus / iris) ───────────────────────────────────────────
 static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT direct, int speed,
-                              const function<void(const SockException &ex)> &cb) {
+                              const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     switch (direct) {
         case IMAGE_CONTROL_DIRECT::FocusAuto:
             // TODO: trigger auto-focus via Imaging service
@@ -206,10 +229,11 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
                 return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED));
             }
             // Auto-stop after 1 second
-            WorkThreadPool::Instance().getPoller()->doDelayTask(1000, [ptr, cb]() {
+            delayed(1000, [ptr, cb]() {
                 ptr->Imaging_FocusStop();
                 cb(SockException(Err_success, "Imaging focus move success", ApiErrCode::CODE_SUCCESS));
-                return 0;
+            }, [cb]() {
+                cb(SockException(Err_success, "Imaging focus move success", ApiErrCode::CODE_SUCCESS));
             });
             return;
         }
@@ -257,7 +281,8 @@ static void onvifRelayControl(const OnvifControl::Ptr &ptr, RELAY_OUTPUT_CONTROL
 }
 
 // ── Standard PTZ (pan / tilt / zoom) ─────────────────────────────────────────
-static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed, const function<void(const SockException &ex)> &cb) {
+static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed,
+                         const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
         return;
@@ -353,15 +378,17 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             return;
         }
 
-        // PTZ_Stop() is a blocking SOAP call — schedule on WorkThreadPool, not EventPollerPool.
-        WorkThreadPool::Instance().getPoller()->doDelayTask(timeout_sec * 1000, [ptr, cb]() {
+        // Stop after the move timeout, unless a newer PTZ command was issued meanwhile: stopping
+        // then would cut that command short (the camera also stops by itself at the timeout).
+        delayed(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
                 cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
-                return 0;
+                return;
             }
             // Execute success
             cb(SockException(Err_success, "Device execute ptz continuous move success", ApiErrCode::CODE_SUCCESS));
-            return 0;
+        }, [cb]() {
+            cb(SockException(Err_success, "Device execute ptz continuous move success", ApiErrCode::CODE_SUCCESS));
         });
         return;
     }
@@ -401,9 +428,17 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
         auto onvif_ctr = _onvif_ctr;
         int ptz_mode   = _ptzMode;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
-        // Blocking SOAP — dispatch to a fresh WorkThread so _poller stays responsive.
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, ptz_mode, direct, ptz_speed, cb]() {
-            onvifPTZMove(onvif_ctr, ptz_mode, direct, ptz_speed, cb);
+        const uint64_t generation = ++_ptz_generation;
+        DelayedDeviceTask delayed = [weak_self, generation](int delay_ms, const function<void()> &task, const function<void()> &on_cancel) {
+            auto self = weak_self.lock();
+            if (!self) {
+                on_cancel();
+                return;
+            }
+            self->postDeviceTaskAfter(delay_ms, generation, task, on_cancel);
+        };
+        postDeviceTask([onvif_ctr, ptz_mode, direct, ptz_speed, cb, delayed]() {
+            onvifPTZMove(onvif_ctr, ptz_mode, direct, ptz_speed, cb, delayed);
         });
         return;
     }
@@ -436,9 +471,16 @@ void CameraController::ImageMoveControl(const std::string &strDirect, int speed,
     if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto onvif_ctr = _onvif_ctr;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
-        // Blocking SOAP — dispatch to a fresh WorkThread so _poller stays responsive.
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, direct, speed, cb]() {
-            onvifImageControl(onvif_ctr, direct, speed, cb);
+        DelayedDeviceTask delayed = [weak_self](int delay_ms, const function<void()> &task, const function<void()> &on_cancel) {
+            auto self = weak_self.lock();
+            if (!self) {
+                on_cancel();
+                return;
+            }
+            self->postDeviceTaskAfter(delay_ms, 0, task, on_cancel);
+        };
+        postDeviceTask([onvif_ctr, direct, speed, cb, delayed]() {
+            onvifImageControl(onvif_ctr, direct, speed, cb, delayed);
         });
         return;
     }
@@ -461,9 +503,8 @@ void CameraController::RelayOutputControl(const std::string &strDirect, const st
 
     if (_onvif_ctr && _onvif_ctr->isConnected()) {
         auto onvif_ctr = _onvif_ctr;
-        std::weak_ptr<CameraController> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, relay_token, direct, cb]() { 
-            onvifRelayControl(onvif_ctr, direct, relay_token, cb); 
+        postDeviceTask([onvif_ctr, relay_token, direct, cb]() {
+            onvifRelayControl(onvif_ctr, direct, relay_token, cb);
         });
         return;
     }
@@ -504,8 +545,8 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
     std::weak_ptr<CameraController> weak_self = shared_from_this();
     std::string token = presetToken;
     std::string name  = presetName;
-    // Blocking SOAP — dispatch to WorkThread so _poller stays responsive.
-    WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, poller, token, name, cb]() {
+    // Blocking SOAP — run it on the camera's serial device queue so _poller stays responsive.
+    postDeviceTask([weak_self, onvif_ctr, poller, token, name, cb]() {
         float p = 0, t = 0, z = 0;
         // PTZ_GetStatus returns UNKNOWN only on SOAP failure; IDLE/MOVING both indicate
         // the call succeeded and the coordinates are valid.
@@ -552,7 +593,8 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
         cb(SockException(Err_other, "Camera is configured to disable PTZ control", ApiErrCode::CODE_DEVICE_CONFIG_DISABLE_PTZ));
         return;
     }
-    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    // A preset move supersedes a pending continuous-move stop.
+    ++_ptz_generation;
 
     if (isUserPreset) {
         auto it = _userPresets.find(presetToken);
@@ -564,8 +606,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
         if (_onvif_ctr && _onvif_ctr->isConnected()) {
             auto onvif_ctr = _onvif_ctr;
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
-            // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
-            WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, pan, tilt, zoom, cb]() mutable {
+            postDeviceTask([onvif_ctr, pan, tilt, zoom, cb]() mutable {
                 if (!onvif_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
                     cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED));
                 } else {
@@ -581,8 +622,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
         if (_onvif_ctr && _onvif_ctr->isConnected()) {
             auto onvif_ctr = _onvif_ctr;
             string token = presetToken;
-            // Blocking SOAP — dispatch to fresh WorkThread so _poller stays responsive.
-            WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, cb]() {
+            postDeviceTask([onvif_ctr, token, cb]() {
                 if (!onvif_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
                     cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED));
                 } else {
@@ -620,7 +660,7 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
                 cb(ex, config_copy);
             });
         };
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, token, on_callback]() {
+        postDeviceTask([onvif_ctr, token, on_callback]() {
             onvifGetMediaProfile(onvif_ctr, token, on_callback);
         });
         return;
@@ -692,7 +732,7 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
                 }
             });
         };
-        WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr, profileToken, config, cb, on_success]() {
+        postDeviceTask([onvif_ctr, profileToken, config, cb, on_success]() {
             onvifSetMediaProfile(onvif_ctr, profileToken, config, cb, on_success);
         });
         return;

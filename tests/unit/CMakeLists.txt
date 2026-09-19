@@ -112,6 +112,26 @@ target_include_directories(unit_api_work_dispatcher PRIVATE "${PROJECT_SOURCE_DI
 add_test(NAME unit.api_work_dispatcher_all COMMAND unit_api_work_dispatcher)
 set_tests_properties(unit.api_work_dispatcher_all PROPERTIES LABELS unit TIMEOUT 30)
 
+# Shared blocking thread pools (manager/Common/BlockingExecutors).
+add_s3_unit_test(unit_blocking_executors manager/test_blocking_executors.cpp manager/test_serial_task_queue.cpp)
+target_link_libraries(unit_blocking_executors PRIVATE S3MediaKit::ManagerKit)
+add_test(NAME unit.blocking_executors_all COMMAND unit_blocking_executors)
+set_tests_properties(unit.blocking_executors_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# SubnetScan with an injected probe; server/ symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_subnet_scan
+  manager/test_subnet_scan.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_subnet_scan PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_subnet_scan PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.subnet_scan_all COMMAND unit_subnet_scan)
+set_tests_properties(unit.subnet_scan_all PROPERTIES LABELS unit TIMEOUT 30)
+
 if(ENABLE_TIER_STORAGE)
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp

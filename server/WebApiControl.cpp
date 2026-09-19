@@ -68,7 +68,7 @@ void registerControlApis() {
                     return;
                 }
                 respond(result->ex, result->data);
-            });
+            }, apiWorkLimit("device.discovery"));
     });
 
     api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
@@ -88,23 +88,22 @@ void registerControlApis() {
             return;
         }
 
-        // Synchronous scan of the whole range (blocking ONVIF calls per IP): run it on the API worker
-        // pool. Addresses are IPs, so discovery_device answers synchronously.
-        dispatchApiWork(sender, headerOut, val, invoker, [startIp, endIp, port, defaultPort, username, password](Json::Value &val) {
-            int scan_port = port;
-            bool scan_default_port = defaultPort;
-            std::string user = username;
-            std::string pass = password;
+        SubnetScanOption option;
+        option.startIp = startIp;
+        option.endIp = endIp;
+        option.port = port;
+        option.defaultPort = defaultPort;
+        option.username = username;
+        option.password = password;
+
+        // Synchronous scan of the whole range: the API worker waits while the IPs are probed in
+        // parallel (bounded by searcher.max_parallel) on the discovery pool; devices keep IP order.
+        dispatchApiWork(sender, headerOut, val, invoker, [option](Json::Value &val) {
             val["data"] = arrayValue;
-            auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
-            for (auto &ip : ip_range) {
-                SubnetScan::discovery_device(ip, scan_port, scan_default_port, user, pass, [&val](const SockException &ex, const DeviceScanResult &data) {
-                    if (!ex) {
-                        val["data"].append(toJsonValue(data));
-                    }
-                });
+            for (const auto &device : SubnetScan::scanRange(option)) {
+                val["data"].append(toJsonValue(device));
             }
-        });
+        }, nullptr, apiWorkLimit("device.discovery"));
     });
 
     static auto addSubnetScan = [](SubnetScanOption &option, const function<void(const SockException &ex, const string &key)> &cb) {

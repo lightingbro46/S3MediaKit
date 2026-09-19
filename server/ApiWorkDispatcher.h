@@ -4,6 +4,8 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include "json/json.h"
 #include "Http/HttpSession.h"
 #include "Network/Socket.h"
@@ -33,12 +35,41 @@ using ApiCompletionTask = std::function<void(Json::Value &val)>;
 // Dedicated executor for blocking API work. It is separate from WorkThreadPool: WorkThreadPool
 // threads are EventPollers that also run timers and ordered queues (SyncManager, camera ESC
 // writes, tier storage), which a long API request must not delay.
-// Pool size: config `api.workerThreads` (<= 0: max(2, hardware_concurrency / 2)), read once.
+// It is managerkit::BlockingExecutors::api() (pool size: `blocking.apiThreads`, legacy `api.workerThreads`).
 toolkit::TaskExecutor::Ptr getApiWorkExecutor();
+
+// Admission limit for a group of endpoints (backpressure). A request over the limit is answered
+// 503 CODE_SERVER_BUSY without running its work, and the connection is kept:
+//   - max_inflight: requests of the group queued or running at the same time (<= 0: unlimited);
+//   - max_queue_ms: a request that waited longer in the worker queue is dropped (<= 0: unlimited).
+// An empty group means no limit (the default, so existing handlers are unchanged).
+struct ApiWorkLimit {
+    ApiWorkLimit() = default;
+    ApiWorkLimit(std::string group_in, int max_inflight_in, int max_queue_ms_in)
+        : group(std::move(group_in)), max_inflight(max_inflight_in), max_queue_ms(max_queue_ms_in) {}
+
+    std::string group;
+    int max_inflight = 0;
+    int max_queue_ms = 0;
+};
+
+// Limit of `group` from config `api.limit.<group>.maxInflight` / `api.limit.<group>.maxQueueMs`,
+// read on every call. Registered groups: sync.snapshot, sync.changes, device.discovery.
+ApiWorkLimit apiWorkLimit(const std::string &group);
+
+// Requests of `group` currently queued or running (for tests and diagnostics).
+int apiWorkInflight(const std::string &group);
+
+// Error of a request rejected by an ApiWorkLimit: answered 503 CODE_SERVER_BUSY.
+class ApiBusyException : public std::runtime_error {
+public:
+    explicit ApiBusyException(const std::string &msg) : std::runtime_error(msg) {}
+};
 
 // Sends the error response for an exception thrown while serving an API request, using the same
 // mapping as the synchronous dispatch (ApiRetException / SqliteException / std::exception).
-// As in the synchronous path, the connection is shut down after an ApiRetException.
+// As in the synchronous path, the connection is shut down after an ApiRetException (but not after
+// an ApiBusyException).
 void responseApiException(const std::exception_ptr &error,
                           const mediakit::HttpSession::HttpResponseInvoker &invoker,
                           const std::weak_ptr<toolkit::SocketHelper> &session);
@@ -50,11 +81,13 @@ std::weak_ptr<toolkit::SocketHelper> apiRequestSession(toolkit::SockInfo &sender
 
 // Generic form: `work` runs on the API worker pool, then `done(error)` runs on `owner`
 // exactly once (`error` is null on success). If `session` is given and already expired
-// before the work starts, the work is skipped and `done` is not called.
+// before the work starts, the work is skipped and `done` is not called. A request rejected by
+// `limit` does not run `work`; `done` gets an ApiBusyException.
 void runApiWork(const toolkit::EventPoller::Ptr &owner,
                 const std::weak_ptr<toolkit::SocketHelper> &session,
                 const std::function<void()> &work,
-                const std::function<void(const std::exception_ptr &error)> &done);
+                const std::function<void(const std::exception_ptr &error)> &done,
+                const ApiWorkLimit &limit = ApiWorkLimit());
 
 // Typical handler form: runs `work`, then `completion` on the request poller, then replies
 // `200 + val` (or the mapped error). `headerOut` / `val` are copied.
@@ -63,7 +96,8 @@ void dispatchApiWork(toolkit::SockInfo &sender,
                      const Json::Value &val,
                      const mediakit::HttpSession::HttpResponseInvoker &invoker,
                      const ApiWorkTask &work,
-                     const ApiCompletionTask &completion = nullptr);
+                     const ApiCompletionTask &completion = nullptr,
+                     const ApiWorkLimit &limit = ApiWorkLimit());
 
 // Same as above with an explicit owner poller and session (for callers without a SockInfo, and tests).
 void dispatchApiWork(const toolkit::EventPoller::Ptr &owner,
@@ -72,6 +106,7 @@ void dispatchApiWork(const toolkit::EventPoller::Ptr &owner,
                      const Json::Value &val,
                      const mediakit::HttpSession::HttpResponseInvoker &invoker,
                      const ApiWorkTask &work,
-                     const ApiCompletionTask &completion = nullptr);
+                     const ApiCompletionTask &completion = nullptr,
+                     const ApiWorkLimit &limit = ApiWorkLimit());
 
 #endif // S3MEDIAKIT_API_WORK_DISPATCHER_H

@@ -7,12 +7,15 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include "ApiWorkDispatcher.h"
+#include "Common/BlockingExecutors.h"
 #include "Network/Socket.h"
 #include "Poller/EventPoller.h"
 #include "Util/SqliteConnection.h"
 #include "WebApi.h"
+#include "WebApiErrCode.h"
 
 using namespace toolkit;
 using namespace mediakit;
@@ -86,6 +89,10 @@ Json::Value successVal() {
 }
 
 } // namespace
+
+TEST(ApiWorkDispatcherTest, UsesSharedApiPool) {
+    EXPECT_EQ(managerkit::BlockingExecutors::api().get(), getApiWorkExecutor().get());
+}
 
 TEST(ApiWorkDispatcherTest, RunsWorkOffPollerAndRepliesOnOwner) {
     auto owner = ownerPoller();
@@ -210,4 +217,120 @@ TEST(ApiWorkDispatcherTest, SlowWorkDoesNotBlockOwnerPoller) {
 
     ASSERT_TRUE(probe.waitFirst());
     EXPECT_EQ(1u, probe.settle().size());
+}
+
+namespace {
+
+// Blocks worker tasks until released.
+struct Gate {
+    std::shared_ptr<std::promise<void>> open = std::make_shared<std::promise<void>>();
+    std::shared_future<void> opened = open->get_future().share();
+    void release() { open->set_value(); }
+    std::function<void(Json::Value &)> blockingWork(std::atomic<int> *started = nullptr) {
+        auto opened_copy = opened;
+        return [opened_copy, started](Json::Value &) {
+            if (started) {
+                ++(*started);
+            }
+            opened_copy.wait_for(std::chrono::seconds(5));
+        };
+    }
+};
+
+bool waitFor(const std::function<bool()> &cond, int ms = 3000) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (cond()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return cond();
+}
+
+} // namespace
+
+TEST(ApiWorkDispatcherTest, RejectsOverInflightLimitWithoutRunningWork) {
+    auto owner = ownerPoller();
+    const ApiWorkLimit limit("test.inflight", 1, 0);
+    Gate gate;
+    std::atomic<int> started{0};
+    ReplyProbe first;
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), first.invoker(owner),
+                    gate.blockingWork(&started), nullptr, limit);
+    ASSERT_TRUE(waitFor([&started]() { return started.load() == 1; }));
+    EXPECT_EQ(1, apiWorkInflight("test.inflight"));
+
+    ReplyProbe second;
+    std::atomic<bool> second_ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), second.invoker(owner),
+                    [&second_ran](Json::Value &) { second_ran = true; }, nullptr, limit);
+    ASSERT_TRUE(second.waitFirst());
+    auto rejected = second.settle(50);
+    ASSERT_EQ(1u, rejected.size());
+    EXPECT_EQ(503, rejected[0].status);
+    EXPECT_EQ(static_cast<int>(managerkit::ApiErrCode::CODE_SERVER_BUSY), rejected[0].body["code"].asInt());
+    EXPECT_TRUE(rejected[0].on_owner);
+    EXPECT_FALSE(second_ran.load());
+
+    gate.release();
+    ASSERT_TRUE(first.waitFirst());
+    EXPECT_EQ(200, first.settle(50)[0].status);
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.inflight") == 0; }));
+}
+
+TEST(ApiWorkDispatcherTest, InflightSlotIsReleasedWhenWorkThrows) {
+    auto owner = ownerPoller();
+    const ApiWorkLimit limit("test.throw", 1, 0);
+    for (int i = 0; i < 3; ++i) {
+        ReplyProbe probe;
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), probe.invoker(owner),
+                        [](Json::Value &) { throw std::runtime_error("boom"); }, nullptr, limit);
+        ASSERT_TRUE(probe.waitFirst()) << "round " << i;
+        // Would be 503 from the second round on if the slot leaked.
+        EXPECT_EQ(500, probe.settle(20)[0].status) << "round " << i;
+        EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.throw") == 0; })) << "round " << i;
+    }
+}
+
+TEST(ApiWorkDispatcherTest, DropsRequestThatWaitedTooLongInQueue) {
+    auto owner = ownerPoller();
+    // Occupy every API worker so the limited request has to wait in the queue.
+    const int threads = managerkit::BlockingExecutors::apiThreadCount();
+    Gate gate;
+    std::atomic<int> started{0};
+    std::vector<std::unique_ptr<ReplyProbe>> blockers;
+    for (int i = 0; i < threads; ++i) {
+        blockers.emplace_back(new ReplyProbe());
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(),
+                        blockers.back()->invoker(owner), gate.blockingWork(&started));
+    }
+    ASSERT_TRUE(waitFor([&started, threads]() { return started.load() == threads; }));
+
+    ReplyProbe probe;
+    std::atomic<bool> ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), probe.invoker(owner),
+                    [&ran](Json::Value &) { ran = true; }, nullptr, ApiWorkLimit("test.queue", 0, 50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    gate.release();
+
+    ASSERT_TRUE(probe.waitFirst());
+    auto replies = probe.settle(50);
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(503, replies[0].status);
+    EXPECT_FALSE(ran.load());
+    for (auto &blocker : blockers) {
+        EXPECT_TRUE(blocker->waitFirst());
+    }
+}
+
+TEST(ApiWorkDispatcherTest, ReadsGroupLimitsFromConfig) {
+    auto snapshot = apiWorkLimit("sync.snapshot");
+    EXPECT_EQ("sync.snapshot", snapshot.group);
+    EXPECT_EQ(2, snapshot.max_inflight);
+    EXPECT_EQ(8, apiWorkLimit("sync.changes").max_inflight);
+    EXPECT_EQ(4, apiWorkLimit("device.discovery").max_inflight);
+    auto unknown = apiWorkLimit("not.configured");
+    EXPECT_EQ(0, unknown.max_inflight);
+    EXPECT_EQ(0, unknown.max_queue_ms);
 }
