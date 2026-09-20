@@ -17,7 +17,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 |---|---|---|---|
 | — | Bộ stress test + báo cáo | **xong** | `d4c78308` |
 | V1 | Segfault khi camera ONVIF thiếu zoom space | **xong** | `d57429e3` |
-| V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **đang dở** — code + test đã viết, chưa chạy được test | chưa commit |
+| V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | chưa bắt đầu | — |
 | V4 | PTZ chết khi vài camera ONVIF chậm | chưa bắt đầu | — |
 | V7 | `enforceStoragePolicy()` blocking trên poller | chưa bắt đầu | — |
@@ -54,7 +54,7 @@ Năm case mới ở `tests/unit/manager/test_camera_controller.cpp`
 
 ---
 
-## V6 — đang dở, nằm trong working tree
+## V6 — đã xong (`b315c402`)
 
 ### Đã thay đổi
 
@@ -91,15 +91,17 @@ mục không phải ngày / nội suy đúng theo `keep_percent` / không tràn 
 
 `tests/unit/CMakeLists.txt` — thêm file trên vào target `unit_storage`.
 
-### Việc còn lại của V6
+### Xác minh đã chạy
 
-1. `manager/CMakeLists.txt` dùng `file(GLOB)` nên file `.cpp` mới **cần chạy lại cmake**:
-   ```bash
-   cmake -S . -B build-test
-   cmake --build build-test --target unit_storage -j2
-   ./release/linux/Debug/unit_storage --gtest_filter='StoragePolicy*'
-   ```
-2. Commit.
+```
+cmake -S . -B build-test && cmake --build build-test --target unit_storage -j2   → exit 0
+./release/linux/Debug/unit_storage --gtest_filter='StoragePolicy*'               → 9/9 PASSED
+./release/linux/Debug/unit_storage                                                → 54/54 PASSED
+cmake -S . -B build && cmake --build build -j2                                    → exit 0
+```
+
+**Chưa làm:** xác minh bằng harness — chạy pha `retention_drop` / `retention_purge` và kiểm
+không còn file nào của camera Auto bị xoá sớm.
 
 ### Cố ý không làm trong V6
 
