@@ -4,6 +4,10 @@ Kết quả rà soát toàn bộ **134 route `/media/*`** (2026-09-20, nhánh `f
 Đây là danh sách việc cần làm, không phải mô tả hiện trạng kiến trúc — mô hình thread và cách
 dispatch nằm ở [threading-blocking-work.md](threading-blocking-work.md).
 
+Tài liệu này **gộp luôn phần còn lại** của hai plan cũ (`docs/features/worker.md` và
+`docs/sync-followup-plan.md`), xem [§5](#5-tồn-đọng-gộp-từ-hai-plan-cũ). Sau khi hai file đó được
+xoá, đây là nguồn duy nhất cho việc còn phải làm.
+
 ## Cách rà soát
 
 Script phân tích từng thân handler `api_regist("/media/...")`, xác định phạm vi **lambda đầu tiên**
@@ -12,7 +16,7 @@ chạy trên worker; mọi lambda còn lại — completion, done — chạy tr�
 lời gọi blocking **nằm ngoài** phạm vi đó.
 
 Từ 134 route: 39 route bị gắn cờ, sau khi soi tay còn **34 route cần sửa thật**. Phần false positive
-được liệt kê ở [§5](#5-đã-kiểm-tra-và-không-cần-sửa) để lần sau không phải soi lại.
+được liệt kê ở [§6](#6-đã-kiểm-tra-và-không-cần-sửa) để lần sau không phải soi lại.
 
 Mẫu nhận biết blocking: `*Imp`/`Repository`/`findBy*` (SQLite), `File::*`/`::stat`/`scanDir`,
 `TimeQuery`/`MultiTimeDemuxer`, `TierStorageManager::Instance()`, `FFmpegSnap`/`FFmpegProbe`/
@@ -26,7 +30,12 @@ Mẫu nhận biết blocking: `*Imp`/`Repository`/`findBy*` (SQLite), `File::*`/
 | **P1** | [§2 `/media/api/storage/*`](#2-p1--họ-mediaapistorage-25-route) | 25 | Cả họ endpoint bị bỏ sót hoàn toàn khi refactor `/media/mserver/storage/*` |
 | **P2** | [§3 Storage còn sót](#3-p2--storage-còn-sót-1-route) | 1 | `playback/resolve` nằm trong đường phát lại |
 | **P2** | [§4 WebApi.cpp lẻ](#4-p2--các-route-lẻ-trong-webapicpp-3-route) | 3 | `getSyncStatus`, `listFiles`, `systemStatisticHistory` |
+| P2 | [§5.2 Backpressure](#52-các-mục-còn-lại) | — | Pool `api` chưa có giới hạn tổng, mới có theo nhóm |
 | P3 | [§4](#4-p2--các-route-lẻ-trong-webapicpp-3-route) | 1 | `serveFile` — một `::stat`, chỉ đáng lo trên NFS |
+
+Thứ tự đề xuất: **§1.1** (sửa `RecordedThumbnailTask::start()`, nhỏ và độc lập) → **§5.2
+backpressure tổng** (làm trước khi đổ thêm 25 endpoint vào pool `api`) → **§2** → **§1** → **§3** →
+**§4**.
 
 ---
 
@@ -174,7 +183,53 @@ Hướng làm: `dispatchApiWork` toàn bộ `on_access`, giữ `CHECK_USER_DEVIC
 
 ---
 
-## 5. Đã kiểm tra và không cần sửa
+## 5. Tồn đọng gộp từ hai plan cũ
+
+### 5.1 Trạng thái
+
+| Plan | Trạng thái |
+|---|---|
+| `docs/sync-followup-plan.md` (P0–P8) | **Xong hết.** Đã kiểm chứng cả hai mục "chỉ sửa tài liệu" của P8: ghi chú mật khẩu camera nằm trong dữ liệu đồng bộ có ở [api-sync.md:449](api-sync.md), ghi chú chưa có `ownershipGeneration` có ở [api-sync.md:47](api-sync.md) |
+| `docs/features/worker.md` (Bước 1–6) | Các bước đều đánh dấu xong; còn 3 mục ở [§5.2](#52-các-mục-còn-lại), và một lỗ hổng phạm vi ở [§5.3](#53-lỗ-hổng-phạm-vi-của-workermd) |
+
+### 5.2 Các mục còn lại
+
+| Mục | Nguồn | Xử lý |
+|---|---|---|
+| **Backpressure tổng cho pool `api`** | `worker.md` mục 6 phần đánh giá, và "Còn tồn đọng" | **Chưa làm** — xem dưới |
+| Phần tạo thumbnail của `bookmark/recordThumbnail` (TimeQuery/ffmpeg) | `worker.md` Bước 2 ghi "để Bước 5", nhưng Bước 5 chỉ làm extraction | Đã gộp vào [§1](#1-p1--thumbnail-2-route--1-lỗi-lifecycle) |
+| `/index/api/getSnap` chọn thread theo query param `async` | `worker.md` "Chưa làm (cố ý)" | Cố ý bỏ, xem [§7](#7-ngoài-phạm-vi) |
+
+**Backpressure tổng.** `ApiWorkLimit` hiện chỉ giới hạn **theo nhóm**
+(`sync.snapshot` 2, `sync.changes` 8, `device.discovery` 4). Không có trần cho toàn pool `api`, nên
+nhiều nhóm cùng bận vẫn có thể lấp kín mọi thread và làm hàng đợi dài vô hạn — request đã bị client
+timeout vẫn chạy tiếp. Hướng làm:
+
+- Một bộ đếm in-flight toàn cục cho `BlockingExecutors::api()`, config
+  `api.limit.global.maxInflight` / `maxQueueMs`, vượt thì trả 503 `CODE_SERVER_BUSY` (902012) như
+  giới hạn theo nhóm.
+- Giới hạn nhóm vẫn được kiểm tra trước, để một nhóm nặng không chiếm hết hạn mức chung.
+- Cần đặt mặc định đủ rộng để không làm đổi hành vi của các endpoint hiện có.
+- Test: mở rộng `unit_api_work_dispatcher` (vượt trần chung → 503 đúng một lần, bộ đếm giảm đúng cả
+  khi work ném exception, giới hạn nhóm vẫn ưu tiên).
+
+Việc này **nên làm trước** [§2](#2-p1--họ-mediaapistorage-25-route): thêm 25 endpoint nữa vào pool
+`api` mà chưa có trần chung thì rủi ro lấp pool tăng lên đáng kể.
+
+### 5.3 Lỗ hổng phạm vi của `worker.md`
+
+`worker.md` tuyên bố phạm vi là "**chỉ các API có route `/media/*`**", và "Exit criteria" ghi *"tất
+cả blocking DB/filesystem/S3/HTTP/FFmpeg trong nhóm `/media/*` đã được phân loại"*. Thực tế cả 6
+bước chỉ đụng tới `/media/mserver/*` và `/media/esc/*`.
+
+Họ `/media/api/*` (trust boundary `CHECK_SECRET` / `CHECK_CLUSTER_AUTHOR_ASYNC`) **chưa từng được
+phân loại** — đó chính là [§2](#2-p1--họ-mediaapistorage-25-route) và
+[§4](#4-p2--các-route-lẻ-trong-webapicpp-3-route) của tài liệu này, 28 route. Nói cách khác, exit
+criteria của `worker.md` chưa đạt, và đợt làm tiếp theo mới đóng được nó.
+
+---
+
+## 6. Đã kiểm tra và không cần sửa
 
 Ghi lại để lần rà soát sau không mất công soi lại.
 
@@ -195,7 +250,7 @@ Ghi lại để lần rà soát sau không mất công soi lại.
 
 ---
 
-## 6. Ngoài phạm vi
+## 7. Ngoài phạm vi
 
 - **`/index/api/getSnap`** — client chọn thread qua query param `async`, nhánh `async=0` chờ ffmpeg
   trên một poller của `WorkThreadPool`. Là API của repo gốc, đã thống nhất giữ nguyên contract. Nếu
@@ -206,7 +261,7 @@ Ghi lại để lần rà soát sau không mất công soi lại.
 
 ---
 
-## 7. Kiểm chứng sau khi sửa
+## 8. Kiểm chứng sau khi sửa
 
 Mỗi nhóm xong thì chạy:
 
