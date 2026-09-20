@@ -29,6 +29,9 @@ using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
+// Constant-initialized: the config registration below runs during static init and reads it.
+const char kApiGlobalLimitGroup[] = "global";
+
 namespace {
 
 const string kApiLimitPrefix = "api.limit.";
@@ -38,6 +41,12 @@ string limitKey(const string &group, const char *field) {
 }
 
 onceToken s_api_limit_config([]() {
+    // Total cap of the API pool, applied to every dispatched request on top of its group limit:
+    // without it, several busy groups together can fill every worker and grow an unbounded queue of
+    // requests the clients have already given up on. Wide by default, so no existing endpoint
+    // changes behaviour; `global` is a reserved group name.
+    mINI::Instance()[limitKey(kApiGlobalLimitGroup, "maxInflight")] = 256;
+    mINI::Instance()[limitKey(kApiGlobalLimitGroup, "maxQueueMs")] = 30000;
     // Snapshots are large and slow to build: few at a time.
     mINI::Instance()[limitKey("sync.snapshot", "maxInflight")] = 2;
     mINI::Instance()[limitKey("sync.snapshot", "maxQueueMs")] = 30000;
@@ -46,6 +55,14 @@ onceToken s_api_limit_config([]() {
     // Each ONVIF discovery may block up to ~20s on an address that does not answer.
     mINI::Instance()[limitKey("device.discovery", "maxInflight")] = 4;
     mINI::Instance()[limitKey("device.discovery", "maxQueueMs")] = 30000;
+    // Storage reads (tier repositories, mount scan, dashboard): plain SQLite queries, but a whole
+    // endpoint family, so the group gets a budget of its own well above normal use.
+    mINI::Instance()[limitKey("storage.read", "maxInflight")] = 32;
+    mINI::Instance()[limitKey("storage.read", "maxQueueMs")] = 15000;
+    // Recorded thumbnails: opening the timefile plus rendering the overlay (which writes an SVG
+    // mask to disk) before ffmpeg is even started.
+    mINI::Instance()[limitKey("media.thumbnail", "maxInflight")] = 8;
+    mINI::Instance()[limitKey("media.thumbnail", "maxQueueMs")] = 15000;
 });
 
 int readLimit(const string &key) {
@@ -93,6 +110,32 @@ public:
 private:
     shared_ptr<atomic<int>> _counter;
 };
+
+// Takes an in-flight slot of `group`; false when the group already has `max_inflight` requests.
+// No group or no limit means no slot to take, which always succeeds.
+bool acquireInflight(const string &group, int max_inflight, shared_ptr<InflightSlot> &slot) {
+    if (group.empty() || max_inflight <= 0) {
+        return true;
+    }
+    auto counter = inflightCounter(group);
+    if (++(*counter) > max_inflight) {
+        --(*counter);
+        return false;
+    }
+    slot = std::make_shared<InflightSlot>(counter);
+    return true;
+}
+
+// The stricter of two queue deadlines (<= 0 means unlimited).
+int tighterQueueMs(int a, int b) {
+    if (a <= 0) {
+        return b > 0 ? b : 0;
+    }
+    if (b <= 0) {
+        return a;
+    }
+    return a < b ? a : b;
+}
 
 void sendApiError(int code, const string &msg, int status_code, const HttpSession::HttpResponseInvoker &invoker) {
     GET_CONFIG(string, charSet, Http::kCharSet);
@@ -191,23 +234,37 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
     // An empty weak_ptr means "no session to watch"; an expired one means the client is gone.
     const bool check_session = !isEmptyWeak(session);
 
-    shared_ptr<InflightSlot> slot;
-    if (!limit.group.empty() && limit.max_inflight > 0) {
-        auto counter = inflightCounter(limit.group);
-        if (++(*counter) > limit.max_inflight) {
-            --(*counter);
-            WarnL << "API group " << limit.group << " is busy (" << limit.max_inflight << " requests in flight), rejecting";
-            auto error = make_exception_ptr(ApiBusyException("Server busy (" + limit.group + "), retry later"));
-            owner->async([done, error]() { done(error); }, false);
-            return;
-        }
-        slot = std::make_shared<InflightSlot>(counter);
+    auto rejectBusy = [&owner, &done](const string &group, int max_inflight) {
+        WarnL << "API group " << group << " is busy (" << max_inflight << " requests in flight), rejecting";
+        auto error = make_exception_ptr(ApiBusyException("Server busy (" + group + "), retry later"));
+        owner->async([done, error]() { done(error); }, false);
+    };
+
+    // The group limit is checked first, so a heavy group is rejected on its own budget instead of
+    // eating into the pool-wide one.
+    shared_ptr<InflightSlot> group_slot;
+    if (!acquireInflight(limit.group, limit.max_inflight, group_slot)) {
+        rejectBusy(limit.group, limit.max_inflight);
+        return;
+    }
+    // Pool-wide limit: applies to every request, whether or not it belongs to a group.
+    const auto global_limit = apiWorkLimit(kApiGlobalLimitGroup);
+    shared_ptr<InflightSlot> global_slot;
+    if (!acquireInflight(global_limit.group, global_limit.max_inflight, global_slot)) {
+        // group_slot is released here, before the response.
+        rejectBusy(global_limit.group, global_limit.max_inflight);
+        return;
     }
     const auto queued_at = chrono::steady_clock::now();
-    const string group = limit.group;
-    const int max_queue_ms = limit.group.empty() ? 0 : limit.max_queue_ms;
+    string group = limit.group;
+    int max_queue_ms = limit.group.empty() ? 0 : limit.max_queue_ms;
+    const int queue_ms = tighterQueueMs(max_queue_ms, global_limit.max_queue_ms);
+    if (queue_ms != max_queue_ms) {
+        group = global_limit.group;
+    }
+    max_queue_ms = queue_ms;
 
-    auto task = [owner, session, check_session, work, done, slot, queued_at, group, max_queue_ms]() {
+    auto task = [owner, session, check_session, work, done, group_slot, global_slot, queued_at, group, max_queue_ms]() {
         if (check_session && session.expired()) {
             // Client is gone: nobody will read the response, skip the blocking work.
             return;

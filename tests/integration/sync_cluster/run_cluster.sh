@@ -96,7 +96,10 @@ if [ "${2:-}" = "workerapis" ]; then
         curl -s -m 2 -o /dev/null http://127.0.0.1:18081/media/mserver/healthcheck && break
         sleep 1
     done
-    python3 "$HERE/check_worker_apis.py" http://127.0.0.1:18081 node-a
+    # The /media/api/* family is behind CHECK_SECRET(); hand the node's secret to the checker.
+    # MediaServer dumps config.ini with CRLF line endings, hence the tr.
+    API_SECRET="$(sed -n 's/^secret=//p' "$WORK/node-a/config.ini" | head -1 | tr -d '\r')" \
+        python3 "$HERE/check_worker_apis.py" http://127.0.0.1:18081 node-a
     exit $?
 fi
 

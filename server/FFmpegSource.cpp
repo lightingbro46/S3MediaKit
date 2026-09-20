@@ -751,7 +751,14 @@ void RecordedThumbnailTask::start() {
         auto self = weak_self.lock();
         return self ? self->tick() : false;
     }, _poller);
-    tick();
+    // The first tick resolves the object read source (SQLite, and possibly object storage), so it
+    // runs on the task poller like every later tick instead of on whichever thread called start().
+    _poller->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (self) {
+            self->tick();
+        }
+    }, false);
 }
 
 bool RecordedThumbnailTask::tick() {

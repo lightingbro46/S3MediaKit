@@ -160,7 +160,17 @@ Nếu session đã đóng trước khi worker bắt đầu, phần việc blocki
   ngay, **không** xếp hàng.
 - `maxQueueMs`: request chờ trong hàng đợi lâu hơn mức này thì bị bỏ.
 
-Nhóm đã đăng ký và giá trị mặc định: xem [§5](#5-cấu-hình).
+Ngoài giới hạn theo nhóm còn có **giới hạn tổng cho cả pool `api`** (`api.limit.global.*`,
+nhóm `global` là tên dành riêng). Nó áp cho **mọi** request đi qua `runApiWork` /
+`dispatchApiWork` / `runApiCallbackWork`, kể cả request không thuộc nhóm nào. Thứ tự:
+
+1. Kiểm tra giới hạn của nhóm trước — nhóm nặng bị chặn trên hạn mức của chính nó, không ăn lẹm
+   vào hạn mức chung.
+2. Rồi mới kiểm tra `global`. Nếu vượt, slot của nhóm đã lấy được trả lại trước khi trả 503.
+3. `maxQueueMs` thực tế là **mức chặt hơn** giữa nhóm và `global`.
+
+Mặc định của `global` đặt rộng để không đổi hành vi của endpoint hiện có; xem
+[§5](#5-cấu-hình).
 
 ### 3.4 Transaction đọc rồi ghi
 
@@ -245,9 +255,12 @@ Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
 
 | Nhóm | `maxInflight` | `maxQueueMs` |
 |---|---|---|
+| `api.limit.global.*` | 256 | 30000 |
 | `api.limit.sync.snapshot.*` | 2 | 30000 |
 | `api.limit.sync.changes.*` | 8 | 30000 |
 | `api.limit.device.discovery.*` | 4 | 30000 |
+| `api.limit.storage.read.*` | 32 | 15000 |
+| `api.limit.media.thumbnail.*` | 8 | 15000 |
 
 Quét dải IP (`manager/Control/SubnetScan.cpp`):
 
@@ -263,7 +276,6 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
   vẫn chờ ffmpeg trên một poller của `WorkThreadPool`. Đây là API của repo gốc, cố ý giữ
   nguyên contract. Nếu muốn xử lý mà không đổi contract: cho `makeSnap` gọi `makeSnapOnWorker`
   thay vì `WorkThreadPool`.
-- Chưa có giới hạn tổng số request đồng thời cho pool `api`; mới có `ApiWorkLimit` theo nhóm.
 - `SubnetScan::scanRange()` (bản đồng bộ) giữ một thread của pool `api` trong suốt lần quét.
   Quét dải lớn toàn IP không route được sẽ giữ thread đó rất lâu.
 
@@ -274,7 +286,7 @@ Unit test:
 | Target | Nội dung |
 |---|---|
 | `unit_blocking_executors` | Pool là singleton và tách biệt nhau, thread không phải poller, tên thread, số thread song song đúng cấu hình |
-| `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, poller không bị chặn |
+| `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
 
@@ -287,12 +299,17 @@ ctest --test-dir build-test --output-on-failure -R unit.
 Kiểm thử tích hợp — `tests/integration/sync_cluster/check_worker_apis.py`, chạy qua:
 
 ```bash
-tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
+bash tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
 ```
 
 Script gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gói, rồi đo độ trễ của
 `/media/mserver/healthcheck` trong suốt thời gian đó. Kết quả mong đợi: discovery mất
 20s/10s trong khi healthcheck vẫn ở mức vài milli giây.
+
+Bước 6 phủ họ `/media/api/*` (trust boundary `CHECK_SECRET`): 21 route đọc + 5 mutation, kiểm tra
+status/code không đổi, cộng một vòng `storage/dashboard/detail` song song với healthcheck.
+`run_cluster.sh` truyền secret của node qua `API_SECRET` — secret được MediaServer sinh ngẫu nhiên
+lúc khởi động rồi ghi vào `config.ini` (file dump theo CRLF nên phải `tr -d '\r'`).
 
 > `BLACKHOLE_IP` phải là `192.0.2.1` (RFC 5737 TEST-NET-1). Không dùng dải `10.x`: dưới WSL đó
 > là NAT gateway của host và trả "connection refused" ngay, làm mọi check theo thời gian trở

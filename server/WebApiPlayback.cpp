@@ -115,169 +115,183 @@ void registerPlaybackApis() {
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE);
         CHECK_ARGS_("cameraId", "pos");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
-            string camera_id = allArgs["cameraId"];
-            string stream_id = allArgs["streamId"];
-            string pos_str = allArgs["pos"];
-            bool edge = allArgs["edge"];
+        auto poller = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, poller, session]() mutable {
+            // Owner lookup (SQLite), opening the timefile, rendering the overlay (which writes the
+            // SVG mask to disk) and starting the thumbnail task all run on the API worker. Every
+            // answer goes through `reply`, which runs it on the request poller owning the session.
+            runApiCallbackWork(poller, session, invoker,
+                [allArgs, val, invoker, headerOut](const ApiReply &reply) mutable {
+                string camera_id = allArgs["cameraId"];
+                string stream_id = allArgs["streamId"];
+                string pos_str = allArgs["pos"];
+                bool edge = allArgs["edge"];
 
-            // Forward to the node that recorded this camera at the requested time.
-            if (!edge) {
-                std::pair<string, string> owner;
-                if (pos_str == "latest") {
-                    owner = SearchEngine::findCurrentOwnerNode(camera_id);
-                } else {
-                    owner = SearchEngine::findOwnerNodeAtTime(camera_id, (int64_t)stoll(pos_str));
+                // Forward to the node that recorded this camera at the requested time.
+                if (!edge) {
+                    std::pair<string, string> owner;
+                    if (pos_str == "latest") {
+                        owner = SearchEngine::findCurrentOwnerNode(camera_id);
+                    } else {
+                        owner = SearchEngine::findOwnerNodeAtTime(camera_id, (int64_t)stoll(pos_str));
+                    }
+                    if (!owner.second.empty()) {
+                        string jwt_token = allArgs["_jwt_token"];
+                        string owner_node = owner.second;
+                        // Forwarding is asynchronous HTTP; it is emitted from the request poller.
+                        reply([owner_node, camera_id, stream_id, pos_str, jwt_token, invoker]() {
+                            NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, owner_node, camera_id, stream_id, pos_str, jwt_token, invoker);
+                        });
+                        return;
+                    }
                 }
-                if (!owner.second.empty()) {
-                    string jwt_token = allArgs["_jwt_token"];
-                    NOTICE_EMIT(BroadcastSyncThumbnailArgs, Broadcast::kBroadcastSyncThumbnail, owner.second, camera_id, stream_id, pos_str, jwt_token, invoker);
-                    return;
-                }
-            }
 
-            MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
-            TimeQuery::Ptr query;
-            try {
-                query = std::make_shared<TimeQuery>(tuple);
-            } catch(...) {}
+                MediaTuple tuple = { DEFAULT_VHOST, camera_id, stream_id, "" };
+                TimeQuery::Ptr query;
+                try {
+                    query = std::make_shared<TimeQuery>(tuple);
+                } catch(...) {}
 
-            string src_path;
-            TimeBlock selected_block;
-            bool has_selected_block = false;
-            uint64_t pos_time = 0;
-            uint64_t diff_time = 0;
-            if (query) {
-                if (pos_str == "latest" || pos_str == "0") {
-                    // todo: get latest jpeg record
-                    auto ret = findDeviceSource(tuple.app, GENERIC_RTSP_CAMERA_SCHEMA);
-                    if (ret) {
-                        auto weak_listener = ret->getListener();
-                        if (auto listener = weak_listener.lock()) {
-                            auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(listener);
-                            if (ptr) {
-                                auto stats_imp = ptr->getCameraStatisticImp();
-                                if (stats_imp) {
-                                    auto params = stats_imp->getParams();
-                                    uint64_t last_archived_time = 0;
-                                    if (!tuple.stream.empty() && params.storage_map.find(tuple.stream) != params.storage_map.end()) {
-                                        last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
+                string src_path;
+                TimeBlock selected_block;
+                bool has_selected_block = false;
+                uint64_t pos_time = 0;
+                uint64_t diff_time = 0;
+                if (query) {
+                    if (pos_str == "latest" || pos_str == "0") {
+                        // todo: get latest jpeg record
+                        auto ret = findDeviceSource(tuple.app, GENERIC_RTSP_CAMERA_SCHEMA);
+                        if (ret) {
+                            auto weak_listener = ret->getListener();
+                            if (auto listener = weak_listener.lock()) {
+                                auto ptr = dynamic_pointer_cast<GenericRtspCameraImp>(listener);
+                                if (ptr) {
+                                    auto stats_imp = ptr->getCameraStatisticImp();
+                                    if (stats_imp) {
+                                        auto params = stats_imp->getParams();
+                                        uint64_t last_archived_time = 0;
+                                        if (!tuple.stream.empty() && params.storage_map.find(tuple.stream) != params.storage_map.end()) {
+                                            last_archived_time = params.storage_map[tuple.stream].archiveEndTime;
                                         
-                                    } else if (tuple.stream.empty()) {
-                                        for (const auto &pr : params.storage_map) {
-                                            if (pr.second.archiveEndTime > last_archived_time) {
-                                                last_archived_time = pr.second.archiveEndTime;
+                                        } else if (tuple.stream.empty()) {
+                                            for (const auto &pr : params.storage_map) {
+                                                if (pr.second.archiveEndTime > last_archived_time) {
+                                                    last_archived_time = pr.second.archiveEndTime;
+                                                }
                                             }
                                         }
-                                    }
-                                    if (last_archived_time > 0) {
-                                        auto block = query->getLastBlock(last_archived_time);
-                                        if (block) {
-                                            selected_block = *block;
-                                            has_selected_block = true;
-                                            pos_time = block->time_len() > 10 ? (block->start_time() + block->time_len() - 10): block->start_time();
-                                            diff_time = pos_time - block->start_time();
-                                            src_path = decodeBase64(block->file_path());
+                                        if (last_archived_time > 0) {
+                                            auto block = query->getLastBlock(last_archived_time);
+                                            if (block) {
+                                                selected_block = *block;
+                                                has_selected_block = true;
+                                                pos_time = block->time_len() > 10 ? (block->start_time() + block->time_len() - 10): block->start_time();
+                                                diff_time = pos_time - block->start_time();
+                                                src_path = decodeBase64(block->file_path());
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                } else {
-                    pos_time = stoll(pos_str);
-                    auto start_time = pos_time - 60;
-                    auto end_time = pos_time + 60;
-                    query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path, &diff_time, &selected_block, &has_selected_block](const vector<TimeBlock> &blocks) {
-                        for (const auto &block : blocks) {
-                            if (block.start_time() > pos_time) {
-                                break;
+                    } else {
+                        pos_time = stoll(pos_str);
+                        auto start_time = pos_time - 60;
+                        auto end_time = pos_time + 60;
+                        query->getRecordedTimePeriod(start_time, end_time, [&pos_time, &src_path, &diff_time, &selected_block, &has_selected_block](const vector<TimeBlock> &blocks) {
+                            for (const auto &block : blocks) {
+                                if (block.start_time() > pos_time) {
+                                    break;
+                                }
+                                diff_time = pos_time - block.start_time();
+                                src_path = decodeBase64(block.file_path());
+                                selected_block = block;
+                                has_selected_block = true;
                             }
-                            diff_time = pos_time - block.start_time();
-                            src_path = decodeBase64(block.file_path());
-                            selected_block = block;
-                            has_selected_block = true;
-                        }
-                    });
+                        });
+                    }
                 }
-            }
 
-            if (src_path.empty() || pos_time == 0) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_TIMELINE_NOT_FOUND, "No data in period");
-                return;
-            }
-
-            if (has_selected_block) {
-                stream_id = selected_block.stream();
-                tuple.stream = stream_id;
-            }
-
-            GET_CONFIG(string, snap_root, API::kSnapRoot);
-            auto path = camera_id + "/" + stream_id;
-            auto scan_path = File::absolutePath(path, snap_root) + "/";
-            string filter_complex;
-            string policy_key;
-            vector<string> overlay_temp_paths;
-            const string overlay_prefix = StrPrinter << scan_path << pos_time << ".overlay";
-            if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
-                                                            filter_complex, overlay_temp_paths, policy_key)) {
-                for (const auto &temp_path : overlay_temp_paths) {
-                    File::delete_file(temp_path);
+                if (src_path.empty() || pos_time == 0) {
+                    throw ApiResponseException(ApiErrCode::CODE_TIMELINE_NOT_FOUND, "No data in period");
                 }
-                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to render thumbnail overlay");
-                return;
-            }
 
-            const string cache_key = MD5(policy_key).hexdigest();
-            string new_snap = StrPrinter << scan_path << pos_time << "." << cache_key << ".jpeg";
-            if (File::fileExist(new_snap) && File::fileSize(new_snap) > 0) {
-                for (const auto &temp_path : overlay_temp_paths) {
-                    File::delete_file(temp_path);
+                if (has_selected_block) {
+                    stream_id = selected_block.stream();
+                    tuple.stream = stream_id;
                 }
-                responseSnap(new_snap, allArgs.parser.getHeader(), invoker);
-                return;
-            }
-            File::delete_file(new_snap);
-            GET_CONFIG(float, thumbnail_timeout_sec, FFmpeg::kRecordedThumbnailTimeoutSec);
-            RecordedThumbnailTask::Request request;
-            request.tuple = tuple;
-            request.source_path = src_path;
-            request.segment_start_time = static_cast<int64_t>(selected_block.start_time());
-            request.segment_size = static_cast<int64_t>(selected_block.file_size());
-            request.seek_time = diff_time;
-            request.output_path = new_snap;
-            request.filter_complex = filter_complex;
-            request.temporary_paths = overlay_temp_paths;
-            request.restore_reason = "THUMBNAIL";
-            request.timeout_sec = thumbnail_timeout_sec;
-            auto task = std::make_shared<RecordedThumbnailTask>(request,
-                [invoker, allArgs, val, headerOut, new_snap](const RecordedThumbnailTask::Result &result) mutable {
-                    if (result.success) {
+
+                GET_CONFIG(string, snap_root, API::kSnapRoot);
+                auto path = camera_id + "/" + stream_id;
+                auto scan_path = File::absolutePath(path, snap_root) + "/";
+                string filter_complex;
+                string policy_key;
+                vector<string> overlay_temp_paths;
+                const string overlay_prefix = StrPrinter << scan_path << pos_time << ".overlay";
+                if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
+                                                                filter_complex, overlay_temp_paths, policy_key)) {
+                    for (const auto &temp_path : overlay_temp_paths) {
+                        File::delete_file(temp_path);
+                    }
+                    throw ApiResponseException(ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY, "Unable to render thumbnail overlay");
+                }
+
+                const string cache_key = MD5(policy_key).hexdigest();
+                string new_snap = StrPrinter << scan_path << pos_time << "." << cache_key << ".jpeg";
+                if (File::fileExist(new_snap) && File::fileSize(new_snap) > 0) {
+                    for (const auto &temp_path : overlay_temp_paths) {
+                        File::delete_file(temp_path);
+                    }
+                    reply([new_snap, allArgs, invoker]() mutable {
                         responseSnap(new_snap, allArgs.parser.getHeader(), invoker);
-                        return;
-                    }
-                    if (result.timeout) {
-                        val["code"] = ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT;
-                        val["msg"] = result.error;
-                        val["data"]["status"] = "TIMEOUT";
-                        val["data"]["stage"] = result.stage;
-                        val["data"]["progressPercent"] = result.progress_percent;
-                        invoker(getStatusCode(ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT),
-                                headerOut, val.toStyledString());
-                        return;
-                    }
-                    const ApiErrCode code = result.storage_unavailable
-                        ? ApiErrCode::CODE_STORAGE_POOL_OFFLINE
-                        : (result.restore_unavailable
-                            ? ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED
-                            : (result.recording_unavailable
-                                ? ApiErrCode::CODE_TIMELINE_NOT_FOUND
-                                : ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY));
-                    val["code"] = code;
-                    val["msg"] = result.error;
-                    invoker(getStatusCode(code), headerOut, val.toStyledString());
-                });
-            task->start();
+                    });
+                    return;
+                }
+                File::delete_file(new_snap);
+                GET_CONFIG(float, thumbnail_timeout_sec, FFmpeg::kRecordedThumbnailTimeoutSec);
+                RecordedThumbnailTask::Request request;
+                request.tuple = tuple;
+                request.source_path = src_path;
+                request.segment_start_time = static_cast<int64_t>(selected_block.start_time());
+                request.segment_size = static_cast<int64_t>(selected_block.file_size());
+                request.seek_time = diff_time;
+                request.output_path = new_snap;
+                request.filter_complex = filter_complex;
+                request.temporary_paths = overlay_temp_paths;
+                request.restore_reason = "THUMBNAIL";
+                request.timeout_sec = thumbnail_timeout_sec;
+                auto task = std::make_shared<RecordedThumbnailTask>(request,
+                    [reply, invoker, allArgs, val, headerOut, new_snap](const RecordedThumbnailTask::Result &result) mutable {
+                        reply([result, invoker, allArgs, val, headerOut, new_snap]() mutable {
+                            if (result.success) {
+                                responseSnap(new_snap, allArgs.parser.getHeader(), invoker);
+                                return;
+                            }
+                            if (result.timeout) {
+                                val["code"] = ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT;
+                                val["msg"] = result.error;
+                                val["data"]["status"] = "TIMEOUT";
+                                val["data"]["stage"] = result.stage;
+                                val["data"]["progressPercent"] = result.progress_percent;
+                                invoker(getStatusCode(ApiErrCode::CODE_EXTRACT_THUMBNAIL_TIMEOUT),
+                                        headerOut, val.toStyledString());
+                                return;
+                            }
+                            const ApiErrCode code = result.storage_unavailable
+                                ? ApiErrCode::CODE_STORAGE_POOL_OFFLINE
+                                : (result.restore_unavailable
+                                    ? ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED
+                                    : (result.recording_unavailable
+                                        ? ApiErrCode::CODE_TIMELINE_NOT_FOUND
+                                        : ApiErrCode::CODE_EXTRACT_THUMBNAIL_EMPTY));
+                            val["code"] = code;
+                            val["msg"] = result.error;
+                            invoker(getStatusCode(code), headerOut, val.toStyledString());
+                        });
+                    });
+                task->start();
+            }, apiWorkLimit("media.thumbnail"));
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Checks the /media/* APIs that run blocking work on the API worker pool (docs/features/worker.md, step 6).
+"""Checks the /media/* APIs that run blocking work on the API worker pool.
+
+Covers docs/api-blocking-backlog.md and the six steps of the retired docs/features/worker.md.
 
 Runs against one node started by setup_nodes.py (manager.enableAuthorize=0) and the mock API.
 
@@ -327,6 +329,97 @@ step4_call("alert/ack(unknown)", S + "/alert/ack", {"alert_id": "no-such-alert"}
 step4_call("protected/delete(unknown)", S + "/protected/delete", {"protected_id": "no-such-protected"}, 404, 914024, as_json=False)
 step4_call("restoreJob/create(unknown camera)", S + "/restoreJob/create",
            {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001, as_json=False)
+
+# 11. The /media/api/* family (CHECK_SECRET / CHECK_CLUSTER_AUTHOR_ASYNC trust boundary), which was
+#     dispatched to the API worker in the api-blocking-backlog pass. Route, status and code must be
+#     unchanged, and a heavy read must not delay the pollers.
+A = "/media/api/storage"
+# This family is behind CHECK_SECRET(), unlike /media/mserver/* which uses the user JWT.
+API_SECRET = os.environ.get("API_SECRET", "")
+
+
+def api_call(path, params=None, timeout=30):
+    return call(path, dict(params or {}, secret=API_SECRET), timeout=timeout)
+
+
+def api_post(path, body, timeout=30):
+    return post_json(path + "?secret=" + urllib.parse.quote(API_SECRET), body, timeout=timeout)
+
+
+api_reads = [
+    ("dashboard/summary", A + "/dashboard/summary", None, 200, 0),
+    ("pool/options", A + "/pool/options", None, 200, 0),
+    ("pool/list", A + "/pool/list", None, 200, 0),
+    ("pool/detail(unknown)", A + "/pool/detail", {"id": "no-such-pool"}, 404, 914001),
+    ("policy/list", A + "/policy/list", None, 200, 0),
+    ("policy/detail(unknown)", A + "/policy/detail", {"id": "no-such-policy"}, 404, 914002),
+    ("alert/list", A + "/alert/list", None, 200, 0),
+    ("restoreJob/list", A + "/restoreJob/list", None, 200, 0),
+    ("tieringJob/list", A + "/tieringJob/list", None, 200, 0),
+    ("expiredSegment/list", A + "/expiredSegment/list", None, 200, 0),
+    ("protected/list", A + "/protected/list", None, 200, 0),
+    ("mountpoint/available", A + "/mountpoint/available", None, 200, 0),
+    ("camera/effectivePolicy/list", A + "/camera/effectivePolicy/list", None, 200, 0),
+    ("camera/timeline(missing args)", A + "/camera/timeline", None, 400, 902001),
+    ("camera/timeline(unknown)", A + "/camera/timeline",
+     {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001),
+    ("camera/summary(unknown)", A + "/camera/summary", {"camera_id": "no-such-camera"}, 404, 905001),
+    ("getSyncStatus", "/media/api/getSyncStatus", None, 200, 0),
+    ("systemStatisticHistory", "/media/api/systemStatisticHistory",
+     {"from": 0, "to": int(time.time()), "limit": 10}, 200, 0),
+    ("listFiles", "/media/api/listFiles", None, 200, 0),
+    ("serveFile(unknown)", "/media/api/serveFile", {"path": "no-such-file"}, 404, None),
+]
+for name, path, params, want_status, want_code in api_reads:
+    status, data, elapsed = api_call(path, params)
+    ok = status == want_status and (want_code is None or data.get("code") == want_code)
+    check("step6 %s" % name, ok, "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
+
+# dashboard/detail is an API_ARGS_JSON endpoint, so it needs a JSON body.
+status, data, elapsed = api_post(A + "/dashboard/detail", {})
+check("step6 dashboard/detail", status == 200 and data.get("code") == 0,
+      "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
+
+
+# Mutations of this family share the serial storage.mutation group with /media/mserver/storage/*.
+def api_step_call(name, path, body, want_status, want_code, as_json=True):
+    status, data, _ = api_post(path, body) if as_json else api_call(path, body)
+    if probe_only or want_status is None:
+        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:200]))
+    else:
+        check("step6 %s" % name, status == want_status and data.get("code") == want_code,
+              "status=%s code=%s body=%s" % (status, data.get("code"), json.dumps(data)[:120]))
+
+
+api_step_call("pool/create(bad watermark)", A + "/pool/create",
+              dict(pool, high_watermark_percent=95, critical_watermark_percent=90), 404, 902008)
+api_step_call("pool/update(unknown)", A + "/pool/update", {"id": "no-such-pool", "name": "x"}, 404, 914001)
+api_step_call("policy/delete(unknown)", A + "/policy/delete", {"id": "no-such-policy"}, 404, 914002, as_json=False)
+api_step_call("policy/assignCamera(unknown)", A + "/policy/assignCamera",
+              {"camera_id": "no-such-camera", "policy_id": "no-such-policy"}, 404, 905001, as_json=False)
+api_step_call("policy/removeCamera(unknown)", A + "/policy/removeCamera",
+              {"camera_id": "no-such-camera"}, 404, 905001, as_json=False)
+
+# The heaviest read of the family must not delay the request pollers.
+heavy = {}
+
+
+def api_dashboard_detail():
+    for _ in range(20):
+        heavy["last"] = api_post(A + "/dashboard/detail", {})
+
+
+threads = [threading.Thread(target=api_dashboard_detail) for _ in range(4)]
+for t in threads:
+    t.start()
+latencies = []
+while any(t.is_alive() for t in threads):
+    latencies.append(call("/media/mserver/healthcheck")[2])
+    time.sleep(0.02)
+for t in threads:
+    t.join()
+check("healthcheck stays fast during api storage reads", latencies and max(latencies) < 0.5,
+      "requests=%d max=%.3fs" % (len(latencies), max(latencies) if latencies else -1))
 
 print("FAILED: %s" % failures if failures else "ALL PASSED")
 sys.exit(1 if failures else 0)

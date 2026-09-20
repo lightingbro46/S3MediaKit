@@ -59,8 +59,15 @@ struct ApiWorkLimit {
 // Serialized group: its requests run one at a time, in order (no in-flight/queue limit).
 ApiWorkLimit apiWorkSerial(const std::string &group);
 
+// Reserved group name of the pool-wide limit (config `api.limit.global.maxInflight` /
+// `api.limit.global.maxQueueMs`). It is applied to **every** dispatched request, after its own
+// group limit, so that several busy groups together cannot fill the API pool and grow an unbounded
+// queue. Defaults are wide enough not to change the behaviour of existing endpoints.
+extern const char kApiGlobalLimitGroup[];
+
 // Limit of `group` from config `api.limit.<group>.maxInflight` / `api.limit.<group>.maxQueueMs`,
-// read on every call. Registered groups: sync.snapshot, sync.changes, device.discovery.
+// read on every call. Registered groups: sync.snapshot, sync.changes, device.discovery,
+// storage.read, media.thumbnail (plus the reserved `global` above).
 ApiWorkLimit apiWorkLimit(const std::string &group);
 
 // Requests of `group` currently queued or running (for tests and diagnostics).

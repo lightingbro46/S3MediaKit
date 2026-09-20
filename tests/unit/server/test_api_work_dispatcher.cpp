@@ -14,6 +14,7 @@
 #include "Network/Socket.h"
 #include "Poller/EventPoller.h"
 #include "Util/SqliteConnection.h"
+#include "Util/mini.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 
@@ -333,6 +334,140 @@ TEST(ApiWorkDispatcherTest, ReadsGroupLimitsFromConfig) {
     auto unknown = apiWorkLimit("not.configured");
     EXPECT_EQ(0, unknown.max_inflight);
     EXPECT_EQ(0, unknown.max_queue_ms);
+}
+
+TEST(ApiWorkDispatcherTest, GlobalLimitDefaultsAreWideEnoughToChangeNothing) {
+    auto global_limit = apiWorkLimit(kApiGlobalLimitGroup);
+    EXPECT_EQ("global", global_limit.group);
+    // Far above every group limit, so no existing endpoint hits it before its own limit.
+    EXPECT_GE(global_limit.max_inflight, 256);
+    EXPECT_GT(global_limit.max_queue_ms, 0);
+}
+
+namespace {
+
+// Sets the pool-wide limit for one test and restores it afterwards.
+class GlobalLimitOverride {
+public:
+    GlobalLimitOverride(int max_inflight, int max_queue_ms)
+        : _inflight(apiWorkLimit(kApiGlobalLimitGroup).max_inflight),
+          _queue_ms(apiWorkLimit(kApiGlobalLimitGroup).max_queue_ms) {
+        set(max_inflight, max_queue_ms);
+    }
+    ~GlobalLimitOverride() { set(_inflight, _queue_ms); }
+
+private:
+    static void set(int max_inflight, int max_queue_ms) {
+        mINI::Instance()[std::string("api.limit.global.maxInflight")] = max_inflight;
+        mINI::Instance()[std::string("api.limit.global.maxQueueMs")] = max_queue_ms;
+    }
+    int _inflight;
+    int _queue_ms;
+};
+
+} // namespace
+
+TEST(ApiWorkDispatcherTest, RejectsOverGlobalLimitEvenWithoutAGroup) {
+    auto owner = ownerPoller();
+    GlobalLimitOverride limit(1, 0);
+    Gate gate;
+    std::atomic<int> started{0};
+
+    ReplyProbe first;
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), first.invoker(owner),
+                    gate.blockingWork(&started));
+    ASSERT_TRUE(waitFor([&started]() { return started.load() == 1; }));
+    EXPECT_EQ(1, apiWorkInflight(kApiGlobalLimitGroup));
+
+    // An ungrouped request is now over the pool-wide limit.
+    ReplyProbe second;
+    std::atomic<bool> second_ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), second.invoker(owner),
+                    [&second_ran](Json::Value &) { second_ran = true; });
+    ASSERT_TRUE(second.waitFirst());
+    auto rejected = second.settle(50);
+    ASSERT_EQ(1u, rejected.size());
+    EXPECT_EQ(503, rejected[0].status);
+    EXPECT_EQ(static_cast<int>(managerkit::ApiErrCode::CODE_SERVER_BUSY), rejected[0].body["code"].asInt());
+    EXPECT_TRUE(rejected[0].on_owner);
+    EXPECT_FALSE(second_ran.load());
+
+    gate.release();
+    ASSERT_TRUE(first.waitFirst());
+    EXPECT_EQ(200, first.settle(50)[0].status);
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight(kApiGlobalLimitGroup) == 0; }));
+}
+
+TEST(ApiWorkDispatcherTest, GroupLimitIsCheckedBeforeGlobalLimit) {
+    auto owner = ownerPoller();
+    GlobalLimitOverride limit(10, 0);
+    const ApiWorkLimit group("test.before.global", 1, 0);
+    Gate gate;
+    std::atomic<int> started{0};
+
+    ReplyProbe first;
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), first.invoker(owner),
+                    gate.blockingWork(&started), nullptr, group);
+    ASSERT_TRUE(waitFor([&started]() { return started.load() == 1; }));
+
+    ReplyProbe second;
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), second.invoker(owner),
+                    [](Json::Value &) {}, nullptr, group);
+    ASSERT_TRUE(second.waitFirst());
+    EXPECT_EQ(503, second.settle(50)[0].status);
+    // Rejected on its own budget: the pool-wide slot was never taken and is released again.
+    EXPECT_EQ(1, apiWorkInflight(kApiGlobalLimitGroup));
+
+    gate.release();
+    ASSERT_TRUE(first.waitFirst());
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight(kApiGlobalLimitGroup) == 0; }));
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.before.global") == 0; }));
+}
+
+TEST(ApiWorkDispatcherTest, GlobalSlotIsReleasedWhenWorkThrows) {
+    auto owner = ownerPoller();
+    GlobalLimitOverride limit(1, 0);
+    for (int i = 0; i < 3; ++i) {
+        ReplyProbe probe;
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), probe.invoker(owner),
+                        [](Json::Value &) { throw std::runtime_error("boom"); });
+        ASSERT_TRUE(probe.waitFirst()) << "round " << i;
+        // Would be 503 from the second round on if the pool-wide slot leaked.
+        EXPECT_EQ(500, probe.settle(20)[0].status) << "round " << i;
+        EXPECT_TRUE(waitFor([]() { return apiWorkInflight(kApiGlobalLimitGroup) == 0; })) << "round " << i;
+    }
+}
+
+TEST(ApiWorkDispatcherTest, GlobalQueueDeadlineDropsUngroupedRequest) {
+    auto owner = ownerPoller();
+    GlobalLimitOverride limit(0, 50);
+    // Occupy every API worker so the next request has to wait in the queue.
+    const int threads = managerkit::BlockingExecutors::apiThreadCount();
+    Gate gate;
+    std::atomic<int> started{0};
+    std::vector<std::unique_ptr<ReplyProbe>> blockers;
+    for (int i = 0; i < threads; ++i) {
+        blockers.emplace_back(new ReplyProbe());
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(),
+                        blockers.back()->invoker(owner), gate.blockingWork(&started));
+    }
+    ASSERT_TRUE(waitFor([&started, threads]() { return started.load() == threads; }));
+
+    ReplyProbe probe;
+    std::atomic<bool> ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), probe.invoker(owner),
+                    [&ran](Json::Value &) { ran = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    gate.release();
+
+    ASSERT_TRUE(probe.waitFirst());
+    auto replies = probe.settle(50);
+    ASSERT_EQ(1u, replies.size());
+    EXPECT_EQ(503, replies[0].status);
+    EXPECT_FALSE(ran.load());
+    for (auto &blocker : blockers) {
+        EXPECT_TRUE(blocker->waitFirst());
+    }
 }
 
 TEST(ApiWorkDispatcherTest, CallbackWorkRepliesOnceOnOwner) {
