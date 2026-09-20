@@ -19,7 +19,9 @@ Kiểm tra các API chạy trên API worker pool (`docs/features/worker.md`, bư
 ```bash
 tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
 ```
-`check_worker_apis.py` gọi discovery ONVIF tới một IP không định tuyến được (mất khoảng 20s) và đo độ trễ của `/media/mserver/healthcheck` trong suốt thời gian đó; kiểm tra discovery RTSP, `subnetScan` và `register` (lưu certificate, gọi lại không đổi gì). Node test chạy với `manager.enableAuthorize=0`.
+`check_worker_apis.py` gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gói (`192.0.2.1`, RFC 5737 TEST-NET-1; ONVIF mất ~20s, ffprobe ~10s) rồi đo độ trễ của `/media/mserver/healthcheck` trong suốt thời gian đó — cả hai dạng address đều phải chạy trên `api worker`, không chiếm poller nào. Ngoài ra kiểm tra `subnetScan` và `register` (lưu certificate, gọi lại không đổi gì). Node test chạy với `manager.enableAuthorize=0`.
+
+Không đổi `BLACKHOLE_IP` sang dải `10.x`: dưới WSL đó là NAT gateway của host và trả "connection refused" ngay, làm mọi check theo thời gian trở nên flaky.
 
 ## Kịch bản
 | Phase | Nội dung |

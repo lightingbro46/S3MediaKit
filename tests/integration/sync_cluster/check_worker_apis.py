@@ -15,7 +15,10 @@ import urllib.request
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18081"
 NODE_ID = sys.argv[2] if len(sys.argv) > 2 else "node-a"
-BLACKHOLE_IP = "10.255.255.1"  # not routed: ONVIF connect waits for its timeout
+# RFC 5737 TEST-NET-1: packets are dropped, so a connect waits for its timeout. Do not use a
+# 10.x address here: under WSL that range is the host NAT gateway and answers "connection
+# refused" at once, which makes every timing check below flaky.
+BLACKHOLE_IP = "192.0.2.1"
 
 failures = []
 
@@ -83,11 +86,34 @@ check("discovery(onvif) was slow enough to test blocking", elapsed > 1.0, "elaps
 check("healthcheck stays fast during discovery", latencies and max(latencies) < 0.5,
       "requests=%d max=%.3fs" % (len(latencies), max(latencies) if latencies else -1))
 
-# 2. RTSP discovery keeps the asynchronous probe path.
+# 2. RTSP discovery takes the same worker path: the handler must not pick a thread from the address.
 status, data, elapsed = call("/media/mserver/device/discovery",
                              {"address": "rtsp://127.0.0.1:9/none", "port": 554, "defaultPort": 1})
 check("discovery(rtsp) answers", status != 200 or data.get("code") != 0,
       "status=%s code=%s elapsed=%.1fs" % (status, data.get("code"), elapsed))
+
+slow_rtsp = {}
+
+
+def slow_rtsp_discovery():
+    slow_rtsp["result"] = call("/media/mserver/device/discovery",
+                               {"address": "rtsp://%s:554/none" % BLACKHOLE_IP, "port": 554, "defaultPort": 1})
+
+
+worker = threading.Thread(target=slow_rtsp_discovery)
+worker.start()
+time.sleep(0.3)
+latencies = []
+while worker.is_alive():
+    latencies.append(call("/media/mserver/healthcheck")[2])
+    time.sleep(0.05)
+worker.join()
+status, data, elapsed = slow_rtsp["result"]
+check("discovery(rtsp blackhole) answered with an error", status != 200 or data.get("code") != 0,
+      "status=%s code=%s elapsed=%.1fs" % (status, data.get("code"), elapsed))
+check("discovery(rtsp blackhole) was slow enough to test blocking", elapsed > 1.0, "elapsed=%.1fs" % elapsed)
+check("healthcheck stays fast during rtsp discovery", latencies and max(latencies) < 0.5,
+      "requests=%d max=%.3fs" % (len(latencies), max(latencies) if latencies else -1))
 
 # 3. Synchronous subnet scan runs on the worker and still returns the collected list.
 status, data, elapsed = call("/media/mserver/device/subnetScan",
@@ -115,7 +141,7 @@ check("register validation unchanged", status != 200, "status=%s code=%s" % (sta
 # 5. Subnet scan probes IPs in parallel (searcher.max_parallel, default 8) on the discovery pool:
 #    16 unrouted IPs (~20s each) finish in about two rounds, progress grows, healthcheck stays fast.
 status, data, _ = call("/media/mserver/device/subnetScan/create",
-                       {"startIp": "10.255.255.1", "endIp": "10.255.255.16", "port": 80, "defaultPort": 1})
+                       {"startIp": "192.0.2.1", "endIp": "192.0.2.16", "port": 80, "defaultPort": 1})
 key = data.get("data", {}).get("key", "")
 check("subnetScan/create accepted", status == 201 and key, "status=%s data=%s" % (status, data))
 if key:
@@ -161,7 +187,9 @@ busy = [r for r in results if r[0] == 503 and r[1].get("code") == 902012]
 slow_ones = [r for r in results if r[2] > 5]
 check("discovery over the limit gets 503/902012", len(busy) == 2 and all(r[2] < 1.0 for r in busy),
       "statuses=%s" % [(r[0], r[1].get("code"), round(r[2], 1)) for r in results])
-check("discovery within the limit still runs", len(slow_ones) == 4, "slow=%d" % len(slow_ones))
+check("discovery within the limit still runs", len(results) - len(busy) == 4,
+      "ran=%d busy=%d" % (len(results) - len(busy), len(busy)))
+check("discovery within the limit waits for the device", len(slow_ones) == 4, "slow=%d" % len(slow_ones))
 
 # 7. Search/bookmark/playback metadata (worker.md step 2) now run on the API worker: status and
 #    error codes are unchanged. PROBE_ONLY=1 prints the answers instead of checking them.
