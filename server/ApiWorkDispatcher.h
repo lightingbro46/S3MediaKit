@@ -43,7 +43,9 @@ toolkit::TaskExecutor::Ptr getApiWorkExecutor();
 //   - max_inflight: requests of the group queued or running at the same time (<= 0: unlimited);
 //   - max_queue_ms: a request that waited longer in the worker queue is dropped (<= 0: unlimited).
 //   - serial: requests of the group run one at a time, in arrival order (a SerialTaskQueue per
-//     group on the API pool), e.g. mutations of shared caches/registrations.
+//     group on the API pool), e.g. mutations of shared caches/registrations. A serial group is
+//     exempt from the pool-wide queue deadline (`api.limit.global.maxQueueMs`), because order and
+//     integrity of its mutations matter more than dropping work the client may have given up on.
 // An empty group means no limit (the default, so existing handlers are unchanged).
 struct ApiWorkLimit {
     ApiWorkLimit() = default;
@@ -62,7 +64,8 @@ ApiWorkLimit apiWorkSerial(const std::string &group);
 // Reserved group name of the pool-wide limit (config `api.limit.global.maxInflight` /
 // `api.limit.global.maxQueueMs`). It is applied to **every** dispatched request, after its own
 // group limit, so that several busy groups together cannot fill the API pool and grow an unbounded
-// queue. Defaults are wide enough not to change the behaviour of existing endpoints.
+// queue. Defaults are wide enough not to change the behaviour of existing endpoints. Its
+// `maxQueueMs` does not apply to serial groups (see `serial` above).
 extern const char kApiGlobalLimitGroup[];
 
 // Limit of `group` from config `api.limit.<group>.maxInflight` / `api.limit.<group>.maxQueueMs`,

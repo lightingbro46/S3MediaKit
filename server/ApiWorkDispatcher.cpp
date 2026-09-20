@@ -258,11 +258,16 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
     const auto queued_at = chrono::steady_clock::now();
     string group = limit.group;
     int max_queue_ms = limit.group.empty() ? 0 : limit.max_queue_ms;
-    const int queue_ms = tighterQueueMs(max_queue_ms, global_limit.max_queue_ms);
-    if (queue_ms != max_queue_ms) {
-        group = global_limit.group;
+    // A serial group is exempt from the pool-wide queue deadline: its requests run one at a time in
+    // arrival order, so dropping one because the queue grew long would break both that order and
+    // the integrity of the mutations it serializes. Its own maxQueueMs, if set, still applies.
+    if (!limit.serial) {
+        const int queue_ms = tighterQueueMs(max_queue_ms, global_limit.max_queue_ms);
+        if (queue_ms != max_queue_ms) {
+            group = global_limit.group;
+        }
+        max_queue_ms = queue_ms;
     }
-    max_queue_ms = queue_ms;
 
     auto task = [owner, session, check_session, work, done, group_slot, global_slot, queued_at, group, max_queue_ms]() {
         if (check_session && session.expired()) {

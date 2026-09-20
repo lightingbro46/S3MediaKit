@@ -16,9 +16,15 @@ Tất cả route dùng prefix:
 /media/mserver/storage
 ```
 
+27 trong số các route này có bản song song ở prefix `/media/api/storage`, dùng `CHECK_SECRET()`
+thay cho JWT người dùng (trust boundary khác, dành cho gọi nội bộ giữa các node). **Payload của hai
+họ là một**: thân handler là hàm thuần dùng chung khai báo ở `server/WebApiStorage.h`, nên tài liệu
+này mô tả đúng cả hai. Các route còn lại (`playback/resolve`, `policy/clone`, `camera/summary/list`,
+các route job/alert/protected dạng mutation…) chỉ có ở `/media/mserver/storage`.
+
 Handler `API_ARGS_MAP` nhận query/form params; handler `API_ARGS_JSON` nhận JSON body. Route list/detail được backend đăng ký theo cùng cơ chế `api_regist`, không tách route GET và POST.
 
-Timestamp trong API tiering là Unix timestamp theo giây. Pagination bắt đầu từ `page=0`; các list job/alert/range bảo vệ `size` trong khoảng `1..100`, nếu không hợp lệ thì dùng `20`.
+Timestamp trong API tiering là Unix timestamp theo giây. Pagination bắt đầu từ `page=0`; mọi list phân trang bảo vệ `size` trong khoảng `1..100`, nếu không hợp lệ thì dùng `20` (trước đây `policy/list` thiếu chặn này).
 
 ### 1.2 Xác thực và permission
 
@@ -649,7 +655,7 @@ Khác với summary gọn, detail dùng `TierStorageManager::getDashboardDetail(
 
 Item alert: `id`, `level`, `type`, `pool_id`, `pool_name`, `message`, `created_at`, `acknowledged`.
 
-> Lưu ý code hiện tại: parser của `acknowledged` kiểm tra nhầm `level.empty()` trước khi `stoi(allArgs["acknowledged"])`. Tránh gửi `level` mà bỏ trống `acknowledged`; filter này cần backend sửa để an toàn.
+> Đã sửa: trước đây parser kiểm tra nhầm `level.empty()` trước khi `stoi(allArgs["acknowledged"])`, nên gửi `level` mà bỏ trống `acknowledged` trả 500. Nay hai filter độc lập nhau.
 
 ## 10. Expired range
 

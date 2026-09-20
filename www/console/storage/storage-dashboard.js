@@ -281,7 +281,7 @@
         var cameraId = btn.getAttribute('data-camera-id') || '';
         if (action === 'modal-close') return _closeModal();
         if (action === 'pool-create') return _openPoolModal();
-        if (action === 'pool-edit') return _openPoolModal(_findById((_state.data && _state.data.pools) || [], id));
+        if (action === 'pool-edit') return _openPoolForEdit(id);
         if (action === 'pool-delete') return _deletePool(id);
         if (action === 'policy-create') return _openPolicyModal();
         if (action === 'policy-edit') return _openPolicyModal(_findById((_state.data && _state.data.policies) || [], id));
@@ -427,12 +427,16 @@
             return;
         }
         var rows = pools.map(function (p) {
+            // pool/list answers `status` / `used_percent`; dashboard/detail answers the raw entity
+            // with `health_status` / `usage_pct`. Both shapes reach this table.
+            var status = p.status || p.health_status || 'OK';
+            var usedPct = _num(p.used_percent != null ? p.used_percent : p.usage_pct);
             return '<tr>' +
                 '<td><div class="std-name">' + _esc(p.name || p.id) + '</div><div class="std-id">' + _esc(p.id) + '</div></td>' +
                 '<td>' + _tierBadge(p.tier) + '</td>' +
                 '<td>' + _esc(p.type) + '</td>' +
-                '<td><span class="std-status-chip ' + _statusClass(p.health_status) + '">' + _esc(p.health_status || 'OK') + '</span></td>' +
-                '<td><div class="std-meter"><span style="width:' + Math.min(100, _num(p.usage_pct)).toFixed(1) + '%"></span></div><div class="std-meter-label">' + _num(p.usage_pct).toFixed(1) + '% · ' + _fmtBytes(p.used_bytes) + ' / ' + _fmtBytes(p.total_bytes) + '</div></td>' +
+                '<td><span class="std-status-chip ' + _statusClass(status) + '">' + _esc(status) + '</span></td>' +
+                '<td><div class="std-meter"><span style="width:' + Math.min(100, usedPct).toFixed(1) + '%"></span></div><div class="std-meter-label">' + usedPct.toFixed(1) + '% · ' + _fmtBytes(p.used_bytes) + ' / ' + _fmtBytes(p.total_bytes) + '</div></td>' +
                 '<td>' + _esc(p.enabled ? 'Enabled' : 'Disabled') + '</td>' +
                 '<td>' + _fmtTs(p.last_health_check) + '</td>' +
                 '<td><div class="std-actions"><button class="std-icon-btn" data-std-action="pool-edit" data-id="' + _esc(p.id) + '">Edit</button><button class="std-icon-btn std-danger-btn" data-std-action="pool-delete" data-id="' + _esc(p.id) + '">Delete</button></div></td>' +
@@ -800,6 +804,18 @@
             html += '<option value="' + _esc(c.camera_id || '') + '"' + (c.camera_id === selected ? ' selected' : '') + '>' + _esc(label) + '</option>';
         });
         return html;
+    }
+
+    // pool/list only carries the summary fields (id, name, tier, type, status, usage), so the edit
+    // form loads the full record from pool/detail first.
+    function _openPoolForEdit(id) {
+        _setStatus('', 'Đang tải pool...');
+        return _apiStrict('/media/api/storage/pool/detail', { id: id }).then(function (pool) {
+            _setStatus('', '');
+            _openPoolModal(pool);
+        }).catch(function (err) {
+            _setStatus('err', (err && err.message) || 'Không tải được thông tin pool');
+        });
     }
 
     function _openPoolModal(pool) {

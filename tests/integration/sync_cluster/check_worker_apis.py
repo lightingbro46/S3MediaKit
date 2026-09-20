@@ -250,6 +250,7 @@ step3 = [
     ("expiredSegment/list", S + "/expiredSegment/list", {}, 200, 0),
     ("protected/list", S + "/protected/list", {}, 200, 0),
     ("mountpoint/available", S + "/mountpoint/available", {}, 200, 0),
+    ("systemStatistic", "/media/mserver/systemStatistic", {}, 200, 0),
     ("systemStatisticHistory", "/media/mserver/systemStatisticHistory", {"from": 0, "to": 2000000000, "limit": 5}, 200, 0),
     ("storage/list", "/media/mserver/storage/list", {"mediaServerId": NODE_ID}, 200, 0),
     ("storage/list(other node)", "/media/mserver/storage/list", {"mediaServerId": "someone-else"}, 404, 902006),
@@ -365,6 +366,8 @@ api_reads = [
      {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001),
     ("camera/summary(unknown)", A + "/camera/summary", {"camera_id": "no-such-camera"}, 404, 905001),
     ("getSyncStatus", "/media/api/getSyncStatus", None, 200, 0),
+    # Shared body with /media/mserver/systemStatistic* (WebApiMonitor.h).
+    ("systemStatistic", "/media/api/systemStatistic", None, 200, 0),
     ("systemStatisticHistory", "/media/api/systemStatisticHistory",
      {"from": 0, "to": int(time.time()), "limit": 10}, 200, 0),
     ("listFiles", "/media/api/listFiles", None, 200, 0),
@@ -400,26 +403,98 @@ api_step_call("policy/assignCamera(unknown)", A + "/policy/assignCamera",
 api_step_call("policy/removeCamera(unknown)", A + "/policy/removeCamera",
               {"camera_id": "no-such-camera"}, 404, 905001, as_json=False)
 
-# The heaviest read of the family must not delay the request pollers.
-heavy = {}
+# 12. With every API worker blocked: the request pollers stay free (§5 of
+#     docs/api-blocking-followup-plan.md) and the `storage.read` cap really is shared by the two
+#     families (§2).
+#
+#     `pool/testConnection` on an object storage at BLACKHOLE_IP is the slow endpoint of this
+#     family: the AWS SDK sets its client up and then waits out its 5s connect timeout, which takes
+#     ~40s in all, so one request holds an API worker for that long (setup_nodes.py raises
+#     `http.keepAliveSecond` accordingly, or the server closes the connection before the answer).
+#     `blocking.apiThreads` of them hold the whole pool. That is what makes both checks below
+#     deterministic — a storage read answers in ~1ms on an empty node and can
+#     never be made to overlap reliably, which is why the old version of this check only ever
+#     collected a couple of samples. The endpoint is deliberately ungrouped, so it is not the
+#     `storage.read` cap that keeps the healthcheck fast here, only the dispatch to the worker.
+API_THREADS = 4               # blocking.apiThreads, pinned by setup_nodes.py
+STORAGE_READ_INFLIGHT = 32    # api.limit.storage.read.maxInflight (default)
+BURST_OVER = 8                # requests of the burst above the cap
+blackhole_pool = {"name": "worker-test-blackhole", "type": "MINIO", "tier": "COLD",
+                  "endpoint": "http://%s:9000" % BLACKHOLE_IP, "bucket": "worker-test",
+                  "base_path": "worker-test", "access_key": "probe", "secret_key": "probe",
+                  "health_check_enabled": False}
+probes = []
+burst = []
+burst_lock = threading.Lock()
 
 
-def api_dashboard_detail():
-    for _ in range(20):
-        heavy["last"] = api_post(A + "/dashboard/detail", {})
+def blackhole_probe():
+    r = api_post(A + "/pool/testConnection", blackhole_pool, timeout=180)
+    with burst_lock:
+        probes.append(r)
 
 
-threads = [threading.Thread(target=api_dashboard_detail) for _ in range(4)]
-for t in threads:
+def burst_read(family):
+    # Both families share one storage.read budget: the same group, counted once.
+    path = (A if family == "api" else S) + "/pool/list"
+    r = api_call(path, timeout=180) if family == "api" else call(path, {}, timeout=180)
+    with burst_lock:
+        burst.append((family, r))
+
+
+def burst_playback():
+    # Not in storage.read: the playback path must not be rejected because the admin lists filled it.
+    r = call(S + "/playback/resolve",
+             {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, timeout=180)
+    with burst_lock:
+        burst.append(("playback", r))
+
+
+probe_threads = [threading.Thread(target=blackhole_probe) for _ in range(API_THREADS)]
+for t in probe_threads:
     t.start()
+# Let the probes take every worker before the burst is admitted: from here on nothing leaves the
+# API pool, so each dispatched request keeps its in-flight slot until the probes are done.
+time.sleep(1.5)
+total_burst = STORAGE_READ_INFLIGHT + BURST_OVER
+burst_threads = [threading.Thread(target=burst_read, args=("mserver" if i % 2 else "api",))
+                 for i in range(total_burst)]
+burst_threads += [threading.Thread(target=burst_playback) for _ in range(2)]
+for t in burst_threads:
+    t.start()
+
 latencies = []
-while any(t.is_alive() for t in threads):
+while any(t.is_alive() for t in probe_threads + burst_threads):
     latencies.append(call("/media/mserver/healthcheck")[2])
     time.sleep(0.02)
-for t in threads:
+for t in probe_threads + burst_threads:
     t.join()
-check("healthcheck stays fast during api storage reads", latencies and max(latencies) < 0.5,
+
+probe_secs = sorted(r[2] for r in probes)
+check("pool/testConnection(blackhole) was slow enough to test blocking",
+      len(probes) == API_THREADS and probe_secs and probe_secs[0] > 3.0,
+      "durations=%s" % [round(x, 1) for x in probe_secs])
+check("pool/testConnection(blackhole) answers 914005",
+      all(r[0] == 404 and r[1].get("code") == 914005 for r in probes),
+      "statuses=%s" % [(r[0], r[1].get("code")) for r in probes])
+check("healthcheck stays fast while every api worker is blocked",
+      len(latencies) >= 100 and max(latencies) < 0.5,
       "requests=%d max=%.3fs" % (len(latencies), max(latencies) if latencies else -1))
+
+reads = [r for family, r in burst if family != "playback"]
+busy = [r for r in reads if r[0] == 503 and r[1].get("code") == 902012]
+ran = [r for r in reads if r[0] == 200 and r[1].get("code") == 0]
+check("storage.read over the limit gets 503/902012",
+      len(busy) == BURST_OVER and all(r[2] < 1.0 for r in busy),
+      "busy=%d expected=%d max=%.2fs" % (len(busy), BURST_OVER, max([r[2] for r in busy] or [-1])))
+check("storage.read within the limit still runs",
+      len(ran) == STORAGE_READ_INFLIGHT,
+      "ran=%d busy=%d other=%s" % (len(ran), len(busy),
+                                   [(r[0], r[1].get("code")) for r in reads if r not in busy and r not in ran]))
+playbacks = [r for family, r in burst if family == "playback"]
+check("playback/resolve is not rejected when storage.read is full",
+      len(playbacks) == 2 and all(r[0] == 404 and r[1].get("code") == 905001 for r in playbacks),
+      "statuses=%s" % [(r[0], r[1].get("code")) for r in playbacks])
 
 print("FAILED: %s" % failures if failures else "ALL PASSED")
 sys.exit(1 if failures else 0)

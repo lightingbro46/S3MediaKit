@@ -9,14 +9,20 @@
  *
  * Routes are mounted under /media/mserver/storage/...
  * All endpoints share the CHECK_AUTH_TOKEN() guard.
+ *
+ * The handler bodies declared in WebApiStorage.h are shared with the /media/api/storage/* family
+ * registered in WebApi.cpp, which sits behind CHECK_SECRET() instead. Only the guards differ; both
+ * families answer the same payload.
  */
 
 #include <algorithm>
 #include <set>
+#include <unordered_map>
 
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
+#include "WebApiStorage.h"
 #include "WebApiErrCode.h"
 #include "Camera/CameraManager.h"
 #include "Common/StrUtil.h"
@@ -37,14 +43,579 @@ using namespace managerkit;
 
 #ifdef ENABLE_TIER_STORAGE
 
-static int64_t latestTieringJobTime(const std::string &camera_id) {
+// ===================================================================
+// Shared handler bodies (see WebApiStorage.h)
+//
+// These run on the API worker pool and are called by both endpoint families. Where the two
+// families used to answer different payloads, the `/media/mserver/storage/*` payload is the one
+// kept:
+//   - pool/list                    -> poolSummaryToJson (was poolDetailToJson on /media/api/...)
+//   - policy/list                  -> system default policy carries the unassigned camera count
+//   - policy/detail                -> policyDetailToJson without the summary fields
+//   - camera/effectivePolicy/list  -> effectivePolicyToJson + the `policy_id` filter
+//   - camera/timeline              -> no `policy_name` field
+//   - dashboard/summary            -> capacity_complete / capacity_unavailable_pool_count
+//   - policy/assignCameras         -> rejects a request whose camera_ids are all unknown
+//   - pool/update                  -> watermarks are validated before the per-type validation
+// ===================================================================
+namespace managerkit {
+
+namespace {
+
+// Page size shared by every paged list of this API: an unset or out-of-range `size` falls back
+// to 20, so a client cannot ask for an unbounded query.
+int pagedSize(const std::string &raw) {
+    int size = raw.empty() ? 20 : std::stoi(raw);
+    if (size <= 0 || size > 100) size = 20;
+    return size;
+}
+
+int pagedPage(const std::string &raw) {
+    return raw.empty() ? 0 : std::stoi(raw);
+}
+
+int64_t optionalTime(const std::string &raw) {
+    return raw.empty() ? 0 : std::stoll(raw);
+}
+
+int64_t latestTieringJobTime(const std::string &camera_id) {
     TieringJobImp imp;
     auto jobs = imp.query(camera_id, "", "", "", 0, 0, 0, 1);
     if (jobs.empty()) return 0;
     return jobs.front().updated_at > 0 ? jobs.front().updated_at : jobs.front().created_at;
 }
 
-static Json::Value dashboardSummaryToDocJson() {
+// camera_id -> camera_name of every RTSP camera, optionally filtered by a name substring.
+std::unordered_map<std::string, std::string> cameraNameMap(const std::string &search) {
+    std::unordered_map<std::string, std::string> device_map;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto device_tuple = src->getDeviceTuple();
+        if (!search.empty() && device_tuple.name.find(search) == std::string::npos)
+            return;
+        device_map.emplace(device_tuple.device_id, device_tuple.name);
+    }, GENERIC_RTSP_CAMERA_SCHEMA);
+    return device_map;
+}
+
+Json::Value cameraStorageSummaryToJson(const std::string &camera_id, const std::string &camera_name) {
+    auto summary = TierStorageManager::Instance().getCameraStorageSummary(camera_id);
+    auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
+
+    Json::Value data;
+    data["camera_id"]           = summary.camera_id;
+    data["camera_name"]         = camera_name;
+    data["policy_id"]           = effective.policy_id;
+    data["policy_name"]         = effective.policy_name;
+    data["policy_source"]       = effective.source;
+    data["total_size_bytes"]    = static_cast<Json::Int64>(summary.total_used_bytes);
+    data["total_segment_count"] = static_cast<Json::Int64>(summary.total_segments);
+
+    Json::Value tiers_arr(Json::arrayValue);
+    for (const auto &t : summary.tiers) {
+        Json::Value tv;
+        tv["tier"]          = t.tier;
+        tv["from_time"]     = static_cast<Json::Int64>(t.oldest_segment_time);
+        tv["to_time"]       = static_cast<Json::Int64>(t.newest_segment_time);
+        tv["size_bytes"]    = static_cast<Json::Int64>(t.used_bytes);
+        tv["segment_count"] = static_cast<Json::Int64>(t.segment_count);
+        tiers_arr.append(tv);
+    }
+    data["tier_summary"] = tiers_arr;
+    data["last_tiering_job_time"] = static_cast<Json::Int64>(latestTieringJobTime(camera_id));
+    data["status"] = "OK";
+    return data;
+}
+
+// Splits `camera_ids` into the cameras that exist and the ids that do not.
+void splitKnownCameras(const Json::Value &camera_ids_arr,
+                       std::vector<std::string> &known,
+                       std::vector<std::string> &unknown) {
+    for (const auto &c : camera_ids_arr) {
+        std::string camera_id = c.asString();
+        if (findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA)) {
+            known.push_back(camera_id);
+        } else {
+            unknown.push_back(camera_id);
+        }
+    }
+}
+
+Json::Value failedIdsToJson(const std::vector<std::string> &unknown,
+                            const std::vector<std::string> &failed) {
+    Json::Value failed_arr(Json::arrayValue);
+    for (const auto &id : unknown) failed_arr.append(id);
+    for (const auto &id : failed) failed_arr.append(id);
+    return failed_arr;
+}
+
+} // namespace
+
+// --- Section 1: storage pools -------------------------------------------------------------
+
+void storagePoolList(const ArgsMap &allArgs, Json::Value &val) {
+    string tier    = allArgs["tier"];
+    string type    = allArgs["type"];
+    string status  = allArgs["status"];
+    string keyword = allArgs["keyword"];
+
+    auto pools = TierStorageManager::Instance().listPools(tier, type, keyword);
+    Json::Value data = Json::arrayValue;
+    for (const auto &p : pools) {
+        const std::string pool_status = p.health_status.empty() ? "OK" : p.health_status;
+        if (!status.empty() && pool_status != status)
+            continue;
+        data.append(TierStorageBase::poolSummaryToJson(p));
+    }
+    val["data"] = data;
+}
+
+void storagePoolDetail(const ArgsMap &allArgs, Json::Value &val) {
+    string pool_id = allArgs["id"];
+    auto pools = TierStorageManager::Instance().getPool(pool_id);
+    if (pools.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+    }
+    val["data"] = TierStorageBase::poolDetailToJson(pools.front());
+}
+
+void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
+    auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
+
+    std::string pool_err;
+    if (!TierStorageBase::validatePoolByType(pool, pool_err)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
+    }
+    if (pool.high_watermark_percent >= pool.critical_watermark_percent) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT,
+                                   "high_watermark_percent must be less than critical_watermark_percent");
+    }
+
+    auto id = TierStorageManager::Instance().createPool(pool);
+    if (id.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
+    }
+    val["data"]["id"] = id;
+}
+
+void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
+    string pool_id = allArgs["id"];
+
+    auto existing = TierStorageManager::Instance().getPool(pool_id);
+    if (existing.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+    }
+    auto body = allArgs.getArgs();
+
+    auto &base = existing.front();
+    TierStorageBase::applyPoolPatch(base, body);
+
+    if (base.high_watermark_percent >= base.critical_watermark_percent) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT,
+                                   "high_watermark_percent must be less than critical_watermark_percent");
+    }
+    std::string pool_err;
+    if (!TierStorageBase::validatePoolByType(base, pool_err)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
+    }
+
+    if (!TierStorageManager::Instance().updatePool(base)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
+    }
+    val["data"]["id"] = pool_id;
+}
+
+void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val) {
+    string pool_id = allArgs["id"];
+    int ref_count = 0;
+    bool is_default_pool = false;
+    if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
+        val["data"]["ref_count"] = ref_count;
+        val["data"]["is_default_pool"] = is_default_pool;
+        if (is_default_pool) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE,
+                                       "Cannot delete system default storage pool");
+        }
+        if (ref_count > 0) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_IN_USE,
+                                       "Storage pool is referenced by " + std::to_string(ref_count) +
+                                       " policies or segment ranges");
+        }
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
+    }
+}
+
+void storagePoolTestConnection(const ArgsJson &allArgs, Json::Value &val) {
+    const Json::Value &body = allArgs.getArgs();
+    string pool_id = body.get("pool_id", "").asString();
+    StoragePool pool;
+    if (!pool_id.empty()) {
+        // Test an existing saved pool
+        auto existing = TierStorageManager::Instance().getPool(pool_id);
+        if (existing.empty()) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+        }
+        pool = existing.front();
+        TierStorageBase::applyPoolPatch(pool, body);
+    } else {
+        // Ad-hoc test (before pool is saved)
+        pool = TierStorageBase::poolFromJson(body);
+    }
+
+    std::string validation_error;
+    if (!TierStorageBase::validatePoolByType(pool, validation_error)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, validation_error);
+    }
+
+    string message;
+    int latency_ms = 0;
+    bool ok = TierStorageManager::Instance().testPoolConnection(pool, message, latency_ms);
+
+    Json::Value data;
+    data["status"]     = ok ? "OK" : "ERROR";
+    data["latency_ms"] = latency_ms;
+    data["can_read"]   = ok;
+    data["can_write"]  = ok;
+    data["message"]    = message;
+    val["data"] = data;
+    if (!ok) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CONN_FAILED, message);
+    }
+}
+
+void storagePoolOptions(Json::Value &val) {
+    Json::Value data;
+    data["poolsTypeSupport"] = Json::objectValue;
+    data["poolsTypeSupport"]["HOT"]  = poolTypeSupport(TierType::HotTier);
+    data["poolsTypeSupport"]["WARM"] = poolTypeSupport(TierType::WarmTier);
+    data["poolsTypeSupport"]["COLD"] = poolTypeSupport(TierType::ColdTier);
+    val["data"] = data;
+}
+
+// --- Section 2: storage policies ------------------------------------------------------------
+
+void storagePolicyList(const ArgsMap &allArgs, Json::Value &val) {
+    string keyword = allArgs["keyword"];
+    int enabled_filter = !allArgs["enabled"].empty() ? allArgs["enabled"].as<int>() : -1;
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    auto policies = TierStorageManager::Instance().listPolicies(keyword, enabled_filter, page, size);
+    auto total_count = TierStorageManager::Instance().countPolicies(keyword, enabled_filter);
+
+    Json::Value items = Json::arrayValue;
+    PolicyAssignmentImp assignment_imp;
+    int total_device_count = CameraManager::Instance().getCameraKeys().size();
+    int total_applied_count = 0;
+    auto system_default_policy_id = TierStorageManager::Instance().getSystemDefaultPolicyId();
+    for (const auto &p : policies) {
+        if (p.id == system_default_policy_id) continue; // skip system default policy for now
+        const int applied_count = static_cast<int>(assignment_imp.findCamerasByPolicyId(p.id).size());
+        total_applied_count += applied_count;
+        items.append(TierStorageBase::policySummaryToJson(p, applied_count));
+    }
+    // Add the system default policy with the remaining camera count
+    for (const auto &p : policies) {
+        if (p.id == system_default_policy_id) {
+            items.append(TierStorageBase::policySummaryToJson(p, total_device_count - total_applied_count));
+            break;
+        }
+    }
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"]  = page;
+    data["size"]  = size;
+    data["total"] = total_count;
+    val["data"]   = data;
+}
+
+void storagePolicyDetail(const ArgsMap &allArgs, Json::Value &val) {
+    string policy_id = allArgs["id"];
+
+    auto policies = TierStorageManager::Instance().getPolicy(policy_id);
+    if (policies.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+    }
+
+    val["data"] = TierStorageBase::policyDetailToJson(
+        policies.front(), TierStorageBase::loadPoolMap());
+}
+
+void storagePolicyCreate(const ArgsJson &allArgs, Json::Value &val) {
+    auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
+
+    std::string tier_err;
+    if (!TierStorageBase::validateStoragePolicy(policy, TierStorageBase::loadPoolMap(), tier_err)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
+    }
+
+    auto id = TierStorageManager::Instance().createPolicy(policy);
+    if (id.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
+    }
+    val["data"]["id"] = id;
+}
+
+void storagePolicyUpdate(const ArgsJson &allArgs, Json::Value &val) {
+    string policy_id = allArgs["id"];
+    auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+    if (existing.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+    }
+
+    auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
+
+    std::string tier_err;
+    if (!TierStorageBase::validateStoragePolicy(policy, TierStorageBase::loadPoolMap(), tier_err)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
+    }
+
+    if (!TierStorageManager::Instance().updatePolicy(policy)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
+    }
+    val["data"]["id"] = policy_id;
+}
+
+void storagePolicyDelete(const ArgsMap &allArgs, Json::Value &val) {
+    string policy_id = allArgs["id"];
+    auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+    if (existing.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+    }
+
+    int camera_count = 0;
+    bool is_default_policy = false;
+    if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count, is_default_policy)) {
+        val["data"]["camera_count"] = camera_count;
+        val["data"]["is_default_policy"] = is_default_policy;
+        if (is_default_policy) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE,
+                                       "Cannot delete system default storage policy");
+        }
+        if (camera_count > 0) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_IN_USE,
+                                       "Policy is applied to " + std::to_string(camera_count) + " cameras");
+        }
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED,
+                                   "Policy not found or could not be deleted");
+    }
+}
+
+// --- Section 3: policy assignment (camera level) ---------------------------------------------
+
+void storagePolicyAssignCamera(const ArgsMap &allArgs, Json::Value &val) {
+    string camera_id = allArgs["camera_id"];
+    string policy_id = allArgs["policy_id"];
+    string reason = allArgs["override_reason"];
+
+    auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+    if (!device) {
+        throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+    }
+
+    auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+    if (existing.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+    }
+
+    if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED,
+                                   "Assign policy to camera failed");
+    }
+}
+
+void storagePolicyAssignCameras(const ArgsJson &allArgs, Json::Value &val) {
+    std::string policy_id = allArgs["policy_id"];
+    Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+    if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
+    }
+
+    std::vector<std::string> camera_ids;
+    std::vector<std::string> non_existed_camera_ids;
+    splitKnownCameras(camera_ids_arr, camera_ids, non_existed_camera_ids);
+
+    if (camera_ids.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "No valid camera IDs provided");
+    }
+
+    auto existing = TierStorageManager::Instance().getPolicy(policy_id);
+    if (existing.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
+    }
+
+    std::vector<std::string> failed;
+    int assigned = TierStorageManager::Instance().assignPolicyToCameras(camera_ids, policy_id, failed);
+
+    Json::Value data;
+    data["assigned_count"] = assigned;
+    data["failed_ids"] = failedIdsToJson(non_existed_camera_ids, failed);
+    val["data"] = data;
+}
+
+void storagePolicyRemoveCamera(const ArgsMap &allArgs, Json::Value &val) {
+    string camera_id = allArgs["camera_id"];
+    auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+    if (!device) {
+        throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+    }
+    if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED,
+                                   "Failed to unassign storage policy from camera");
+    }
+}
+
+void storagePolicyRemoveCameras(const ArgsJson &allArgs, Json::Value &val) {
+    Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
+    if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
+    }
+
+    std::vector<std::string> camera_ids;
+    std::vector<std::string> non_existed_camera_ids;
+    splitKnownCameras(camera_ids_arr, camera_ids, non_existed_camera_ids);
+
+    std::vector<std::string> failed;
+    int removed = TierStorageManager::Instance().removeCamerasOverride(camera_ids, failed);
+
+    Json::Value data;
+    data["removed_count"] = removed;
+    data["failed_ids"] = failedIdsToJson(non_existed_camera_ids, failed);
+    val["data"] = data;
+}
+
+// --- Section 4: camera storage ----------------------------------------------------------------
+
+void storageCameraEffectivePolicyList(const ArgsMap &allArgs, Json::Value &val) {
+    string search = allArgs["search"];
+    string policy_id = allArgs["policy_id"];
+
+    auto device_map = cameraNameMap(search);
+
+    Json::Value items(Json::arrayValue);
+    for (const auto &it : device_map) {
+        auto result = TierStorageManager::Instance().getEffectivePolicy(it.first);
+        if (!policy_id.empty() && result.policy_id != policy_id)
+            continue;
+        items.append(TierStorageBase::effectivePolicyToJson(result, it.second));
+    }
+
+    Json::Value data;
+    data["total"] = static_cast<int>(items.size());
+    data["items"] = items;
+    val["data"] = data;
+}
+
+void storageCameraTimeline(const ArgsMap &allArgs, Json::Value &val) {
+    string camera_id     = allArgs["camera_id"];
+    int64_t start_time   = allArgs["start_time"];
+    int64_t end_time     = allArgs["end_time"];
+    bool include_deleted = allArgs["include_deleted"];
+
+    if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
+    }
+
+    auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+    if (!device) {
+        throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+    }
+    auto device_tuple = device->getDeviceTuple();
+
+    Json::Value ranges_json(Json::arrayValue);
+    auto pool_map = TierStorageBase::loadPoolMap();
+    auto ranges = TierStorageManager::Instance().getCameraTimeline(camera_id, start_time, end_time);
+    for (const auto &r : ranges) {
+        if (!include_deleted && r.status == segmentStatusToString(SegmentStatus::DELETED))
+            continue;
+        Json::Value range;
+        range["start"]            = static_cast<Json::Int64>(r.start);
+        range["end"]              = static_cast<Json::Int64>(r.end);
+        range["tier"]             = r.tier;
+        range["pool_id"]          = r.pool_id;
+        range["status"]           = r.status;
+        range["segment_count"]    = static_cast<Json::Int64>(r.segment_count);
+        range["size_bytes"]       = static_cast<Json::Int64>(r.size_bytes);
+        range["restore_required"] = TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map);
+        range["has_motion"]       = r.has_motion;
+        range["has_event"]        = r.has_event;
+        ranges_json.append(range);
+    }
+
+    auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
+    Json::Value data;
+    data["camera_id"]   = camera_id;
+    data["camera_name"] = device_tuple.name;
+    data["policy_id"]   = effective.policy_id;
+    data["ranges"]      = ranges_json;
+    val["data"] = data;
+}
+
+void storageCameraSummary(const ArgsMap &allArgs, Json::Value &val) {
+    string camera_id = allArgs["camera_id"];
+    auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+    if (!device) {
+        throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+    }
+    val["data"] = cameraStorageSummaryToJson(camera_id, device->getDeviceTuple().name);
+}
+
+// --- Sections 5-6: restore / tiering jobs -----------------------------------------------------
+
+void storageRestoreJobList(const ArgsMap &allArgs, Json::Value &val) {
+    std::string camera_id = allArgs["camera_id"];
+    std::string status = allArgs["status"];
+    int64_t from_time = allArgs["from_time"];
+    int64_t to_time = allArgs["to_time"];
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    auto jobs = TierStorageManager::Instance().listRestoreJobs(camera_id, status, from_time, to_time, page, size);
+    Json::Value items(Json::arrayValue);
+    for (const auto &j : jobs) {
+        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        items.append(TierStorageBase::restoreJobToJson(
+            j, device ? device->getDeviceTuple().name : "", true));
+    }
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"] = page;
+    data["size"] = size;
+    data["total"] = TierStorageManager::Instance().countRestoreJobs(camera_id, status, from_time, to_time);
+    val["data"] = data;
+}
+
+void storageTieringJobList(const ArgsMap &allArgs, Json::Value &val) {
+    std::string status = allArgs["status"];
+    std::string camera_id = allArgs["camera_id"];
+    std::string source_tier = allArgs["source_tier"];
+    std::string target_tier = allArgs["target_tier"];
+    int64_t from_time = allArgs["from_time"];
+    int64_t to_time = allArgs["to_time"];
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    Json::Value items(Json::arrayValue);
+    auto jobs = TierStorageManager::Instance().listTieringJobs(
+        camera_id, status, source_tier, target_tier, from_time, to_time, page, size);
+    for (const auto &j : jobs) {
+        auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        items.append(TierStorageBase::tieringJobToJson(
+            j, device ? device->getDeviceTuple().name : ""));
+    }
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"] = page;
+    data["size"] = size;
+    data["total"] = TierStorageManager::Instance().countTieringJobs(camera_id, status, from_time, to_time);
+    val["data"] = data;
+}
+
+// --- Section 7: dashboard ---------------------------------------------------------------------
+
+void storageDashboardSummary(Json::Value &val) {
     auto pools = TierStorageManager::Instance().listPools();
 
     struct TierAgg {
@@ -53,7 +624,9 @@ static Json::Value dashboardSummaryToDocJson() {
         std::string status = "OK";
     };
     struct TierAggCompare {
-        bool operator()(const std::string &x, const std::string &y) const { return tierTypeFromString(x) < tierTypeFromString(y); }
+        bool operator()(const std::string &x, const std::string &y) const {
+            return tierTypeFromString(x) < tierTypeFromString(y);
+        }
     };
     std::map<std::string, TierAgg, TierAggCompare> tiers;
     tiers["HOT"];
@@ -119,11 +692,106 @@ static Json::Value dashboardSummaryToDocJson() {
     data["failed_tiering_jobs"] = tiering_imp.countQuery("", "FAILED");
     data["active_restore_jobs"] = restore_imp.countActive();
     data["alerts"] = alerts;
-    return data;
+    val["data"] = data;
 }
+
+void storageDashboardDetail(Json::Value &val) {
+    val["data"] = TierStorageManager::Instance().getDashboardDetail();
+}
+
+// --- Sections 8-10: alerts, expired segments, protected videos --------------------------------
+
+void storageAlertList(const ArgsMap &allArgs, Json::Value &val) {
+    std::string level = allArgs["level"];
+    int acknowledged = allArgs["acknowledged"].empty() ? -1 : std::stoi(allArgs["acknowledged"]);
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    StorageAlertImp imp;
+    Json::Value items(Json::arrayValue);
+    auto pool_map = TierStorageBase::loadPoolMap();
+    for (const auto &a : imp.query(level, acknowledged, page, size))
+        items.append(TierStorageBase::alertToJson(a, pool_map));
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"] = page;
+    data["size"] = size;
+    data["total"] = imp.countQuery(level, acknowledged);
+    val["data"] = data;
+}
+
+void storageExpiredSegmentList(const ArgsMap &allArgs, Json::Value &val) {
+    std::string camera_id = allArgs["camera_id"];
+    int64_t from_time = optionalTime(allArgs["from_time"]);
+    int64_t to_time = optionalTime(allArgs["to_time"]);
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    SegmentTierRangeImp imp;
+    Json::Value items(Json::arrayValue);
+    for (const auto &r : imp.findExpired(camera_id, from_time, to_time, page, size)) {
+        auto device = findDeviceSource(r.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        ProtectedVideoImp protected_imp;
+        items.append(TierStorageBase::expiredSegmentToJson(
+            r,
+            device ? device->getDeviceTuple().name : "",
+            protected_imp.overlaps(r.camera_id, r.start_time, r.end_time)));
+    }
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"] = page;
+    data["size"] = size;
+    data["total"] = imp.countExpired(camera_id, from_time, to_time);
+    val["data"] = data;
+}
+
+void storageProtectedList(const ArgsMap &allArgs, Json::Value &val) {
+    std::string camera_id = allArgs["camera_id"];
+    std::string type = allArgs["type"];
+    int64_t from_time = optionalTime(allArgs["from_time"]);
+    int64_t to_time = optionalTime(allArgs["to_time"]);
+    int page = pagedPage(allArgs["page"]);
+    int size = pagedSize(allArgs["size"]);
+
+    ProtectedVideoImp imp;
+    Json::Value items(Json::arrayValue);
+    for (const auto &p : imp.query(camera_id, type, from_time, to_time, page, size)) {
+        auto device = findDeviceSource(p.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
+        items.append(TierStorageBase::protectedVideoToJson(
+            p, device ? device->getDeviceTuple().name : ""));
+    }
+
+    Json::Value data;
+    data["items"] = items;
+    data["page"] = page;
+    data["size"] = size;
+    data["total"] = imp.countQuery(camera_id, type, from_time, to_time);
+    val["data"] = data;
+}
+
+// --- Mount points -----------------------------------------------------------------------------
+
+void storageMountpointAvailable(const ArgsMap &allArgs, Json::Value &val) {
+    string storage_types = allArgs["include"];
+    auto available_mount_points = TierStorageManager::Instance().getAvailableMountPoints(storage_types);
+
+    Json::Value data;
+    data["mount_point"] = Json::arrayValue;
+    for (const auto &mp : available_mount_points) {
+        data["mount_point"].append(mp.toJson());
+    }
+    val["data"] = data;
+}
+
+} // namespace managerkit
 
 // ===================================================================
 // Register all storage API routes
+//
+// Each route keeps its own guards (CHECK_AUTH_TOKEN + CHECK_USER_PERMISSION here, CHECK_SECRET in
+// the /media/api/storage/* family) and dispatches the shared body to the API worker pool.
 // ===================================================================
 namespace managerkit {
 
@@ -138,23 +806,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string tier    = allArgs["tier"];
-            string type    = allArgs["type"];
-            string status  = allArgs["status"];
-            string keyword = allArgs["keyword"];
-
-            auto pools = TierStorageManager::Instance().listPools(tier, type, keyword);
-            Json::Value data = Json::arrayValue;
-            for (const auto &p : pools) {
-                const std::string pool_status = p.health_status.empty() ? "OK" : p.health_status;
-                if (!status.empty() && pool_status != status)
-                    continue;
-                data.append(TierStorageBase::poolSummaryToJson(p));
-            }
-            val["data"] = data;
-        });
+            storagePoolList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // GET/POST /media/mserver/storage/pool/detail
@@ -163,15 +817,9 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string pool_id = allArgs["id"];
-            auto pools = TierStorageManager::Instance().getPool(pool_id);
-            if (pools.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
-            }
-            val["data"] = TierStorageBase::poolDetailToJson(pools.front());
-        });
+            storagePoolDetail(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // POST /media/mserver/storage/pool/create
@@ -180,26 +828,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("name", "type", "tier");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
-
-            std::string pool_err;
-            if (!TierStorageBase::validatePoolByType(pool, pool_err)) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
-            }
-
-            // Validate watermarks
-            if (pool.high_watermark_percent >= pool.critical_watermark_percent) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
-            }
-
-            auto id = TierStorageManager::Instance().createPool(pool);
-            if (id.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
-            }
-
-            val["data"]["id"] = id;
+            storagePoolCreate(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -209,31 +839,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string pool_id = allArgs["id"];
-
-            auto existing = TierStorageManager::Instance().getPool(pool_id);
-            if (existing.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
-            }
-            auto body = allArgs.getArgs();
-
-            auto &base = existing.front();
-            TierStorageBase::applyPoolPatch(base, body);
-
-            if (base.high_watermark_percent >= base.critical_watermark_percent) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_WATERMARK_PERCENT, "high_watermark_percent must be less than critical_watermark_percent");
-            }
-            std::string pool_err;
-            if (!TierStorageBase::validatePoolByType(base, pool_err)) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
-            }
-
-            if (!TierStorageManager::Instance().updatePool(base)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
-            }
-            val["data"]["id"] = pool_id;
+            storagePoolUpdate(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -243,22 +850,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string pool_id = allArgs["id"];
-            int ref_count = 0;
-            bool is_default_pool = false;
-            if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
-                val["data"]["ref_count"] = ref_count;
-                val["data"]["is_default_pool"] = is_default_pool;
-                if (is_default_pool) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage pool");
-                }
-                if (ref_count > 0) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_IN_USE, "Storage pool is referenced by " + std::to_string(ref_count) + " policies or segment ranges");
-                }
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
-            }
+            storagePoolDelete(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -267,43 +860,11 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        // The connection test (filesystem/S3 round trip) runs on the API worker.
+        // The connection test (filesystem/S3 round trip) runs on the API worker, but not in the
+        // serial mutation group: it writes nothing. No read group either, because a pool that does
+        // not answer holds its worker for the whole connect timeout.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            const Json::Value &body = allArgs.getArgs();
-            string pool_id = body.get("pool_id", "").asString();
-            StoragePool pool;
-            if (!pool_id.empty()) {
-                // Test an existing saved pool
-                auto existing = TierStorageManager::Instance().getPool(pool_id);
-                if (existing.empty()) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
-                }
-                pool = existing.front();
-                TierStorageBase::applyPoolPatch(pool, body);
-            } else {
-                // Ad-hoc test (before pool is saved)
-                pool = TierStorageBase::poolFromJson(body);
-            }
-
-            std::string validation_error;
-            if (!TierStorageBase::validatePoolByType(pool, validation_error)) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, validation_error);
-            }
-
-            string message;
-            int latency_ms = 0;
-            bool ok = TierStorageManager::Instance().testPoolConnection(pool, message, latency_ms);
-
-            Json::Value data;
-            data["status"]     = ok ? "OK" : "ERROR";
-            data["latency_ms"] = latency_ms;
-            data["can_read"]   = ok;
-            data["can_write"]  = ok;
-            data["message"]    = message;
-            val["data"] = data;
-            if (!ok) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CONN_FAILED, message);
-            }
+            storagePoolTestConnection(allArgs, val);
         });
     });
 
@@ -316,42 +877,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string keyword = allArgs["keyword"];
-            int enabled_filter  = !allArgs["enabled"].empty() ? allArgs["enabled"].as<int>() : -1;
-            int page = !allArgs["page"].empty() ? allArgs["page"].as<int>() : 0;
-            int size = !allArgs["size"].empty() ? allArgs["size"].as<int>() : 20;
-
-            auto policies = TierStorageManager::Instance().listPolicies(keyword, enabled_filter, page, size);
-            auto total_count = TierStorageManager::Instance().countPolicies(keyword, enabled_filter);
-
-            Json::Value items = Json::arrayValue;
-            PolicyAssignmentImp assignment_imp;
-            int total_device_count = CameraManager::Instance().getCameraKeys().size();
-            int total_applied_count = 0;
-            auto system_default_policy_id = TierStorageManager::Instance().getSystemDefaultPolicyId();
-            for (const auto &p : policies) {
-                if (p.id == system_default_policy_id) continue; // skip system default policy for now
-                const int applied_count = static_cast<int>(assignment_imp.findCamerasByPolicyId(p.id).size());
-                total_applied_count += applied_count;
-                items.append(TierStorageBase::policySummaryToJson(p, applied_count));
-            }
-            // Add the system default policy with the remaining camera count
-            for (const auto &p : policies) {
-                if (p.id == system_default_policy_id) {
-                    items.append(TierStorageBase::policySummaryToJson(p, total_device_count - total_applied_count));
-                    break;
-                }
-            }
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"]  = page;
-            data["size"]  = size;
-            data["total"] = total_count;
-            val["data"]   = data;
-        });
+            storagePolicyList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // GET/POST /media/mserver/storage/policy/detail
@@ -360,18 +888,9 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string policy_id = allArgs["id"];
-
-            auto policies = TierStorageManager::Instance().getPolicy(policy_id);
-            if (policies.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            }
-
-            val["data"] = TierStorageBase::policyDetailToJson(
-                policies.front(), TierStorageBase::loadPoolMap());
-        });
+            storagePolicyDetail(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // POST /media/mserver/storage/policy/create
@@ -380,22 +899,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("name", "total_retention_days");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
-
-            std::string tier_err;
-            if (!TierStorageBase::validateStoragePolicy(
-                    policy, TierStorageBase::loadPoolMap(), tier_err)) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
-            }
-
-            auto id = TierStorageManager::Instance().createPolicy(policy);
-            if (id.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
-            }
-
-            val["data"]["id"] = id;
+            storagePolicyCreate(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -405,31 +910,11 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string policy_id = allArgs["id"];
-            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-            if (existing.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            }
-
-            auto policy = TierStorageBase::policyFromJson(allArgs.getArgs());
-
-            std::string tier_err;
-            if (!TierStorageBase::validateStoragePolicy(
-                    policy, TierStorageBase::loadPoolMap(), tier_err)) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, tier_err);
-            }
-
-            if (!TierStorageManager::Instance().updatePolicy(policy)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
-            }
-
-            val["data"]["id"] = policy_id;
+            storagePolicyUpdate(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
-    // POST /media/mserver/storage/policy/clone
     api_regist("/media/mserver/storage/policy/clone", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
@@ -460,27 +945,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string policy_id = allArgs["id"];
-            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-            if (existing.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            }
-
-            int camera_count = 0;
-            bool is_default_policy = false;
-            if (!TierStorageManager::Instance().deletePolicy(policy_id, camera_count, is_default_policy)) {
-                val["data"]["camera_count"] = camera_count;
-                val["data"]["is_default_policy"] = is_default_policy;
-                if (is_default_policy) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Cannot delete system default storage policy");
-                }
-                if (camera_count > 0) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_IN_USE, "Policy is applied to " + std::to_string(camera_count) + " cameras");
-                }
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED, "Policy not found or could not be deleted");
-            }
+            storagePolicyDelete(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -494,25 +960,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id", "policy_id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string camera_id = allArgs["camera_id"];
-            string policy_id = allArgs["policy_id"];
-            string reason = allArgs["override_reason"];
-
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            }
-
-            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-            if (existing.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            }
-
-            if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED, "Assign policy to camera failed");
-            }
+            storagePolicyAssignCamera(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -522,50 +971,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("policy_id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string policy_id = allArgs["policy_id"];
-            Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
-            if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
-            }
-
-            std::vector<std::string> camera_ids;
-            std::vector<std::string> non_existed_camera_ids;
-            for (const auto &c : camera_ids_arr) {
-                std::string camera_id = c.asString();
-                auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                if (!device) {
-                    non_existed_camera_ids.push_back(camera_id);
-                    continue;  // Skip invalid camera IDs
-                }
-                camera_ids.push_back(camera_id);
-            }
-
-            if (camera_ids.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "No valid camera IDs provided");
-            }
-
-            auto existing = TierStorageManager::Instance().getPolicy(policy_id);
-            if (existing.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_NOT_FOUND, "Storage policy not found");
-            }
-
-            std::vector<std::string> failed;
-            int assigned = TierStorageManager::Instance().assignPolicyToCameras(camera_ids, policy_id, failed);
-
-            Json::Value data;
-            data["assigned_count"] = assigned;
-            Json::Value failed_arr(Json::arrayValue);
-            for (const auto &id : non_existed_camera_ids) {
-                failed_arr.append(id);
-            }
-            for (const auto &id : failed) {
-                failed_arr.append(id);
-            }
-            data["failed_ids"] = failed_arr;
-
-            val["data"] = data;
+            storagePolicyAssignCameras(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -575,16 +982,8 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id");
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string camera_id = allArgs["camera_id"];
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            }
-            if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Failed to unassign storage policy from camera");
-            }
+            storagePolicyRemoveCamera(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
@@ -593,42 +992,11 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
 
-        // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            Json::Value camera_ids_arr = allArgs.getArgs()["camera_ids"];
-            if (camera_ids_arr.empty() || !camera_ids_arr.isArray()) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "camera_ids must be an array");
-            }
-
-            std::vector<std::string> camera_ids;
-            std::vector<std::string> non_existed_camera_ids;
-            for (const auto &c : camera_ids_arr) {
-                std::string camera_id = c.asString();
-                auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                if (!device) {
-                    non_existed_camera_ids.push_back(camera_id);
-                    continue;  // Skip invalid camera IDs
-                }
-                camera_ids.push_back(camera_id);
-            }
-
-            std::vector<std::string> failed;
-            int removed = TierStorageManager::Instance().removeCamerasOverride(camera_ids, failed);
-            Json::Value data;
-            data["removed_count"] = removed;
-            Json::Value failed_arr(Json::arrayValue);
-            for (const auto &id : non_existed_camera_ids) {
-                failed_arr.append(id);
-            }
-            for (const auto &id : failed) {
-                failed_arr.append(id);
-            }
-            data["failed_ids"] = failed_arr;
-            val["data"] = data;
+            storagePolicyRemoveCameras(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
-    // GET/POST /media/mserver/storage/camera/effectivePolicy
     api_regist("/media/mserver/storage/camera/effectivePolicy", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
@@ -644,7 +1012,7 @@ void registerStorageApis() {
             auto device_tuple = device->getDeviceTuple();
             auto result = TierStorageManager::Instance().getEffectivePolicy(device_tuple.device_id);
             val["data"] = TierStorageBase::effectivePolicyToJson(result, device_tuple.name);
-        });
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // GET/POST /media/mserver/storage/camera/effectivePolicy/list
@@ -652,34 +1020,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string search = allArgs["search"];
-            string policy_id = allArgs["policy_id"];
-
-            std::unordered_map<std::string, std::string> device_map;
-            DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
-                auto device_tuple = src->getDeviceTuple();
-                if (!search.empty() && device_tuple.name.find(search) == std::string::npos)
-                    return;
-                device_map.emplace(device_tuple.device_id, device_tuple.name);
-            }, GENERIC_RTSP_CAMERA_SCHEMA);
-
-            Json::Value items(Json::arrayValue);
-            for (const auto &it : device_map) {
-                const auto &device_id = it.first;
-                const auto &device_name = it.second;
-                auto result = TierStorageManager::Instance().getEffectivePolicy(device_id);
-                if (!policy_id.empty() && result.policy_id != policy_id)
-                    continue;
-                items.append(TierStorageBase::effectivePolicyToJson(result, device_name));
-            }
-
-            Json::Value data;
-            data["total"] = static_cast<int>(items.size());
-            data["items"] = items;
-            val["data"] = data;
-        });
+            storageCameraEffectivePolicyList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // ================================================================
@@ -692,51 +1035,9 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id", "start_time", "end_time");
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string camera_id      = allArgs["camera_id"];
-            int64_t start_time    = allArgs["start_time"];
-            int64_t end_time      = allArgs["end_time"];
-            bool include_deleted  = allArgs["include_deleted"];
-
-            if (start_time <= 0 || end_time <= 0 || start_time >= end_time) {
-                throw ApiResponseException(ApiErrCode::CODE_INVALID_TIME_RANGE, "start_time and end_time must be valid");
-            }
-
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            }
-            auto device_tuple = device->getDeviceTuple();
-
-            Json::Value ranges_json(Json::arrayValue);
-            auto pool_map = TierStorageBase::loadPoolMap();
-            auto ranges = TierStorageManager::Instance().getCameraTimeline(camera_id, start_time, end_time);
-            for (const auto &r : ranges) {
-                if (!include_deleted && r.status == segmentStatusToString(SegmentStatus::DELETED))
-                    continue;
-                Json::Value range;
-                range["start"]            = static_cast<Json::Int64>(r.start);
-                range["end"]              = static_cast<Json::Int64>(r.end);
-                range["tier"]             = r.tier;
-                range["pool_id"]          = r.pool_id;
-                range["status"]           = r.status;
-                range["segment_count"]    = static_cast<Json::Int64>(r.segment_count);
-                range["size_bytes"]       = static_cast<Json::Int64>(r.size_bytes);
-                range["restore_required"] = TierStorageBase::isRestoreRequiredPool(r.pool_id, pool_map);
-                range["has_motion"]       = r.has_motion;
-                range["has_event"]        = r.has_event;
-                ranges_json.append(range);
-            }
-
-            auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
-            Json::Value data;
-            data["camera_id"] = camera_id;
-            data["camera_name"] = device_tuple.name;
-            data["policy_id"] = effective.policy_id;
-            data["ranges"]    = ranges_json;
-            val["data"] = data;
-        });
+            storageCameraTimeline(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // GET/POST /media/mserver/storage/camera/summary
@@ -745,98 +1046,24 @@ void registerStorageApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("camera_id");
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string camera_id = allArgs["camera_id"];
-            auto device = findDeviceSource(camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-            if (!device) {
-                throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-            }
-            auto device_tuple = device->getDeviceTuple();
-
-            auto summary = TierStorageManager::Instance().getCameraStorageSummary(camera_id);
-            auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
-
-            Json::Value data;
-            data["camera_id"]           = summary.camera_id;
-            data["camera_name"]         = device_tuple.name;
-            data["policy_id"]           = effective.policy_id;
-            data["policy_name"]         = effective.policy_name;
-            data["policy_source"]       = effective.source;
-            data["total_size_bytes"]    = static_cast<Json::Int64>(summary.total_used_bytes);
-            data["total_segment_count"] = static_cast<Json::Int64>(summary.total_segments);
-
-            Json::Value tiers_arr(Json::arrayValue);
-            for (const auto &t : summary.tiers) {
-                Json::Value tv;
-                tv["tier"]          = t.tier;
-                tv["from_time"]     = static_cast<Json::Int64>(t.oldest_segment_time);
-                tv["to_time"]       = static_cast<Json::Int64>(t.newest_segment_time);
-                tv["size_bytes"]    = static_cast<Json::Int64>(t.used_bytes);
-                tv["segment_count"] = static_cast<Json::Int64>(t.segment_count);
-                tiers_arr.append(tv);
-            }
-            data["tier_summary"] = tiers_arr;
-            data["last_tiering_job_time"] = static_cast<Json::Int64>(latestTieringJobTime(camera_id));
-            data["status"] = "OK";
-
-            val["data"] = data;
-        });
+            storageCameraSummary(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
-    // GET/POST /media/mserver/storage/camera/summary/list
     api_regist("/media/mserver/storage/camera/summary/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
+        // Repository queries and JSON building run on the API worker. One item per camera, each
+        // built exactly like /media/mserver/storage/camera/summary.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string search = allArgs["search"];
-
-            std::unordered_map<std::string, std::string> device_map;
-            DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
-                auto device_tuple = src->getDeviceTuple();
-                if (!search.empty() && device_tuple.name.find(search) == std::string::npos)
-                    return;
-                device_map.emplace(device_tuple.device_id, device_tuple.name);
-            }, GENERIC_RTSP_CAMERA_SCHEMA);
-
             Json::Value items(Json::arrayValue);
-
-            for (const auto &it : device_map) {
-                const auto &camera_id = it.first;
-                const auto &camera_name = it.second;
-
-                auto summary = TierStorageManager::Instance().getCameraStorageSummary(camera_id);
-                auto effective = TierStorageManager::Instance().getEffectivePolicy(camera_id);
-
-                Json::Value data;
-                data["camera_id"]           = summary.camera_id;
-                data["camera_name"]         = camera_name;
-                data["policy_id"]           = effective.policy_id;
-                data["policy_name"]         = effective.policy_name;
-                data["policy_source"]       = effective.source;
-                data["total_size_bytes"]    = static_cast<Json::Int64>(summary.total_used_bytes);
-                data["total_segment_count"] = static_cast<Json::Int64>(summary.total_segments);
-
-                Json::Value tiers_arr(Json::arrayValue);
-                for (const auto &t : summary.tiers) {
-                    Json::Value tv;
-                    tv["tier"]          = t.tier;
-                    tv["from_time"]     = static_cast<Json::Int64>(t.oldest_segment_time);
-                    tv["to_time"]       = static_cast<Json::Int64>(t.newest_segment_time);
-                    tv["size_bytes"]    = static_cast<Json::Int64>(t.used_bytes);
-                    tv["segment_count"] = static_cast<Json::Int64>(t.segment_count);
-                    tiers_arr.append(tv);
-                }
-                data["tier_summary"] = tiers_arr;
-                data["last_tiering_job_time"] = static_cast<Json::Int64>(latestTieringJobTime(camera_id));
-                data["status"] = "OK";
-                items.append(data);
+            for (const auto &it : cameraNameMap(allArgs["search"])) {
+                items.append(cameraStorageSummaryToJson(it.first, it.second));
             }
-
             val["data"] = items;
-        });
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // ================================================================
@@ -1150,7 +1377,7 @@ void registerStorageApis() {
                                                    "Restore job not found");
                     }
                     val["data"] = TierStorageBase::restoreJobSnapshotToJson(snapshot);
-                });
+                }, nullptr, apiWorkLimit("storage.read"));
             };
 
             CHECK_USER_DEVICE_AUTHOR_ASYNC(*camera_id, on_access);
@@ -1161,34 +1388,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE, PLAYBACK_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string camera_id = allArgs["camera_id"];
-            std::string status = allArgs["status"];
-            int64_t from_time = allArgs["from_time"];
-            int64_t to_time = allArgs["to_time"];
-            int page = allArgs["page"].empty() ? 0 : allArgs["page"].as<int>();
-            int size = allArgs["size"].empty() ? 20 : allArgs["size"].as<int>();
-            if (size <= 0 || size > 100) size = 20;
-
-            auto jobs = TierStorageManager::Instance().listRestoreJobs(camera_id, status, from_time, to_time, page, size);
-            Json::Value items(Json::arrayValue);
-            for (const auto &j : jobs) {
-                auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                items.append(TierStorageBase::restoreJobToJson(
-                    j, device ? device->getDeviceTuple().name : "", true));
-            }
-
-            auto total_count = TierStorageManager::Instance().countRestoreJobs(camera_id, status, from_time, to_time);
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"] = page;
-            data["size"] = size;
-            data["total"] = total_count;
-
-            val["data"] = data;
-        });
+            storageRestoreJobList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // ================================================================
@@ -1199,38 +1401,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string status = allArgs["status"];
-            std::string camera_id = allArgs["camera_id"];
-            std::string source_tier = allArgs["source_tier"];
-            std::string target_tier = allArgs["target_tier"];
-            int64_t from_time = allArgs["from_time"];
-            int64_t to_time = allArgs["to_time"];
-            int page = allArgs["page"].empty() ? 0 : allArgs["page"].as<int>();
-            int size = allArgs["size"].empty() ? 20 : allArgs["size"].as<int>();
-            if (size <= 0 || size > 100) size = 20;
-
-            Json::Value items(Json::arrayValue);
-            auto jobs = TierStorageManager::Instance().listTieringJobs(
-                camera_id, status, source_tier, target_tier, from_time, to_time, page, size);
-            for (const auto &j : jobs) {
-                auto device = findDeviceSource(j.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                items.append(TierStorageBase::tieringJobToJson(
-                    j, device ? device->getDeviceTuple().name : ""));
-            }
-
-            auto total_count = TierStorageManager::Instance().countTieringJobs(
-                camera_id, status, from_time, to_time);
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"] = page;
-            data["size"] = size;
-            data["total"] = total_count;
-
-            val["data"] = data;
-        });
+            storageTieringJobList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     api_regist("/media/mserver/storage/tieringJob/detail", [](API_ARGS_MAP_ASYNC) {
@@ -1246,7 +1419,7 @@ void registerStorageApis() {
                 throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
             }
             val["data"] = TierStorageBase::tieringJobToJson(jobs.front(), "", true);
-        });
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     api_regist("/media/mserver/storage/tieringJob/retry", [](API_ARGS_MAP_ASYNC) {
@@ -1285,14 +1458,23 @@ void registerStorageApis() {
     // ================================================================
     // === Section 7: Storage Dashboard APIs ==========================
     // ================================================================
+
     api_regist("/media/mserver/storage/dashboard/summary", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            val["data"] = dashboardSummaryToDocJson();
-        });
+        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
+            storageDashboardSummary(val);
+        }, nullptr, apiWorkLimit("storage.read"));
+    });
+
+    api_regist("/media/mserver/storage/dashboard/detail", [](API_ARGS_JSON_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
+
+        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
+            storageDashboardDetail(val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     // ================================================================
@@ -1303,28 +1485,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string level = allArgs["level"];
-            int acknowledged = allArgs["level"].empty() ? -1 : std::stoi(allArgs["acknowledged"]);
-            int page = allArgs["page"].empty() ? 0 : std::stoi(allArgs["page"]);
-            int size = allArgs["size"].empty() ? 20 : std::stoi(allArgs["size"]);
-            if (size <= 0 || size > 100) size = 20;
-
-            StorageAlertImp imp;
-            Json::Value items(Json::arrayValue);
-            auto pool_map = TierStorageBase::loadPoolMap();
-            for (const auto &a : imp.query(level, acknowledged, page, size))
-                items.append(TierStorageBase::alertToJson(a, pool_map));
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"] = page;
-            data["size"] = size;
-            data["total"] = imp.countQuery(level, acknowledged);
-
-            val["data"] = data;
-        });
+            storageAlertList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     api_regist("/media/mserver/storage/alert/ack", [](API_ARGS_MAP_ASYNC) {
@@ -1350,34 +1513,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string camera_id = allArgs["camera_id"];
-            int64_t from_time = allArgs["from_time"].empty() ? 0 : std::stoll(allArgs["from_time"]);
-            int64_t to_time = allArgs["to_time"].empty() ? 0 : std::stoll(allArgs["to_time"]);
-            int page = allArgs["page"].empty() ? 0 : std::stoi(allArgs["page"]);
-            int size = allArgs["size"].empty() ? 20 : std::stoi(allArgs["size"]);
-            if (size <= 0 || size > 100) size = 20;
-
-            SegmentTierRangeImp imp;
-            Json::Value items(Json::arrayValue);
-            for (const auto &r : imp.findExpired(camera_id, from_time, to_time, page, size)) {
-                auto device = findDeviceSource(r.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                ProtectedVideoImp protected_imp;
-                items.append(TierStorageBase::expiredSegmentToJson(
-                    r,
-                    device ? device->getDeviceTuple().name : "",
-                    protected_imp.overlaps(r.camera_id, r.start_time, r.end_time)));
-            }
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"] = page;
-            data["size"] = size;
-            data["total"] = imp.countExpired(camera_id, from_time, to_time);
-
-            val["data"] = data;
-        });
+            storageExpiredSegmentList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     api_regist("/media/mserver/storage/expiredSegment/approve", [](API_ARGS_JSON_ASYNC) {
@@ -1502,55 +1640,17 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE, READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            std::string camera_id = allArgs["camera_id"];
-            std::string type = allArgs["type"];
-            int64_t from_time = allArgs["from_time"].empty() ? 0 : std::stoll(allArgs["from_time"]);
-            int64_t to_time = allArgs["to_time"].empty() ? 0 : std::stoll(allArgs["to_time"]);
-            int page = allArgs["page"].empty() ? 0 : std::stoi(allArgs["page"]);
-            int size = allArgs["size"].empty() ? 20 : std::stoi(allArgs["size"]);
-            if (size <= 0 || size > 100) size = 20;
-
-            ProtectedVideoImp imp;
-            Json::Value items(Json::arrayValue);
-            for (const auto &p : imp.query(camera_id, type, from_time, to_time, page, size)) {
-                auto device = findDeviceSource(p.camera_id, GENERIC_RTSP_CAMERA_SCHEMA);
-                items.append(TierStorageBase::protectedVideoToJson(
-                    p, device ? device->getDeviceTuple().name : ""));
-            }
-
-            Json::Value data;
-            data["items"] = items;
-            data["page"] = page;
-            data["size"] = size;
-            data["total"] = imp.countQuery(camera_id, type, from_time, to_time);
-
-            val["data"] = data;
-        });
+            storageProtectedList(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
-    api_regist("/media/mserver/storage/dashboard/detail", [](API_ARGS_JSON_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
-
-        // Repository queries and JSON building run on the API worker.
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            val["data"] = TierStorageManager::Instance().getDashboardDetail();
-        });
-    });
-
+    // Constant answer: no blocking work, so no dispatch.
     api_regist("/media/mserver/storage/pool/options", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
-        
-        Json::Value data;
-        data["poolsTypeSupport"] = Json::objectValue;
-        data["poolsTypeSupport"]["HOT"] = poolTypeSupport(TierType::HotTier);
-        data["poolsTypeSupport"]["WARM"] = poolTypeSupport(TierType::WarmTier);
-        data["poolsTypeSupport"]["COLD"] = poolTypeSupport(TierType::ColdTier);
 
-        val["data"] = data;
+        storagePoolOptions(val);
         invoker(200, headerOut, val.toStyledString());
     });
 
@@ -1558,18 +1658,9 @@ void registerStorageApis() {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
 
-        // Repository queries and JSON building run on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            string storage_types = allArgs["include"];
-            auto available_mount_points = TierStorageManager::Instance().getAvailableMountPoints(storage_types);
-
-            Json::Value data;
-            data["mount_point"] = Json::arrayValue;
-            for (const auto &mp : available_mount_points) {
-                data["mount_point"].append(mp.toJson());
-            }
-            val["data"] = data;
-        });
+            storageMountpointAvailable(allArgs, val);
+        }, nullptr, apiWorkLimit("storage.read"));
     });
 
     InfoL << "Storage tiering APIs registered";

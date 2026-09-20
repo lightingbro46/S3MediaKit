@@ -168,6 +168,9 @@ nhóm `global` là tên dành riêng). Nó áp cho **mọi** request đi qua `ru
    vào hạn mức chung.
 2. Rồi mới kiểm tra `global`. Nếu vượt, slot của nhóm đã lấy được trả lại trước khi trả 503.
 3. `maxQueueMs` thực tế là **mức chặt hơn** giữa nhóm và `global`.
+4. **Nhóm serial được miễn `maxQueueMs` của `global`.** Request của nhóm serial chạy lần lượt
+   đúng thứ tự đến, nên bỏ một request chỉ vì hàng đợi dài sẽ phá cả thứ tự đó lẫn tính toàn vẹn
+   của các mutation mà nhóm đang tuần tự hoá. `maxQueueMs` của chính nhóm, nếu đặt, vẫn áp dụng.
 
 Mặc định của `global` đặt rộng để không đổi hành vi của endpoint hiện có; xem
 [§5](#5-cấu-hình).
@@ -286,7 +289,7 @@ Unit test:
 | Target | Nội dung |
 |---|---|
 | `unit_blocking_executors` | Pool là singleton và tách biệt nhau, thread không phải poller, tên thread, số thread song song đúng cấu hình |
-| `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
+| `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
 

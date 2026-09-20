@@ -470,6 +470,55 @@ TEST(ApiWorkDispatcherTest, GlobalQueueDeadlineDropsUngroupedRequest) {
     }
 }
 
+TEST(ApiWorkDispatcherTest, SerialGroupIsExemptFromGlobalQueueDeadline) {
+    auto owner = ownerPoller();
+    GlobalLimitOverride limit(0, 50);
+    // Occupy every API worker, so both requests below wait far longer than the deadline.
+    const int threads = managerkit::BlockingExecutors::apiThreadCount();
+    Gate gate;
+    std::atomic<int> started{0};
+    std::vector<std::unique_ptr<ReplyProbe>> blockers;
+    for (int i = 0; i < threads; ++i) {
+        blockers.emplace_back(new ReplyProbe());
+        dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(),
+                        blockers.back()->invoker(owner), gate.blockingWork(&started));
+    }
+    ASSERT_TRUE(waitFor([&started, threads]() { return started.load() == threads; }));
+
+    // A mutation of a serial group: order and integrity matter more than dropping stale work.
+    ReplyProbe serial;
+    std::atomic<bool> serial_ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), serial.invoker(owner),
+                    [&serial_ran](Json::Value &) { serial_ran = true; }, nullptr,
+                    apiWorkSerial("test.serial.deadline"));
+    // An ordinary group queued at the same time is still dropped.
+    ReplyProbe plain;
+    std::atomic<bool> plain_ran{false};
+    dispatchApiWork(owner, std::weak_ptr<SocketHelper>(), jsonHeader(), successVal(), plain.invoker(owner),
+                    [&plain_ran](Json::Value &) { plain_ran = true; }, nullptr,
+                    ApiWorkLimit("test.plain.deadline", 0, 0));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    gate.release();
+
+    ASSERT_TRUE(serial.waitFirst());
+    auto serial_replies = serial.settle(50);
+    ASSERT_EQ(1u, serial_replies.size());
+    EXPECT_EQ(200, serial_replies[0].status);
+    EXPECT_TRUE(serial_ran.load());
+
+    ASSERT_TRUE(plain.waitFirst());
+    auto plain_replies = plain.settle(50);
+    ASSERT_EQ(1u, plain_replies.size());
+    EXPECT_EQ(503, plain_replies[0].status);
+    EXPECT_FALSE(plain_ran.load());
+
+    for (auto &blocker : blockers) {
+        EXPECT_TRUE(blocker->waitFirst());
+    }
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.serial.deadline") == 0; }));
+}
+
 TEST(ApiWorkDispatcherTest, CallbackWorkRepliesOnceOnOwner) {
     auto owner = ownerPoller();
     ReplyProbe probe;

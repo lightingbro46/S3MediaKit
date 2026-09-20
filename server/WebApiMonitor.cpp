@@ -1,6 +1,7 @@
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
+#include "WebApiMonitor.h"
 
 #include "Manager.h"
 #include "Server/GlobalMonitor.h"
@@ -12,18 +13,27 @@ using namespace mediakit;
 
 namespace managerkit {
 
+// --- Bodies shared with the /media/api/* family (WebApiMonitor.h) ----------------------------
+
+void systemStatistic(Json::Value &val) {
+    val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
+}
+
+void systemStatisticHistory(const ArgsMap &allArgs, Json::Value &val) {
+    int64_t from_ts = allArgs["from"];
+    int64_t to_ts   = allArgs["to"];
+    int     limit   = allArgs["limit"];
+    int     bucket_sec = allArgs["bucket_sec"];
+    val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit, bucket_sec);
+}
+
 void registerMonitorApis() {
     // Register the Web API monitor endpoints here
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
-        // string id = allArgs["mediaServerId"];
-        // GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        // if (id != mediaServerId) {
-        //     RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
-        //     return;
-        // }
-        val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
+
+        systemStatistic(val);
     });
 
     api_regist("/media/mserver/systemStatisticHistory", [](API_ARGS_MAP_ASYNC) {
@@ -31,13 +41,9 @@ void registerMonitorApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("from", "to", "limit");
 
-        // Blocking part (statistics DB, disk usage, per-camera storage) runs on the API worker.
+        // Blocking part (statistics DB) runs on the API worker.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            int64_t from_ts = allArgs["from"];
-            int64_t to_ts   = allArgs["to"];
-            int     limit   = allArgs["limit"];
-            int     bucket_sec = allArgs["bucket_sec"];
-            val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit, bucket_sec);
+            systemStatisticHistory(allArgs, val);
         });
     });
 

@@ -5,12 +5,13 @@ route. Mô hình thread và cách dispatch: [threading-blocking-work.md](threadi
 
 ## Thứ tự đề xuất
 
-| Bước | Mục | Ưu tiên | Vì sao ở vị trí này |
+| Bước | Mục | Ưu tiên | Trạng thái |
 |---|---|---|---|
-| 1 | [§1 Gộp hai họ endpoint storage](#1-gộp-hai-họ-endpoint-storage) | P1 | Chặn mục 2; mỗi endpoint storage mới hiện phải sửa hai chỗ |
-| 2 | [§2 Gắn `storage.read` cho `/media/mserver/storage/*`](#2-gắn-storageread-cho-các-read-của-mediamserverstorage) | P2 | Sau §1 thì chỉ còn một chỗ để sửa |
-| 3 | [§5 Siết bài đo healthcheck của bước 6](#5-siết-bài-đo-healthcheck-của-bước-6) | P2 | Độc lập, rẻ, làm bất cứ lúc nào |
-| 4 | [§6 Deadline hàng đợi chung với nhóm serial](#6-deadline-hàng-đợi-chung-áp-cả-cho-nhóm-serial) | P3 | Chỉ làm khi vận hành thấy triệu chứng |
+| 1 | [§1 Gộp hai họ endpoint storage](#1-gộp-hai-họ-endpoint-storage) | P1 | **Xong** — `server/WebApiStorage.h` + 27 hàm thuần, payload đã đồng nhất về bản `mserver` |
+| 2 | [§2 Gắn `storage.read` cho `/media/mserver/storage/*`](#2-gắn-storageread-cho-các-read-của-mediamserverstorage) | P2 | **Xong** — 19 read mang nhóm `storage.read`, `playback/resolve` vẫn ngoài nhóm |
+| 3 | [§5 Siết bài đo healthcheck của bước 6](#5-siết-bài-đo-healthcheck-của-bước-6) | P2 | **Xong** — đo bằng `pool/testConnection` trỏ vào `BLACKHOLE_IP` |
+| 4 | [§6 Deadline hàng đợi chung với nhóm serial](#6-deadline-hàng-đợi-chung-áp-cả-cho-nhóm-serial) | P3 | **Xong** — `ApiWorkLimit::serial` được miễn `global.maxQueueMs` |
+| 5 | [§7 Gộp hai họ ngoài storage](#7-gộp-hai-họ-ngoài-storage-systemstatistic) | P2 | **Xong** — `systemStatistic` / `systemStatisticHistory` |
 | — | [§3 `/index/api/getSnap`](#3-indexapigetsnap-chọn-thread-theo-query-param) | — | Cố ý giữ nguyên, ghi lại cách xử lý nếu đổi ý |
 | — | [§4 Decode/transcode](#4-decodetranscode-vẫn-trên-workthreadpool) | — | Cần đo trước, chưa đủ dữ liệu để lên việc |
 
@@ -46,13 +47,32 @@ api_regist("/media/api/storage/pool/list", [](API_ARGS_MAP_ASYNC) {
 **Không** làm forwarder HTTP giữa hai họ: guard phải nằm ở từng họ, gộp lại là đổi trust boundary.
 Phương án hàm thuần giữ nguyên ranh giới đó, chỉ bỏ phần trùng.
 
-Hai họ hiện khác nhau ở vài chỗ nhỏ, phải xử lý trước khi gộp — soát lại từng cặp:
+Hai họ hiện khác nhau ở vài chỗ nhỏ, phải xử lý trước khi gộp — soát lại từng cặp.
 
-- `pool/list` của `/media/api/...` trả `poolDetailToJson`, của `/media/mserver/...` trả
-  `poolSummaryToJson`. **Giữ nguyên khác biệt này**, cho hàm thuần nhận tham số chọn dạng JSON.
-- `camera/effectivePolicy/list` của `/media/mserver/...` có thêm filter `policy_id` và dùng
-  `effectivePolicyToJson`; bản `/media/api/...` tự dựng item. Thống nhất về hàm chung nhưng **không**
-  đổi payload của họ nào.
+> **Đã làm khác kế hoạch ban đầu.** Kế hoạch viết là giữ nguyên khác biệt payload giữa hai họ.
+> Khi thực hiện thì **đồng nhất payload**, lấy bản `/media/mserver/storage/*` làm chuẩn, và sửa
+> console tier storage theo. Lý do: một hàm thuần trả hai dạng JSON tuỳ người gọi thì vẫn còn đúng
+> chỗ để hai họ lệch nhau, tức là vẫn còn nguyên vấn đề mà §1 muốn bỏ. Tám chỗ lệch đã xử lý:
+>
+> | Route | Payload giữ lại (bản `mserver`) |
+> |---|---|
+> | `pool/list` | `poolSummaryToJson` (trước đó `/media/api/...` trả `poolDetailToJson`) |
+> | `policy/list` | policy mặc định của hệ thống mang số camera chưa gán |
+> | `policy/detail` | `policyDetailToJson` không kèm các trường summary |
+> | `camera/effectivePolicy/list` | `effectivePolicyToJson` + filter `policy_id` |
+> | `camera/timeline` | không có trường `policy_name` |
+> | `dashboard/summary` | có `capacity_complete` / `capacity_unavailable_pool_count` |
+> | `policy/assignCameras` | từ chối request mà toàn bộ `camera_ids` đều không tồn tại |
+> | `pool/update` | validate watermark trước khi validate theo type |
+>
+> Hai chỗ **lấy bản `/media/api/...`** vì bản `mserver` là lỗi, không phải lựa chọn payload:
+> `alert/list` guard nhầm trên `level` rồi `std::stoi("")` trên `acknowledged` (500 khi lọc theo
+> `level`), và `policy/list` thiếu chặn `size` trong khoảng 1..100 mà mọi list phân trang khác đều có.
+>
+> Console phải sửa theo hai chỗ: bảng pool đọc được cả `status`/`used_percent` (từ `pool/list`) lẫn
+> `health_status`/`usage_pct` (từ `dashboard/detail`), và form sửa pool nạp bản đầy đủ qua
+> `pool/detail` thay vì dùng item của `pool/list`.
+
 - Họ `/media/api/storage/*` là **tập con thật sự**: cả 27 route của nó đều có bản tương ứng bên
   `/media/mserver/storage/*`. Chiều ngược lại thì không — 14 route chỉ có ở `/media/mserver/...`:
   `alert/ack`, `camera/effectivePolicy` (số ít), `camera/summary/list`, `expiredSegment/approve`,
@@ -105,6 +125,19 @@ trần chung `global`. Nếu sau này muốn nó có backpressure riêng thì đ
 đồng thời nhiều hơn `maxInflight` request tới một read của cả hai họ, đếm số 503/902012, và xác nhận
 `playback/resolve` **không** bị chặn khi `storage.read` đã đầy.
 
+**Đã làm (bước 12 của `check_worker_apis.py`).** Một read storage trên node trống trả về trong
+khoảng 1ms, nên bắn song song không bao giờ chồng lấn đủ để chạm hạn mức. Bài đo vì thế **chặn sạch
+pool `api`** trước: `API_THREADS` request `pool/testConnection` trỏ vào `BLACKHOLE_IP`, mỗi request
+giữ một worker khoảng 20s. Từ lúc đó không còn việc nào rời pool, nên mỗi request được nhận vào giữ
+slot `storage.read` cho tới khi pool thoát — 40 request (20 `/media/api/...` + 20
+`/media/mserver/...`) cho đúng 32 chạy và 8 nhận 503/902012, không phụ thuộc thời điểm đến. Hai
+request `playback/resolve` bắn cùng lúc vẫn trả 404/905001.
+
+`setup_nodes.py` vì bài này đặt thêm cho node test: `blocking.apiThreads=4` (mặc định
+`max(2, nproc/2)` khác nhau theo máy) và `api.limit.global.maxQueueMs` /
+`api.limit.storage.read.maxQueueMs` = 120000, để lý do duy nhất một request bị từ chối là trần
+`maxInflight` chứ không phải deadline hàng đợi.
+
 ---
 
 ## 3. `/index/api/getSnap` chọn thread theo query param
@@ -154,6 +187,18 @@ status/code đúng), **chưa** chứng minh được tính không-blocking như 
 
 Phương án hai rẻ hơn và nhất quán với các bài đã có.
 
+**Đã làm: phương án hai, nhưng endpoint chậm là `pool/testConnection` chứ không phải
+`mountpoint/available`.** `mountpoint/available` chỉ đọc snapshot mount đã cache nên không chậm
+được; muốn nó chậm thì phải có sẵn một mount mạng treo, không tạo được trong test. Ngược lại
+`pool/testConnection` với pool MINIO trỏ vào `http://192.0.2.1:9000` đi qua AWS SDK với
+`connectTimeoutMs` 5s và 3 lần retry, nên giữ một worker khoảng 20s — và nó **cố ý không thuộc nhóm
+nào**, nên thứ duy nhất giữ healthcheck nhanh là việc đã được đẩy khỏi poller.
+
+Bài đo mới gộp luôn phần kiểm chứng của §2 (xem bước 12 ở đó): lấy >100 mẫu `healthcheck` trong lúc
+toàn bộ worker của pool `api` đang bị chặn, và khẳng định thêm rằng probe đã đủ chậm
+(`min(duration) > 3s`) — thiếu khẳng định này thì một probe trả nhanh sẽ làm bài đo lại vô nghĩa
+đúng như bản cũ.
+
 ---
 
 ## 6. Deadline hàng đợi chung áp cả cho nhóm serial
@@ -173,6 +218,49 @@ Không đổi gì cho tới khi có triệu chứng thật.
 
 Nếu chọn (2), nhớ bổ sung case vào `unit_api_work_dispatcher`: nhóm serial chờ quá deadline chung
 vẫn chạy, nhóm thường vẫn bị bỏ.
+
+**Đã làm: phương án (2).** `runApiWork` bỏ qua `global.max_queue_ms` khi `limit.serial`;
+`maxQueueMs` của chính nhóm serial, nếu đặt, vẫn áp dụng. Case
+`ApiWorkDispatcherTest.SerialGroupIsExemptFromGlobalQueueDeadline` chặn hết worker, xếp một request
+nhóm serial và một request nhóm thường vào cùng thời điểm, rồi kiểm tra request serial trả 200 và
+có chạy, request thường trả 503 và không chạy.
+
+---
+
+## 7. Gộp hai họ ngoài storage (`systemStatistic`)
+
+**Rà soát.** Sau §1, soát lại toàn bộ 205 route `api_regist` của `server/` theo tên lá để tìm các
+cặp còn lại của hai họ:
+
+```bash
+grep -rhoE 'api_regist\("/[a-zA-Z0-9/_]+' server/*.cpp | sed 's/api_regist("//' | sort \
+  | awk -F/ '{fam=$2"/"$3; leaf=$0; sub("^/"fam"/","",leaf); print leaf"\t"fam}' \
+  | sort | awk -F'\t' '{c[$1]=c[$1]" "$2} END {for (k in c) if (split(c[k],a," ")>1) print k, c[k]}'
+```
+
+Kết quả: ngoài 27 route storage đã gộp ở §1, hai họ chỉ còn trùng **hai** route —
+`systemStatistic` và `systemStatisticHistory`. Thân của hai cặp này vốn đã giống hệt nhau từng
+dòng, chỉ khác guard (`CHECK_AUTH_TOKEN` + `CHECK_USER_PERMISSION` so với
+`CHECK_CLUSTER_AUTHOR_ASYNC`).
+
+**Đã làm.** Thêm `server/WebApiMonitor.h` với đúng hai hàm thuần, theo cùng contract của
+`WebApiStorage.h`:
+
+- `systemStatistic(val)` — chỉ đọc snapshot đã cache của `GlobalMonitor` (OS, CPU, RAM, net, disk,
+  reader), **không** blocking, nên cả hai họ vẫn trả lời ngay trên request poller.
+- `systemStatisticHistory(allArgs, val)` — truy vấn DB thống kê, chạy trên API worker ở cả hai họ.
+
+**Không phải cặp để gộp**, đã soát và loại:
+
+- `/media/api/device/statisticsList` và `/media/mserver/device/statistics`: một bên liệt kê mọi
+  thiết bị, một bên lấy một thiết bị theo `id`. Payload mỗi item đã dùng chung
+  `makeDeviceStatisticJson`, không còn gì để tách.
+- `/index/api/{getStatistic,getThreadsLoad,getWorkThreadsLoad}` và bản `/media/api/...` của chúng:
+  thân đã là một lời gọi tới hàm dùng chung (`getStatisticJson`, `getThreadsLoad`), không còn logic
+  trùng. Lưu ý ba handler `/media/api/...` này bắt `&sender` theo tham chiếu rồi truyền vào
+  `API_ARGS_VALUE` bên trong callback của `CHECK_CLUSTER_AUTHOR_ASYNC` — callback đó **có thể** chạy
+  sau khi handler đã trả về (nhánh hook bất đồng bộ). Đây là lỗi có sẵn, nằm ngoài phạm vi đợt này,
+  cần một đợt riêng vì phải đổi chữ ký `getThreadsLoad`/`getStatisticJson`.
 
 ---
 

@@ -99,7 +99,13 @@ def main():
         shutil.copytree(os.path.join(REPO, "migration/mserver_updates"), os.path.join(d, "mserver_updates"))
         overrides = {
             "general": {"mediaServerId": node_id},
-            "http": {"port": ports["http"], "sslport": 0, "rootPath": d + "/www"},
+            # keepAliveSecond: check_worker_apis.py drives requests that deliberately take far
+            # longer than the 30s default (pool/testConnection against a blackhole address waits out
+            # the AWS SDK setup plus its connect timeout). The server closes an HTTP session that
+            # sends nothing for keepAliveSecond, so at the default the client loses the connection
+            # before the answer and the measurement collapses.
+            "http": {"port": ports["http"], "sslport": 0, "rootPath": d + "/www",
+                     "keepAliveSecond": 180},
             "rtsp": {"port": ports["rtsp"], "sslport": 0},
             "rtmp": {"port": ports["rtmp"], "sslport": 0},
             "rtp_proxy": {"port": 0},
@@ -120,6 +126,13 @@ def main():
                         "failoverActiveDelaySec": 5,
                         # device/config APIs are exercised without JWT (check_worker_apis.py)
                         "enableAuthorize": 0},
+            # check_worker_apis.py blocks every API worker on purpose (pool/testConnection against
+            # a blackhole address) to measure the pollers and the storage.read cap. It needs a
+            # known pool size, instead of the default max(2, nproc/2) which differs per machine.
+            "blocking": {"apiThreads": 4},
+            # ... and queue deadlines longer than that blockage, so the in-flight cap is the only
+            # reason a request of the burst can be answered 503.
+            "api": {"limit.global.maxQueueMs": 120000, "limit.storage.read.maxQueueMs": 120000},
         }
         patch_ini(os.path.join(REPO, "conf/config.ini"), os.path.join(d, "config.ini"), overrides)
 
