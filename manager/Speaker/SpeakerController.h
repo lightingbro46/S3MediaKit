@@ -4,6 +4,7 @@
 #include "ext-plugin/IDevice.h"
 #include "GenericIPSpeaker.h"
 #include "AudioFileManager.h"
+#include "Common/SerialTaskQueue.h"
 
 #include <string>
 #include <vector>
@@ -55,6 +56,8 @@ private:
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
+    // Serializes blocking calls to this speaker (ONVIF SOAP) on the shared `device` pool.
+    SerialTaskQueue::Ptr _device_queue;
     std::atomic<bool> _ready { false };
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;

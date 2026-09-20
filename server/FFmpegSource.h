@@ -6,6 +6,7 @@
 #include <functional>
 #include <vector>
 #include "Process.h"
+#include "Thread/TaskExecutor.h"
 #include "Util/TimeTicker.h"
 #include "Common/config.h"
 #include "Common/MediaSource.h"
@@ -37,11 +38,37 @@ public:
      */
     static void makeSnap(bool async, const std::string &play_url, const std::string &save_path, uint64_t seek_time, float timeout_sec, const onSnap &cb);
 
-    // Create a JPEG through an optional filter_complex graph. The graph must
-    // expose its final video as [v]. The caller owns temporary overlay files.
+    /**
+     * Create a screenshot on the calling thread: `cb` runs exactly once, before this returns.
+     * It waits for the ffmpeg process, so it must be called from a blocking executor
+     * (managerkit::BlockingExecutors::*), never from an EventPoller.
+     */
+    static void snap(const std::string &play_url, const std::string &save_path, uint64_t seek_time,
+                     float timeout_sec, const onSnap &cb);
+
+    /**
+     * Same as `snap`, through an optional filter_complex graph. The graph must expose its final
+     * video as [v]. The caller owns temporary overlay files.
+     */
+    static void snapWithFilter(const std::string &play_url, const std::string &save_path,
+                               uint64_t seek_time, float timeout_sec,
+                               const std::string &filter_complex, const onSnap &cb);
+
+    /**
+     * Asynchronous form of `snap`, and the one new code should use instead of `makeSnap`: it runs
+     * on a plain thread pool, not on an EventPoller, so waiting for ffmpeg never delays the timers
+     * and ordered queues a WorkThreadPool poller also serves. `cb` runs on `executor`.
+     * @param executor Where the blocking snapshot runs; null means BlockingExecutors::ffmpeg().
+     */
+    static void makeSnapOnWorker(const std::string &play_url, const std::string &save_path,
+                                 uint64_t seek_time, float timeout_sec, const onSnap &cb,
+                                 const toolkit::TaskExecutor::Ptr &executor = nullptr);
+
+    // Asynchronous form of `snapWithFilter`; `executor` as in makeSnapOnWorker.
     static void makeSnapWithFilter(const std::string &play_url, const std::string &save_path,
                                    uint64_t seek_time, float timeout_sec,
-                                   const std::string &filter_complex, const onSnap &cb);
+                                   const std::string &filter_complex, const onSnap &cb,
+                                   const toolkit::TaskExecutor::Ptr &executor = nullptr);
 
 private:
     FFmpegSnap() = delete;
@@ -340,6 +367,8 @@ private:
     bool _success = false;
     bool _complete_emitted = false;
     bool _started = false;
+    // Set by cancel(); a prepare step still queued on _poller then does nothing.
+    bool _cancelled = false;
     bool _start_emitted = false;
     bool _restore_cache_retained = false;
     bool _restore_started = false;
@@ -367,12 +396,20 @@ class FFmpegProbe {
 public:
     using onProbe = std::function<void(bool success, const std::string &err_msg, const ProbeInfo &info)>;
     /**
-     * Probe url to get source information
+     * Probe url to get source information, on the calling thread: `cb` runs exactly once, before
+     * this returns. It waits for the ffprobe process, so it must be called from a blocking
+     * executor (managerkit::BlockingExecutors::*), never from an EventPoller.
      * @param play_url The playback URL address, as long as FFmpeg supports it
      * @param timeout_sec Timeout for probe url (to prevent blocking for too long)
-     * @param cb Callback for whether the screenshot was generated successfully
+     * @param cb Callback for whether the source information was read successfully
      */
-    static void makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb, const toolkit::EventPoller::Ptr &poller = nullptr);
+    static void probe(const std::string &play_url, float timeout_sec, const onProbe &cb);
+
+    /**
+     * Runs `probe` on `executor`; `cb` runs on that executor, after this returns.
+     * @param executor Where the blocking probe runs; null means a WorkThreadPool poller.
+     */
+    static void makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb, const toolkit::TaskExecutor::Ptr &executor = nullptr);
 
 private:
     FFmpegProbe() = delete;

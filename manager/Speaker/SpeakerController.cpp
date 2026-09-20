@@ -1,4 +1,5 @@
 #include "SpeakerController.h"
+#include "Common/BlockingExecutors.h"
 #include "ext-plugin/DeviceFactory.h"
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
 
@@ -8,7 +9,9 @@ using namespace mediakit;
 
 namespace managerkit {
 
-SpeakerController::SpeakerController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {}
+SpeakerController::SpeakerController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
+    : _tuple(tuple), _poller(poller),
+      _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "speaker " + tuple.shortUrl())) {}
 
 void SpeakerController::createTimer() {
     weak_ptr<SpeakerController> weak_self = shared_from_this();
@@ -100,7 +103,8 @@ void SpeakerController::onManager() {
     auto onvif_ctr = _onvif_ctr;
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
 
-    WorkThreadPool::Instance().getPoller()->async([weak_self, onvif_ctr]() {
+    // ONVIF connect() is a blocking SOAP/HTTP call: run it on the speaker's serial device queue.
+    _device_queue->post([weak_self, onvif_ctr]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;

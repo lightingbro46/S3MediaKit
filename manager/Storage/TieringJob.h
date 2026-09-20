@@ -12,8 +12,13 @@
 #include "Util/util.h"
 #include "Common/StrUtil.h"
 #include "Local/StorageTier.h"
+#include "StorageTierExtra.h"
 
 namespace managerkit {
+
+// Largest gap between recorded segments that compact ranges still treat as
+// continuous. Anything longer splits ranges so the timeline shows the gap.
+static const int64_t kSegmentMergeGapSeconds = 10;
 
 // ===================================================================
 // TieringJob entity — one row per data-movement job
@@ -254,6 +259,82 @@ public:
         return SqliteRepository<TieringJob>::findById(j);
     }
 
+    bool hasActiveJobForRange(const std::string &range_id) {
+        if (range_id.empty())
+            return false;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("range_id = ? AND status IN (?, ?)",
+                       {range_id,
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // Legacy jobs may not carry a range_id, so they are matched by window.
+    bool hasActiveJobForWindow(const std::string &camera_id,
+                               const std::string &stream_id,
+                               const std::string &source_tier,
+                               const std::string &target_tier,
+                               int64_t start_time,
+                               int64_t end_time) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND source_tier = ? AND "
+                       "target_tier = ? AND segment_start_time = ? AND "
+                       "segment_end_time = ? AND status IN (?, ?)",
+                       {camera_id, stream_id, source_tier, target_tier,
+                        std::to_string(start_time), std::to_string(end_time),
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // Bytes still expected to leave a pool through queued or running transfers.
+    int64_t sumActiveBytesBySourcePool(const std::string &pool_id) {
+        if (pool_id.empty())
+            return 0;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(bytes_total), 0)"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("source_pool_id = ? AND status IN (?, ?)",
+                       {pool_id,
+                        jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)}));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
+    }
+
+    // Newest first. error_prefix is compared literally, not as a LIKE pattern.
+    std::vector<TieringJob> findRecentFailedByRange(const std::string &range_id,
+                                                    const std::string &error_prefix,
+                                                    int limit) {
+        std::vector<TieringJob> ret;
+        if (range_id.empty() || error_prefix.empty() || limit <= 0)
+            return ret;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<TieringJob>::getColumns())
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("range_id = ? AND status = ? AND "
+                       "substr(error_message, 1, ?) = ?",
+                       {range_id, jobStatusToString(JobStatus::FAILED),
+                        std::to_string(error_prefix.size()), error_prefix})
+                .orderBy("updated_at DESC")
+                .limit(limit));
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<TieringJob>::fromRow(row));
+        return ret;
+    }
+
     bool updateStatusAt(const std::string &job_id, const std::string &status,
                         int64_t updated_at,
                         int64_t bytes_moved = -1, const std::string &error = "") {
@@ -289,7 +370,7 @@ public:
     }
 
     std::vector<TieringJob> claimPendingAt(int limit, int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         std::vector<TieringJob> claimed;
         auto rows = _executor->executeRawWithTxn(
             txn,
@@ -635,6 +716,297 @@ public:
         return 0;
     }
 
+    // Keeps ranges that a PENDING/RUNNING transfer already owns out of a query.
+    static void appendNoActiveJobFilter(std::ostringstream &where,
+                                        std::vector<std::string> &params) {
+        const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
+        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<TieringJob>::tableName()
+              << " j WHERE j.range_id = " << ranges << ".range_id AND j.status IN (?, ?))";
+        params.push_back(jobStatusToString(JobStatus::PENDING));
+        params.push_back(jobStatusToString(JobStatus::RUNNING));
+    }
+
+    // Appends conditions that keep a range out of deletion candidates: an
+    // active transfer, an unexpired retention override or a protected video.
+    // Filtering in SQL keeps undeletable rows from starving a LIMITed page.
+    static void appendDeletableFilter(std::ostringstream &where,
+                                      std::vector<std::string> &params,
+                                      int64_t now,
+                                      bool exclude_protected_video = true) {
+        const std::string ranges = EntityTraits<SegmentTierRange>::tableName();
+        appendNoActiveJobFilter(where, params);
+        where << " AND NOT EXISTS (SELECT 1 FROM "
+              << EntityTraits<SegmentRetentionOverride>::tableName()
+              << " o WHERE o.range_id = " << ranges << ".range_id AND o.extend_until > ?)";
+        params.push_back(std::to_string(now));
+        if (!exclude_protected_video)
+            return;
+        where << " AND NOT EXISTS (SELECT 1 FROM " << EntityTraits<ProtectedVideo>::tableName()
+              << " p WHERE p.camera_id = " << ranges << ".camera_id AND p.start_time <= "
+              << ranges << ".end_time AND p.end_time >= " << ranges << ".start_time)";
+    }
+
+    // Oldest-first deletion candidates of one pool, paged by (end_time, range_id).
+    std::vector<SegmentTierRange> findDeletableByPoolAfter(const std::string &tier,
+                                                           const std::string &pool_id,
+                                                           int64_t ended_before,
+                                                           int64_t after_end_time,
+                                                           const std::string &after_range_id,
+                                                           int64_t now,
+                                                           int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "tier = ? AND pool_id = ? AND status = ? AND end_time <= ?"
+              << " AND (end_time > ? OR (end_time = ? AND range_id > ?))";
+        params.push_back(tier);
+        params.push_back(pool_id);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(ended_before));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(after_range_id);
+        // Protected videos are handled by splitting candidates around them.
+        appendDeletableFilter(where, params, now, false);
+
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // Start of the camera's oldest AVAILABLE range on one pool; false when it
+    // has none. Uses the (camera_id, pool_id, tier, status, end_time) index.
+    bool findOldestStartByCameraPool(const std::string &camera_id,
+                                     const std::string &pool_id,
+                                     const std::string &tier,
+                                     int64_t &out_start) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"start_time"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND pool_id = ? AND tier = ? AND status = ?",
+                       {camera_id, pool_id, tier,
+                        segmentStatusToString(SegmentStatus::AVAILABLE)})
+                .orderBy("end_time ASC")
+                .limit(1));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return false;
+        out_start = std::stoll(rows[0][0]);
+        return true;
+    }
+
+    // Bytes of the camera's candidate ranges on one pool that end by `ended_by`.
+    // Ranges straddling it are left out, so the estimate errs low. Move
+    // candidates (`for_move`) only skip active transfers: a retention override
+    // blocks deletion, not a move.
+    int64_t sumDeletableBytesByCameraPoolEndedBy(const std::string &camera_id,
+                                                 const std::string &pool_id,
+                                                 const std::string &tier,
+                                                 int64_t ended_by,
+                                                 int64_t now,
+                                                 bool for_move = false) {
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND pool_id = ? AND tier = ? AND status = ? AND end_time <= ?";
+        params.push_back(camera_id);
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(ended_by));
+        if (for_move)
+            appendNoActiveJobFilter(where, params);
+        else
+            appendDeletableFilter(where, params, now, false);
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(size_bytes), 0)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
+    }
+
+    // Deletion (or, with `for_move`, move) candidates of one camera on one
+    // pool that start before `started_before`, oldest first, paged by
+    // (end_time, range_id).
+    std::vector<SegmentTierRange> findPoolRetentionCandidatesAfter(const std::string &camera_id,
+                                                                   const std::string &pool_id,
+                                                                   const std::string &tier,
+                                                                   int64_t started_before,
+                                                                   int64_t after_end_time,
+                                                                   const std::string &after_range_id,
+                                                                   int64_t now,
+                                                                   int limit,
+                                                                   bool for_move = false) {
+        std::vector<SegmentTierRange> ret;
+        if (camera_id.empty() || pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND pool_id = ? AND tier = ? AND status = ? AND start_time < ?"
+              << " AND (end_time > ? OR (end_time = ? AND range_id > ?))";
+        params.push_back(camera_id);
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(started_before));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(std::to_string(after_end_time));
+        params.push_back(after_range_id);
+        if (for_move)
+            appendNoActiveJobFilter(where, params);
+        else
+            appendDeletableFilter(where, params, now, false);
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // Age-retention candidates of one camera, paged by (start_time, range_id).
+    // Protected videos are not filtered here: a range is split at the cutoff
+    // first, and only the old piece is checked against protections.
+    std::vector<SegmentTierRange> findRetentionCandidatesAfter(const std::string &camera_id,
+                                                               int64_t started_before,
+                                                               int64_t after_start_time,
+                                                               const std::string &after_range_id,
+                                                               int64_t now,
+                                                               const std::string &exclude_pool_id,
+                                                               int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (camera_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "camera_id = ? AND status = ? AND start_time < ?"
+              << " AND (start_time > ? OR (start_time = ? AND range_id > ?))";
+        params.push_back(camera_id);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(started_before));
+        params.push_back(std::to_string(after_start_time));
+        params.push_back(std::to_string(after_start_time));
+        params.push_back(after_range_id);
+        if (!exclude_pool_id.empty()) {
+            where << " AND pool_id <> ?";
+            params.push_back(exclude_pool_id);
+        }
+        appendDeletableFilter(where, params, now, false);
+
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC, range_id ASC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // AVAILABLE ranges strictly before the (start_time, range_id) cursor, newest first.
+    std::vector<SegmentTierRange> findReconcileCandidatesBefore(int64_t before_start_time,
+                                                                const std::string &before_range_id,
+                                                                int limit) {
+        std::vector<SegmentTierRange> ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "status = ? AND (start_time < ?";
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(before_start_time));
+        if (!before_range_id.empty()) {
+            where << " OR (start_time = ? AND range_id < ?)";
+            params.push_back(std::to_string(before_start_time));
+            params.push_back(before_range_id);
+        }
+        where << ")";
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time DESC, range_id DESC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // AVAILABLE ranges of one pool strictly before the (end_time, range_id)
+    // cursor, newest first; uses the (pool_id, tier, status, end_time) index.
+    std::vector<SegmentTierRange> findPoolReconcileCandidatesBefore(const std::string &pool_id,
+                                                                    const std::string &tier,
+                                                                    int64_t before_end_time,
+                                                                    const std::string &before_range_id,
+                                                                    int limit) {
+        std::vector<SegmentTierRange> ret;
+        if (pool_id.empty())
+            return ret;
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "pool_id = ? AND tier = ? AND status = ? AND (end_time < ?";
+        params.push_back(pool_id);
+        params.push_back(tier);
+        params.push_back(segmentStatusToString(SegmentStatus::AVAILABLE));
+        params.push_back(std::to_string(before_end_time));
+        if (!before_range_id.empty()) {
+            where << " OR (end_time = ? AND range_id < ?)";
+            params.push_back(std::to_string(before_end_time));
+            params.push_back(before_range_id);
+        }
+        where << ")";
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("end_time DESC, range_id DESC");
+        if (limit > 0)
+            query = query.limit(limit);
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
+    // Ranges of one camera stream on a pool whose objects should still exist
+    // (AVAILABLE, RESTORING, EXPIRED) overlapping [from, to).
+    std::vector<SegmentTierRange> findStoredByCameraStreamPool(const std::string &camera_id,
+                                                               const std::string &stream_id,
+                                                               const std::string &pool_id,
+                                                               int64_t from,
+                                                               int64_t to) {
+        std::vector<SegmentTierRange> ret;
+        auto query = toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND pool_id = ? AND stream_id = ? AND status IN (?, ?, ?)"
+                       " AND end_time > ? AND start_time < ?",
+                       {camera_id, pool_id, stream_id,
+                        segmentStatusToString(SegmentStatus::AVAILABLE),
+                        segmentStatusToString(SegmentStatus::RESTORING),
+                        segmentStatusToString(SegmentStatus::EXPIRED),
+                        std::to_string(from), std::to_string(to)})
+                .orderBy("start_time ASC");
+        for (const auto &row : _executor->executeRaw(query))
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
+    }
+
     std::vector<SegmentTierRange> findByRangeIds(const std::vector<std::string> &range_ids) {
         std::vector<SegmentTierRange> ret;
         std::ostringstream where;
@@ -663,11 +1035,12 @@ public:
         return ret;
     }
 
-    bool hasAnyCoveringRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
-                                    const std::string &camera_id,
-                                    const std::string &stream_id,
-                                    int64_t start_time,
-                                    int64_t end_time) {
+    // True when a range of the stream owns `start_time`, i.e. start_time is in
+    // its half-open [start_time, end_time) window.
+    bool hasOwningRangeWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                               const std::string &camera_id,
+                               const std::string &stream_id,
+                               int64_t start_time) {
         if (!txn)
             return false;
         auto rows = _executor->executeRawWithTxn(
@@ -675,9 +1048,30 @@ public:
             toolkit::QueryBuilder()
                 .select({"1"})
                 .from(EntityTraits<SegmentTierRange>::tableName())
-                .where("camera_id = ? AND stream_id = ? AND start_time <= ? AND end_time >= ?",
+                .where("camera_id = ? AND stream_id = ? AND start_time <= ? AND end_time > ?",
                        {camera_id, stream_id, std::to_string(start_time),
-                        std::to_string(end_time)})
+                        std::to_string(start_time)})
+                .limit(1));
+        return !rows.empty();
+    }
+
+    // True when inserting [start_time, end_time) would take ownership of a
+    // segment start already owned by another range of the stream.
+    bool hasOwnershipConflictWithTxn(const toolkit::SqliteTransaction::Ptr &txn,
+                                     const std::string &camera_id,
+                                     const std::string &stream_id,
+                                     int64_t start_time,
+                                     int64_t end_time) {
+        if (!txn)
+            return false;
+        auto rows = _executor->executeRawWithTxn(
+            txn,
+            toolkit::QueryBuilder()
+                .select({"1"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("camera_id = ? AND stream_id = ? AND start_time < ? AND end_time > ?",
+                       {camera_id, stream_id, std::to_string(end_time),
+                        std::to_string(start_time)})
                 .limit(1));
         return !rows.empty();
     }
@@ -685,11 +1079,10 @@ public:
     bool mergeIfUncovered(const SegmentTierRange &range,
                           int64_t merge_gap_seconds,
                           int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
-            if (hasAnyCoveringRangeWithTxn(
-                    txn, range.camera_id, range.stream_id,
-                    range.start_time, range.end_time)) {
+            if (hasOwningRangeWithTxn(txn, range.camera_id, range.stream_id,
+                                      range.start_time)) {
                 txn->commit();
                 return true;
             }
@@ -709,7 +1102,7 @@ public:
     bool mergeNormalizedRange(const SegmentTierRange &range,
                               int64_t merge_gap_seconds,
                               int64_t updated_at) {
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             if (!mergeNormalizedRangeWithTxn(range, merge_gap_seconds,
                                              updated_at, txn)) {
@@ -767,12 +1160,42 @@ public:
         auto existing = EntityTraits<SegmentTierRange>::fromRow(rows[0]);
         int64_t merged_start = range.start_time;
         int64_t merged_end = range.end_time;
-        int64_t merged_count = std::max<int64_t>(1, range.segment_count);
-        int64_t merged_size = std::max<int64_t>(0, range.size_bytes);
         for (const auto &row : rows) {
             const auto item = EntityTraits<SegmentTierRange>::fromRow(row);
             merged_start = std::min(merged_start, item.start_time);
             merged_end = std::max(merged_end, item.end_time);
+        }
+        // Never let a merged window swallow a range of another tier, pool or
+        // status lying between the candidates; keep the new range separate.
+        {
+            std::ostringstream other_where;
+            std::vector<std::string> other_params;
+            other_where << "camera_id = ? AND stream_id = ? AND start_time < ? AND end_time > ?"
+                        << " AND range_id <> ?";
+            other_params.push_back(range.camera_id);
+            other_params.push_back(range.stream_id);
+            other_params.push_back(std::to_string(merged_end));
+            other_params.push_back(std::to_string(merged_start));
+            other_params.push_back(range.range_id);
+            for (const auto &row : rows) {
+                other_where << " AND range_id <> ?";
+                other_params.push_back(EntityTraits<SegmentTierRange>::fromRow(row).range_id);
+            }
+            auto others = _executor->executeRawWithTxn(
+                txn,
+                toolkit::QueryBuilder()
+                    .select({"1"})
+                    .from(EntityTraits<SegmentTierRange>::tableName())
+                    .where(other_where.str(), other_params)
+                    .limit(1));
+            if (!others.empty())
+                return saveWithTxn(range, txn, true);
+        }
+
+        int64_t merged_count = std::max<int64_t>(1, range.segment_count);
+        int64_t merged_size = std::max<int64_t>(0, range.size_bytes);
+        for (const auto &row : rows) {
+            const auto item = EntityTraits<SegmentTierRange>::fromRow(row);
             merged_count += std::max<int64_t>(0, item.segment_count);
             merged_size += std::max<int64_t>(0, item.size_bytes);
             if (item.range_id != existing.range_id &&
@@ -803,7 +1226,7 @@ public:
                             int64_t updated_at) {
         if (range_id.empty())
             return false;
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         try {
             auto rows = _executor->executeRawWithTxn(
                 txn,
@@ -860,6 +1283,86 @@ public:
             .set({{"tier", new_tier}, {"pool_id", pool_id}, {"status", status}, {"updated_at", std::to_string(updated_at)}})
             .where("range_id = ?", {range_id});
         return _executor->execDML(q);
+    }
+
+    // WHERE clause matching a range row only while it still equals the snapshot
+    // a caller planned against, so concurrent split/merge/move/delete wins once.
+    static const char *snapshotWhereClause() {
+        return "range_id = ? AND camera_id = ? AND stream_id = ? AND "
+               "start_time = ? AND end_time = ? AND tier = ? AND pool_id = ? AND "
+               "status = ? AND segment_count = ? AND size_bytes = ?";
+    }
+
+    static std::vector<std::string> snapshotWhereParams(const SegmentTierRange &expected) {
+        return {expected.range_id, expected.camera_id, expected.stream_id,
+                std::to_string(expected.start_time), std::to_string(expected.end_time),
+                expected.tier, expected.pool_id, expected.status,
+                std::to_string(expected.segment_count), std::to_string(expected.size_bytes)};
+    }
+
+    // Negative segment_count/size_bytes keep the stored values.
+    bool updateTierBySnapshotAt(const SegmentTierRange &expected,
+                                const std::string &new_tier,
+                                const std::string &pool_id,
+                                const std::string &status,
+                                int64_t updated_at,
+                                int64_t segment_count = -1,
+                                int64_t size_bytes = -1) {
+        if (expected.range_id.empty() || pool_id.empty())
+            return false;
+        std::vector<std::pair<std::string, std::string>> set;
+        set.push_back({"tier", new_tier});
+        set.push_back({"pool_id", pool_id});
+        set.push_back({"status", status});
+        set.push_back({"updated_at", std::to_string(updated_at)});
+        if (segment_count >= 0)
+            set.push_back({"segment_count", std::to_string(segment_count)});
+        if (size_bytes >= 0)
+            set.push_back({"size_bytes", std::to_string(size_bytes)});
+        auto q = toolkit::QueryBuilder()
+            .update(EntityTraits<SegmentTierRange>::tableName())
+            .set(set)
+            .where(snapshotWhereClause(), snapshotWhereParams(expected));
+        return _executor->execDML(q);
+    }
+
+    bool updateStatusBySnapshotAt(const SegmentTierRange &expected,
+                                  const std::string &status,
+                                  int64_t updated_at) {
+        return updateTierBySnapshotAt(expected, expected.tier, expected.pool_id,
+                                      status, updated_at);
+    }
+
+    // Marks the range terminal and queues its metadata cleanup atomically,
+    // only if the range still matches the snapshot the files were deleted from.
+    bool markDeletedBySnapshotAndEnqueue(const SegmentTierRange &expected,
+                                         const std::string &final_status,
+                                         const TierMetadataCleanupJob &cleanup_job) {
+        if (expected.range_id.empty() || cleanup_job.range_id != expected.range_id)
+            return false;
+        auto txn = _executor->beginWriteTxn();
+        try {
+            if (!_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .update(EntityTraits<SegmentTierRange>::tableName())
+                        .set({{"status", final_status},
+                              {"updated_at", std::to_string(cleanup_job.updated_at)}})
+                        .where(snapshotWhereClause(), snapshotWhereParams(expected)))) {
+                txn->rollback();
+                return false;
+            }
+            TierMetadataCleanupJobRepository cleanup_repo;
+            if (!cleanup_repo.upsertWithTxn(cleanup_job, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
     }
 
     bool updateStatusByWindowAt(const std::string &camera_id,
@@ -960,7 +1463,7 @@ public:
                 return false;
         }
 
-        auto txn = _executor->execTxn();
+        auto txn = _executor->beginWriteTxn();
         if (!_executor->execDMLWithTxn(
             txn,
             toolkit::QueryBuilder()
@@ -977,6 +1480,48 @@ public:
         return ok;
     }
 
+    bool replaceRangeWithPiecesIfUnchanged(
+            const SegmentTierRange &expected,
+            const std::vector<SegmentTierRange> &pieces) {
+        if (expected.range_id.empty() || pieces.empty())
+            return false;
+        for (const auto &piece : pieces) {
+            if (piece.range_id.empty() || piece.pool_id.empty())
+                return false;
+        }
+
+        auto txn = _executor->beginWriteTxn();
+        try {
+            if (!_executor->execDMLWithTxn(
+                    txn,
+                    toolkit::QueryBuilder()
+                        .deleteFrom(EntityTraits<SegmentTierRange>::tableName())
+                        .where(snapshotWhereClause(), snapshotWhereParams(expected)))) {
+                txn->rollback();
+                return false;
+            }
+
+            std::vector<std::string> piece_ids;
+            for (const auto &piece : pieces) {
+                if (!saveWithTxn(piece, txn, true)) {
+                    txn->rollback();
+                    return false;
+                }
+                piece_ids.push_back(piece.range_id);
+            }
+            SegmentRetentionOverrideRepository override_repo;
+            if (!override_repo.copyToRangesWithTxn(expected.range_id, piece_ids, txn)) {
+                txn->rollback();
+                return false;
+            }
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
     void pruneDeletedOlderThan(int64_t ts) {
         std::ostringstream where;
         std::vector<std::string> params;
@@ -986,9 +1531,10 @@ public:
                  "SELECT 1 FROM tier_metadata_cleanup_jobs "
                  "WHERE tier_metadata_cleanup_jobs.range_id = segment_tier_ranges.range_id "
                  "AND tier_metadata_cleanup_jobs.status = ?)";
+        // EXPIRED ranges still own files awaiting approval; never prune them.
         params.push_back(std::to_string(ts));
         params.push_back(segmentStatusToString(SegmentStatus::DELETED));
-        params.push_back(segmentStatusToString(SegmentStatus::EXPIRED));
+        params.push_back(segmentStatusToString(SegmentStatus::MISSING));
         params.push_back(jobStatusToString(JobStatus::PENDING));
         _executor->execDML(
             toolkit::QueryBuilder()
@@ -1011,6 +1557,24 @@ public:
         for (const auto &row : rows)
             if (!row.empty()) ids.push_back(row[0]);
         return ids;
+    }
+
+    // Bytes of every range whose files still occupy the pool.
+    int64_t sumStoredBytesByPool(const std::string &pool_id) {
+        if (pool_id.empty())
+            return 0;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"COALESCE(SUM(size_bytes), 0)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("pool_id = ? AND status IN (?, ?, ?)",
+                       {pool_id,
+                        segmentStatusToString(SegmentStatus::AVAILABLE),
+                        segmentStatusToString(SegmentStatus::RESTORING),
+                        segmentStatusToString(SegmentStatus::EXPIRED)}));
+        if (rows.empty() || rows[0].empty() || rows[0][0].empty())
+            return 0;
+        return std::stoll(rows[0][0]);
     }
 };
 
@@ -1119,7 +1683,7 @@ public:
     using Ptr = std::shared_ptr<SegmentTierRangeImp>;
 
     bool registerIfUncovered(SegmentTierRange range,
-                             int64_t merge_gap_seconds = 90) {
+                             int64_t merge_gap_seconds = kSegmentMergeGapSeconds) {
         if (range.pool_id.empty())
             return false;
         const int64_t now = static_cast<int64_t>(time(nullptr));
@@ -1131,7 +1695,7 @@ public:
         return mergeIfUncovered(range, merge_gap_seconds, now);
     }
 
-    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = 90) {
+    bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = kSegmentMergeGapSeconds) {
         if (range.pool_id.empty())
             return false;
         const int64_t now = static_cast<int64_t>(time(nullptr));

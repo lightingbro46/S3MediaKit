@@ -2,6 +2,9 @@
 #include "Common/StrUtil.h"
 #include "Common/config.h"
 #include "Extension/Resource.h"
+#ifdef ENABLE_SYNC_CHANGES
+#include "Extension/SyncManager.h"
+#endif
 #include <mutex>
 
 using namespace std;
@@ -11,6 +14,12 @@ using namespace mediakit;
 namespace managerkit {
 
 void TransactionLogImp::appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload) {
+#ifndef ENABLE_SYNC_CHANGES
+    (void)table;
+    (void)op;
+    (void)payload;
+    return;
+#else
     // Serialize all callers (across every TransactionLogImp instance) to prevent
     // a read-modify-write race where two concurrent calls both read the same
     // current_seq, compute the same next sequence, and then one INSERT succeeds
@@ -28,7 +37,14 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     log.db_guid = self_db_guid;
     log.sequence = current_seq + 1;
     log.timestamp = static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
-    log.timestamp_hi = 0; // default to 0, can be set to 1 to indicate this log wins in conflict resolution regardless of timestamp
+    try {
+        // Records the LWW versions of the touched rows; may move the timestamp forward so this
+        // write is newer than any version this node already accepted for those rows.
+        log.timestamp = SyncManager::Instance().stampLocalMutation(table, op, payload, log.timestamp, self_node_id);
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to record row versions for local " << op << " on " << table << ": " << ex.what();
+    }
+    log.timestamp_hi = 0; // audit flag, only set for remote entries (1 = conflict winner, 2 = stale)
     log.tran_guid = toolkit::makeUuidStr();
     log.tran_type = static_cast<int>(TranType::DataMutation);
 
@@ -39,6 +55,7 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     log.tran_data = StrJsonUtils::writeJsonString(tran_data_json);
 
     add(log);
+#endif // ENABLE_SYNC_CHANGES
 }
 
 } // namespace managerkit

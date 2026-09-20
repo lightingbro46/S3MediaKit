@@ -63,7 +63,7 @@ void MigrationHistoryImp::migrate(const string &files_string) {
 }
 
 void MigrationHistoryImp::execSqlQuery(const string &sql_query) {
-    auto txn = _executor->execTxn();
+    auto txn = _executor->beginWriteTxn();
     txn->execScript(sql_query);
     txn->commit();
 }

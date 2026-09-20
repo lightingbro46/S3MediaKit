@@ -37,6 +37,16 @@ extern const std::string kGossipFanout;
 extern const std::string kTransactionLogKeepLast;
 // Whether to keep migration SQL files after execution, default is false (do not keep)
 extern const std::string kKeepMigrationSqlFiles;
+// Days to keep sync_row_version tombstones (deleted rows) before pruning, default 30.
+// Must exceed the longest time a node may stay offline and still resume by incremental pull.
+extern const std::string kRowVersionTombstoneTtlDays;
+// Days an offline peer (known cluster member) keeps holding back transaction_log pruning, measured
+// from its last ack, default 7. A peer away longer resyncs from a snapshot when it returns.
+// Should not exceed kRowVersionTombstoneTtlDays.
+extern const std::string kPeerOfflineTtlDays;
+// Bootstrap attempts per peer (answers "not bootstrapped yet" or connection failures) before a
+// cluster where no node has completed bootstrap elects a seed (lowest mediaServerId), default 3.
+extern const std::string kBootstrapSeedRounds;
 } // namespace Database
 
 namespace managerkit {
@@ -111,9 +121,22 @@ public:
         return Executor::executeRaw(pool, std::forward<ArgsType>(args)...);
     }
 
-    toolkit::SqliteTransaction::Ptr execTxn() {
-        auto pool = _helper->pool();
-        return std::make_shared<toolkit::SqliteTransaction>(pool);
+    // Transaction that writes (BEGIN IMMEDIATE): takes the write lock up front, waiting up to
+    // busy_timeout for other writers. Use it for every transaction that may write, including ones
+    // that read first: a deferred transaction that has already read cannot be upgraded once another
+    // connection has written, and fails with "database is locked" without honoring busy_timeout.
+    toolkit::SqliteTransaction::Ptr beginWriteTxn() {
+        auto txn = std::make_shared<toolkit::SqliteTransaction>(_helper->pool());
+        // SqliteTransaction always opens a deferred transaction; it holds no lock yet, so it can
+        // be swapped for an immediate one on the same connection (commit/rollback still apply).
+        txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
+        return txn;
+    }
+
+    // Read-only transaction (deferred): a consistent snapshot that never blocks writers. Never
+    // write through it; a long snapshot read holding the write lock would stall every writer.
+    toolkit::SqliteTransaction::Ptr beginReadTxn() {
+        return std::make_shared<toolkit::SqliteTransaction>(_helper->pool());
     }
 
     template<typename ...ArgsType>
@@ -142,7 +165,7 @@ public:
 
     std::string getTag() { return _tag; }
 
-    // Expose executor so callers can create/share transactions with execTxn()
+    // Expose executor so callers can create/share transactions with beginWriteTxn()/beginReadTxn()
     // and pass them to WithTxn methods across multiple Imp instances on the same DB.
     SqliteQueryExecutor::Ptr getExecutor() { return _executor; }
 

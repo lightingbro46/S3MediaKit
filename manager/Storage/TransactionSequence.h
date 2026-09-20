@@ -78,6 +78,27 @@ public:
         return ret;
     }
 
+    std::vector<TransactionSequence> findByPeerIdAndDbGuidWithTxn(const TransactionSequence &seq, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .select(EntityTraits<TransactionSequence>::getColumns())
+                            .from(EntityTraits<TransactionSequence>::tableName())
+                            .where("peer_guid = ? AND db_guid = ?", {seq.peer_guid, seq.db_guid});
+        auto rows = executeRawWithTxn(txn, query);
+        std::vector<TransactionSequence> ret;
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<TransactionSequence>::fromRow(row));
+        }
+        return ret;
+    }
+
+    bool updateByPeerGuidAndDbGuidWithTxn(const TransactionSequence &seq, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                            .update(EntityTraits<TransactionSequence>::tableName())
+                            .set({{"sequence", std::to_string(seq.sequence)}})
+                            .where("peer_guid = ? AND db_guid = ?", {seq.peer_guid, seq.db_guid});
+        return execDMLWithTxn(txn, query);
+    }
+
     bool updateByPeerGuidAndDbGuid(const TransactionSequence &seq) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
@@ -133,6 +154,17 @@ public:
             save(entity);
         } else {
             updateByPeerGuidAndDbGuid(entity);
+        }
+    }
+
+    // Transaction-aware cursor upsert used when applying remote log entries.
+    // The cursor only moves forward so a rolled-back or re-ordered batch can never regress it.
+    void addWithTxn(const TransactionSequence &entity, toolkit::SqliteTransaction::Ptr txn) {
+        auto entities = findByPeerIdAndDbGuidWithTxn(entity, txn);
+        if (entities.empty()) {
+            saveWithTxn(entity, txn);
+        } else if (entity.sequence > entities[0].sequence) {
+            updateByPeerGuidAndDbGuidWithTxn(entity, txn);
         }
     }
 

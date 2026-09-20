@@ -45,8 +45,16 @@ Các trường quan trọng:
 - `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key_enc`
 - `high_watermark_percent`, `critical_watermark_percent`
 - `enabled`, `health_check_enabled`
+- `capacity_source` (`METRICS` | `QUOTA`, mặc định `METRICS`) và `capacity_quota_bytes` (nullable), thêm ở migration `17_storage_pool_capacity_quota.sql`
 
 Khi trả về client, `access_key` và `secret_key` phải được mask bằng `***********`.
+
+Dung lượng pool object storage có hai nguồn:
+
+- `METRICS`: dùng metric cluster của MinIO (`/minio/v2/metrics/cluster`). Số này là raw capacity của cả cluster: gồm parity erasure coding, mọi bucket khác và có độ trễ, nên không phản ánh đúng phần dung lượng của pool.
+- `QUOTA`: usage = tổng `size_bytes` của các range `AVAILABLE`/`RESTORING`/`EXPIRED` trên pool (`SegmentTierRangeRepository::sumStoredBytesByPool()`), total = `capacity_quota_bytes`. HeadBucket vẫn quyết định pool online hay không. Nếu metric raw cũng đọc được và raw usage ≥ `critical_watermark_percent` thì lấy giá trị lớn hơn, để metric raw vẫn là lưới an toàn khi chính cluster sắp đầy. Tổng byte được cache `storage.tiering_quota_usage_cache_seconds` (mặc định 30 giây) vì probe dung lượng chạy nhiều lần mỗi cycle.
+
+Khuyến nghị khi dùng `QUOTA`: đặt hard quota cho bucket trên MinIO (`mc quota set <alias>/<bucket> --size ...`) cao hơn `capacity_quota_bytes` khoảng 5%, để MinIO chặn ghi nếu metadata và dữ liệu thực tế lệch nhau (ví dụ object được ghi ngoài hệ thống).
 
 ### 2.2 StoragePolicy
 
@@ -102,6 +110,8 @@ Với mô hình 300 camera, 600 stream ghi 1 segment MP4/phút, 6 tháng tạo k
 Range được giới hạn theo ngày local của `start_time`, với đầu ngày được tính bằng `StampUtils::getStartOfDay()` theo timezone của process. Segment liền kề chỉ merge khi cùng camera, stream, tier, pool, status và cùng ngày local; một lần split/transfer vì thế không phải đọc toàn bộ cửa sổ retention nhiều tháng. Ngày local có thể dài 23, 24 hoặc 25 giờ ở timezone có DST; thay đổi timezone sau khi đã ghi metadata có thể làm quy tắc compact của dữ liệu mới không đồng nhất với range cũ.
 Ở trạng thái ổn định, 600 stream trong 180 ngày cần khoảng 108.000 daily range thay vì hàng triệu row file-level.
 
+**Quy tắc sở hữu segment:** một range sở hữu các segment (TimeBlock) có `start_time` nằm trong khoảng nửa mở `[range.start_time, range.end_time)` của cùng camera/stream. File MP4 liền kề có thể chồng nhau vài giây ở biên, nhưng mỗi segment chỉ thuộc đúng một range. Mọi luồng liệt kê file (split, move, delete, cleanup metadata), playback resolver và backfill đều dùng quy tắc này. Không tạo range mới chiếm quyền sở hữu của range đã có, và khi gộp range không được vắt qua range khác tier/pool/status.
+
 `segment_tier_ranges` lưu:
 
 - `range_id`
@@ -123,19 +133,21 @@ Các luồng tiering, timeline, summary, playback và restore phải lấy `segm
    - `MP4Recorder` emit `Broadcast::kBroadcastRecordMP4` sau khi file `.tmp` đã close và rename sang `.mp4`.
    - `TierStorageManager` nhận `RecordInfo`, lấy `camera_id`, `stream_id`, `start_time`, `time_len`, `file_size`, `file_path`.
    - Backend resolve HOT pool bằng longest-prefix match từ `file_path` với `mount_path/network_path` của các HOT pool enabled.
-   - Backend tạo `SegmentTierRange` tier `HOT`, đúng `pool_id`, status `AVAILABLE`, rồi gọi `mergeOrInsert(...)` để gộp các segment liền kề thành range compact.
+   - Backend tạo `SegmentTierRange` tier `HOT`, đúng `pool_id`, status `AVAILABLE`, rồi gọi `registerIfUncovered(...)`: nếu `start_time` của segment đã thuộc một range thì bỏ qua (idempotent), ngược lại gộp với range liền kề (khoảng trống ≤ 10 giây — `kSegmentMergeGapSeconds`, cùng ngày local) thành range compact.
    - Nếu không match được HOT pool, segment không được ghi vào `segment_tier_ranges`.
    - Timefile vẫn được ghi dưới `Protocol::kMP4SavePath`; `file_path` trong `TimeBlock` trỏ tới segment MP4 thật, có thể nằm ở HOT pool khác.
 
 2. **Luồng move tier thành công**
-   - Khi `tiering_jobs` move thành công, backend gọi `updateTierByRangeId(...)` để đổi tier/pool/status của đúng range đã move.
+   - Khi `tiering_jobs` move thành công, backend gọi `updateTierBySnapshotAt(...)`: chỉ đổi tier/pool/status nếu range vẫn khớp đúng snapshot (id, camera, stream, window, tier, pool, status, `segment_count`, `size_bytes`) đã dùng để liệt kê file. Nếu range đã đổi (split, merge, bị xóa) thì job fail với `STALE_RANGE_SNAPSHOT` và rollback file đã copy.
    - Move LOCAL/NAS và object storage đều cập nhật range theo cùng nguyên tắc này.
+   - Segment mất ở cả nguồn lẫn đích được retry có backoff; hết số lần thử thì bị loại khỏi range (xem 5.5).
 
 3. **Luồng expire/delete**
    - `MARK_EXPIRED_WAIT_APPROVAL` chuyển range sang `EXPIRED` nhưng chưa xóa file.
    - Automatic delete/`DELETE_OLDEST` chỉ chuyển range sang `DELETED` khi mọi file/object đã xóa thành công.
+   - Mọi đường xóa bỏ qua range đang có `tiering_jobs` `PENDING/RUNNING`, đọc lại range ngay trước khi xóa file, và đánh dấu `DELETED` + tạo cleanup job trong cùng transaction chỉ khi range vẫn khớp snapshot.
    - Sau đó `tier_metadata_cleanup_jobs` xóa đúng các `TimeBlock` tương ứng; move giữa tier không xóa timefile.
-   - `tier_metadata_cleanup_jobs` xử lý tuần tự toàn bộ metadata của range: xác minh cleanup TimeFile, cleanup motion trên các ngày bị ảnh hưởng, rồi cleanup bookmark trong range và chỉ chuyển `DONE` khi mọi bước hoàn tất. Camera không có TimeFile được hiểu là không có dữ liệu lưu trữ và tiếp tục cleanup; các lỗi mở/đọc khác giữ job ở `PENDING`.
+   - `tier_metadata_cleanup_jobs` xử lý tuần tự toàn bộ metadata của range: xác minh cleanup TimeFile, cleanup motion trên các ngày bị ảnh hưởng, rồi cleanup bookmark trong range và chỉ chuyển `DONE` khi mọi bước hoàn tất. Camera không có TimeFile được hiểu là không có dữ liệu lưu trữ và tiếp tục cleanup; lỗi mở/đọc/parse TimeFile (báo qua `TimeQuery::queryBlocks()`) giữ job ở `PENDING` kèm `error_message`.
    - `protected_videos` và `segment_retention_overrides` được kiểm tra tập trung trước mọi đường xóa.
 
 4. **Luồng restore COLD**
@@ -177,10 +189,17 @@ Các hàm quan trọng:
 - `uploadSegment(pool_id, local_path, s3_key)`
 - `downloadSegment(pool_id, s3_key, local_path)`
 - `deleteSegment(pool_id, s3_key)`
+- `deleteSegmentsBatch(pool_id, s3_keys)`: `DeleteObjects` ở chế độ quiet, tối đa 1 000 key/request; trả `false` khi request lỗi hoặc có bất kỳ key nào nằm trong `Errors`.
 - `segmentExists(pool_id, s3_key)`
+- `headSegment(pool_id, s3_key)`: `HeadObject` trả `PRESENT`, `ABSENT` (chỉ khi HTTP 404) hoặc `UNKNOWN` (mọi lỗi khác). `segmentExists` gộp mọi lỗi thành `false` nên không dùng được để chứng minh object đã mất.
+- `listObjects(pool_id, prefix, out, error)`: `ListObjectsV2` theo continuation token, trả key đầy đủ kèm size và `LastModified`. Lỗi ở bất kỳ trang nào trả `false` và để `out` rỗng, không bao giờ trả danh sách thiếu.
+- `listCommonPrefixes(pool_id, prefix, out, error)`: như trên với delimiter `/`, trả các "thư mục" con ngay dưới `prefix`.
+- `bucketVersioningStatus(pool_id, status)`: đọc `GetBucketVersioning` (`Enabled`, `Suspended` hoặc rỗng).
 - `makeS3Key(base_path, camera_id, stream_id, segment_path)`
 
 Đây là lớp dùng chung cho cả upload khi chuyển sang COLD và download khi restore segment.
+
+Bucket bật versioning không giải phóng dung lượng khi xóa: `DeleteObjects` chỉ tạo delete marker, bản cũ thành noncurrent version và vẫn chiếm chỗ. `TierStorageManager::refreshPoolVersioning()` đọc trạng thái versioning ngay khi đăng ký pool và tối đa một lần/giờ trong probe dung lượng (health cycle và maintenance). Khi `Enabled`, backend ghi cảnh báo `POOL_VERSIONING_BLOCKS_RECLAIM` (tối đa một lần/ngày/pool) khuyến nghị thêm lifecycle rule `NoncurrentVersionExpiration` (kèm dọn expired delete marker) hoặc tắt versioning, và thêm ghi chú vào `capacity_message` của health. Backend không chặn thao tác nào vì trạng thái này.
 
 ### 2.8 Job Tables
 
@@ -215,6 +234,7 @@ Backend kiểm tra:
 - `NAS` cần `mount_path` hoặc `network_path`, path phải được mount/writable và được xử lý qua `TierNASStorage`.
 - `MINIO` cần `endpoint`, `bucket`, `base_path`, `access_key`, `secret_key`.
 - `high_watermark_percent < critical_watermark_percent`.
+- `capacity_source` là `METRICS` hoặc `QUOTA` (không phân biệt hoa thường); `QUOTA` chỉ dành cho object storage và bắt buộc `capacity_quota_bytes` là số nguyên dương. `pool/update` với `capacity_quota_bytes: null` xóa quota, bỏ trống field thì giữ nguyên.
 
 `mount_path`/`network_path` của filesystem pool lưu logical recorder root, không
 chứa `Record::kAppName`. `TierStorageManager::resolveFilePoolDataRoot()` nối app
@@ -259,6 +279,8 @@ Backend validate:
 - WARM optional; nếu WARM disabled và COLD enabled thì HOT có thể move trực tiếp sang COLD
 - `retain_until_days` tăng dần giữa các tier enabled theo thứ tự `HOT -> WARM -> COLD`
 - Tier enabled phía sau yêu cầu tier enabled liền trước có `overflow_action = MOVE_TO_NEXT_TIER`
+- Tier enabled cuối cùng không được dùng `MOVE_TO_NEXT_TIER` (không có tier đích nên dữ liệu sẽ không bao giờ bị xóa); lưu ý `overflow_action` mặc định là `MOVE_TO_NEXT_TIER` khi request không truyền
+- Tier dùng `DELETE_OLDEST` phải có `retain_until_days > 0`
 - `delete_after_days >= retain_until_days` lớn nhất
 - `pool_id` tồn tại và enabled
 - `pool_id` phải đúng tier đang cấu hình và type phải được tier đó hỗ trợ
@@ -344,9 +366,18 @@ MP4Recorder close/rename segment
       size_bytes += file_size
 ```
 
-Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery`, decode `TimeBlock.file_path`, resolve HOT pool và aggregate trực tiếp thành range theo ngày. Range compact và cursor task được commit trong cùng transaction. Vì vậy restart sẽ tiếp tục từ cursor đã commit, replay không nhân đôi metadata, chunk có orphan không tiến cursor và lỗi mở timefile được chuyển sang retry. Lỗi phát sinh bên trong `TimeQuery::getRecordedTimePeriod()` giữ cơ chế tương thích cũ: được xử lý ngầm và trả kết quả đã thu thập được.
+Backfill lịch sử chạy bằng dispatcher riêng của `TierStorageManager`, tách khỏi tiering cycle. Mỗi camera có một dòng durable trong `tier_backfill_tasks`; worker claim một task đến hạn, đọc đúng một chunk timefile bằng `TimeQuery::queryBlocks()`, decode `TimeBlock.file_path`, resolve HOT pool rồi dựng range. Range compact và cursor task được commit trong cùng transaction, nên restart tiếp tục từ cursor đã commit và replay không nhân đôi metadata.
 
-Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Task mới luôn bắt đầu từ cửa sổ cấu hình trong `tier_backfill_tasks`.
+Quy tắc dựng range của một chunk:
+
+- Chunk sở hữu các block có `start_time` trong `[cursor, chunk_end)`; block đã thuộc một range (bất kỳ tier/status) thì bỏ qua.
+- Block được nhóm theo stream và HOT pool, sắp theo thời gian; range mới được tách khi sang ngày local khác, khi khoảng trống giữa hai block lớn hơn 10 giây, hoặc khi giữa hai block có `start_time` của một range đã tồn tại. `end_time` của range mới bị chặn tại `start_time` của range kế tiếp.
+- Lúc commit, nếu range mới chiếm quyền sở hữu của range khác (metadata vừa thay đổi) thì rollback và chunk được retry.
+- Block orphan (không có stream/file path hoặc path không thuộc HOT pool nào) được đếm vào `orphan_blocks`, ghi cảnh báo `TIER_BACKFILL_ORPHAN` và **không** chặn cursor.
+- Block đã kết thúc quá `tier_reconcile_min_age_seconds` mà file MP4 không còn trên HOT pool (pool qua health gate và thư mục dữ liệu tồn tại) không được đăng ký thành range; sau khi chunk commit, TimeBlock của nó bị gỡ khỏi timefile và ghi cảnh báo `TIER_BACKFILL_MISSING_FILE`. Nếu pool không kiểm chứng được là đọc được, chunk retry thay vì kết luận file đã mất. Trường hợp điển hình là file đã bị `StorageManager` cũ xóa nhưng việc rebuild timefile chưa hoàn tất trước khi nâng cấp.
+- Lỗi mở/đọc/parse timefile làm chunk retry, cursor không tiến.
+
+Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang `RETRY` với exponential backoff; quá số lần thử chuyển sang `FAILED`. Khi MediaServer khởi động, task còn `RUNNING` được đưa về `PENDING`. Mỗi phút, việc đồng bộ task chỉ trượt `window_start`/`cutoff_time` tới; task `FAILED`/`RETRY` giữ nguyên số lần thử, backoff và lỗi, task `COMPLETED` được mở lại `PENDING` khi cutoff mới vượt cursor. Chỉ khi đổi `timeline_path` hoặc mở rộng cửa sổ thì cursor mới được reset.
 
 ## 5. Luồng Chuyển Tầng
 
@@ -372,8 +403,11 @@ Luồng hiện tại theo code:
    - Nếu có policy hiệu lực, chạy `processCameraTiering(camera_id, policy)`.
    - Chạy `processCameraPressureTiering(camera_id, policy)`.
    - Chạy `enforcePolicyDeleteRetention(camera_id, policy)`.
-   - Chạy `enforceCameraArchiveRetention(camera_id, policy)`.
-7. Ghi log thời gian hoàn tất.
+   - Chạy `enforceCameraArchiveRetention(camera_id, policy)` (chỉ `keepArchivedMaxFor`).
+7. Chạy `enforcePoolPressureRetention()` một lần cho mọi pool enabled, gồm HOT/WARM/COLD và object storage (xem 5.4).
+8. Chạy `runRangeFileReconcile()` (xem 5.6).
+9. Xử lý metadata cleanup, restore job, prune metric/range, dọn cache restore và MP4 orphan, rồi dispatch job lần nữa.
+10. Ghi log thời gian hoàn tất.
 
 ### 5.2 Move Theo Tuổi Dữ Liệu
 
@@ -389,15 +423,21 @@ Backend sort tier theo thứ tự `HOT -> WARM -> COLD`, nhưng tier đích là 
 ```text
 move_threshold = now - source_tier.retain_until_days * 86400
 move_threshold không được mới hơn now - min_segment_age_minutes_before_move
+move_threshold được làm tròn xuống theo tiering_split_granularity_seconds (mặc định 3600)
 ```
 
+Làm tròn giúp mỗi stream chỉ bị split, tạo job và range DELETED tối đa một lần mỗi giờ thay vì mỗi cycle 5 phút; dữ liệu vì thế có thể chuyển/xóa trễ tối đa một khoảng bằng độ mịn. Mốc retention theo tuổi (`delete_after_days`, `keepArchivedMaxFor`) cũng được làm tròn như vậy; xóa khi vượt ngưỡng không bị ảnh hưởng.
+
 5. Query `segment_tier_ranges` theo source tier/source pool với `start_time < move_threshold`.
-6. Nếu range vượt quá ngưỡng nhưng còn phần mới chưa đủ tuổi, backend split range tại ranh giới segment gần `move_threshold`.
-7. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
+6. Bỏ qua range đã có job `PENDING/RUNNING` (không đọc timefile lại).
+7. Đọc timefile để liệt kê segment thuộc range, đồng thời làm mới `segment_count`/`size_bytes` theo timefile. Nếu range còn phần mới chưa đủ tuổi, split tại `start_time` của segment đầu tiên chưa đủ tuổi (các segment cùng `start_time` được xét như một nhóm). Split/refresh dùng `replaceRangeWithPiecesIfUnchanged`, piece mới kế thừa `segment_retention_overrides` của range gốc.
+8. Với range thuộc camera hiện tại, tạo job bằng `queueTierMoveJob(...)`.
 
 `queueTierMoveJob()` yêu cầu `source_pool_id` và `target_pool_id` đều không rỗng. Source pool thực tế ưu tiên lấy từ `SegmentTierRange.pool_id`; policy source pool là fallback cấu hình nhưng cũng phải có giá trị. Job ghi `job_trigger=RETENTION` cùng `policy_id`/`policy_updated_at` hiện tại.
 
-`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng camera/source/target/window. Dispatcher cache effective policy theo camera trong mỗi lượt và batch-load range để tránh N+1 query. Dispatcher chỉ claim job khi policy vẫn cho phép, source cho phép đọc và destination cho phép ghi. Pool `UNKNOWN`, `OFFLINE`, có snapshot stale hoặc bị disable làm job tiếp tục ở `PENDING`; health cycle sẽ gọi lại dispatcher sau khi probe để job tự resume khi pool phục hồi.
+`queueTierMoveJob()` chống tạo trùng job bằng cách kiểm tra job `PENDING/RUNNING` cùng `range_id` (hoặc cùng camera/stream/source/target/window với job legacy). Range có job trước đó fail vì `SOURCE_AND_TARGET_NOT_FOUND` chỉ được queue lại sau backoff `tiering_missing_segment_retry_base_seconds << (số lần fail - 1)`, tối đa 1 ngày. Khi chạy, job chỉ xử lý nếu range vẫn khớp đúng window và `bytes_total` lúc tạo job. Dispatcher cache effective policy theo camera trong mỗi lượt và batch-load range để tránh N+1 query. Dispatcher chỉ claim job khi policy vẫn cho phép, source cho phép đọc và destination cho phép ghi. Pool `UNKNOWN`, `OFFLINE`, có snapshot stale hoặc bị disable làm job tiếp tục ở `PENDING`; health cycle sẽ gọi lại dispatcher sau khi probe để job tự resume khi pool phục hồi.
+
+Trước khi tạo job (mọi trigger: `RETENTION`, `PRESSURE`, `DELETE_POLICY_EXTERNAL`), `queueTierMoveJob()` probe dung lượng destination pool qua `isDestinationPoolCritical()`: nếu usage ≥ `critical_watermark_percent` thì không tạo job, range giữ nguyên ở tier nguồn và ghi cảnh báo `TIER_DEST_POOL_CRITICAL` (tối đa một lần/giờ/pool). Kết quả probe được cache trong một maintenance cycle nên mỗi pool chỉ bị probe (statvfs/metric MinIO) một lần mỗi cycle; pool không đo được dung lượng (`total_bytes = 0`) không bị coi là critical. `processCameraTiering()` kiểm tra điều kiện này trước khi split range để không ghi lại range khi chắc chắn không move được.
 
 Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNING`, `HIGH` hoặc `CRITICAL`, nhưng không ghi thêm dữ liệu vào destination `CRITICAL`. Pool tắt `health_check_enabled` giữ hành vi tương thích cũ, miễn là pool vẫn enabled. Worker kiểm tra lại health sau khi claim; nếu trạng thái thay đổi, job được trả từ `RUNNING` về `PENDING` thay vì đánh dấu `FAILED`.
 
@@ -417,14 +457,36 @@ Health gate cho phép source được đọc/xóa ở trạng thái `OK`, `WARNI
 
 Luồng này cũng tạo `tiering_jobs` với `job_trigger=PRESSURE`. Mục tiêu reclaim xấp xỉ tới dưới high watermark 5%.
 
+Cách chọn range theo `storage.tiering_pressure_delete_mode` (dùng chung cho move sớm và xóa theo áp lực):
+
+- `OLDEST`: mỗi camera tự lấy tối đa `tiering_max_ranges_per_camera_cycle` range cũ nhất đã ổn định và queue move cho tới khi riêng phần của camera đó đủ kéo pool xuống mục tiêu; nhiều camera cùng pool vì vậy có thể move vượt nhu cầu.
+- `BALANCED` (mặc định): trước vòng camera, `planBalancedPressureMoves()` gom các camera có policy bật move sớm ra khỏi tier của từng pool (destination không critical; không offline nếu `skip_move_if_pool_offline`). Với mỗi pool vượt high watermark, lượng cần move = `used - total * (high - 5)% - byte job đang PENDING/RUNNING từ pool`; nếu còn dương thì tìm `kp` giống xóa cân bằng trên cửa sổ `[lo, now - max(min_segment_age, 60s))` của từng camera (range có override vẫn được move vì move không làm mất dữ liệu). `processCameraPressureTiering()` sau đó queue move các range bắt đầu trước mốc cắt của camera (split tại mốc), tối đa `tiering_max_ranges_per_camera_cycle` range mỗi camera mỗi cycle. Job đã queue được trừ vào nhu cầu ở cycle sau nên không queue lặp.
+
 ### 5.4 Retention Theo CameraOption
 
 `enforceCameraArchiveRetention()` giữ ý nghĩa hiện tại của cấu hình từng camera:
 
 - `keepArchivedMaxFor`: nếu không auto và > 0, dữ liệu cũ hơn mốc này được expire kể cả khi storage còn dung lượng.
-- `keepArchivedMinFor`: dữ liệu mới hơn mốc này được bảo vệ khỏi xóa khi pressure; pressure move vẫn được phép vì không làm mất dữ liệu.
+- `keepArchivedMinFor`: dữ liệu mới hơn mốc này được bảo vệ khỏi xóa khi pressure (áp dụng trong `enforcePoolPressureRetention()`); pressure move vẫn được phép vì không làm mất dữ liệu. Camera không có statistic recorder không có vùng bảo vệ này.
 
-Nếu HOT/WARM pool critical, backend expire các range đủ cũ và không còn trong vùng protected minimum.
+Retention theo tuổi (`keepArchivedMaxFor` và `delete_after_days`) dùng chung `collectAgeRetentionPieces()`:
+
+- Lấy range `AVAILABLE` có `start_time < cutoff` theo phân trang keyset `(start_time, range_id)`, tối đa 16 trang mỗi lượt; range có job `PENDING/RUNNING` hoặc override còn hạn bị loại ngay trong SQL nên không chiếm chỗ của range khác.
+- Range vượt qua cutoff được split; chỉ phần cũ bị xử lý, phần mới được lượt sau xử lý khi đủ tuổi.
+- Phần đã split được cắt tiếp quanh video được bảo vệ (`carveDeletablePieces()`): segment chạm video bảo vệ nằm trong piece riêng giữ `AVAILABLE`, các piece còn lại được thu hẹp sát segment để không chạm video bảo vệ và được xử lý bình thường.
+
+Xóa khi vượt ngưỡng chạy trong `enforcePoolPressureRetention()`, một lần mỗi cycle cho từng pool enabled ở mọi tier (HOT/WARM/COLD), kể cả object storage:
+
+- Chỉ chạy khi usage thực tế ≥ `critical_watermark_percent` và pool đọc/xóa được. Pool không đo được dung lượng (`total_bytes = 0`, ví dụ object storage `METRICS` khi metric không đọc được) bị bỏ qua.
+- Tier cuối và object storage không có job move đi nên `pending_move_bytes = 0` và nhánh hoãn xóa không áp dụng.
+- Pool object storage `METRICS`: metric MinIO trễ so với thao tác xóa, nên sau một lượt đã xóa được dữ liệu, pool bị tạm dừng xóa theo áp lực trong `storage.tiering_object_pressure_cooldown_seconds` (mặc định 900 giây) để không xóa quá tay dựa trên số liệu cũ. Pool `QUOTA` tính usage từ DB nên không cần cooldown; cache tổng byte của pool bị xóa ngay sau lượt xóa.
+- Ưu tiên chuyển tầng: nếu pool còn job move `PENDING/RUNNING` và usage < `critical + tiering_pressure_delete_margin_percent` thì hoãn xóa; nếu vẫn xóa thì trừ số byte đang chờ move khỏi lượng cần giải phóng.
+- Lượng cần giải phóng = `used - total * (high - 5)%`. Cách chọn dữ liệu theo `storage.tiering_pressure_delete_mode`:
+  - `OLDEST`: range được lấy theo `end_time` tăng dần trên toàn pool (bỏ range có job hoặc override còn hạn), bỏ range mới hơn `keepArchivedMinFor` của camera, cắt quanh video được bảo vệ như trên rồi xóa các piece không được bảo vệ, và dừng ngay khi đủ dung lượng. Camera có retention dài chịu toàn bộ phần xóa vì dữ liệu của nó cũ nhất.
+  - `BALANCED` (mặc định): mỗi camera có dữ liệu trên pool được xét trên cửa sổ `[lo, hi)`, với `lo` là `start_time` cũ nhất của camera trên pool và `hi = now - keepArchivedMinFor` (`now` khi auto). Với tỉ lệ giữ `kp`, mốc cắt của camera là `hi - (hi - lo) * kp / 100`. Backend tìm `kp` lớn nhất (bước 1%) sao cho tổng byte các range deletable kết thúc trước mốc cắt ≥ lượng cần giải phóng (`sumDeletableBytesByCameraPoolEndedBy()`, dò từ 99 xuống với bước gấp đôi rồi chia đôi), sau đó xóa luân phiên từng range của mỗi camera tới mốc cắt của nó (split tại mốc, cắt quanh video bảo vệ) và dừng khi đủ. Mọi camera vì vậy mất cùng tỉ lệ cửa sổ lưu trữ thay vì camera retention dài mất hết. Camera không còn statistic recorder (đã bị gỡ khỏi hệ thống) được xử lý trước như một nhóm riêng: chỉ khi toàn bộ dữ liệu deletable của nhóm này không đủ thì mới cắt vào cửa sổ của camera đang ghi. Ước lượng bỏ qua range vắt qua mốc cắt nên luôn thiên thấp; phần thiếu được bù ở vòng luân phiên. Trên DB tổng hợp 1,14 triệu range (600 camera), mỗi bước `kp` tốn khoảng 20–60 ms khi `kp` ≥ 90 và khoảng 220 ms ở `kp = 50`.
+- Nếu không giải phóng đủ, ghi cảnh báo `POOL_CRITICAL_NO_DELETABLE` (tối đa một lần/giờ/pool).
+
+Với pool object storage, `expireRangeBestEffort()` gom mọi key của range rồi gọi `deleteSegmentsBatch()` một lần thay vì một `DeleteObject` cho mỗi segment. Range chỉ chuyển `DELETED` khi cả batch thành công; một key lỗi giữ range `AVAILABLE`, ghi `TIER_DELETE_FAILED`, và lượt sau gửi lại toàn bộ key (xóa key đã mất là idempotent).
 
 Expire yêu cầu `SegmentTierRange.pool_id` trỏ tới pool còn tồn tại và sẵn sàng cho thao tác xóa. Nếu range thiếu pool, pool không tồn tại hoặc health gate chưa cho phép, backend return mà không đổi trạng thái range và không fallback sang `kMP4SavePath`.
 
@@ -434,6 +496,7 @@ Ngoài `CameraOption`, `enforcePolicyDeleteRetention()` xử lý `delete_policy`
 - `MARK_EXPIRED_WAIT_APPROVAL` hoặc `require_approval_before_delete=true`: chỉ đặt range sang `EXPIRED`.
 - `MOVE_TO_EXTERNAL_STORAGE`: queue tiering job tới `external_pool_id` nếu pool tồn tại và khác pool hiện tại.
 - `DELETE_AUTOMATICALLY`: xóa segment qua backend của pool, update range `DELETED` và rebuild timefile.
+- `MOVE_TO_EXTERNAL_STORAGE` bỏ qua range đã nằm ở `external_pool_id` ngay khi lấy ứng viên.
 - `skip_protected_video=true`: bỏ qua range overlap bất kỳ row `protected_videos`. Field `skip_evidence_video` được parse nhưng chưa có check riêng trong hàm này.
 
 Sau khi physical deletion thành công, cleanup metadata chạy theo thứ tự:
@@ -449,8 +512,10 @@ segment_tier_ranges = DELETED
   -> mọi metadata step thành công mới đánh dấu job DONE
 ```
 
+Mỗi cycle lấy tối đa 2 000 cleanup job `PENDING`, gom TimeBlock cần gỡ theo camera và rebuild timefile một lần cho mỗi camera (chỉ các file ngày chứa block cần gỡ). Liệt kê segment của một range chỉ mở các file ngày trong khung của range (`timelineFilesForWindow()`), không mở toàn bộ timefile của camera.
+
 Pipeline không lưu phase: mỗi lần retry chạy lại từ bước TimeFile và dựa trên trạng thái dữ liệu thực tế làm checkpoint. Vì vậy mọi metadata step phải idempotent. Motion hiện có độ phân giải theo ngày: `TierStorageManager` lọc các ngày không còn TimeBlock rồi chuyển danh sách đó cho API hiện có của `MotionBlockManager`. Nếu stream/range khác vẫn còn TimeBlock trong ngày, motion ngày đó được giữ lại. Bookmark được cleanup bằng `BookmarkImp::removeByTimeRange()` sau bước motion; bookmark ngoài range hoặc thuộc camera khác được giữ lại. Move HOT/WARM/COLD không chạy metadata cleanup vì video vẫn còn được lưu giữ.
-Range terminal và cleanup job `PENDING` không bị TTL cleanup để giữ đủ `start_time/end_time` cho retry sau restart. Range chỉ được prune khi không còn cleanup job `PENDING`; cleanup job `DONE` được prune cùng thời hạn range terminal.
+Range terminal và cleanup job `PENDING` không bị TTL cleanup để giữ đủ `start_time/end_time` cho retry sau restart. Chỉ range `DELETED`/`MISSING` được prune, và chỉ khi không còn cleanup job `PENDING`; range `EXPIRED` vẫn còn file chờ duyệt nên không bao giờ bị prune. Cleanup job `DONE` được prune cùng thời hạn range terminal. Một range được kích hoạt lại rồi xóa lần nữa sẽ ghi đè cleanup job cũ.
 
 ### 5.5 Move LOCAL/NAS
 
@@ -461,14 +526,65 @@ resolve backend theo pool.type:
   LOCAL_DISK -> TierLocalDiskStorage
   NAS        -> TierNASStorage
 require source_pool_id/target_pool_id non-empty và tồn tại
-copy file sang mount_path/network_path qua file .tmp
-  -> verify copy
-  -> remove source
-  -> update SegmentTierRange.tier/pool_id/status cho window đã move
+liệt kê segment của range (lỗi đọc timefile -> job FAILED)
+copy từng file sang mount_path/network_path qua file .tmp
+  -> fsync + close file tạm (lỗi -> rollback)
+  -> rename, so kích thước đích với nguồn, fsync thư mục cha
+  -> update SegmentTierRange theo snapshot (lệch -> rollback file đã copy)
+  -> remove source, xóa thư mục ngày rỗng
   -> update tiering job DONE/FAILED
 ```
 
-### 5.6 Move Sang Object Storage
+Xử lý segment thiếu nguồn:
+
+- Nguồn mất nhưng đích đã có file/object: dùng lại đích (trường hợp retry sau crash hoặc dữ liệu cũ bị lỗi 2 range).
+- Nguồn và đích đều mất: job fail với prefix `SOURCE_AND_TARGET_NOT_FOUND` và được retry có backoff. Khi số lần fail đạt `tiering_missing_segment_max_attempts` **và** pool nguồn đang đọc được (health gate + thư mục gốc tồn tại), segment bị loại khỏi range: range đích giảm `segment_count`/`size_bytes`, TimeBlock của segment bị xóa, ghi cảnh báo `TIER_SEGMENT_MISSING`. Nếu mọi segment của range đều mất, range chuyển `MISSING`.
+
+### 5.6 Đối Soát Range Với File Thực Tế
+
+`runRangeFileReconcile()` quét range `AVAILABLE` từ mới về cũ trong giới hạn `tier_reconcile_work_budget_ms` mỗi cycle, bằng con trỏ `(start_time, range_id)` giữ trong bộ nhớ (khởi động lại thì quét lại từ range mới nhất). Chỉ xét range thuộc pool filesystem đọc được (health gate + thư mục dữ liệu tồn tại) và không có job `PENDING/RUNNING`.
+
+Với mỗi range, `reconcileRangeFiles()` liệt kê segment theo timefile và `stat` các segment đã kết thúc quá `tier_reconcile_min_age_seconds`. Segment mất file (ENOENT) bị bỏ:
+
+- Range được dựng lại bằng các segment còn file: tách tại đoạn mất, thu hẹp khung sát segment, piece đầu giữ `range_id` (qua `replaceRangeWithPiecesIfUnchanged`, override được kế thừa). Không còn segment nào thì range chuyển `MISSING`.
+- TimeBlock của segment mất bị gỡ khỏi timefile và ghi cảnh báo `TIER_SEGMENT_MISSING`.
+- Lỗi `stat` khác ENOENT hoặc lỗi đọc timefile thì bỏ qua range ở lượt này.
+
+Khoảng trống ≤ 10 giây (`kSegmentMergeGapSeconds`) vẫn được coi là liền mạch như mọi luồng compact khác; đoạn mất file dài hơn luôn tách range.
+
+#### Đối soát range trên object storage
+
+Pool object storage không `stat` được, nên `runObjectRangeReconcile()` (chạy ngay sau `runRangeFileReconcile()`) đối soát bằng `ListObjectsV2`, theo `storage.tier_object_reconcile_mode`:
+
+- `FIX` (mặc định): bỏ segment mà object đã mất, giống đối soát file (tách/thu hẹp range hoặc chuyển `MISSING`, gỡ TimeBlock, cảnh báo `TIER_SEGMENT_MISSING` với "missing from object storage") và xoá cache usage `QUOTA` của pool.
+- `REPORT`: chỉ ghi `TIER_OBJECT_MISSING` (một lần/range/tiến trình), không đổi range.
+- `OFF`: không chạy. Giá trị không hợp lệ được hiểu là `REPORT`.
+
+Range do restore xếp hàng (mục 8.6) được đối soát trước, rồi mới tới lượt quét. Mỗi pool object (enabled, qua health gate, đăng ký được client) có con trỏ riêng `(end_time, range_id)` giảm dần trên index `(pool_id, tier, status, end_time)`; các pool chia chung `tier_object_reconcile_work_budget_ms` (mặc định 2 000 ms), pool bắt đầu được xoay vòng mỗi cycle. Bỏ qua range bắt đầu gần hơn `tier_reconcile_min_age_seconds` và range có job `PENDING/RUNNING` (kiểm lại ngay trước khi sửa).
+
+Với mỗi range, `checkObjectRange()`:
+
+1. Đọc segment từ timefile, dựng key bằng `makeS3Key(base_path, ...)`.
+2. List các day prefix `base_path/camera/stream/YYYY-MM-DD/` của segment đã kết thúc quá `tier_reconcile_min_age_seconds` (range tách ở nửa đêm địa phương nên thường 1–2 prefix). List lỗi (bất kỳ trang nào) thì dừng pool ở lượt này, không đổi gì và không tiến con trỏ.
+3. Key không có trong listing chỉ bị coi là mất khi `headSegment()` trả `ABSENT` (HTTP 404); `PRESENT` thì giữ (listing trễ), lỗi khác thì dừng như trên.
+4. Object có size khác `file_size` của TimeBlock chỉ ghi `TIER_OBJECT_SIZE_MISMATCH` (một lần/range/tiến trình), không đổi range.
+
+Chặn mất hàng loạt (mass-loss guard): range mất toàn bộ object không bị sửa ngay mà chờ trong bộ nhớ đến khi pool chứng minh cấu hình đúng, tức là gặp một range còn ít nhất một object (lúc đó các range chờ được áp dụng), hoặc hết lượt quét mà đã từng gặp object. Nếu `tier_object_reconcile_mass_loss_threshold` (mặc định 20) range liên tiếp mất toàn bộ, hoặc hết lượt quét mà pool không có object nào, backend coi là cấu hình sai (đổi `base_path`, sai bucket/credential, bucket bị reset): không đổi gì, ghi `POOL_OBJECTS_MISSING_SUSPECT` (ERROR) và dừng đối soát pool đó `tier_object_reconcile_pause_seconds` (mặc định 3 600 s). Đổi endpoint/bucket/`base_path` của pool xoá toàn bộ trạng thái đang chờ. Hệ quả: pool chỉ có vài range và đã mất hết object luôn bị giữ nguyên kèm cảnh báo, cần người vận hành xác nhận.
+
+Bucket bật versioning: object đã xoá (delete marker) không có trong `ListObjectsV2` nên được coi là mất đúng như mong muốn.
+
+#### Báo cáo object mồ côi
+
+Sau lượt đối soát range, mỗi pool object còn dùng được (không bị pause) chạy `runObjectOrphanSweep()` trong `tier_object_orphan_work_budget_ms` (mặc định 1 000 ms, `0` tắt), tối đa một lượt mỗi `tier_object_orphan_sweep_interval_seconds` (mặc định 1 ngày):
+
+1. Duyệt `base_path/` bằng `listCommonPrefixes` xuống `camera/stream/YYYY-MM-DD/`; thư mục cấp ngày không đúng dạng ngày bị bỏ qua. Trạng thái lượt quét giữ trong bộ nhớ, list lỗi thì thử lại prefix đó ở cycle sau.
+2. Với mỗi day prefix: list object, lấy các range `AVAILABLE/RESTORING/EXPIRED` của pool cho camera/stream đó chồng lên ngày (±1 giờ), đọc segment từ timefile để dựng tập key sở hữu. Timefile đọc lỗi thì coi cả ngày là có chủ.
+3. Object không thuộc tập đó và có `LastModified` cũ hơn `tier_object_orphan_min_age_seconds` (mặc định 1 ngày, vì upload ghi object trước khi range chuyển sang pool) được đếm là mồ côi.
+4. Hết lượt: nếu có, ghi một cảnh báo `POOL_ORPHAN_OBJECTS` (WARNING) với số object, tổng byte và key đầu tiên.
+
+Báo cáo không bao giờ xoá object. Object mồ côi thường đến từ lỗi xoá giữa chừng, upload bị huỷ sau khi đã ghi object, hoặc dữ liệu ghi ngoài hệ thống. Người vận hành tự xác nhận rồi xoá.
+
+### 5.7 Move Sang Object Storage
 
 Nếu target pool là object storage (API hiện cho phép `MINIO`):
 
@@ -734,7 +850,7 @@ Khi register/download/mkdir/rename lỗi:
 - Child chuyển `FAILED`, parent được tổng hợp thành `FAILED` và ghi `error_message`.
 - Range COLD vẫn giữ `AVAILABLE` vì trạng thái restore thuộc durable child queue.
 - Partial file `.part` trong thư mục job được xóa ở các nhánh download/rename thất bại.
-- Code hiện không chuyển range sang `MISSING` khi object download thất bại.
+- Download lỗi thì worker `HeadObject` lại key: chỉ khi HTTP 404 (`ABSENT`) child ghi lỗi "Object is missing from object storage" và range được xếp vào hàng ưu tiên của đối soát object (`requestObjectRangeReconcile`, tối đa 32 range/cycle, chạy trước lượt quét ở cycle kế tiếp, xem 5.6). Restore không tự đổi range; mọi thay đổi vẫn đi qua đối soát và mass-loss guard.
 
 ### 8.7 Object Key Và Restore Path
 
@@ -939,10 +1055,27 @@ storage.presigned_extract_max_bytes=0
 storage.default_hot_high_watermark_percent=85
 storage.default_hot_critical_watermark_percent=95
 storage.tiering_max_ranges_per_camera_cycle=64
+storage.tiering_missing_segment_max_attempts=3
+storage.tiering_missing_segment_retry_base_seconds=3600
+storage.tiering_pressure_delete_margin_percent=3
+storage.tiering_quota_usage_cache_seconds=30
+storage.tiering_object_pressure_cooldown_seconds=900
+storage.tiering_pressure_delete_mode=BALANCED
+storage.tier_reconcile_enabled=1
+storage.tier_reconcile_work_budget_ms=2000
+storage.tier_reconcile_min_age_seconds=600
+storage.tier_object_reconcile_mode=FIX
+storage.tier_object_reconcile_work_budget_ms=2000
+storage.tier_object_reconcile_mass_loss_threshold=20
+storage.tier_object_reconcile_pause_seconds=3600
+storage.tier_object_orphan_work_budget_ms=1000
+storage.tier_object_orphan_min_age_seconds=86400
+storage.tier_object_orphan_sweep_interval_seconds=86400
+storage.tiering_split_granularity_seconds=3600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
 storage.tiering_job_retention_days=30
-storage.tiering_terminal_range_retention_days=180
+storage.tiering_terminal_range_retention_days=30
 storage.tier_range_backfill_enabled=1
 storage.tier_range_backfill_days=180
 storage.tier_range_backfill_chunk_seconds=86400
@@ -972,17 +1105,34 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `presigned_extract_max_bytes` | HYBRID extraction | Tổng byte tối đa cho direct read; `0` tắt direct extraction |
 | `default_hot_*_watermark_percent` | `ensureDefaultHotPool()` | Watermark cho `pool-default-hot` |
 | `tiering_max_ranges_per_camera_cycle` | Tiering/retention | Giới hạn số range eligible xử lý cho mỗi camera/tier/cycle |
+| `tiering_missing_segment_max_attempts` | Tier transfer | Số lần job fail vì segment mất ở cả nguồn và đích trước khi segment bị loại khỏi range |
+| `tiering_missing_segment_retry_base_seconds` | `queueTierMoveJob()` | Backoff cơ sở cho range có segment mất, nhân đôi mỗi lần, tối đa 1 ngày |
+| `tiering_pressure_delete_margin_percent` | `enforcePoolPressureRetention()` | Phần trăm vượt critical cho phép xóa dù pool còn job move đang chờ |
+| `tiering_quota_usage_cache_seconds` | `quotaUsedBytes()` | Thời gian dùng lại tổng byte range của pool `QUOTA`; `0` tắt cache |
+| `tiering_object_pressure_cooldown_seconds` | `enforcePoolPressureRetention()` | Thời gian chờ giữa hai lượt xóa theo áp lực trên pool object storage `METRICS`; `0` tắt cooldown |
+| `tiering_pressure_delete_mode` | `enforcePoolPressureRetention()`, `planBalancedPressureMoves()` | `BALANCED` (mặc định): khi xóa và khi move sớm, mọi camera chịu cùng tỉ lệ cửa sổ lưu trữ (khi xóa, camera không còn recorder trước); `OLDEST`: hành vi cũ, lấy range cũ nhất |
+| `tier_reconcile_enabled` | Backfill, `runRangeFileReconcile()` | Bật/tắt việc bỏ segment/TimeBlock không còn file MP4 |
+| `tier_reconcile_work_budget_ms` | `runRangeFileReconcile()` | Thời gian tối đa cho đối soát mỗi cycle |
+| `tier_reconcile_min_age_seconds` | Backfill, `runRangeFileReconcile()`, `runObjectRangeReconcile()` | Segment kết thúc gần hơn ngưỡng này không bị coi là mất file/object |
+| `tier_object_reconcile_mode` | `runObjectRangeReconcile()` | `FIX` (mặc định) bỏ segment có object mất; `REPORT` chỉ cảnh báo `TIER_OBJECT_MISSING`; `OFF` tắt |
+| `tier_object_reconcile_work_budget_ms` | `runObjectRangeReconcile()` | Thời gian tối đa đối soát object storage mỗi cycle (chung cho mọi pool object) |
+| `tier_object_reconcile_mass_loss_threshold` | `runObjectRangeReconcile()` | Số range liên tiếp mất toàn bộ object bị coi là cấu hình sai (`POOL_OBJECTS_MISSING_SUSPECT`) |
+| `tier_object_reconcile_pause_seconds` | `runObjectRangeReconcile()` | Thời gian dừng đối soát pool sau khi mass-loss guard kích hoạt |
+| `tier_object_orphan_work_budget_ms` | `runObjectOrphanSweep()` | Thời gian tối đa cho báo cáo object mồ côi mỗi cycle; `0` tắt |
+| `tier_object_orphan_min_age_seconds` | `runObjectOrphanSweep()` | Object mới hơn ngưỡng này không bị coi là mồ côi |
+| `tier_object_orphan_sweep_interval_seconds` | `runObjectOrphanSweep()` | Khoảng cách giữa hai lượt báo cáo của cùng một pool |
+| `tiering_split_granularity_seconds` | Move theo tuổi, retention theo tuổi | Độ mịn làm tròn mốc; `<= 1` tắt làm tròn |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
 | `tiering_job_retention_days` | `pruneOldMetrics()` | Xóa lịch sử job `DONE`/`FAILED`/`CANCELLED` cũ |
-| `tiering_terminal_range_retention_days` | `pruneOldMetrics()` | Xóa range `DELETED`/`EXPIRED` cũ |
+| `tiering_terminal_range_retention_days` | `pruneOldMetrics()` | Xóa range `DELETED`/`MISSING` cũ (không xóa `EXPIRED`) |
 | `tier_range_backfill_enabled` | Backfill dispatcher | Bật/tắt durable backfill |
 | `tier_range_backfill_days` | Đồng bộ task | Cửa sổ lịch sử cố định khi tạo/reset task |
 | `tier_range_backfill_chunk_seconds` | Backfill worker | Khoảng timeline commit nguyên tử mỗi chunk |
 | `tier_range_backfill_max_cameras_per_cycle` | Backfill dispatcher | Số task tối đa mỗi lượt dispatch |
 | `tier_range_backfill_dispatch_interval_seconds` | Backfill timer | Chu kỳ đánh thức dispatcher |
 | `tier_range_backfill_work_budget_ms` | Backfill dispatcher | Time budget tối đa mỗi lượt |
-| `tier_range_backfill_max_attempts` | Backfill retry | Số lỗi tối đa trước khi chuyển `FAILED` |
+| `tier_range_backfill_max_attempts` | Backfill retry | Số lỗi tối đa trước khi chuyển `FAILED`; trạng thái `FAILED` giữ nguyên khi cửa sổ trượt |
 | `tier_range_backfill_retry_base_seconds` | Backfill retry | Backoff cơ sở, tăng theo lũy thừa hai |
 | `pool_health_check_interval_seconds` | Health timer | Chu kỳ probe nhẹ, độc lập với tiering cycle |
 | `pool_health_failure_threshold` | Health state machine | Số lỗi liên tiếp trước khi chuyển `OFFLINE` |
@@ -992,9 +1142,9 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `globalmonitor.mount_refresh_interval_seconds` | `HddMonitor` | Chu kỳ quét lại toàn bộ mount inventory để phát hiện mount/unmount |
 | `globalmonitor.mount_snapshot_stale_after_seconds` | Mount lookup | Snapshot quá ngưỡng sẽ được refresh trực tiếp trước khi probe NAS |
 
-`tier_backfill_tasks` lưu cursor và các counter `scanned_blocks`, `registered_blocks`, `orphan_blocks`, `indexed_bytes`. Khi task `FAILED`, có thể đưa lại về hàng đợi qua `TierBackfillTaskImp::retryFailed(camera_id)` sau khi đã xử lý nguyên nhân orphan hoặc lỗi mở timefile.
+`tier_backfill_tasks` lưu cursor và các counter `scanned_blocks`, `registered_blocks`, `orphan_blocks`, `indexed_bytes`. Khi task `FAILED`, có thể đưa lại về hàng đợi qua `TierBackfillTaskImp::retryFailed(camera_id)` sau khi đã xử lý nguyên nhân lỗi mở/đọc timefile. Block orphan không làm task fail; xem cảnh báo `TIER_BACKFILL_ORPHAN`.
 
-`segment_tier_ranges` là bảng metadata chính của luồng tiering nên không bị cleanup bằng TTL ngắn hạn. Chỉ các range `DELETED/EXPIRED` nên được cleanup bằng retention riêng sau khi không còn cần cho timeline, thống kê hoặc audit.
+`segment_tier_ranges` là bảng metadata chính của luồng tiering nên không bị cleanup bằng TTL ngắn hạn. Chỉ các range `DELETED/MISSING` được cleanup bằng retention riêng sau khi không còn cần cho timeline, thống kê hoặc audit.
 
 `storage.restore_save_path` là thư mục restore cache tạm. `storage.restore_ttl_seconds` được áp dụng thông qua `restore_jobs`: job terminal quá TTL sẽ được đánh dấu `EXPIRED` sau khi xóa exact child cache tương ứng.
 
@@ -1077,13 +1227,36 @@ void TierStorageManager::executeRestoreSegment(...) {
 - Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; cleanup chỉ xóa thư mục của job hết TTL rồi chuyển job đó sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.
 - Direct HTTP static-file miss, byte-range và HLS restore chưa được tích hợp.
-- Khi object MinIO mất, child/job chuyển `FAILED` nhưng range vẫn `AVAILABLE`, chưa chuyển `MISSING`.
+- Object MinIO mất (xoá tay, ILM, reset bucket) được đối soát theo lượt quét (mục 5.6): quét hết ~90 nghìn range COLD (600 stream × 150 ngày, ~1–2 LIST/range) mất khoảng 1–3 ngày với budget 2 s mỗi cycle 300 s; range có restore thất bại vì object trả 404 được đối soát ngay ở cycle kế tiếp.
+- Không đổi `base_path`/bucket của pool đang chứa dữ liệu: mọi key cũ sẽ lệch. Mass-loss guard chặn việc chuyển hàng loạt range sang `MISSING` trong trường hợp này, nhưng dữ liệu cũ vẫn không đọc được cho tới khi trả lại cấu hình.
+- Pool `QUOTA` chỉ biết dữ liệu có range trong DB: object ghi ngoài hệ thống, upload đang chạy (range chưa chuyển sang pool) hoặc object còn sót sau lỗi xóa không được tính. Object còn sót quá 1 ngày được báo qua `POOL_ORPHAN_OBJECTS` (mục 5.6) nhưng không được tự xoá. Hard quota MinIO cao hơn quota logic khoảng 5% là lớp chặn cuối.
+- Bucket MinIO bật versioning mà không có lifecycle `NoncurrentVersionExpiration` sẽ không bao giờ lấy lại dung lượng sau khi xóa; backend chỉ cảnh báo (`POOL_VERSIONING_BLOCKS_RECLAIM`), không tự sửa cấu hình bucket.
 - Parser auto-restore phụ thuộc layout record root/tên segment; custom record root có thể không parse được.
 - Bootstrap chọn HOT filesystem pool hợp lệ theo thứ tự xác định; chỉ tạo pool mặc định khi chưa có pool phù hợp.
+- Demuxer TimeFile hiện coi lỗi `read()` như hết file; chỉ lỗi parse block được báo qua `TimeQuery::queryBlocks()`. Lỗi I/O giữa file vẫn có thể làm danh sách segment bị thiếu.
+- Retention theo tuổi và xóa khi vượt ngưỡng quét tối đa 16 trang × `tiering_max_ranges_per_camera_cycle` range mỗi lượt; piece chứa video được bảo vệ vẫn nằm trong trang quét nên số lượng rất lớn có thể làm chậm việc xóa range mới hơn.
+- Segment có cùng `start_time` không tách được theo quyền sở hữu; nếu một trong số đó chạm video bảo vệ thì cả nhóm được giữ.
+- Rebuild timefile ghi ra file tạm rồi swap trên một luồng riêng ("timefile swap") khi file hết reader; swap thay file bằng `rename()` nguyên tử. Với file ngày cũ, nếu có block mới được ghi trong lúc chờ swap (ví dụ nhập từ thẻ SD), swap bị hủy để không mất block và file vẫn dirty cho lần rebuild sau. Dấu dirty chỉ được xóa sau khi swap thành công. File ngày hiện tại đang ghi dùng cơ chế mirror block mới sang file tạm.
+- Gỡ TimeBlock là bất đồng bộ (swap khi file hết reader) và không bền qua restart. Block bỏ ở backfill mà chưa swap kịp sẽ còn trong timefile nhưng không có range; block trong range sẽ được vòng đối soát xử lý lại.
+- `StorageManager` cũ (bản không có tier) xóa file trước rồi mới rebuild timefile; nếu tiến trình dừng giữa chừng, timefile giữ block của file đã xóa. Sau khi nâng cấp, backfill và vòng đối soát dọn các block này.
 
 ## 14. Phần Còn Thiếu Theo Code Hiện Tại
 
 1. Quyết định có hỗ trợ direct HTTP static-file restore hay chỉ giữ resolver `TimeBlock`; nếu hỗ trợ cần contract HTTP mới.
-2. Bổ sung checksum/size verification và chuyển range sang `MISSING` khi object thực sự không còn.
+2. Bổ sung checksum nội dung object; hiện chỉ so size với TimeBlock (`TIER_OBJECT_SIZE_MISMATCH`, không tự sửa).
 3. Sửa parser record path để hỗ trợ camera record root do policy điều phối.
 4. Bổ sung metrics/alert cho restore throughput, failure và queue depth; các metric dashboard placeholder hiện vẫn là `0`.
+
+## 15. Quy Mô Tham Chiếu
+
+Ước lượng cho 600 stream, segment MP4 1 phút, lưu 6 tháng, `tiering_split_granularity_seconds=3600`:
+
+| Hạng mục | Khối lượng |
+|---|---|
+| Segment MP4 | ~155 triệu |
+| Range `AVAILABLE` | ~108 nghìn (1 range/stream/ngày, cộng piece do split) |
+| Job chuyển tầng | ~14 400/ngày (1/stream/giờ) |
+| Range `DELETED` | ~14 400/ngày, giữ 30 ngày (~430 nghìn dòng) |
+| Timefile | 1 file/camera/ngày, ~2 880 block (~400 KB) |
+
+Migration `16_tier_performance_indexes.sql` thêm index cho các truy vấn nóng. Đo trên SQLite với 1,14 triệu range: `hasActiveJobForRange` 3,3 ms → 0,012 ms, `findDeletableByPoolAfter` 2 053 ms/trang → 2 ms, `findRetentionCandidatesAfter` 67 ms → 0,06 ms, `findReconcileCandidatesBefore` 15,6 ms → 0,5 ms.

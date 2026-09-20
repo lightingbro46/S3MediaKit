@@ -1913,6 +1913,7 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_audit_log, body, nullptr);
     });
 
+#ifdef ENABLE_SYNC_CHANGES
     // Listen to sync change events
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncChanges, [](BroadcastSyncChangesArgs) {
         GET_CONFIG(string, hook_sync_changes, Hook::kOnSyncChanges);
@@ -1968,6 +1969,7 @@ void installWebHook() {
         // Execute hook
         fetchDataFromOrigin(urls, params, 0, 0, invoker); 
     });
+#endif // ENABLE_SYNC_CHANGES
 
     // Listen to sync bookmark index events — fetch full bookmark detail from a peer node
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSyncBookmarkIndex, [](BroadcastSyncBookmarkIndexArgs) {

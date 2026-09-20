@@ -22,9 +22,18 @@ Content-Type: application/json
 }
 ```
 
-Endpoint này dành cho giao tiếp service-to-service. MediaServer chỉ nhận job khi header `X-Secret-Key` tồn tại và khớp chính xác với cấu hình `manager.apiSecret`; cấu hình secret rỗng luôn bị từ chối. Endpoint không sử dụng JWT hoặc quyền người dùng/camera.
+Endpoint này dành cho giao tiếp service-to-service và không sử dụng JWT hoặc quyền người dùng/camera. Khi `manager.enableAuthorize` bật, request phải có header `X-Secret-Key`, và giá trị phải khớp chính xác với `manager.apiSecret`. Lưu ý: nếu `manager.apiSecret` rỗng, MediaServer chỉ yêu cầu header tồn tại mà không so sánh giá trị. Vì vậy môi trường triển khai phải cấu hình secret khác rỗng.
 
-`streamId` không bắt buộc; khi bỏ trống, MediaServer dùng luồng ghi hình phù hợp theo cơ chế hiện có. `format` nhận `mp4`, `mkv` hoặc `avi`. `uploadUrl` phải dùng HTTPS và có thể bị giới hạn bởi `extract_job.allowed_upload_hosts`.
+| Field | Kiểu | Bắt buộc | Ràng buộc |
+|---|---|---|---|
+| `fileId` | string | Có | Không rỗng; là khóa idempotency |
+| `cameraId` | string | Có | Tối đa 256 ký tự; camera phải tồn tại trên node |
+| `startTime`, `endTime` | số nguyên | Có | `startTime > 0`, `endTime > startTime`, độ dài không vượt `extract_job.max_duration_sec` (mặc định 3600) |
+| `uploadUrl` | string | Có | HTTPS, không chứa userinfo, tối đa 8192 ký tự; nếu `extract_job.allowed_upload_hosts` khác rỗng thì host phải nằm trong danh sách (phân tách bằng dấu phẩy) |
+| `format` | string | Có | `mp4`, `mkv` hoặc `avi` |
+| `streamId` | string | Không | Tối đa 256 ký tự; bỏ trống thì MediaServer chọn stream có dữ liệu khả dụng dài nhất |
+
+Sai kiểu dữ liệu (ví dụ `startTime` là chuỗi) trả `902001`. Khoảng thời gian không hợp lệ trả `902009`, định dạng không hỗ trợ trả `902003`, còn camera không tồn tại trả `905001`.
 
 Phản hồi thành công dùng HTTP `202 Accepted`:
 
@@ -35,16 +44,16 @@ Phản hồi thành công dùng HTTP `202 Accepted`:
   "data": {
     "fileId": "b0ca90e6-d938-4f25-9b78-1eda8b33feb7",
     "accepted": true,
-    "status": "QUEUED",
-    "stage": "QUEUED",
-    "progressPercent": 0.0
+    "status": "QUEUED"
   }
 }
 ```
 
-`fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung trả về job đã có; dùng cùng `fileId` với nội dung khác trả HTTP `409 Conflict`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
+Response tạo job chỉ có `fileId`, `accepted` và `status` (`QUEUED`, `RUNNING`, `SUCCESS` hoặc `FAILED`). `stage` và `progressPercent` chỉ có trong API liệt kê job.
 
-Restore là một stage nội bộ của tiến trình trích xuất. API công khai giữ `status=RUNNING`,
+`fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung sẽ nhận `202` kèm trạng thái hiện tại của job đã có. Dùng cùng `fileId` với nội dung khác sẽ nhận HTTP `409 Conflict` (`909004`). Lỗi lưu job trả `909005`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
+
+Restore là một stage nội bộ của tiến trình trích xuất. API liệt kê job giữ `status=RUNNING`,
 trả `stage=RESTORING` và ánh xạ tiến độ restore vào khoảng 0-30%. FFmpeg dùng khoảng
 30-90%, upload dùng 90-100%. ID của restore job không được đưa vào response. Nếu
 `streamId` rỗng, MediaServer chọn trước stream có dữ liệu khả dụng dài nhất rồi chỉ
@@ -56,10 +65,12 @@ chỉ lưu trạng thái, upload và callback.
 
 ```http
 GET /media/esc/extractArchived/job/list?camera_id=cam-001&start_time_from=1784250000&start_time_to=1784260000&page=0&size=20
-
+Authorization: Bearer <jwt>
 ```
 
-Các bộ lọc đều không bắt buộc. `camera_id` được so khớp chính xác; `start_time_from` và `start_time_to` là epoch giây, được áp dụng inclusive lên thời điểm bắt đầu của job. Kết quả được sắp xếp theo `start_time` mới nhất trước. `page` bắt đầu từ 0, `size` mặc định là 20 và tối đa 100.
+Khác với API tạo job, API này xác thực bằng JWT người dùng, không dùng `X-Secret-Key`.
+
+Các bộ lọc đều không bắt buộc. `camera_id` được so khớp chính xác; `start_time_from` và `start_time_to` là epoch giây, được áp dụng inclusive lên thời điểm bắt đầu của job. Nếu `start_time_from > start_time_to` hoặc có giá trị âm, API trả `902009`. Kết quả được sắp xếp theo `start_time` mới nhất trước. `page` bắt đầu từ 0 (giá trị âm được coi là 0). `size` mặc định là 20; giá trị `<= 0` hoặc `> 100` được đưa về 20.
 
 ```json
 {
@@ -103,7 +114,7 @@ Thống kê được tính trên toàn bộ tập dữ liệu sau khi áp dụng
 
 ## Upload file
 
-MediaServer thực hiện HTTP `PUT` nội dung file trực tiếp tới `uploadUrl`, đặt `Content-Type` tương ứng định dạng. Mọi mã HTTP 2xx là thành công. Lỗi mạng, 408, 429 và 5xx được retry theo cấu hình; lỗi 4xx khác kết thúc job với trạng thái `FAILED`.
+MediaServer thực hiện HTTP `PUT` nội dung file trực tiếp tới `uploadUrl`, đặt `Content-Type` tương ứng định dạng. Mọi mã HTTP 2xx là thành công. Lỗi mạng, 408, 429 và 5xx được retry theo cấu hình: `extract_job.upload_max_attempts` (mặc định 3), `extract_job.retry_delay_sec` (5) và `extract_job.upload_timeout_sec` (300). Lỗi 401/403 kết thúc job với mã `UPLOAD_URL_EXPIRED`. Các lỗi 4xx khác kết thúc job với mã `UPLOAD_FAILED`. Presigned URL cần còn hạn đủ lâu để bao cả thời gian job chờ trong hàng đợi (`extract_job.max_concurrent`, mặc định 1 job/node), thời gian restore và thời gian trích xuất.
 
 ## Callback kết quả
 
@@ -138,7 +149,15 @@ Thất bại:
 }
 ```
 
-Callback có ngữ nghĩa at-least-once: VMS phải xử lý idempotent theo `fileId`. MediaServer chỉ đánh dấu `DELIVERED` khi callback trả 2xx; lỗi có thể retry được sẽ được lưu lại trong database và gửi lại sau khi khởi động lại.
+| `error.code` | Ý nghĩa |
+|---|---|
+| `RECORDING_NOT_FOUND` | Khoảng thời gian không có dữ liệu ghi hình |
+| `EXTRACT_FAILED` | FFmpeg hoặc restore thất bại |
+| `UPLOAD_URL_EXPIRED` | Storage trả 401/403 khi upload |
+| `UPLOAD_FAILED` | Upload thất bại sau khi đã retry, hoặc file tạm bị mất |
+| `INTERNAL_ERROR` | Lỗi nội bộ khi lưu metadata file |
+
+Callback có ngữ nghĩa at-least-once: VMS phải xử lý idempotent theo `fileId`. MediaServer chỉ đánh dấu `DELIVERED` khi callback trả 2xx. Lỗi có thể retry sẽ được lưu lại trong database và gửi lại, kể cả sau khi khởi động lại, tối đa `extract_job.callback_max_attempts` lần (mặc định 10). Sau đó callback chuyển sang `DEAD`, và VMS cần đối soát bằng API liệt kê job.
 
 ## Đọc dữ liệu từ cold storage
 

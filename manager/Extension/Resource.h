@@ -100,8 +100,8 @@ public:
         _local_imp->remove(guid); // local-only first
         _rstatus_imp->remove(guid);
         _kvpair_imp->remove(guid);
-        _assign_imp->remove(guid);
         _resource_imp->remove(guid);
+        releaseResource_l(guid, getSelfNodeId()); // _mtx already held; releaseResource() would self-deadlock
         DebugL << "Removed resource with guid " << guid;
     }
 
@@ -128,7 +128,7 @@ public:
         for (const auto &res : ret) {
             auto kvs   = _kvpair_imp->findAllKeyValue(res.guid);
             auto props = _local_imp->findAllProperty(res.guid);
-            out.push_back(ResourceAdapter<T>::fromVmsData(res, kvs, props));
+            out.push_back(ResourceAdapter<T>::fromVmsResource(res, kvs, props));
         }
     }
 
@@ -170,12 +170,44 @@ public:
         assign.assigned_at    = static_cast<int64_t>(time(nullptr));
         assign.released_at    = 0;
         assign.assign_type    = static_cast<int>(type);
+        assign.prev_peer_id   = current.empty() ? "" : current[0].owner_peer_id;
         _assign_imp->add(assign);
-        InfoL << "Assigning resource " << resource_guid << " to peer " << peer_id;
+        InfoL << "Assigning resource " << resource_guid << " to peer " << peer_id << ", type " << static_cast<int>(assign.assign_type) << ", prev peer " << assign.prev_peer_id;
     }
 
     void releaseResource(const std::string &resource_guid, const std::string &peer_id) {
         std::lock_guard<std::mutex> lk(_mtx);
+        releaseResource_l(resource_guid, peer_id);
+    }
+
+    bool getLastResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto current = _assign_imp->findLastAssignment(resource_guid);
+        if (!current.empty()) {
+            out = current[0];
+            return true;
+        }
+        return false;
+    }
+
+    // true if another peer currently holds an unreleased assignment of the resource.
+    bool isAssignedToOtherPeer(const std::string &resource_guid, const std::string &self_peer_id) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto current = _assign_imp->findCurrentAssignment(resource_guid);
+        return !current.empty() && current[0].owner_peer_id != self_peer_id;
+    }
+
+    const std::string getSelfNodeId() const { return _self_node_id; }
+
+    const std::string getSelfDbGuid() const { return _self_db_guid; }
+
+private:
+    ResourceManager();
+
+    void load();
+
+    // Release a resource assignment if it is currently assigned to the given peer_id.
+    void releaseResource_l(const std::string &resource_guid, const std::string &peer_id) {
         auto current = _assign_imp->findLastAssignment(resource_guid);
         if (!current.empty()) {
             auto assign = current[0];
@@ -190,25 +222,6 @@ public:
         }
         WarnL << "Resource " << resource_guid << " is not currently assigned, cannot be released";
     }
-
-    bool getLastResourceAssignment(const std::string &resource_guid, VmsResourceAssignment &out) {
-        std::lock_guard<std::mutex> lk(_mtx);
-        auto current = _assign_imp->findLastAssignment(resource_guid);
-        if (!current.empty()) {
-            out = current[0];
-            return true;
-        }
-        return false;
-    }
-
-    const std::string getSelfNodeId() const { return _self_node_id; }
-
-    const std::string getSelfDbGuid() const { return _self_db_guid; }
-
-private:
-    ResourceManager();
-
-    void load();
 
 private:
     // Serializes all multi-table write and logical-read operations.

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <set>
 #include <vector>
 #include "TimeRebuilder.h"
 #include "TimeFileDirtyTracker.h"
@@ -7,7 +8,6 @@
 #include "TimeFileAccessManager.h"
 #include "Common/StrUtil.h"
 #include "Local/StatisticRecorder.h"
-#include "Thread/WorkThreadPool.h"
 #include "Util/base64.h"
 
 using namespace std;
@@ -36,7 +36,12 @@ void TimeRebuilder::createTempFile() {
     string temp_filename = "." + filename;
     _full_path_tmp = parent_path + temp_filename;
     _full_path = _src_path;
+    // File::parentDir() keeps a trailing '/', but TimeRecorder marks files dirty
+    // under the device path without it; a mismatched key made every version
+    // lookup return 0 and silently disabled the concurrent-write check.
     _device_path = parent_path;
+    while (_device_path.size() > 1 && _device_path.back() == '/')
+        _device_path.pop_back();
 
     // Capture the dirty version before reading so the simple swap can detect any block
     // written to the source file while the rebuild is running.
@@ -92,6 +97,31 @@ static void deleteMakerFile(const string &db_path) {
     File::delete_file(maker_path);
 }
 
+// Replace the source with the rebuilt file. rename() swaps the name atomically,
+// so a directory scan never observes the day's file missing; deleting first and
+// renaming afterwards left a window where queries silently skipped that day.
+static void replaceTimeFiles(const string &db_path_tmp, const string &db_path) {
+    if (db_path_tmp.empty())
+        return;
+    if (File::fileSize(db_path_tmp) == 0) {
+        // Nothing left to keep: drop both the empty rebuild and the source.
+        deleteTimeFile(db_path_tmp);
+        deleteMakerFile(db_path_tmp);
+        deleteTimeFile(db_path);
+        deleteMakerFile(db_path);
+        return;
+    }
+    renameTimeFile(db_path_tmp, db_path);
+    string maker_path_tmp(db_path_tmp);
+    replace(maker_path_tmp, ".s3db", ".idx");
+    if (File::fileExist(maker_path_tmp)) {
+        renameMakerFile(db_path_tmp, db_path);
+    } else {
+        // A stale index would point at offsets of the replaced file.
+        deleteMakerFile(db_path);
+    }
+}
+
 void TimeRebuilder::closeTempFile() {
     // close writer to close tmp file
     auto writer = _writer;
@@ -106,38 +136,24 @@ void TimeRebuilder::closeTempFile() {
     auto src_path = _src_path;
     auto device_path = _device_path;
     auto version_at_start = _dirty_version_at_start;
+    auto on_swapped = _on_swapped;
     TimeFileAccessManager::Instance().beginPendingSwap(full_path);
-    WorkThreadPool::Instance().getExecutor()->async([full_path_tmp, full_path, src_path, device_path, version_at_start]() {
-        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path, device_path, version_at_start]() {
-            // Abort the destructive swap if the source file was written to while we were
-            // rebuilding it (e.g. SD-card import re-opened this past-date file). Deleting
-            // the source now would drop those blocks; keep it dirty for the next cycle.
-            uint64_t current_version = TimeFileDirtyTracker::Instance().currentVersion(device_path, src_path);
-            if (current_version != version_at_start) {
-                WarnL << "Source time file changed during rebuild, discard temp file: " << src_path;
-                if (!full_path_tmp.empty()) {
-                    deleteTimeFile(full_path_tmp);
-                    deleteMakerFile(full_path_tmp);
-                }
-                return;
-            }
-            if (!src_path.empty()) {
-                deleteTimeFile(src_path);
-                deleteMakerFile(src_path);
-            }
+    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path, device_path, version_at_start, on_swapped]() {
+        // Abort the destructive swap if the source file was written to while we were
+        // rebuilding it (e.g. SD-card import re-opened this past-date file). Deleting
+        // the source now would drop those blocks; keep it dirty for the next cycle.
+        uint64_t current_version = TimeFileDirtyTracker::Instance().currentVersion(device_path, src_path);
+        if (current_version != version_at_start) {
+            WarnL << "Source time file changed during rebuild, discard temp file: " << src_path;
             if (!full_path_tmp.empty()) {
-                // Get file size
-                uint64_t file_size = File::fileSize(full_path_tmp);
-                if (file_size == 0) {
-                    deleteTimeFile(full_path_tmp);
-                    deleteMakerFile(full_path_tmp);
-                    return;
-                }
-                // Change the temporary file name to the official file name to prevent access to the file before it is completed
-                renameTimeFile(full_path_tmp, full_path);
-                renameMakerFile(full_path_tmp, full_path);
+                deleteTimeFile(full_path_tmp);
+                deleteMakerFile(full_path_tmp);
             }
-        });
+            return;
+        }
+        replaceTimeFiles(full_path_tmp, full_path);
+        if (on_swapped)
+            on_swapped();
     });
 }
 
@@ -149,35 +165,23 @@ void TimeRebuilder::closeTempFileAfterActiveSwap() {
     auto full_path_tmp = _full_path_tmp;
     auto full_path = _full_path;
     auto src_path = _src_path;
+    auto on_swapped = _on_swapped;
     TimeFileAccessManager::Instance().beginPendingSwap(full_path);
-    WorkThreadPool::Instance().getExecutor()->async([writer, recorder, full_path_tmp, full_path, src_path]() {
-        TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [writer, recorder, full_path_tmp, full_path, src_path]() {
-            auto swap_file = [full_path_tmp, full_path, src_path]() {
-                if (!src_path.empty()) {
-                    deleteTimeFile(src_path);
-                    deleteMakerFile(src_path);
-                }
-                if (!full_path_tmp.empty()) {
-                    uint64_t file_size = File::fileSize(full_path_tmp);
-                    if (file_size == 0) {
-                        deleteTimeFile(full_path_tmp);
-                        deleteMakerFile(full_path_tmp);
-                        return;
-                    }
-                    renameTimeFile(full_path_tmp, full_path);
-                    renameMakerFile(full_path_tmp, full_path);
-                }
-            };
+    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [writer, recorder, full_path_tmp, full_path, src_path, on_swapped]() {
+        auto swap_file = [full_path_tmp, full_path]() {
+            replaceTimeFiles(full_path_tmp, full_path);
+        };
 
-            if (recorder) {
-                recorder->finishRebuildSwap(src_path, writer, swap_file);
-            } else if (writer) {
-                writer->closeNow();
-                swap_file();
-            } else {
-                swap_file();
-            }
-        });
+        if (recorder) {
+            recorder->finishRebuildSwap(src_path, writer, swap_file);
+        } else if (writer) {
+            writer->closeNow();
+            swap_file();
+        } else {
+            swap_file();
+        }
+        if (on_swapped)
+            on_swapped();
     });
 }
 
@@ -426,11 +430,17 @@ size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
         try {
             TraceL << "Rebuild time file: " << timefile << (is_dirty ? " (dirty)" : "");
             auto rebuilder = std::make_shared<TimeRebuilder>(timefile);
-            total_removed_bytes += rebuilder->rebuildTimeLine(map);
             if (is_dirty) {
-                // Clear the dirty mark only when no new block was written during the rebuild.
-                TimeFileDirtyTracker::Instance().clearIfUnchanged(_src_path, timefile, dirty_it->second);
+                // Clear the dirty mark only after the rebuilt file replaced the source,
+                // and only when no new block was written since the snapshot. Clearing
+                // earlier made the pending swap see a version change and discard itself.
+                const std::string device_path = _src_path;
+                const uint64_t version = dirty_it->second;
+                rebuilder->setOnSwapped([device_path, timefile, version]() {
+                    TimeFileDirtyTracker::Instance().clearIfUnchanged(device_path, timefile, version);
+                });
             }
+            total_removed_bytes += rebuilder->rebuildTimeLine(map);
         } catch (std::exception &ex) {
             WarnL << ex.what();
         }
@@ -442,7 +452,15 @@ size_t MultiTimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blo
     size_t total_removed_bytes = 0;
     if (blocks.empty())
         return 0;
+    // Daily files hold blocks by the local date of their start time; only rewrite
+    // the files that can contain a requested block. Files whose name is not a date
+    // (stamp 0) are always considered.
+    std::set<uint64_t> block_days;
+    for (const auto &identity : blocks)
+        block_days.insert(StampUtils::getStartOfDay(identity.start_time));
     for (const auto &it : _timefiles_map) {
+        if (it.first != 0 && block_days.count(it.first) == 0)
+            continue;
         try {
             auto rebuilder = std::make_shared<TimeRebuilder>(it.second);
             total_removed_bytes += rebuilder->removeTimeBlocks(blocks);

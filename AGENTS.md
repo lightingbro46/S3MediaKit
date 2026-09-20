@@ -66,6 +66,7 @@ Choose focused tests when possible, then run the smallest relevant build or test
 - Singletons use `ClassName::Instance()`.
 - Config defaults are registered with `onceToken` and `mINI::Instance()`.
 - Database access uses `toolkit::SqlitePool`/manager repositories. Schema changes are new numbered files under the correct migration directory.
+- SQLite transactions: `beginWriteTxn()` (BEGIN IMMEDIATE) for any transaction that may write, even if it reads first; `beginReadTxn()` only for read-only snapshots. A deferred transaction that reads then writes fails with "database is locked" when another connection commits meanwhile.
 - REST handlers use the existing `WebApi` macros and `ApiErrCode`; authentication and internal sync APIs have different trust boundaries.
 - `CMAKE_INCLUDE_CURRENT_DIR` is `OFF`; use explicit, correct includes.
 

@@ -15,10 +15,14 @@ namespace managerkit {
 /**
  * PeerAckLog records how far each remote peer has successfully pulled from this node.
  *
- *   peer_guid  — the remote peer's node ID (the puller)
- *   db_guid    — this node's own db_guid (the pulled-from)
- *   acked_seq  — the highest sequence number the peer has already received
- *   updated_at — last update timestamp (ms)
+ *   peer_guid     — the remote peer's node ID (the puller)
+ *   db_guid       — the puller's db_guid
+ *   src_peer_guid — the peer whose log entries were acknowledged
+ *   src_db_guid   — that peer's db_guid
+ *   acked_seq     — the highest sequence of (src_peer_guid, src_db_guid) the puller has
+ *   updated_at    — last time the puller reported this ack (unix seconds)
+ *
+ * Key: (peer_guid, src_peer_guid, src_db_guid) — see migration 10_peer_ack_log_src_db_key.sql.
  *
  * GC logic: once all active peers have acked up to seq N, transaction_log
  * entries with sequence <= N can be safely deleted.
@@ -55,7 +59,7 @@ struct PeerAckLog {
 };
 
 DECLARE_ENTITY(PeerAckLog, "transaction_peer_ack_log",
-    MAKE_PK("peer_guid", "src_peer_guid"),
+    MAKE_PK("peer_guid", "src_peer_guid", "src_db_guid"),
     &PeerAckLog::peer_guid,  "peer_guid",
     &PeerAckLog::db_guid,    "db_guid",
     &PeerAckLog::src_peer_guid,  "src_peer_guid",
@@ -69,15 +73,16 @@ public:
     PeerAckLogRepository() : SqliteRepository<PeerAckLog>(Database::kEdgeStorageControllerDb) {}
     
     /**
-     * Returns all ack logs for the given peer_guid (puller) and src_peer_guid (pulled-from).  Should be at most one entry, but return vector for flexibility.
+     * Returns the ack of `peer_guid` (puller) for source (src_peer_guid, src_db_guid). At most one row.
      */
-    std::vector<PeerAckLog> findByPeerGuidAndSrcPeerGuid(const std::string &peer_guid, const std::string &src_peer_guid) {
+    std::vector<PeerAckLog> findByKey(const std::string &peer_guid, const std::string &src_peer_guid, const std::string &src_db_guid) {
         std::ostringstream whereClause;
         std::vector<std::string> whereParams;
 
-        whereClause << "peer_guid = ? AND src_peer_guid = ?";
+        whereClause << "peer_guid = ? AND src_peer_guid = ? AND src_db_guid = ?";
         whereParams.push_back(peer_guid);
         whereParams.push_back(src_peer_guid);
+        whereParams.push_back(src_db_guid);
 
         auto query = toolkit::QueryBuilder()
                         .select(EntityTraits<PeerAckLog>::getColumns())
@@ -171,6 +176,22 @@ public:
         return result;
     }
 
+    /**
+     * Last time (unix seconds) each puller reported any ack: puller peer_guid → max(updated_at).
+     */
+    std::unordered_map<std::string, int64_t> findLastAckTimes() {
+        auto query = toolkit::QueryBuilder()
+                        .select({"peer_guid", "MAX(updated_at)"})
+                        .from(EntityTraits<PeerAckLog>::tableName())
+                        .groupBy("peer_guid");
+        std::unordered_map<std::string, int64_t> ret;
+        for (const auto &row : _executor->executeRaw(query)) {
+            if (row.size() < 2) continue;
+            ret[row[0]] = row[1].empty() ? 0 : std::stoll(row[1]);
+        }
+        return ret;
+    }
+
     std::vector<PeerAckLog> findAll() {
         auto query = toolkit::QueryBuilder()
                         .select(EntityTraits<PeerAckLog>::getColumns())
@@ -196,20 +217,27 @@ public:
      */
     void add(PeerAckLog &entity) {
         if (entity.peer_guid.empty() || entity.src_peer_guid.empty() || entity.acked_seq <= 0) return;
+        // updated_at doubles as "last seen" for prune decisions; refreshing it on every pull would
+        // write on every tick, so an unchanged ack is only touched once per this interval.
+        static const int64_t kLastSeenRefreshSec = 60;
         static std::mutex s_add_mtx;
         std::lock_guard<std::mutex> lk(s_add_mtx);
-        auto ret = findByPeerGuidAndSrcPeerGuid(entity.peer_guid, entity.src_peer_guid);
+        auto ret = findByKey(entity.peer_guid, entity.src_peer_guid, entity.src_db_guid);
         if (ret.empty()) {
             // No existing entry, insert new one
             save(entity, true);
             return;
         }
         auto &existing = ret[0];
-        if (entity.acked_seq > existing.acked_seq && entity.updated_at > existing.updated_at) {
-            // Update existing entry with higher acked_seq
+        if (existing.db_guid != entity.db_guid) {
+            // The puller recreated its database: its acks restart, replace the old one.
+            updateById(entity);
+        } else if (entity.acked_seq > existing.acked_seq) {
             updateById(entity);
         } else if (entity.acked_seq == existing.acked_seq) {
-            // nothing to update
+            if (entity.updated_at - existing.updated_at >= kLastSeenRefreshSec) {
+                updateById(entity);
+            }
         } else {
             WarnL << "Not updating ack log for peer=" << entity.peer_guid
                   << " src_peer=" << entity.src_peer_guid

@@ -9,6 +9,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Network/sockutil.h"
 #include "Network/Socket.h"
+#include "Common/BlockingExecutors.h"
 #include "Local/TimeQuery.h"
 #include "Transcode/OverlayPrivacyUtils.h"
 #include "Util/util.h"
@@ -419,6 +420,69 @@ static void makeSnapAsync(const string &play_url, const string &save_path, float
 
 #endif
 
+namespace {
+
+// Runs `cmd`, waits for it on the calling thread and reports whether `save_path` was produced.
+// Only the kill-on-timeout watchdog is posted to a poller: it is a timer, it never blocks.
+void runSnapProcess(const char *cmd, const string &save_path, float timeout_sec,
+                    const FFmpegSnap::onSnap &cb) {
+    GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+    std::shared_ptr<Process> process = std::make_shared<Process>();
+    auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
+    process->run(cmd, log_file);
+
+    auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
+        (uint64_t)(timeout_sec * 1000), [process]() {
+            if (process->wait(false)) {
+                // The FFmpeg process is still running, close it if it times out
+                process->kill(2000);
+            }
+            return 0;
+        });
+
+    // Wait for the FFmpeg process to exit
+    process->wait(true);
+    // The FFmpeg process has exited, the timer can be canceled
+    delayTask->cancel();
+    // Execute the callback function
+    bool success = process->exit_code() == 0 && File::fileSize(save_path);
+    cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "");
+}
+
+} // namespace
+
+void FFmpegSnap::snap(const string &play_url, const string &save_path, uint64_t seek_time,
+                      float timeout_sec, const onSnap &cb) {
+    GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
+    GET_CONFIG(string, ffmpeg_snap, FFmpeg::kSnap);
+    char cmd[2048] = { 0 };
+    if (countSubString(ffmpeg_snap, "%s") == 3) {
+        // Backward compatibility, the ffmpeg command template does not contain the time parameter, so it is considered that the ffmpeg command template does not contain the time parameter
+        snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), save_path.data());
+    } else {
+        snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), format_duration_hms(seek_time).data(), save_path.data());
+    }
+    runSnapProcess(cmd, save_path, timeout_sec, cb);
+}
+
+void FFmpegSnap::snapWithFilter(const string &play_url, const string &save_path,
+                                uint64_t seek_time, float timeout_sec,
+                                const string &filter_complex, const onSnap &cb) {
+    GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
+    GET_CONFIG(string, ffmpeg_snap_overlay, FFmpeg::kSnapOverlay);
+    char cmd[65536] = { 0 };
+    int command_length = snprintf(cmd, sizeof(cmd), ffmpeg_snap_overlay.data(),
+                                  File::absolutePath("", ffmpeg_bin).data(),
+                                  format_duration_hms(seek_time).data(),
+                                  play_url.data(), filter_complex.data(),
+                                  save_path.data());
+    if (command_length < 0 || static_cast<size_t>(command_length) >= sizeof(cmd)) {
+        cb(false, "FFmpeg snapshot overlay command is too long");
+        return;
+    }
+    runSnapProcess(cmd, save_path, timeout_sec, cb);
+}
+
 void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save_path, uint64_t seek_time, float timeout_sec, const onSnap &cb) {
 #if defined(ENABLE_FFMPEG)
     if (async) {
@@ -426,10 +490,8 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
         return;
     }
 #endif
-
-    GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
-    GET_CONFIG(string, ffmpeg_snap, FFmpeg::kSnap);
-    GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+    // Kept for /index/api/getSnap: it still waits for ffmpeg on a WorkThreadPool poller.
+    // New callers should use makeSnapOnWorker().
     Ticker ticker;
     WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, save_path, seek_time, cb, ticker]() {
         auto elapsed_ms = ticker.elapsedTime();
@@ -438,78 +500,41 @@ void FFmpegSnap::makeSnap(bool async, const string &play_url, const string &save
             cb(false, "wait work poller schedule snap task timeout");
             return;
         }
-        char cmd[2048] = { 0 };
-        if (countSubString(ffmpeg_snap, "%s") == 3) {
-            // Backward compatibility, the ffmpeg command template does not contain the time parameter, so it is considered that the ffmpeg command template does not contain the time parameter
-            snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), save_path.data());
-        } else {
-            snprintf(cmd, sizeof(cmd), ffmpeg_snap.data(), File::absolutePath("", ffmpeg_bin).data(), play_url.data(), format_duration_hms(seek_time).data(), save_path.data());
+        // The snapshot timeout is reduced by the delay of the background task startup
+        FFmpegSnap::snap(play_url, save_path, seek_time, timeout_sec - elapsed_ms / 1000.0f, cb);
+    });
+}
+
+void FFmpegSnap::makeSnapOnWorker(const string &play_url, const string &save_path, uint64_t seek_time,
+                                  float timeout_sec, const onSnap &cb,
+                                  const toolkit::TaskExecutor::Ptr &executor) {
+    Ticker ticker;
+    auto _executor = executor ? executor : managerkit::BlockingExecutors::ffmpeg();
+    _executor->async([timeout_sec, play_url, save_path, seek_time, cb, ticker]() {
+        auto elapsed_ms = ticker.elapsedTime();
+        if (elapsed_ms > timeout_sec * 1000) {
+            // Timeout, the pool is saturated, it took too long to start this task
+            cb(false, "wait ffmpeg worker schedule snap task timeout");
+            return;
         }
-
-        std::shared_ptr<Process> process = std::make_shared<Process>();
-        auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
-        process->run(cmd, log_file);
-
-        // The timer delay should be reduced by the delay of the background task startup
-        auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
-            (uint64_t)(timeout_sec * 1000 - elapsed_ms), [process, cb, log_file, save_path]() {
-                if (process->wait(false)) {
-                    // The FFmpeg process is still running, close it if it times out
-                    process->kill(2000);
-                }
-                return 0;
-            });
-
-        // Wait for the FFmpeg process to exit
-        process->wait(true);
-        // The FFmpeg process has exited, the timer can be canceled
-        delayTask->cancel();
-        // Execute the callback function
-        bool success = process->exit_code() == 0 && File::fileSize(save_path);
-        cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "");
+        FFmpegSnap::snap(play_url, save_path, seek_time, timeout_sec - elapsed_ms / 1000.0f, cb);
     });
 }
 
 void FFmpegSnap::makeSnapWithFilter(const string &play_url, const string &save_path,
                                     uint64_t seek_time, float timeout_sec,
-                                    const string &filter_complex, const onSnap &cb) {
-    GET_CONFIG(string, ffmpeg_bin, FFmpeg::kBin);
-    GET_CONFIG(string, ffmpeg_snap_overlay, FFmpeg::kSnapOverlay);
-    GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+                                    const string &filter_complex, const onSnap &cb,
+                                    const toolkit::TaskExecutor::Ptr &executor) {
     Ticker ticker;
-    WorkThreadPool::Instance().getPoller()->async([timeout_sec, play_url, save_path, seek_time,
-                                                    filter_complex, cb, ticker]() {
+    auto _executor = executor ? executor : managerkit::BlockingExecutors::ffmpeg();
+    _executor->async([timeout_sec, play_url, save_path, seek_time, filter_complex, cb, ticker]() {
         auto elapsed_ms = ticker.elapsedTime();
         if (elapsed_ms > timeout_sec * 1000) {
-            cb(false, "wait work poller schedule snap task timeout");
+            cb(false, "wait ffmpeg worker schedule snap task timeout");
             return;
         }
-
-        char cmd[65536] = { 0 };
-        int command_length = snprintf(cmd, sizeof(cmd), ffmpeg_snap_overlay.data(),
-                                      File::absolutePath("", ffmpeg_bin).data(), 
-                                      format_duration_hms(seek_time).data(),
-                                      play_url.data(), filter_complex.data(),
-                                      save_path.data());
-        if (command_length < 0 || static_cast<size_t>(command_length) >= sizeof(cmd)) {
-            cb(false, "FFmpeg snapshot overlay command is too long");
-            return;
-        }
-
-        std::shared_ptr<Process> process = std::make_shared<Process>();
-        auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
-        process->run(cmd, log_file);
-        auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
-            static_cast<uint64_t>(timeout_sec * 1000 - elapsed_ms), [process]() {
-                if (process->wait(false)) {
-                    process->kill(2000);
-                }
-                return 0;
-            });
-        process->wait(true);
-        delayTask->cancel();
-        bool success = process->exit_code() == 0 && File::fileSize(save_path);
-        cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "");
+        FFmpegSnap::snapWithFilter(play_url, save_path, seek_time, timeout_sec - elapsed_ms / 1000.0f,
+                                   filter_complex, cb);
     });
 }
 
@@ -826,8 +851,9 @@ void RecordedThumbnailTask::startSnap(const string &source_path) {
         self->onSnap(success, error);
     };
     if (_request.filter_complex.empty()) {
-        FFmpegSnap::makeSnap(false, source_path, temporary_output,
-                             _request.seek_time, remaining_sec, cb);
+        // Waiting for ffmpeg happens on the ffmpeg pool, not on a WorkThreadPool poller.
+        FFmpegSnap::makeSnapOnWorker(source_path, temporary_output,
+                                     _request.seek_time, remaining_sec, cb);
     } else {
         FFmpegSnap::makeSnapWithFilter(source_path, temporary_output,
                                        _request.seek_time, remaining_sec,
@@ -1333,7 +1359,16 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         return;
     }
     updateLifecycleStatus(Stage::QUEUED, 0.0f);
-    prepareExtractSource();
+    // The timefile query, restore planning and ffmpeg start run on the extractor's own poller
+    // (where its restore/ffmpeg timers already run), not on the caller's thread, which is an
+    // HTTP request poller for extractArchived/create.
+    weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
+    _poller->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (self) {
+            self->prepareExtractSource();
+        }
+    }, false);
 }
 
 const char *FFmpegExtractor::stageToString(Stage stage) {
@@ -1388,6 +1423,16 @@ void FFmpegExtractor::notifyStartOnce(const SockException &ex) {
 }
 
 void FFmpegExtractor::prepareExtractSource() {
+    bool cancelled;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        cancelled = _cancelled;
+    }
+    if (cancelled) {
+        // cancel() already closed the task; still answer the start callback once.
+        notifyStartOnce(SockException(Err_other, "Extraction task was cancelled", ApiErrCode::CODE_EXTRACT_FAILED));
+        return;
+    }
     vector<TimeBlock> blocks;
     queryExtractTimeBlocks(_tuple.app, _tuple.stream, _options.start_time,
                            _options.end_time, [&blocks](const TimeBlock &block) {
@@ -1924,6 +1969,7 @@ void FFmpegExtractor::cancel() {
     {
         lock_guard<mutex> lock(_status_mtx);
         _onComplete = nullptr;
+        _cancelled = true;
     }
     _timer.reset();
     _process.kill(2000);
@@ -2034,44 +2080,52 @@ static bool parse_probe_log(ProbeInfo &info, const string &log_string) {
     return true;
 }
 
-void FFmpegProbe::makeProbe(const string &play_url, float timeout_sec, const onProbe &cb, const toolkit::EventPoller::Ptr &poller) {
+void FFmpegProbe::probe(const string &play_url, float timeout_sec, const onProbe &cb) {
     GET_CONFIG(string, ffprobe_bin, FFmpeg::kBinP);
     GET_CONFIG(string, ffmpeg_probe, FFmpeg::kProbe);
     GET_CONFIG(string, ffmpeg_log, FFmpeg::kLog);
+    ProbeInfo info;
+    info.url = play_url;
+
+    char cmd[2048] = { 0 };
+    snprintf(cmd, sizeof(cmd), ffmpeg_probe.data(), File::absolutePath("", ffprobe_bin).data(), escape(play_url).data());
+    std::shared_ptr<Process> process = std::make_shared<Process>();
+    auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
+    process->run(cmd, log_file);
+
+    // Only the kill-on-timeout watchdog runs on a poller: it is a timer, it never blocks.
+    auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
+        (uint64_t)(timeout_sec * 1000), [process]() {
+            if (process->wait(false)) {
+                // The FFmpeg process is still running, close it if it times out
+                process->kill(2000);
+            }
+            return 0;
+        });
+
+    // Wait for the FFmpeg process to exit
+    process->wait(true);
+    // The FFmpeg process has exited, the timer can be canceled
+    delayTask->cancel();
+    // Execute the callback function
+    string log_string = File::loadFile(log_file);
+    bool success = process->exit_code() == 0 && parse_probe_log(info, log_string);
+    cb(success, (!success && !log_file.empty()) ? log_string : "", info);
+}
+
+void FFmpegProbe::makeProbe(const string &play_url, float timeout_sec, const onProbe &cb, const toolkit::TaskExecutor::Ptr &executor) {
     Ticker ticker;
-    auto _poller = poller ? poller : WorkThreadPool::Instance().getPoller();
-    _poller->async([timeout_sec, play_url, cb, ticker]() {
-        ProbeInfo info;
-        info.url = play_url;
+    auto _executor = executor ? executor : WorkThreadPool::Instance().getPoller();
+    _executor->async([timeout_sec, play_url, cb, ticker]() {
         auto elapsed_ms = ticker.elapsedTime();
         if (elapsed_ms > timeout_sec * 1000) {
             // Timeout, the background thread load is too high, it takes too long to start this task
+            ProbeInfo info;
+            info.url = play_url;
             cb(false, "wait work poller schedule probe task timeout", info);
             return;
         }
-        char cmd[2048] = { 0 };
-        snprintf(cmd, sizeof(cmd), ffmpeg_probe.data(), File::absolutePath("", ffprobe_bin).data(), escape(play_url).data());
-        std::shared_ptr<Process> process = std::make_shared<Process>();
-        auto log_file = ffmpeg_log.empty() ? ffmpeg_log : File::absolutePath("", ffmpeg_log);
-        process->run(cmd, log_file);
-
-        // The timer delay should be reduced by the delay of the background task startup
-        auto delayTask = EventPollerPool::Instance().getPoller()->doDelayTask(
-            (uint64_t)(timeout_sec * 1000 - elapsed_ms), [process, cb, log_file]() {
-                if (process->wait(false)) {
-                    // The FFmpeg process is still running, close it if it times out
-                    process->kill(2000);
-                }
-                return 0;
-            });
-
-        // Wait for the FFmpeg process to exit
-        process->wait(true);
-        // The FFmpeg process has exited, the timer can be canceled
-        delayTask->cancel();
-        // Execute the callback function
-        string log_string = File::loadFile(log_file);
-        bool success = process->exit_code() == 0 && parse_probe_log(info, log_string);
-        cb(success, (!success && !log_file.empty()) ? File::loadFile(log_file) : "", info);
+        // The probe timeout is reduced by the delay of the background task startup
+        FFmpegProbe::probe(play_url, timeout_sec - elapsed_ms / 1000.0f, cb);
     });
 }

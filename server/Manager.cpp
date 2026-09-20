@@ -21,7 +21,9 @@
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
 #include "User/UserAuthorManager.h"
+#ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
+#endif
 #include "Transcode/OverlayPrivacyUtils.h"
 
 using namespace std;
@@ -91,8 +93,10 @@ static void loadSavedMediaServerInfo() {
     EventPollerPool::Instance().getPoller()->doDelayTask(6000, []() {
         DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
+#ifdef ENABLE_SYNC_CHANGES
         DebugL << "Sync manager has been started";
         SyncManager::Instance().start();
+#endif
         return 0;
     });
 }
@@ -451,12 +455,21 @@ static void releaseAllDevice() {
 }
 
 static void releaseSyncDatabase() {
+#ifdef ENABLE_SYNC_CHANGES
     SyncManager::Instance().stop();
+#endif
 }
 
 
 static void releaseActiveJobs() {
     ExtractJobManager::Instance().stop();
+}
+
+void releaseStorageManagers() {
+#ifdef ENABLE_TIER_STORAGE
+    // Stops tier cycles and shuts the AWS SDK down now instead of during static destruction.
+    TierStorageManager::Instance().shutdown();
+#endif
 }
 
 void unInstallManagerHook() {
@@ -469,6 +482,7 @@ void unInstallManagerHook() {
 
     // Note: Comment the following code in order to save last segments when program exit
     NoticeCenter::Instance().delListener(&manager_hook_tag);
+    releaseStorageManagers();
 }
 
 void migrateDatabase() {
@@ -958,7 +972,9 @@ static void loadServerClusterFromJson(const Json::Value &data) {
         ClusterManager::Instance().removeMediaServer(id);
     }
 
+#ifdef ENABLE_SYNC_CHANGES
     SyncManager::Instance().setSingleNodeMode(ClusterManager::Instance().getMediaServerIds().size() == 1);
+#endif
     TraceL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
 }
 

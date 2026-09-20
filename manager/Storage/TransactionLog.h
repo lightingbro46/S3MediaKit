@@ -16,6 +16,15 @@ enum class TranType : uint8_t {
 #define TRAN_DATA_OP_UPSERT_BATCH "UPSERT_BATCH"
 #define TRAN_DATA_OP_DELETE "DELETE"
 
+// TransactionLog::timestamp_hi is an audit flag set by the receiving node.
+enum TranAuditFlag : int {
+    TRAN_AUDIT_APPLIED  = 0, // applied (or local write)
+    TRAN_AUDIT_WINNER   = 1, // applied, replaced an older version of the row
+    TRAN_AUDIT_STALE    = 2, // not applied, a newer version of the row was already stored
+    TRAN_AUDIT_DEFERRED = 3, // not applied: unknown table/op/type in this build; kept for relay and
+                             // re-applied at startup once a build understands it
+};
+
 /**
  * TransactionLog is the data structure used to store the transaction log of database.
  * It contains the peer_id and db_guid of the media server, the sequence number of the transaction, 
@@ -204,6 +213,39 @@ public:
         return !_executor->executeRaw(query).empty();
     }
 
+    // Entries stored with the given audit flag (timestamp_hi), in source order.
+    std::vector<TransactionLog> findByAuditFlagWithTxn(int flag, int limit, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .select(EntityTraits<TransactionLog>::getColumns())
+                        .from(EntityTraits<TransactionLog>::tableName())
+                        .where("timestamp_hi = ?", {std::to_string(flag)})
+                        .orderBy("peer_guid ASC, sequence ASC");
+        if (limit > 0) query.limit(limit);
+        std::vector<TransactionLog> ret;
+        for (const auto &row : executeRawWithTxn(txn, query)) {
+            ret.push_back(EntityTraits<TransactionLog>::fromRow(row));
+        }
+        return ret;
+    }
+
+    bool updateAuditFlagWithTxn(const std::string &tran_guid, int flag, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .update(EntityTraits<TransactionLog>::tableName())
+                        .set({{"timestamp_hi", std::to_string(flag)}})
+                        .where("tran_guid = ?", {tran_guid});
+        return execDMLWithTxn(txn, query);
+    }
+
+    // Same as existsByTranGuid but sees rows written earlier in the same transaction.
+    bool existsByTranGuidWithTxn(const std::string &tran_guid, toolkit::SqliteTransaction::Ptr txn) {
+        auto query = toolkit::QueryBuilder()
+                        .select({"tran_guid"})
+                        .from(EntityTraits<TransactionLog>::tableName())
+                        .where("tran_guid = ?", {tran_guid})
+                        .limit(1);
+        return !executeRawWithTxn(txn, query).empty();
+    }
+
 };
 
 class TransactionLogImp : public TransactionLogRepository {
@@ -225,15 +267,17 @@ public:
         }
     }
 
-    // Transaction-aware variant: insert the log entry within an existing transaction.
-    // The sequence update is intentionally kept outside the transaction (it's metadata).
+    // Transaction-aware variant: the log entry and the peer cursor are written in the
+    // same transaction, so a rollback never leaves the cursor ahead of the applied data.
+    // (Writing the cursor through another pooled connection would also block on the
+    // write lock held by this transaction.)
     void addWithTxn(TransactionLog &entity, toolkit::SqliteTransaction::Ptr txn) {
         if (saveWithTxn(entity, txn)) {
             TransactionSequence seq;
             seq.peer_guid = entity.peer_guid;
             seq.db_guid = entity.db_guid;
             seq.sequence = entity.sequence;
-            _seq_impl->add(seq);
+            _seq_impl->addWithTxn(seq, txn);
         }
     }
 

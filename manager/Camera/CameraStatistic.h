@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_set>
 #include "Local/FileRecorder.h"
+#include "Poller/EventPoller.h"
 #include "GenericRtspCamera.h"
 #include "CameraController.h"
 
@@ -91,7 +92,7 @@ struct CameraStatistic {
     }
 };
 
-class CameraStatisticImp : private CameraStatistic {
+class CameraStatisticImp : private CameraStatistic, public std::enable_shared_from_this<CameraStatisticImp> {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;
 
@@ -136,7 +137,13 @@ public:
 
     void remove(bool failover_active = false);
 
+    // Enables/disables writes to the cluster ESC database. Enabling publishes the current
+    // ownership, config and status (the option may be unchanged since startup).
     void setSyncMode(bool enable);
+
+    // The camera is leaving this node (moved, failed back or deleted): release this node's
+    // assignment and stop ESC writes, without publishing the local config.
+    void detachFromCluster();
 
     static bool syncFromEsc(std::string &guid, CameraStatistic &resource);
 
@@ -145,11 +152,22 @@ private:
 
     void load();
 
+    // Persist info.txt. Also retries a pending ESC sync (throttled) if the last one failed.
     void save();
 
-    bool syncToEsc();
+    // Called by config setters (tuple / stream urls / option): pushes the ESC resource now,
+    // bypassing the throttle, so config changes are never delayed or dropped.
+    void markEscConfigChanged();
 
-    bool removeFromEsc();
+    // Queue an ESC upsert of the current config if it is pending. force=false applies the
+    // retry throttle. Caller must hold _mtx.
+    bool syncToEsc(bool force);
+
+    // Queue ESC removal after all pending ESC tasks of this camera.
+    void removeFromEsc();
+
+    // Run blocking ESC/SQLite work off the camera poller, in FIFO order per camera.
+    void postEscTask(const std::function<void()> &task);
 
     void assignResource(bool regist = true);
 
@@ -168,6 +186,9 @@ private:
     int _sync_interval_sec = 30;
     bool _sync_mode = false;
     uint64_t _last_sync_time = 0;
+    bool _esc_dirty = false;    // config not yet written to ESC (never synced or last write failed)
+    bool _esc_removed = false;  // remove() was called; no more ESC writes
+    toolkit::EventPoller::Ptr _esc_poller;
     std::unordered_set<int> _status_history_initialized_streams;
     bool _device_status_history_initialized = false;
 };

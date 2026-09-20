@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 
 #ifdef ENABLE_AWS_SDK
 
@@ -83,15 +84,18 @@ TierObjectStorage::TierObjectStorage() {
 }
 
 TierObjectStorage::~TierObjectStorage() {
+    shutdownSdk();
+}
+
+void TierObjectStorage::shutdownSdk() {
 #ifdef ENABLE_AWS_SDK
-    {
-        std::lock_guard<std::mutex> lk(_mtx);
-        _pool_map.clear();
-        _metrics_providers.clear();
-    }
+    std::lock_guard<std::mutex> lk(_mtx);
+    // Clients must be released before ShutdownAPI.
+    _pool_map.clear();
+    _metrics_providers.clear();
     if (_sdk_initialized) {
-        Aws::ShutdownAPI(_sdk_options);
         _sdk_initialized = false;
+        Aws::ShutdownAPI(_sdk_options);
         DebugL << "TierObjectStorage: AWS SDK shut down";
     }
 #endif
@@ -510,6 +514,8 @@ bool TierObjectStorage::deleteSegmentsBatch(const std::string &pool_id,
             identifiers.push_back(oi);
         }
         del.SetObjects(identifiers);
+        // Quiet mode lists only the keys that failed.
+        del.SetQuiet(true);
 
         Aws::S3::Model::DeleteObjectsRequest req;
         req.SetBucket(entry.bucket.c_str());
@@ -517,12 +523,15 @@ bool TierObjectStorage::deleteSegmentsBatch(const std::string &pool_id,
 
         auto out = entry.client->DeleteObjects(req);
         if (!out.IsSuccess()) {
-            WarnL << "TierObjectStorage::deleteSegmentsBatch: "
+            WarnL << "TierObjectStorage::deleteSegmentsBatch: pool " << pool_id << ": "
                   << out.GetError().GetMessage();
             all_ok = false;
         } else if (!out.GetResult().GetErrors().empty()) {
-            WarnL << "TierObjectStorage::deleteSegmentsBatch: "
-                  << out.GetResult().GetErrors().size() << " errors";
+            const auto &errors = out.GetResult().GetErrors();
+            WarnL << "TierObjectStorage::deleteSegmentsBatch: pool " << pool_id << ": "
+                  << errors.size() << " of " << (end - i) << " key(s) failed, first "
+                  << errors.front().GetKey() << ": " << errors.front().GetCode()
+                  << " " << errors.front().GetMessage();
             all_ok = false;
         }
     }
@@ -543,6 +552,168 @@ bool TierObjectStorage::segmentExists(const std::string &pool_id,
     req.SetBucket(entry.bucket.c_str());
     req.SetKey(s3_key.c_str());
     return entry.client->HeadObject(req).IsSuccess();
+}
+
+TierObjectPresence TierObjectStorage::headSegment(const std::string &pool_id,
+                                                  const std::string &s3_key) {
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) return TierObjectPresence::UNKNOWN;
+        entry = it->second;
+    }
+
+    Aws::S3::Model::HeadObjectRequest req;
+    req.SetBucket(entry.bucket.c_str());
+    req.SetKey(s3_key.c_str());
+    auto out = entry.client->HeadObject(req);
+    if (out.IsSuccess())
+        return TierObjectPresence::PRESENT;
+    if (out.GetError().GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND)
+        return TierObjectPresence::ABSENT;
+    WarnL << "TierObjectStorage::headSegment: pool " << pool_id << " key " << s3_key << ": "
+           << static_cast<int>(out.GetError().GetResponseCode()) << " "
+           << out.GetError().GetMessage();
+    return TierObjectPresence::UNKNOWN;
+}
+
+// Pages through ListObjectsV2; `on_page` consumes each page's result.
+static bool listObjectsV2Pages(const std::shared_ptr<Aws::S3::S3Client> &client,
+                               const std::string &bucket,
+                               const std::string &prefix,
+                               const std::string &delimiter,
+                               const std::function<void(const Aws::S3::Model::ListObjectsV2Result &)> &on_page,
+                               std::string &error) {
+    Aws::String token;
+    // Guards against a server that keeps returning the same token.
+    for (int page = 0; page < 100000; ++page) {
+        Aws::S3::Model::ListObjectsV2Request req;
+        req.SetBucket(bucket.c_str());
+        req.SetPrefix(prefix.c_str());
+        if (!delimiter.empty())
+            req.SetDelimiter(delimiter.c_str());
+        if (!token.empty())
+            req.SetContinuationToken(token);
+        auto out = client->ListObjectsV2(req);
+        if (!out.IsSuccess()) {
+            error = std::string("ListObjectsV2 failed: ") +
+                    std::to_string(static_cast<int>(out.GetError().GetResponseCode())) + " " +
+                    out.GetError().GetMessage().c_str();
+            return false;
+        }
+        const auto &result = out.GetResult();
+        on_page(result);
+        if (!result.GetIsTruncated())
+            return true;
+        const Aws::String next = result.GetNextContinuationToken();
+        if (next.empty() || next == token) {
+            error = "ListObjectsV2 returned a truncated page without a new continuation token";
+            return false;
+        }
+        token = next;
+    }
+    error = "ListObjectsV2 did not finish";
+    return false;
+}
+
+bool TierObjectStorage::listObjects(const std::string &pool_id,
+                                    const std::string &prefix,
+                                    std::map<std::string, TierObjectInfo> &out,
+                                    std::string &error) {
+    out.clear();
+    error.clear();
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) {
+            error = "Pool not registered: " + pool_id;
+            return false;
+        }
+        entry = it->second;
+    }
+    const bool ok = listObjectsV2Pages(
+        entry.client, entry.bucket, prefix, "",
+        [&out](const Aws::S3::Model::ListObjectsV2Result &result) {
+            for (const auto &object : result.GetContents()) {
+                TierObjectInfo info;
+                info.size = static_cast<int64_t>(object.GetSize());
+                info.last_modified = static_cast<int64_t>(object.GetLastModified().Seconds());
+                out[object.GetKey().c_str()] = info;
+            }
+        },
+        error);
+    if (!ok) {
+        out.clear();
+        WarnL << "TierObjectStorage::listObjects: pool " << pool_id << " prefix " << prefix
+              << ": " << error;
+    }
+    return ok;
+}
+
+bool TierObjectStorage::listCommonPrefixes(const std::string &pool_id,
+                                           const std::string &prefix,
+                                           std::vector<std::string> &out,
+                                           std::string &error) {
+    out.clear();
+    error.clear();
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) {
+            error = "Pool not registered: " + pool_id;
+            return false;
+        }
+        entry = it->second;
+    }
+    const bool ok = listObjectsV2Pages(
+        entry.client, entry.bucket, prefix, "/",
+        [&out](const Aws::S3::Model::ListObjectsV2Result &result) {
+            for (const auto &common : result.GetCommonPrefixes())
+                out.push_back(common.GetPrefix().c_str());
+        },
+        error);
+    if (!ok) {
+        out.clear();
+        WarnL << "TierObjectStorage::listCommonPrefixes: pool " << pool_id << " prefix "
+              << prefix << ": " << error;
+    }
+    return ok;
+}
+
+bool TierObjectStorage::bucketVersioningStatus(const std::string &pool_id,
+                                               std::string &out_status) {
+    out_status.clear();
+    PoolEntry entry;
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        auto it = _pool_map.find(pool_id);
+        if (it == _pool_map.end()) return false;
+        entry = it->second;
+    }
+
+    Aws::S3::Model::GetBucketVersioningRequest req;
+    req.SetBucket(entry.bucket.c_str());
+    auto client = entry.health_client ? entry.health_client : entry.client;
+    auto out = client->GetBucketVersioning(req);
+    if (!out.IsSuccess()) {
+        DebugL << "TierObjectStorage::bucketVersioningStatus: pool " << pool_id << ": "
+               << out.GetError().GetMessage();
+        return false;
+    }
+    switch (out.GetResult().GetStatus()) {
+    case Aws::S3::Model::BucketVersioningStatus::Enabled:
+        out_status = "Enabled";
+        break;
+    case Aws::S3::Model::BucketVersioningStatus::Suspended:
+        out_status = "Suspended";
+        break;
+    default:
+        break;
+    }
+    return true;
 }
 
 bool TierObjectStorage::supportsPresignedRead(const std::string &pool_id) const {
@@ -668,6 +839,27 @@ bool TierObjectStorage::deleteSegment(const std::string &, const std::string &) 
 bool TierObjectStorage::deleteSegmentsBatch(const std::string &,
                                               const std::vector<std::string> &) { return false; }
 bool TierObjectStorage::segmentExists(const std::string &, const std::string &) { return false; }
+TierObjectPresence TierObjectStorage::headSegment(const std::string &, const std::string &) {
+    return TierObjectPresence::UNKNOWN;
+}
+bool TierObjectStorage::listObjects(const std::string &, const std::string &,
+                                    std::map<std::string, TierObjectInfo> &out,
+                                    std::string &error) {
+    out.clear();
+    error = "AWS SDK not enabled";
+    return false;
+}
+bool TierObjectStorage::listCommonPrefixes(const std::string &, const std::string &,
+                                           std::vector<std::string> &out,
+                                           std::string &error) {
+    out.clear();
+    error = "AWS SDK not enabled";
+    return false;
+}
+bool TierObjectStorage::bucketVersioningStatus(const std::string &, std::string &out_status) {
+    out_status.clear();
+    return false;
+}
 bool TierObjectStorage::supportsPresignedRead(const std::string &) const { return false; }
 bool TierObjectStorage::createPresignedGetUrl(const std::string &, const std::string &,
                                                uint32_t, std::string &,

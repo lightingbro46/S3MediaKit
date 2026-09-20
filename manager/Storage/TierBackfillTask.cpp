@@ -101,6 +101,21 @@ bool TierBackfillTaskRepository::updateDefinitionAt(const TierBackfillTask &task
                    {task.task_id, tierBackfillTaskStatusToString(TierBackfillTaskStatus::RUNNING)}));
 }
 
+bool TierBackfillTaskRepository::updateWindowAt(const TierBackfillTask &task) {
+    return _executor->execDML(
+        QueryBuilder()
+            .update(EntityTraits<TierBackfillTask>::tableName())
+            .set({{"window_start", std::to_string(task.window_start)},
+                  {"cutoff_time", std::to_string(task.cutoff_time)},
+                  {"cursor_time", std::to_string(task.cursor_time)},
+                  {"status", task.status},
+                  {"next_retry_at", std::to_string(task.next_retry_at)},
+                  {"completed_at", std::to_string(task.completed_at)},
+                  {"updated_at", std::to_string(task.updated_at)}})
+            .where("task_id = ? AND status <> ?",
+                   {task.task_id, tierBackfillTaskStatusToString(TierBackfillTaskStatus::RUNNING)}));
+}
+
 bool TierBackfillTaskRepository::retryFailedAt(const std::string &camera_id,
                                                 int64_t updated_at) {
     return _executor->execDML(
@@ -131,7 +146,7 @@ bool TierBackfillTaskRepository::hasDueAt(int64_t now) {
 
 std::vector<TierBackfillTask> TierBackfillTaskRepository::claimNextDueAt(int64_t now) {
     std::vector<TierBackfillTask> claimed;
-    auto txn = _executor->execTxn();
+    auto txn = _executor->beginWriteTxn();
     try {
         auto rows = _executor->executeRawWithTxn(
             txn,
@@ -211,7 +226,7 @@ bool TierBackfillTaskRepository::commitChunkAt(const TierBackfillTask &task,
                                                const std::string &status,
                                                int64_t completed_at,
                                                int64_t updated_at) {
-    auto txn = _executor->execTxn();
+    auto txn = _executor->beginWriteTxn();
     try {
         auto task_rows = _executor->executeRawWithTxn(
             txn,
@@ -233,13 +248,17 @@ bool TierBackfillTaskRepository::commitChunkAt(const TierBackfillTask &task,
             const auto &range = chunk.ranges[index];
             // A compact-only backfill must never overwrite data already moved
             // by tiering while historical indexing was running.
-            if (range_repository.hasAnyCoveringRangeWithTxn(
+            // Pieces were planned around existing ranges. A conflict means
+            // metadata changed meanwhile; retry the chunk so its blocks are
+            // re-planned instead of silently skipped.
+            if (range_repository.hasOwnershipConflictWithTxn(
                     txn, range.camera_id, range.stream_id,
                     range.start_time, range.end_time)) {
-                continue;
+                txn->rollback();
+                return false;
             }
             if (!range_repository.mergeNormalizedRangeWithTxn(
-                    range, 90, updated_at, txn)) {
+                    range, kSegmentMergeGapSeconds, updated_at, txn)) {
                 txn->rollback();
                 return false;
             }
@@ -308,6 +327,32 @@ TierBackfillTask TierBackfillTaskImp::ensureTask(TierBackfillTask desired) {
     bool narrowed = desired.window_start > existing.window_start;
     if (!path_changed && !expanded && !narrowed)
         return existing;
+
+    if (!path_changed && !expanded) {
+        // The window slides forward on every sync. Only extend the cutoff and
+        // skip the dropped head; FAILED/RETRY must keep attempts and backoff,
+        // otherwise a persistent error would be retried every minute forever.
+        const std::string completed_status =
+            tierBackfillTaskStatusToString(TierBackfillTaskStatus::COMPLETED);
+        existing.window_start = desired.window_start;
+        existing.cutoff_time = std::max(existing.cutoff_time, desired.cutoff_time);
+        existing.cursor_time = std::max(existing.cursor_time, desired.window_start);
+        if (existing.status == completed_status && existing.cursor_time < existing.cutoff_time) {
+            existing.status = tierBackfillTaskStatusToString(TierBackfillTaskStatus::PENDING);
+            existing.next_retry_at = 0;
+            existing.completed_at = 0;
+        } else if (existing.status != completed_status &&
+                   existing.status != tierBackfillTaskStatusToString(TierBackfillTaskStatus::FAILED) &&
+                   existing.cursor_time >= existing.cutoff_time) {
+            existing.status = completed_status;
+            existing.next_retry_at = 0;
+            existing.completed_at = now;
+        }
+        existing.updated_at = now;
+        if (!updateWindowAt(existing))
+            return TierBackfillTask();
+        return existing;
+    }
 
     existing.timeline_path = desired.timeline_path;
     existing.window_start = desired.window_start;

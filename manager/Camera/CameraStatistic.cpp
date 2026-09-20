@@ -3,6 +3,7 @@
 #include "Common/StrUtil.h"
 #include "Local/TierStorageManager.h"
 #include "Extension/Resource.h"
+#include "Thread/WorkThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -718,6 +719,8 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 
 CameraStatisticImp::CameraStatisticImp(const std::string &src_path, int sync_interval_sec) : _sync_interval_sec(sync_interval_sec) {
     CHECK(!src_path.empty(), "Source path cannot be empty");
+    // One fixed worker per camera keeps its ESC writes (assign/release, upsert, status, remove) in order.
+    _esc_poller = WorkThreadPool::Instance().getPoller();
     setup(src_path);
 }
 
@@ -746,6 +749,8 @@ void CameraStatisticImp::load() {
         sinfo_map = saved_stats.sinfo_map;
         transport_stats = saved_stats.transport_stats;
         device_stats = saved_stats.device_stats;
+        motion_stats = saved_stats.motion_stats;
+        tier_storage_map = saved_stats.tier_storage_map;
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
     }
@@ -757,13 +762,29 @@ void CameraStatisticImp::save() {
     }
     updated_at = time(nullptr);
     _file->save(static_cast<const CameraStatistic &>(*this));
-    syncToEsc();
+    // Statistic-only saves do not push ESC on every call. Two exceptions keep ESC consistent:
+    //  - retry a config sync that was not written yet (sync mode was off or the write failed);
+    //  - a periodic refresh every _sync_interval_sec. It is a no-op when ESC already matches, and
+    //    repairs values overwritten by a stale peer write (UPSERT_BATCH has no per-item LWW yet)
+    //    or a resource removed by another node.
+    if (!_esc_dirty && _sync_mode && static_cast<uint64_t>(time(nullptr)) - _last_sync_time >= static_cast<uint64_t>(_sync_interval_sec)) {
+        _esc_dirty = true;
+    }
+    if (_esc_dirty) {
+        syncToEsc(false);
+    }
+}
+
+void CameraStatisticImp::markEscConfigChanged() {
+    _esc_dirty = true;
+    syncToEsc(true);
 }
 
 void CameraStatisticImp::setDeviceTuple(const DeviceTuple &input_tuple) {
     std::lock_guard<std::mutex> lck(_mtx);
     tuple = input_tuple;
     save();
+    markEscConfigChanged();
 }
 
 void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTuple> &input_stream_map) {
@@ -806,6 +827,7 @@ void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTup
     
     stream_map = input_stream_map;
     save();
+    markEscConfigChanged();
 }
 
 void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
@@ -820,6 +842,7 @@ void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
         assignResource(false);
     }
     save();
+    markEscConfigChanged();
 }
 
 void CameraStatisticImp::setTransportStats(const TransportStats &input_stats) {
@@ -1000,10 +1023,11 @@ void CameraStatisticImp::remove(bool failover_active) {
             DebugL << "Removed file recorder success: " << tuple.shortUrl();
             removed = true;
         }
-    }
-
-    if (!failover_active) {
-        removeFromEsc();
+        if (!failover_active) {
+            // Queued behind any pending ESC writes of this camera, so they cannot recreate it afterwards.
+            removeFromEsc();
+        }
+        _esc_removed = true;
     }
 
     if (_on_remove && removed) {
@@ -1125,7 +1149,9 @@ struct ResourceAdapter<CameraStatistic> {
     static VmsResource toVmsResource(const CameraStatistic &stats) {
         VmsResource res;
         res.guid = stats.tuple.device_id;
-        res.parent_guid = stats.option.preferedMediaServer; // Use preferedMediaServer as parent_guid to associate camera resource with media server resource in VMS
+        // parent_guid is the camera's primary (preferred) media server, not the node currently running it;
+        // the current owner is recorded in vms_resource_assignment.
+        res.parent_guid = stats.option.preferedMediaServer;
         res.name = stats.tuple.name;
         // For camera resource, use stream url as resource url if ip is not configured, so that VMS can pull stream directly from camera. 
         // If ip is configured, use http url with ip and web port as resource url for VMS to access camera info and control api, and pull stream through media server.
@@ -1142,7 +1168,8 @@ struct ResourceAdapter<CameraStatistic> {
                 }
             }
         } else {
-            url = StrPrinter << "http://" << stats.option.ip << ":" << (!stats.option.autoMediaPort ? std::to_string(stats.option.webPort) : std::to_string(stats.option.port));
+            // Same rule as the "webPage" reported to the service API (server/Manager.cpp).
+            url = StrPrinter << "http://" << stats.option.ip << ":" << (stats.option.autoWebPort ? stats.option.port : stats.option.webPort);
         }
         res.url = url; 
         res.xtype_guid = getXtypeId();
@@ -1212,56 +1239,23 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("motionPreRecordSec",         std::to_string(opt.motionPreRecordSec)));
         kvs.push_back(make("motionPostRecordSec",        std::to_string(opt.motionPostRecordSec)));
 
+        // ── additional shared camera configuration ───────────────────────
+        kvs.push_back(make("sdCardSyncEnabled",          std::to_string(opt.sdCardSyncEnabled)));
+        kvs.push_back(make("sdCardSyncAutoSyncEnabled",  std::to_string(opt.sdCardSyncAutoSyncEnabled)));
+        kvs.push_back(make("sdCardSyncMinSegmentGapSec", std::to_string(opt.sdCardSyncMinSegmentGapSec)));
+        kvs.push_back(make("sdCardSyncRetryCount",       std::to_string(opt.sdCardSyncRetryCount)));
+        kvs.push_back(make("enforceWatermarkOnView",     std::to_string(opt.enforceWatermarkOnView)));
+        kvs.push_back(make("watermarkExcludedRoleIds",   opt.watermarkExcludedRoleIds));
+        kvs.push_back(make("watermarkTemplate",          opt.watermarkTemplate));
+        kvs.push_back(make("enforcePrivacyMaskOnView",   std::to_string(opt.enforcePrivacyMaskOnView)));
+        kvs.push_back(make("privacyMaskExcludedRoleIds", opt.privacyMaskExcludedRoleIds));
+        kvs.push_back(make("privacyMaskRegions",          opt.privacyMaskRegions));
+
         // ── stream urls (synced so peers know where to pull) ──────────────
         Json::Value streamUrls = Json::objectValue;
         streamUrls[std::to_string(PrimaryStream)]   = makeStreamTupleJson(stats.stream_map, PrimaryStream);
         streamUrls[std::to_string(SecondaryStream)] = makeStreamTupleJson(stats.stream_map, SecondaryStream);
         kvs.push_back(make("streamUrls", StrJsonUtils::writeJsonString(streamUrls)));
-
-        // ── stream statistic (synced so peers know where to pull) ──────────────
-        Json::Value mediaStreams = Json::objectValue;
-        mediaStreams[std::to_string(PrimaryStream)]   = makeStreamStatisticJson(stats.sinfo_map, PrimaryStream);
-        mediaStreams[std::to_string(SecondaryStream)] = makeStreamStatisticJson(stats.sinfo_map, SecondaryStream);
-        kvs.push_back(make("mediaStreams", StrJsonUtils::writeJsonString(mediaStreams)));
-
-        kvs.push_back(make("transportStats", StrJsonUtils::writeJsonString(makeTransportStatsJson(stats.transport_stats))));
-
-        // ── storage info (synced so peers know where to pull) ──────────────
-        Json::Value storage_info = Json::objectValue;
-        auto bm_json = makeBookmarkStatsJson(stats.bm);
-        storage_info["bookmarkStats"] = bm_json;
-
-        auto motion_json = makeMotionStorageStatsJson(stats.motion_stats);
-        storage_info["motionStats"] = motion_json;
-
-        Json::Value stream_storage_json = Json::arrayValue;
-        auto it_primary = stats.stream_map.find(PrimaryStream);
-        if (it_primary != stats.stream_map.end()) {
-            Json::Value stream_json = Json::objectValue;
-            auto stream_id = it_primary->second.stream_id;
-            stream_json["key"] = stream_id;
-            stream_json["value"] = Json::objectValue;
-            if (stats.storage_map.find(stream_id) != stats.storage_map.end()) {
-                stream_json["value"] = makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, PrimaryStream);
-            }
-            stream_storage_json.append(stream_json);
-        }
-
-        auto it_secondary = stats.stream_map.find(SecondaryStream);
-        if (it_secondary != stats.stream_map.end()) {
-            Json::Value stream_json = Json::objectValue;
-            auto stream_id = it_secondary->second.stream_id;
-            stream_json["key"] = stream_id;
-            stream_json["value"] = Json::objectValue;
-            if (stats.storage_map.find(stream_id) != stats.storage_map.end()) {
-                stream_json["value"] = makeStreamStorageStatsJson(stats.storage_map, stats.stream_map, SecondaryStream);
-            }
-            stream_storage_json.append(stream_json);
-        }
-        storage_info["streamStorageInfos"] = stream_storage_json;
-        storage_info["lastUpdateTimeMs"] = (Json::UInt64)(stats.updated_at * 1000);
-
-        kvs.push_back(make("storageInfos", StrJsonUtils::writeJsonString(storage_info)));
 
         return kvs;
     }
@@ -1277,7 +1271,7 @@ struct ResourceAdapter<CameraStatistic> {
             return props;
         };
         // add if needed, currently no local property for camera statistic
-        props.push_back(make("recordRootPath", stats.option.recordRootPath));
+        // props.push_back(make("recordRootPath", stats.option.recordRootPath));
         return props;
     }
 
@@ -1369,29 +1363,35 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.motionPreRecordSec = std::stoi(kv.value);
                 } else if (kv.name == "motionPostRecordSec") {
                     stats.option.motionPostRecordSec = std::stoi(kv.value);
+                } else if (kv.name == "sdCardSyncEnabled") {
+                    stats.option.sdCardSyncEnabled = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "sdCardSyncAutoSyncEnabled") {
+                    stats.option.sdCardSyncAutoSyncEnabled = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "sdCardSyncMinSegmentGapSec") {
+                    stats.option.sdCardSyncMinSegmentGapSec = std::stoi(kv.value);
+                } else if (kv.name == "sdCardSyncRetryCount") {
+                    stats.option.sdCardSyncRetryCount = std::stoi(kv.value);
+                } else if (kv.name == "enforceWatermarkOnView") {
+                    stats.option.enforceWatermarkOnView = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "watermarkExcludedRoleIds") {
+                    stats.option.watermarkExcludedRoleIds = kv.value;
+                } else if (kv.name == "watermarkTemplate") {
+                    stats.option.watermarkTemplate = kv.value;
+                } else if (kv.name == "enforcePrivacyMaskOnView") {
+                    stats.option.enforcePrivacyMaskOnView = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "privacyMaskExcludedRoleIds") {
+                    stats.option.privacyMaskExcludedRoleIds = kv.value;
+                } else if (kv.name == "privacyMaskRegions") {
+                    stats.option.privacyMaskRegions = kv.value;
                 } else if (kv.name == "streamUrls") {
                     Json::Value streamUrls_json;
                     StrJsonUtils::readJsonString(kv.value, streamUrls_json);
-                    stats.stream_map[PrimaryStream]   = getStreamTuple(streamUrls_json[std::to_string(PrimaryStream)],   stats.tuple, PrimaryStream);
-                    stats.stream_map[SecondaryStream] = getStreamTuple(streamUrls_json[std::to_string(SecondaryStream)], stats.tuple, SecondaryStream);
-                } else if (kv.name == "mediaStreams") {
-                    Json::Value mediaStreams_json;
-                    StrJsonUtils::readJsonString(kv.value, mediaStreams_json);
-                    stats.sinfo_map[PrimaryStream]   = getStreamStatistic(mediaStreams_json[std::to_string(PrimaryStream)]);
-                    stats.sinfo_map[SecondaryStream] = getStreamStatistic(mediaStreams_json[std::to_string(SecondaryStream)]);
-                } else if (kv.name == "transportStats") {
-                    Json::Value transport_stats_json;
-                    StrJsonUtils::readJsonString(kv.value, transport_stats_json);
-                    stats.transport_stats = getTransportStats(transport_stats_json);
-                } else if (kv.name == "storageInfos") {
-                    Json::Value storage_info_json;
-                    StrJsonUtils::readJsonString(kv.value, storage_info_json);
-                    stats.bm = getBookmarkStats(storage_info_json["bookmarkStats"]);
-                    stats.motion_stats = getMotionStorageStats(storage_info_json["motionStats"]);
-                    for (const auto &stream_storage_json : storage_info_json["streamStorageInfos"]) {
-                        auto stream_id = stream_storage_json["key"].asString();
-                        auto storage_stats = getStreamStorageStats(stream_storage_json["value"]);
-                        stats.storage_map[stream_id] = storage_stats;
+                    const int stream_types[] = {PrimaryStream, SecondaryStream};
+                    for (int type : stream_types) {
+                        auto stream = getStreamTuple(streamUrls_json[std::to_string(type)], stats.tuple, type);
+                        if (!stream.empty()) {
+                            stats.stream_map[type] = stream;
+                        }
                     }
                 }
             } catch (const std::exception &e) {
@@ -1401,9 +1401,9 @@ struct ResourceAdapter<CameraStatistic> {
         
         for (const auto &prop : props) {
             try {
-                if (prop.property_name == "recordRootPath") {
-                    stats.option.recordRootPath = prop.property_value;
-                }
+                // if (prop.property_name == "recordRootPath") {
+                //     stats.option.recordRootPath = prop.property_value;
+                // }
             } catch (const std::exception &e) {
                 WarnL << "Failed to parse local property '" << prop.property_name << "' = '" << prop.property_value << "': " << e.what();
             }
@@ -1418,38 +1418,52 @@ struct ResourceAdapter<CameraStatistic> {
     }
 };
 
-bool CameraStatisticImp::syncToEsc() {
-    if (!_sync_mode) {
-        // Only sync to ESC when recording is enabled or failover is enabled, to reduce unnecessary sync and resource assignment when camera is inactive.
-        return false;
-    }
-    auto sync_time = time(nullptr);
-    if (sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
-        TraceL << "Sync to ESC skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
-        return false;
-    }
-
-    try {
-        auto params = static_cast<const CameraStatistic &>(*this);
-        ResourceManager::Instance().addResource<CameraStatistic>(params, true);
-        _last_sync_time = time(nullptr);
-        TraceL << "Sync to ESC for camera " << params.tuple.shortUrl() << " at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
-        return true;
-    } catch (const std::exception &e) {
-        ErrorL << "Failed to sync camera resource to ESC for camera " << tuple.shortUrl() << ": " << e.what();
-        return false;
-    }
+void CameraStatisticImp::postEscTask(const std::function<void()> &task) {
+    // may_sync=false: never run inline, callers hold _mtx.
+    _esc_poller->async(task, false);
 }
 
-bool CameraStatisticImp::removeFromEsc() {
-    try {
-        ResourceManager::Instance().removeResource(tuple.device_id);
-        TraceL << "Removed camera resource from ESC for camera " << tuple.shortUrl();
-        return true;
-    } catch (const std::exception &e) {
-        ErrorL << "Failed to remove camera resource from ESC for camera " << tuple.shortUrl() << ": " << e.what();
+bool CameraStatisticImp::syncToEsc(bool force) {
+    if (!_sync_mode || _esc_removed || !_esc_dirty) {
         return false;
     }
+    auto sync_time = static_cast<uint64_t>(time(nullptr));
+    if (!force && sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
+        TraceL << "Sync to ESC retry skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+        return false;
+    }
+    _last_sync_time = sync_time;
+    _esc_dirty = false;
+
+    CameraStatistic params = static_cast<const CameraStatistic &>(*this);
+    std::weak_ptr<CameraStatisticImp> weak_self = shared_from_this();
+    postEscTask([weak_self, params]() {
+        try {
+            ResourceManager::Instance().addResource<CameraStatistic>(params, true);
+            TraceL << "Sync to ESC for camera " << params.tuple.shortUrl();
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to sync camera resource to ESC for camera " << params.tuple.shortUrl() << ": " << e.what();
+            auto self = weak_self.lock();
+            if (self) {
+                std::lock_guard<std::mutex> lck(self->_mtx);
+                self->_esc_dirty = true; // retried by the next save()
+            }
+        }
+    });
+    return true;
+}
+
+void CameraStatisticImp::removeFromEsc() {
+    auto device_id = tuple.device_id;
+    auto device_url = tuple.shortUrl();
+    postEscTask([device_id, device_url]() {
+        try {
+            ResourceManager::Instance().removeResource(device_id);
+            TraceL << "Removed camera resource from ESC for camera " << device_url;
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to remove camera resource from ESC for camera " << device_url << ": " << e.what();
+        }
+    });
 }
 
 bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
@@ -1469,55 +1483,86 @@ bool CameraStatisticImp::syncFromEsc(string &guid, CameraStatistic &stats) {
 }
 
 void CameraStatisticImp::assignResource(bool regist) {
-    if (!_sync_mode) {
+    if (!_sync_mode || _esc_removed) {
         DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
         return;
     }
     DebugL << (regist ? "Assigning" : "Releasing") << " resource for camera " << tuple.shortUrl();
-    try {
-        auto node_id = ResourceManager::Instance().getSelfNodeId();
-        if (regist) {
-            auto db_guid = ResourceManager::Instance().getSelfDbGuid();
-            auto assign_type = (option.enableFailover && option.preferedMediaServer != node_id) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
-            ResourceManager::Instance().assignResource(tuple.device_id, node_id, db_guid, assign_type);
-        } else {
-            ResourceManager::Instance().releaseResource(tuple.device_id, node_id);
+    auto device_id = tuple.device_id;
+    auto device_url = tuple.shortUrl();
+    bool enable_failover = option.enableFailover;
+    auto prefered_server = option.preferedMediaServer;
+    postEscTask([device_id, device_url, regist, enable_failover, prefered_server]() {
+        try {
+            auto node_id = ResourceManager::Instance().getSelfNodeId();
+            if (regist) {
+                auto db_guid = ResourceManager::Instance().getSelfDbGuid();
+                auto assign_type = (enable_failover && prefered_server != node_id) ? ResourceAssignType::FAILOVER : ResourceAssignType::PRIMARY;
+                ResourceManager::Instance().assignResource(device_id, node_id, db_guid, assign_type);
+            } else {
+                ResourceManager::Instance().releaseResource(device_id, node_id);
+            }
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to " << (regist ? "assign" : "release") << " resource for camera " << device_url << ": " << e.what();
         }
-    } catch (const std::exception &e) {
-        ErrorL << "Failed to " << (regist ? "assign" : "release") << " resource for camera " << tuple.shortUrl() << ": " << e.what();
-    }
+    });
 }
 
 void CameraStatisticImp::syncResourceStatus() {
-    if (!_sync_mode) {
-        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource assignment";
+    if (!_sync_mode || _esc_removed) {
+        DebugL << "Sync mode is disabled for camera " << tuple.shortUrl() << ". Skip resource status sync";
         return;
     }
-    try {
-        ResourceStatus state = ResourceStatus::OFFLINE;
-        for (const auto &sinfo_pair : sinfo_map) {
-            const auto &sinfo = sinfo_pair.second;
-            if (sinfo.live) {
-                state = ResourceStatus::ONLINE;
-                break;
-            }
-            if (sinfo.status.find("Unauthorized") != string::npos) {
-                state = ResourceStatus::UNAUTHORIZED;
-            } else {
-                state = ResourceStatus::OFFLINE;
-            }
+    // Priority: ONLINE (any stream live) > UNAUTHORIZED (any stream rejected credentials) > OFFLINE,
+    // independent of unordered_map iteration order, so the replicated status does not flap.
+    ResourceStatus state = ResourceStatus::OFFLINE;
+    for (const auto &sinfo_pair : sinfo_map) {
+        const auto &sinfo = sinfo_pair.second;
+        if (sinfo.live) {
+            state = ResourceStatus::ONLINE;
+            break;
         }
-        DebugL << "Sync resource status for camera " << tuple.shortUrl() << " as " << (state == ResourceStatus::ONLINE ? "ONLINE" : (state == ResourceStatus::UNAUTHORIZED ? "UNAUTHORIZED" : "OFFLINE"));
-        ResourceManager::Instance().setResourceStatus(tuple.device_id, state);
-    } catch (const std::exception &e) {
-        ErrorL << "Failed to sync resource status for camera " << tuple.shortUrl() << ": " << e.what();
+        if (sinfo.status.find("Unauthorized") != string::npos) {
+            state = ResourceStatus::UNAUTHORIZED;
+        }
     }
+    DebugL << "Sync resource status for camera " << tuple.shortUrl() << " as " << (state == ResourceStatus::ONLINE ? "ONLINE" : (state == ResourceStatus::UNAUTHORIZED ? "UNAUTHORIZED" : "OFFLINE"));
+    auto device_id = tuple.device_id;
+    auto device_url = tuple.shortUrl();
+    postEscTask([device_id, device_url, state]() {
+        try {
+            ResourceManager::Instance().setResourceStatus(device_id, state);
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to sync resource status for camera " << device_url << ": " << e.what();
+        }
+    });
 }
 
 void CameraStatisticImp::setSyncMode(bool enable) {
     std::lock_guard<std::mutex> lck(_mtx);
+    const bool was_enabled = _sync_mode;
     _sync_mode = enable;
     DebugL << "Set sync mode for camera " << tuple.shortUrl() << " to " << (_sync_mode ? "enabled" : "disabled");
+    if (enable && !was_enabled && !_esc_removed && option.enableActive) {
+        // This node runs the camera. The option may already be in place (loaded from info.txt at
+        // startup, and the camera skips setCameraOption when the option is unchanged), so publish
+        // ownership, config and status now. An inactive local option is not published: the camera
+        // is either coming back (setCameraOption follows) or owned elsewhere.
+        assignResource(true);
+        markEscConfigChanged();
+        syncResourceStatus();
+    }
+}
+
+void CameraStatisticImp::detachFromCluster() {
+    std::lock_guard<std::mutex> lck(_mtx);
+    if (_sync_mode) {
+        // Release ownership only. The camera config in ESC belongs to the node that takes the camera
+        // over; publishing this node's local "inactive" option would overwrite it.
+        assignResource(false);
+    }
+    _sync_mode = false;
+    DebugL << "Camera " << tuple.shortUrl() << " detached from cluster";
 }
 
 void CameraStatisticImp::saveStreamStatusHistory(const std::string &stream_id, const std::string &stream_url,
@@ -1526,26 +1571,35 @@ void CameraStatisticImp::saveStreamStatusHistory(const std::string &stream_id, c
         WarnL << "Cannot save local status history for an empty stream id";
         return;
     }
-    const bool saved = connect
-        ? ResourceStatusManager::Instance().onReconnected(stream_id, time(nullptr))
-        : ResourceStatusManager::Instance().onDisconnected(stream_id, reason, time(nullptr));
-    if (saved) {
-        DebugL << "Saved local resource status for stream " << stream_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
-    } else {
-        WarnL << "Failed to save local resource status for stream " << stream_url;
-    }
+    // SQLite write: runs on the camera's ESC queue (ordered with its other ESC writes), not on the
+    // camera poller. The event time is taken now so the gap boundaries stay exact.
+    const uint64_t event_time = time(nullptr);
+    postEscTask([stream_id, stream_url, connect, reason, event_time]() {
+        const bool saved = connect
+            ? ResourceStatusManager::Instance().onReconnected(stream_id, event_time)
+            : ResourceStatusManager::Instance().onDisconnected(stream_id, reason, event_time);
+        if (saved) {
+            DebugL << "Saved local resource status for stream " << stream_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+        } else {
+            WarnL << "Failed to save local resource status for stream " << stream_url;
+        }
+    });
 }
 
 void CameraStatisticImp::saveDeviceStatusHistory(const std::string &device_id, const std::string &device_url,
                                                  bool connect, const std::string &reason) {
-    const bool saved = connect
-        ? ResourceStatusManager::Instance().onReconnected(device_id, time(nullptr))
-        : ResourceStatusManager::Instance().onDisconnected(device_id, reason, time(nullptr));
-    if (saved) {
-        DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
-    } else {
-        WarnL << "Failed to save local resource status for camera " << device_url;
-    }
+    // Same as saveStreamStatusHistory: ESC queue, event time taken now.
+    const uint64_t event_time = time(nullptr);
+    postEscTask([device_id, device_url, connect, reason, event_time]() {
+        const bool saved = connect
+            ? ResourceStatusManager::Instance().onReconnected(device_id, event_time)
+            : ResourceStatusManager::Instance().onDisconnected(device_id, reason, event_time);
+        if (saved) {
+            DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
+        } else {
+            WarnL << "Failed to save local resource status for camera " << device_url;
+        }
+    });
 }
 
 } // namespace managerkit

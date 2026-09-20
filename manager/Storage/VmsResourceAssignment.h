@@ -107,6 +107,7 @@ public:
             if (!existing.empty()) {
                 updateById(assign);
             } else {
+                if (isStaleActiveAssignment(assign)) return;
                 save(assign, true);
             }
         }
@@ -137,10 +138,13 @@ public:
             assign.assignment_guid = toolkit::makeUuidStr();
             saveWithTxn(assign, txn, true);
         } else {
-            auto existing = findById(assign);
+            // Reads must go through txn: the same assignment_guid can be inserted and
+            // then updated (released) within one sync batch.
+            auto existing = findByIdWithTxn(assign, txn);
             if (!existing.empty()) {
                 updateByIdWithTxn(assign, txn);
             } else {
+                if (isStaleActiveAssignmentWithTxn(assign, txn)) return;
                 saveWithTxn(assign, txn, true);
             }
         }
@@ -223,6 +227,27 @@ public:
     }
 
 private:
+    // Check if the incoming assignment is stale compared to the current active assignment.
+    bool isStaleActiveAssignment(const VmsResourceAssignment &incoming) {
+        if (incoming.released_at != 0) return false;
+        auto current = findCurrentAssignment(incoming.resource_guid);
+        if (current.empty()) return false;
+        return incoming.assigned_at <= current[0].assigned_at;
+    }
+
+    bool isStaleActiveAssignmentWithTxn(const VmsResourceAssignment &incoming, toolkit::SqliteTransaction::Ptr txn) {
+        if (incoming.released_at != 0) return false;
+        auto query = toolkit::QueryBuilder()
+                            .select(EntityTraits<VmsResourceAssignment>::getColumns())
+                            .from(EntityTraits<VmsResourceAssignment>::tableName())
+                            .where("resource_guid = ? AND released_at = 0", {incoming.resource_guid})
+                            .orderBy("assigned_at DESC")
+                            .limit(1);
+        auto rows = executeRawWithTxn(txn, query);
+        if (rows.empty()) return false;
+        return incoming.assigned_at <= EntityTraits<VmsResourceAssignment>::fromRow(rows[0]).assigned_at;
+    }
+
     TransactionLogImp::Ptr _log_impl;
 
 public:

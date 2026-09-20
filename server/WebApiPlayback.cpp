@@ -1,3 +1,4 @@
+#include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 #include "Util/logger.h"
@@ -26,7 +27,9 @@ void registerPlaybackApis() {
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE);
         CHECK_ARGS_("cameraId", "startTime", "endTime", "periodType", "detail");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string camera_id = allArgs["cameraId"];
             uint64_t start_time = allArgs["startTime"];
             uint64_t end_time = allArgs["endTime"];
@@ -46,14 +49,20 @@ void registerPlaybackApis() {
             }
 
             MediaTuple tuple = { DEFAULT_VHOST, camera_id, "", "" };
-            SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, include_status, jwt_token, edge, [val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
-                if (ex) {
-                    RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                } else {
-                    val["data"] = data;
-                    InfoL << "Get recorded time period success";
-                    invoker(200, headerOut, val.toStyledString());
-                }
+            // Assignments, timefiles and status gaps are read on the API worker; remote peers answer
+            // later; the response is sent from the request poller.
+            runApiCallbackWork(owner, session, invoker, [=](const ApiReply &reply) mutable {
+                SearchEngine::findTimePeriod(tuple, start_time, end_time, period_type, detail, include_motion, include_status, jwt_token, edge, [reply, val, invoker, headerOut](const SockException &ex, const Value &data) mutable {
+                    reply([ex, data, val, invoker, headerOut]() mutable {
+                        if (ex) {
+                            RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                        } else {
+                            val["data"] = data;
+                            InfoL << "Get recorded time period success";
+                            invoker(200, headerOut, val.toStyledString());
+                        }
+                    });
+                });
             });
         };
 

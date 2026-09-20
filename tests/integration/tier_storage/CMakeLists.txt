@@ -54,6 +54,10 @@ foreach(manager_case
     MapsAppDirectoryBindMountToLogicalPoolRoot
     RegistersHotSegmentIdempotently
     RunsCycleAndMovesHotSegmentToNas
+    MovesOnlyStartOwnedSegmentsAcrossOverlappingBoundary
+    ReusesExistingNasTargetWhenSourceIsMissing
+    BacksOffMissingSegmentJob
+    DropsMissingSegmentAfterMaxAttempts
     RunsCycleAndMovesHotSegmentToMinio
     RestoresSegmentFromMinio
     ReusesActiveRestoreForDuplicateRequest
@@ -62,6 +66,16 @@ foreach(manager_case
     ReusesEquivalentRestoreWindowJobsAndExtendsTtl
     MarksExpiredAndDeletesAfterApproval
     ProtectsRetentionUntilGuardsExpire
+    DefersDeletionWhileTransferIsActive
+    KeepsWorkPendingWhenTimefileIsUnreadable
+    PressureDeletesOldestAcrossPoolAndStopsAtTarget
+    AgeRetentionSkipsBlockedRangesAndSplitsAtCutoff
+    PressureDeletionSplitsAroundProtectedVideo
+    AgeRetentionSplitsAroundProtectedVideo
+    ReconcilesRangesWhoseFilesAreMissing
+    BackfillSkipsBlocksWithoutFiles
+    RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks
+    AlignsMoveThresholdToSplitGranularity
     EnforcesRestoreConcurrencyLimit
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot
@@ -73,13 +87,31 @@ foreach(manager_case
     CleansOnlyExpiredJobScopedRestoreCache
     TracksPoolHealthAndBlocksPlaybackWhenOffline
     DefersTierMoveUntilDestinationPoolRecovers
+    SkipsMoveWhenDestinationPoolIsCritical
+    DeletesObjectRangeInOneBatchRequest
+    ListsObjectsAndProvesAbsenceOnlyOn404
+    ReconcilesRangesWhoseObjectsAreMissing
+    ObjectReconcileKeepsRangesOnListFailureAndInReportMode
+    ObjectReconcileMassLossGuardPausesPool
+    RestoreOfMissingObjectPrioritizesReconcile
+    ReportsOrphanObjectsWithoutDeleting
+    AlertsWhenObjectBucketVersioningIsEnabled
+    QuotaCapacityFollowsStoredRangeBytes
+    PressureDeletesOldestOnCriticalColdNasPool
+    PressureDeletesOnCriticalQuotaObjectPool
+    ObjectPressureWaitsForLaggingMetrics
+    BalancedPressureDeletesProportionally
+    BalancedPressureDeletesOrphanCamerasFirst
+    BalancedPressureRespectsMinRetention
+    BalancedPressureMovesProportionally
     CancelsPendingJobAfterPolicyReassignment
     CancelsPendingJobAfterRetentionIncrease
     GuardsRangeAndOrphanDeletionUntilPoolRecovers
     BackfillsAtomicallyAndIdempotently
     BackfillsAcrossLocalMidnightIntoSeparateRanges
     BoundsAndCompactsTierMetadata
-    RetriesOrphanChunkWithoutAdvancingCursor
+    SkipsOrphanBlockAndAdvancesCursor
+    BackfillShapesRangesAroundExistingOnes
     CompletesEmptyBackfillWhenCameraHasNoTimeFile
     RecoversRunningWorkAcrossFreshProcesses
     DeletesStableStaleTemporaryMp4FromHotPools

@@ -5,11 +5,16 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
+#include <functional>
 #include <string>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include "Poller/EventPoller.h"
 #include "Poller/Timer.h"
 #include "Util/TimeTicker.h"
@@ -106,6 +111,9 @@ public:
 
     void start();
     void stop();
+    // Process exit: stop() and shut the object storage SDK down. Called explicitly on shutdown
+    // (also after a failed startup) so none of it runs during static destruction.
+    void shutdown();
 
     // ------------------------------------------------------------------
     // Section 1 — Storage Pool APIs
@@ -358,6 +366,160 @@ private:
     void enforcePolicyDeleteRetention(const std::string &camera_id,
                                       const StoragePolicy &policy);
 
+    // Old pieces (split at `cutoff`) of a camera's AVAILABLE ranges that are
+    // due for age-based retention, oldest first and bounded per cycle.
+    std::vector<SegmentTierRange> collectAgeRetentionPieces(const std::string &camera_id,
+                                                            int64_t cutoff,
+                                                            const std::string &exclude_pool_id);
+
+    // Splits `range` so segments touching protected videos stay in their own
+    // pieces, and returns the pieces that may be deleted (all of `range` when
+    // nothing is protected). Returns false when the range could not be read
+    // or changed concurrently.
+    bool carveDeletablePieces(const SegmentTierRange &range,
+                              std::vector<SegmentTierRange> &out);
+
+    // True when a filesystem pool passes the health gate and its data root
+    // exists, so an absent segment file can be trusted as really missing.
+    bool isFilePoolVerifiablyReadable(const StoragePool &pool) const;
+
+    // Drops segments older than `verify_before` whose MP4 is missing from the
+    // range's filesystem pool: removes their TimeBlocks and shrinks/splits the
+    // range (MISSING when nothing is left). Returns false if it could not check.
+    bool reconcileRangeFiles(const SegmentTierRange &range, int64_t verify_before);
+
+    // Time-budgeted, newest-first sweep of AVAILABLE ranges calling
+    // reconcileRangeFiles(); resumes from an in-memory cursor each cycle.
+    void runRangeFileReconcile();
+
+    // Removes `missing` segments (kind 0 in `kinds`) from `range`: shrinks or
+    // splits it, or marks it MISSING when nothing is left, then drops their
+    // TimeBlocks and raises TIER_SEGMENT_MISSING. False if the range changed.
+    bool dropMissingSegments(const SegmentTierRange &range,
+                             const std::vector<TierRangeSegmentFile> &segments,
+                             const std::vector<int> &kinds,
+                             const std::vector<TierRangeSegmentFile> &missing,
+                             const std::string &missing_from);
+
+    // Object-storage counterpart of reconcileRangeFiles(): compares a range's
+    // segments with ListObjectsV2 of its day prefix(es); a key absent from
+    // the listing is missing only when HeadObject answers 404.
+    enum class ObjectRangeCheck {
+        SKIPPED,        // timefile unreadable; nothing to judge
+        ERROR,          // listing/HEAD failed; retry later
+        CONSISTENT,
+        PARTIAL,        // some objects missing, at least one present
+        ALL_MISSING
+    };
+    struct ObjectRangeFinding {
+        SegmentTierRange range;
+        std::vector<TierRangeSegmentFile> segments;
+        std::vector<int> kinds;                    // 1 present (or too recent), 0 missing
+        std::vector<TierRangeSegmentFile> missing;
+        std::string first_missing_key;
+    };
+    // Per object pool sweep state; maintenance-cycle only.
+    struct ObjectReconcilePoolState {
+        std::string fingerprint;                   // endpoint|bucket|base_path
+        int64_t cursor_end = std::numeric_limits<int64_t>::max();
+        std::string cursor_id;
+        bool seen_present = false;                 // current sweep saw a present object
+        // Ranges with no object at all wait here until the pool proves it is
+        // sane (a present object); N of them in a row trip the mass-loss guard.
+        std::vector<ObjectRangeFinding> pending_all_missing;
+        int64_t paused_until = 0;
+        // Orphan-object report: prefixes left to visit with their depth
+        // below base_path (0 lists cameras, 3 is a day of one stream).
+        std::deque<std::pair<std::string, int>> orphan_queue;
+        bool orphan_active = false;
+        int64_t orphan_next_sweep = 0;
+        int64_t orphan_objects = 0;
+        int64_t orphan_bytes = 0;
+        std::string orphan_first;
+    };
+    ObjectRangeCheck checkObjectRange(const StoragePool &pool,
+                                      const SegmentTierRange &range,
+                                      int64_t verify_before,
+                                      ObjectRangeFinding &out);
+    ObjectRangeCheck reconcileObjectRange(const StoragePool &pool,
+                                          ObjectReconcilePoolState &state,
+                                          const SegmentTierRange &range,
+                                          int64_t verify_before);
+    void applyObjectFinding(const StoragePool &pool, const ObjectRangeFinding &finding);
+    void flushPendingObjectFindings(const StoragePool &pool, ObjectReconcilePoolState &state);
+    void tripObjectMassLossGuard(const StoragePool &pool, ObjectReconcilePoolState &state);
+    // Priority ranges (see requestObjectRangeReconcile), then a time-budgeted,
+    // newest-first sweep of each object pool's AVAILABLE ranges.
+    void runObjectRangeReconcile();
+    // Report-only sweep of camera/stream/day prefixes for objects that no
+    // AVAILABLE/RESTORING/EXPIRED range of the pool owns; raises
+    // POOL_ORPHAN_OBJECTS once per completed sweep and never deletes.
+    void runObjectOrphanSweep(const StoragePool &pool,
+                              ObjectReconcilePoolState &state,
+                              const std::function<bool()> &exhausted);
+    // False when listing failed; the day is then retried next cycle.
+    bool scanOrphanDayPrefix(const StoragePool &pool,
+                             const std::string &prefix,
+                             const std::string &camera_id,
+                             const std::string &stream_id,
+                             const std::string &day,
+                             ObjectReconcilePoolState &state);
+    // Queues a range for object reconciliation at the start of the next
+    // maintenance cycle, ahead of the sweep; any thread.
+    void requestObjectRangeReconcile(const std::string &range_id);
+
+    // Pressure deletion on every pool (HOT/WARM/COLD, filesystem or object
+    // storage) above its critical watermark; stops once usage would drop
+    // below (high - 5)%. Picks data per storage.tiering_pressure_delete_mode
+    // (BALANCED or OLDEST). METRICS-mode object pools cool down between runs.
+    void enforcePoolPressureRetention();
+
+    // One camera's deletable window on a pool for balanced pressure deletion:
+    // [lo, hi) where hi excludes the camera's keepArchivedMinFor.
+    struct PressureCameraWindow {
+        std::string camera_id;
+        int64_t lo = 0;
+        int64_t hi = 0;
+    };
+
+    // BALANCED pressure deletion: finds the largest keep percent kp (1%
+    // steps) whose per-camera cutoffs hi - (hi - lo) * kp / 100 free `need`
+    // bytes, then deletes up to those cutoffs round-robin across cameras.
+    // Cameras without a recorder are reclaimed before the others.
+    void reclaimPoolBalanced(const StoragePool &pool,
+                             int64_t now,
+                             int max_pieces,
+                             int64_t &need,
+                             int &deleted_count,
+                             int64_t &deleted_bytes);
+
+    static int64_t balancedCutoff(const PressureCameraWindow &window, int keep_percent);
+
+    // Largest keep percent (0..99, 1% steps) whose per-camera cutoffs cover
+    // `need` bytes of deletable (or, with `for_move`, movable) ranges on
+    // `pool`; 0 when nothing covers it. `out_estimated` gets the bytes covered.
+    int findBalancedKeepPercent(const StoragePool &pool,
+                                const std::vector<PressureCameraWindow> &cameras,
+                                int64_t now,
+                                int64_t need,
+                                bool for_move,
+                                int64_t &out_estimated);
+
+    // BALANCED early moves: for every pool above its high watermark, picks one
+    // keep percent across the cameras whose policy moves data out of it early
+    // and stores each camera's move cutoff for processCameraPressureTiering().
+    void planBalancedPressureMoves(
+        const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
+
+    // Returns the number of candidate ranges it examined.
+    int reclaimCamerasBalanced(const StoragePool &pool,
+                               const std::vector<PressureCameraWindow> &cameras,
+                               int64_t now,
+                               int max_pieces,
+                               int64_t &need,
+                               int &deleted_count,
+                               int64_t &deleted_bytes);
+
     void ensureDefaultHotPool();
 
     void ensureSystemDefaultPolicy();
@@ -367,6 +529,21 @@ private:
                           const PolicyTierConfig &dst_tier_cfg,
                           const StoragePolicy &policy,
                           TieringJobTrigger trigger);
+
+    struct DestinationPoolCheck {
+        bool critical = false;
+        bool has_capacity = false;
+        float usage_pct = 0.0f;
+    };
+
+    // True when the destination pool is at or above its critical watermark.
+    // Probes each pool at most once per maintenance cycle and raises a
+    // rate-limited TIER_DEST_POOL_CRITICAL alert. Unknown capacity is not critical.
+    bool isDestinationPoolCritical(const std::string &pool_id);
+
+    // Same per-cycle probe; `has_capacity` is false when the pool is unknown,
+    // disabled or reports no capacity (e.g. offline).
+    DestinationPoolCheck destinationPoolCheck(const std::string &pool_id);
 
     enum class PendingJobPolicyDecision {
         VALID,
@@ -400,10 +577,19 @@ private:
 
     bool cleanupRangeBookmarkMetadata(const SegmentTierRange &range);
 
+    // Lists the segments a range owns. Returns false (with `error`) when the
+    // timefile cannot be read completely; callers that change data must stop.
+    bool collectSegmentFilesForRange(const SegmentTierRange &range,
+                                     std::vector<TierRangeSegmentFile> &out,
+                                     std::string &error);
+
+    // Read-only convenience wrapper; yields an empty list on read errors.
     std::vector<TierRangeSegmentFile> collectSegmentFilesForRange(const SegmentTierRange &range);
 
-    std::vector<TierRangeSegmentFile> collectSegmentFilesForJob(const TieringJob &job,
-                                                                SegmentTierRange &out_range);
+    bool collectSegmentFilesForJob(const TieringJob &job,
+                                   SegmentTierRange &out_range,
+                                   std::vector<TierRangeSegmentFile> &out,
+                                   std::string &error);
 
     void executePendingJob(TieringJob &job);
 
@@ -415,7 +601,26 @@ private:
                                const StoragePool &dst_pool);
 
     bool executeObjectStorageUpload(TieringJob &job,
+                                     const StoragePool &src_pool,
                                      const StoragePool &dst_pool);
+
+    // True once a range has exhausted its missing-segment retries and the
+    // source pool is verifiably reachable, so absent files are real losses.
+    bool canDropMissingSegments(const TieringJob &job,
+                                const StoragePool &src_pool) const;
+
+    // Applies a finished transfer to the range snapshot. Segments flagged in
+    // `missing` are dropped from the range stats and from the timeline.
+    bool commitTierTransfer(TieringJob &job,
+                            const SegmentTierRange &range,
+                            const std::vector<TierRangeSegmentFile> &segments,
+                            const std::vector<char> &missing,
+                            const std::string &target_tier,
+                            const std::string &target_pool_id);
+
+    void reportMissingSegments(const SegmentTierRange &range,
+                               const std::vector<TierRangeSegmentFile> &missing,
+                               const std::string &missing_from = "source and target");
 
     void executeRestoreSegment(const RestoreJobSegment &segment);
 
@@ -484,6 +689,10 @@ private:
         std::condition_variable completed;
         int active_total = 0;
         std::unordered_map<std::string, int> active_by_pool;
+        // Transfer callbacks not yet finished. Unlike active_total it drops only
+        // after the callback released the manager, so stop() never returns while
+        // a work poller could still destroy the manager.
+        int callbacks_in_flight = 0;
     };
 
     struct TemporaryMp4Observation {
@@ -526,6 +735,38 @@ private:
     std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
+    // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.
+    int64_t _reconcile_cursor_start = std::numeric_limits<int64_t>::max();
+    std::string _reconcile_cursor_id;
+    std::unordered_map<std::string, ObjectReconcilePoolState> _object_reconcile;
+    // Ranges whose restore found the object gone (HTTP 404); any thread.
+    std::mutex _object_reconcile_priority_mtx;
+    std::set<std::string> _object_reconcile_priority;
+    size_t _object_reconcile_next_pool = 0;
+    // Ranges already reported (REPORT mode, size mismatch); maintenance-cycle only.
+    std::unordered_set<std::string> _object_reconcile_reported;
+    // Last POOL_CRITICAL_NO_DELETABLE alert per pool; maintenance-cycle only.
+    std::unordered_map<std::string, int64_t> _pressure_alerted_at;
+    // Earliest next pressure deletion per METRICS-mode object pool; maintenance-cycle only.
+    std::unordered_map<std::string, int64_t> _pressure_cooldown_until;
+    // BALANCED early-move cutoffs of this cycle: source pool -> camera ->
+    // move ranges starting before it; maintenance-cycle only.
+    std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> _pressure_move_cutoffs;
+    // Destination capacity probed during the current maintenance cycle and the
+    // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
+    std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
+    std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
+    // Bucket versioning per object pool; touched by API, health and maintenance threads.
+    struct PoolVersioningState {
+        int64_t checked_at = 0;
+        int64_t alerted_at = 0;
+        std::string status;
+    };
+    mutable std::mutex _pool_versioning_mtx;
+    std::unordered_map<std::string, PoolVersioningState> _pool_versioning;
+    // QUOTA-mode usage per pool: {computed_at, bytes}; any thread.
+    mutable std::mutex _quota_usage_mtx;
+    std::unordered_map<std::string, std::pair<int64_t, int64_t>> _quota_usage;
     size_t _temporary_mp4_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)
@@ -553,6 +794,15 @@ private:
     const TierFileStorageBase *fileStorageForPoolType(const std::string &type) const;
 
     bool probePoolRuntimeStats(StoragePool &pool, std::string &out_message);
+
+    // Reads the bucket versioning state of an object pool at most once an
+    // hour (always when `force`) and raises POOL_VERSIONING_BLOCKS_RECLAIM
+    // at most once a day while it is Enabled. Returns the last known state.
+    std::string refreshPoolVersioning(const StoragePool &pool, bool force);
+
+    // Summed bytes of the ranges stored on a QUOTA-mode pool, cached for
+    // storage.tiering_quota_usage_cache_seconds.
+    int64_t quotaUsedBytes(const std::string &pool_id);
     void mergePoolRuntimeStats(StoragePool &pool) const;
 };
 

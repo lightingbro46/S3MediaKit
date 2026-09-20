@@ -1,3 +1,4 @@
+#include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 
@@ -89,28 +90,30 @@ void registerExtractionApis() {
         CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE);
         CHECK_ARGS_("cameraId", "startTime", "endTime");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
-            auto camera_id = allArgs["cameraId"];
-            auto stream_id = allArgs["streamId"];
-            uint64_t start_time = allArgs["startTime"];
-            uint64_t end_time = allArgs["endTime"];
+        auto poller = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, poller, session]() mutable {
+            // Timefile/DB queries of the preview run on the API worker.
+            dispatchApiWork(poller, session, headerOut, val, invoker, [allArgs](Value &val) {
+                auto camera_id = allArgs["cameraId"];
+                auto stream_id = allArgs["streamId"];
+                uint64_t start_time = allArgs["startTime"];
+                uint64_t end_time = allArgs["endTime"];
 
-            if (start_time >= end_time) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_TIME_RANGE, "Invalid time range");
-                return;
-            }
+                if (start_time >= end_time) {
+                    throw ApiResponseException(ApiErrCode::CODE_INVALID_TIME_RANGE, "Invalid time range");
+                }
 
-            if (!findDeviceSource(camera_id)) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
-                return;
-            }
+                if (!findDeviceSource(camera_id)) {
+                    throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                }
 
-            auto preview = FFmpegExtractor::getExtractPreview(camera_id, stream_id, start_time, end_time);
-            val["data"]["hasData"] = preview.hasData;
-            val["data"]["availableDuration"] = Json::UInt64(preview.availableDuration);
-            val["data"]["streamId"] = preview.streamId;
-            val["data"]["streamName"] = preview.streamName;
-            invoker(200, headerOut, val.toStyledString());
+                auto preview = FFmpegExtractor::getExtractPreview(camera_id, stream_id, start_time, end_time);
+                val["data"]["hasData"] = preview.hasData;
+                val["data"]["availableDuration"] = Json::UInt64(preview.availableDuration);
+                val["data"]["streamId"] = preview.streamId;
+                val["data"]["streamName"] = preview.streamName;
+            });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["cameraId"], on_access);
@@ -268,23 +271,26 @@ void registerExtractionApis() {
             return;
         }
 
-        auto result = ExtractJobManager::Instance().submit(submit_request);
-        if (result.result == ExtractJobRepository::CreateResult::CONFLICT) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_JOB_CONFLICT, "fileId already exists with a different payload");
-            return;
-        }
-        if (result.result == ExtractJobRepository::CreateResult::FAILED) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_JOB_CREATE_FAILED, "Failed to persist extract job");
-            return;
-        }
+        // The job is persisted (find-or-create transaction) on the API worker; answered 202.
+        runApiCallbackWork(apiRequestPoller(sender), apiRequestSession(sender), invoker,
+            [submit_request, val, invoker, headerOut](const ApiReply &reply) mutable {
+                auto result = ExtractJobManager::Instance().submit(submit_request);
+                if (result.result == ExtractJobRepository::CreateResult::CONFLICT) {
+                    throw ApiResponseException(ApiErrCode::CODE_EXTRACT_JOB_CONFLICT, "fileId already exists with a different payload");
+                }
+                if (result.result == ExtractJobRepository::CreateResult::FAILED) {
+                    throw ApiResponseException(ApiErrCode::CODE_EXTRACT_JOB_CREATE_FAILED, "Failed to persist extract job");
+                }
 
-        val["data"]["fileId"] = result.job.file_id;
-        val["data"]["accepted"] = true;
-        val["data"]["status"] = extractJobPublicStatus(result.job.status);
-        invoker(202, headerOut, val.toStyledString());
+                val["data"]["fileId"] = result.job.file_id;
+                val["data"]["accepted"] = true;
+                val["data"]["status"] = extractJobPublicStatus(result.job.status);
+                const string body = val.toStyledString();
+                reply([invoker, headerOut, body]() { invoker(202, headerOut, body); });
+            });
     });
 
-    api_regist("/media/esc/extractArchived/job/list", [](API_ARGS_MAP) {
+    api_regist("/media/esc/extractArchived/job/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
 
         const string camera_id = allArgs["camera_id"];
@@ -303,20 +309,23 @@ void registerExtractionApis() {
             throw InvalidArgsException("Invalid start_time range", ApiErrCode::CODE_INVALID_TIME_RANGE);
         }
 
-        ExtractJobImp repository;
-        const auto jobs = repository.list(camera_id, start_time_from, start_time_to, page, size);
-        const auto statistics = repository.statistics(camera_id, start_time_from, start_time_to);
+        dispatchApiWork(sender, headerOut, val, invoker,
+            [camera_id, start_time_from, start_time_to, page, size](Value &val) {
+                ExtractJobImp repository;
+                const auto jobs = repository.list(camera_id, start_time_from, start_time_to, page, size);
+                const auto statistics = repository.statistics(camera_id, start_time_from, start_time_to);
 
-        Json::Value items(Json::arrayValue);
-        for (const auto &job : jobs) {
-            items.append(job.toJson());
-        }
-        val["data"]["items"] = items;
-        val["data"]["page"] = page;
-        val["data"]["size"] = size;
-        val["data"]["statistics"]["total"] = static_cast<Json::Int64>(statistics.total);
-        val["data"]["statistics"]["success"] = static_cast<Json::Int64>(statistics.success);
-        val["data"]["statistics"]["failed"] = static_cast<Json::Int64>(statistics.failed);
+                Json::Value items(Json::arrayValue);
+                for (const auto &job : jobs) {
+                    items.append(job.toJson());
+                }
+                val["data"]["items"] = items;
+                val["data"]["page"] = page;
+                val["data"]["size"] = size;
+                val["data"]["statistics"]["total"] = static_cast<Json::Int64>(statistics.total);
+                val["data"]["statistics"]["success"] = static_cast<Json::Int64>(statistics.success);
+                val["data"]["statistics"]["failed"] = static_cast<Json::Int64>(statistics.failed);
+            });
     });
 
     DebugL << "Extraction APIs registered";

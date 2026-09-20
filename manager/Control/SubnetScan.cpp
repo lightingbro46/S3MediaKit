@@ -1,5 +1,7 @@
+#include <future>
 #include "Util/onceToken.h"
 #include "Util/util.h"
+#include "Common/BlockingExecutors.h"
 #include "Common/config.h"
 #include "Common/StrUtil.h"
 #include "server/FFmpegSource.h"
@@ -16,12 +18,15 @@ namespace Searcher {
 #define SUBNETSCAN_FIELD "searcher."
 const string kTimeoutSec = SUBNETSCAN_FIELD"timeout_sec";
 const string kDelayCloseSec = SUBNETSCAN_FIELD"delay_close_sec";
+const string kMaxParallel = SUBNETSCAN_FIELD"max_parallel";
 
 onceToken token([]() {
     // Default subnet scan timeout is 10 seconds
     mINI::Instance()[kTimeoutSec] = 10;
     // Default delay close time is 300 seconds
     mINI::Instance()[kDelayCloseSec] = 300;
+    // IPs of one scan probed at the same time (on the shared `discovery` pool)
+    mINI::Instance()[kMaxParallel] = 8;
 });
 } // namespace Searcher
 
@@ -60,18 +65,29 @@ Json::Value toJsonValue(const DeviceScanResult &result) {
     return ret;
 }
 
-SubnetScan::SubnetScan(const SubnetScanOption &option, uint64_t timeout_ms)
-    : _option(option), _timeout_ms(timeout_ms) {
+SubnetScan::SubnetScan(const SubnetScanOption &option, uint64_t timeout_ms, Probe probe, int max_parallel)
+    : _option(option), _probe(std::move(probe)), _max_parallel(max_parallel), _timeout_ms(timeout_ms) {
     _created_at = time(nullptr);
+    if (_max_parallel <= 0) {
+        GET_CONFIG(int, config_parallel, Searcher::kMaxParallel);
+        _max_parallel = config_parallel > 0 ? config_parallel : 8;
+    }
+    if (!_probe) {
+        SubnetScanOption opt = option;
+        // startProbes() already runs this on the discovery pool, so the blocking form is called
+        // directly: one hop, and _max_parallel keeps bounding the probes actually running.
+        _probe = [opt](const string &ip, const onScan &cb) { discovery_device(opt, ip, cb); };
+    }
 }
 
 SubnetScan::~SubnetScan() {
     DebugL;
 }
 
-void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort, 
-                                string &username, string &password, const onScan &cb, 
-                                const toolkit::EventPoller::Ptr &poller) {
+void SubnetScan::discovery_device(const SubnetScanOption &option, const string &address, const onScan &cb) {
+    const string &username = option.username;
+    const string &password = option.password;
+    const bool defaultPort = option.defaultPort;
     DeviceScanResult ret;
     if (start_with(address, "rtsp://")) {
         // address is rtsp url
@@ -82,10 +98,11 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
         }
 
         if (!defaultPort) {
-            url = UriUtils::replacePort(url, port);
+            url = UriUtils::replacePort(url, option.port);
         }
 
-        FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
+        // Synchronous: cb runs before probe() returns, like the ONVIF branch below.
+        FFmpegProbe::probe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
             if (!success) {
                 ret.address = url;
                 ret.err_msg = err_msg;
@@ -116,13 +133,11 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
                 ret.profiles.push_back(stream);
                 cb(SockException(Err_success), ret);
             }
-        }, poller);
+        });
     } else if (isIP(address.data())) {
         // address is ip
-        string ip = address;
-        if (defaultPort) {
-            port = 80;
-        }
+        const string &ip = address;
+        const int port = defaultPort ? 80 : option.port;
         string ipAddress = StrPrinter << ip << ":" << port;
         auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
         if (!onvif->connect()) {
@@ -170,65 +185,117 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
 
 void SubnetScan::makeScan(const std::string &key, const std::function<void(const SockException &)> &cb) {
     auto ip_range = SockUtil::get_ipv4_range(_option.startIp, _option.endIp);
+    if (ip_range.empty()) {
+        cb(SockException(Err_other, "Invalid IP range", ApiErrCode::CODE_INVALID_IP_RANGE));
+        return;
+    }
     {
         lock_guard<mutex> lock(_status_mtx);
         _total_ip = ip_range.size();
         _processed_ip = 0;
         _finished = false;
+        _cancelled = false;
+        _done = false;
         _progress = 0.0f;
         _result.clear();
+        _pending_ips.clear();
+        for (size_t i = 0; i < ip_range.size(); ++i) {
+            _pending_ips.emplace_back(i, ip_range[i]);
+        }
     }
 
-    if (ip_range.empty()) {
-        cb(SockException(Err_other, "Invalid IP range", ApiErrCode::CODE_INVALID_IP_RANGE));
+    // Only the close timer runs on this poller; probes run on the `discovery` pool.
+    _poller = WorkThreadPool::Instance().getPoller();
+    startProbes();
+    cb(SockException(Err_success));
+}
+
+void SubnetScan::startProbes() {
+    std::vector<std::pair<size_t, std::string>> to_start;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        while (!_cancelled && _inflight < _max_parallel && !_pending_ips.empty()) {
+            to_start.push_back(_pending_ips.front());
+            _pending_ips.pop_front();
+            ++_inflight;
+        }
+    }
+    weak_ptr<SubnetScan> weak_self = shared_from_this();
+    for (const auto &item : to_start) {
+        const size_t index = item.first;
+        const string ip = item.second;
+        BlockingExecutors::discovery()->async([weak_self, index, ip]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return;
+            }
+            // This is the blocking thread the probe needs: discovery_device answers synchronously
+            // for every address kind, and the callback runs exactly once.
+            strong_self->_probe(ip, [weak_self, index, ip](const SockException &ex, const DeviceScanResult &data) {
+                auto strong_self = weak_self.lock();
+                if (strong_self) {
+                    strong_self->onProbed(index, ip, ex, data);
+                }
+            });
+        }, false);
+    }
+}
+
+void SubnetScan::onProbed(size_t index, const std::string &ip, const SockException &ex, const DeviceScanResult &data) {
+    if (!ex) {
+        DebugL << "Found device at ip: " << ip;
+    } else {
+        DebugL << "Scan device at ip " << ip << " failed: " << ex.what();
+    }
+    bool all_done = false;
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        --_inflight;
+        if (!ex) {
+            _result[index] = data;
+        }
+        _processed_ip++;
+        _progress = (static_cast<float>(_processed_ip) / _total_ip) * 100.0f;
+        if (!_finished) {
+            _finished = (_processed_ip == _total_ip);
+        }
+        if (!_done && _inflight == 0 && (_pending_ips.empty() || _cancelled)) {
+            _done = true;
+            all_done = true;
+        }
+    }
+    if (!all_done) {
+        startProbes();
         return;
     }
+    if (_onFinished) {
+        _onFinished();
+    }
+    if (_poller) {
+        closeAfterDelaySec();
+    }
+}
 
-    weak_ptr<SubnetScan> weak_self = shared_from_this();
-
-    _poller = WorkThreadPool::Instance().getPoller();    
-    _poller->async([weak_self, ip_range, cb]() {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
+std::vector<DeviceScanResult> SubnetScan::scanRange(const SubnetScanOption &option, Probe probe, int max_parallel) {
+    auto scanner = std::make_shared<SubnetScan>(option, 0, std::move(probe), max_parallel);
+    auto finished = std::make_shared<std::promise<void>>();
+    auto finished_future = finished->get_future();
+    scanner->setOnFinished([finished]() { finished->set_value(); });
+    auto ip_range = SockUtil::get_ipv4_range(option.startIp, option.endIp);
+    if (ip_range.empty()) {
+        return {};
+    }
+    {
+        lock_guard<mutex> lock(scanner->_status_mtx);
+        scanner->_total_ip = ip_range.size();
+        for (size_t i = 0; i < ip_range.size(); ++i) {
+            scanner->_pending_ips.emplace_back(i, ip_range[i]);
         }
-        auto option = strong_self->_option;
-        for (auto &ip : ip_range) {
-            if (strong_self->finished()) {
-                break;
-            }
-            strong_self->discovery_device(const_cast<std::string&>(ip),
-                                        option.port,
-                                        option.defaultPort,
-                                        option.username,
-                                        option.password,
-                                        [weak_self, ip](const SockException &ex, const DeviceScanResult &data) {
-                auto strong_self = weak_self.lock();
-                if (!strong_self) {
-                    return;
-                }
-                {
-                    lock_guard<mutex> lock(strong_self->_status_mtx);
-                    if (!ex) {
-                        strong_self->_result.push_back(data);
-                    }
-                    strong_self->_processed_ip++;
-                    strong_self->_progress = (static_cast<float>(strong_self->_processed_ip) / strong_self->_total_ip) * 100.0f;
-                    if (!strong_self->_finished) {
-                        strong_self->_finished = (strong_self->_processed_ip == strong_self->_total_ip);
-                    }
-                }
-                if (!ex) {
-                    DebugL << "Found device at ip: " << ip;
-                } else {
-                    DebugL << "Scan device at ip " << ip << " failed: " << ex.what();
-                }
-            }, strong_self->_poller);
-        }
-        strong_self->closeAfterDelaySec();
-    });
-
-    cb(SockException(Err_success));
+    }
+    // No _poller: nothing to close, the scanner dies with this call.
+    scanner->startProbes();
+    finished_future.wait();
+    return scanner->result();
 }
 
 SubnetScan::Status SubnetScan::status() const {
@@ -236,14 +303,19 @@ SubnetScan::Status SubnetScan::status() const {
     Status ret;
     ret.progress = _progress;
     ret.finished = _finished;
-    ret.result = _result;
+    for (const auto &item : _result) {
+        ret.result.push_back(item.second);
+    }
     return ret;
 }
 
 void SubnetScan::cancel() {
     {
         lock_guard<mutex> lock(_status_mtx);
+        // IPs not started yet are dropped; probes already running finish on their own.
         _finished = true;
+        _cancelled = true;
+        _pending_ips.clear();
     }
     close();
 }

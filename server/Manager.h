@@ -46,6 +46,9 @@ extern std::string g_ini_file;
 void installManagerHook();
 
 void unInstallManagerHook();
+// Stops the storage managers (tier cycles, object storage SDK). Part of unInstallManagerHook();
+// also called when the server fails to start.
+void releaseStorageManagers();
 
 void migrateDatabase();
 

@@ -1,3 +1,4 @@
+#include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
 
@@ -25,15 +26,19 @@ void registerMonitorApis() {
         val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
     });
 
-    api_regist("/media/mserver/systemStatisticHistory", [](API_ARGS_MAP) {
+    api_regist("/media/mserver/systemStatisticHistory", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("from", "to", "limit");
-        int64_t from_ts = allArgs["from"];
-        int64_t to_ts   = allArgs["to"];
-        int     limit   = allArgs["limit"];
-        int     bucket_sec = allArgs["bucket_sec"];
-        val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit, bucket_sec);
+
+        // Blocking part (statistics DB, disk usage, per-camera storage) runs on the API worker.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            int64_t from_ts = allArgs["from"];
+            int64_t to_ts   = allArgs["to"];
+            int     limit   = allArgs["limit"];
+            int     bucket_sec = allArgs["bucket_sec"];
+            val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit, bucket_sec);
+        });
     });
 
     api_regist("/media/mserver/storage/list", [](API_ARGS_MAP_ASYNC) {
@@ -41,14 +46,15 @@ void registerMonitorApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("mediaServerId");
 
-        string id = allArgs["mediaServerId"];
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        if (id != mediaServerId) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
-            return;
-        }
-        val["data"] = StorageManager::Instance().makeSystemStorageJson();
-        invoker(200, headerOut, val.toStyledString());
+        // Blocking part (statistics DB, disk usage, per-camera storage) runs on the API worker.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string id = allArgs["mediaServerId"];
+            GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+            if (id != mediaServerId) {
+                throw ApiResponseException(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
+            }
+            val["data"] = StorageManager::Instance().makeSystemStorageJson();
+        });
     });
 
     api_regist("/media/mserver/device/storage", [](API_ARGS_MAP_ASYNC) {
@@ -56,14 +62,15 @@ void registerMonitorApis() {
         CHECK_USER_PERMISSION(READ_MSERVER_PERMISSION_CODE);
         CHECK_ARGS_("mediaServerId");
 
-        string id = allArgs["mediaServerId"];
-        GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-        if (id != mediaServerId) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
-            return;
-        }
-        val["data"] = makeDeviceStoragesJson();
-        invoker(200, headerOut, val.toStyledString());
+        // Blocking part (statistics DB, disk usage, per-camera storage) runs on the API worker.
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            string id = allArgs["mediaServerId"];
+            GET_CONFIG(string, mediaServerId, General::kMediaServerId)
+            if (id != mediaServerId) {
+                throw ApiResponseException(ApiErrCode::CODE_MSERVER_NOT_FOUND, "Media server not found");
+            }
+            val["data"] = makeDeviceStoragesJson();
+        });
     });
 
     api_regist("/media/mserver/reader/available", [](API_ARGS_MAP_ASYNC) {

@@ -35,6 +35,7 @@ namespace managerkit {
     XX(CODE_INVALID_TIME_RANGE,             "Invalid time range",               404,         902009) \
     XX(CODE_ENDPOINT_NOT_SUPPORTED,         "Endpoint not supported",           404,         902010) \
     XX(CODE_METHOD_NOT_ALLOWED,             "Method not allowed",               405,         902011) \
+    XX(CODE_SERVER_BUSY,                    "Server busy, retry later",         503,         902012) \
     /* 903xxx - Timeline errors */                                                                   \
     XX(CODE_TIMELINE_NOT_FOUND,             "Timeline not found",               404,         903001) \
     /* 904xxx - Thumbnail/snapshot errors */                                                         \

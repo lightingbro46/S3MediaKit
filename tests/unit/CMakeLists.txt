@@ -76,6 +76,98 @@ target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
+if(ENABLE_SYNC_CHANGES)
+  # Uses a temporary on-disk ESC database built from the real migrations.
+  # CameraStatistic pulls in camera/stream code that references server/ symbols;
+  # reuse the tier-storage stubs for those.
+  add_s3_unit_test(unit_sync_apply
+    manager/test_sync_apply.cpp
+    manager/test_camera_statistic_sync.cpp
+    "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+  target_link_libraries(unit_sync_apply PRIVATE
+    -Wl,--start-group
+    S3MediaKit::MediaKit
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec
+    -Wl,--end-group)
+  target_include_directories(unit_sync_apply PRIVATE "${PROJECT_SOURCE_DIR}/server")
+  target_compile_definitions(unit_sync_apply PRIVATE
+    S3_ESC_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/updates"
+    S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+  add_test(NAME unit.sync_apply_all COMMAND unit_sync_apply)
+  set_tests_properties(unit.sync_apply_all PROPERTIES LABELS unit TIMEOUT 30)
+endif()
+
+# API worker dispatcher (server/ApiWorkDispatcher.cpp), compiled directly like the storage API test.
+add_s3_unit_test(unit_api_work_dispatcher
+  server/test_api_work_dispatcher.cpp
+  "${PROJECT_SOURCE_DIR}/server/ApiWorkDispatcher.cpp"
+  "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp")
+target_link_libraries(unit_api_work_dispatcher PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_api_work_dispatcher PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.api_work_dispatcher_all COMMAND unit_api_work_dispatcher)
+set_tests_properties(unit.api_work_dispatcher_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# Shared blocking thread pools (manager/Common/BlockingExecutors).
+add_s3_unit_test(unit_blocking_executors manager/test_blocking_executors.cpp manager/test_serial_task_queue.cpp)
+target_link_libraries(unit_blocking_executors PRIVATE S3MediaKit::ManagerKit)
+add_test(NAME unit.blocking_executors_all COMMAND unit_blocking_executors)
+set_tests_properties(unit.blocking_executors_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# SubnetScan with an injected probe; server/ symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_subnet_scan
+  manager/test_subnet_scan.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_subnet_scan PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_subnet_scan PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.subnet_scan_all COMMAND unit_subnet_scan)
+set_tests_properties(unit.subnet_scan_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# CameraController with a fake OnvifControl (PTZ ordering/stop, media profile sync).
+add_s3_unit_test(unit_camera_controller
+  manager/test_camera_controller.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_camera_controller PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_camera_controller PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.camera_controller_all COMMAND unit_camera_controller)
+set_tests_properties(unit.camera_controller_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# FFmpegExtractor start/cancel (server/FFmpegSource.cpp compiled directly); remaining server/
+# symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_extract_start
+  server/test_extract_start.cpp
+  "${PROJECT_SOURCE_DIR}/server/FFmpegSource.cpp"
+  "${PROJECT_SOURCE_DIR}/server/Process.cpp"
+  "${PROJECT_SOURCE_DIR}/server/System.cpp"
+  "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp"
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_extract_start PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_extract_start PRIVATE "${PROJECT_SOURCE_DIR}/server")
+target_compile_definitions(unit_extract_start PRIVATE
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+add_test(NAME unit.extract_start_all COMMAND unit_extract_start)
+set_tests_properties(unit.extract_start_all PROPERTIES LABELS unit TIMEOUT 30)
+
 if(ENABLE_TIER_STORAGE)
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp
@@ -87,6 +179,16 @@ if(ENABLE_TIER_STORAGE)
     "${PROJECT_SOURCE_DIR}/server")
   add_test(NAME unit.storage_pool_api_all COMMAND unit_storage_pool_api)
   set_tests_properties(unit.storage_pool_api_all PROPERTIES LABELS unit TIMEOUT 15)
+
+  # Tier read-then-write transactions against a temporary mserver DB built from the real migrations.
+  add_s3_unit_test(unit_tier_txn_lock storage/test_tier_txn_lock.cpp)
+  target_link_libraries(unit_tier_txn_lock PRIVATE
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec)
+  target_compile_definitions(unit_tier_txn_lock PRIVATE
+    S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+  add_test(NAME unit.tier_txn_lock_all COMMAND unit_tier_txn_lock)
+  set_tests_properties(unit.tier_txn_lock_all PROPERTIES LABELS unit TIMEOUT 30)
 endif()
 
 if(ENABLE_SERVER_LIB)

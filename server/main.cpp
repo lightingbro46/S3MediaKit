@@ -500,6 +500,7 @@ int start_main(int argc,char *argv[]) {
 
         } catch (std::exception &ex) {
             ErrorL << "Start server failed: " << ex.what();
+            releaseStorageManagers();
             sleep(1);
 #if !defined(_WIN32)
             if (pid != getpid() && kill_parent_if_failed) {

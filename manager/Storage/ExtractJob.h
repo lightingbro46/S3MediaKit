@@ -210,7 +210,7 @@ public:
 
     CreateResult createOrFind(const ExtractJob &job, ExtractJob &stored) {
         try {
-            auto txn = _executor->execTxn();
+            auto txn = _executor->beginWriteTxn();
             ExtractJob lookup;
             lookup.file_id = job.file_id;
             auto rows = findByIdWithTxn(lookup, txn);

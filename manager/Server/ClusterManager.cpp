@@ -5,7 +5,9 @@
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
 #include "Storage/VmsKvPair.h"
+#ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
+#endif
 
 using namespace std;
 using namespace toolkit;
@@ -185,7 +187,9 @@ void ClusterManager::removeMediaServer(const std::string &id) {
         savePeerList(_map_server_info);
         DebugL << "Removed media server: " << id;
     }
+#ifdef ENABLE_SYNC_CHANGES
     SyncManager::Instance().removePeer(id);
+#endif
 }
 
 void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls) {
@@ -212,7 +216,9 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
                 }
             }
             if (was_healthy) {
+#ifdef ENABLE_SYNC_CHANGES
                 SyncManager::Instance().removePeer(id);
+#endif
             }
             return;
         }
@@ -232,7 +238,9 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
             GET_CONFIG(int, self_server_group_id, "manager.serverLocationId");
             if (server_group_id == self_server_group_id) {
                 // If the server group ID matches, add the peer to SyncManager for syncing data
+#ifdef ENABLE_SYNC_CHANGES
                 SyncManager::Instance().addPeer(id, url);
+#endif
             }
         } else {
             WarnL << "Health check index out of range for " << origin_urls << ": " << idx;

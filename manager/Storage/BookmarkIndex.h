@@ -238,7 +238,7 @@ public:
 
     // Transaction-aware variants.
     void addWithTxn(BookmarkIndex &entry, toolkit::SqliteTransaction::Ptr txn) {
-        auto existing = findById(entry);
+        auto existing = findByIdWithTxn(entry, txn);
         if (!existing.empty()) {
             updateByIdWithTxn(entry, txn);
         } else {

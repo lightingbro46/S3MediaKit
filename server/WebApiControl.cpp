@@ -6,6 +6,7 @@
 #include "Control/SubnetScan.h"
 #include "Speaker/SpeakerController.h"
 #include "Manager.h"
+#include "ApiWorkDispatcher.h"
 
 using namespace std;
 using namespace toolkit;
@@ -25,20 +26,46 @@ void registerControlApis() {
         CHECK_ARGS_("address","port", "defaultPort");
 
         string address = allArgs["address"];
-        int port = allArgs["port"];
-        bool defaultPort = allArgs["defaultPort"];
-        string username = allArgs["username"];
-        string password = allArgs["password"];
 
-        SubnetScan::discovery_device(address, port, defaultPort, username, password, [=](const SockException &ex, const DeviceScanResult &data) mutable {
+        SubnetScanOption option;
+        option.port = allArgs["port"];
+        option.defaultPort = allArgs["defaultPort"];
+        option.username = (string)allArgs["username"];
+        option.password = (string)allArgs["password"];
+
+        auto respond = [val, headerOut, invoker](const SockException &ex, const DeviceScanResult &data) mutable {
+            val["data"] = toJsonValue(data);
             if (ex) {
-                val["data"] = toJsonValue(data);
                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                 return;
             }
-            val["data"] = toJsonValue(data);
             invoker(200, headerOut, val.toStyledString());
-        });
+        };
+
+        // Probing a device blocks whatever the address is (ONVIF SOAP calls, or waiting for
+        // ffprobe): always run it on the API worker pool and answer from the request poller. The
+        // handler never inspects the address to pick a thread -- discovery_device owns that.
+        struct DiscoveryResult {
+            SockException ex;
+            DeviceScanResult data;
+        };
+        auto result = std::make_shared<DiscoveryResult>();
+        auto session = apiRequestSession(sender);
+        runApiWork(apiRequestPoller(sender), session,
+            [result, option, address]() {
+                SubnetScan::discovery_device(option, address,
+                    [result](const SockException &ex, const DeviceScanResult &data) {
+                        result->ex = ex;
+                        result->data = data;
+                    });
+            },
+            [result, respond, session, invoker](const std::exception_ptr &error) mutable {
+                if (error) {
+                    responseApiException(error, invoker, session);
+                    return;
+                }
+                respond(result->ex, result->data);
+            }, apiWorkLimit("device.discovery"));
     });
 
     api_regist("/media/mserver/device/subnetScan", [](API_ARGS_MAP_ASYNC) {
@@ -58,16 +85,22 @@ void registerControlApis() {
             return;
         }
 
-        val["data"] = arrayValue;
-        auto ip_range = SockUtil::get_ipv4_range(startIp, endIp);
-        for (auto &ip : ip_range) {
-            SubnetScan::discovery_device(ip, port, defaultPort, username, password, [&](const SockException &ex, const DeviceScanResult &data) {
-                if (!ex) {
-                    val["data"].append(toJsonValue(data));
-                }
-            });
-        }
-        invoker(200, headerOut, val.toStyledString());
+        SubnetScanOption option;
+        option.startIp = startIp;
+        option.endIp = endIp;
+        option.port = port;
+        option.defaultPort = defaultPort;
+        option.username = username;
+        option.password = password;
+
+        // Synchronous scan of the whole range: the API worker waits while the IPs are probed in
+        // parallel (bounded by searcher.max_parallel) on the discovery pool; devices keep IP order.
+        dispatchApiWork(sender, headerOut, val, invoker, [option](Json::Value &val) {
+            val["data"] = arrayValue;
+            for (const auto &device : SubnetScan::scanRange(option)) {
+                val["data"].append(toJsonValue(device));
+            }
+        }, nullptr, apiWorkLimit("device.discovery"));
     });
 
     static auto addSubnetScan = [](SubnetScanOption &option, const function<void(const SockException &ex, const string &key)> &cb) {
