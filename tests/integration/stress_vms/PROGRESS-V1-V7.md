@@ -18,7 +18,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | — | Bộ stress test + báo cáo | **xong** | `d4c78308` |
 | V1 | Segfault khi camera ONVIF thiếu zoom space | **xong** | `d57429e3` |
 | V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
-| V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | chưa bắt đầu | — |
+| V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
 | V4 | PTZ chết khi vài camera ONVIF chậm | chưa bắt đầu | — |
 | V7 | `enforceStoragePolicy()` blocking trên poller | chưa bắt đầu | — |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
@@ -113,6 +113,67 @@ riêng. V6 chỉ coi thống kê là gợi ý và kẹp bằng dữ liệu trên
 
 ---
 
+## V3 — đã xong (`8d897ea5`)
+
+### Đã thay đổi
+
+`manager/Control/OnvifDeviceControl.cpp` / `.h` — cache **độ lệch đồng hồ**, không cache
+`cam_time`:
+
+- `_clock_offset` / `_clock_offset_at` (`std::atomic<time_t>`, mặc định 0) + ba hàm riêng
+  `cacheClockOffset()` / `invalidateClockOffset()` / `clockOffset(time_t&)`.
+- `getCameraTime()` tự nạp cache ở **cả hai** nhánh thành công (UTCDateTime và LocalDateTime),
+  nên mọi nơi gọi nó đều làm mới cache, kể cả `setCameraTimeManual()`.
+- `setCredentials()` lấy độ lệch qua `clockOffset()` — chỉ đi round-trip khi cache rỗng hoặc
+  quá `onvif.clockOffsetTtlSec` (mới, mặc định 300 s, đã ghi vào `conf/config.ini`).
+  `cam_time` ký digest được **tính lại** mỗi lần bằng `time(nullptr) + offset`.
+- Vô hiệu cache ở hai chỗ: `reportError()` khi fault là lỗi xác thực/timestamp, và
+  `setCameraTimeManual()` sau khi `SetSystemDateAndTime` thành công (đồng hồ camera vừa đổi
+  thì độ lệch đo trước đó hết đúng).
+
+### Ba cái bẫy trong kế hoạch — đã xử lý hết
+
+1. **`_camTimeInfo` chưa khởi tạo** → thêm `= 0` cho `cam_time` và `cam_sys_time`.
+2. **Hook giữ offset cũ vĩnh viễn** → thêm `bool enabled` vào `SoapHookContext` và
+   `disableSoapHook()`. `soap->fsend` không gỡ lại được an toàn nên hook tự tắt tại chỗ.
+   `setCredentials()` giờ **luôn** quyết định: cài/làm mới hook khi ký bằng đồng hồ camera,
+   **tắt** hook khi ký bằng đồng hồ máy. Chỗ này còn sửa một lỗi tiềm ẩn thật: hook viết đè
+   `wsu:Created` trong khi `soap_wsse_add_UsernameTokenDigest` (bản không `_at`) đã tính digest
+   trên mốc khác → digest không khớp.
+3. **Khoá** → cache dùng `std::atomic<time_t>`, không giả định caller giữ `_soap_mtx`.
+
+### Chi tiết đáng nhớ
+
+- `GET_CONFIG` nở ra `Broadcast::`, `ReloadConfigTag`, `BroadcastReloadConfigArgs` — đều thuộc
+  `mediakit`. File này trước đó **không** có `using namespace mediakit;` nên phải thêm.
+- Namespace config đặt tên `OnvifCtrl` chứ không phải `Onvif`: `src/Onvif/Onvif.cpp` đã có
+  `namespace Onvif` ở global scope kèm `using namespace mediakit;`, trùng tên sẽ thành
+  ambiguous lookup. Khoá vẫn nằm trong section `[onvif]` của `config.ini`.
+- `isAuthOrTimestampFault()` cố ý **hẹp**: lỗi mạng hay "ActionNotSupported" không nói gì về
+  đồng hồ, vứt cache ở đó là trả lại đúng cái round-trip thừa mà V3 đang bỏ đi.
+
+### Kiểm thử
+
+`clockOffsetFresh()` và `isAuthOrTimestampFault()` để **static public** để test được mà không
+cần camera thật (cùng khuôn với `pickPTZProfile()` / `fillPTZSpaces()` của V1). Năm case mới ở
+`tests/unit/manager/test_camera_controller.cpp` (`OnvifClockOffsetCacheTest.*`,
+`OnvifAuthFaultTest.*`): dùng lại trong TTL / không dùng cache rỗng hoặc TTL <= 0 / vứt cache
+khi đồng hồ máy nhảy lùi / nhận đúng nhóm fault xác thực-timestamp / không nhận nhầm fault mạng.
+
+### Xác minh đã chạy
+
+```
+cmake --build build -j2                                     → exit 0
+cmake --build build-test -j2                                → exit 0
+./release/linux/Debug/unit_camera_controller                → 13/13 PASSED
+ctest --test-dir build-test -R '^unit\.'                    → 153/153 PASSED
+```
+
+**Chưa làm:** xác minh bằng harness — chạy `mid steady` rồi đối chiếu `onvif_state.json`, tỉ lệ
+`GetSystemDateAndTime / tổng lệnh` phải tụt từ ~50% xuống < 10%.
+
+---
+
 ## V2 — code đã sửa, chưa commit
 
 `manager/Local/TierFileStorageBase.cpp` đang có +4 dòng trong working tree: bọc cả file trong
@@ -129,17 +190,11 @@ lệch tài liệu — `CMakeLists.txt:46` mặc định **ON** còn `docs/api-s
 
 ---
 
-## V3, V4, V7, V5 — chưa bắt đầu
+## V4, V7, V5 — chưa bắt đầu
 
 Xem kế hoạch. Tóm tắt những gì đã xác minh trong lúc lập kế hoạch, để phiên sau không phải
 điều tra lại:
 
-- **V3**: `setCredentials()` (`OnvifDeviceControl.cpp:1082-1102`) gọi `getCameraTime()` trước
-  **mỗi** thao tác, được gọi từ 42 chỗ. Đo được đúng 50,0% lưu lượng ONVIF trên hai lần chạy
-  độc lập. Cache **độ lệch**, không cache `cam_time`. Ba bẫy phải xử lý cùng lúc: `_camTimeInfo`
-  chưa có default initializer; hook giữ offset cũ vĩnh viễn khi offset tụt dưới 5 s; và
-  `findVideoSegments()` đi tới `setCredentials()` mà **không** giữ `_soap_mtx` → cache phải tự
-  bảo vệ bằng `std::atomic<time_t>`.
 - **V4**: gốc rễ thật **không phải** chỉ thiếu deadline mà là tải nền tự gây ra —
   `CameraController::onManager()` (`manager/Camera/CameraController.cpp:155-215`) chạy mỗi 10 s
   cho mỗi camera và **không kiểm `_ready`**, nên cứ 60 s lại chạy lại **toàn bộ** `connect()`.
