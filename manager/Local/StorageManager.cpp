@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <ctime>
 #include <cmath>
 #include <iomanip>
@@ -17,6 +18,7 @@
 #include "Storage/Bookmark.h"
 #include "Common/StrUtil.h"
 #include "MotionBlockManager.h"
+#include "StoragePolicy.h"
 
 using namespace std;
 using namespace toolkit;
@@ -229,6 +231,9 @@ using RecordProfiles = unordered_map<string /*camera_id/stream_id*/, pair<uint64
 static RecordProfiles getRecordProfiles() {
     RecordProfiles profiles;
     time_t current_time = time(nullptr);
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
+    GET_CONFIG(string, app_name, Record::kAppName);
+    string record_path = File::absolutePath(app_name, mp4_save_path);
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
         auto weak_listener = src->getListener();
         if (auto strong_listener = weak_listener.lock()) {
@@ -268,15 +273,19 @@ static RecordProfiles getRecordProfiles() {
                     max_value = current_time - option.keepArchivedMaxFor;
                 }
 
+                // max_value is computed once per camera, but the on-disk floor is per stream, so
+                // the clamp belongs here rather than next to the computation above.
                 if (camera->hasStreamTuple(PrimaryStream)) {
                     auto tuple = camera->getStreamTuple(PrimaryStream);
                     string key_primary = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
-                    profiles.emplace(key_primary, make_pair(min_value, max_value));
+                    profiles.emplace(key_primary, make_pair(min_value,
+                        clampMaxToDisk(record_path, key_primary, max_value, option.keepArchivedMaxForAuto)));
                 }
                 if (camera->hasStreamTuple(SecondaryStream)) {
                     auto tuple = camera->getStreamTuple(SecondaryStream);
                     string key_second = (StrPrinter << tuple.device_id << "/" << tuple.stream_id);
-                    profiles.emplace(key_second, make_pair(min_value, max_value));
+                    profiles.emplace(key_second, make_pair(min_value,
+                        clampMaxToDisk(record_path, key_second, max_value, option.keepArchivedMaxForAuto)));
                 }
             }
         }
@@ -424,7 +433,7 @@ void StorageManager::enforceStoragePolicy() {
             // step 1: estimate keep time map with new keep_percent value
             for (const auto &p : record_profiles) {
                 auto keep_pair = p.second;
-                keep_time_map[p.first] = static_cast<uint64_t>(keep_pair.first - (keep_pair.first - keep_pair.second) * keep_percent / 100);
+                keep_time_map[p.first] = keepTimeThreshold(keep_pair.first, keep_pair.second, keep_percent);
             }
 
             // step 2: remove expired segment and get keep time map
