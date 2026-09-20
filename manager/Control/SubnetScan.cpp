@@ -74,14 +74,9 @@ SubnetScan::SubnetScan(const SubnetScanOption &option, uint64_t timeout_ms, Prob
     }
     if (!_probe) {
         SubnetScanOption opt = option;
-        _probe = [opt](const string &ip, const onScan &cb) {
-            string address = ip;
-            int port = opt.port;
-            bool default_port = opt.defaultPort;
-            string username = opt.username;
-            string password = opt.password;
-            discovery_device(address, port, default_port, username, password, cb);
-        };
+        // startProbes() already runs this on the discovery pool, so the blocking form is called
+        // directly: one hop, and _max_parallel keeps bounding the probes actually running.
+        _probe = [opt](const string &ip, const onScan &cb) { discovery_device(opt, ip, cb); };
     }
 }
 
@@ -89,9 +84,10 @@ SubnetScan::~SubnetScan() {
     DebugL;
 }
 
-void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort, 
-                                string &username, string &password, const onScan &cb, 
-                                const toolkit::EventPoller::Ptr &poller) {
+void SubnetScan::discovery_device(const SubnetScanOption &option, const string &address, const onScan &cb) {
+    const string &username = option.username;
+    const string &password = option.password;
+    const bool defaultPort = option.defaultPort;
     DeviceScanResult ret;
     if (start_with(address, "rtsp://")) {
         // address is rtsp url
@@ -102,10 +98,11 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
         }
 
         if (!defaultPort) {
-            url = UriUtils::replacePort(url, port);
+            url = UriUtils::replacePort(url, option.port);
         }
 
-        FFmpegProbe::makeProbe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
+        // Synchronous: cb runs before probe() returns, like the ONVIF branch below.
+        FFmpegProbe::probe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
             if (!success) {
                 ret.address = url;
                 ret.err_msg = err_msg;
@@ -136,13 +133,11 @@ void SubnetScan::discovery_device(string &address, int &port, bool &defaultPort,
                 ret.profiles.push_back(stream);
                 cb(SockException(Err_success), ret);
             }
-        }, poller);
+        });
     } else if (isIP(address.data())) {
         // address is ip
-        string ip = address;
-        if (defaultPort) {
-            port = 80;
-        }
+        const string &ip = address;
+        const int port = defaultPort ? 80 : option.port;
         string ipAddress = StrPrinter << ip << ":" << port;
         auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
         if (!onvif->connect()) {
@@ -234,7 +229,8 @@ void SubnetScan::startProbes() {
             if (!strong_self) {
                 return;
             }
-            // discovery_device answers synchronously for an IP; the callback runs exactly once.
+            // This is the blocking thread the probe needs: discovery_device answers synchronously
+            // for every address kind, and the callback runs exactly once.
             strong_self->_probe(ip, [weak_self, index, ip](const SockException &ex, const DeviceScanResult &data) {
                 auto strong_self = weak_self.lock();
                 if (strong_self) {

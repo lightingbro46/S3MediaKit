@@ -18,9 +18,21 @@
 using namespace managerkit;
 using namespace toolkit;
 
-// SubnetScan only probes RTSP URLs through FFmpegProbe (server/); subnet scans pass IPs.
-void FFmpegProbe::makeProbe(const std::string &, float, const onProbe &cb, const EventPoller::Ptr &) {
-    cb(false, "not available in unit test", ProbeInfo());
+// SubnetScan probes RTSP URLs through FFmpegProbe (server/); subnet scans pass IPs. The stub keeps
+// the real contract: `cb` runs on the calling thread, before probe() returns.
+std::atomic<int> g_probe_calls{0};
+
+void FFmpegProbe::probe(const std::string &play_url, float, const onProbe &cb) {
+    ++g_probe_calls;
+    ProbeInfo info;
+    info.url = play_url;
+    cb(false, "not available in unit test", info);
+}
+
+void FFmpegProbe::makeProbe(const std::string &play_url, float timeout_sec, const onProbe &cb,
+                            const TaskExecutor::Ptr &executor) {
+    auto _executor = executor ? executor : WorkThreadPool::Instance().getPoller();
+    _executor->async([play_url, timeout_sec, cb]() { FFmpegProbe::probe(play_url, timeout_sec, cb); });
 }
 
 namespace {
@@ -161,4 +173,40 @@ TEST(SubnetScanTest, ScanRangeBlocksAndKeepsIpOrder) {
     EXPECT_EQ(4, lastOctet(devices[1].ip));
     EXPECT_EQ(6, lastOctet(devices[2].ip));
     EXPECT_EQ(8, lastOctet(devices[3].ip));
+}
+
+// The handler of /media/mserver/device/discovery must not branch on the address to pick a thread:
+// discovery_device answers on the calling thread for every address kind.
+TEST(SubnetScanTest, DiscoveryDeviceAnswersBeforeReturningForRtspUrl) {
+    SubnetScanOption option;
+    option.defaultPort = true;
+
+    const int calls_before = g_probe_calls.load();
+    bool called = false;
+    bool called_before_return = false;
+    std::thread::id cb_thread;
+    SubnetScan::discovery_device(option, "rtsp://10.10.0.1/stream",
+        [&](const SockException &ex, const DeviceScanResult &data) {
+            called = true;
+            cb_thread = std::this_thread::get_id();
+            EXPECT_TRUE(static_cast<bool>(ex));
+            EXPECT_EQ(ApiErrCode::CODE_DEVICE_NOT_FOUND, ex.getCustomCode());
+            EXPECT_FALSE(data.err_msg.empty());
+        });
+    called_before_return = called;
+
+    EXPECT_TRUE(called_before_return);
+    EXPECT_EQ(std::this_thread::get_id(), cb_thread);
+    EXPECT_EQ(calls_before + 1, g_probe_calls.load());
+}
+
+TEST(SubnetScanTest, DiscoveryDeviceRejectsAddressThatIsNeitherIpNorRtsp) {
+    SubnetScanOption option;
+    bool called = false;
+    SubnetScan::discovery_device(option, "not-an-address",
+        [&](const SockException &ex, const DeviceScanResult &) {
+            called = true;
+            EXPECT_EQ(ApiErrCode::CODE_INVALID_ARGS, ex.getCustomCode());
+        });
+    EXPECT_TRUE(called);
 }

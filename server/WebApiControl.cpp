@@ -26,10 +26,12 @@ void registerControlApis() {
         CHECK_ARGS_("address","port", "defaultPort");
 
         string address = allArgs["address"];
-        int port = allArgs["port"];
-        bool defaultPort = allArgs["defaultPort"];
-        string username = allArgs["username"];
-        string password = allArgs["password"];
+
+        SubnetScanOption option;
+        option.port = allArgs["port"];
+        option.defaultPort = allArgs["defaultPort"];
+        option.username = (string)allArgs["username"];
+        option.password = (string)allArgs["password"];
 
         auto respond = [val, headerOut, invoker](const SockException &ex, const DeviceScanResult &data) mutable {
             val["data"] = toJsonValue(data);
@@ -40,14 +42,9 @@ void registerControlApis() {
             invoker(200, headerOut, val.toStyledString());
         };
 
-        if (start_with(address, "rtsp://")) {
-            // RTSP probing is asynchronous (ffprobe process), it does not block this poller.
-            SubnetScan::discovery_device(address, port, defaultPort, username, password, respond);
-            return;
-        }
-
-        // ONVIF discovery is a series of blocking SOAP calls: run it on the API worker pool and
-        // answer from the request poller.
+        // Probing a device blocks whatever the address is (ONVIF SOAP calls, or waiting for
+        // ffprobe): always run it on the API worker pool and answer from the request poller. The
+        // handler never inspects the address to pick a thread -- discovery_device owns that.
         struct DiscoveryResult {
             SockException ex;
             DeviceScanResult data;
@@ -55,8 +52,8 @@ void registerControlApis() {
         auto result = std::make_shared<DiscoveryResult>();
         auto session = apiRequestSession(sender);
         runApiWork(apiRequestPoller(sender), session,
-            [result, address, port, defaultPort, username, password]() mutable {
-                SubnetScan::discovery_device(address, port, defaultPort, username, password,
+            [result, option, address]() {
+                SubnetScan::discovery_device(option, address,
                     [result](const SockException &ex, const DeviceScanResult &data) {
                         result->ex = ex;
                         result->data = data;

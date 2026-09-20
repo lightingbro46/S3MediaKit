@@ -17,6 +17,7 @@ namespace Blocking {
 const string kApiThreads = "blocking.apiThreads";
 const string kDeviceThreads = "blocking.deviceThreads";
 const string kDiscoveryThreads = "blocking.discoveryThreads";
+const string kFfmpegThreads = "blocking.ffmpegThreads";
 // Read for backward compatibility only; not registered, so fresh configs do not get it.
 const string kLegacyApiWorkerThreads = "api.workerThreads";
 
@@ -24,6 +25,7 @@ static onceToken token([]() {
     mINI::Instance()[kApiThreads] = 0;
     mINI::Instance()[kDeviceThreads] = 4;
     mINI::Instance()[kDiscoveryThreads] = 8;
+    mINI::Instance()[kFfmpegThreads] = 4;
 });
 } // namespace Blocking
 
@@ -75,6 +77,14 @@ int BlockingExecutors::discoveryThreadCount() {
     return s_threads;
 }
 
+int BlockingExecutors::ffmpegThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kFfmpegThreads);
+        return threads > 0 ? threads : 4;
+    }();
+    return s_threads;
+}
+
 TaskExecutor::Ptr BlockingExecutors::api() {
     static TaskExecutor::Ptr s_executor = makePool(apiThreadCount(), "api worker");
     return s_executor;
@@ -87,6 +97,11 @@ TaskExecutor::Ptr BlockingExecutors::device() {
 
 TaskExecutor::Ptr BlockingExecutors::discovery() {
     static TaskExecutor::Ptr s_executor = makePool(discoveryThreadCount(), "discovery");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::ffmpeg() {
+    static TaskExecutor::Ptr s_executor = makePool(ffmpegThreadCount(), "ffmpeg worker");
     return s_executor;
 }
 

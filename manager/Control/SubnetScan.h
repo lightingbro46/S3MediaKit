@@ -64,6 +64,7 @@ public:
     using Ptr = std::shared_ptr<SubnetScan>;
     using onScan = std::function<void(const toolkit::SockException &, const DeviceScanResult &)>;
     // Probes one IP and calls `cb` exactly once (tests inject a fake; default: discovery_device).
+    // Always invoked on a BlockingExecutors::discovery() thread, so it may block.
     using Probe = std::function<void(const std::string &ip, const onScan &cb)>;
 
     struct Status {
@@ -95,9 +96,17 @@ public:
     void cancel();
 
 public:
-    static void discovery_device(std::string &address, int &port, bool &defaultPort, 
-                                std::string &username, std::string &password, const onScan &cb, 
-                                const toolkit::EventPoller::Ptr &poller = nullptr);
+    /**
+     * Probes one address -- an IPv4 address (ONVIF) or an `rtsp://` URL (ffprobe) -- using the port
+     * and credentials of `option`.
+     *
+     * Blocking, whatever the address is: `cb` runs exactly once, on the calling thread, before this
+     * returns. Both branches wait for a device that may never answer (~20s for ONVIF, `timeout_sec`
+     * for ffprobe), so it must be called from a blocking executor (BlockingExecutors::discovery()
+     * for a range scan, BlockingExecutors::api() for a one-off API request), never from an
+     * EventPoller. Callers must not branch on the address to decide where to run it.
+     */
+    static void discovery_device(const SubnetScanOption &option, const std::string &address, const onScan &cb);
 
 private:
     toolkit::Timer::Ptr _timer;

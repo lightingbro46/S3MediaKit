@@ -29,16 +29,24 @@ public:
     // Threads are named "discovery N". Size: `blocking.discoveryThreads` (<= 0 means 8).
     static toolkit::TaskExecutor::Ptr discovery();
 
+    // Waiting for an ffmpeg/ffprobe child process (snapshots, thumbnails). One wait lasts as long as
+    // the media takes, so it is kept apart from `api`: a slow thumbnail must not use up the threads
+    // that serve API requests. Threads are named "ffmpeg worker N".
+    // Size: `blocking.ffmpegThreads` (<= 0 means 4).
+    static toolkit::TaskExecutor::Ptr ffmpeg();
+
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();
     static int deviceThreadCount();
     static int discoveryThreadCount();
+    static int ffmpegThreadCount();
 };
 
 namespace Blocking {
 extern const std::string kApiThreads;
 extern const std::string kDeviceThreads;
 extern const std::string kDiscoveryThreads;
+extern const std::string kFfmpegThreads;
 extern const std::string kLegacyApiWorkerThreads;
 } // namespace Blocking
 

@@ -42,7 +42,12 @@ RunInfo runOn(const TaskExecutor::Ptr &executor) {
 TEST(BlockingExecutorsTest, PoolsAreSingletons) {
     EXPECT_EQ(BlockingExecutors::api().get(), BlockingExecutors::api().get());
     EXPECT_EQ(BlockingExecutors::device().get(), BlockingExecutors::device().get());
+    EXPECT_EQ(BlockingExecutors::ffmpeg().get(), BlockingExecutors::ffmpeg().get());
     EXPECT_NE(BlockingExecutors::api().get(), BlockingExecutors::device().get());
+    // A slow ffmpeg wait must not use up the threads that serve API requests.
+    EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::api().get());
+    EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::device().get());
+    EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::discovery().get());
 }
 
 TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
@@ -53,12 +58,17 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     auto device = runOn(BlockingExecutors::device());
     EXPECT_EQ(0u, device.thread_name.find("device worker")) << device.thread_name;
     EXPECT_FALSE(device.on_poller);
+
+    auto ffmpeg = runOn(BlockingExecutors::ffmpeg());
+    EXPECT_EQ(0u, ffmpeg.thread_name.find("ffmpeg worker")) << ffmpeg.thread_name;
+    EXPECT_FALSE(ffmpeg.on_poller);
 }
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     const int threads = BlockingExecutors::deviceThreadCount();
     EXPECT_EQ(4, threads);
     EXPECT_GE(BlockingExecutors::apiThreadCount(), 2);
+    EXPECT_EQ(4, BlockingExecutors::ffmpegThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really
     // runs `threads` tasks at the same time.
