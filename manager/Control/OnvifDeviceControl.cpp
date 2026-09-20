@@ -1,12 +1,29 @@
 #include "wsdd.nsmap" //Namespaces
 #include "plugin/wsseapi.h" //WS-Sercurity
 #include "Util/logger.h" 
+#include "Util/onceToken.h"
+#include "Common/config.h"
 #include "Extension/Plugin.h" 
 #include "OnvifDeviceControl.h"
 #include <algorithm>
+#include <cctype>
 
 using namespace std;
 using namespace toolkit;
+using namespace mediakit;
+
+namespace OnvifCtrl {
+#define ONVIF_CTRL_FIELD "onvif."
+const string kClockOffsetTtlSec = ONVIF_CTRL_FIELD"clockOffsetTtlSec";
+
+static onceToken token([]() {
+    // How long a camera's clock offset stays usable before it is measured again.
+    // Camera clocks drift by seconds per day, so five minutes is far shorter than
+    // the drift needs to matter, while removing a GetSystemDateAndTime round trip
+    // from every single ONVIF operation. 0 or less restores the old behaviour.
+    mINI::Instance()[kClockOffsetTtlSec] = 300;
+});
+} // namespace OnvifCtrl
 
 namespace managerkit {
 
@@ -935,10 +952,41 @@ bool OnvifControl::getNetworkInterfaces() {
     return true;
 }
 
+// WS-Security faults that mean the camera rejected our timestamp or digest. The
+// cached clock offset is the first suspect, so drop it and let the next operation
+// measure the camera clock again instead of replaying the same bad signature.
+// Deliberately narrow: a network or "action not supported" fault says nothing
+// about the clock, and throwing the offset away there would restore the extra
+// round trip this cache exists to remove.
+bool OnvifControl::isAuthOrTimestampFault(const std::string &fault) {
+    std::string lower(fault);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+
+    static const char *kMarkers[] = {
+        "failedauthentication",
+        "invalidsecuritytoken",
+        "securitytokenunavailable",
+        "messageexpired",
+        "notauthorized",
+        "not authorized",
+        "unauthorized",
+    };
+    for (size_t i = 0; i < sizeof(kMarkers) / sizeof(kMarkers[0]); ++i) {
+        if (lower.find(kMarkers[i]) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void OnvifControl::reportError() {
     std::ostringstream oss;
     soap_stream_fault(_m_soap, oss);
     _soapErrMsg = oss.str();
+    if (OnvifControl::isAuthOrTimestampFault(_soapErrMsg)) {
+        invalidateClockOffset();
+    }
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
@@ -990,6 +1038,7 @@ bool OnvifControl::getCameraTime() {
             int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
             int offset_sys = get_system_offset_seconds();
             _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
+            cacheClockOffset();
             return true;
         }
     }
@@ -999,6 +1048,7 @@ bool OnvifControl::getCameraTime() {
         if (t > 0) {
             _camTimeInfo.cam_time = t;
             _camTimeInfo.cam_sys_time = t;
+            cacheClockOffset();
             return true;
         }
     }
@@ -1006,10 +1056,70 @@ bool OnvifControl::getCameraTime() {
     return false;
 }
 
+void OnvifControl::cacheClockOffset() {
+    const time_t now = time(nullptr);
+    _clock_offset.store(_camTimeInfo.cam_time - now, std::memory_order_relaxed);
+    // 0 is the "no entry" sentinel, so never store it as a timestamp.
+    _clock_offset_at.store(now != 0 ? now : 1, std::memory_order_release);
+}
+
+void OnvifControl::invalidateClockOffset() {
+    _clock_offset.store(0, std::memory_order_relaxed);
+    _clock_offset_at.store(0, std::memory_order_release);
+}
+
+bool OnvifControl::clockOffsetFresh(time_t cached_at, time_t now, int ttl_sec) {
+    if (ttl_sec <= 0 || cached_at == 0) {
+        return false;
+    }
+    // A `now` before the stamp means the local clock jumped back; the age of the
+    // entry is then unknown, so treat it as expired rather than trust it.
+    if (now < cached_at) {
+        return false;
+    }
+    return now - cached_at < ttl_sec;
+}
+
+bool OnvifControl::clockOffset(time_t &offset) {
+    GET_CONFIG(int, ttl_sec, OnvifCtrl::kClockOffsetTtlSec);
+
+    const time_t cached_at = _clock_offset_at.load(std::memory_order_acquire);
+    if (clockOffsetFresh(cached_at, time(nullptr), ttl_sec)) {
+        offset = _clock_offset.load(std::memory_order_relaxed);
+        return true;
+    }
+
+    // Cache miss: one round trip here, then none until the TTL runs out.
+    // getCameraTime() refreshes the cache itself on success.
+    if (getCameraTime() && _clock_offset_at.load(std::memory_order_acquire) != 0) {
+        offset = _clock_offset.load(std::memory_order_relaxed);
+        return true;
+    }
+
+    // The camera's clock is unknown right now. Sign with the local clock rather
+    // than keep using an offset we can no longer confirm.
+    invalidateClockOffset();
+    offset = 0;
+    return false;
+}
+
 struct SoapHookContext {
     int (*original_fsend)(struct soap*, const char*, size_t);
     time_t offset;
+    // The hook cannot be unhooked once soap->fsend is replaced, so it carries its
+    // own off switch instead. Without it, a hook installed while the camera clock
+    // was far off keeps rewriting timestamps after the drift is gone, and the
+    // rewritten wsu:Created no longer matches the digest gSOAP computed.
+    bool enabled;
 };
+
+void OnvifControl::disableSoapHook(struct soap* soap) {
+    if (!soap || !soap->user)
+        return;
+    auto ctx = static_cast<SoapHookContext*>(soap->user);
+    ctx->enabled = false;
+    ctx->offset = 0;
+}
 
 void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
     if (!soap || !soap->fsend)
@@ -1018,12 +1128,14 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
     if (soap->user) {
         auto ctx = static_cast<SoapHookContext*>(soap->user);
         ctx->offset = offset;
+        ctx->enabled = true;
         return;
     }
 
     auto ctx = (SoapHookContext*)soap_malloc(soap, sizeof(SoapHookContext));
     ctx->original_fsend = soap->fsend;
     ctx->offset = offset;
+    ctx->enabled = true;
 
     soap->user = ctx;
 
@@ -1059,7 +1171,7 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 
         std::string xml(buf, len);
 
-        if (xml.find("wsse:Security") != std::string::npos) {
+        if (ctx->enabled && xml.find("wsse:Security") != std::string::npos) {
 
             time_t now = time(nullptr) + ctx->offset;
 
@@ -1133,6 +1245,10 @@ void OnvifControl::setCameraTimeManual() {
             int ret = proxy->SetSystemDateAndTime(&req, resp);
             if (ret != SOAP_OK) {
                 WarnL << "Set camera time failed, ret " << ret;
+            } else {
+                // The camera clock just moved, so the offset measured above no
+                // longer describes it. Let the next operation measure it again.
+                invalidateClockOffset();
             }
         }
     }
@@ -1140,17 +1256,32 @@ void OnvifControl::setCameraTimeManual() {
 
 bool OnvifControl::setCredentials() {
     soap_wsse_delete_Security(_m_soap);
-    // Access with username, password and lifetime
-    bool need_update_time = false;
-    if (getCameraTime()) {
-        time_t offset_time = _camTimeInfo.cam_time - time(nullptr);
-        if (abs(offset_time) >= 5) {
-            installSoapHook(_m_soap, offset_time);
-            need_update_time = true;
-        }
+    // Access with username, password and lifetime.
+    // The offset is cached (onvif.clockOffsetTtlSec), so the common path costs no
+    // round trip. It used to call getCameraTime() unconditionally, which made
+    // GetSystemDateAndTime exactly half of all ONVIF traffic: one extra request
+    // for each of the ~40 operations that authenticate through here.
+    time_t offset_time = 0;
+    const bool have_offset = clockOffset(offset_time);
+    const time_t drift = offset_time < 0 ? -offset_time : offset_time;
+    const bool need_update_time = have_offset && drift >= 5;
+
+    // The hook rewrites wsu:Created/wsu:Expires on the way out, so it has to stay
+    // in step with the timestamp the digest was computed over: refreshed when we
+    // sign with the camera clock, switched off when we sign with the local one.
+    // Installing it only above the threshold left an already-installed hook
+    // stamping with a stale offset forever once the drift dropped below it.
+    if (need_update_time) {
+        installSoapHook(_m_soap, offset_time);
+    } else {
+        disableSoapHook(_m_soap);
     }
 
-    const int ret = need_update_time ? (soap_wsse_add_UsernameTokenDigest_at(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time))
+    // Recomputed from the offset rather than cached: cam_time is an absolute
+    // instant and also seeds the digest, so it must be current on every request.
+    const time_t cam_time = time(nullptr) + offset_time;
+
+    const int ret = need_update_time ? (soap_wsse_add_UsernameTokenDigest_at(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), cam_time))
                                      : (soap_wsse_add_UsernameTokenDigest(_m_soap, "Auth", _strUsername.c_str(), _strPassword.c_str()));
 
     if (soap_wsse_add_Timestamp(_m_soap, "Time", 10) || ret) {

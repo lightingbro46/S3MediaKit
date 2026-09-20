@@ -1,8 +1,10 @@
 #ifndef S3PLUGINKIT_ONVIFCONTROL_H
 #define S3PLUGINKIT_ONVIFCONTROL_H
 
+#include <atomic>
 #include <map>
 #include <mutex>
+#include <string>
 #include "soapDeviceBindingProxy.h"
 #include "soapMediaBindingProxy.h"
 #include "soapMedia2BindingProxy.h"
@@ -12,6 +14,12 @@
 #include "soapReplayBindingProxy.h"
 #include "soapRecordingBindingProxy.h"
 #include "Common/DeviceControl.h"
+
+namespace OnvifCtrl {
+// TTL (seconds) of the cached camera-clock offset used to sign ONVIF requests.
+// <= 0 disables the cache and refetches the camera time before every operation.
+extern const std::string kClockOffsetTtlSec;
+} // namespace OnvifCtrl
 
 namespace managerkit {
 
@@ -541,6 +549,21 @@ public:
     static tt__Profile *pickPTZProfile(const _trt__GetProfilesResponse &resp);
 
     /**
+     * True when a cached clock offset stamped at `cached_at` is still usable at
+     * `now`. `ttl_sec` <= 0 disables the cache; a `now` before `cached_at` means
+     * the local clock jumped back and the entry is discarded.
+     * Static and public so it can be unit tested without a camera.
+     */
+    static bool clockOffsetFresh(time_t cached_at, time_t now, int ttl_sec);
+
+    /**
+     * True for the WS-Security faults that mean the camera rejected our
+     * timestamp or digest, i.e. the ones that should drop the cached offset.
+     * Static and public so it can be unit tested without a camera.
+     */
+    static bool isAuthOrTimestampFault(const std::string &fault);
+
+    /**
      * Fill the PTZ ranges from a GetConfigurationOptions response, skipping every field the
      * device did not report. Pure parsing, no SOAP call: kept separate so it can be unit tested
      * against hand-built responses.
@@ -609,6 +632,30 @@ private:
     void installSoapHook(struct soap* soap, time_t offset);
 
     /**
+     * Stop an installed hook from rewriting timestamps. soap->fsend cannot be
+     * restored safely once replaced, so the hook is switched off in place.
+     */
+    void disableSoapHook(struct soap* soap);
+
+    /**
+     * Store the camera-clock offset derived from the last successful
+     * getCameraTime(), and stamp it with the current time.
+     */
+    void cacheClockOffset();
+
+    /**
+     * Drop the cached offset; the next setCredentials() refetches the camera time.
+     */
+    void invalidateClockOffset();
+
+    /**
+     * Camera-clock offset to sign with, refetching it only when the cache is
+     * empty or older than `onvif.clockOffsetTtlSec`. Returns false when no
+     * offset is available, in which case the local clock must be used.
+     */
+    bool clockOffset(time_t &offset);
+
+    /**
     * Get tt__VideoEncoder2Configuration by profile token.
     */
     tt__VideoEncoder2Configuration* getConfigVideoEncoder2ByToken(const std::string& profileToken);
@@ -661,10 +708,20 @@ private:
 
     struct CamTimeInfo {
         std::string TZ;
-        time_t cam_time;
-        time_t cam_sys_time;
+        // Without these initializers both fields hold garbage until the first
+        // successful getCameraTime(), and setCredentials() would sign with it.
+        time_t cam_time = 0;
+        time_t cam_sys_time = 0;
     };
     CamTimeInfo _camTimeInfo;
+
+    // Cached camera-clock offset (camera UTC - local time), so that a full
+    // GetSystemDateAndTime round trip is not needed before every operation.
+    // Atomic because setCredentials() is also reached from findVideoSegments()
+    // without _soap_mtx held, and the same OnvifControl is shared between the
+    // camera's device queue and the MediaGapFillManager worker.
+    std::atomic<time_t> _clock_offset {0};     // meaningless while _clock_offset_at == 0
+    std::atomic<time_t> _clock_offset_at {0};  // 0 = no valid cache entry
 
     std::vector<RecordingInformation> _recordingInformations;
 

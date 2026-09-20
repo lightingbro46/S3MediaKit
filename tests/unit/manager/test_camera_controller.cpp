@@ -480,3 +480,54 @@ TEST(OnvifPTZProfilePickTest, SkipsProfilesWithoutPTZAndHandlesEmptyList) {
     ASSERT_NE(nullptr, picked);
     EXPECT_EQ("profile-2", picked->token);
 }
+
+// ---------------------------------------------------------------------------
+// V3: the camera-clock offset cache that removes a GetSystemDateAndTime round
+// trip from every ONVIF operation. Both halves of the decision are pure, so
+// they are tested here without a camera; the traffic drop itself is measured by
+// the stress harness.
+// ---------------------------------------------------------------------------
+
+TEST(OnvifClockOffsetCacheTest, ReusesTheEntryUntilTheTtlRunsOut) {
+    const time_t stamped_at = 1000000;
+    EXPECT_TRUE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at, 300));
+    EXPECT_TRUE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at + 299, 300));
+    // Exactly at the TTL the entry is already stale.
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at + 300, 300));
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at + 3600, 300));
+}
+
+TEST(OnvifClockOffsetCacheTest, NeverUsesAnEmptyOrDisabledCache) {
+    const time_t now = 1000000;
+    // 0 is the "no entry yet" sentinel, and an invalidated entry is set back to it.
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(0, now, 300));
+    // ttl <= 0 restores the old behaviour: measure the camera clock every time.
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(now, now, 0));
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(now, now, -1));
+}
+
+TEST(OnvifClockOffsetCacheTest, DiscardsTheEntryWhenTheLocalClockJumpsBack) {
+    const time_t stamped_at = 1000000;
+    // NTP stepped the host clock backwards: the entry's age is unknowable.
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at - 1, 300));
+    EXPECT_FALSE(OnvifControl::clockOffsetFresh(stamped_at, stamped_at - 86400, 300));
+}
+
+TEST(OnvifAuthFaultTest, DropsTheOffsetOnTimestampAndAuthFaults) {
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault(
+        "SOAP-ENV:Sender[wsse:FailedAuthentication] The security token could not be authenticated"));
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault("wsse:InvalidSecurityToken"));
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault("wsu:MessageExpired"));
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault("ter:NotAuthorized"));
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault("Sender not Authorized"));
+    // Cameras are inconsistent about case in fault strings.
+    EXPECT_TRUE(OnvifControl::isAuthOrTimestampFault("FAILEDAUTHENTICATION"));
+}
+
+TEST(OnvifAuthFaultTest, KeepsTheOffsetOnFaultsThatSayNothingAboutTheClock) {
+    EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault(""));
+    EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("ter:ActionNotSupported"));
+    EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("End of file or no input: Operation timed out"));
+    EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("Connection refused"));
+    EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("ter:InvalidArgVal ter:NoProfile"));
+}
