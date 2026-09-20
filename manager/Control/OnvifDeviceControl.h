@@ -533,6 +533,23 @@ public:
     */
     SDCardInformation getSDCardInfo()  { return _sdCardInfo; }
 
+    /**
+     * Pick the media profile carrying the PTZ configuration, or null when the device reported
+     * none. `Profiles` is an optional element and its entries may be null, so it must not be
+     * indexed blindly.
+     */
+    static tt__Profile *pickPTZProfile(const _trt__GetProfilesResponse &resp);
+
+    /**
+     * Fill the PTZ ranges from a GetConfigurationOptions response, skipping every field the
+     * device did not report. Pure parsing, no SOAP call: kept separate so it can be unit tested
+     * against hand-built responses.
+     *
+     * Every space is optional in ONVIF, and a pan/tilt-only head (no zoom) is legal, so each
+     * vector, each element and each XRange/YRange is checked on its own.
+     */
+    static void fillPTZSpaces(const _tptz__GetConfigurationOptionsResponse &resp, OnvifPTZProfile &out);
+
 private:
     void reportError();
 

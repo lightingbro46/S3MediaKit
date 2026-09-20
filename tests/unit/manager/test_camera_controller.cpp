@@ -302,3 +302,181 @@ TEST_F(CameraControllerTest, MediaProfileSyncUpdatesMapOnPollerOnly) {
         EXPECT_TRUE(updates_on_poller[i]) << "profile map updated off the camera poller (update " << i << ")";
     }
 }
+
+// ── OnvifControl PTZ capability parsing ──────────────────────────────────────
+//
+// Regression cover for the crash found by the 300-camera stress run: a camera that reports
+// pan/tilt but no zoom space (legal ONVIF) used to make getDeviceCapabilities() index an empty
+// vector and take the whole MediaServer process down.
+namespace {
+
+// Owns the gSOAP response objects for one case. They are plain classes, so the test can build
+// them on the heap and wire the raw pointers by hand — no soap context needed for pure parsing.
+class PTZOptionsBuilder {
+public:
+    tt__Space2DDescription *panTilt(float min_x, float max_x, float min_y, float max_y) {
+        auto *space = add(new tt__Space2DDescription());
+        space->XRange = range(min_x, max_x);
+        space->YRange = range(min_y, max_y);
+        return space;
+    }
+
+    tt__Space1DDescription *zoom(float min_v, float max_v) {
+        auto *space = add1d(new tt__Space1DDescription());
+        space->XRange = range(min_v, max_v);
+        return space;
+    }
+
+    tt__PTZSpaces *spaces() {
+        if (!_spaces) {
+            _spaces.reset(new tt__PTZSpaces());
+        }
+        return _spaces.get();
+    }
+
+    // `with_spaces == false` reproduces a device whose PTZConfigurationOptions has no Spaces.
+    _tptz__GetConfigurationOptionsResponse response(bool with_options = true, bool with_spaces = true) {
+        _tptz__GetConfigurationOptionsResponse resp;
+        resp.PTZConfigurationOptions = nullptr;
+        if (!with_options) {
+            return resp;
+        }
+        if (!_options) {
+            _options.reset(new tt__PTZConfigurationOptions());
+        }
+        _options->Spaces = with_spaces ? spaces() : nullptr;
+        resp.PTZConfigurationOptions = _options.get();
+        return resp;
+    }
+
+private:
+    tt__FloatRange *range(float min_v, float max_v) {
+        std::unique_ptr<tt__FloatRange> r(new tt__FloatRange());
+        r->Min = min_v;
+        r->Max = max_v;
+        _ranges.push_back(std::move(r));
+        return _ranges.back().get();
+    }
+    tt__Space2DDescription *add(tt__Space2DDescription *s) {
+        _spaces2d.push_back(std::unique_ptr<tt__Space2DDescription>(s));
+        return s;
+    }
+    tt__Space1DDescription *add1d(tt__Space1DDescription *s) {
+        _spaces1d.push_back(std::unique_ptr<tt__Space1DDescription>(s));
+        return s;
+    }
+
+    std::vector<std::unique_ptr<tt__FloatRange>> _ranges;
+    std::vector<std::unique_ptr<tt__Space2DDescription>> _spaces2d;
+    std::vector<std::unique_ptr<tt__Space1DDescription>> _spaces1d;
+    std::unique_ptr<tt__PTZSpaces> _spaces;
+    std::unique_ptr<tt__PTZConfigurationOptions> _options;
+};
+
+} // namespace
+
+TEST(OnvifPTZSpacesTest, ReadsEveryRangeWhenTheDeviceReportsAllSpaces) {
+    PTZOptionsBuilder builder;
+    auto *spaces = builder.spaces();
+    spaces->AbsolutePanTiltPositionSpace.push_back(builder.panTilt(-1.0f, 1.0f, -0.5f, 0.5f));
+    spaces->AbsoluteZoomPositionSpace.push_back(builder.zoom(0.0f, 1.0f));
+    spaces->ContinuousPanTiltVelocitySpace.push_back(builder.panTilt(-0.9f, 0.9f, -0.4f, 0.4f));
+    spaces->ContinuousZoomVelocitySpace.push_back(builder.zoom(-0.8f, 0.8f));
+    spaces->RelativePanTiltTranslationSpace.push_back(builder.panTilt(-0.7f, 0.7f, -0.3f, 0.3f));
+    spaces->RelativeZoomTranslationSpace.push_back(builder.zoom(-0.6f, 0.6f));
+
+    OnvifPTZProfile profile;
+    OnvifControl::fillPTZSpaces(builder.response(), profile);
+
+    EXPECT_TRUE(profile.isAbsMoveEnable);
+    EXPECT_TRUE(profile.isConsMoveEnable);
+    EXPECT_TRUE(profile.isRelMoveEnable);
+    EXPECT_FLOAT_EQ(-1.0f, profile.absMinPan);
+    EXPECT_FLOAT_EQ(0.5f, profile.absMaxTilt);
+    EXPECT_FLOAT_EQ(1.0f, profile.absMaxZoom);
+    EXPECT_FLOAT_EQ(-0.8f, profile.consMinZoom);
+    EXPECT_FLOAT_EQ(0.6f, profile.relMaxZoom);
+}
+
+// The case that crashed: pan/tilt present, zoom absent.
+TEST(OnvifPTZSpacesTest, SurvivesPanTiltOnlyDeviceAndKeepsMoveEnabled) {
+    PTZOptionsBuilder builder;
+    auto *spaces = builder.spaces();
+    spaces->AbsolutePanTiltPositionSpace.push_back(builder.panTilt(-1.0f, 1.0f, -1.0f, 1.0f));
+    spaces->ContinuousPanTiltVelocitySpace.push_back(builder.panTilt(-1.0f, 1.0f, -1.0f, 1.0f));
+    spaces->RelativePanTiltTranslationSpace.push_back(builder.panTilt(-1.0f, 1.0f, -1.0f, 1.0f));
+    // no zoom space at all
+
+    OnvifPTZProfile profile;
+    const OnvifPTZProfile defaults;
+    OnvifControl::fillPTZSpaces(builder.response(), profile);
+
+    // Pan/tilt still drives the capability flags; presets depend on isAbsMoveEnable.
+    EXPECT_TRUE(profile.isAbsMoveEnable);
+    EXPECT_TRUE(profile.isConsMoveEnable);
+    EXPECT_TRUE(profile.isRelMoveEnable);
+    EXPECT_FLOAT_EQ(-1.0f, profile.absMinPan);
+    // Zoom keeps its defaults rather than reading past the end of an empty vector.
+    EXPECT_FLOAT_EQ(defaults.absMinZoom, profile.absMinZoom);
+    EXPECT_FLOAT_EQ(defaults.absMaxZoom, profile.absMaxZoom);
+    EXPECT_FLOAT_EQ(defaults.consMinZoom, profile.consMinZoom);
+    EXPECT_FLOAT_EQ(defaults.relMaxZoom, profile.relMaxZoom);
+}
+
+TEST(OnvifPTZSpacesTest, ToleratesMissingSpacesAndMissingOptions) {
+    PTZOptionsBuilder builder;
+    const OnvifPTZProfile defaults;
+
+    OnvifPTZProfile no_spaces;
+    OnvifControl::fillPTZSpaces(builder.response(true, false), no_spaces);
+    EXPECT_FALSE(no_spaces.isAbsMoveEnable);
+    EXPECT_FLOAT_EQ(defaults.absMinPan, no_spaces.absMinPan);
+
+    OnvifPTZProfile no_options;
+    OnvifControl::fillPTZSpaces(builder.response(false), no_options);
+    EXPECT_FALSE(no_options.isAbsMoveEnable);
+}
+
+TEST(OnvifPTZSpacesTest, ToleratesNullEntriesAndNullRanges) {
+    PTZOptionsBuilder builder;
+    auto *spaces = builder.spaces();
+    spaces->AbsolutePanTiltPositionSpace.push_back(nullptr);
+    // A space whose required XRange/YRange the device omitted.
+    auto *bare = builder.panTilt(0.0f, 0.0f, 0.0f, 0.0f);
+    bare->XRange = nullptr;
+    bare->YRange = nullptr;
+    spaces->ContinuousPanTiltVelocitySpace.push_back(bare);
+    spaces->ContinuousZoomVelocitySpace.push_back(nullptr);
+
+    OnvifPTZProfile profile;
+    const OnvifPTZProfile defaults;
+    OnvifControl::fillPTZSpaces(builder.response(), profile);
+
+    // A null first entry means "no usable space": the capability must stay off.
+    EXPECT_FALSE(profile.isAbsMoveEnable);
+    // A present space with no ranges still counts as supported, values stay at defaults.
+    EXPECT_TRUE(profile.isConsMoveEnable);
+    EXPECT_FLOAT_EQ(defaults.consMinPan, profile.consMinPan);
+    EXPECT_FLOAT_EQ(defaults.consMinZoom, profile.consMinZoom);
+}
+
+TEST(OnvifPTZProfilePickTest, SkipsProfilesWithoutPTZAndHandlesEmptyList) {
+    _trt__GetProfilesResponse empty;
+    EXPECT_EQ(nullptr, OnvifControl::pickPTZProfile(empty));
+
+    std::unique_ptr<tt__Profile> without(new tt__Profile());
+    without->PTZConfiguration = nullptr;
+    std::unique_ptr<tt__Profile> with(new tt__Profile());
+    std::unique_ptr<tt__PTZConfiguration> config(new tt__PTZConfiguration());
+    config->token = "ptz-token";
+    with->PTZConfiguration = config.get();
+    with->token = "profile-2";
+
+    _trt__GetProfilesResponse resp;
+    resp.Profiles.push_back(nullptr);           // gSOAP can leave a null entry
+    resp.Profiles.push_back(without.get());     // first real profile has no PTZ
+    resp.Profiles.push_back(with.get());
+    tt__Profile *picked = OnvifControl::pickPTZProfile(resp);
+    ASSERT_NE(nullptr, picked);
+    EXPECT_EQ("profile-2", picked->token);
+}

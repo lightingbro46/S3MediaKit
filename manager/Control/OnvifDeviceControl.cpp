@@ -17,6 +17,40 @@ OnvifControl::~OnvifControl() {
     disconnect();
 }    
 
+// gSOAP generates every repeated element as a vector of raw pointers, and the project does not
+// enable SOAP_XML_STRICT, so a device that omits an element yields an empty vector (or a null
+// entry) instead of a parse error. Indexing such a vector is undefined behaviour.
+template <typename T>
+static T *firstOrNull(const std::vector<T *> &v) {
+    return v.empty() ? nullptr : v.front();
+}
+
+// Copy a 2D range (pan/tilt). XRange/YRange are "required" per schema but generated as raw
+// pointers, so they can still be null.
+static void copyPanTiltRange(const tt__Space2DDescription *space, float &min_x, float &max_x,
+                             float &min_y, float &max_y) {
+    if (!space) {
+        return;
+    }
+    if (space->XRange) {
+        min_x = space->XRange->Min;
+        max_x = space->XRange->Max;
+    }
+    if (space->YRange) {
+        min_y = space->YRange->Min;
+        max_y = space->YRange->Max;
+    }
+}
+
+// Copy a 1D range (zoom). tt__Space1DDescription has no YRange: min and max both come from XRange.
+static void copyZoomRange(const tt__Space1DDescription *space, float &min_v, float &max_v) {
+    if (!space || !space->XRange) {
+        return;
+    }
+    min_v = space->XRange->Min;
+    max_v = space->XRange->Max;
+}
+
 static std::string ResRangeToString(const std::vector<std::pair<int, int>>& v)
 {
     std::ostringstream oss;
@@ -301,6 +335,64 @@ bool OnvifControl::getDeviceInformation() {
     return true;
 }
 
+tt__Profile *OnvifControl::pickPTZProfile(const _trt__GetProfilesResponse &resp) {
+    // Historically only Profiles[0] was considered. Keep preferring it, but fall back to the
+    // first profile that actually carries a PTZ configuration instead of giving up on PTZ for
+    // devices that do not list it first.
+    for (size_t i = 0; i < resp.Profiles.size(); ++i) {
+        tt__Profile *profile = resp.Profiles[i];
+        if (profile && profile->PTZConfiguration) {
+            return profile;
+        }
+    }
+    return nullptr;
+}
+
+void OnvifControl::fillPTZSpaces(const _tptz__GetConfigurationOptionsResponse &resp, OnvifPTZProfile &out) {
+    tt__PTZSpaces *spaces = resp.PTZConfigurationOptions ? resp.PTZConfigurationOptions->Spaces : nullptr;
+    if (!spaces) {
+        TraceL << "Device reported no PTZ spaces";
+        return;
+    }
+
+    // Absolute. The move capability follows pan/tilt only: zoom is read separately because a
+    // pan/tilt-only head is legal ONVIF and used to crash here.
+    if (tt__Space2DDescription *pan_tilt = firstOrNull(spaces->AbsolutePanTiltPositionSpace)) {
+        out.isAbsMoveEnable = true;
+        copyPanTiltRange(pan_tilt, out.absMinPan, out.absMaxPan, out.absMinTilt, out.absMaxTilt);
+    }
+    copyZoomRange(firstOrNull(spaces->AbsoluteZoomPositionSpace), out.absMinZoom, out.absMaxZoom);
+    if (out.isAbsMoveEnable) {
+        TraceL << "AbsoluteMove supported: Pan[" << out.absMinPan << "~" << out.absMaxPan
+               << "] Tilt[" << out.absMinTilt << "~" << out.absMaxTilt
+               << "] Zoom[" << out.absMinZoom << "~" << out.absMaxZoom << "]";
+    }
+
+    // Continuous.
+    if (tt__Space2DDescription *pan_tilt = firstOrNull(spaces->ContinuousPanTiltVelocitySpace)) {
+        out.isConsMoveEnable = true;
+        copyPanTiltRange(pan_tilt, out.consMinPan, out.consMaxPan, out.consMinTilt, out.consMaxTilt);
+    }
+    copyZoomRange(firstOrNull(spaces->ContinuousZoomVelocitySpace), out.consMinZoom, out.consMaxZoom);
+    if (out.isConsMoveEnable) {
+        TraceL << "ContinuousMove supported: Pan[" << out.consMinPan << "~" << out.consMaxPan
+               << "] Tilt[" << out.consMinTilt << "~" << out.consMaxTilt
+               << "] Zoom[" << out.consMinZoom << "~" << out.consMaxZoom << "]";
+    }
+
+    // Relative.
+    if (tt__Space2DDescription *pan_tilt = firstOrNull(spaces->RelativePanTiltTranslationSpace)) {
+        out.isRelMoveEnable = true;
+        copyPanTiltRange(pan_tilt, out.relMinPan, out.relMaxPan, out.relMinTilt, out.relMaxTilt);
+    }
+    copyZoomRange(firstOrNull(spaces->RelativeZoomTranslationSpace), out.relMinZoom, out.relMaxZoom);
+    if (out.isRelMoveEnable) {
+        TraceL << "RelativeMove supported: Pan[" << out.relMinPan << "~" << out.relMaxPan
+               << "] Tilt[" << out.relMinTilt << "~" << out.relMaxTilt
+               << "] Zoom[" << out.relMinZoom << "~" << out.relMaxZoom << "]";
+    }
+}
+
 bool OnvifControl::getDeviceCapabilities() {
     // get device capabilities and print media
     _tds__GetCapabilities *GetCapabilities = soap_new__tds__GetCapabilities(_m_soap);
@@ -376,13 +468,14 @@ bool OnvifControl::getDeviceCapabilities() {
             reportError();
             return false;
         }
-        if (GetProfilesResponse.Profiles[0]->PTZConfiguration) {
-            TraceL << "MediaProfile token for PTZ:" << GetProfilesResponse.Profiles[0]->token;
-            _ptzProfile.strMediaProfileToken = GetProfilesResponse.Profiles[0]->token;
+        tt__Profile *ptz_profile = pickPTZProfile(GetProfilesResponse);
+        if (ptz_profile) {
+            TraceL << "MediaProfile token for PTZ:" << ptz_profile->token;
+            _ptzProfile.strMediaProfileToken = ptz_profile->token;
 
             _tptz__GetConfigurationOptions *GetConfigurationOptions = soap_new__tptz__GetConfigurationOptions(_m_soap);
             _tptz__GetConfigurationOptionsResponse GetConfigurationOptionsResponse;
-            GetConfigurationOptions->ConfigurationToken = GetProfilesResponse.Profiles[0]->PTZConfiguration->token;
+            GetConfigurationOptions->ConfigurationToken = ptz_profile->PTZConfiguration->token;
             if (!setCredentials()) {
                 return false;
             }
@@ -392,41 +485,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 return false;
             }
 
-            if (GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace.size() > 0) {
-                _ptzProfile.isAbsMoveEnable = true;
-                _ptzProfile.absMinPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace[0]->XRange->Min;
-                _ptzProfile.absMaxPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace[0]->XRange->Max;
-                _ptzProfile.absMinTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace[0]->YRange->Min;
-                _ptzProfile.absMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsolutePanTiltPositionSpace[0]->YRange->Max;
-                _ptzProfile.absMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsoluteZoomPositionSpace[0]->XRange->Min;
-                _ptzProfile.absMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->AbsoluteZoomPositionSpace[0]->XRange->Max;
-                TraceL << "AbsoluteMove supported: Pan[" << _ptzProfile.absMinPan << "~" << _ptzProfile.absMaxPan << "] Tilt[" << _ptzProfile.absMinTilt << "~" << _ptzProfile.absMaxTilt
-                    << "] Zoom[" << _ptzProfile.absMinZoom << "~" << _ptzProfile.absMaxZoom << "]";
-            }
-
-            if (GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace.size() > 0) {
-                _ptzProfile.isConsMoveEnable = true;
-                _ptzProfile.consMinPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace[0]->XRange->Min;
-                _ptzProfile.consMaxPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace[0]->XRange->Max;
-                _ptzProfile.consMinTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace[0]->YRange->Min;
-                _ptzProfile.consMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousPanTiltVelocitySpace[0]->YRange->Max;
-                _ptzProfile.consMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousZoomVelocitySpace[0]->XRange->Min;
-                _ptzProfile.consMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->ContinuousZoomVelocitySpace[0]->XRange->Max;
-                TraceL << "ContinuousMove supported: Pan[" << _ptzProfile.consMinPan << "~" << _ptzProfile.consMaxPan << "] Tilt[" << _ptzProfile.consMinTilt << "~" << _ptzProfile.consMaxTilt
-                    << "] Zoom[" << _ptzProfile.consMinZoom << "~" << _ptzProfile.consMaxZoom << "]";
-            }
-
-            if (GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace.size() > 0) {
-                _ptzProfile.isRelMoveEnable = true;
-                _ptzProfile.relMinPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace[0]->XRange->Min;
-                _ptzProfile.relMaxPan = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace[0]->XRange->Max;
-                _ptzProfile.relMinTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace[0]->YRange->Min;
-                _ptzProfile.relMaxTilt = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativePanTiltTranslationSpace[0]->YRange->Max;
-                _ptzProfile.relMinZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativeZoomTranslationSpace[0]->XRange->Min;
-                _ptzProfile.relMaxZoom = GetConfigurationOptionsResponse.PTZConfigurationOptions->Spaces->RelativeZoomTranslationSpace[0]->XRange->Max;
-                TraceL << "RelativeMove supported: Pan[" << _ptzProfile.relMinPan << "~" << _ptzProfile.relMaxPan << "] Tilt[" << _ptzProfile.relMinTilt << "~" << _ptzProfile.relMaxTilt
-                    << "] Zoom[" << _ptzProfile.relMinZoom << "~" << _ptzProfile.relMaxZoom << "]";
-            }
+            fillPTZSpaces(GetConfigurationOptionsResponse, _ptzProfile);
 
             if (_ptzProfile.isAbsMoveEnable) {
                 getPTZPresets();
