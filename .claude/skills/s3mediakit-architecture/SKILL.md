@@ -67,8 +67,13 @@ worked end-to-end traces.
 - **`EventPoller`** — one thread per poller, a pool sized to the CPU. A `Session`, a
   `MediaSource` and its muxer are bound to one poller and must only be touched from it.
   Cross-thread hand-off goes through `poller->async()` / `async_first()`.
-- **`WorkThreadPool`** — for anything blocking: disk I/O, SQLite, AWS S3, ffmpeg,
-  ONVIF/HTTP calls to devices. Never block a poller thread.
+- **`WorkThreadPool`** — also pollers, running background timers and ordered queues
+  (`SyncManager`, per-camera ESC writes, tier storage). Not a place to block.
+- **`managerkit::BlockingExecutors`** — plain thread pools for anything blocking:
+  `api()` (REST handlers), `device()` (ONVIF/SDK of known devices), `discovery()` (probing
+  addresses), `ffmpeg()` (waiting for an ffmpeg/ffprobe process). Never block a poller thread.
+  A function is either blocking or async — never both depending on its input.
+  Full model: `docs/threading-blocking-work.md`.
 - **Timers** (`Timer`, `doDelayTask`) fire on a poller. Capture a `weak_ptr`, never `this`.
 - **Async REST handlers** hold an `HttpResponseInvoker`; the response may be produced on a
   different thread than the request. Call it exactly once.

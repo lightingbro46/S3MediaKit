@@ -40,8 +40,10 @@ Load `s3mediakit-architecture` first if you are not sure which layer owns the ch
    capturing anything.
 3. Respect poller affinity: sessions, `MediaSource`s and muxers belong to one `EventPoller`.
    Hop with `poller->async()`; do not reach across threads to mutate them.
-4. Blocking work — disk, SQLite, S3/AWS, ffmpeg, device HTTP/ONVIF — goes to
-   `WorkThreadPool`. A blocked poller stalls every stream on that thread.
+4. Blocking work — disk, SQLite, S3/AWS, ffmpeg, device HTTP/ONVIF — goes to a
+   `managerkit::BlockingExecutors` pool (`api()`, `device()`, `discovery()`, `ffmpeg()`),
+   not to `WorkThreadPool`: its threads are pollers running timers and ordered queues.
+   A blocked poller stalls every stream on that thread. See `docs/threading-blocking-work.md`.
 5. Prefer `std::atomic` + `std::atomic_load_explicit` for the small shared flags the code
    already uses this way, rather than adding a mutex on a hot path.
 

@@ -44,8 +44,9 @@ plugin. If you are re-deriving muxing rules in `ext-codec/`, it probably belongs
 - Timestamps go through `Stamp` for correction; do not hand-roll wrap/jump handling.
 - `CHECK`/`CHECK_RET` and the project loggers for errors; no bare `assert()`/`abort()` in
   library code.
-- Media objects belong to their `EventPoller`. Decode/transcode work that blocks belongs on
-  `WorkThreadPool`.
+- Media objects belong to their `EventPoller`. Decode/transcode work that blocks still runs on
+  `WorkThreadPool` today; everything else blocking has moved to `managerkit::BlockingExecutors`
+  (see `docs/threading-blocking-work.md`). Do not add new blocking work to a poller.
 
 ## Verify
 

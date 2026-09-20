@@ -78,9 +78,14 @@ explicitly in your report if you change one.
 
 ## Threading
 
-Handlers run on the HTTP session's poller. Anything blocking — SQLite, disk, S3, ffmpeg,
-device calls — must move to `WorkThreadPool` with an async handler, capturing a `weak_ptr`
-(never `this`) and the `invoker` by value.
+Handlers run on the HTTP session's poller; the `_ASYNC` suffix only defers the response, it
+does not move work off that thread. Anything blocking — SQLite, disk, S3, ffmpeg, device calls
+— must be dispatched through `server/ApiWorkDispatcher.h` (`dispatchApiWork`, `runApiWork`,
+`runApiCallbackWork`), which runs it on `BlockingExecutors::api()` and answers from the request
+poller. Capture request values by value (never `allArgs`/`val`/`headerOut` by reference, never
+raw `this`). Never decide from request data whether to dispatch. Heavy groups take an
+`apiWorkLimit("<group>")` for backpressure (503 `CODE_SERVER_BUSY`).
+See `docs/threading-blocking-work.md`.
 
 ## Checklist before finishing
 

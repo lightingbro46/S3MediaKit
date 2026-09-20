@@ -26,6 +26,14 @@ S3MediaKit is a C++11 streaming media server derived from ZLMediaKit. It provide
 - Never capture raw `this` in timers, `doDelayTask`, poller tasks, or other callbacks. Singleton managers may call `ClassName::Instance()` inside the callback.
 - Prefer `std::shared_ptr`/`std::weak_ptr`; use the project's `Optional<T>` instead of `std::optional`.
 
+## Threading
+
+- Sessions and media objects belong to one `EventPoller` and must not be touched from another thread.
+- Blocking work (disk, SQLite, S3, SOAP/ONVIF, ffmpeg) goes to a `managerkit::BlockingExecutors` pool — `api()`, `device()`, `discovery()` or `ffmpeg()` — not to `WorkThreadPool`, whose threads are pollers running timers and ordered queues.
+- REST handlers dispatch through `server/ApiWorkDispatcher.h`.
+- A function is either blocking or async, never both depending on its input; never pick a thread from request data.
+- Full model: [docs/threading-blocking-work.md](docs/threading-blocking-work.md).
+
 ## Repository map
 
 | Path | Responsibility |

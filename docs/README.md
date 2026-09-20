@@ -13,6 +13,7 @@
 - [Tích hợp Restore Job cho Web, Desktop và Mobile](./restore-job-client-integration.md)
 - [Kiểm thử tích hợp Storage Tiering với Codex agent](./tier-storage-integration-testing.md)
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
+- [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 
 ## Mục lục
 

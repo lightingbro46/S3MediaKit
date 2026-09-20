@@ -60,9 +60,14 @@ poller->async([weak_self]() {
 
 Singleton managers are the one exception — call `ClassName::Instance()` inside the callback.
 
-**Thread affinity is real.** Sessions and media objects belong to one `EventPoller` and
-must not be touched from another thread; blocking work (disk, SQLite, S3, ffmpeg) belongs
-on `WorkThreadPool`. Crossing that line is the most common source of bugs here.
+**Thread affinity is real.** Sessions and media objects belong to one `EventPoller` and must
+not be touched from another thread. Blocking work (disk, SQLite, S3, SOAP/ONVIF, ffmpeg) goes
+to a `managerkit::BlockingExecutors` pool — `api()`, `device()`, `discovery()` or `ffmpeg()` —
+**not** to `WorkThreadPool`, whose threads are pollers running timers and ordered queues.
+REST handlers dispatch through `server/ApiWorkDispatcher.h`. Never pick a thread from request
+data: a function is either blocking or async, never both depending on its input. Crossing any
+of these lines is the most common source of bugs here — see
+[docs/threading-blocking-work.md](docs/threading-blocking-work.md).
 
 **`CMAKE_INCLUDE_CURRENT_DIR` is `OFF`.** Includes must be explicit and correct.
 

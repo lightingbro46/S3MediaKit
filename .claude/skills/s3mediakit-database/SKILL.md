@@ -76,7 +76,9 @@ SyncManager::Instance().registerTable("my_table", h);
 
 ## Threading
 
-All SQLite access is blocking — it belongs on `WorkThreadPool`, never on an `EventPoller`.
+All SQLite access is blocking — it belongs on a `managerkit::BlockingExecutors` pool
+(`api()` for REST handlers, via `server/ApiWorkDispatcher.h`), never on an `EventPoller` and
+not on `WorkThreadPool`, whose threads are pollers. See `docs/threading-blocking-work.md`.
 Keep transactions short; a long transaction blocks every other writer on that database.
 
 Open transactions through the executor (`getExecutor()`):

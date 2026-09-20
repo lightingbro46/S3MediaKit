@@ -57,7 +57,8 @@ StoragePolicy / PolicyAssignment (Storage entities)
 
 Restore jobs and their client contract: `docs/api-storage-tiering.md`,
 `docs/restore-job-client-integration.md`, `docs/storage-tiering-flow.md`.
-All of this is blocking I/O — it runs on `WorkThreadPool`, not on a poller.
+All of this is blocking I/O — it runs on a `managerkit::BlockingExecutors` pool, not on a
+poller (and not on `WorkThreadPool`, whose threads are pollers).
 
 ## 4. REST request
 
