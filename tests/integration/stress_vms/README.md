@@ -156,6 +156,15 @@ Cột phải đọc là `fd đầu→cuối`. `fd đỉnh` chỉ nói lúc cao n
 thì về bản chất không bao giờ giảm, nên đọc nó như "fd không được giải phóng" là sai. Đó
 chính là chỗ làm quan sát fd trong `REPORT-2026-09-20.md` không kết luận được gì.
 
+Muốn đo được việc **nhả** fd của camera đã chuyển đi thì phase phải đủ dài: writer timefile chỉ
+được đóng trong chu kỳ bảo trì kho lưu trữ (timer 300 s), nên dùng `PHASE_SEC=330` trở lên.
+`setup_stress.py` cũng hạ `record.timefileIdleCloseSec` xuống 30 s cho node của harness (mặc định
+600 s thì một phase không bao giờ thấy writer idle). Xác nhận cơ chế đã chạy bằng log:
+
+```bash
+grep -h "idle time file writer" <work_dir>/node-*/log/*.log
+```
+
 Kết quả ghi ra `<work_dir>/report_<phase>.json` và `report_final.json`.
 
 ## Kịch bản `storage` — StorageManager khi `ENABLE_TIER_STORAGE=OFF`

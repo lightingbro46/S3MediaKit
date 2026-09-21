@@ -257,7 +257,10 @@ def node_overrides(node_id, d, ports, args):
         "protocol": {"mp4_save_path": d + "/record", "hls_save_path": d + "/www/live",
                      # đoạn ngắn để sinh nhiều file index trong thời gian chạy ngắn
                      "mp4_max_second": args.segment_sec},
-        "record": {"fileSecond": args.segment_sec},
+        # timefileIdleCloseSec thấp hơn hẳn mặc định 600: một phase của harness chỉ dài vài
+        # phút, cần chu kỳ bảo trì (300s) nhìn thấy writer đã idle mới nhả được handle
+        # .s3db/.idx của camera bị move đi.
+        "record": {"fileSecond": args.segment_sec, "timefileIdleCloseSec": 30},
         "hook": {"enable": 1, "api_url": "http://127.0.0.1:%d" % args.api_port,
                  "report_interval": 10.0, "alive_interval": 5.0, "timeoutSec": 5, "retry": 0},
         "database": {"db_save_path": d + "/db", "updates_save_path": d + "/updates",

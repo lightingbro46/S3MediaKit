@@ -8,7 +8,8 @@ Kế hoạch đầy đủ (mô tả gốc rễ từng vấn đề, cách sửa, 
 kế hoạch đó.
 
 Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi vấn đề một commit độc lập.
-**Cả bảy đã xong.** Phần còn lại là xác minh bằng harness cho V1, V3, V4, V6, V7 và V5 (xem từng mục).
+**Cả bảy đã xong.** V5 đã được xác minh lại bằng soak 2 chu kỳ (2026-09-21). Phần còn lại là xác minh
+bằng harness cho V1, V3, V4, V6 (xem từng mục); V7 đã có bằng chứng thread `storage worker` trong soak đó.
 
 ---
 
@@ -533,8 +534,23 @@ của tiến trình trỏ tới đường dẫn; đã kiểm test bắt được
 Vậy cả 3 fd mỗi camera bị giữ lại đều đã xử lý: 2 handle timefile (idle close) + 1 handle rò
 (`fclose`).
 
-**Chưa làm:** chạy lại soak để xác nhận phần dư +170 thật sự về ~0. Cần soak dài hơn ngưỡng 600 s
-của một chu kỳ bảo trì, hoặc hạ `record.timefileIdleCloseSec` trong config của harness.
+### Xác nhận bằng soak sau khi sửa
+
+`setup_stress.py` nay đặt `record.timefileIdleCloseSec=30` cho node của harness (mặc định 600 s là
+quá dài so với một phase), và `PHASE_SEC` phải ≥ 330 s để mỗi phase chứa ít nhất một chu kỳ bảo trì
+(timer 300 s trong `StorageManager::start()`).
+
+```
+NODES=2 PHASE_SEC=330 CYCLES=2 run_stress.sh /tmp/s3mk_soak2 mid soak  → exit 0, không failure
+```
+
+node-b: `steady` 491 → `rebalance_1` 493 → `rebalance_2` 493. **Phần dư +170 fd còn +2 và phẳng
+hoàn toàn giữa hai chu kỳ**; fd loại `file` 336 → 338 → 338. Mức nền `steady` cũng giảm 556 → 491,
+đúng bằng phần handle `create_file()` không còn rò cho 60 camera mỗi node. Đỉnh khi failover
+1.069 → 944/963. Log `Closed 51 idle time file writer(s) of 56 device(s)` trên thread
+`storage worker` xác nhận cả cơ chế idle-close và pool của V7.
+
+Số liệu đầy đủ ở `REPORT-2026-09-20.md`, mục "Xác nhận sau khi sửa".
 
 ---
 
