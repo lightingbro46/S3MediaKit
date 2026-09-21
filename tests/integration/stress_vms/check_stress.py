@@ -308,7 +308,35 @@ def db_size(work, node):
 
 
 # ------------------------------------------------------------------ tài nguyên
-def resource_summary(work):
+def phase_start(work, phase):
+    """Mốc bắt đầu của `phase`, đọc từ phases.jsonl (do mark() trong run_stress.sh ghi).
+
+    Trả lần xuất hiện CUỐI, để kịch bản soak lặp lại tên phase vẫn lấy đúng chu kỳ mới nhất.
+    """
+    if not phase or phase in ("final", "done"):
+        return None
+    at = None
+    try:
+        with open(os.path.join(work, "phases.jsonl")) as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("phase") == phase and isinstance(rec.get("at"), int):
+                    at = rec["at"]
+    except OSError:
+        return None
+    return at
+
+
+def resource_summary(work, since=None):
+    """Tài nguyên của từng node. `since` cắt theo mốc bắt đầu phase.
+
+    Không cắt thì mọi con số là của CẢ lần chạy: `fds_peak` khi đó là đỉnh tích luỹ nên
+    không bao giờ giảm được, và đọc nó như "fd không được giải phóng" là sai. Đây chính là
+    chỗ làm quan sát V5 của báo cáo 2026-09-20 không kết luận được gì.
+    """
     path = os.path.join(work, "resources.jsonl")
     per_node = defaultdict(list)
     try:
@@ -322,17 +350,29 @@ def resource_summary(work):
     except OSError:
         return {}
     out = {}
-    for node, recs in per_node.items():
-        if not recs:
+    for node, all_recs in per_node.items():
+        if not all_recs:
             continue
+        recs = [r for r in all_recs if since is None or r.get("at", 0) >= since]
+        # Phase quá ngắn để có mẫu riêng: quay về cả lần chạy thay vì mất hẳn node khỏi bảng.
+        windowed = bool(recs)
+        if not recs:
+            recs = all_recs
         rss = [r["rss_kb"] for r in recs]
+        fds = [r["fds"] for r in recs]
         out[node] = {
             "samples": len(recs),
+            "windowed": windowed,
             "rss_start_mb": round(rss[0] / 1024.0, 1),
             "rss_end_mb": round(rss[-1] / 1024.0, 1),
             "rss_peak_mb": round(max(rss) / 1024.0, 1),
             "threads_peak": max(r["threads"] for r in recs),
-            "fds_peak": max(r["fds"] for r in recs),
+            "fds_start": fds[0],
+            "fds_end": fds[-1],
+            "fds_peak": max(fds),
+            # Phân loại fd ở mẫu cuối của phase: fd tăng mà không biết loại nào thì không
+            # truy ngược được nơi tạo.
+            "fd_kinds_end": recs[-1].get("fd_kinds") or {},
         }
         span = recs[-1]["at"] - recs[0]["at"]
         ticks = recs[-1]["cpu_ticks"] - recs[0]["cpu_ticks"]
@@ -441,7 +481,8 @@ def evaluate(work, phase, final):
         if final and not report["sync"].get("converged", True):
             failures.append("DB ESC chưa hội tụ giữa các node")
 
-    report["resources"] = resource_summary(work)
+    # Cắt theo phase: xem mô tả trong resource_summary().
+    report["resources"] = resource_summary(work, phase_start(work, phase))
 
     if final:
         live = report["streams"]["rtsp_playing"]
@@ -497,9 +538,14 @@ def render(report):
         print("  sync     %s -> %s" % (", ".join(parts),
                                        "HỘI TỤ" if report["sync"]["converged"] else "LỆCH"))
     for node, r in sorted(report.get("resources", {}).items()):
-        print("  %-8s rss %.0f->%.0fMB (đỉnh %.0f) threads=%d fds=%d cpu~%.0f%%"
+        kinds = ", ".join("%s=%d" % (k, v) for k, v in sorted(
+            (r.get("fd_kinds_end") or {}).items(), key=lambda kv: -kv[1]))
+        print("  %-8s rss %.0f->%.0fMB (đỉnh %.0f) threads=%d fd %d->%d (đỉnh %d) cpu~%.0f%%"
               % (node, r["rss_start_mb"], r["rss_end_mb"], r["rss_peak_mb"],
-                 r["threads_peak"], r["fds_peak"], r.get("cpu_pct_avg", 0)))
+                 r["threads_peak"], r.get("fds_start", 0), r.get("fds_end", 0),
+                 r["fds_peak"], r.get("cpu_pct_avg", 0)))
+        if kinds:
+            print("           fd theo loại: %s" % kinds)
     for f in report["failures"]:
         print("  FAIL: %s" % f)
 

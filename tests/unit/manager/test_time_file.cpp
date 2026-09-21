@@ -1,15 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "Local/TimeFile.h"
 #include "Local/TimeMaker.h"
 #include "Local/TimeDemuxer.h"
 #include "Local/TimeFileAccessManager.h"
 #include "Local/TimeQuery.h"
+#include "Local/TimeRecorder.h"
+#include "Util/File.h"
+#include "Util/util.h"
 
 using namespace managerkit;
 
@@ -367,4 +373,55 @@ TEST(TimeQueryTest, ReadsTimelineWithoutStatisticState) {
 
     std::remove(path.c_str());
     std::remove(TimeMakerImp::indexFile(path).c_str());
+}
+
+// V5: a device is never removed from TimeRecorderManager, so the writer of today's timefile used to
+// stay open for the life of the process — including for a camera that had stopped recording here
+// (moved to another node, or waiting for retention to clear its data). Measured on the stress
+// harness: 2 fd per such camera, 120 fd for 60 cameras on one node.
+TEST(TimeRecorderIdleCloseTest, ClosesWriterWithoutLosingData) {
+    const std::string dir = "/tmp/s3mediakit-unit-idle-writer";
+    ::system(("rm -rf " + dir).c_str());
+    ASSERT_EQ(0, ::mkdir(dir.c_str(), 0755));
+
+    auto recorder = std::make_shared<TimeRecorder>(dir);
+    const uint64_t now = (uint64_t)time(nullptr);
+    ASSERT_TRUE(recorder->inputBlock(makeBlock("main", now, 10)));
+
+    const std::string today = dir + "/" + toolkit::getTimeStr("%Y-%m-%d", now) + ".s3db";
+    ASSERT_TRUE(toolkit::File::fileExist(today.data()));
+
+    // Not idle yet, and a threshold of 0 disables closing entirely.
+    EXPECT_EQ(0U, recorder->closeIdleWriters(60000));
+    EXPECT_EQ(0U, recorder->closeIdleWriters(0));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(1U, recorder->closeIdleWriters(10));
+    // Nothing left to close on a second pass.
+    EXPECT_EQ(0U, recorder->closeIdleWriters(10));
+
+    // The point of the whole change: the next block reopens the file in append mode, so the block
+    // written before the close is still there. TimeMuxer::openFile uses "ab+" and restores the
+    // index offset from the file size; truncating here would destroy a whole day of index.
+    ASSERT_TRUE(recorder->inputBlock(makeBlock("main", now + 60, 10)));
+    recorder->closeNow();
+
+    TimeDemuxer scan;
+    scan.openFile(today);
+    std::vector<uint64_t> stamps;
+    bool eof = false;
+    for (;;) {
+        TimeBlock block;
+        scan.readBlock(block, eof);
+        if (eof) {
+            break;
+        }
+        stamps.push_back(block.start_time());
+    }
+    scan.closeFile();
+    ASSERT_EQ(2U, stamps.size()) << "block written before the idle close was lost";
+    EXPECT_EQ(now, stamps[0]);
+    EXPECT_EQ(now + 60, stamps[1]);
+
+    ::system(("rm -rf " + dir).c_str());
 }

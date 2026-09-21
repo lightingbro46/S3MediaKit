@@ -491,6 +491,10 @@ void StorageManager::postMaintenanceCycle(bool full) {
             strong_self->enforceStoragePolicy();
 #endif
             strong_self->removeExpiredUserSession();
+            // A device is never removed from TimeRecorderManager, so a camera that stopped
+            // recording here (moved to another node, or off schedule) would keep its timefile
+            // handles open for the life of the process.
+            TimeRecorderManager::Instance().closeIdleWriters();
         }
         strong_self->cleanupTemporaryFiles();
     }, false);

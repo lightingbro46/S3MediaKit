@@ -6,10 +6,23 @@ using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
+namespace TimeRecord {
+// How long a timefile writer may sit without a single block written before it is closed again.
+// A device kept in the list but no longer recording (moved to another node, or waiting for
+// retention to clear its data) otherwise holds its `.s3db` + `.idx` handles for as long as the
+// process lives. Reopening costs one append-mode open, so the threshold only has to be well above
+// the gap between two blocks of a recording stream. 0 disables closing.
+const std::string kTimefileIdleCloseSec = "record.timefileIdleCloseSec";
+
+static toolkit::onceToken token([]() {
+    mINI::Instance()[kTimefileIdleCloseSec] = 600;
+});
+} // namespace TimeRecord
+
 namespace managerkit {
 
 static onceToken token(
-    []() { 
+    []() {
         GOOGLE_PROTOBUF_VERIFY_VERSION;
     },
     []() { google::protobuf::ShutdownProtobufLibrary(); }
@@ -94,6 +107,32 @@ bool TimeRecorderManager::removeRecorder(const string &device_id) {
     }
     TraceL << "Removed TimeRecorder for device: " << device_id;
     return true;
+}
+
+size_t TimeRecorderManager::closeIdleWriters() {
+    GET_CONFIG(int, idle_close_sec, TimeRecord::kTimefileIdleCloseSec);
+    if (idle_close_sec <= 0) {
+        return 0;
+    }
+    std::vector<TimeRecorder::Ptr> recorders;
+    {
+        // Copy out: closing a file is slow and must not hold the manager lock, which addBlock()
+        // takes on the recording path.
+        std::lock_guard<std::mutex> lock(_mutex);
+        recorders.reserve(_recorders.size());
+        for (const auto &pr : _recorders) {
+            recorders.push_back(pr.second);
+        }
+    }
+    const auto idle_ms = static_cast<uint64_t>(idle_close_sec) * 1000;
+    size_t closed = 0;
+    for (const auto &recorder : recorders) {
+        closed += recorder->closeIdleWriters(idle_ms);
+    }
+    if (closed) {
+        InfoL << "Closed " << closed << " idle time file writer(s) of " << recorders.size() << " device(s)";
+    }
+    return closed;
 }
 
 } // namespace managerkit

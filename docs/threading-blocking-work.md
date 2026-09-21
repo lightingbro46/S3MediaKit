@@ -285,6 +285,7 @@ thật sự. Đừng "sửa" nó thành dispatch.
 _poller (timer 300s) -> postMaintenanceCycle(true)
 storage worker       -> enforceStoragePolicy()      (chỉ khi ENABLE_TIER_STORAGE=OFF)
                      -> removeExpiredUserSession()
+                     -> TimeRecorderManager::closeIdleWriters()
                      -> cleanupTemporaryFiles()
 ```
 
@@ -306,6 +307,12 @@ task kết thúc kiểu nào cũng nhả.
 
 `enforceStoragePolicy()` có `CHECK(!EventPoller::getCurrentPoller(), ...)` để chặn việc ai đó gọi
 lại nó từ poller.
+
+`TimeRecorderManager::closeIdleWriters()` đóng **đồng bộ** (`record.timefileIdleCloseSec`, mặc định
+600 s). Khác với `evictIdleImportWritersLocked()` — hàm đó chạy trong `inputBlock()` trên đường ghi
+nên phải đóng bất đồng bộ. Ở đây đóng đồng bộ vừa hợp chỗ (pool `storage`) vừa loại được một race:
+một lần đóng bất đồng bộ còn giữ dữ liệu trong buffer trong khi writer mới mở lại cùng file sẽ làm
+`TimeMuxer::setLastOffset()` đọc kích thước file cũ.
 
 ## 5. Cấu Hình
 

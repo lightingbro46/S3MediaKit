@@ -106,6 +106,9 @@ TimeRecorder::FileWriter::Ptr TimeRecorder::getOrCreateWriter(const string &file
 
     auto writer = std::make_shared<FileWriter>();
     writer->full_path = file_path;
+    // A just-opened writer is not the least recently used one, and must not look idle forever to
+    // closeIdleWriters() when it is opened by a path that does not write immediately.
+    writer->last_access = getCurrentMillisecond();
     try {
         writer->muxer = std::make_shared<TimeMuxer>();
         TraceL << "Open time file: " << file_path;
@@ -116,6 +119,39 @@ TimeRecorder::FileWriter::Ptr TimeRecorder::getOrCreateWriter(const string &file
     }
     _writers[file_path] = writer;
     return writer;
+}
+
+size_t TimeRecorder::closeIdleWriters(uint64_t idle_ms) {
+    if (idle_ms == 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto now = getCurrentMillisecond();
+    size_t closed = 0;
+    for (auto it = _writers.begin(); it != _writers.end();) {
+        auto &writer = it->second;
+        // Same exclusion as the import eviction: a rebuild owns these writers.
+        if (writer->mem_muxer || writer->mirror_recorder) {
+            ++it;
+            continue;
+        }
+        if (now < writer->last_access + idle_ms) {
+            ++it;
+            continue;
+        }
+        // Closed synchronously, unlike the import eviction: that one runs inside inputBlock() on the
+        // recording path, this one runs on BlockingExecutors::storage() where blocking is expected.
+        // It also removes a race — an async close still holding buffered data while a new writer
+        // reopens the same path would make TimeMuxer::setLastOffset() read a stale file size.
+        TraceL << "Close idle time file: " << writer->full_path;
+        if (writer->muxer) {
+            writer->muxer->closeFile();
+            writer->muxer = nullptr;
+        }
+        it = _writers.erase(it);
+        ++closed;
+    }
+    return closed;
 }
 
 void TimeRecorder::closeAllLocked(bool async) {

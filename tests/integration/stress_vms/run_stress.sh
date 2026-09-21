@@ -9,13 +9,14 @@
 #   run_stress.sh [work_dir] [profile] [scenario]
 #     profile : smoke (30 cam) | mid (120 cam) | full (300 cam)   [mặc định: mid]
 #     scenario: all | ramp | steady | onvif | flap | schedule | retention
-#               | failover | storage | recover                    [mặc định: all]
+#               | failover | storage | recover | soak              [mặc định: all]
 #   run_stress.sh [work_dir] stop
 #
 # Env:
 #   MEDIASERVER_DIR  thư mục chứa MediaServer (mặc định <repo>/release/linux/Debug)
 #   NODES            số node (mặc định 2; kịch bản storage luôn dùng 1)
 #   PHASE_SEC        thời lượng mỗi phase (mặc định theo profile)
+#   CYCLES           số chu kỳ failover<->rebalance của kịch bản soak (mặc định 4)
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +39,7 @@ case "$PROFILE" in
 esac
 PHASE_SEC="${PHASE_SEC:-$DEF_PHASE}"
 NODES="${NODES:-2}"
+CYCLES="${CYCLES:-4}"
 [ "$SCENARIO" = "storage" ] && NODES=1
 
 node_list() {
@@ -227,9 +229,32 @@ sleep 2
             [ -d "/proc/$pid" ] || continue
             rss=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null)
             threads=$(awk '/Threads/{print $2}' "/proc/$pid/status" 2>/dev/null)
-            fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)
             utime=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null)
-            echo "{\"at\":$(date +%s),\"node\":\"$node\",\"rss_kb\":${rss:-0},\"threads\":${threads:-0},\"fds\":$fds,\"cpu_ticks\":${utime:-0}}"
+            # Phân loại fd theo đích của symlink. Chỉ đếm tổng thì biết fd tăng mà không
+            # biết rò loại nào, nên một lần `ls -l` trả cả tổng lẫn từng loại.
+            fd_info=$(ls -l "/proc/$pid/fd" 2>/dev/null | awk '
+                / -> / {
+                    t = $NF; n++
+                    if      (t ~ /^socket:/)                 k = "socket"
+                    else if (t ~ /^pipe:/)                   k = "pipe"
+                    else if (t ~ /^anon_inode:\[?eventfd/)   k = "eventfd"
+                    else if (t ~ /^anon_inode:\[?eventpoll/) k = "eventpoll"
+                    else if (t ~ /^anon_inode:\[?timerfd/)   k = "timerfd"
+                    else if (t ~ /^anon_inode:\[?inotify/)   k = "inotify"
+                    else if (t ~ /^anon_inode:/)             k = "anon"
+                    else if (t ~ /^\//)                      k = "file"
+                    else                                     k = "other"
+                    c[k]++
+                }
+                END {
+                    printf "%d ", n + 0
+                    printf "{"
+                    first = 1
+                    for (k in c) { if (!first) printf ","; printf "\"%s\":%d", k, c[k]; first = 0 }
+                    printf "}"
+                }')
+            fds="${fd_info%% *}"; fd_kinds="${fd_info#* }"
+            echo "{\"at\":$(date +%s),\"node\":\"$node\",\"rss_kb\":${rss:-0},\"threads\":${threads:-0},\"fds\":${fds:-0},\"fd_kinds\":${fd_kinds:-{\}},\"cpu_ticks\":${utime:-0}}"
         done
         sleep 5
     done
@@ -290,6 +315,22 @@ case "$SCENARIO" in
             run_phase failover "$PHASE_SEC" failover
             run_phase rebalance "$PHASE_SEC" rebalance
         fi
+        run_phase recover "$PHASE_SEC" recover
+        ;;
+    soak)
+        # V5: lặp chu kỳ failover <-> rebalance để phân biệt fd rò thật với fd bão hoà.
+        # Một lần failover/rebalance (kịch bản `all`) không nói được gì: phải thấy fd tăng
+        # ĐƠN ĐIỆU theo số chu kỳ mới là rò. Đọc cột "fd đầu→cuối" của từng phase.
+        if [ "$NODES" -lt 2 ]; then
+            echo "kịch bản soak cần NODES>=2 (nó dựa vào failover giữa các node)"; exit 2
+        fi
+        run_phase steady "$PHASE_SEC" ""
+        cycle=1
+        while [ "$cycle" -le "$CYCLES" ]; do
+            run_phase "failover_$cycle"  "$PHASE_SEC" failover
+            run_phase "rebalance_$cycle" "$PHASE_SEC" rebalance
+            cycle=$((cycle + 1))
+        done
         run_phase recover "$PHASE_SEC" recover
         ;;
     *) echo "scenario không hợp lệ: $SCENARIO"; exit 2 ;;

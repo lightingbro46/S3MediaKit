@@ -20,6 +20,18 @@ public:
 
     TimeRecorder::Ptr getRecorder(const std::string &device_id);
 
+    /**
+     * Close every timefile writer idle for longer than `record.timefileIdleCloseSec`, across all
+     * devices; returns how many were closed. Blocking (it closes files), so it belongs on
+     * BlockingExecutors::storage() — StorageManager's maintenance cycle calls it.
+     *
+     * A recorder is created per device and never removed while the process lives, so without this
+     * every device the node has ever recorded keeps its `.s3db` + `.idx` handles open. That is most
+     * visible after a failover: a camera moved back to its own node stays in this node's device list
+     * (by design, until retention has cleared its data) and used to keep those two handles with it.
+     */
+    size_t closeIdleWriters();
+
 private:
     TimeRecorderManager();
 

@@ -30,10 +30,11 @@ tests/integration/stress_vms/run_stress.sh /tmp/s3mk_stress stop
 | Tham số | Giá trị |
 |---|---|
 | `profile` | `smoke` (30 cam / 60 luồng), `mid` (120/240), `full` (300/600) |
-| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover` |
+| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak` |
 | `MEDIASERVER_DIR` | thư mục chứa binary (mặc định `<repo>/release/linux/Debug`) |
 | `NODES` | số node (mặc định 2; `storage` luôn 1) |
 | `PHASE_SEC` | thời lượng mỗi phase (mặc định 60/120/180 theo profile) |
+| `CYCLES` | số chu kỳ `failover`↔`rebalance` của kịch bản `soak` (mặc định 4) |
 
 ## Hệ thống giả lập
 
@@ -100,6 +101,21 @@ không ghi liên tục. `check_stress.py` dùng đúng bảng này để đối 
 | `rebalance` | trả quyền sở hữu về ban đầu | không kẹt assignment, không "database is locked" |
 | `recover` | gỡ mọi lỗi tiêm vào | hệ quay lại mức `steady` |
 
+Kịch bản `soak` lặp `failover`↔`rebalance` `CYCLES` lần (`failover_1`, `rebalance_1`,
+`failover_2`, ...). Nó có để trả lời một câu hỏi cụ thể: fd có **rò** không. Một lần
+failover/rebalance như trong `all` không đủ — fd tăng khi node nhận thêm camera là chuyện
+đương nhiên. Chỉ khi fd tăng **đơn điệu theo số chu kỳ** thì mới là rò.
+
+```bash
+NODES=2 PHASE_SEC=120 CYCLES=4 \
+    tests/integration/stress_vms/run_stress.sh /tmp/s3mk_soak mid soak
+```
+
+Lưu ý khi đọc: harness đặt `manager.failoverActiveDelaySec=15` (mặc định của server là
+**1800**), nên camera bị chuyển đi được nhả sau ~15 s. Nếu đo trên cấu hình mặc định thì
+node vừa nhả camera vẫn giữ chúng trong danh sách tới 30 phút — fd chưa về mức nền trong
+khoảng đó **không** phải rò.
+
 > **Các phase không cộng dồn.** Mỗi phase gọi `setup_stress.py phase <tên>`, và hàm đó
 > dựng lại toàn bộ danh sách camera từ `SCHEDULES` gốc rồi mới áp thay đổi riêng của
 > phase. Nghĩa là `retention_drop` hoàn tác hoán đổi lịch của `schedule_flip`, chứ không
@@ -128,6 +144,17 @@ không ghi liên tục. `check_stress.py` dùng đúng bảng này để đối 
 Mỗi phase in thêm (không phải tiêu chí đạt/trượt): số file mp4 và dung lượng theo
 node, số timefile, RSS/threads/fd/CPU, số lệnh ONVIF theo operation, độ trễ p50/p95/max
 của từng nhóm API.
+
+### Đọc số fd cho đúng
+
+`resources.jsonl` lấy mẫu mỗi 5 s và phân loại fd theo đích của symlink
+(`socket`/`file`/`eventfd`/`eventpoll`/`timerfd`/`pipe`/`anon`). Báo cáo in
+**`fd đầu→cuối` của riêng phase** cộng với `fd đỉnh`.
+
+Cột phải đọc là `fd đầu→cuối`. `fd đỉnh` chỉ nói lúc cao nhất đạt bao nhiêu, và trước đây
+`check_stress.py` tính nó trên **cả lần chạy** chứ không cắt theo phase — một đỉnh tích luỹ
+thì về bản chất không bao giờ giảm, nên đọc nó như "fd không được giải phóng" là sai. Đó
+chính là chỗ làm quan sát fd trong `REPORT-2026-09-20.md` không kết luận được gì.
 
 Kết quả ghi ra `<work_dir>/report_<phase>.json` và `report_final.json`.
 

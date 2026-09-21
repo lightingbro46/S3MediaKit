@@ -58,6 +58,23 @@ public:
      */
     void closeNow();
 
+    /**
+     * Close the writers that have had no block written to them for `idle_ms`, and return how many
+     * were closed. The next block reopens them (TimeMuxer::openFile appends), so this only costs a
+     * reopen on a file that is being written again.
+     *
+     * Unlike evictIdleImportWritersLocked() this also releases the writer of today's file, which is
+     * otherwise pinned for as long as the device exists. A device kept in the list but inactive (a
+     * camera moved to another node, or one whose data is still waiting for retention) writes nothing
+     * yet used to hold its `.s3db` + `.idx` handles open indefinitely.
+     *
+     * Writers taking part in a rebuild are never closed: the swap machinery owns them.
+     * `idle_ms` of 0 closes nothing.
+     *
+     * Closes synchronously, so the caller must not be on an EventPoller or the recording path.
+     */
+    size_t closeIdleWriters(uint64_t idle_ms);
+
 private:
     struct FileWriter {
         using Ptr = std::shared_ptr<FileWriter>;

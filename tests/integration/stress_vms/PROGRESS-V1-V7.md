@@ -8,6 +8,7 @@ Kế hoạch đầy đủ (mô tả gốc rễ từng vấn đề, cách sửa, 
 kế hoạch đó.
 
 Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi vấn đề một commit độc lập.
+**Cả bảy đã xong.** Phần còn lại là xác minh bằng harness cho V1, V3, V4, V6, V7 và V5 (xem từng mục).
 
 ---
 
@@ -22,7 +23,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
 | V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `b5f45f6b` |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | **xong** | `731fcad4` |
-| V5 | fd không trả lại sau failover | chưa điều tra | — |
+| V5 | fd không trả lại sau failover | **xong** — không rò; sửa một khoản fd giữ vô ích | `PENDING` |
 
 ---
 
@@ -422,20 +423,114 @@ ctest --test-dir build-test -R '^unit\.'                → exit 0, 155 test
 
 ---
 
-## V5 — chưa bắt đầu
+## V5 — đã xong (`PENDING`)
 
-Xem kế hoạch. Tóm tắt những gì đã xác minh trong lúc lập kế hoạch, để phiên sau không phải
-điều tra lại:
+### Kết luận: KHÔNG rò fd
 
-- **V5**: mới là **quan sát**, chưa xác nhận là rò rỉ. `node-b` đi 1.353 → 2.436 → 2.440 fd qua
-  chu kỳ failover/rebalance và không giảm; số thread giữ nguyên 27 nên không phải rò thread.
-  Điều tra trước, chỉ sửa nếu chỉ được đúng chỗ rò; nếu fd bão hoà thì đóng V5 không sửa code.
+Soak 4 chu kỳ `failover`↔`rebalance` (`mid`, 2 node, `PHASE_SEC=120`). node-b lặp giữa đúng hai
+mức, không tích luỹ chút nào:
+
+| phase | fd cuối | socket | file |
+|---|---|---|---|
+| steady | 556 | 126 | 398 |
+| failover_1 / 2 / 3 / 4 | 1069 / 1065 / 1059 / 1064 | ~244 | ~787 |
+| rebalance_1 / 2 / 3 / 4 | 728 / 723 / 728 / 725 | ~124 | ~570 |
+
+Không bất biến nào trượt. Theo đúng tiêu chí kế hoạch ("fd bão hoà thì kết luận là trạng thái ổn
+định mới"), V5 đóng ở phần rò rỉ.
+
+### Quan sát gốc của V5 được đo sai
+
+`check_stress.py` tính `fds_peak` trên **cả lần chạy** chứ không cắt theo phase, nên dãy
+1.353 → 2.436 → 2.440 trong báo cáo là **đỉnh tích luỹ** — đại lượng về bản chất không bao giờ
+giảm, và không nói được gì về việc fd có được trả lại. Đã sửa: `resource_summary(work, since)` cắt
+theo mốc phase, thêm `fds_start`/`fds_end`, và phân loại fd theo đích symlink.
+
+### Truy được phần dư đến từng file
+
+Phần dư +170 fd sau `rebalance` so với `steady`: đo trực tiếp trong `rebalance_3` (sau khi lắng 95 s)
+cho thấy node-b giữ **274 fd cho 60 camera đang sở hữu** và **172 fd cho 60 camera đã chuyển đi** —
+3 fd mỗi camera: `info.txt`, `<ngày>.s3db`, `<ngày>.idx`. Phần phải nhả thì đã nhả đúng: socket về
+nền (123 so với 126), camera đã chuyển đi không còn fd `.mp4` nào.
+
+Nguyên nhân là **nghiệp vụ**: camera chuyển đi vẫn ở trong danh sách (`enableActive=false`) tới khi
+retention xoá hết dữ liệu. Log: `Keep device in list` **1.980** lần, `Remove device out of list`
+**0** lần, lý do `has not been released from cluster` — `failoverActiveDelaySec` còn chưa được xét.
+
+### Phần đã sửa: `record.timefileIdleCloseSec`
+
+`info.txt` do `CameraStatisticImp` giữ — đúng là "thông tin camera" nghiệp vụ muốn giữ, để nguyên.
+Nhưng hai handle timefile thì không cần: camera inactive không ghi gì, mà
+`TimeRecorderManager::removeRecorder()` — hàm duy nhất nhả `TimeRecorder` — **không có chỗ nào gọi
+trong toàn bộ repo**, nên writer của file hôm nay bị pin suốt đời tiến trình.
+
+Cách sửa khớp với thiết kế sẵn có: `FileWriter` **đã có** `last_access`, và đã có
+`evictIdleImportWritersLocked()` cho writer file cũ (LRU, tối đa 2) — chỉ writer của file hôm nay là
+bị pin. Thêm:
+
+- `TimeRecorder::closeIdleWriters(idle_ms)` — đóng writer không ghi gì quá `idle_ms`, **kể cả file
+  hôm nay**; bỏ qua writer đang tham gia rebuild (cùng điều kiện loại trừ như eviction).
+- `TimeRecorderManager::closeIdleWriters()` — đọc `record.timefileIdleCloseSec` (mới, 600 s), copy
+  danh sách recorder ra ngoài lock rồi gọi từng cái (đóng file chậm, không được giữ lock mà
+  `addBlock()` cần).
+- Gọi từ chu kỳ bảo trì kho (pool `storage` của V7).
+
+**Vì sao an toàn:** `TimeMuxer::openFile` dùng mode `"ab+"` và `setLastOffset(File::fileSize(...))`
+với chú thích "set current offset to write correct time index after restart server" — mở lại là
+append, vốn đã được thiết kế cho việc đó. Không mất dữ liệu.
+
+**Một điểm tôi sửa trong lúc làm:** bản đầu dùng `asyncCloseMuxer` như eviction. Nhưng đóng bất đồng
+bộ mà còn dữ liệu trong buffer trong khi writer mới mở lại cùng file thì `setLastOffset()` đọc kích
+thước cũ. Đã chuyển sang đóng **đồng bộ** — hợp chỗ vì hàm này chạy trên pool `storage`, còn
+eviction phải bất đồng bộ vì nó chạy trong `inputBlock()` trên đường ghi.
+
+Cũng đặt `last_access` ngay lúc tạo writer: trước đó writer mới tạo có `last_access == 0`, sẽ trông
+như idle vĩnh viễn với hàm mới (và luôn là victim đầu tiên của eviction).
+
+### Cải tiến harness (dùng lại cho mọi lần đo sau)
+
+- `run_stress.sh`: sampler phân loại fd theo đích symlink; kịch bản `soak` lặp
+  `failover`↔`rebalance` `CYCLES` lần (mặc định 4).
+- `check_stress.py`: `resource_summary(work, since)` + `phase_start()`; in `fd đầu→cuối` và fd theo
+  loại.
+- `make_report.py`: bảng tài nguyên có `fd đầu→cuối`; bảng mới "fd theo loại"; `ordered()` xếp phase
+  theo thứ tự chạy thật (đọc `phases.jsonl`) thay vì theo tên — nếu không thì `failover_*` bị gom
+  một chỗ và mất diễn biến chu kỳ.
+- `README.md`: mục kịch bản `soak` và cách đọc số fd cho đúng.
+
+### Kiểm thử
+
+`tests/unit/manager/test_time_file.cpp` — `TimeRecorderIdleCloseTest.ClosesWriterWithoutLosingData`:
+ngưỡng 0 không đóng gì / chưa idle thì không đóng / idle thì đóng đúng 1 và lần hai không còn gì /
+**block ghi trước lúc đóng vẫn đọc được sau khi mở lại** (đây là ca quan trọng: nếu `openFile`
+truncate thì mất index cả ngày).
+
+### Xác minh đã chạy
+
+```
+NODES=2 PHASE_SEC=120 CYCLES=4 run_stress.sh /tmp/s3mk_soak mid soak  → exit 0, không failure
+cmake --build build -j2                                               → exit 0
+cmake --build build-test -j2                                          → exit 0
+./release/linux/Debug/unit_storage --gtest_filter='TimeRecorderIdle*'  → 1/1 PASSED
+ctest --test-dir build-test -R '^unit\.'                              → 157/157 PASSED
+```
+
+**Chưa làm:** chạy lại soak để xác nhận `timefileIdleCloseSec` thật sự hạ phần dư từ +170 xuống
+~+60 (chỉ còn `info.txt`). Cần soak dài hơn ngưỡng 600 s của một chu kỳ bảo trì, hoặc hạ
+`record.timefileIdleCloseSec` trong config của harness.
 
 ---
 
 ## Lưu ý môi trường (đã trả giá)
 
 - **Chỉ build `-j2`.** Máy ~7,9 GB RAM, `-j6` bị OOM lúc link `MediaServer`.
+- **Thư mục output dùng chung — tệ hơn ghi chú cũ.** Nó lừa được cả stale-check: build cấu hình A
+  xong rồi build B, thì B thấy `libs3managerkit.a` **mới hơn** các `.o` của chính nó → coi archive
+  đã cập nhật, **bỏ qua bước archive**, rồi link đúng archive chứa object của A. Triệu chứng khi
+  kiểm tier-off ngay sau khi build `build/`: `undefined reference to vtable for
+  Aws::S3::Model::HeadObjectRequest`. Cách xử lý: `find <build-dir> -name '*.o' -exec touch {} +`
+  rồi build lại (archive lại mà không phải biên dịch lại). Chi tiết ở
+  `docs/storage-tiering-flow.md` §16.
 - **Thư mục output dùng chung.** `build/`, `build-test/`, `build-tier-off/`, `build-sync-off/`
   đều ghi ra `release/linux/Debug/`. Build cấu hình này xong thì phải build lại cấu hình kia
   trước khi chạy binary của nó. Triệu chứng đã gặp: vừa build `build` xong thì link

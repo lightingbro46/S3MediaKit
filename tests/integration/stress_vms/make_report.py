@@ -28,10 +28,34 @@ def load_reports(work):
     return out
 
 
-def ordered(reports):
-    known = [p for p in PHASE_ORDER if p in reports]
-    rest = sorted(p for p in reports if p not in PHASE_ORDER)
-    return known + rest
+def phase_order_from_log(work):
+    """Thứ tự phase theo đúng lúc chạy, đọc từ phases.jsonl."""
+    seen = []
+    try:
+        with open(os.path.join(work, "phases.jsonl")) as fh:
+            for line in fh:
+                try:
+                    name = json.loads(line).get("phase")
+                except ValueError:
+                    continue
+                if name and name not in seen:
+                    seen.append(name)
+    except OSError:
+        return []
+    return seen
+
+
+def ordered(reports, work=None):
+    """Xếp phase theo thứ tự chạy thật; PHASE_ORDER chỉ là dự phòng.
+
+    Kịch bản soak sinh phase động (`failover_1`, `rebalance_1`, ...). Xếp theo tên sẽ gom
+    hết `failover_*` vào một chỗ rồi tới `rebalance_*`, làm mất đúng cái cần đọc là diễn
+    biến qua từng chu kỳ.
+    """
+    logged = [p for p in phase_order_from_log(work) if p in reports] if work else []
+    known = [p for p in PHASE_ORDER if p in reports and p not in logged]
+    rest = sorted(p for p in reports if p not in logged and p not in known)
+    return logged + known + rest
 
 
 def fmt(value, digits=0):
@@ -74,14 +98,40 @@ def stream_table(reports, phases):
 
 
 def resource_table(reports, phases):
-    lines = ["| Phase | node | RSS cuối (MB) | RSS đỉnh (MB) | threads | fd | CPU tb (%) |",
-             "|---|---|---|---|---|---|---|"]
+    # Các con số là của riêng phase (check_stress.py cắt resources.jsonl theo mốc phase).
+    # `fd đầu→cuối` mới là cột đọc để tìm rò: `fd đỉnh` chỉ nói lúc cao nhất đạt bao nhiêu.
+    lines = ["| Phase | node | RSS cuối (MB) | RSS đỉnh (MB) | threads | fd đầu→cuối | fd đỉnh | CPU tb (%) |",
+             "|---|---|---|---|---|---|---|---|"]
     for p in phases:
         for node, r in sorted((reports[p].get("resources") or {}).items()):
-            lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
+            fds = "%s→%s" % (fmt(r.get("fds_start")), fmt(r.get("fds_end")))
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
                 p, node, fmt(r.get("rss_end_mb"), 0), fmt(r.get("rss_peak_mb"), 0),
-                fmt(r.get("threads_peak")), fmt(r.get("fds_peak")),
+                fmt(r.get("threads_peak")), fds, fmt(r.get("fds_peak")),
                 fmt(r.get("cpu_pct_avg"), 0)))
+    return lines
+
+
+def fd_kind_table(reports, phases):
+    """fd theo loại ở cuối mỗi phase. Rò fd chỉ truy được khi biết loại nào tăng."""
+    kinds = set()
+    for p in phases:
+        for r in (reports[p].get("resources") or {}).values():
+            kinds.update((r.get("fd_kinds_end") or {}).keys())
+    if not kinds:
+        return []
+    order = [k for k in ("socket", "file", "eventfd", "eventpoll", "timerfd",
+                         "pipe", "inotify", "anon", "other") if k in kinds]
+    order += sorted(kinds - set(order))
+    lines = ["| Phase | node | " + " | ".join(order) + " |",
+             "|---|---|" + "---|" * len(order)]
+    for p in phases:
+        for node, r in sorted((reports[p].get("resources") or {}).items()):
+            counts = r.get("fd_kinds_end") or {}
+            if not counts:
+                continue
+            lines.append("| %s | %s | %s |" % (
+                p, node, " | ".join(fmt(counts.get(k, 0)) for k in order)))
     return lines
 
 
@@ -100,7 +150,7 @@ def render_run(work, title):
     reports = load_reports(work)
     if not reports:
         return ["", "## %s" % title, "", "_Không có dữ liệu trong `%s`._" % work]
-    phases = ordered(reports)
+    phases = ordered(reports, work)
     inv_path = os.path.join(work, "inventory.json")
     inv = json.load(open(inv_path)) if os.path.exists(inv_path) else {}
 
@@ -115,6 +165,9 @@ def render_run(work, title):
     out += ["### Luồng và lịch ghi", ""] + stream_table(reports, phases) + [""]
     out += ["### Ghi hình", ""] + record_table(reports, phases) + [""]
     out += ["### Tài nguyên", ""] + resource_table(reports, phases) + [""]
+    fd_kinds = fd_kind_table(reports, phases)
+    if fd_kinds:
+        out += ["### fd theo loại (cuối mỗi phase)", ""] + fd_kinds + [""]
 
     final = reports.get("final") or reports.get(phases[-1])
     fails = final.get("failures") or []
