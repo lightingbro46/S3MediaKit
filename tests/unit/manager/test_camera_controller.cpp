@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -24,6 +25,12 @@ namespace managerkit {
 class CameraControllerTestPeer {
 public:
     static void syncMediaProfile(CameraController &c, const OnvifControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
+
+    static void onManager(CameraController &c) { c.onManager(); }
+
+    static void setReady(CameraController &c, bool ready) { c._ready = ready; }
+
+    static bool hasPendingProfileConfig(CameraController &c) { return c.hasPendingProfileConfig(); }
 
     static bool profileConfig(CameraController &c, const std::string &token, VideoEncoderConfig &out) {
         auto it = c._profileConfigMap.find(token);
@@ -50,6 +57,18 @@ public:
     };
 
     bool isConnected() const override { return true; }
+    bool connect() override { record("Connect", ""); return _connect_ok.load(); }
+    bool probeConnection() override { record("Probe", ""); return _probe_ok.load(); }
+    bool refreshMediaProfiles() override { return record("RefreshProfiles", ""); }
+    void setCameraTimeManual() override { record("SetCameraTime", ""); }
+
+    // `connect_ok` is false in the maintenance tests on purpose: the success branch registers a
+    // gap-fill provider and publishes capabilities, which a unit test has no database for.
+    void setMaintenanceResults(bool probe_ok, bool connect_ok) {
+        _probe_ok = probe_ok;
+        _connect_ok = connect_ok;
+    }
+
     bool enablePTZ() override { return true; }
     OnvifPTZProfile getPTZProfile() override {
         OnvifPTZProfile profile;
@@ -111,6 +130,8 @@ private:
     std::string _failing_token;
     std::atomic<int> _concurrent{0};
     std::atomic<int> _max_concurrent{0};
+    std::atomic<bool> _probe_ok{true};
+    std::atomic<bool> _connect_ok{true};
 };
 
 class TestCameraController : public CameraController {
@@ -530,4 +551,113 @@ TEST(OnvifAuthFaultTest, KeepsTheOffsetOnFaultsThatSayNothingAboutTheClock) {
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("End of file or no input: Operation timed out"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("Connection refused"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("ter:InvalidArgVal ter:NoProfile"));
+}
+
+// ── V4: the maintenance cycle of a camera that is already up ─────────────────────────────────────
+// It used to redo the whole OnvifControl::connect() handshake every 60s for every camera (~16 ONVIF
+// operations each). At 300 cameras that background traffic alone filled the shared `device` pool, so
+// PTZ commands queued behind it and timed out.
+
+namespace {
+
+// Names of the device calls recorded so far, in order.
+std::vector<std::string> callNames(const std::shared_ptr<FakeOnvifControl> &fake) {
+    std::vector<std::string> names;
+    for (const auto &call : fake->calls()) {
+        names.push_back(call.name);
+    }
+    return names;
+}
+
+bool sawCall(const std::shared_ptr<FakeOnvifControl> &fake, const std::string &name) {
+    auto names = callNames(fake);
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+} // namespace
+
+TEST_F(CameraControllerTest, ReadyControllerIsProbedInsteadOfReconnected) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(true, false);
+    onPoller([&]() { CameraControllerTestPeer::setReady(*controller, true); });
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+
+    // On the very first cycle both the clock check and the profile re-read are due.
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "RefreshProfiles"); }));
+    EXPECT_EQ(std::vector<std::string>({"Probe", "SetCameraTime", "RefreshProfiles"}), callNames(fake));
+    // The whole point: no handshake.
+    EXPECT_FALSE(sawCall(fake, "Connect"));
+    EXPECT_TRUE(controller->isReady());
+}
+
+TEST_F(CameraControllerTest, ProbeFailureFallsBackToFullConnect) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(false, false);
+    onPoller([&]() { CameraControllerTestPeer::setReady(*controller, true); });
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+
+    // A camera that stops answering the probe still gets the full reconnect, and the failure is
+    // published as before.
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
+    EXPECT_EQ(std::vector<std::string>({"Probe", "Connect"}), callNames(fake));
+    EXPECT_TRUE(waitFor([&]() { return !controller->isReady(); }));
+}
+
+TEST_F(CameraControllerTest, ControllerThatWasNeverReadyIsNotProbed) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(true, false);
+    // _ready is false: there is no connection to probe yet.
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
+    EXPECT_FALSE(sawCall(fake, "Probe"));
+}
+
+// A config this server is still trying to push must keep being retried on every cycle, whatever
+// `onvif.profileResyncIntervalSec` says — that is what hasPendingProfileConfig() decides.
+TEST_F(CameraControllerTest, PendingProfileConfigIsOnlyNewOrProcessing) {
+    auto controller = _controller;
+    auto config = [](const std::string &status) {
+        VideoEncoderConfig out;
+        out.vcodec = "H264";
+        out.width = 1920;
+        out.height = 1080;
+        out.bitrate = 4096;
+        out.fps = 25;
+        out.state.status = status;
+        out.state.retry_time = 5;
+        return out;
+    };
+    auto pending = [&]() {
+        bool result = false;
+        onPoller([&]() { result = CameraControllerTestPeer::hasPendingProfileConfig(*controller); });
+        return result;
+    };
+
+    EXPECT_FALSE(pending()); // nothing configured yet
+
+    // A settled profile is not a reason to re-read anything.
+    onPoller([&]() {
+        controller->addProfileConfig("p-success", config(configStateToString[VideoConfigSetState::SUCCESS]), false);
+        controller->addProfileConfig("p-external", config(configStateToString[VideoConfigSetState::EXTERNAL]), false);
+        controller->addProfileConfig("p-failed", config(configStateToString[VideoConfigSetState::FAILED]), false);
+    });
+    EXPECT_FALSE(pending());
+
+    onPoller([&]() {
+        controller->addProfileConfig("p-new", config(configStateToString[VideoConfigSetState::NEW]), false);
+    });
+    EXPECT_TRUE(pending());
+
+    onPoller([&]() {
+        controller->addProfileConfig("p-new", config(configStateToString[VideoConfigSetState::SUCCESS]), false);
+        controller->addProfileConfig("p-processing", config(configStateToString[VideoConfigSetState::PROCESSING]), false);
+    });
+    EXPECT_TRUE(pending());
 }

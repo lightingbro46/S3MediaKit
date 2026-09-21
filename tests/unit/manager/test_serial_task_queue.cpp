@@ -131,3 +131,163 @@ TEST(SerialTaskQueueTest, PendingTasksKeepQueueAlive) {
     }
     EXPECT_TRUE(countdown.wait());
 }
+
+// V4: an interactive device command (PTZ) must not wait behind the maintenance work already queued
+// for the same camera.
+TEST(SerialTaskQueueTest, PostFrontRunsBeforeQueuedTasks) {
+    auto pool = makePool(2);
+    auto queue = std::make_shared<SerialTaskQueue>(pool, "front");
+    auto gate = std::make_shared<std::promise<void>>();
+    auto gate_future = gate->get_future().share();
+    std::mutex mtx;
+    std::vector<std::string> order;
+    Countdown countdown(5); // the blocker, 3 background tasks and the priority one
+
+    // Occupies the queue so everything below is really waiting in the deque. Waiting for it to have
+    // *started* matters: until it is dequeued it sits in the deque itself, where postFront would
+    // jump ahead of it too.
+    auto started = std::make_shared<std::promise<void>>();
+    queue->post([&, gate_future, started]() {
+        started->set_value();
+        gate_future.wait();
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("blocker");
+        }
+        countdown.signal();
+    });
+    ASSERT_EQ(std::future_status::ready, started->get_future().wait_for(std::chrono::seconds(5)));
+    for (int i = 0; i < 3; ++i) {
+        queue->post([&, i]() {
+            {
+                std::lock_guard<std::mutex> lck(mtx);
+                order.push_back("background" + std::to_string(i));
+            }
+            countdown.signal();
+        });
+    }
+    queue->postFront([&]() {
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("priority");
+        }
+        countdown.signal();
+    });
+    gate->set_value();
+    ASSERT_TRUE(countdown.wait());
+
+    std::lock_guard<std::mutex> lck(mtx);
+    ASSERT_EQ(5u, order.size());
+    // The task already running is never interrupted; the priority one goes right after it, and the
+    // background tasks keep their own order behind it.
+    EXPECT_EQ("blocker", order[0]);
+    EXPECT_EQ("priority", order[1]);
+    EXPECT_EQ("background0", order[2]);
+    EXPECT_EQ("background1", order[3]);
+    EXPECT_EQ("background2", order[4]);
+}
+
+// The real bottleneck is the FIFO queue of the shared pool: 300 cameras may each have a maintenance
+// turn waiting there, so jumping only the camera's own deque would not help. The interactive queue
+// must also be handed to the pool with async_first.
+TEST(SerialTaskQueueTest, PostFrontJumpsTheSharedPoolQueue) {
+    auto pool = makePool(1); // one thread, so the pool queue order is observable
+    auto blocking = std::make_shared<SerialTaskQueue>(pool, "blocking");
+    auto background = std::make_shared<SerialTaskQueue>(pool, "background");
+    auto interactive = std::make_shared<SerialTaskQueue>(pool, "interactive");
+    auto gate = std::make_shared<std::promise<void>>();
+    auto gate_future = gate->get_future().share();
+    std::mutex mtx;
+    std::vector<std::string> order;
+    Countdown countdown(3);
+
+    // Holds the single pool thread while the two turns below line up behind it in the POOL queue.
+    // It has to be running already: a turn still queued on the pool would be jumped as well.
+    auto started = std::make_shared<std::promise<void>>();
+    blocking->post([&, gate_future, started]() {
+        started->set_value();
+        gate_future.wait();
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("blocker");
+        }
+        countdown.signal();
+    });
+    ASSERT_EQ(std::future_status::ready, started->get_future().wait_for(std::chrono::seconds(5)));
+    // Another camera's maintenance turn, queued on the pool with a plain async.
+    background->post([&]() {
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("background");
+        }
+        countdown.signal();
+    });
+    // A third camera's interactive command: async_first puts its turn ahead of the one above.
+    interactive->postFront([&]() {
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("interactive");
+        }
+        countdown.signal();
+    });
+    gate->set_value();
+    ASSERT_TRUE(countdown.wait());
+
+    std::lock_guard<std::mutex> lck(mtx);
+    ASSERT_EQ(3u, order.size());
+    EXPECT_EQ("blocker", order[0]);
+    EXPECT_EQ("interactive", order[1]);
+    EXPECT_EQ("background", order[2]);
+}
+
+// Regression guard: postFront must not turn a burst of interactive commands into LIFO. Two PTZ
+// commands a user sent in a row have to reach the camera in that order — reversing them leaves the
+// camera wherever the older command pointed.
+TEST(SerialTaskQueueTest, PriorityTasksKeepTheirOwnOrder) {
+    auto pool = makePool(2);
+    auto queue = std::make_shared<SerialTaskQueue>(pool, "priority order");
+    auto gate = std::make_shared<std::promise<void>>();
+    auto gate_future = gate->get_future().share();
+    std::mutex mtx;
+    std::vector<std::string> order;
+    Countdown countdown(5); // the blocker, 1 background task and 3 priority ones
+
+    auto started = std::make_shared<std::promise<void>>();
+    queue->post([&, gate_future, started]() {
+        started->set_value();
+        gate_future.wait();
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("blocker");
+        }
+        countdown.signal();
+    });
+    ASSERT_EQ(std::future_status::ready, started->get_future().wait_for(std::chrono::seconds(5)));
+
+    queue->post([&]() {
+        {
+            std::lock_guard<std::mutex> lck(mtx);
+            order.push_back("background");
+        }
+        countdown.signal();
+    });
+    for (int i = 0; i < 3; ++i) {
+        queue->postFront([&, i]() {
+            {
+                std::lock_guard<std::mutex> lck(mtx);
+                order.push_back("priority" + std::to_string(i));
+            }
+            countdown.signal();
+        });
+    }
+    gate->set_value();
+    ASSERT_TRUE(countdown.wait());
+
+    std::lock_guard<std::mutex> lck(mtx);
+    ASSERT_EQ(5u, order.size());
+    EXPECT_EQ("blocker", order[0]);
+    EXPECT_EQ("priority0", order[1]);
+    EXPECT_EQ("priority1", order[2]);
+    EXPECT_EQ("priority2", order[3]);
+    EXPECT_EQ("background", order[4]);
+}

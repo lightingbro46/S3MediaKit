@@ -662,3 +662,66 @@ TEST(ApiWorkDispatcherTest, SerialGroupRunsOneRequestAtATimeInOrder) {
         EXPECT_EQ(i, order[i]);
     }
 }
+
+// V4: the in-flight slot of a callback work must live until the request is answered. `start()`
+// typically only queues the real work somewhere else (a camera's device queue) and returns at once,
+// so a slot released then would count dispatches instead of outstanding requests, and cap nothing.
+TEST(ApiWorkDispatcherTest, CallbackWorkHoldsInflightSlotUntilItReplies) {
+    auto owner = ownerPoller();
+    const ApiWorkLimit limit("test.callback.inflight", 1, 0);
+    ReplyProbe first;
+    auto first_invoker = first.invoker(owner);
+    ApiReply pending_reply;
+    std::atomic<bool> started{false};
+
+    // Like PTZMove: `start` hands the reply to something else and returns immediately.
+    runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), first_invoker,
+        [&pending_reply, &started](const ApiReply &reply) {
+            pending_reply = reply;
+            started = true;
+        }, limit);
+    ASSERT_TRUE(waitFor([&started]() { return started.load(); }));
+    // start() has already returned, yet the request is still outstanding.
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.callback.inflight") == 1; }));
+
+    ReplyProbe second;
+    std::atomic<bool> second_started{false};
+    runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), second.invoker(owner),
+        [&second_started](const ApiReply &) { second_started = true; }, limit);
+    ASSERT_TRUE(second.waitFirst());
+    auto rejected = second.settle(50);
+    ASSERT_EQ(1u, rejected.size());
+    EXPECT_EQ(503, rejected[0].status);
+    EXPECT_FALSE(second_started.load());
+
+    // Answering releases the slot.
+    pending_reply([first_invoker]() { first_invoker(200, jsonHeader(), "{\"code\":0}"); });
+    ASSERT_TRUE(first.waitFirst());
+    EXPECT_EQ(200, first.settle(50)[0].status);
+    pending_reply = nullptr;
+    EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.callback.inflight") == 0; }));
+}
+
+// A reply that is dropped instead of called (the poller task carrying it is discarded) must not
+// leak the slot either.
+TEST(ApiWorkDispatcherTest, CallbackWorkReleasesInflightSlotWhenReplyIsDropped) {
+    auto owner = ownerPoller();
+    const ApiWorkLimit limit("test.callback.dropped", 1, 0);
+    for (int i = 0; i < 3; ++i) {
+        ReplyProbe probe;
+        std::atomic<bool> started{false};
+        runApiCallbackWork(owner, std::weak_ptr<SocketHelper>(), probe.invoker(owner),
+            [&started](const ApiReply &) { started = true; }, limit);
+        ASSERT_TRUE(waitFor([&started]() { return started.load(); })) << "round " << i;
+        // Nothing kept the reply, so it dies with the work: the slot comes back on its own.
+        EXPECT_TRUE(waitFor([]() { return apiWorkInflight("test.callback.dropped") == 0; })) << "round " << i;
+    }
+}
+
+// The group registered for the device command endpoints (PTZ, presets, imaging, relay outputs).
+TEST(ApiWorkDispatcherTest, DeviceControlGroupHasRegisteredDefaults) {
+    const auto limit = apiWorkLimit("device.control");
+    EXPECT_EQ("device.control", limit.group);
+    EXPECT_EQ(16, limit.max_inflight);
+    EXPECT_EQ(10000, limit.max_queue_ms);
+}

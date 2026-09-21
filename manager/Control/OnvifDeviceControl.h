@@ -19,6 +19,13 @@ namespace OnvifCtrl {
 // TTL (seconds) of the cached camera-clock offset used to sign ONVIF requests.
 // <= 0 disables the cache and refetches the camera time before every operation.
 extern const std::string kClockOffsetTtlSec;
+// How often (seconds) the maintenance cycle re-reads the media profiles of a camera
+// that is already connected and has no pending config to push. <= 0 re-reads them
+// on every cycle.
+extern const std::string kProfileResyncIntervalSec;
+// How often (seconds) the maintenance cycle re-checks the clock of a connected camera and pushes
+// the server clock to it when they differ. <= 0 checks it on every cycle.
+extern const std::string kClockSyncIntervalSec;
 } // namespace OnvifCtrl
 
 namespace managerkit {
@@ -333,6 +340,22 @@ public:
     void disconnect() override;
 
     /**
+     * Cheap health check for a controller that is already connected: one
+     * authenticated GetDeviceInformation. False when the camera does not answer,
+     * rejects the credentials, or reports a different device than the one
+     * connect() read the capabilities from — all cases that need a full connect().
+     */
+    virtual bool probeConnection();
+
+    /**
+     * Re-read the media profiles of a connected camera (GetProfiles plus one encoder
+     * config read per profile). Lets the maintenance cycle notice a configuration
+     * changed on the camera's own web page, and drive the config retry engine,
+     * without redoing the whole connect() handshake.
+     */
+    virtual bool refreshMediaProfiles();
+
+    /**
      * Get onvif device info
      */
     OnvifDeviceInfo getDeviceInfo() { return _deviceInfo; }
@@ -486,9 +509,10 @@ public:
     bool getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig);
 
     /**
-    * Set the camera time to match the current system time.
+    * Set the camera time to match the current system time. Virtual so the maintenance cycle can be
+    * driven by a fake device in unit tests.
     */
-    void setCameraTimeManual();
+    virtual void setCameraTimeManual();
 
     /**
      * Move focus continuously. speed > 0 = focus in (near), speed < 0 = focus out (far).

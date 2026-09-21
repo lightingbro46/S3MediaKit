@@ -19,7 +19,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V1 | Segfault khi camera ONVIF thiếu zoom space | **xong** | `d57429e3` |
 | V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
-| V4 | PTZ chết khi vài camera ONVIF chậm | chưa bắt đầu | — |
+| V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `PENDING` |
 | V7 | `enforceStoragePolicy()` blocking trên poller | chưa bắt đầu | — |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
 | V5 | fd không trả lại sau failover | chưa điều tra | — |
@@ -174,6 +174,125 @@ ctest --test-dir build-test -R '^unit\.'                    → 153/153 PASSED
 
 ---
 
+## V4 — đã xong (`PENDING`)
+
+Ba thay đổi của kế hoạch, làm hết cả ba.
+
+### 1. Không bắt tay lại khi đang kết nối tốt
+
+`manager/Control/OnvifDeviceControl.cpp` / `.h` — hai hàm mới, cả hai `virtual` để fake được:
+
+- `probeConnection()` — một `GetDeviceInformation` đã xác thực. Trả false khi camera không trả lời,
+  từ chối credential, **hoặc báo một thiết bị khác** với thiết bị mà `connect()` đã đọc capabilities
+  (đổi camera ở cùng địa chỉ IP thì profile/PTZ space cũ không được dùng lại).
+- `refreshMediaProfiles()` — chỉ `getMediaProfiles()`, để nhận ra config bị đổi từ web camera mà
+  không phải làm lại cả handshake.
+
+`manager/Camera/CameraController.cpp` — `onManager()` khi `_ready && isConnected()` chỉ thăm dò;
+`connect()` đầy đủ chỉ chạy khi thăm dò thất bại. Hai phần đắt được giãn ra bằng config riêng:
+
+- `onvif.profileResyncIntervalSec` (mới, 900 s) — đọc lại media profile. **Nhưng** config server
+  đang cố đẩy xuống camera thì vẫn retry **mỗi chu kỳ** như trước: `hasPendingProfileConfig()`
+  (mới, chạy trên `_poller`) trả true khi có entry ở trạng thái `NEW` hoặc `PROCESSING`.
+- `onvif.clockSyncIntervalSec` (mới, 3600 s) — `setCameraTimeManual()`.
+
+**Điểm kế hoạch bỏ sót, đã xử lý:** kế hoạch chỉ nói "thay `connect()` bằng thăm dò", nhưng chu kỳ
+cũ còn làm hai việc khác mỗi 60 s. Bỏ hẳn `setCameraTimeManual()` thì đồng hồ camera **không bao giờ
+được chỉnh lại** trong suốt thời gian nó còn kết nối (camera nối liên tục nhiều ngày). Vì vậy mới
+thêm `clockSyncIntervalSec` chứ không bỏ luôn.
+
+**Đã kiểm, không phải lo:** chu kỳ cũ cũng gọi `MediaGapFillManager::onManager(..., true)` (kết
+thúc bằng `fillDevice()`). Gap mới **không** phụ thuộc chu kỳ 60 s này — nó được phát hiện qua
+`MediaGapFillManager::onDeviceStateChanged()` (`GenericRtspCameraImp.cpp:347`), còn retry do
+`_progress_timer` 5 s và `_retry_timer` nội bộ lo. Nên đường thăm dò không đăng ký lại provider là
+đúng.
+
+Tải nền ở trạng thái ổn định: từ ~16 thao tác/camera/phút xuống **1** (`GetDeviceInformation`).
+
+### 2. Ưu tiên lệnh tương tác ở *cả hai* hàng đợi
+
+`manager/Common/SerialTaskQueue.{h,cpp}` — thêm `postFront()`. Deque giờ mang `QueuedTask{task,
+priority}` thay vì `Task` trơn, và `schedule(priority)` giao lượt cho pool bằng `async_first()` thay
+vì `async()`. Cần cả hai vì `SerialTaskQueue` chỉ tuần tự hoá **trong một camera**, còn nút thắt
+thật là hàng đợi FIFO chung của `BlockingExecutors::device()`.
+
+`CameraController::postPriorityDeviceTask()` dùng cho PTZMove, ImageMoveControl, RelayOutputControl,
+addUserPTZPreset, PTZGotoPreset (cả hai nhánh), và `postDeviceTaskAfter()` (lệnh stop tiếp nối của
+continuous move). `onManager()` giữ `post()` thường.
+
+**Một bug tôi tự tạo ra rồi sửa — đáng nhớ:** bản đầu `postFront()` đẩy thẳng lên đầu deque
+(`push_front`). Việc đó biến một chuỗi lệnh tương tác thành **LIFO**: `PTZMove("left")` rồi
+`PTZGotoPreset()` gửi liên tiếp sẽ chạy preset trước, camera kết thúc ở chỗ lệnh cũ trỏ tới.
+Test cũ `CameraControllerTest.CommandsOfOneCameraRunInOrderWithoutOverlap` bắt được ngay. Bản đúng
+chèn **sau các task ưu tiên đang chờ, trước mọi task nền** (`find_if` tìm task nền đầu tiên rồi
+`insert`), nên lệnh ưu tiên giữ FIFO với nhau.
+
+### 3. Có trần và có 503
+
+`server/ApiWorkDispatcher.cpp` — nhóm `device.control` (`maxInflight` 16, `maxQueueMs` 10000).
+
+Quan trọng hơn: **slot in-flight giờ được giữ đến khi request được trả lời**. Trước đây
+`runApiCallbackWork` nhả slot ngay khi `start()` trả về, mà `start()` chỉ đẩy việc sang hàng đợi
+thiết bị rồi về ngay — nên `maxInflight` đếm số lần dispatch, không chặn được gì (đúng như kế hoạch
+đã xác minh). Cách làm: tách thân `runApiWork` thành `runApiWorkHolding()`, truyền cho `work` một
+`shared_ptr<void>` giữ hai slot; `runApiCallbackWork` cho lambda `reply` bắt nó. Reply bị huỷ mà
+không gọi thì slot vẫn được trả lại lúc destroy.
+
+`server/WebApiControl.cpp` — sáu route (`ptz_control`, `goto_preset`, `set_preset`, `remove_preset`,
+`imageMoveControl`, `relayOutputControl`) gộp vào một hàm `runDeviceCommand()` chung, thay cho sáu
+khối copy-paste gần như giống nhau (−230 dòng). Nó cũng sửa luôn điểm vệ sinh luồng của kế hoạch:
+`cb(...)` của PTZ trước đây gọi thẳng `invoker(...)` **từ thread `device worker`**; giờ mọi câu trả
+lời đi qua request poller.
+
+Giữ nguyên có ý thức: `set_preset` / `remove_preset` vẫn **không** kiểm ownership (như trước);
+token ownership vẫn chỉ là phép kiểm "không ai khác đang điều khiển" rồi nhả ngay, nên lệnh tới cùng
+một camera vẫn xếp hàng chứ không bị từ chối. `get_presets` vẫn đồng bộ trên request poller — chỉ
+đọc cache preset, không có round trip ONVIF nào.
+
+### Kiểm thử
+
+11 case mới:
+
+- `tests/unit/manager/test_serial_task_queue.cpp` (3): ưu tiên chạy trước task nền đã xếp hàng /
+  chen được cả hàng đợi chung của pool / **các task ưu tiên giữ đúng thứ tự của chúng** (case chặn
+  regression LIFO ở trên).
+- `tests/unit/manager/test_camera_controller.cpp` (4): camera đang ready thì bị thăm dò chứ không
+  bắt tay lại (`{Probe, SetCameraTime, RefreshProfiles}`, không có `Connect`) / thăm dò thất bại thì
+  quay về `connect()` đầy đủ và vẫn publish lỗi / chưa từng ready thì không thăm dò /
+  `hasPendingProfileConfig()` chỉ true với `NEW` và `PROCESSING`.
+- `tests/unit/server/test_api_work_dispatcher.cpp` (4): slot được giữ đến lúc reply (request thứ hai
+  bị 503) / slot được trả lại khi reply bị huỷ / mặc định của nhóm `device.control`.
+
+`FakeOnvifControl` thêm override `connect/probeConnection/refreshMediaProfiles/setCameraTimeManual`
+(phải cho `setCameraTimeManual()` thành `virtual`), và `CameraControllerTestPeer` thêm
+`onManager/setReady/hasPendingProfileConfig`.
+
+**Đã xác minh test có răng:** tạm thay `async_first` bằng `async` → `PostFrontJumpsTheSharedPoolQueue`
+fail đúng như mong đợi, rồi phục hồi.
+
+### Xác minh đã chạy
+
+```
+cmake --build build -j2                                  → exit 0
+cmake --build build-test -j2                             → exit 0
+./release/linux/Debug/unit_blocking_executors            → 7/7 SerialTaskQueue PASSED
+./release/linux/Debug/unit_camera_controller             → 17/17 PASSED
+./release/linux/Debug/unit_api_work_dispatcher           → 26/26 PASSED
+ctest --test-dir build-test -R '^unit\.'                 → 156/156 PASSED
+```
+
+**Chưa làm:** xác minh bằng harness — chạy `full storage` một node, bộ bất biến PTZ trong
+`check_stress.py` (p95 ≤ 15 s, timeout ≤ 25%) phải đạt, và lệnh ONVIF/giây ở trạng thái ổn định
+phải tụt rõ rệt từ ~155.
+
+### Cố ý không làm trong V4
+
+Không thêm deadline cho chính hàng đợi thiết bị. Sau ba thay đổi trên, một lệnh PTZ chỉ còn xếp sau
+tối đa 16 lệnh tương tác khác chứ không sau ~300 tác vụ bảo trì; thêm deadline nữa là thêm một chỗ
+có thể bỏ lệnh mà chưa có số đo nào chứng minh cần.
+
+---
+
 ## V2 — code đã sửa, chưa commit
 
 `manager/Local/TierFileStorageBase.cpp` đang có +4 dòng trong working tree: bọc cả file trong
@@ -190,17 +309,11 @@ lệch tài liệu — `CMakeLists.txt:46` mặc định **ON** còn `docs/api-s
 
 ---
 
-## V4, V7, V5 — chưa bắt đầu
+## V7, V5 — chưa bắt đầu
 
 Xem kế hoạch. Tóm tắt những gì đã xác minh trong lúc lập kế hoạch, để phiên sau không phải
 điều tra lại:
 
-- **V4**: gốc rễ thật **không phải** chỉ thiếu deadline mà là tải nền tự gây ra —
-  `CameraController::onManager()` (`manager/Camera/CameraController.cpp:155-215`) chạy mỗi 10 s
-  cho mỗi camera và **không kiểm `_ready`**, nên cứ 60 s lại chạy lại **toàn bộ** `connect()`.
-  300 cam × ~16 thao tác × 2 lượt / 60 s ≈ 160 lệnh/s, khớp ~155 lệnh/s đo được.
-  Cũng đã xác minh: `runApiCallbackWork` nhả slot in-flight ngay khi `start()` trả về
-  (`ApiWorkDispatcher.cpp:344-351`), nên `ApiWorkLimit` hiện **không** chặn được PTZ.
 - **V7**: `StorageManager.cpp:405` đẩy vào `WorkThreadPool::Instance().getPoller()->async()`
   trong khi thân hàm làm `statvfs`, quét đệ quy cây thư mục ghi, xoá file, dựng lại timefile và
   hai truy vấn SQLite. Đo được 1.036 ms cho 4.161 file.

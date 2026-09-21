@@ -15,6 +15,8 @@ using namespace mediakit;
 namespace OnvifCtrl {
 #define ONVIF_CTRL_FIELD "onvif."
 const string kClockOffsetTtlSec = ONVIF_CTRL_FIELD"clockOffsetTtlSec";
+const string kProfileResyncIntervalSec = ONVIF_CTRL_FIELD"profileResyncIntervalSec";
+const string kClockSyncIntervalSec = ONVIF_CTRL_FIELD"clockSyncIntervalSec";
 
 static onceToken token([]() {
     // How long a camera's clock offset stays usable before it is measured again.
@@ -22,6 +24,16 @@ static onceToken token([]() {
     // the drift needs to matter, while removing a GetSystemDateAndTime round trip
     // from every single ONVIF operation. 0 or less restores the old behaviour.
     mINI::Instance()[kClockOffsetTtlSec] = 300;
+    // The maintenance cycle re-reads a connected camera's media profiles this often
+    // when nothing is waiting to be pushed to it. Only needed to notice a config
+    // changed on the camera's own web page; a config this server is trying to set
+    // is retried on every cycle regardless. <= 0 re-reads on every cycle.
+    mINI::Instance()[kProfileResyncIntervalSec] = 900;
+    // How often the maintenance cycle pushes the server clock back to a connected camera
+    // (SetSystemDateAndTime, and only when the two differ by 10 s or more). A camera clock drifts
+    // slowly, so once an hour corrects it long before the drift matters, while the round trip this
+    // costs no longer runs on every cycle. <= 0 checks the clock on every cycle.
+    mINI::Instance()[kClockSyncIntervalSec] = 3600;
 });
 } // namespace OnvifCtrl
 
@@ -300,6 +312,34 @@ bool OnvifControl::connect() {
     getStorageConfiguration();
 
     return true;
+}
+
+bool OnvifControl::probeConnection() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (!_m_soap || !_proxyDevice) {
+        return false;
+    }
+    // getDeviceInformation() overwrites _deviceInfo, so keep the identity we
+    // connected to and compare afterwards.
+    const OnvifDeviceInfo before = _deviceInfo;
+    if (!getDeviceInformation()) {
+        return false;
+    }
+    if (before != _deviceInfo) {
+        // Another camera answers at this address now: its capabilities, profiles and
+        // PTZ spaces are all different, so the cached ones must not be reused.
+        WarnL << "Onvif device " << _strDeviceIp << " reports a different identity than the one we connected to";
+        return false;
+    }
+    return true;
+}
+
+bool OnvifControl::refreshMediaProfiles() {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (!_m_soap || !_proxyMedia || !_proxyMedia2) {
+        return false;
+    }
+    return getMediaProfiles();
 }
 
 void OnvifControl::disconnect() {

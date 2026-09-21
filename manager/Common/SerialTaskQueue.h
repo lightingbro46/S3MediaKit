@@ -31,17 +31,36 @@ public:
     // Thread-safe.
     void post(Task task);
 
+    // Runs `task` before every plain `post()` already waiting in this queue, and asks the executor
+    // for the queue's next turn ahead of its other work (`async_first`). For work a user is waiting
+    // for while the queue also carries background maintenance: both this queue and the shared pool
+    // are FIFO, so pushing to the front of one alone does not help.
+    // Priority tasks keep their own submission order (they queue behind each other, not in front),
+    // and the task already running is never interrupted.
+    void postFront(Task task);
+
     // Tasks waiting to run, excluding the one currently running.
     size_t pending() const;
 
 private:
+    struct QueuedTask {
+        QueuedTask() = default;
+        QueuedTask(Task task_in, bool priority_in) : task(std::move(task_in)), priority(priority_in) {}
+
+        Task task;
+        bool priority = false;
+    };
+
+    void postTask(Task task, bool priority);
+    // Hands this queue's next turn to the executor; `priority` uses async_first.
+    void schedule(bool priority);
     void runNext();
 
 private:
     toolkit::TaskExecutor::Ptr _executor;
     std::string _name;
     mutable std::mutex _mtx;
-    std::deque<Task> _tasks;
+    std::deque<QueuedTask> _tasks;
     bool _running = false;
 };
 

@@ -74,8 +74,19 @@ private:
     // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
     void storeProfileSetResult(const ProfileSetRequest &request, bool ok);
 
+    // _poller: true while a profile config is still waiting to be pushed to the camera (NEW or
+    // PROCESSING). Such a camera needs its profiles re-read on every maintenance cycle to drive
+    // the retry engine, whatever `OnvifCtrl::kProfileResyncIntervalSec` says.
+    bool hasPendingProfileConfig() const;
+
     // Runs a blocking device call (ONVIF SOAP) on this camera's serial queue.
     void postDeviceTask(SerialTaskQueue::Task task);
+
+    // Same, but ahead of the maintenance work already queued for this camera and for the shared
+    // `device` pool. For commands a user is waiting for (PTZ, presets, imaging, relay outputs):
+    // both queues are FIFO, so without this a command waits behind the background cycle of every
+    // other camera.
+    void postPriorityDeviceTask(SerialTaskQueue::Task task);
 
     // Posts `task` to the serial queue after `delay_ms`; callable from any thread. The delay runs on
     // _poller. `on_cancel` runs instead when the controller is gone or, if `ptz_generation` is not
@@ -94,6 +105,11 @@ private:
     std::atomic<bool> _ready { false };
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;
+    // Last time the maintenance cycle re-read the media profiles of this camera, and last time it
+    // checked the camera clock; only touched on _poller. See OnvifCtrl::kProfileResyncIntervalSec
+    // and OnvifCtrl::kClockSyncIntervalSec.
+    uint64_t _last_profile_resync = 0;
+    uint64_t _last_clock_sync = 0;
     toolkit::Timer::Ptr _timer_ctr;
     OnvifControl::Ptr _onvif_ctr;
     std::string _address;

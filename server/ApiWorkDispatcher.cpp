@@ -63,6 +63,13 @@ onceToken s_api_limit_config([]() {
     // mask to disk) before ffmpeg is even started.
     mINI::Instance()[limitKey("media.thumbnail", "maxInflight")] = 8;
     mINI::Instance()[limitKey("media.thumbnail", "maxQueueMs")] = 15000;
+    // Interactive device commands (PTZ, presets, imaging, relay outputs). Each one is a blocking
+    // ONVIF round trip serialized per camera on the `device` pool, so the API pool is not what
+    // limits them: the slot is held until the command is answered, and `maxInflight` is what caps
+    // how many commands may be outstanding. Over the cap the client gets 503 straight away instead
+    // of a reply long after it gave up. `maxQueueMs` only covers the (cheap) dispatch itself.
+    mINI::Instance()[limitKey("device.control", "maxInflight")] = 16;
+    mINI::Instance()[limitKey("device.control", "maxQueueMs")] = 10000;
 });
 
 int readLimit(const string &key) {
@@ -109,6 +116,12 @@ public:
 
 private:
     shared_ptr<atomic<int>> _counter;
+};
+
+// The in-flight slots of one request, as one object a work that answers later can keep alive.
+struct InflightSlots {
+    shared_ptr<InflightSlot> group;
+    shared_ptr<InflightSlot> global;
 };
 
 // Takes an in-flight slot of `group`; false when the group already has `max_inflight` requests.
@@ -227,9 +240,13 @@ int apiWorkInflight(const string &group) {
     return inflightCounter(group)->load();
 }
 
-void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,
-                const function<void()> &work, const function<void(const exception_ptr &)> &done,
-                const ApiWorkLimit &limit) {
+// Shared body of runApiWork / runApiCallbackWork. `work` is handed the request's in-flight slots:
+// a work that answers immediately ignores them (the task holds them until it returns), a work that
+// answers through a callback keeps them alive until it replies.
+static void runApiWorkHolding(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,
+                              const function<void(const shared_ptr<void> &slots)> &work,
+                              const function<void(const exception_ptr &)> &done,
+                              const ApiWorkLimit &limit) {
     CHECK(owner, "API work requires an owner poller");
     // An empty weak_ptr means "no session to watch"; an expired one means the client is gone.
     const bool check_session = !isEmptyWeak(session);
@@ -255,6 +272,9 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
         rejectBusy(global_limit.group, global_limit.max_inflight);
         return;
     }
+    auto slots = std::make_shared<InflightSlots>();
+    slots->group = group_slot;
+    slots->global = global_slot;
     const auto queued_at = chrono::steady_clock::now();
     string group = limit.group;
     int max_queue_ms = limit.group.empty() ? 0 : limit.max_queue_ms;
@@ -269,7 +289,7 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
         max_queue_ms = queue_ms;
     }
 
-    auto task = [owner, session, check_session, work, done, group_slot, global_slot, queued_at, group, max_queue_ms]() {
+    auto task = [owner, session, check_session, work, done, slots, queued_at, group, max_queue_ms]() {
         if (check_session && session.expired()) {
             // Client is gone: nobody will read the response, skip the blocking work.
             return;
@@ -282,7 +302,7 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
             error = make_exception_ptr(ApiBusyException("Server busy (" + group + "), retry later"));
         } else {
             try {
-                work();
+                work(slots);
             } catch (...) {
                 error = current_exception();
             }
@@ -295,6 +315,12 @@ void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &ses
     } else {
         getApiWorkExecutor()->async(task, false);
     }
+}
+
+void runApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,
+                const function<void()> &work, const function<void(const exception_ptr &)> &done,
+                const ApiWorkLimit &limit) {
+    runApiWorkHolding(owner, session, [work](const shared_ptr<void> &) { work(); }, done, limit);
 }
 
 void dispatchApiWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelper> &session,
@@ -334,15 +360,21 @@ void runApiCallbackWork(const EventPoller::Ptr &owner, const weak_ptr<SocketHelp
                         const HttpSession::HttpResponseInvoker &invoker,
                         const function<void(const ApiReply &reply)> &start, const ApiWorkLimit &limit) {
     auto replied = std::make_shared<atomic<bool>>(false);
-    ApiReply reply = [owner, replied](const function<void()> &respond) {
-        if (replied->exchange(true)) {
-            WarnL << "API reply ignored: the request was already answered";
-            return;
-        }
-        owner->async(respond, false);
-    };
-    runApiWork(owner, session,
-        [start, reply]() { start(reply); },
+    runApiWorkHolding(owner, session,
+        [start, replied, owner](const shared_ptr<void> &slots) {
+            // `reply` holds the request's in-flight slots, so the group's budget is only given back
+            // once the request is really answered. Here `start` typically only queues the work
+            // somewhere else (a device queue) and returns at once; releasing the slot then would
+            // make the limit count dispatches instead of outstanding requests, and cap nothing.
+            ApiReply reply = [owner, replied, slots](const function<void()> &respond) {
+                if (replied->exchange(true)) {
+                    WarnL << "API reply ignored: the request was already answered";
+                    return;
+                }
+                owner->async(respond, false);
+            };
+            start(reply);
+        },
         [replied, invoker, session](const exception_ptr &error) {
             // Without an error the service replies through `reply` (maybe later).
             if (error && !replied->exchange(true)) {

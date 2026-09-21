@@ -18,6 +18,67 @@ namespace managerkit {
 // Subnet scan proxy list
 static ServiceController<SubnetScan> s_subnet_scan;
 
+// One interactive device command (PTZ, preset, imaging, relay output). The six endpoints below all
+// have the same shape, so they share this dispatcher:
+//   - admission through the `device.control` group: every command is a blocking ONVIF round trip,
+//     serialized per camera on the `device` pool, so over the limit the client is answered 503 right
+//     away instead of getting a reply long after it gave up;
+//   - the answer always goes back through the request poller. The camera callbacks run on a
+//     `device worker` thread, and calling the invoker from there is what the rest of the API layer
+//     carefully avoids;
+//   - `require_ownership` covers the endpoints that actually move the camera. As before, the
+//     ownership token is only a "nobody else is driving it" check: it is released right away, so
+//     commands to the same camera still queue instead of being rejected.
+using DeviceCommandCb = std::function<void(const toolkit::SockException &ex)>;
+using DeviceCommand = std::function<void(const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb)>;
+
+static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<SocketHelper> &session,
+                             HttpSession::KeyValue headerOut, Json::Value val,
+                             const HttpSession::HttpResponseInvoker &invoker, const string &device_id,
+                             bool require_ownership, const DeviceCommand &command) {
+    runApiCallbackWork(owner, session, invoker,
+        [headerOut, val, invoker, device_id, require_ownership, command](const ApiReply &reply) mutable {
+            // Answers the request once, on the request poller, whatever thread gets here.
+            // `mutable` all the way down: a copy captured from a const lambda body is itself const,
+            // and RETURN_API_RESPONSE writes into `val`.
+            DeviceCommandCb respond = [reply, headerOut, val, invoker](const SockException &ex) mutable {
+                reply([headerOut, val, invoker, ex]() mutable {
+                    if (ex) {
+                        RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
+                        return;
+                    }
+                    val["msg"] = ex.what();
+                    invoker(200, headerOut, val.toStyledString());
+                });
+            };
+
+            auto ret = findDeviceSource(device_id);
+            if (!ret) {
+                respond(SockException(Err_other, "Device not found", ApiErrCode::CODE_DEVICE_NOT_FOUND));
+                return;
+            }
+            if (require_ownership && !ret->getOwnership()) {
+                respond(SockException(Err_other, "Device is controlled by other user", ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER));
+                return;
+            }
+            // The camera methods assert they run on the device's owner poller.
+            ret->getOwnerPoller()->async([ret, command, respond]() {
+                auto strong_listener = ret->getListener().lock();
+                if (!strong_listener) {
+                    /* Unreachable */
+                    respond(SockException(Err_other, "Device is offline", ApiErrCode::CODE_DEVICE_OFFLINE));
+                    return;
+                }
+                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                if (!impl) {
+                    respond(SockException(Err_other, "Device is not a camera", ApiErrCode::CODE_DEVICE_NOT_FOUND));
+                    return;
+                }
+                command(impl, respond);
+            });
+        }, apiWorkLimit("device.control"));
+}
+
 void registerControlApis() {
     // Register the Web API control endpoints here
     api_regist("/media/mserver/device/discovery", [](API_ARGS_MAP_ASYNC) {
@@ -201,44 +262,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "direct", "speed");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string strDirect = allArgs["direct"];
             int speed = allArgs["speed"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            auto ownership = ret->getOwnership();
-            if (!ownership) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->PTZMove(strDirect, speed, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, true,
+                [strDirect, speed](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->PTZMove(strDirect, speed, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
@@ -249,44 +282,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "presetToken", "isUserPreset");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string presetToken = allArgs["presetToken"];
             bool isUserPreset = allArgs["isUserPreset"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            auto ownership = ret->getOwnership();
-            if (!ownership) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->PTZGotoPreset(presetToken, isUserPreset, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, true,
+                [presetToken, isUserPreset](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->PTZGotoPreset(presetToken, isUserPreset, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
@@ -306,6 +311,9 @@ void registerControlApis() {
                 return;
             }
 
+            // Deliberately not a `device.control` command: this only reads the preset list the
+            // controller already cached, with no ONVIF round trip, so it stays synchronous on the
+            // request poller and must not be charged against the command budget.
             val["data"] = makeDevicePTZPresetJson(ret);
             invoker(200, headerOut, val.toStyledString());
         };
@@ -318,38 +326,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "presetToken", "presetName");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string presetToken = allArgs["presetToken"];
             string presetName = allArgs["presetName"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->addUserPTZPreset(presetToken, presetName, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, false,
+                [presetToken, presetName](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->addUserPTZPreset(presetToken, presetName, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
@@ -360,38 +346,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "presetToken", "presetName");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string presetToken = allArgs["presetToken"];
             string presetName = allArgs["presetName"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->removeUserPTZPreset(presetToken, presetName, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, false,
+                [presetToken, presetName](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->removeUserPTZPreset(presetToken, presetName, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
@@ -402,44 +366,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "direct", "speed");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string strDirect = allArgs["direct"];
             int speed = allArgs["speed"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            auto ownership = ret->getOwnership();
-            if (!ownership) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->ImageMoveControl(strDirect, speed, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, true,
+                [strDirect, speed](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->ImageMoveControl(strDirect, speed, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
@@ -450,44 +386,16 @@ void registerControlApis() {
         CHECK_USER_PERMISSION(PTZ_CONTROL_PERMISSION_CODE);
         CHECK_ARGS_("deviceId", "direct", "token");
 
-        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
             string deviceId = allArgs["deviceId"];
             string strDirect = allArgs["direct"];
             string relayToken = allArgs["token"];
-
-            auto ret = findDeviceSource(deviceId);
-            if (!ret) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
-                return;
-            }
-
-            auto ownership = ret->getOwnership();
-            if (!ownership) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER, "Device is controlled by other user");
-                return;
-            }
-
-            ret->getOwnerPoller()->async([=]() mutable {
-                auto weak_listener = ret->getListener();
-                if (auto strong_listener = weak_listener.lock()) {
-                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                    if (impl) {
-                        impl->RelayOutputControl(strDirect, relayToken, [=](const SockException &ex) mutable {
-                            if (ex) {
-                                RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
-                            } else {
-                                val["msg"] = ex.what();
-                                invoker(200, headerOut, val.toStyledString());
-                            }
-                        });
-                    } else {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device is not a camera");
-                    }
-                } else {
-                    /* Unreachable */
-                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
-                }
-            });
+            runDeviceCommand(owner, session, headerOut, val, invoker, deviceId, true,
+                [strDirect, relayToken](const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb) {
+                    impl->RelayOutputControl(strDirect, relayToken, cb);
+                });
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);

@@ -160,6 +160,12 @@ Nếu session đã đóng trước khi worker bắt đầu, phần việc blocki
   ngay, **không** xếp hàng.
 - `maxQueueMs`: request chờ trong hàng đợi lâu hơn mức này thì bị bỏ.
 
+Với `runApiCallbackWork`, slot in-flight được giữ **đến khi request được trả lời**, không phải đến
+khi `start()` trả về. `start()` thường chỉ đẩy việc thật sang một hàng đợi khác (hàng đợi thiết bị)
+rồi trả về ngay; nhả slot ở thời điểm đó thì `maxInflight` đếm số lần dispatch chứ không đếm số
+request đang treo, và không chặn được gì. Nếu `reply` bị huỷ mà không gọi, slot cũng được trả lại
+lúc nó bị destroy.
+
 Ngoài giới hạn theo nhóm còn có **giới hạn tổng cho cả pool `api`** (`api.limit.global.*`,
 nhóm `global` là tên dành riêng). Nó áp cho **mọi** request đi qua `runApiWork` /
 `dispatchApiWork` / `runApiCallbackWork`, kể cả request không thuộc nhóm nào. Thứ tự:
@@ -199,6 +205,36 @@ Hai đường vào, tách biệt rõ:
 | `/media/mserver/device/discovery` | `runApiWork` → `BlockingExecutors::api()` | `api.limit.device.discovery.*` |
 | `/media/mserver/device/subnetScan` (đồng bộ) | `SubnetScan::scanRange()` trên `api worker`, probe trên `discovery` | `api.limit.device.discovery.*` + `searcher.max_parallel` |
 | `/media/mserver/device/subnetScan/create` (nền) | `SubnetScan::startProbes()` trên `discovery` | `searcher.max_parallel` |
+
+### 4.1b Lệnh điều khiển thiết bị (PTZ, preset, imaging, relay)
+
+Sáu endpoint `ptz_control`, `ptz_control/goto_preset`, `ptz_control/set_preset`,
+`ptz_control/remove_preset`, `imageMoveControl`, `relayOutputControl` đi qua cùng một hàm
+`runDeviceCommand()` (`server/WebApiControl.cpp`):
+
+```
+request poller  : auth, đọc tham số
+api worker      : findDeviceSource + ownership, rồi post sang owner poller của thiết bị
+owner poller    : CameraController::PTZMove/...
+device queue    : SOAP blocking, đẩy lên **đầu** hàng đợi (postFront + async_first)
+request poller  : trả lời
+```
+
+Hai điểm đáng nhớ:
+
+- Cả `SerialTaskQueue` của từng camera và pool `device` đều là FIFO. Lệnh tương tác phải chen ở
+  **cả hai** (`SerialTaskQueue::postFront()` đẩy lên đầu deque của camera, và lượt của camera đó
+  được giao cho pool bằng `async_first`), vì nút thắt thật là hàng đợi chung của pool.
+- Trần `api.limit.device.control.*` mới là thứ chặn burst; `maxQueueMs` ở đây gần như không bao giờ
+  chạm, vì phần chạy trên `api worker` chỉ là dispatch.
+
+`ptz_control/get_presets` **không** thuộc nhóm này: nó chỉ đọc danh sách preset đã cache, không có
+round trip ONVIF nào, nên vẫn chạy đồng bộ trên request poller.
+
+Chu kỳ bảo trì của camera (`CameraController::onManager()`, 10 s/camera, thực thi mỗi 60 s) dùng
+`post()` thường. Camera đang kết nối tốt chỉ bị thăm dò bằng một `GetDeviceInformation`
+(`OnvifControl::probeConnection()`); đọc lại media profile và kiểm đồng hồ camera giãn ra theo
+`onvif.profileResyncIntervalSec` / `onvif.clockSyncIntervalSec`.
 
 `startProbes()` là nơi duy nhất dispatch sang `BlockingExecutors::discovery()` và là nơi giữ
 bound `searcher.max_parallel`; probe mặc định gọi thẳng bản blocking nên chỉ có một hop.
@@ -262,6 +298,7 @@ Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
 | `api.limit.sync.snapshot.*` | 2 | 30000 |
 | `api.limit.sync.changes.*` | 8 | 30000 |
 | `api.limit.device.discovery.*` | 4 | 30000 |
+| `api.limit.device.control.*` | 16 | 10000 |
 | `api.limit.storage.read.*` | 32 | 15000 |
 | `api.limit.media.thumbnail.*` | 8 | 15000 |
 

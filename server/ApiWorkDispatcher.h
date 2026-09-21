@@ -70,7 +70,7 @@ extern const char kApiGlobalLimitGroup[];
 
 // Limit of `group` from config `api.limit.<group>.maxInflight` / `api.limit.<group>.maxQueueMs`,
 // read on every call. Registered groups: sync.snapshot, sync.changes, device.discovery,
-// storage.read, media.thumbnail (plus the reserved `global` above).
+// device.control, storage.read, media.thumbnail (plus the reserved `global` above).
 ApiWorkLimit apiWorkLimit(const std::string &group);
 
 // Requests of `group` currently queued or running (for tests and diagnostics).
@@ -123,7 +123,10 @@ using ApiReply = std::function<void(const std::function<void()> &respond)>;
 // For services that answer through a callback, possibly later and from another thread (e.g. after
 // querying remote peers): `start(reply)` runs on the API worker; the service calls `reply(respond)`
 // once and `respond` (which calls the invoker) runs on `owner`. If `start` throws before replying,
-// the error is answered like in dispatchApiWork. Session/limit handling as in runApiWork.
+// the error is answered like in dispatchApiWork. Session/limit handling as in runApiWork, except
+// that the in-flight slot of `limit` is held until the request is answered (or `reply` is dropped),
+// not only until `start` returns: `start` usually just queues the real work elsewhere, so a slot
+// released at that point would limit nothing.
 void runApiCallbackWork(const toolkit::EventPoller::Ptr &owner,
                         const std::weak_ptr<toolkit::SocketHelper> &session,
                         const mediakit::HttpSession::HttpResponseInvoker &invoker,
