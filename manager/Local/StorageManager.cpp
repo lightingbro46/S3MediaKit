@@ -7,7 +7,7 @@
 #include "Util/NoticeCenter.h"
 #include "Common/config.h"
 #include "Common/Parser.h"
-#include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 #include "TimeRecorderManager.h"
 #include "TimeRebuilder.h"
 #include "Camera/GenericRtspCameraImp.h"
@@ -34,8 +34,8 @@ StorageManager::~StorageManager() {
 
 StorageManager::StorageManager(const EventPoller::Ptr &poller) {
     _poller = poller ? std::move(poller) : EventPollerPool::Instance().getPoller();
-
-    cleanupTemporaryFiles();
+    // The startup cleanup used to run here, on whatever thread first reached Instance() -- a poller
+    // for any caller other than the startup path. start() queues it on the storage pool instead.
 }
 
 static void cleanupFolder(const string folder) {
@@ -90,8 +90,9 @@ void StorageManager::cleanupTemporaryFiles() {
         return;
     }
 
-    // reset ticker to elapse time
-    _ticker.resetTime();
+    // Local, not a member: cycles of the maintenance run no longer share one ticker with
+    // enforceStoragePolicy() (they used to, from two different threads).
+    Ticker ticker;
 
     if (_next_cleanup_time == 0) {
         // only cleanup hls save path when the manager is started for the first time, 
@@ -121,7 +122,7 @@ void StorageManager::cleanupTemporaryFiles() {
         DebugL << "Cleanup crash files";
     }
 
-    InfoL << "Remove temporary files. Finished. " << format_duration_verbose(_ticker.elapsedTime()) << " elapsed" ;
+    InfoL << "Remove temporary files. Finished. " << format_duration_verbose(ticker.elapsedTime()) << " elapsed" ;
 
     _next_cleanup_time = StampUtils::getStartOfDay(time(nullptr)) + 86400;
     InfoL << "Next temporary files cleanup time: " << getTimeStr("%Y-%m-%d %H:%M:%S", _next_cleanup_time);
@@ -409,65 +410,90 @@ static void removeExpiredMotionBlock(const KeepTimeMap &keep_time_map) {
 }
 
 void StorageManager::enforceStoragePolicy() {
-    // asynchronous delete expired segment by scanning folder and removing file which start time over threshold
+    // Deletes expired segments by scanning the record tree and removing every file whose start time
+    // is past the threshold. All of it blocks -- statvfs, the recursive scan, one File::delete_file
+    // per file, rebuilding the timefiles, and two SQLite deletes -- so the caller must be
+    // postMaintenanceCycle(), i.e. the storage pool. It used to run on a WorkThreadPool poller,
+    // which holds the timers and ordered queues of the whole process; measured at 1036 ms for 4161
+    // files, and the cost scales with the file count (30 days x 300 cameras is millions of files).
+    CHECK(!EventPoller::getCurrentPoller(), "enforceStoragePolicy must not run on an EventPoller");
+
+    // Tracks the operation time of this cycle.
+    Ticker ticker;
+
+    // estimate removed space need to reclaim
+    size_t space_reclaim = estimateSpaceToReclaim();
+
+    KeepTimeMap keep_time_map;
+    auto record_profiles = getRecordProfiles();
+    int keep_percent = 100;
+    size_t removed_bytes = 0;
+
+    while (keep_percent > 0 && (space_reclaim == 0 || removed_bytes < space_reclaim)) {
+        // step 1: estimate keep time map with new keep_percent value
+        for (const auto &p : record_profiles) {
+            auto keep_pair = p.second;
+            keep_time_map[p.first] = keepTimeThreshold(keep_pair.first, keep_pair.second, keep_percent);
+        }
+
+        // step 2: remove expired segment and get keep time map
+        auto removed_volume_bytes = removeExpiredSegment(keep_time_map);
+        removed_bytes += removed_volume_bytes;
+
+        // step 3: decrease keep_percent to estimate removed bytes again in next loop if removed_bytes is not enough
+        if (removed_bytes < space_reclaim) {
+            // todo: auto select keep_percent by read/write speed
+            keep_percent += (-5);
+            TraceL << "Decrease keep percent by 5% => remain " << keep_percent << "%";
+        }
+
+        // only enforce storage policy once if space_reclaim equal 0 byte
+        if (space_reclaim == 0) {
+            break;
+        }
+    }
+
+    if (keep_percent == 0 && removed_bytes < space_reclaim) {
+        WarnL << "Cannot reclaim enough space: " << format_bytes_human_readable(removed_bytes)
+              << " , expect: " << format_bytes_human_readable(space_reclaim);
+    }
+
+    // recreate time file according to keep time map
+    recreateTimeFile(keep_time_map);
+    // remove expired motion block associated with media segment
+    removeExpiredMotionBlock(keep_time_map);
+
+    InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << format_duration_verbose(ticker.elapsedTime());
+
+    // remove expired items associated with media segment
+    removeExpiredBookmark(keep_time_map);
+}
+
+void StorageManager::postMaintenanceCycle(bool full) {
+    if (_cycle_running.exchange(true)) {
+        WarnL << "Previous storage maintenance cycle is still running, skipping this one";
+        return;
+    }
     weak_ptr<StorageManager> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
-        // Switch back to your own thread
+    // Gives the slot back however the task ends -- ran, threw, or was dropped with the pool.
+    auto guard = std::shared_ptr<void>((void *)0x01, [weak_self](void *) {
+        if (auto self = weak_self.lock()) {
+            self->_cycle_running = false;
+        }
+    });
+    BlockingExecutors::storage()->async([weak_self, guard, full]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
-
-        // Reset a timer to track the operation time of a cycle
-        strong_self->_ticker.resetTime();
-
-        // estimate removed space need to reclaim
-        size_t space_reclaim = estimateSpaceToReclaim();
-
-        KeepTimeMap keep_time_map;
-        auto record_profiles = getRecordProfiles();
-        int keep_percent = 100;
-        size_t removed_bytes = 0;
-
-        while (keep_percent > 0 && (space_reclaim == 0 || removed_bytes < space_reclaim)) {
-            // step 1: estimate keep time map with new keep_percent value
-            for (const auto &p : record_profiles) {
-                auto keep_pair = p.second;
-                keep_time_map[p.first] = keepTimeThreshold(keep_pair.first, keep_pair.second, keep_percent);
-            }
-
-            // step 2: remove expired segment and get keep time map
-            auto removed_volume_bytes = removeExpiredSegment(keep_time_map);
-            removed_bytes += removed_volume_bytes;
-
-            // step 3: decrease keep_percent to estimate removed bytes again in next loop if removed_bytes is not enough
-            if (removed_bytes < space_reclaim) {
-                // todo: auto select keep_percent by read/write speed
-                keep_percent += (-5);
-                TraceL << "Decrease keep percent by 5% => remain " << keep_percent << "%";
-            }
-
-            // only enforce storage policy once if space_reclaim equal 0 byte
-            if (space_reclaim == 0) {
-                break;
-            }
+        if (full) {
+#ifndef ENABLE_TIER_STORAGE
+            strong_self->enforceStoragePolicy();
+#endif
+            strong_self->removeExpiredUserSession();
         }
-
-        if (keep_percent == 0 && removed_bytes < space_reclaim) {
-            WarnL << "Cannot reclaim enough space: " << format_bytes_human_readable(removed_bytes)
-                  << " , expect: " << format_bytes_human_readable(space_reclaim);
-        }
-
-        // recreate time file according to keep time map
-        recreateTimeFile(keep_time_map);
-        // remove expired motion block associated with media segment
-        removeExpiredMotionBlock(keep_time_map);
-
-        InfoL << "Finished enforcing storage policy: " << format_bytes_human_readable(removed_bytes) << ". Elapsed: " << format_duration_verbose(strong_self->_ticker.elapsedTime());
-
-        // remove expired items associated with media segment
-        removeExpiredBookmark(keep_time_map);
-    });
+        strong_self->cleanupTemporaryFiles();
+    }, false);
 }
 
 void StorageManager::start() {
@@ -475,6 +501,9 @@ void StorageManager::start() {
         WarnL << "Storage manager has been running. Ignore";
         return;
     }
+
+    // The cleanup the constructor used to do inline, now off the poller.
+    postMaintenanceCycle(false);
 
     weak_ptr<StorageManager> weak_self = shared_from_this();
     _timer = std::make_shared<Timer>(
@@ -484,12 +513,8 @@ void StorageManager::start() {
             if (!strong_self) {
                 return false;
             }
-
-#ifndef ENABLE_TIER_STORAGE
-            strong_self->enforceStoragePolicy();
-#endif
-            strong_self->removeExpiredUserSession();
-            strong_self->cleanupTemporaryFiles();
+            // Only queues the work: the whole cycle is blocking and runs on the storage pool.
+            strong_self->postMaintenanceCycle(true);
             return true;
         },
         _poller);
@@ -572,9 +597,13 @@ static void* s_tag;
 static onceToken g_token(
 []() {
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastRebuildTimeFile, [](BroadcastRebuildTimeFileArgs) {
-        WorkThreadPool::Instance().getPoller()->async([device_id, threshold]() {
+        // Walking a camera's record tree and rewriting its timefile is blocking, so it belongs on
+        // the storage pool like the rest of this file -- not on a WorkThreadPool poller, which also
+        // runs the timers and ordered queues of the whole process.
+        // (Nothing emits this event today; kept working and consistent.)
+        BlockingExecutors::storage()->async([device_id, threshold]() {
             StorageManager::Instance().rebuildTimeFile(device_id, threshold);
-        });
+        }, false);
     });
 }, 
 []() {

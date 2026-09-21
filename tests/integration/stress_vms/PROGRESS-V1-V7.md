@@ -20,7 +20,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
 | V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
-| V7 | `enforceStoragePolicy()` blocking trên poller | chưa bắt đầu | — |
+| V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `PENDING` |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
 | V5 | fd không trả lại sau failover | chưa điều tra | — |
 
@@ -293,6 +293,87 @@ có thể bỏ lệnh mà chưa có số đo nào chứng minh cần.
 
 ---
 
+## V7 — đã xong (`PENDING`)
+
+### Pool thứ năm
+
+`manager/Common/BlockingExecutors.{h,cpp}` — `storage()` / `storageThreadCount()` /
+`blocking.storageThreads` (mặc định **1**), đúng khuôn 4 pool sẵn có. Thread tên `storage worker N`.
+
+Một thread là cố ý: vừa đủ, vừa là một lớp bảo vệ nữa chống hai chu kỳ chạy chồng nhau.
+
+### Chu kỳ bảo trì chuyển hết sang pool đó
+
+`manager/Local/StorageManager.{h,cpp}`. Timer 300 s trên `_poller` giờ **chỉ xếp việc**:
+
+```
+_poller (timer 300s) -> postMaintenanceCycle(true)
+storage worker       -> enforceStoragePolicy()      (chỉ khi ENABLE_TIER_STORAGE=OFF)
+                     -> removeExpiredUserSession()
+                     -> cleanupTemporaryFiles()
+```
+
+**Kế hoạch chỉ nói tới `enforceStoragePolicy()`, nhưng hai việc kia còn tệ hơn.** Đọc mới thấy:
+`removeExpiredUserSession()` (một DELETE SQLite) và `cleanupTemporaryFiles()` (quét + xoá đệ quy
+nhiều thư mục, `cleanCrashFiles()`) chạy **thẳng trên `_poller`**, không qua bất kỳ dispatch nào —
+trong khi `enforceStoragePolicy()` ít nhất còn được đẩy sang một poller khác. Cùng một khiếm khuyết,
+cùng một hàm, nên sửa cả ba.
+
+Thêm hai chỗ nữa cùng loại:
+
+- `cleanupTemporaryFiles()` được gọi trong **constructor** của singleton, nên nó chạy trên bất kỳ
+  thread nào chạm `Instance()` đầu tiên — là một poller với mọi caller không phải đường khởi động.
+  Đã bỏ khỏi ctor; `start()` xếp một lượt `postMaintenanceCycle(false)` ngay lúc khởi động để giữ
+  đúng hành vi cũ (dọn lúc start, không phải chờ 300 s).
+- Listener `kBroadcastRebuildTimeFile` đẩy `rebuildTimeFile()` (quét cây thư mục + ghi lại timefile)
+  vào `WorkThreadPool::Instance().getPoller()->async()`. Đã chuyển sang pool `storage`.
+  **Không có chỗ nào emit event này** (grep cả repo: chỉ có khai báo ở `src/Common/config.*`), nên
+  đổi không rủi ro.
+
+Sau thay đổi, `StorageManager.cpp` không còn include `Thread/WorkThreadPool.h`.
+
+### Hai lỗi phụ phát hiện trong lúc sửa
+
+1. **Đua dữ liệu trên `_ticker`.** `enforceStoragePolicy()` và `cleanupTemporaryFiles()` dùng chung
+   member `_ticker` (`resetTime()` rồi `elapsedTime()`), mà chúng chạy trên **hai thread khác nhau**
+   (một WorkThreadPool poller và `_poller`) trong cùng một tick timer. Đã đổi thành `Ticker` local
+   trong từng hàm; member `_ticker` bị bỏ.
+2. **Chu kỳ chồng nhau.** Không có gì chặn timer 300 s xếp thêm chu kỳ khi chu kỳ trước còn chạy —
+   mà trên kho lớn một chu kỳ có thể dài hơn 300 s. Thêm cờ `_cycle_running`
+   (`std::atomic<bool>`): chu kỳ trước chưa xong thì chu kỳ này **bị bỏ** kèm `WarnL`, chứ không xếp
+   hàng (xếp hàng chỉ làm backlog phình ra). Cờ nhả bằng guard `shared_ptr` nên task kết thúc kiểu
+   nào cũng nhả.
+
+`enforceStoragePolicy()` thêm `CHECK(!EventPoller::getCurrentPoller(), ...)` để chặn hồi quy.
+
+### Kiểm thử
+
+`tests/unit/manager/test_blocking_executors.cpp` — bổ sung vào 3 case sẵn có: pool `storage` là
+singleton và khác cả 4 pool kia / thread tên `storage worker` và **không** phải poller /
+`storageThreadCount() == 1`.
+
+Không viết unit test cho `postMaintenanceCycle()`: `StorageManager` là singleton ctor private, và
+gọi được nó trong test thì `cleanupTemporaryFiles()` sẽ xoá thật các thư mục theo config của test.
+Phần đó để harness.
+
+### Xác minh đã chạy
+
+```
+cmake --build build -j2                                      → exit 0
+cmake --build build-tier-off --target s3managerkit -j2       → exit 0 (nhánh ENABLE_TIER_STORAGE=OFF,
+                                                                nơi enforceStoragePolicy() thật sự được gọi)
+cmake --build build-test -j2                                 → exit 0
+./release/linux/Debug/unit_blocking_executors                → 10/10 PASSED
+ctest --test-dir build-test -R '^unit\.'                     → 156/156 PASSED
+```
+
+**Chưa làm:** xác minh bằng harness — log của chu kỳ dọn (`Remove temporary files. Finished.`,
+`Finished enforcing storage policy`) phải mang thread `storage worker N` thay vì `work poller N`.
+Không chạy thử ở máy này vì `cleanupTemporaryFiles()` xoá thật `www/snap` và `www/extract`
+(đang có 142 MB dữ liệu dev trong `release/linux/Debug/www`).
+
+---
+
 ## V2 — code đã sửa, chưa commit
 
 `manager/Local/TierFileStorageBase.cpp` đang có +4 dòng trong working tree: bọc cả file trong
@@ -309,14 +390,11 @@ lệch tài liệu — `CMakeLists.txt:46` mặc định **ON** còn `docs/api-s
 
 ---
 
-## V7, V5 — chưa bắt đầu
+## V5 — chưa bắt đầu
 
 Xem kế hoạch. Tóm tắt những gì đã xác minh trong lúc lập kế hoạch, để phiên sau không phải
 điều tra lại:
 
-- **V7**: `StorageManager.cpp:405` đẩy vào `WorkThreadPool::Instance().getPoller()->async()`
-  trong khi thân hàm làm `statvfs`, quét đệ quy cây thư mục ghi, xoá file, dựng lại timefile và
-  hai truy vấn SQLite. Đo được 1.036 ms cho 4.161 file.
 - **V5**: mới là **quan sát**, chưa xác nhận là rò rỉ. `node-b` đi 1.353 → 2.436 → 2.440 fd qua
   chu kỳ failover/rebalance và không giảm; số thread giữ nguyên 27 nên không phải rò thread.
   Điều tra trước, chỉ sửa nếu chỉ được đúng chỗ rò; nếu fd bão hoà thì đóng V5 không sửa code.
@@ -353,4 +431,4 @@ Xem kế hoạch. Tóm tắt những gì đã xác minh trong lúc lập kế ho
 | Lệnh ONVIF/giây ở trạng thái ổn định | ~155 | giảm rõ rệt (V4.1) |
 | PTZ timeout (1 node, 300 cam) | 48/62 = 77% | ≤ 25%, p95 ≤ 15 s |
 | Camera Auto mất đoạn đầu | có | không còn |
-| Thread chạy chu kỳ dọn kho | `work poller N` | `storage worker N` |
+| Thread chạy chu kỳ dọn kho | `work poller N` | `storage worker N` (V7) |

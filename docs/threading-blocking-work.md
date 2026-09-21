@@ -20,6 +20,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
+| `BlockingExecutors::storage()` | `ThreadPool` | Chu kỳ bảo trì kho: quét cây thư mục ghi, xoá file hết hạn, dựng lại timefile, dọn thư mục tạm |
 | `BlockingExecutors::ffmpeg()` | `ThreadPool` | Chờ tiến trình ffmpeg/ffprobe (snapshot, thumbnail) |
 
 Điểm mấu chốt: **mỗi thread của `WorkThreadPool` là một `EventPoller`**, không phải thread
@@ -33,6 +34,7 @@ Các pool được tách riêng theo nhóm công việc để một việc chậ
 - Một lần quét dải IP dài **không** được làm chậm lệnh PTZ tới camera đã biết → `discovery`
   tách khỏi `device`.
 - Một thumbnail chậm **không** được ăn hết thread phục vụ API → `ffmpeg` tách khỏi `api`.
+- Một chu kỳ dọn kho có thể chạy hàng phút (nó đi qua từng file đã ghi) → `storage` tách khỏi `api`.
 
 ## 2. Quy Tắc
 
@@ -206,36 +208,6 @@ Hai đường vào, tách biệt rõ:
 | `/media/mserver/device/subnetScan` (đồng bộ) | `SubnetScan::scanRange()` trên `api worker`, probe trên `discovery` | `api.limit.device.discovery.*` + `searcher.max_parallel` |
 | `/media/mserver/device/subnetScan/create` (nền) | `SubnetScan::startProbes()` trên `discovery` | `searcher.max_parallel` |
 
-### 4.1b Lệnh điều khiển thiết bị (PTZ, preset, imaging, relay)
-
-Sáu endpoint `ptz_control`, `ptz_control/goto_preset`, `ptz_control/set_preset`,
-`ptz_control/remove_preset`, `imageMoveControl`, `relayOutputControl` đi qua cùng một hàm
-`runDeviceCommand()` (`server/WebApiControl.cpp`):
-
-```
-request poller  : auth, đọc tham số
-api worker      : findDeviceSource + ownership, rồi post sang owner poller của thiết bị
-owner poller    : CameraController::PTZMove/...
-device queue    : SOAP blocking, đẩy lên **đầu** hàng đợi (postFront + async_first)
-request poller  : trả lời
-```
-
-Hai điểm đáng nhớ:
-
-- Cả `SerialTaskQueue` của từng camera và pool `device` đều là FIFO. Lệnh tương tác phải chen ở
-  **cả hai** (`SerialTaskQueue::postFront()` đẩy lên đầu deque của camera, và lượt của camera đó
-  được giao cho pool bằng `async_first`), vì nút thắt thật là hàng đợi chung của pool.
-- Trần `api.limit.device.control.*` mới là thứ chặn burst; `maxQueueMs` ở đây gần như không bao giờ
-  chạm, vì phần chạy trên `api worker` chỉ là dispatch.
-
-`ptz_control/get_presets` **không** thuộc nhóm này: nó chỉ đọc danh sách preset đã cache, không có
-round trip ONVIF nào, nên vẫn chạy đồng bộ trên request poller.
-
-Chu kỳ bảo trì của camera (`CameraController::onManager()`, 10 s/camera, thực thi mỗi 60 s) dùng
-`post()` thường. Camera đang kết nối tốt chỉ bị thăm dò bằng một `GetDeviceInformation`
-(`OnvifControl::probeConnection()`); đọc lại media profile và kiểm đồng hồ camera giãn ra theo
-`onvif.profileResyncIntervalSec` / `onvif.clockSyncIntervalSec`.
-
 `startProbes()` là nơi duy nhất dispatch sang `BlockingExecutors::discovery()` và là nơi giữ
 bound `searcher.max_parallel`; probe mặc định gọi thẳng bản blocking nên chỉ có một hop.
 `makeScan()` chỉ mượn một poller của `WorkThreadPool` cho **timer đóng scan**, không chạy SOAP
@@ -258,8 +230,7 @@ an toàn.
 
 ### 4.3 Điều khiển thiết bị
 
-`ptz_control*`, `imageMoveControl`, `relayOutputControl`, `onvifSetVideoConfigs`,
-`onvifGetConfigProfiles`, `speaker/playAudioFile`, `validateCredential`:
+`onvifSetVideoConfigs`, `onvifGetConfigProfiles`, `speaker/playAudioFile`, `validateCredential`:
 
 ```text
 request poller -> owner poller của camera (lookup + ownership)
@@ -270,6 +241,32 @@ request poller -> owner poller của camera (lookup + ownership)
 Handler không cần `dispatchApiWork`: `CameraController`/`SpeakerController` đã tự đưa phần
 blocking ra pool `device`.
 
+**Lệnh tương tác** — `ptz_control`, `ptz_control/goto_preset`, `ptz_control/set_preset`,
+`ptz_control/remove_preset`, `imageMoveControl`, `relayOutputControl` — đi qua cùng một hàm
+`runDeviceCommand()` (`server/WebApiControl.cpp`) và có thêm hai thứ:
+
+```text
+request poller -> api worker (findDeviceSource + ownership, chịu trần device.control)
+               -> owner poller của camera
+               -> SerialTaskQueue của thiết bị, chen lên ĐẦU (postFront + async_first)
+               -> request poller (trả lời)
+```
+
+- Cả `SerialTaskQueue` của từng camera và pool `device` đều là FIFO. Lệnh tương tác phải chen ở
+  **cả hai** (`postFront()` đẩy lên trước mọi task nền của camera đó — nhưng sau các lệnh ưu tiên
+  đang chờ, để một chuỗi lệnh giữ đúng thứ tự — và lượt của camera được giao cho pool bằng
+  `async_first`), vì nút thắt thật là hàng đợi chung của pool.
+- Trần `api.limit.device.control.*` mới là thứ chặn burst; `maxQueueMs` ở đây gần như không bao giờ
+  chạm, vì phần chạy trên `api worker` chỉ là dispatch.
+
+`ptz_control/get_presets` **không** thuộc nhóm này: nó chỉ đọc danh sách preset đã cache, không có
+round trip ONVIF nào, nên vẫn chạy đồng bộ trên request poller.
+
+Chu kỳ bảo trì của camera (`CameraController::onManager()`, 10 s/camera, thực thi mỗi 60 s) dùng
+`post()` thường. Camera đang kết nối tốt chỉ bị thăm dò bằng một `GetDeviceInformation`
+(`OnvifControl::probeConnection()`); đọc lại media profile và kiểm đồng hồ camera giãn ra theo
+`onvif.profileResyncIntervalSec` / `onvif.clockSyncIntervalSec`.
+
 ### 4.4 Phân biệt với routing theo node
 
 Một số handler (`bookmark/create|update|delete`, `motion`, `playback`) rẽ nhánh theo **node sở
@@ -278,6 +275,37 @@ hữu** dữ liệu: local thì làm tại chỗ, không phải local thì forwa
 Đây **không** phải vi phạm [§2.1](#21-không-chọn-thread-dựa-vào-input). Đó là quyết định
 routing, không phải quyết định "việc này có blocking không" — nhánh forward là HTTP bất đồng bộ
 thật sự. Đừng "sửa" nó thành dispatch.
+
+### 4.5 Chu kỳ bảo trì kho lưu trữ
+
+`StorageManager` có một timer 300 s trên `_poller`. Timer **chỉ xếp việc**: cả chu kỳ chạy trên
+`BlockingExecutors::storage()`.
+
+```text
+_poller (timer 300s) -> postMaintenanceCycle(true)
+storage worker       -> enforceStoragePolicy()      (chỉ khi ENABLE_TIER_STORAGE=OFF)
+                     -> removeExpiredUserSession()
+                     -> cleanupTemporaryFiles()
+```
+
+Vì sao: một chu kỳ làm `statvfs`, quét đệ quy toàn bộ cây thư mục ghi, `File::delete_file` từng
+file, dựng lại timefile, và vài truy vấn SQLite. Đo được **1.036 ms cho 4.161 file**, chi phí tỉ lệ
+thuận số file — kho 30 ngày × 300 camera cỡ hàng triệu file thì chu kỳ chạy hàng phút.
+
+- Trước đây `enforceStoragePolicy()` đẩy vào `WorkThreadPool::Instance().getPoller()->async()`,
+  tức là giữ một `EventPoller` cùng toàn bộ timer và hàng đợi có thứ tự của nó suốt chu kỳ.
+- `removeExpiredUserSession()` và `cleanupTemporaryFiles()` thì còn tệ hơn: chúng chạy **thẳng trên
+  `_poller`**, không qua dispatch nào.
+- `cleanupTemporaryFiles()` cũng từng được gọi trong **constructor** của singleton, nên nó chạy trên
+  bất kỳ thread nào chạm `Instance()` đầu tiên. Giờ `start()` xếp nó lên pool `storage`.
+
+**Hai chu kỳ không bao giờ chạy cùng lúc.** `postMaintenanceCycle()` có cờ `_cycle_running`: chu kỳ
+trước chưa xong thì chu kỳ này bị **bỏ** kèm `WarnL`, chứ không xếp hàng — trên kho lớn một chu kỳ
+có thể dài hơn 300 s, xếp hàng chỉ làm backlog phình ra. Cờ được nhả bằng guard `shared_ptr` nên
+task kết thúc kiểu nào cũng nhả.
+
+`enforceStoragePolicy()` có `CHECK(!EventPoller::getCurrentPoller(), ...)` để chặn việc ai đó gọi
+lại nó từ poller.
 
 ## 5. Cấu Hình
 
@@ -288,6 +316,7 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 | `blocking.apiThreads` | `max(2, hw/2)` | Vẫn đọc `api.workerThreads` cũ nếu key mới bằng 0 |
 | `blocking.deviceThreads` | 4 | |
 | `blocking.discoveryThreads` | 8 | |
+| `blocking.storageThreads` | 1 | Một thread là đủ, và nhờ đó hai chu kỳ bảo trì không bao giờ chạy cùng lúc |
 | `blocking.ffmpegThreads` | 4 | |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:

@@ -29,6 +29,14 @@ public:
     // Threads are named "discovery N". Size: `blocking.discoveryThreads` (<= 0 means 8).
     static toolkit::TaskExecutor::Ptr discovery();
 
+    // Periodic storage maintenance (scanning the record tree, deleting expired segments, rebuilding
+    // timefiles, cleaning temporary folders). One cycle walks every recorded file, so on a large
+    // archive it can run for minutes; kept apart from `api` so it never uses up the threads that
+    // serve REST requests. Threads are named "storage worker N".
+    // Size: `blocking.storageThreads` (<= 0 means 1). One thread is enough and also keeps the
+    // cycles of one manager from overlapping.
+    static toolkit::TaskExecutor::Ptr storage();
+
     // Waiting for an ffmpeg/ffprobe child process (snapshots, thumbnails). One wait lasts as long as
     // the media takes, so it is kept apart from `api`: a slow thumbnail must not use up the threads
     // that serve API requests. Threads are named "ffmpeg worker N".
@@ -39,6 +47,7 @@ public:
     static int apiThreadCount();
     static int deviceThreadCount();
     static int discoveryThreadCount();
+    static int storageThreadCount();
     static int ffmpegThreadCount();
 };
 
@@ -46,6 +55,7 @@ namespace Blocking {
 extern const std::string kApiThreads;
 extern const std::string kDeviceThreads;
 extern const std::string kDiscoveryThreads;
+extern const std::string kStorageThreads;
 extern const std::string kFfmpegThreads;
 extern const std::string kLegacyApiWorkerThreads;
 } // namespace Blocking

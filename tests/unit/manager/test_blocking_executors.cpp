@@ -48,6 +48,14 @@ TEST(BlockingExecutorsTest, PoolsAreSingletons) {
     EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::api().get());
     EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::device().get());
     EXPECT_NE(BlockingExecutors::ffmpeg().get(), BlockingExecutors::discovery().get());
+
+    EXPECT_EQ(BlockingExecutors::storage().get(), BlockingExecutors::storage().get());
+    // A storage maintenance cycle walks every recorded file and can run for minutes: it must not
+    // use up the threads that serve REST requests, nor the ones that talk to cameras.
+    EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::api().get());
+    EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::device().get());
+    EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::discovery().get());
+    EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::ffmpeg().get());
 }
 
 TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
@@ -62,6 +70,12 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     auto ffmpeg = runOn(BlockingExecutors::ffmpeg());
     EXPECT_EQ(0u, ffmpeg.thread_name.find("ffmpeg worker")) << ffmpeg.thread_name;
     EXPECT_FALSE(ffmpeg.on_poller);
+
+    // The storage maintenance cycle used to run on a `work poller N` thread, where its blocking
+    // scans and deletes held up every timer and ordered queue of the process.
+    auto storage = runOn(BlockingExecutors::storage());
+    EXPECT_EQ(0u, storage.thread_name.find("storage worker")) << storage.thread_name;
+    EXPECT_FALSE(storage.on_poller);
 }
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
@@ -69,6 +83,8 @@ TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     EXPECT_EQ(4, threads);
     EXPECT_GE(BlockingExecutors::apiThreadCount(), 2);
     EXPECT_EQ(4, BlockingExecutors::ffmpegThreadCount());
+    // One thread on purpose: it also keeps two maintenance cycles from ever running at once.
+    EXPECT_EQ(1, BlockingExecutors::storageThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really
     // runs `threads` tasks at the same time.
