@@ -90,6 +90,7 @@
 #include "Local/TierStorageManager.h"
 #endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
+#include "HlsPlayback.h"
 
 using namespace std;
 using namespace Json;
@@ -2969,6 +2970,8 @@ void installWebApi() {
     managerkit::registerStorageApis();
     // Historical sd card sync APIs
     managerkit::registerHistoricalSDCardSyncApis();
+    // Hls playback APIs
+    installHlsPlaybackApi();
 }
 
 void unInstallWebApi(){
