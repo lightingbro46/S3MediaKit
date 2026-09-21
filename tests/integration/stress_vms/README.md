@@ -235,6 +235,18 @@ Tái hiện: đặt `ptz_omit_zoom_spaces` cho một thiết bị trong `onvif_f
 
 Mặc định mock khai báo đủ cả 6 space nên kịch bản chạy được; bật cờ này chỉ để tái hiện lỗi.
 
+**Sửa tay file đó chỉ sống được một phase.** `setup_stress.py phase <tên>` gọi lại
+`write_specs()`, mà hàm này dựng lại `onvif_fault_spec.json` từ đầu. Muốn cờ sống qua mọi phase
+thì dùng biến môi trường — `run_stress.sh` truyền nó xuống mọi lần gọi `setup_stress.py`:
+
+```bash
+STRESS_PTZ_OMIT_ZOOM=10 run_stress.sh /tmp/s3mk_ptz mid onvif    # cứ 10 camera thì 1 camera
+STRESS_PTZ_OMIT_ZOOM=all run_stress.sh /tmp/s3mk_ptz smoke steady # toàn bộ thiết bị
+```
+
+Cờ được áp **sau** các nhánh riêng của từng phase, vì `onvif_storm` và `recover` ghi đè
+`default`/`devices` của spec.
+
 ## File
 
 | File | Vai trò |

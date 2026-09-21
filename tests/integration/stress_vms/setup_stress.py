@@ -328,6 +328,20 @@ def write_specs(work, cams, by_cohort, phase):
         faults["default"] = {"latency_ms": 0}
         faults["devices"] = {}
 
+    # V1: camera chỉ khai báo pan/tilt, không khai báo zoom space (hợp lệ theo ONVIF).
+    # Đặt sau các nhánh phase vì `onvif_storm`/`recover` ghi đè `default`/`devices`, mà cờ
+    # này phải sống qua mọi phase — write_specs() chạy lại ở đầu mỗi phase.
+    #   STRESS_PTZ_OMIT_ZOOM=all  -> mọi thiết bị
+    #   STRESS_PTZ_OMIT_ZOOM=<N>  -> cứ N camera thì một camera (index % N == 0)
+    omit = os.environ.get("STRESS_PTZ_OMIT_ZOOM", "").strip()
+    if omit == "all":
+        faults["default"]["ptz_omit_zoom_spaces"] = True
+    elif omit:
+        step = max(1, int(omit))
+        for cam in cams[::step]:
+            dev = faults["devices"].setdefault(device_ip(index_of[cam["id"]]), {})
+            dev["ptz_omit_zoom_spaces"] = True
+
     write_json(drop_path, drop)
     write_json(fault_path, faults)
 

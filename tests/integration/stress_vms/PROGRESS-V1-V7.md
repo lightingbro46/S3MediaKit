@@ -8,8 +8,9 @@ Kế hoạch đầy đủ (mô tả gốc rễ từng vấn đề, cách sửa, 
 kế hoạch đó.
 
 Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi vấn đề một commit độc lập.
-**Cả bảy đã xong.** V5 đã được xác minh lại bằng soak 2 chu kỳ (2026-09-21). Phần còn lại là xác minh
-bằng harness cho V1, V3, V4, V6 (xem từng mục); V7 đã có bằng chứng thread `storage worker` trong soak đó.
+**Cả bảy đã xong, và cả bảy đã được xác minh bằng harness** (2026-09-21): V5 bằng soak 2 chu kỳ,
+V1/V3 bằng hai lần chạy `mid`, còn V4/V6/V7 bằng một lần chạy `full storage` 300 camera trên bản
+`ENABLE_TIER_STORAGE=OFF` ở đúng `ad08065`. Chi tiết số đo nằm ở từng mục.
 
 ---
 
@@ -51,8 +52,23 @@ Năm case mới ở `tests/unit/manager/test_camera_controller.cpp`
 (`OnvifPTZSpacesTest.*`, `OnvifPTZProfilePickTest.*`), trong đó
 `SurvivesPanTiltOnlyDeviceAndKeepsMoveEnabled` chính là ca segfault.
 
-**Chưa làm:** phần kiểm thử bằng harness — bật `ptz_omit_zoom_spaces` trong
-`onvif_fault_spec.json` rồi chạy `run_stress.sh <work> mid onvif`, node phải sống.
+**Xác minh bằng harness (2026-09-21, binary `fa39fc4`+):** đạt.
+
+`setup_stress.py` nhận thêm biến môi trường `STRESS_PTZ_OMIT_ZOOM` vì `write_specs()` ghi đè
+`onvif_fault_spec.json` ở đầu **mỗi** phase — sửa tay file đó thì cờ sống không quá một phase.
+
+```
+STRESS_PTZ_OMIT_ZOOM=10 PHASE_SEC=120 NODES=2 run_stress.sh <work> mid onvif
+        -> 12/120 camera không khai báo zoom space; 120/120 thiết bị kết nối,
+           122 GetConfigurationOptions, 0 dòng "## signal:", KẾT QUẢ ĐẠT
+STRESS_PTZ_OMIT_ZOOM=1  PHASE_SEC=60  NODES=1 run_stress.sh <work> smoke steady
+        -> 30/30 camera KHÔNG có zoom space; 356 lệnh PTZ đều code 0, ptz p95 = 8 ms,
+           KẾT QUẢ ĐẠT
+```
+
+Gọi tay trên camera chỉ có pan/tilt (`cam-0000`) lúc node đang chạy: `LEFT`, `RIGHT`, `UP`,
+`DOWN`, **`ZOOM_IN`** và `get_presets` đều trả `code 0`. Trước khi sửa, chính đường
+`GetConfigurationOptions` này giết tiến trình ở `OnvifDeviceControl.cpp:401`.
 
 ---
 
@@ -102,8 +118,31 @@ cmake -S . -B build-test && cmake --build build-test --target unit_storage -j2  
 cmake -S . -B build && cmake --build build -j2                                    → exit 0
 ```
 
-**Chưa làm:** xác minh bằng harness — chạy pha `retention_drop` / `retention_purge` và kiểm
-không còn file nào của camera Auto bị xoá sớm.
+**Xác minh bằng harness (2026-09-21, binary `ad08065`, bản `ENABLE_TIER_STORAGE=OFF`):** đạt.
+
+`MEDIASERVER_DIR=/tmp/bin-tier-off PHASE_SEC=420 run_stress.sh <work> full storage`
+(300 camera / 600 luồng, 1 node). Quan sát được **5 chu kỳ** chính sách:
+
+| # | Lúc | Cấu hình đang áp | Ngưỡng của 48 luồng `retention_auto` | Đã xoá |
+|---|---|---|---|---|
+| 1 | 15:09:40 | mặc định theo cohort (**Auto**) | `2026-09-21 00:00:00` — sàn trên đĩa | **0 B** |
+| 2 | 15:14:41 | mặc định theo cohort (**Auto**) | `2026-09-21 00:00:00` — sàn trên đĩa | **0 B** |
+| 3 | 15:19:41 | `keepArchivedMaxFor = 1 h` | `14:19:40` = now − 1 h | 0 B |
+| 4 | 15:24:41 | `keepArchivedMaxFor = 1 h` | `14:24:40` = now − 1 h | 0 B |
+| 5 | 15:29:44 | `keepArchivedMaxFor = 0` | `15:29:40` = now | **4,67 GB** |
+
+Chu kỳ 1 chính là chu kỳ đã cắt dữ liệu trong `REPORT-2026-09-20.md` (18,35 MB, 86 luồng mất
+~405 KB mỗi luồng). Giờ ngưỡng của mọi luồng Auto bị `clampMaxToDisk()` kẹp về **nửa đêm của
+ngày cũ nhất có trên đĩa**, nên không có gì quá hạn.
+
+Đo thêm bằng đĩa chứ không chỉ bằng log: một sampler ghi lại đoạn ghi **sớm nhất còn tồn tại**
+của từng luồng, 20 s một lần. Trong cửa sổ Auto còn hiệu lực (15:05 → 15:18:40, phủ chu kỳ 1 và
+2): **0/48 luồng `retention_auto` bị đẩy mốc sớm nhất**, và 0/510 luồng của mọi cohort khác cũng
+vậy. Phép đo này có răng: ở chu kỳ 5 nó bắt được đúng 510/510 luồng bị đẩy mốc, tức nếu có mất
+đoạn đầu ở chu kỳ 1 thì nó đã thấy.
+
+Lưu ý khi đọc lại: `retention_drop` và `retention_purge` **tắt** chế độ Auto (đặt giờ tường minh),
+nên chỉ chu kỳ 1–2 kiểm được nhánh `keepArchivedMaxForAuto`; hai pha kia kiểm phần xoá thường.
 
 ### Cố ý không làm trong V6
 
@@ -171,8 +210,19 @@ cmake --build build-test -j2                                → exit 0
 ctest --test-dir build-test -R '^unit\.'                    → 153/153 PASSED
 ```
 
-**Chưa làm:** xác minh bằng harness — chạy `mid steady` rồi đối chiếu `onvif_state.json`, tỉ lệ
-`GetSystemDateAndTime / tổng lệnh` phải tụt từ ~50% xuống < 10%.
+**Xác minh bằng harness (2026-09-21, binary `fa39fc4`+):** đạt.
+
+`PHASE_SEC=120 NODES=2 run_stress.sh <work> mid steady` (120 camera / 240 luồng):
+
+| Cửa sổ đo | `GetSystemDateAndTime` / tổng lệnh | |
+|---|---|---|
+| Riêng phase `steady` (158 s) | **10 / 716 = 1,4 %** | mốc so sánh: 50,0 % |
+| Cả lần chạy, gồm 120 lượt connect | 351 / 3.240 = 10,8 % | |
+
+Phải lấy **hiệu số giữa hai report liên tiếp**: `onvif_state.json` là bộ đếm cộng dồn cả lần
+chạy, đọc thẳng số cộng dồn thì phần connect của `ramp` (mỗi camera một lượt
+`GetSystemDateAndTime` + một `SetSystemDateAndTime`) sẽ làm tỉ lệ cao giả. 10,8 % của cả lần
+chạy là đúng như thiết kế: cache chỉ bỏ được round-trip **lặp lại**, không bỏ được lượt đầu.
 
 ---
 
@@ -283,9 +333,29 @@ cmake --build build-test -j2                             → exit 0
 ctest --test-dir build-test -R '^unit\.'                 → 156/156 PASSED
 ```
 
-**Chưa làm:** xác minh bằng harness — chạy `full storage` một node, bộ bất biến PTZ trong
-`check_stress.py` (p95 ≤ 15 s, timeout ≤ 25%) phải đạt, và lệnh ONVIF/giây ở trạng thái ổn định
-phải tụt rõ rệt từ ~155.
+**Xác minh bằng harness (2026-09-21, binary `ad08065`, bản `ENABLE_TIER_STORAGE=OFF`):** đạt.
+
+Cùng lần chạy với V6: `full storage`, 300 camera / 600 luồng trên **một** node,
+`blocking.deviceThreads` giữ nguyên, 12/300 camera bị tiêm độ trễ ONVIF 8 s.
+
+| Phase | ptz n | p50 | p95 | p99 | max | timeout | ONVIF/giây | lệnh/camera/phút |
+|---|---|---|---|---|---|---|---|---|
+| `steady` | 1.852 | 1,3 ms | 6.620 ms | 15.721 ms | 38.759 ms | 25/1.877 = **1 %** | 9,7 | 1,94 |
+| `retention` | 2.245 | 2,5 ms | 5.012 ms | 18.768 ms | 48.329 ms | 20/2.265 = **1 %** | 12,7 | 2,54 |
+| `purge` | 5.456 | 3,8 ms | 1.359 ms | 14.082 ms | 46.345 ms | **0**/5.456 = 0 % | 15,2 | 3,03 |
+
+Mốc so sánh của Run B (`REPORT-2026-09-20.md`): `ptz_control` **không hoàn thành trong 120 s**,
+48 timeout / 62 lệnh = 77 %. `check_stress.py` báo `KẾT QUẢ: ĐẠT (0 bất biến bị vi phạm)`, với
+healthcheck p95 ≤ 48 ms ở mọi phase.
+
+Lưu lượng ONVIF ở trạng thái ổn định: **9,7 lệnh/giây** cho 300 camera, so với ~155 của lần đo
+trước — và con số này đã **bao gồm** tải PTZ của bộ sinh tải (5.456 lệnh REST trong phase
+`purge`), nên phần nền còn thấp hơn nữa.
+
+Phần đuôi còn lại là do thiết kế của kịch bản chứ không phải hàng đợi bị lấp: 4 % số camera trả
+lời sau 8 s, và đúng ~4–5 % số lệnh PTZ nằm trên ngưỡng p95 — lệnh gửi tới **chính** camera chậm
+vẫn phải chờ nó, vì `SerialTaskQueue` tuần tự hoá theo từng camera. Khác hẳn triệu chứng cũ, khi
+lệnh tới camera **bình thường** (`cam-0000`, `cam-0001`) cũng chết.
 
 ### Cố ý không làm trong V4
 
@@ -369,10 +439,12 @@ cmake --build build-test -j2                                 → exit 0
 ctest --test-dir build-test -R '^unit\.'                     → 156/156 PASSED
 ```
 
-**Chưa làm:** xác minh bằng harness — log của chu kỳ dọn (`Remove temporary files. Finished.`,
-`Finished enforcing storage policy`) phải mang thread `storage worker N` thay vì `work poller N`.
-Không chạy thử ở máy này vì `cleanupTemporaryFiles()` xoá thật `www/snap` và `www/extract`
-(đang có 142 MB dữ liệu dev trong `release/linux/Debug/www`).
+**Xác minh bằng harness (2026-09-21):** đạt, lấy từ chính lần chạy `full storage` của V4/V6 —
+kịch bản dựng `www/` riêng trong thư mục làm việc nên không đụng `release/linux/Debug/www`.
+Toàn bộ **304** dòng log của `enforceStoragePolicy` / `recreateTimeFile` /
+`removeExpiredUserSession` / `cleanupTemporaryFiles` đều mang thread `storage worker`; dòng duy
+nhất mang thread khác là `BlockingExecutors.cpp:46 | storage worker pool started with 1 threads`.
+Chu kỳ xoá 4,67 GB chiếm **3 s 862 ms** — trước V7 chừng đó thời gian nằm trên một `EventPoller`.
 
 ---
 
@@ -585,10 +657,11 @@ Số liệu đầy đủ ở `REPORT-2026-09-20.md`, mục "Xác nhận sau khi 
 
 ## Tiêu chí đạt sau khi sửa xong
 
-| Hạng mục | Trước | Sau |
-|---|---|---|
-| Tỉ lệ `GetSystemDateAndTime` | 50,0% | < 10% (V3) |
-| Lệnh ONVIF/giây ở trạng thái ổn định | ~155 | giảm rõ rệt (V4.1) |
-| PTZ timeout (1 node, 300 cam) | 48/62 = 77% | ≤ 25%, p95 ≤ 15 s |
-| Camera Auto mất đoạn đầu | có | không còn |
-| Thread chạy chu kỳ dọn kho | `work poller N` | `storage worker N` (V7) |
+| Hạng mục | Trước | Tiêu chí | Đo được 2026-09-21 |
+|---|---|---|---|
+| Tỉ lệ `GetSystemDateAndTime` | 50,0% | < 10% (V3) | **1,4%** ở phase `steady` |
+| Lệnh ONVIF/giây ở trạng thái ổn định | ~155 | giảm rõ rệt (V4.1) | **9,7/giây** (đã gồm tải PTZ) |
+| PTZ timeout (1 node, 300 cam) | 48/62 = 77% | ≤ 25%, p95 ≤ 15 s | **1%**, p95 6,6 s |
+| Camera Auto mất đoạn đầu | có | không còn | **0/48 luồng** qua 2 chu kỳ Auto |
+| Thread chạy chu kỳ dọn kho | `work poller N` | `storage worker N` (V7) | **304/304 dòng** `storage worker` |
+| Node sống khi camera không có zoom space | segfault | sống | **30/30 camera**, PTZ đều `code 0` |
