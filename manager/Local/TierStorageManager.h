@@ -66,6 +66,12 @@ struct TierRangeSegmentFile {
     int64_t start_time = 0;
     int64_t end_time = 0;
     int64_t file_size = 0;
+    // Record encryption: which tier/pool the file sits on, which pool wrote it
+    // (the encryption key is derived per origin pool) and whether it is encrypted.
+    std::string tier;
+    std::string pool_id;
+    std::string origin_pool_id;
+    bool encrypted = false;
 };
 
 // A filesystem mount exposed as a storage-pool candidate. mount_path is the
@@ -274,6 +280,55 @@ public:
                                                          const std::string &stream_id,
                                                          int64_t segment_start_time,
                                                          const std::string &timefile_path);
+
+    // ===================== Record encryption support =====================
+    // Estimated encryption footprint of the recordings this pool holds: encrypted and
+    // unencrypted bytes plus their share. Read from the key history of the pool that
+    // wrote each range, so a segment awaiting encryption already counts as encrypted.
+    void fillPoolEncryptionUsage(StoragePool &pool);
+
+    // Wires TierEncryptionManager to this manager through EncryptionStorageBridge.
+    // Must run before TierEncryptionManager::initialize().
+    void registerEncryptionStorageBridge();
+
+    // True while at least one pool has encryption enabled; keeps the ".enc" lookups
+    // off the hot path when the feature is unused.
+    void setEncryptionActive(bool active);
+
+    // Returns the variant of `path` that is actually on disk (plaintext or ".enc").
+    std::string resolveRecordFilePath(const std::string &path) const;
+
+    // Pool that originally wrote this segment; its key is the one that decrypts it.
+    std::string getSegmentOriginPoolId(const std::string &camera_id,
+                                       const std::string &stream_id,
+                                       int64_t segment_start_time);
+
+    // Segment files whose data was first recorded on `origin_pool_id`.
+    std::vector<TierRangeSegmentFile> listSegmentFilesByOriginPool(const std::string &origin_pool_id,
+                                                                   int64_t start_time,
+                                                                   int64_t end_time);
+
+    // Live (non deleted/expired) segment count still keyed to `origin_pool_id`.
+    // Returns -1 when it cannot be determined; callers gating a destructive action
+    // must refuse rather than treat that as zero.
+    int countSegmentsByOriginPool(const std::string &origin_pool_id);
+
+    // Splits a recorder file path into the segment path used as storage key.
+    bool deriveSegmentPathForFile(const std::string &camera_id,
+                                  const std::string &stream_id,
+                                  const std::string &full_path,
+                                  std::string &out_segment_path);
+
+    // Writes `new_local_file` back over the segment in its pool, dropping the stale
+    // plaintext/encrypted counterpart so a pool never keeps both copies.
+    bool replaceSegmentInPlace(const std::string &camera_id,
+                               const std::string &stream_id,
+                               const std::string &segment_path,
+                               const std::string &new_local_file,
+                               std::string *err);
+
+    // True while another thread is rewriting this segment file.
+    bool isSegmentFileBusy(const std::string &path) const;
 
     PlaybackPathResolveResult accessRecordedSegment(const std::string &camera_id,
                                                     const std::string &stream_id,
@@ -673,6 +728,34 @@ private:
     bool validatePolicyForExecution(const StoragePolicy &policy, std::string &error) const;
 
 private:
+    // Serializes rewrites of one segment file against readers of that file.
+    void acquireSegmentLock(const std::string &path);
+    void releaseSegmentLock(const std::string &path);
+
+    class SegmentFileLock {
+    public:
+        SegmentFileLock(TierStorageManager *owner, const std::string &path);
+        ~SegmentFileLock();
+        SegmentFileLock(const SegmentFileLock &) = delete;
+        SegmentFileLock &operator=(const SegmentFileLock &) = delete;
+
+    private:
+        TierStorageManager *_owner;
+        std::string _key;
+    };
+
+    bool findRangeForSegment(const std::string &camera_id,
+                             const std::string &stream_id,
+                             int64_t segment_start_time,
+                             SegmentTierRange &out_range);
+
+    // Path resolution without the decryption step; resolvePlaybackSegmentPath() wraps it.
+    PlaybackPathResolveResult resolvePlaybackSegmentPathRaw(const std::string &camera_id,
+                                                            const std::string &stream_id,
+                                                            int64_t segment_start_time,
+                                                            const std::string &timefile_path);
+
+private:
     struct PoolHealthRuntimeState {
         PoolHealthInfo info;
         int64_t last_metric_at = 0;
@@ -804,6 +887,11 @@ private:
     // storage.tiering_quota_usage_cache_seconds.
     int64_t quotaUsedBytes(const std::string &pool_id);
     void mergePoolRuntimeStats(StoragePool &pool) const;
+
+    // Segment files currently being rewritten (encrypt/decrypt/re-encrypt).
+    mutable std::mutex _segment_busy_mtx;
+    std::condition_variable _segment_busy_cv;
+    std::unordered_set<std::string> _segment_busy;
 };
 
 } // namespace managerkit

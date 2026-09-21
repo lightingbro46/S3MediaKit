@@ -50,6 +50,11 @@ struct StoragePool {
     bool        capacity_available = false;
     std::string capacity_status = "UNAVAILABLE";
     std::string capacity_message;
+    // Record encryption usage (runtime-only, populated by fillPoolEncryptionUsage).
+    int64_t     encrypted_bytes   = 0;
+    int64_t     unencrypted_bytes = 0;
+    float       encrypted_pct     = 0.0f;
+    float       unencrypted_pct   = 0.0f;
 
     Json::Value toJson() const {
         Json::Value v;

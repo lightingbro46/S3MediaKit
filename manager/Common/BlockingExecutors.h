@@ -43,9 +43,17 @@ public:
     // Size: `blocking.ffmpegThreads` (<= 0 means 4).
     static toolkit::TaskExecutor::Ptr ffmpeg();
 
+    // Record encryption work: encrypting each finished segment and the re-encryption jobs that
+    // rewrite a whole pool after a password or mode change. Both are long and disk bound, so they
+    // are kept apart from `api` (must not starve REST) and from `storage` (whose single thread runs
+    // the retention/timefile cycles). Threads are named "encryption worker N".
+    // Size: `blocking.encryptionThreads` (<= 0 means 2).
+    static toolkit::TaskExecutor::Ptr encryption();
+
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();
     static int deviceThreadCount();
+    static int encryptionThreadCount();
     static int discoveryThreadCount();
     static int storageThreadCount();
     static int ffmpegThreadCount();

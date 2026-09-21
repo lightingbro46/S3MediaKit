@@ -3,6 +3,7 @@
 #ifdef ENABLE_TIER_STORAGE
 
 #include "StorageTier.h"
+#include "TierEncryptionManager.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -324,6 +325,58 @@ bool TierStorageBase::isRestoreRequiredPool(const std::string &pool_id,
     return pool_it != pool_map.end() && poolTypeIsObjectStorage(pool_it->second.type);
 }
 
+static const char *encryptionJobStatusToString(EncryptionJobStatus st) {
+    switch (st) {
+        case EncryptionJobStatus::kIdle:      return "IDLE";
+        case EncryptionJobStatus::kRunning:   return "RUNNING";
+        case EncryptionJobStatus::kCompleted: return "COMPLETED";
+        case EncryptionJobStatus::kFailed:    return "FAILED";
+        default:                              return "UNKNOWN";
+    }
+}
+
+Json::Value TierStorageBase::encryptionStatusToJson(const StoragePool &p) {
+    Json::Value enc;
+    auto &mgr = TierEncryptionManager::Instance();
+
+    const bool hot = (p.tier == tierTypeToString(HotTier));
+    enc["supported"] = hot;
+
+    if (!hot || !mgr.tierExists(p.id)) {
+        enc["configured"] = false;
+        enc["mode"] = static_cast<int>(RecordEncryptionMode::kNone);
+        enc["encryptOldVideo"] = false;
+        return enc;
+    }
+
+    auto cfg = mgr.getTierConfig(p.id);
+    enc["configured"] = true;
+    enc["mode"] = static_cast<int>(cfg.mode);
+    enc["encryptOldVideo"] = cfg.encrypt_old_video;
+    enc["updated_at"] = static_cast<Json::Int64>(cfg.updated_at);
+    enc["key_history_count"] = static_cast<Json::UInt>(cfg.time_ranges.size());
+
+    auto prog = mgr.getReencryptProgress(p.id);
+    Json::Value job;
+    job["status"] = encryptionJobStatusToString(prog.status);
+    job["started_at"] = static_cast<Json::Int64>(prog.started_at);
+    job["finished_at"] = static_cast<Json::Int64>(prog.finished_at);
+    job["total_files"] = static_cast<Json::UInt>(prog.total_files);
+    job["processed_files"] = static_cast<Json::UInt>(prog.processed_files);
+    job["failed_files"] = static_cast<Json::UInt>(prog.failed_files);
+    job["skipped_files"] = static_cast<Json::UInt>(prog.skipped_files);
+    job["restored_files"] = static_cast<Json::UInt>(prog.restored_files);
+    job["current_file"] = prog.current_file;
+    job["error_msg"] = prog.error_msg;
+    job["percent"] = prog.total_files > 0
+        ? static_cast<int>((prog.processed_files * 100) / prog.total_files)
+        : (prog.status == EncryptionJobStatus::kCompleted ? 100 : 0);
+    enc["reencrypt_job"] = job;
+    enc["job_running_any_tier"] = mgr.isAnyJobRunning();
+    enc["running_job_tier_id"] = mgr.getRunningJobTierId();
+    return enc;
+}
+
 Json::Value TierStorageBase::poolSummaryToJson(const StoragePool &pool) {
     Json::Value value;
     const int64_t free_bytes = pool.total_bytes > pool.used_bytes
@@ -377,6 +430,12 @@ Json::Value TierStorageBase::poolDetailToJson(const StoragePool &pool) {
     value["used_percent"] = pool.total_bytes > 0
         ? static_cast<double>(pool.used_bytes) * 100.0 / static_cast<double>(pool.total_bytes)
         : static_cast<double>(pool.usage_pct);
+    // Zero unless the caller ran fillPoolEncryptionUsage() first (pool/detail does).
+    value["encrypted_bytes"]   = static_cast<Json::Int64>(pool.encrypted_bytes);
+    value["unencrypted_bytes"] = static_cast<Json::Int64>(pool.unencrypted_bytes);
+    value["encrypted_pct"]     = pool.encrypted_pct;
+    value["unencrypted_pct"]   = pool.unencrypted_pct;
+    value["encryption"] = encryptionStatusToJson(pool);
     return value;
 }
 

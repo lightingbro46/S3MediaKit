@@ -816,6 +816,8 @@ extern const std::string kPoolHealthRecoveryThreshold;
 extern const std::string kPoolHealthStaleAfterSeconds;
 // Maximum interval between durable pool metric snapshots when state is stable.
 extern const std::string kPoolHealthMetricSnapshotIntervalSeconds;
+// Temporary directory for decrypted copies, used when an encrypted recording must be read.
+extern const std::string kDecryptSavePath;
 
 } // namespace Storage
 

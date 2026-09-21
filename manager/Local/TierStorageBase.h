@@ -37,6 +37,9 @@ public:
 
     static Json::Value poolSummaryToJson(const StoragePool &pool);
     static Json::Value poolDetailToJson(const StoragePool &pool);
+    // Record encryption status of a pool: configuration, key history size and the
+    // progress of the re-encryption job, if one has run.
+    static Json::Value encryptionStatusToJson(const StoragePool &pool);
     static Json::Value policySummaryToJson(const StoragePolicy &policy,
                                            int applied_camera_count);
     static Json::Value policyDetailToJson(const StoragePolicy &policy,

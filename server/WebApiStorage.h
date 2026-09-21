@@ -37,6 +37,7 @@ void storagePoolDetail(const ArgsMap &allArgs, Json::Value &val);
 void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val);
 void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val);
 void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val);
+void storagePoolEncryptChangePassword(const ArgsMap &allArgs, Json::Value &val);
 void storagePoolTestConnection(const ArgsJson &allArgs, Json::Value &val);
 // Constant answer (no blocking work): both families call it on the request poller.
 void storagePoolOptions(Json::Value &val);

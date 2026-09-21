@@ -13,6 +13,7 @@
 #include "Storage/MiscData.h"
 #include "Local/StorageManager.h"
 #include "Local/TierStorageManager.h"
+#include "Local/TierEncryptionManager.h"
 #include "Local/ExtractJobManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
@@ -73,6 +74,16 @@ static void enforceStoragePolicy() {
     StorageManager::Instance().start();
 #ifdef ENABLE_TIER_STORAGE
     TierStorageManager::Instance().start();
+#endif
+}
+
+static void initializeTierEncryption() {
+#ifdef ENABLE_TIER_STORAGE
+    // The bridge must be registered before initialize(): mount-path restoration and the startup
+    // reconcile both go through it.
+    TierStorageManager::Instance().registerEncryptionStorageBridge();
+    TierEncryptionManager::Instance().initialize();
+    DebugL << "Tier encryption manager has been initialized";
 #endif
 }
 
@@ -439,6 +450,8 @@ void installManagerHook () {
     });
 
     enforceStoragePolicy();
+
+    initializeTierEncryption();
 
     loadSavedDeviceInfo();
 

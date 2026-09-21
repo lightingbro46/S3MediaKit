@@ -101,6 +101,9 @@ struct SegmentTierRange {
     std::string stream_id;
     std::string tier;           // HOT | WARM | COLD
     std::string pool_id;
+    // Pool the range was first recorded on; a tier move changes pool_id but not this.
+    // Record encryption keys are derived per origin pool, so it must survive the move.
+    std::string origin_pool_id;
     std::string status;         // AVAILABLE | RESTORING | EXPIRED | DELETED | MISSING
     int64_t start_time    = 0;
     int64_t end_time      = 0;
@@ -116,6 +119,7 @@ struct SegmentTierRange {
         v["stream_id"]     = stream_id;
         v["tier"]          = tier;
         v["pool_id"]       = pool_id;
+        v["origin_pool_id"] = origin_pool_id;
         v["status"]        = status;
         v["start_time"]    = static_cast<Json::Int64>(start_time);
         v["end_time"]      = static_cast<Json::Int64>(end_time);
@@ -132,6 +136,7 @@ DECLARE_ENTITY(SegmentTierRange, "segment_tier_ranges",
     &SegmentTierRange::stream_id,     "stream_id",
     &SegmentTierRange::tier,          "tier",
     &SegmentTierRange::pool_id,       "pool_id",
+    &SegmentTierRange::origin_pool_id, "origin_pool_id",
     &SegmentTierRange::status,        "status",
     &SegmentTierRange::start_time,    "start_time",
     &SegmentTierRange::end_time,      "end_time",
@@ -1692,7 +1697,54 @@ public:
         range.updated_at = now;
         if (range.range_id.empty())
             range.range_id = StrUUID::make_guid(8, "rng");
+        // A range starts life on the pool it was recorded to; tier moves keep this value.
+        if (range.origin_pool_id.empty() && range.tier == tierTypeToString(HotTier))
+            range.origin_pool_id = range.pool_id;
         return mergeIfUncovered(range, merge_gap_seconds, now);
+    }
+
+    // Bumps updated_at only, e.g. after a segment file was rewritten in place.
+    bool touchUpdatedAt(const std::string &range_id) {
+        if (range_id.empty())
+            return false;
+        int64_t now = static_cast<int64_t>(time(nullptr));
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .update(EntityTraits<SegmentTierRange>::tableName())
+                .set({{"updated_at", std::to_string(now)}})
+                .where("range_id = ?", {range_id}));
+    }
+
+    // Ranges whose data was originally recorded on `origin_pool_id`, wherever they sit now.
+    std::vector<SegmentTierRange> queryByOriginPool(const std::string &origin_pool_id,
+                                                    int64_t start_time = 0,
+                                                    int64_t end_time = 0) {
+        std::vector<SegmentTierRange> ret;
+        if (origin_pool_id.empty())
+            return ret;
+
+        std::ostringstream where;
+        std::vector<std::string> params;
+        where << "origin_pool_id = ?";
+        params.push_back(origin_pool_id);
+        if (start_time > 0) {
+            where << " AND end_time > ?";
+            params.push_back(std::to_string(start_time));
+        }
+        if (end_time > 0) {
+            where << " AND start_time < ?";
+            params.push_back(std::to_string(end_time));
+        }
+
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<SegmentTierRange>::getColumns())
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where(where.str(), params)
+                .orderBy("start_time ASC"));
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<SegmentTierRange>::fromRow(row));
+        return ret;
     }
 
     bool mergeOrInsert(SegmentTierRange range, int64_t merge_gap_seconds = kSegmentMergeGapSeconds) {
@@ -1704,6 +1756,9 @@ public:
         range.updated_at = now;
         if (range.range_id.empty())
             range.range_id = StrUUID::make_guid(8, "rng");
+        // A range starts life on the pool it was recorded to; tier moves keep this value.
+        if (range.origin_pool_id.empty() && range.tier == tierTypeToString(HotTier))
+            range.origin_pool_id = range.pool_id;
         return mergeNormalizedRange(range, merge_gap_seconds, now);
     }
 

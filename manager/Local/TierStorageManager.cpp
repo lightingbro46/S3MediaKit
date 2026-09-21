@@ -23,6 +23,8 @@
 #include "Thread/WorkThreadPool.h"
 #include "Server/GlobalMonitor.h"
 #include "Local/StatisticRecorder.h"
+#include "Local/TierEncryptionManager.h"
+#include "Local/TierEncryptionUtils.h"
 #include "Local/TimeQuery.h"
 #include "Local/TimeRebuilder.h"
 #include "Local/MotionBlockManager.h"
@@ -123,6 +125,40 @@ INSTANCE_IMP(TierStorageManager)
 
 namespace {
 
+// Set while any pool has record encryption enabled. Keeps the ".enc" probing off the
+// hot path for deployments that never turn encryption on.
+static std::atomic<bool> s_encryption_active{false};
+
+static bool regularFileExists(const std::string &p) {
+    if (p.empty())
+        return false;
+    struct stat st{};
+    return ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// Returns whichever variant of `path` is really on disk: the encrypted one wins.
+static std::string resolveLocalVariant(const std::string &path) {
+    if (path.empty() || !s_encryption_active.load(std::memory_order_relaxed))
+        return path;
+    const std::string plain = RecordEncryptionUtils::stripEncSuffix(path);
+    const std::string enc = plain + RecordEncryptionUtils::encryptedFileSuffix();
+    if (regularFileExists(enc))
+        return enc;
+    if (regularFileExists(plain))
+        return plain;
+    return path;
+}
+
+// Makes a storage key describe the variant actually being written, so an encrypted
+// file is never stored under the plaintext key (which would orphan the ".enc" copy).
+static std::string keyForVariant(const std::string &key, const std::string &local_path) {
+    if (!s_encryption_active.load(std::memory_order_relaxed))
+        return key;
+    if (!RecordEncryptionUtils::hasEncSuffix(local_path))
+        return RecordEncryptionUtils::stripEncSuffix(key);
+    return RecordEncryptionUtils::hasEncSuffix(key) ? key : key + RecordEncryptionUtils::encryptedFileSuffix();
+}
+
 static const char kDefaultHotPoolId[] = "pool-default-hot";
 static const char kDefaultHotPoolName[] = "Default HOT Tier Storage";
 static const char kSystemDefaultPolicyId[] = "policy-system-default";
@@ -213,7 +249,9 @@ static std::vector<DiskSegmentInfo> collectDiskSegmentsFromRoot(const std::strin
     }
 
     File::scanDir(camera_root, [&](const std::string &path, bool isDir) {
-        if (isDir || !end_with(path, ".mp4"))
+        // Matching only ".mp4" made every encrypted recording invisible to the
+        // restore-cache cleanup, so those files were never reclaimed.
+        if (isDir || !end_with(RecordEncryptionUtils::stripEncSuffix(path), ".mp4"))
             return true;
         std::string rel = path.substr(camera_root.size());
         if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
@@ -313,6 +351,8 @@ static bool deriveSegmentPathFromFullPath(const std::string &full_path,
     if (pos == std::string::npos)
         return false;
     segment_path = full_path.substr(pos + marker.size());
+    // An encrypted segment keeps the same storage key as its plaintext form.
+    segment_path = RecordEncryptionUtils::stripEncSuffix(segment_path);
     if (!end_with(segment_path, ".mp4"))
         return false;
     segment_path.resize(segment_path.size() - 4);
@@ -416,10 +456,10 @@ static bool isJobScopedRestoreLayout(const std::string &job_id) {
 static std::string resolveRestoreSegmentPath(const RestoreJob &job,
                                              const RestoreJobSegment &segment) {
     if (isJobScopedRestoreLayout(job.job_id))
-        return buildRestoreSegmentPath(job.job_id, segment.camera_id,
-                                       segment.stream_id, segment.segment_path);
-    return buildLegacyRestoreSegmentPath(segment.camera_id, segment.stream_id,
-                                         segment.segment_path);
+        return resolveLocalVariant(buildRestoreSegmentPath(job.job_id, segment.camera_id,
+                                                           segment.stream_id, segment.segment_path));
+    return resolveLocalVariant(buildLegacyRestoreSegmentPath(segment.camera_id, segment.stream_id,
+                                                             segment.segment_path));
 }
 
 // Restore children run concurrently and commonly create the same camera/stream
@@ -1644,6 +1684,15 @@ bool TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &ran
         if (item.full_path.empty())
             item.full_path = timefile_path;
 
+        // An encrypted segment lives under the ".enc" spelling, so both the path and
+        // the storage key must describe the variant that is really on disk.
+        item.full_path      = resolveLocalVariant(item.full_path);
+        item.storage_key    = keyForVariant(item.storage_key, item.full_path);
+        item.encrypted      = RecordEncryptionUtils::hasEncSuffix(item.full_path);
+        item.tier           = range.tier;
+        item.pool_id        = range.pool_id;
+        item.origin_pool_id = range.origin_pool_id;
+
         out.emplace_back(std::move(item));
     }
 
@@ -1818,8 +1867,32 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
                                                                          const std::string &stream_id,
                                                                          int64_t segment_start_time,
                                                                          const std::string &timefile_path) {
+    PlaybackPathResolveResult ret = resolvePlaybackSegmentPathRaw(camera_id, stream_id,
+                                                                  segment_start_time, timefile_path);
+    if (!ret.ready || ret.read_path.empty())
+        return ret;
+
+    // Every reader goes through here, so decryption is done once, at the point where the
+    // path is handed out: an encrypted segment is materialized as a plaintext copy under
+    // storage.decrypt_save_path and that copy is what the caller opens.
+    std::string err;
+    const std::string readable = TierEncryptionManager::Instance().materializeReadablePath(
+        camera_id, stream_id, segment_start_time, ret.read_path, &err);
+    if (readable.empty()) {
+        ret.ready = false;
+        ret.message = err.empty() ? "Cannot decrypt segment for reading" : err;
+        return ret;
+    }
+    ret.read_path = readable;
+    return ret;
+}
+
+PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPathRaw(const std::string &camera_id,
+                                                                            const std::string &stream_id,
+                                                                            int64_t segment_start_time,
+                                                                            const std::string &timefile_path) {
     PlaybackPathResolveResult ret;
-    ret.read_path = timefile_path;
+    ret.read_path = resolveLocalVariant(timefile_path);
     ret.tier = tierTypeToString(HotTier);
 
     if (camera_id.empty() || stream_id.empty() || segment_start_time <= 0) {
@@ -1956,7 +2029,7 @@ PlaybackPathResolveResult TierStorageManager::resolvePlaybackSegmentPath(const s
     }
 
     std::string storage_key = TierFileStorageBase::makeStorageKey(camera_id, stream_id, segment_path);
-    std::string resolved_path = storage->resolvePath(pool.id, storage_key);
+    std::string resolved_path = resolveLocalVariant(storage->resolvePath(pool.id, storage_key));
     if (resolved_path.empty() || !File::fileExist(resolved_path)) {
         const bool original_exists = !timefile_path.empty() && File::fileExist(timefile_path);
         ret.read_path = original_exists ? timefile_path : "";
@@ -2229,6 +2302,36 @@ ObjectReadPlan TierStorageManager::planObjectReadWindow(
     return plan;
 }
 
+static std::vector<TierRangeSegmentFile> dropSegmentsNotReadyToMove(
+        TierStorageManager *self, const TieringJob &job,
+        std::vector<TierRangeSegmentFile> segments) {
+    std::vector<TierRangeSegmentFile> ready;
+    ready.reserve(segments.size());
+    size_t busy = 0, pending = 0;
+    for (auto &sf : segments) {
+        if (self->isSegmentFileBusy(sf.full_path)) {
+            // Being rewritten right now. Copying it would capture a partial file.
+            ++busy;
+            continue;
+        }
+        if (TierEncryptionManager::Instance().isSegmentPendingEncryption(
+                sf.origin_pool_id.empty() && sf.tier == tierTypeToString(HotTier) ? sf.pool_id : sf.origin_pool_id,
+                sf.full_path, sf.start_time)) {
+            // Still plaintext although a key era covers it. Moving it now would
+            // put an unencrypted recording on WARM/COLD storage.
+            ++pending;
+            continue;
+        }
+        ready.emplace_back(std::move(sf));
+    }
+    if (busy || pending) {
+        InfoL << "Tiering job " << job.job_id << " deferring " << (busy + pending)
+              << " segment(s) (" << busy << " in use, " << pending
+              << " awaiting encryption); they move on a later cycle";
+    }
+    return ready;
+}
+
 bool TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
                                                    SegmentTierRange &out_range,
                                                    std::vector<TierRangeSegmentFile> &out,
@@ -2278,6 +2381,15 @@ bool TierStorageManager::collectSegmentFilesForJob(const TieringJob &job,
         return false;
     if (out.empty()) {
         error = "No source segments found from tier ranges/timefile";
+        return false;
+    }
+    const size_t collected = out.size();
+    out = dropSegmentsNotReadyToMove(this, job, std::move(out));
+    if (out.empty()) {
+        // The range stays AVAILABLE and only PENDING/RUNNING jobs block a new one, so the
+        // next maintenance cycle queues a fresh job for these segments.
+        error = "All " + std::to_string(collected) +
+                " source segment(s) are in use or awaiting encryption; a later cycle retries them";
         return false;
     }
     return true;
@@ -3278,6 +3390,7 @@ void TierStorageManager::runTieringCycle() {
             self->processRestoreJobs();
             self->pruneOldMetrics();
             self->cleanupRestoreTempFiles();
+            TierEncryptionManager::Instance().sweepDecryptCache();
             self->cleanupOrphanTemporarySegments();
             self->dispatchPendingTieringJobs();
             InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
@@ -3901,8 +4014,13 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         keys.reserve(segments.size());
         for (const auto &seg : segments) {
             if (seg.stream_id != range.stream_id) continue;
-            keys.push_back(TierObjectStorage::makeS3Key(base_path, seg.camera_id, seg.stream_id,
-                                                        seg.segment_path));
+            auto key = TierObjectStorage::makeS3Key(base_path, seg.camera_id, seg.stream_id,
+                                                    seg.segment_path);
+            // A segment uploaded while encrypted sits under the ".enc" spelling; ask for
+            // both so a key written by the other variant is not left behind.
+            if (s_encryption_active.load(std::memory_order_relaxed))
+                keys.push_back(key + RecordEncryptionUtils::encryptedFileSuffix());
+            keys.push_back(std::move(key));
         }
         // DeleteObjects is idempotent for absent keys; any request or per-key
         // error keeps the range AVAILABLE so the next cycle retries every key.
@@ -3920,6 +4038,13 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
         for (const auto &seg : segments) {
             if (seg.stream_id != range.stream_id) continue;
             // File backend treats ENOENT as success, making retries idempotent.
+            if (s_encryption_active.load(std::memory_order_relaxed)) {
+                // The counterpart spelling may still be on disk if the file was
+                // encrypted or decrypted since the key was built; drop it too.
+                const std::string other = RecordEncryptionUtils::toggleEncSuffix(seg.storage_key);
+                if (other != seg.storage_key)
+                    storage->deleteSegment(pool.id, other);
+            }
             if (!storage->deleteSegment(pool.id, seg.storage_key))
                 all_deleted = false;
         }
@@ -5943,6 +6068,9 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
 
         keys[i] = TierObjectStorage::makeS3Key(
             base_path, seg.camera_id, seg.stream_id, seg.segment_path);
+        // An encrypted segment must keep its ".enc" spelling in the bucket, otherwise
+        // the restore path downloads it and opens it as plaintext.
+        keys[i] = keyForVariant(keys[i], seg.full_path);
 
         struct stat st{};
         if (::stat(seg.full_path.c_str(), &st) != 0) {
@@ -6300,17 +6428,19 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
     }
 
     std::string base_path = source_pool.base_path.value_or("");
-    std::string s3_key = TierObjectStorage::makeS3Key(base_path, segment.camera_id, segment.stream_id, segment.segment_path);
+    // An encrypted segment was uploaded under "<key>.enc"; which spelling exists is
+    // decided at download time, with the plaintext key as the fallback.
+    const std::string s3_key = TierObjectStorage::makeS3Key(base_path, segment.camera_id, segment.stream_id, segment.segment_path);
     std::string directory_error;
     if (!prepareRestoreJobDirectory(segment.job_id, directory_error)) {
         segment_imp.updateStatus(segment, "FAILED", 0, directory_error);
         updateRestoreParent(segment.job_id);
         return;
     }
-    std::string restore_path = buildRestoreSegmentPath(
+    const std::string plain_restore_path = buildRestoreSegmentPath(
         segment.job_id, segment.camera_id, segment.stream_id, segment.segment_path);
-    std::string restore_dir = restore_path.substr(0, restore_path.rfind('/'));
-    std::string tmp_path = restore_path + ".part";
+    std::string restore_dir = plain_restore_path.substr(0, plain_restore_path.rfind('/'));
+    std::string tmp_path = plain_restore_path + ".part";
 
     std::string mkdir_err;
     if (!ensureDirectoryPath(restore_dir, S_IRWXO | S_IRWXG | S_IRWXU, mkdir_err)) {
@@ -6320,7 +6450,8 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
     }
 
     struct stat st{};
-    if (stat(restore_path.c_str(), &st) == 0) {
+    const std::string cached = resolveLocalVariant(plain_restore_path);
+    if (regularFileExists(cached) && stat(cached.c_str(), &st) == 0) {
         ::unlink(tmp_path.c_str());
         int64_t restored_bytes = static_cast<int64_t>(st.st_size);
         segment_imp.updateStatus(segment, "DONE", restored_bytes);
@@ -6335,11 +6466,30 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
         return;
     }
 
-    bool ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
+    const std::string enc_s3_key = s3_key + RecordEncryptionUtils::encryptedFileSuffix();
+    bool encrypted = false;
+    bool ok = false;
+    if (s_encryption_active.load(std::memory_order_relaxed)) {
+        ok = _obj_storage.downloadSegment(source_pool.id, enc_s3_key, tmp_path);
+        encrypted = ok;
+    }
+    if (!ok)
+        ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
+
+    // The restored copy keeps the spelling of the object it came from, so playback
+    // knows it still has to be decrypted.
+    const std::string restore_path = encrypted
+        ? plain_restore_path + RecordEncryptionUtils::encryptedFileSuffix()
+        : plain_restore_path;
+
     if (!ok) {
         std::string error = "Download from object storage failed";
-        // A proven loss should not wait for the sweep to reach this range.
-        if (_obj_storage.headSegment(source_pool.id, s3_key) == TierObjectPresence::ABSENT) {
+        // A proven loss should not wait for the sweep to reach this range. Both
+        // spellings must be absent before the object counts as lost.
+        const bool plain_absent = _obj_storage.headSegment(source_pool.id, s3_key) == TierObjectPresence::ABSENT;
+        const bool enc_absent = !s_encryption_active.load(std::memory_order_relaxed) ||
+                                _obj_storage.headSegment(source_pool.id, enc_s3_key) == TierObjectPresence::ABSENT;
+        if (plain_absent && enc_absent) {
             error = "Object is missing from object storage";
             requestObjectRangeReconcile(segment.range_id);
         }
@@ -6496,6 +6646,74 @@ bool TierStorageManager::probePoolRuntimeStats(StoragePool &pool, std::string &o
 void TierStorageManager::fillPoolRuntimeStats(StoragePool &pool) {
     std::string message;
     probePoolRuntimeStats(pool, message);
+}
+
+void TierStorageManager::fillPoolEncryptionUsage(StoragePool &pool) {
+    pool.encrypted_bytes = 0;
+    pool.unencrypted_bytes = 0;
+    pool.encrypted_pct = 0.0f;
+    pool.unencrypted_pct = 0.0f;
+    if (pool.id.empty())
+        return;
+
+    SegmentTierRangeImp range_imp;
+    std::vector<std::string> camera_ids;
+    try {
+        camera_ids = range_imp.findDistinctAvailableCameras();
+    } catch (const std::exception &ex) {
+        WarnL << "fillPoolEncryptionUsage: cannot list cameras for pool " << pool.id << ": " << ex.what();
+        return;
+    } catch (...) {
+        WarnL << "fillPoolEncryptionUsage: cannot list cameras for pool " << pool.id;
+        return;
+    }
+
+    const std::string deleted = segmentStatusToString(SegmentStatus::DELETED);
+    const std::string missing = segmentStatusToString(SegmentStatus::MISSING);
+    auto &encryption = TierEncryptionManager::Instance();
+
+    for (const auto &camera_id : camera_ids) {
+        if (_stopping)
+            return;
+
+        std::vector<SegmentTierRange> ranges;
+        try {
+            ranges = range_imp.queryByCamera(camera_id);
+        } catch (const std::exception &ex) {
+            WarnL << "fillPoolEncryptionUsage: query failed for camera " << camera_id << ": " << ex.what();
+            continue;
+        } catch (...) {
+            WarnL << "fillPoolEncryptionUsage: query failed for camera " << camera_id;
+            continue;
+        }
+
+        for (const auto &r : ranges) {
+            if (r.pool_id != pool.id)
+                continue;
+            if (r.status == deleted || r.status == missing)
+                continue;
+            if (r.size_bytes <= 0)
+                continue;
+
+            std::string origin_pool_id = r.origin_pool_id;
+            if (origin_pool_id.empty() && r.tier == tierTypeToString(HotTier))
+                origin_pool_id = r.pool_id;
+
+            // Read from the key history, not from the files: a segment covered by a key
+            // era but not yet rewritten is counted as encrypted, which is what the
+            // operator asked for and what it will be within one cycle.
+            if (encryption.isEncryptedAtTime(origin_pool_id, r.start_time))
+                pool.encrypted_bytes += r.size_bytes;
+            else
+                pool.unencrypted_bytes += r.size_bytes;
+        }
+    }
+
+    const int64_t total = pool.encrypted_bytes + pool.unencrypted_bytes;
+    if (total > 0) {
+        pool.encrypted_pct = static_cast<float>(pool.encrypted_bytes) * 100.f / static_cast<float>(total);
+        pool.unencrypted_pct = 100.0f - pool.encrypted_pct;
+    }
 }
 
 StorageHealth TierStorageManager::computePoolHealth(const StoragePool &pool,
@@ -7542,6 +7760,364 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                << ", errors=" << errors
                << ", budget_exhausted=" << budget_exhausted;
     }
+}
+
+// ===========================================================================
+// Record encryption support
+// ===========================================================================
+
+std::string TierStorageManager::resolveRecordFilePath(const std::string &path) const {
+    return resolveLocalVariant(path);
+}
+
+void TierStorageManager::setEncryptionActive(bool active) {
+    s_encryption_active.store(active, std::memory_order_relaxed);
+}
+
+void TierStorageManager::acquireSegmentLock(const std::string &path) {
+    const std::string key = RecordEncryptionUtils::stripEncSuffix(path);
+    std::unique_lock<std::mutex> lock(_segment_busy_mtx);
+    _segment_busy_cv.wait(lock, [&] { return _segment_busy.count(key) == 0; });
+    _segment_busy.insert(key);
+}
+
+void TierStorageManager::releaseSegmentLock(const std::string &path) {
+    const std::string key = RecordEncryptionUtils::stripEncSuffix(path);
+    {
+        std::lock_guard<std::mutex> lock(_segment_busy_mtx);
+        _segment_busy.erase(key);
+    }
+    _segment_busy_cv.notify_all();
+}
+
+TierStorageManager::SegmentFileLock::SegmentFileLock(TierStorageManager *owner, const std::string &path)
+    : _owner(owner), _key(RecordEncryptionUtils::stripEncSuffix(path)) {
+    _owner->acquireSegmentLock(_key);
+}
+
+TierStorageManager::SegmentFileLock::~SegmentFileLock() {
+    _owner->releaseSegmentLock(_key);
+}
+
+bool TierStorageManager::isSegmentFileBusy(const std::string &path) const {
+    std::lock_guard<std::mutex> lock(_segment_busy_mtx);
+    return _segment_busy.count(RecordEncryptionUtils::stripEncSuffix(path)) != 0;
+}
+
+bool TierStorageManager::deriveSegmentPathForFile(const std::string &camera_id,
+                                                  const std::string &stream_id,
+                                                  const std::string &full_path,
+                                                  std::string &out_segment_path) {
+    return deriveSegmentPathFromFullPath(full_path, camera_id, stream_id, out_segment_path);
+}
+
+static std::atomic<bool> s_origin_pool_column_missing{false};
+static void reportOriginPoolQueryFailure(const char *where, const char *what) {
+    if (!s_origin_pool_column_missing.exchange(true)) {
+        WarnL << where << ": query on segment_tier_ranges.origin_pool_id failed ("
+              << (what ? what : "unknown error")
+              << "). The column is most likely missing -- apply the record encryption migration. "
+                 "Record encryption cannot resolve the originating pool until then; tier storage "
+                 "itself is unaffected.";
+    }
+}
+
+bool TierStorageManager::findRangeForSegment(const std::string &camera_id,
+                                             const std::string &stream_id,
+                                             int64_t segment_start_time,
+                                             SegmentTierRange &out_range) {
+    if (camera_id.empty() || stream_id.empty() || segment_start_time <= 0)
+        return false;
+
+    SegmentTierRangeImp range_imp;
+    auto ranges = range_imp.queryByCamera(camera_id, segment_start_time, segment_start_time + 1);
+    for (const auto &r : ranges) {
+        if (r.stream_id != stream_id)
+            continue;
+        if (r.start_time <= segment_start_time && r.end_time > segment_start_time &&
+            r.status != segmentStatusToString(SegmentStatus::DELETED) &&
+            r.status != segmentStatusToString(SegmentStatus::EXPIRED) &&
+            r.status != segmentStatusToString(SegmentStatus::MISSING)) {
+            out_range = r;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string TierStorageManager::getSegmentOriginPoolId(const std::string &camera_id,
+                                                       const std::string &stream_id,
+                                                       int64_t segment_start_time) {
+    SegmentTierRange range;
+    if (!findRangeForSegment(camera_id, stream_id, segment_start_time, range))
+        return "";
+
+    if (!range.origin_pool_id.empty())
+        return range.origin_pool_id;
+    // Still in HOT, so the pool it lives in is the pool that wrote it.
+    if (range.tier == tierTypeToString(HotTier))
+        return range.pool_id;
+
+    WarnL << "Segment range is missing origin_pool_id and has already left the HOT tier; "
+          << "cannot determine the encryption key: range=" << range.range_id
+          << " camera=" << camera_id << " start=" << segment_start_time;
+    return "";
+}
+
+std::vector<TierRangeSegmentFile> TierStorageManager::listSegmentFilesByOriginPool(const std::string &origin_pool_id,
+                                                                                   int64_t start_time,
+                                                                                   int64_t end_time) {
+    std::vector<TierRangeSegmentFile> ret;
+    if (origin_pool_id.empty())
+        return ret;
+    if (s_origin_pool_column_missing.load(std::memory_order_relaxed))
+        return ret;
+
+    std::vector<SegmentTierRange> ranges;
+    try {
+        SegmentTierRangeImp range_imp;
+        ranges = range_imp.queryByOriginPool(origin_pool_id, start_time, end_time);
+    } catch (const std::exception &ex) {
+        reportOriginPoolQueryFailure("listSegmentFilesByOriginPool", ex.what());
+        return ret;
+    } catch (...) {
+        reportOriginPoolQueryFailure("listSegmentFilesByOriginPool", nullptr);
+        return ret;
+    }
+
+    for (const auto &range : ranges) {
+        auto files = collectSegmentFilesForRange(range);
+        for (auto &f : files) {
+            if (f.origin_pool_id.empty())
+                f.origin_pool_id = origin_pool_id;
+            ret.emplace_back(std::move(f));
+        }
+    }
+    return ret;
+}
+
+int TierStorageManager::countSegmentsByOriginPool(const std::string &origin_pool_id) {
+    if (origin_pool_id.empty())
+        return 0;
+
+    std::vector<SegmentTierRange> ranges;
+    try {
+        SegmentTierRangeImp range_imp;
+        ranges = range_imp.queryByOriginPool(origin_pool_id, 0, 0);
+    } catch (const std::exception &ex) {
+        reportOriginPoolQueryFailure("countSegmentsByOriginPool", ex.what());
+        // -1 means "cannot tell", not "nothing depends on this pool". Callers that
+        // gate a destructive action on this must refuse rather than assume zero.
+        return -1;
+    } catch (...) {
+        reportOriginPoolQueryFailure("countSegmentsByOriginPool", nullptr);
+        return -1;
+    }
+
+    int count = 0;
+    for (const auto &r : ranges) {
+        if (r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+            r.status == segmentStatusToString(SegmentStatus::EXPIRED))
+            continue;
+        count += static_cast<int>(std::max<int64_t>(0, r.segment_count));
+    }
+    return count;
+}
+
+bool TierStorageManager::replaceSegmentInPlace(const std::string &camera_id,
+                                                const std::string &stream_id,
+                                                const std::string &segment_path,
+                                                const std::string &new_local_file,
+                                                std::string *err) {
+    auto fail = [&](const std::string &msg) {
+        if (err) *err = msg;
+        WarnL << "replaceSegmentInPlace: " << msg;
+        return false;
+    };
+
+    if (camera_id.empty() || stream_id.empty() || segment_path.empty() || new_local_file.empty())
+        return fail("Missing arguments");
+    if (!regularFileExists(new_local_file))
+        return fail("Replacement file does not exist: " + new_local_file);
+
+    int64_t segment_start_time = RecordEncryptionUtils::parseRecordingTimestamp(new_local_file);
+    SegmentTierRange range;
+    if (segment_start_time <= 0 || !findRangeForSegment(camera_id, stream_id, segment_start_time, range))
+        return fail("No segment range covers " + new_local_file);
+
+    StoragePool pool;
+    if (!getPoolById(range.pool_id, pool))
+        return fail("Pool not found: " + range.pool_id);
+
+    // The key must describe the file we are actually writing. Building it from
+    // segment_path alone meant an encrypted file was written back under the
+    // plaintext key, leaving the ".enc" file orphaned and the pool holding two
+    // copies of every segment.
+    const std::string base_key = TierFileStorageBase::makeStorageKey(camera_id, stream_id, segment_path);
+    const std::string storage_key = keyForVariant(base_key, new_local_file);
+    const std::string stale_key = RecordEncryptionUtils::toggleEncSuffix(storage_key);
+
+    if (poolTypeIsObjectStorage(pool.type)) {
+        if (!_obj_storage.isRegistered(pool.id) && !registerPoolObjStorage(pool))
+            return fail("Object storage pool is not registered: " + pool.id);
+
+        const std::string base_s3_key = TierObjectStorage::makeS3Key(pool.base_path.value_or(""), camera_id, stream_id, segment_path);
+        const std::string s3_key = keyForVariant(base_s3_key, new_local_file);
+        if (!_obj_storage.uploadSegment(pool.id, new_local_file, s3_key))
+            return fail("Failed to upload to object storage, key=" + s3_key);
+
+        // Drop the object stored under the previous spelling so the bucket does
+        // not keep both a plaintext and an encrypted copy.
+        const std::string stale_s3_key = RecordEncryptionUtils::toggleEncSuffix(s3_key);
+        if (stale_s3_key != s3_key)
+            _obj_storage.deleteSegment(pool.id, stale_s3_key);
+
+        for (const auto &job : RestoreJobImp().queryCompletedForSegment(camera_id, stream_id, segment_path)) {
+            const std::string plain = buildRestoreSegmentPath(job.job_id, camera_id, stream_id, segment_path);
+            if (plain.empty())
+                continue;
+            for (const std::string &cached : { plain, plain + RecordEncryptionUtils::encryptedFileSuffix() }) {
+                if (::unlink(cached.c_str()) == 0)
+                    DebugL << "Deleted old restore cache after replacing segment: " << cached;
+            }
+        }
+        const std::string legacy = buildLegacyRestoreSegmentPath(camera_id, stream_id, segment_path);
+        for (const std::string &cached : { legacy, legacy + RecordEncryptionUtils::encryptedFileSuffix() }) {
+            if (::unlink(cached.c_str()) == 0)
+                DebugL << "Deleted old restore cache after replacing segment: " << cached;
+        }
+    } else {
+        auto storage = fileStorageForPoolType(pool.type);
+        if (!storage)
+            return fail("File storage type is not supported: " + pool.type);
+        if (!storage->isRegistered(pool.id) && !registerPoolFileStorage(pool))
+            return fail("File storage pool is not registered: " + pool.id);
+
+        std::string dst_path = storage->resolvePath(pool.id, storage_key);
+        if (dst_path.empty())
+            return fail("Failed to resolve destination path in pool: " + pool.id);
+
+        if (isSameFileOnDisk(new_local_file, dst_path)) {
+            DebugL << "Segment is already at the destination path, skipping copy: " << dst_path;
+        } else if (!storage->uploadSegment(pool.id, new_local_file, storage_key)) {
+            return fail("Failed to overwrite segment: " + dst_path);
+        }
+
+        if (stale_key != storage_key) {
+            std::string stale_path = storage->resolvePath(pool.id, stale_key);
+            if (!stale_path.empty() && !isSameFileOnDisk(stale_path, dst_path) &&
+                ::unlink(stale_path.c_str()) == 0) {
+                DebugL << "Removed stale segment variant: " << stale_path;
+            }
+        }
+    }
+
+    // An encrypted file carries an extra trailer, so the range's accounting is
+    // now stale by that much.
+    SegmentTierRangeImp range_imp;
+    range_imp.touchUpdatedAt(range.range_id);
+    return true;
+}
+
+void TierStorageManager::registerEncryptionStorageBridge() {
+    EncryptionStorageBridge bridge;
+
+    bridge.getPoolInfo = [](const std::string &pool_id) {
+        BridgePoolInfo info;
+        auto pools = TierStorageManager::Instance().getPool(pool_id);
+        if (pools.empty()) return info;
+        const auto &pool = pools.front();
+        info.found = true;
+        info.tier = pool.tier;
+        info.mount_path = pool.mount_path.value_or("");
+        info.network_path = pool.network_path.value_or("");
+        return info;
+    };
+
+    bridge.lockSegmentFile = [](const std::string &path) {
+        TierStorageManager::Instance().acquireSegmentLock(path);
+    };
+
+    bridge.unlockSegmentFile = [](const std::string &path) {
+        TierStorageManager::Instance().releaseSegmentLock(path);
+    };
+
+    bridge.deriveSegmentPathForFile = [](const std::string &camera_id, const std::string &stream_id,
+                                          const std::string &full_path, std::string &out_segment_path) {
+        return TierStorageManager::Instance().deriveSegmentPathForFile(camera_id, stream_id, full_path, out_segment_path);
+    };
+
+    bridge.replaceSegmentInPlace = [](const std::string &camera_id, const std::string &stream_id,
+                                       const std::string &segment_path, const std::string &new_local_file,
+                                       std::string *err) {
+        return TierStorageManager::Instance().replaceSegmentInPlace(camera_id, stream_id, segment_path, new_local_file, err);
+    };
+
+    bridge.listSegmentFilesByOriginPool = [](const std::string &origin_pool_id, int64_t start_time, int64_t end_time) {
+        std::vector<BridgeSegmentFile> out;
+        for (const auto &sf : TierStorageManager::Instance().listSegmentFilesByOriginPool(origin_pool_id, start_time, end_time)) {
+            BridgeSegmentFile item;
+            item.camera_id    = sf.camera_id;
+            item.stream_id    = sf.stream_id;
+            item.segment_path = sf.segment_path;
+            item.full_path    = sf.full_path;
+            item.start_time   = sf.start_time;
+            item.end_time     = sf.end_time;
+            item.file_size    = sf.file_size;
+            item.encrypted    = sf.encrypted;
+            item.tier         = sf.tier;
+            item.pool_id      = sf.pool_id;
+            out.push_back(std::move(item));
+        }
+        return out;
+    };
+
+    bridge.resolvePlaybackSegmentPath = [](const std::string &camera_id, const std::string &stream_id,
+                                            int64_t segment_start_time, const std::string &timefile_path) {
+        BridgePlaybackPathResult out;
+        auto r = TierStorageManager::Instance().resolvePlaybackSegmentPath(camera_id, stream_id, segment_start_time, timefile_path);
+        out.ready             = r.ready;
+        out.restore_required  = r.restore_required;
+        out.read_path         = r.read_path;
+        out.message           = r.message;
+        return out;
+    };
+
+    bridge.requestRestoreSegment = [](const std::string &camera_id, const std::string &stream_id,
+                                       int64_t segment_start_time, const std::string &path_hint,
+                                       const std::string &reason) {
+        BridgeRestoreResult out;
+        auto r = TierStorageManager::Instance().requestRestoreSegment(camera_id, stream_id, segment_start_time, path_hint, reason);
+        out.handled = r.handled;
+        out.job_id  = r.job_id;
+        out.message = r.message;
+        return out;
+    };
+
+    bridge.getRestoreJobStatus = [](const std::string &job_id, std::string &out_status) {
+        auto jobs = TierStorageManager::Instance().getRestoreJob(job_id);
+        if (jobs.empty()) return false;
+        out_status = jobs.front().status;
+        return true;
+    };
+
+    bridge.resolveRecordFilePath = [](const std::string &path) {
+        return TierStorageManager::Instance().resolveRecordFilePath(path);
+    };
+
+    bridge.getSegmentOriginPoolId = [](const std::string &camera_id, const std::string &stream_id, int64_t segment_start_time) {
+        return TierStorageManager::Instance().getSegmentOriginPoolId(camera_id, stream_id, segment_start_time);
+    };
+
+    bridge.isSegmentFileBusy = [](const std::string &path) {
+        return TierStorageManager::Instance().isSegmentFileBusy(path);
+    };
+
+    bridge.setEncryptionActive = [](bool active) {
+        TierStorageManager::Instance().setEncryptionActive(active);
+    };
+
+    TierEncryptionManager::Instance().bindStorageBridge(std::move(bridge));
 }
 
 static void* s_tag;

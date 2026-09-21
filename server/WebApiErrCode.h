@@ -128,9 +128,16 @@ namespace managerkit {
     XX(CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED, "Storage policy unassign from camera failed", 500, 914028) \
     XX(CODE_STORAGE_POOL_DEFAULT_CANNOT_DELETE, "Storage pool default cannot be deleted",  400, 914029) \
     XX(CODE_STORAGE_POLICY_DEFAULT_CANNOT_DELETE, "Storage policy default cannot be deleted", 400, 914030) \
+    XX(CODE_STORAGE_ENCRYPTION_PASSWORD_SAME, "New password must be different from old password", 400, 914031) \
+    XX(CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING, "Re-encrypt job is running", 409, 914032) \
+    XX(CODE_STORAGE_ENCRYPTION_INVALID_OLD_PASSWORD, "Invalid old password", 400, 914033) \
     /* 915xxx - Audio errors */                                                                        \
     XX(CODE_AUDIO_FILE_NOT_FOUND,           "Audio file not found",             404,         915001) \
     XX(CODE_PLAY_AUDIO_FAILED,              "Failed to play audio file",        500,         915002) \
+    /* 916xxx - Encryption errors */                                                                  \
+    XX(CODE_CONFIG_ENCRYPTION_PASSWORD_FALIED,  "Failed to config encryption password",     500,    916001) \
+    XX(CODE_CHANGE_ENCRYPTION_PASSWORD_FALIED,  "Failed to change encryption password",     409,    916002) \
+    XX(CODE_CHANGE_ENCRYPTION_MODE_FAILED,      "Failed to change encryption mode",         409,    916003) \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,
