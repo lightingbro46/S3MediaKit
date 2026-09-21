@@ -1891,7 +1891,11 @@ bool TierEncryptionManager::isSegmentPendingEncryption(const std::string& origin
     struct stat st{};
     if (::stat(local_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
         return false;
-    return !getCandidateTimeRanges(origin_pool_id, segment_start_time).empty();
+    // Only the era covering this segment decides. getCandidateTimeRanges() also offers every
+    // other known key as a decryption fallback, so using it here reported "pending" for a
+    // plaintext segment recorded after encryption was switched off, as long as the pool still
+    // held an older key -- and the tiering job deferred that segment for ever.
+    return isEncryptedAtTime(origin_pool_id, segment_start_time);
 }
 
 void TierEncryptionManager::maybeSweepDecryptCache() {

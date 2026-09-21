@@ -8072,10 +8072,13 @@ void TierStorageManager::registerEncryptionStorageBridge() {
         return out;
     };
 
+    // Deliberately the raw resolution: the only caller is the re-encryption job, which has to
+    // see the file as it is on disk. Handing it the decrypting variant gave it the plaintext
+    // copy from the decrypt cache, so every segment looked unencrypted and the job skipped it.
     bridge.resolvePlaybackSegmentPath = [](const std::string &camera_id, const std::string &stream_id,
                                             int64_t segment_start_time, const std::string &timefile_path) {
         BridgePlaybackPathResult out;
-        auto r = TierStorageManager::Instance().resolvePlaybackSegmentPath(camera_id, stream_id, segment_start_time, timefile_path);
+        auto r = TierStorageManager::Instance().resolvePlaybackSegmentPathRaw(camera_id, stream_id, segment_start_time, timefile_path);
         out.ready             = r.ready;
         out.restore_required  = r.restore_required;
         out.read_path         = r.read_path;

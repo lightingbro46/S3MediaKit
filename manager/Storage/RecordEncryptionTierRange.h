@@ -94,6 +94,11 @@ public:
     }
 
     bool insertOrReplace(const RecordEncryptionTierRange& range) {
+        // SqliteRepository::save() is a plain INSERT, and (tier_id, start_time) is the primary
+        // key, so writing a key era that already exists raised "UNIQUE constraint failed" and
+        // aborted the whole re-encryption job after its files had already been rewritten. Every
+        // re-key/collapse pass rewrites the history in place, so drop the old row first.
+        deleteByTierIdAndStart(range.tier_id, range.start_time);
         return save(range, true);
     }
 
