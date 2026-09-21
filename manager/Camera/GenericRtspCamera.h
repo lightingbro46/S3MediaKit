@@ -292,6 +292,14 @@ struct SdCardSyncConfig {
     }
 };
 
+// Tracks whether the result of one video-config rule job has already been broadcast,
+// so a retry or a reconnect does not report the same job twice.
+struct RuleReportContext {
+    std::string logId;
+    bool reported = false;
+    using RuleReportContextMap = std::unordered_map<std::string, RuleReportContext>;
+};
+
 class GenericRtspCameraImp;
 
 /**

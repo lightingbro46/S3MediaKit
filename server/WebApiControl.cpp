@@ -5,6 +5,7 @@
 #include "WebApiErrCode.h"
 #include "Control/SubnetScan.h"
 #include "Speaker/SpeakerController.h"
+#include "Camera/VideoConfigJobManager.h"
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
 
@@ -599,6 +600,99 @@ void registerControlApis() {
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    // Applies a time-boxed video encoder override to a batch of cameras; each camera is rolled back
+    // to its baseline when the job expires. Accepted per camera, the result arrives via
+    // kBroadcastVideoConfigRuleResult.
+    api_regist("/media/mserver/device/onvifApplyVideoConfigRule", [](API_ARGS_JSON_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_ARGS_("logId");
+
+        string logId = allArgs["logId"];
+        auto camerasReq = allArgs.args["cameras"];
+        if (!camerasReq.isArray() || camerasReq.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "cameras must be a non-empty array");
+            return;
+        }
+
+        Json::Value results(Json::arrayValue);
+
+        for (auto &camReq : camerasReq) {
+            string deviceId = camReq.get("deviceId", "").asString();
+            Json::Value item;
+            item["deviceId"] = deviceId;
+
+            if (deviceId.empty()) {
+                item["code"] = ApiErrCode::CODE_INVALID_ARGS;
+                item["msg"] = "deviceId is required";
+                results.append(item);
+                continue;
+            }
+
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                item["code"] = ApiErrCode::CODE_DEVICE_NOT_FOUND;
+                item["msg"] = "Device not found";
+                results.append(item);
+                continue;
+            }
+            auto ownership = ret->getOwnership();
+            if (!ownership) {
+                item["code"] = ApiErrCode::CODE_DEVICE_OWNERSHIP_BY_OTHER;
+                item["msg"] = "Device is controlled by other user";
+                results.append(item);
+                continue;
+            }
+
+            int width         = camReq["width"].asInt();
+            int height        = camReq["height"].asInt();
+            float fps         = camReq["fps"].asFloat();
+            int bitrate       = camReq["bitrate"].asInt();
+            int applyDuration = camReq["applyDuration"].asInt();
+
+            if (width <= 0 || height <= 0 || fps <= 0.0F || bitrate <= 0 || applyDuration <= 0) {
+                item["code"] = ApiErrCode::CODE_INVALID_ARGS;
+                item["msg"] = "Invalid video config or applyDuration";
+                results.append(item);
+                continue;
+            }
+
+            item["code"] = 0;
+            item["msg"] = "accepted";
+            results.append(item);
+
+            ret->getOwnerPoller()->async([ret, logId, deviceId, width, height, fps, bitrate, applyDuration]() mutable {
+                auto strong_listener = ret->getListener().lock();
+                if (!strong_listener) {
+                    WarnL << "Device offline, deviceId=" << deviceId;
+                    return;
+                }
+                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                if (!impl) {
+                    WarnL << "Device is not a camera, deviceId=" << deviceId;
+                    return;
+                }
+                auto statistic = impl->getCameraStatisticImp();
+                if (!statistic) {
+                    WarnL << "Statistic released, deviceId=" << deviceId;
+                    return;
+                }
+                auto token = statistic->getPrimaryProfileToken();
+                if (token.empty()) {
+                    WarnL << "Failed to determine profile token, skipping, deviceId=" << deviceId;
+                    return;
+                }
+                VideoConfigJobManager::Instance().handleRuleRequest(impl, logId, deviceId, token, width,
+                                                                   height, fps, bitrate, applyDuration);
+            });
+        }
+
+        val["code"] = 0;
+        val["msg"] = "success";
+        val["data"]["results"] = results;
+        invoker(200, headerOut, val.toStyledString());
     });
 
     DebugL << "Control APIs registered";

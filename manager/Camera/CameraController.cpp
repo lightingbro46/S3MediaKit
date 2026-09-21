@@ -848,6 +848,38 @@ void CameraController::applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr,
     std::vector<ProfileSetRequest> requests;
     for (const auto &profile : profiles) {
         auto token = profile.token;
+
+        // A video config rule owns this token: retry the rule config, not the baseline.
+        auto rule_it = _ruleConfigMap.find(token);
+        if (rule_it != _ruleConfigMap.end()) {
+            VideoEncoderConfig &rule_config = rule_it->second;
+            if (profile.isVideoConfigEqual(rule_config)) {
+                if (rule_config.state.status != configStateToString[VideoConfigSetState::SUCCESS]) {
+                    rule_config.state.status = configStateToString[VideoConfigSetState::SUCCESS];
+                    InfoL << "Profile token: " << token << " rule config is consistent with camera, mark as SUCCESS";
+                }
+                rule_config.state.retry_time = 5;
+                reportRuleConfigResult(token, true, "", "");
+            } else if (rule_config.state.retry_time > 0) {
+                ProfileSetRequest request;
+                request.token = token;
+                request.is_rule = true;
+                request.based_on = rule_config;
+                request.on_success = rule_config;
+                request.on_success.state.retry_time--;
+                request.on_success.state.status = configStateToString[VideoConfigSetState::PROCESSING];
+                request.on_failure = rule_config;
+                request.on_failure.state.retry_time = 0;
+                request.on_failure.state.status = configStateToString[VideoConfigSetState::FAILED];
+                requests.push_back(request);
+            } else {
+                rule_config.state.status = configStateToString[VideoConfigSetState::FAILED];
+                reportRuleConfigResult(token, false, "CONFIG_NOT_APPLIED",
+                                       "Camera accepted the request but the config was not applied after retries");
+            }
+            continue;
+        }
+
         auto it = _profileConfigMap.find(token);
         if (it == _profileConfigMap.end()) {
             TraceL << "Profile token: " << token << " not found in current profile config map, skip syncing";
@@ -918,22 +950,43 @@ void CameraController::applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr,
     postDeviceTask([weak_self, onvif_ctr, poller, requests]() {
         for (const auto &request : requests) {
             const bool ok = onvif_ctr->setVideoEncoderConfigByToken(request.token, request.on_success);
+            std::string err_msg;
             if (ok) {
                 InfoL << "Retry set config to camera for profile token: " << request.token
                       << "; retries left: " << request.on_success.state.retry_time;
             } else {
-                WarnL << "Failed to set config to camera for profile token: " << request.token << ": " << onvif_ctr->getSoapErrMsg();
+                err_msg = onvif_ctr->getSoapErrMsg();
+                WarnL << "Failed to set config to camera for profile token: " << request.token << ": " << err_msg;
             }
-            poller->async([weak_self, request, ok]() {
+            poller->async([weak_self, request, ok, err_msg]() {
                 if (auto self = weak_self.lock()) {
-                    self->storeProfileSetResult(request, ok);
+                    self->storeProfileSetResult(request, ok, err_msg);
                 }
             }, false);
         }
     });
 }
 
-void CameraController::storeProfileSetResult(const ProfileSetRequest &request, bool ok) {
+void CameraController::storeProfileSetResult(const ProfileSetRequest &request, bool ok, const std::string &err_msg) {
+    if (request.is_rule) {
+        auto rule_it = _ruleConfigMap.find(request.token);
+        if (rule_it == _ruleConfigMap.end()) {
+            // The rule was rolled back or replaced while its config was being set.
+            return;
+        }
+        const auto &current = rule_it->second;
+        if (current != request.based_on || current.state.status != request.based_on.state.status ||
+            current.state.retry_time != request.based_on.state.retry_time) {
+            DebugL << "Rule token: " << request.token << " changed while its config was being set, keep the newer entry";
+            return;
+        }
+        rule_it->second = ok ? request.on_success : request.on_failure;
+        if (!ok) {
+            reportRuleConfigResult(request.token, false, "SET_CONFIG_FAILED", err_msg);
+        }
+        return;
+    }
+
     auto it = _profileConfigMap.find(request.token);
     if (it != _profileConfigMap.end()) {
         const auto &current = it->second;
@@ -944,6 +997,118 @@ void CameraController::storeProfileSetResult(const ProfileSetRequest &request, b
         }
     }
     addProfileConfig(request.token, ok ? request.on_success : request.on_failure);
+}
+
+bool CameraController::getBaselineVideoConfig(const string &profileToken, VideoEncoderConfig &config) const {
+    auto it = _profileConfigMap.find(profileToken);
+    if (it == _profileConfigMap.end()) {
+        return false;
+    }
+    config = it->second;
+    return true;
+}
+
+void CameraController::clearRuleVideoConfig(const string &profileToken) {
+    _ruleConfigMap.erase(profileToken);
+    _ruleReportMap.erase(profileToken);
+}
+
+bool CameraController::isRuleResultReported(const string &profileToken) const {
+    auto it = _ruleReportMap.find(profileToken);
+    return it != _ruleReportMap.end() && it->second.reported;
+}
+
+void CameraController::reportRuleConfigResult(const string &profileToken, bool success,
+                                              const string &err_code, const string &err_msg) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end() || it->second.reported) {
+        return;
+    }
+    it->second.reported = true;
+    InfoL << "Report rule config result, logId: " << it->second.logId
+          << ", token: " << profileToken
+          << ", status: " << (success ? "SUCCESS" : "FAILED")
+          << (success ? "" : (", code: " + err_code + ", msg: " + err_msg));
+    NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, Broadcast::kBroadcastVideoConfigRuleResult,
+                it->second.logId, _tuple.device_id, success, err_code, err_msg);
+}
+
+void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
+    // Caller (GenericRtspCameraImp::applyRuleVideoConfig) asserts isCurrentThread - no dispatch needed.
+    VideoEncoderConfig rule_config = config;
+    rule_config.state.retry_time = 5;
+    rule_config.state.status = configStateToString[VideoConfigSetState::NEW];
+    _ruleConfigMap[profileToken] = rule_config;
+
+    RuleReportContext ctx;
+    ctx.logId = logId;
+    ctx.reported = false;
+    _ruleReportMap[profileToken] = ctx;
+
+    if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
+        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+
+    auto onvif_ctr = _onvif_ctr;
+    auto poller = _poller;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    // The set command is blocking SOAP: send it on the device queue, store the result on _poller.
+    postDeviceTask([weak_self, onvif_ctr, profileToken, rule_config, cb, poller]() {
+        onvifSetMediaProfile(onvif_ctr, profileToken, rule_config,
+            [weak_self, poller, cb, profileToken](const SockException &ex) mutable {
+                poller->async([weak_self, profileToken, ex, cb]() mutable {
+                    if (auto self = weak_self.lock()) {
+                        auto it = self->_ruleConfigMap.find(profileToken);
+                        if (it != self->_ruleConfigMap.end()) {
+                            it->second.state.status = configStateToString[ex ? VideoConfigSetState::PROCESSING : VideoConfigSetState::SUCCESS];
+                        }
+                    }
+                    cb(ex);
+                });
+            },
+            []() {});
+    });
+}
+
+void CameraController::rollbackRuleVideoConfigAsync(const string &profileToken, const VideoEncoderConfig &baseline, const function<void(const SockException &ex)> &cb) {
+    _ruleConfigMap.erase(profileToken);
+    _ruleReportMap.erase(profileToken);
+
+    if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
+        markBaselineNeedResync(profileToken);
+        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+
+    auto onvif_ctr = _onvif_ctr;
+    auto poller = _poller;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    postDeviceTask([weak_self, onvif_ctr, profileToken, baseline, cb, poller]() {
+        onvifSetMediaProfile(onvif_ctr, profileToken, baseline,
+            [weak_self, poller, cb, profileToken](const SockException &ex) mutable {
+                poller->async([weak_self, profileToken, ex, cb]() mutable {
+                    if (ex) {
+                        if (auto self = weak_self.lock()) {
+                            self->markBaselineNeedResync(profileToken);
+                        }
+                    }
+                    cb(ex);
+                });
+            },
+            []() {});
+    });
+}
+
+void CameraController::markBaselineNeedResync(const std::string &profileToken) {
+    auto it = _profileConfigMap.find(profileToken);
+    if (it == _profileConfigMap.end()) {
+        return;
+    }
+    VideoEncoderConfig config = it->second;
+    config.state.retry_time = 5;
+    config.state.status = configStateToString[VideoConfigSetState::PROCESSING];
+    addProfileConfig(profileToken, config, false);
 }
 
 } // namespace managerkit
