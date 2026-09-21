@@ -1,0 +1,6 @@
+#ifndef S3MEDIAKIT_HLSPLAYBACK_H
+#define S3MEDIAKIT_HLSPLAYBACK_H
+
+void installHlsPlaybackApi();
+
+#endif // S3MEDIAKIT_HLSPLAYBACK_H
