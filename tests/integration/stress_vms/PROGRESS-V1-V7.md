@@ -19,7 +19,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V1 | Segfault khi camera ONVIF thiếu zoom space | **xong** | `d57429e3` |
 | V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
-| V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `PENDING` |
+| V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
 | V7 | `enforceStoragePolicy()` blocking trên poller | chưa bắt đầu | — |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
 | V5 | fd không trả lại sau failover | chưa điều tra | — |
@@ -174,7 +174,7 @@ ctest --test-dir build-test -R '^unit\.'                    → 153/153 PASSED
 
 ---
 
-## V4 — đã xong (`PENDING`)
+## V4 — đã xong (`68827c1e`)
 
 Ba thay đổi của kế hoạch, làm hết cả ba.
 
