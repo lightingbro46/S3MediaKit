@@ -1,6 +1,7 @@
 #ifndef EXTENSION_FILERECORDER_H
 #define EXTENSION_FILERECORDER_H
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <fstream>
@@ -17,7 +18,14 @@ public:
 
     FileRecorder(const std::string &file_path) : _file_path(file_path) {
         if (!toolkit::File::fileExist(file_path)) {
-            toolkit::File::create_file(file_path, "wb+");
+            // create_file() is called for its mkdir -p of the parent directories, but it also
+            // fopen()s the file and hands back the handle. Dropping that handle leaked one fd per
+            // record file for the whole life of the process (one per camera's info.txt, one per
+            // speaker, one per audio file record). Nothing reads or writes through it: every access
+            // below opens its own stream.
+            if (auto fp = toolkit::File::create_file(file_path, "wb+")) {
+                fclose(fp);
+            }
             TraceL << "Created file record: " << file_path;
         }
     };
