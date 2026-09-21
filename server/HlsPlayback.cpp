@@ -25,6 +25,7 @@
 #include "Record/MPEG.h"
 #include "Record/MP4Demuxer.h"
 #include "Local/StatisticRecorder.h"
+#include "Local/TierEncryptionManager.h"
 #include "Local/TimeQuery.h"
 #include "ext-codec/H264.h"
 #include "ext-codec/H265.h"
@@ -100,10 +101,25 @@ struct SegmentItem {
     uint64_t absolute_start_ms;
 };
 
+// Path a reader can actually open: an encrypted recording is materialized as a plaintext copy in
+// the decrypt cache, anything else is returned unchanged. Empty means the segment cannot be read,
+// and the caller answers as it does for a missing file. Blocking, so API worker only.
+static string readableRecordPath(const string &path) {
+#ifdef ENABLE_TIER_STORAGE
+    if (path.empty())
+        return path;
+    string err;
+    string readable = TierEncryptionManager::Instance().materializeReadablePathForFile(path, &err);
+    if (readable.empty())
+        WarnL << "Cannot read recording " << path << ": " << (err.empty() ? "decrypt failed" : err);
+    return readable;
+#else
+    return path;
+#endif
+}
+
 static SegmentItem getKeyframeAlignedSegmentSingle(const string &file_path, uint64_t start_offset_ms, uint64_t max_end_offset_ms, uint64_t block_start_time, bool is_hi) {
-    // TODO(merge-repo): khi port record encryption, đổi lại thành
-    // TierEncryptionManager::Instance().materializeReadablePathForFile(...)
-    string abs_file_path = decodeBase64(file_path);
+    string abs_file_path = readableRecordPath(decodeBase64(file_path));
     struct stat st;
     if (stat(abs_file_path.c_str(), &st) != 0) {
         SegmentItem item;
@@ -434,7 +450,20 @@ void installHlsPlaybackApi() {
             }
         }
 
-        auto on_authorized = [allArgs, val, invoker, headerOut, is_secret_valid, api_secret, cameraId, startTime, endTime]() mutable {
+        // Reading the timefile index, cutting each segment at a keyframe (MP4Demuxer) and
+        // decrypting an encrypted recording on the way are all blocking disk work: they must not
+        // run on the request EventPoller.
+        auto req_poller = apiRequestPoller(sender);
+        auto req_session = apiRequestSession(sender);
+
+        auto on_authorized = [allArgs, invoker, headerOut, is_secret_valid, api_secret, cameraId,
+                              startTime, endTime, req_poller, req_session]() mutable {
+            auto playlist = std::make_shared<string>();
+            auto invoker_copy = invoker;
+            auto headerOut_copy = headerOut;
+
+            runApiWork(req_poller, req_session,
+                [allArgs, is_secret_valid, api_secret, cameraId, startTime, endTime, playlist]() mutable {
             // Determine mode and quality
             enum PlaybackMode {
                 Mode_Low = 0,
@@ -831,8 +860,21 @@ void installHlsPlaybackApi() {
             }
             ss << "#EXT-X-ENDLIST\n";
 
-            headerOut["Content-Type"] = "application/vnd.apple.mpegurl";
-            invoker(200, headerOut, ss.str());
+            *playlist = ss.str();
+                },
+                [playlist, invoker_copy, headerOut_copy, req_session](const std::exception_ptr &error) mutable {
+                    if (error) {
+                        try {
+                            std::rethrow_exception(error);
+                        } catch (const std::exception &ex) {
+                            WarnL << "Failed to build HLS playlist: " << ex.what();
+                        }
+                        responseApiException(error, invoker_copy, req_session);
+                        return;
+                    }
+                    headerOut_copy["Content-Type"] = "application/vnd.apple.mpegurl";
+                    invoker_copy(200, headerOut_copy, *playlist);
+                });
         };
 
         if (is_secret_valid) {
@@ -934,8 +976,6 @@ void installHlsPlaybackApi() {
         auto req_session = apiRequestSession(sender);
 
         auto on_authorized = [allArgs, invoker, headerOut, req_poller, req_session]() mutable {
-            // TODO(merge-repo): khi port record encryption, đổi lại thành
-            // TierEncryptionManager::Instance().materializeReadablePathForFile(...)
             string file = decodeBase64(allArgs["file"]);
             uint64_t offset_ms = std::stoull(allArgs["offset_ms"]);
             uint64_t duration_ms = std::stoull(allArgs["duration_ms"]);
@@ -950,13 +990,19 @@ void installHlsPlaybackApi() {
 
             runApiWork(req_poller, req_session,
                 [file, offset_ms, duration_ms, dts_offset_ms, ts_data]() {
+                    // Decryption belongs here, on the API worker, not on the request poller.
+                    const string readable = readableRecordPath(file);
+                    if (readable.empty()) {
+                        throw std::runtime_error("Cannot read recording: " + file);
+                    }
+
                     struct stat st;
-                    if (stat(file.c_str(), &st) != 0) {
-                        throw std::runtime_error("File not found: " + file);
+                    if (stat(readable.c_str(), &st) != 0) {
+                        throw std::runtime_error("File not found: " + readable);
                     }
 
                     MP4Demuxer demuxer;
-                    demuxer.openMP4(file);
+                    demuxer.openMP4(readable);
 
                     TSMuxer tsMuxer;
                     auto tracks = demuxer.getTracks(true);
