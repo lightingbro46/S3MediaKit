@@ -23,7 +23,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
 | V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `b5f45f6b` |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | **xong** | `731fcad4` |
-| V5 | fd không trả lại sau failover | **xong** — không rò; sửa một khoản fd giữ vô ích | `PENDING` |
+| V5 | fd không trả lại sau failover | **xong** — không rò; sửa một khoản fd giữ vô ích | `6906aece` |
 
 ---
 
@@ -423,7 +423,7 @@ ctest --test-dir build-test -R '^unit\.'                → exit 0, 155 test
 
 ---
 
-## V5 — đã xong (`PENDING`)
+## V5 — đã xong (`6906aece`)
 
 ### Kết luận: KHÔNG rò fd
 
