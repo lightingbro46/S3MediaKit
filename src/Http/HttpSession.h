@@ -13,6 +13,7 @@
 #ifdef ENABLE_MOTION
 #include "Motion/MotionMjpegMediaSource.h"
 #endif // ENABLE_MOTION
+#include "Backchannel/BackchannelWsSession.h"
 
 namespace mediakit {
 
@@ -112,6 +113,9 @@ private:
     bool checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_list = nullptr);
     bool checkLiveStreamHlsByApp();
     bool checkLiveMotionStreamByApp();
+    // ONVIF two-way audio: a WebSocket upgrade on /media/<device_id>/backchannel hands the
+    // socket over to a BackchannelWsSession.
+    bool checkAudioBackchannel(const std::function<void()> &cb = nullptr);
 
     bool checkWebSocket();
     bool emitHttpEvent(bool doInvoke);
@@ -150,6 +154,8 @@ private:
 #endif // ENABLE_MOTION
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;
+    // Set once this connection was upgraded to a backchannel audio session.
+    BackchannelWsSession::Ptr _talk_src;
 };
 
 using HttpsSession = toolkit::SessionWithSSL<HttpSession>;

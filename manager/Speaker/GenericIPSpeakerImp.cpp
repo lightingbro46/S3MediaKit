@@ -100,6 +100,19 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         return;
     }
 
+    // An ONVIF backchannel streams the file straight to the speaker, so it needs neither a
+    // vendor API nor the file to be uploaded to the device first.
+    if (strong_statistic->getParams().device_caps.supportsAudioBackchannel) {
+        _controller->playAudioFileByBackchannel(fileId, [speakerId, cb](bool ok, const std::string& data) {
+            if (ok) {
+                cb(SockException(Err_success, "Trigger play [" + speakerId + "]: OK", ApiErrCode::CODE_SUCCESS));
+            } else {
+                cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+            }
+        });
+        return;
+    }
+
     if (!strong_statistic->isFeatureSupported(SupportedFeatures::PlayAudioFile)) {
         WarnL << "Speaker " << _src->getUrl() << " does not support this feature";
         cb(SockException(Err_other, "Speaker does not support this feature", ApiErrCode::CODE_PLAY_AUDIO_FAILED));

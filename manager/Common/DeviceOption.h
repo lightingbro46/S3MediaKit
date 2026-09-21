@@ -95,12 +95,15 @@ struct DeviceCapabilities {
     OnvifProfile onvifProfile;
     bool supportsSdCardPlayback = false;
     VendorFeatureSupport vendorFeatureSupport;
+    // Device accepts a two-way audio (backchannel) stream.
+    bool supportsAudioBackchannel = false;
 
     bool operator==(const DeviceCapabilities &o) const {
         return isOnvifDevice == o.isOnvifDevice
             && onvifProfile == o.onvifProfile
             && supportsSdCardPlayback == o.supportsSdCardPlayback
-            && vendorFeatureSupport == o.vendorFeatureSupport;
+            && vendorFeatureSupport == o.vendorFeatureSupport
+            && supportsAudioBackchannel == o.supportsAudioBackchannel;
     }
     bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }
 };

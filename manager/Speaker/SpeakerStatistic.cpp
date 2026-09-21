@@ -38,6 +38,7 @@ static Json::Value makeDeviceStatisticJson(const bool &connect, const string &st
     }
     vendorFeatureSupport["supportedVendorFeatures"] = featureArray;
     ret["capabilities"]["vendorFeatureSupport"] = vendorFeatureSupport;
+    ret["capabilities"]["supportsAudioBackchannel"] = caps.supportsAudioBackchannel;
     return ret;
 }
 
@@ -56,6 +57,7 @@ static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     VendorFeatureSupport features;
     features.requiresSeparateCredential = data["vendorFeatureSupport"]["requiresSeparateCredential"].asBool();
     features.supportsVendorFeatures = data["vendorFeatureSupport"]["supportsVendorFeatures"].asBool();
+    stats.supportsAudioBackchannel = !data["supportsAudioBackchannel"].empty() ? data["supportsAudioBackchannel"].asBool() : false;
     for (const auto &it : data["vendorFeatureSupport"]["supportedVendorFeatures"]) {
         features.supportedVendorFeatures.push_back(it.asString());
     }

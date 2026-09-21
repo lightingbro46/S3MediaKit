@@ -1,4 +1,6 @@
 #include "SpeakerController.h"
+#include "Common/StrUtil.h"
+#include "Backchannel/BackchannelManager.h"
 #include "Common/BlockingExecutors.h"
 #include "ext-plugin/DeviceFactory.h"
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
@@ -85,6 +87,7 @@ void SpeakerController::stopController() {
     _device_ctr.reset();
     _audio_playback_ctr = nullptr;
     _ready = false;
+    mediakit::BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
     DebugL << "Closed speaker controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
@@ -121,6 +124,11 @@ void SpeakerController::onManager() {
             caps->vendorFeatureSupport.supportedVendorFeatures = features;
             caps->vendorFeatureSupport.supportsVendorFeatures = !features.empty();
             caps->onvifProfile.deviceInfo = onvif_ctr->getDeviceInfo();
+            caps->supportsAudioBackchannel = onvif_ctr->supportAudioBackchannel();
+            if (caps->supportsAudioBackchannel) {
+                // Still on the device queue, which is where this blocking SOAP setup belongs.
+                strong_self->registerAudioBackchannel(onvif_ctr);
+            }
             strong_self->onControllerReady(true, "connected", std::move(caps));
         } else {
             auto err_msg = onvif_ctr->getSoapErrMsg();
@@ -475,6 +483,42 @@ std::vector<std::string> SpeakerController::getVendorFeatures(const std::string&
     }
 
     return {};
+}
+
+
+void SpeakerController::playAudioFileByBackchannel(const std::string& fileId, OnDeviceResult cb) {
+    // supportsAudioBackchannel has already been verified by the caller.
+    auto file = AudioFileManager::Instance().getAudioFile(fileId);
+    if (file.id.empty() || !file.downloaded) {
+        cb(false, "Audio file is not ready for backchannel or does not exist: " + fileId);
+        return;
+    }
+
+    GET_CONFIG(std::string, speaker_path, mediakit::Speaker::kSpeakerSavePath);
+    GET_CONFIG(std::string, audio_file_dir, mediakit::Speaker::kAudioFilesDir);
+    std::string filePath = file.localPath(toolkit::File::absolutePath(audio_file_dir, speaker_path));
+
+    auto &backchannel = mediakit::BackchannelManager::Instance();
+    bool ok = backchannel.playFile(_tuple.device_id, filePath);
+    cb(ok, ok ? "" : backchannel.getErrorMsg());
+}
+
+void SpeakerController::registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr) {
+    if (!onvif_ctr) {
+        return;
+    }
+
+    std::string backchannelUri;
+    if (!onvif_ctr->setupAudioBackchannel(backchannelUri, _ctrl_option.manufacturer == "Bosch") || backchannelUri.empty()) {
+        WarnL << "Setup audio backchannel failed for device " << _tuple.shortUrl();
+        return;
+    }
+
+    if (backchannelUri.find("@") == std::string::npos && !_ctrl_option.password.empty()) {
+        backchannelUri = UriUtils::replaceCredentials(backchannelUri, _ctrl_option.username, _ctrl_option.password);
+    }
+
+    mediakit::BackchannelManager::Instance().registerDevice(_tuple.device_id, backchannelUri);
 }
 
 } // namespace managerkit

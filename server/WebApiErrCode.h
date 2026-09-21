@@ -131,6 +131,7 @@ namespace managerkit {
     /* 915xxx - Audio errors */                                                                        \
     XX(CODE_AUDIO_FILE_NOT_FOUND,           "Audio file not found",             404,         915001) \
     XX(CODE_PLAY_AUDIO_FAILED,              "Failed to play audio file",        500,         915002) \
+    XX(CODE_SET_AUDIO_VOLUME_FAILED,        "Failed to set audio volume",       409,         915003) \
 
 typedef enum {
 #define XX(type, message, http_code, custom_code) type = custom_code,
