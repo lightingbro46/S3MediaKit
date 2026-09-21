@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Checks the /media/* APIs that run blocking work on the API worker pool.
 
-Covers docs/api-blocking-backlog.md and the six steps of the retired docs/features/worker.md.
+Covers the API-blocking backlog pass and the six steps of the retired docs/features/worker.md.
+(Both planning documents have been removed; this file is now the record of what they required.)
 
 Runs against one node started by setup_nodes.py (manager.enableAuthorize=0) and the mock API.
 
@@ -332,7 +333,7 @@ step4_call("restoreJob/create(unknown camera)", S + "/restoreJob/create",
            {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001, as_json=False)
 
 # 11. The /media/api/* family (CHECK_SECRET / CHECK_CLUSTER_AUTHOR_ASYNC trust boundary), which was
-#     dispatched to the API worker in the api-blocking-backlog pass. Route, status and code must be
+#     dispatched to the API worker in the API-blocking backlog pass. Route, status and code must be
 #     unchanged, and a heavy read must not delay the pollers.
 A = "/media/api/storage"
 # This family is behind CHECK_SECRET(), unlike /media/mserver/* which uses the user JWT.
@@ -403,9 +404,8 @@ api_step_call("policy/assignCamera(unknown)", A + "/policy/assignCamera",
 api_step_call("policy/removeCamera(unknown)", A + "/policy/removeCamera",
               {"camera_id": "no-such-camera"}, 404, 905001, as_json=False)
 
-# 12. With every API worker blocked: the request pollers stay free (§5 of
-#     docs/api-blocking-followup-plan.md) and the `storage.read` cap really is shared by the two
-#     families (§2).
+# 12. With every API worker blocked: the request pollers stay free, and the `storage.read` cap
+#     really is shared by the two families.
 #
 #     `pool/testConnection` on an object storage at BLACKHOLE_IP is the slow endpoint of this
 #     family: the AWS SDK sets its client up and then waits out its 5s connect timeout, which takes
