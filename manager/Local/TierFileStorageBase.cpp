@@ -1,5 +1,7 @@
 #include "TierFileStorageBase.h"
 
+#ifdef ENABLE_TIER_STORAGE
+
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Util/TimeTicker.h"
@@ -404,3 +406,5 @@ std::string TierFileStorageBase::makeStorageKey(const std::string &camera_id,
 }
 
 } // namespace managerkit
+
+#endif // ENABLE_TIER_STORAGE

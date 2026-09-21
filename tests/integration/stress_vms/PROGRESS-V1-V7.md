@@ -21,7 +21,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
 | V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
 | V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `b5f45f6b` |
-| V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
+| V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | **xong** | `PENDING` |
 | V5 | fd không trả lại sau failover | chưa điều tra | — |
 
 ---
@@ -374,19 +374,51 @@ Không chạy thử ở máy này vì `cleanupTemporaryFiles()` xoá thật `www
 
 ---
 
-## V2 — code đã sửa, chưa commit
+## V2 — đã xong (`PENDING`)
 
-`manager/Local/TierFileStorageBase.cpp` đang có +4 dòng trong working tree: bọc cả file trong
-`#ifdef ENABLE_TIER_STORAGE`, đúng khuôn `TierStorageBase.cpp`. Không có guard này thì
-`-DENABLE_TIER_STORAGE=OFF` không biên dịch.
+`manager/Local/TierFileStorageBase.cpp` — bọc cả file trong `#ifdef ENABLE_TIER_STORAGE`, đúng
+khuôn `TierStorageBase.cpp`. Không có guard này thì `-DENABLE_TIER_STORAGE=OFF` không biên dịch.
 
-Đã xác minh `TierNASStorage.cpp` và `TierObjectStorage.cpp` biên dịch sạch khi tier off
-(`g++ -fsyntax-only` với đúng cờ của `build-tier-off`) → **không cần thêm guard**.
+`TierNASStorage.cpp` và `TierObjectStorage.cpp` biên dịch sạch khi tier off → **không cần guard**.
 
-Còn lại: thêm job CI `-DENABLE_TIER_STORAGE=OFF` build tới target `MediaServer`, và xử lý
-lệch tài liệu — `CMakeLists.txt:46` mặc định **ON** còn `docs/api-storage-tiering.md:7`,
-`docs/storage-tiering-flow.md:7` ghi **OFF**. Đề xuất sửa tài liệu theo code, nhưng
-**cần xác nhận của bạn** trước khi đổi.
+**Lệch tài liệu:** đã sửa docs theo code (bạn chốt). `docs/api-storage-tiering.md:7` và
+`docs/storage-tiering-flow.md:7` giờ ghi mặc định **ON**, khớp `CMakeLists.txt:46`.
+
+**CI:** repo **không có CI nào cả** — không `.github/workflows`, không gitlab-ci, không Jenkinsfile.
+Kế hoạch ghi "thêm job CI" nhưng không có chỗ để thêm. Bạn chốt: chỉ ghi tài liệu, không dựng CI.
+Đã thêm `docs/storage-tiering-flow.md` §16 "Kiểm Cấu Hình Tier-Off".
+
+### Hai cạm bẫy phải trả giá mới ra, đã ghi vào §16
+
+Lần link tier-off đầu tiên hỏng hai lần, **cả hai đều không phải lỗi mã nguồn**:
+
+1. **Thư mục output dùng chung, lừa được cả stale-check.** Mọi build dir ghi thư viện ra
+   `release/linux/Debug/`. Build cấu hình A xong rồi build B, thì B thấy `libs3managerkit.a` **mới
+   hơn** các `.o` của chính nó → coi archive đã cập nhật, **bỏ qua bước archive**, rồi link đúng
+   archive chứa object của A. Triệu chứng: `undefined reference to vtable for
+   Aws::S3::Model::HeadObjectRequest`. Đây là bản chính xác hơn của ghi chú cũ (không chỉ là
+   "binary cũ" mà là link sai cấu hình).
+   Cách chẩn đoán không phá huỷ: object của chính build-tier-off có **0** symbol AWS chưa định
+   nghĩa, object cùng tên của `build/` có **41**.
+   Cách xử lý: `find build-tier-off -name '*.o' -exec touch {} +` rồi build lại — archive lại mà
+   không phải biên dịch lại.
+2. **`file(GLOB)` trong `manager/CMakeLists.txt`.** `build-tier-off/` được cấu hình từ trước khi V6
+   thêm `manager/Local/StoragePolicy.cpp`, nên file đó không được biên dịch →
+   `undefined reference to managerkit::clampMaxToDisk / keepTimeThreshold`. Phải
+   `cmake -S . -B build-tier-off ...` lại. Build dir ít dùng là chỗ dễ bị nhất.
+
+Cả hai đều là thứ một job CI sẽ tự bắt. Chừng nào chưa có CI, hai bước đó là phần bắt buộc của
+việc kiểm.
+
+### Xác minh đã chạy
+
+```
+cmake -S . -B build-tier-off -DCMAKE_BUILD_TYPE=Debug -DENABLE_TIER_STORAGE=OFF -DENABLE_AWS_SDK=OFF
+find build-tier-off -name '*.o' -exec touch {} +
+cmake --build build-tier-off --target MediaServer -j2   → exit 0, MediaServer 244 MB
+cmake --build build -j2 (sau khi touch .o)              → exit 0, MediaServer 269 MB (bản AWS)
+ctest --test-dir build-test -R '^unit\.'                → exit 0, 155 test
+```
 
 ---
 

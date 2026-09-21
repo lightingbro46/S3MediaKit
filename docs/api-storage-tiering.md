@@ -4,7 +4,7 @@ Tài liệu này mô tả các route đang được đăng ký trong `server/Web
 
 Luồng nội bộ: [storage-tiering-flow.md](storage-tiering-flow.md).
 
-> Cần build với `-DENABLE_TIER_STORAGE=ON`. Option này mặc định `OFF`; khi tắt, nhóm API bên dưới không được đăng ký.
+> Cần build với `-DENABLE_TIER_STORAGE=ON`. Option này mặc định `ON` (`CMakeLists.txt`); khi tắt, nhóm API bên dưới không được đăng ký.
 
 ## 1. Quy ước chung
 

@@ -4,7 +4,9 @@ Tài liệu này mô tả chi tiết luồng lưu trữ đa tầng đang đượ
 
 Tài liệu API chi tiết nằm ở [api-storage-tiering.md](api-storage-tiering.md).
 
-> Tính năng chỉ được biên dịch khi CMake bật `-DENABLE_TIER_STORAGE=ON`; mặc định hiện là `OFF`. Khi tắt, entity/manager tiering bị loại khỏi build, `TierStorageManager` không start và route `/media/mserver/storage/...` không được đăng ký. Migration SQL của MediaServer vẫn quét thư mục migration độc lập với macro này.
+> Tính năng chỉ được biên dịch khi CMake bật `-DENABLE_TIER_STORAGE=ON`; mặc định hiện là `ON` (`CMakeLists.txt`). Khi tắt, entity/manager tiering bị loại khỏi build, `TierStorageManager` không start và route `/media/mserver/storage/...` không được đăng ký. Migration SQL của MediaServer vẫn quét thư mục migration độc lập với macro này.
+>
+> **Cấu hình `OFF` không được build tự động ở đâu cả** (repo chưa có CI). Mọi thay đổi trong `manager/Local/Tier*` hoặc code có `#ifdef ENABLE_TIER_STORAGE` phải tự kiểm trước khi phát hành — xem [§16](#16-kiểm-cấu-hình-tier-off).
 
 ## 1. Mục Tiêu
 
@@ -1260,3 +1262,68 @@ void TierStorageManager::executeRestoreSegment(...) {
 | Timefile | 1 file/camera/ngày, ~2 880 block (~400 KB) |
 
 Migration `16_tier_performance_indexes.sql` thêm index cho các truy vấn nóng. Đo trên SQLite với 1,14 triệu range: `hasActiveJobForRange` 3,3 ms → 0,012 ms, `findDeletableByPoolAfter` 2 053 ms/trang → 2 ms, `findRetentionCandidatesAfter` 67 ms → 0,06 ms, `findReconcileCandidatesBefore` 15,6 ms → 0,5 ms.
+
+## 16. Kiểm Cấu Hình Tier-Off
+
+Repo **chưa có CI**, nên cấu hình `-DENABLE_TIER_STORAGE=OFF` không được build ở đâu tự động.
+Nó đã từng hỏng đúng vì vậy: `manager/Local/TierFileStorageBase.cpp` thiếu guard
+`#ifdef ENABLE_TIER_STORAGE` nên cả file được biên dịch khi tier tắt và không compile được.
+
+Cách kiểm:
+
+```bash
+cmake -S . -B build-tier-off -DCMAKE_BUILD_TYPE=Debug \
+      -DENABLE_TIER_STORAGE=OFF -DENABLE_AWS_SDK=OFF
+cmake --build build-tier-off --target MediaServer -j2
+```
+
+### Cạm bẫy: thư mục output dùng chung
+
+**Mọi** build dir (`build/`, `build-test/`, `build-tier-off/`, `build-sync-off/`) đều ghi thư viện
+ra cùng một chỗ: `release/linux/Debug/`. Hệ quả cụ thể, đã mất thời gian vì nó:
+
+Build cấu hình A xong rồi build cấu hình B, thì B thấy `libs3managerkit.a` **mới hơn** các `.o` của
+chính nó, nên coi archive là đã cập nhật và **bỏ qua bước archive** — rồi link thẳng archive chứa
+object của A. Triệu chứng khi kiểm tier-off ngay sau khi build `build/`:
+
+```
+undefined reference to `vtable for Aws::S3::Model::HeadObjectRequest'
+```
+
+Đây **không** phải lỗi mã nguồn tier-off. Cách nhận ra: object của chính build-tier-off không tham
+chiếu AWS nào cả, còn object cùng tên của `build/` thì có 41 symbol:
+
+```bash
+nm -C build-tier-off/manager/CMakeFiles/s3managerkit.dir/Local/TierObjectStorage.cpp.o | grep -c ' U .*[Aa]ws'   # 0
+nm -C build/manager/CMakeFiles/s3managerkit.dir/Local/TierObjectStorage.cpp.o           | grep -c ' U .*[Aa]ws'   # 41
+```
+
+Cách xử lý: buộc cấu hình đang kiểm archive lại. Không cần biên dịch lại, chỉ cần các `.o` của nó
+mới hơn archive:
+
+```bash
+find build-tier-off -name '*.o' -exec touch {} +
+cmake --build build-tier-off --target MediaServer -j2
+```
+
+Xong rồi thì làm điều tương tự cho build dir bạn dùng thường ngày trước khi chạy binary của nó,
+nếu không sẽ gặp đúng vấn đề theo chiều ngược lại.
+
+### Cạm bẫy: `file(GLOB)` trong `manager/CMakeLists.txt`
+
+Danh sách nguồn của `manager/` lấy bằng `file(GLOB)`, chỉ mở rộng lúc **configure**. Một build dir
+cấu hình từ trước khi có file `.cpp` mới sẽ không biên dịch file đó, và lỗi hiện ra ở bước link:
+
+```
+undefined reference to `managerkit::clampMaxToDisk(...)'
+undefined reference to `managerkit::keepTimeThreshold(...)'
+```
+
+Vì `build-tier-off/` hiếm khi được dùng nên nó là chỗ dễ bị nhất. Configure lại trước khi kiểm:
+
+```bash
+cmake -S . -B build-tier-off -DCMAKE_BUILD_TYPE=Debug -DENABLE_TIER_STORAGE=OFF -DENABLE_AWS_SDK=OFF
+```
+
+Cả hai cạm bẫy trên đều là thứ một job CI sẽ tự bắt được. Chừng nào chưa có CI, hai bước
+(configure lại + `touch` các `.o`) là phần bắt buộc của việc kiểm.
