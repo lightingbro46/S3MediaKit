@@ -459,8 +459,7 @@ retention xoá hết dữ liệu. Log: `Keep device in list` **1.980** lần, `R
 
 ### Phần đã sửa: `record.timefileIdleCloseSec`
 
-`info.txt` do `CameraStatisticImp` giữ — đúng là "thông tin camera" nghiệp vụ muốn giữ, để nguyên.
-Nhưng hai handle timefile thì không cần: camera inactive không ghi gì, mà
+Hai handle timefile không cần: camera inactive không ghi gì, mà
 `TimeRecorderManager::removeRecorder()` — hàm duy nhất nhả `TimeRecorder` — **không có chỗ nào gọi
 trong toàn bộ repo**, nên writer của file hôm nay bị pin suốt đời tiến trình.
 
@@ -515,9 +514,27 @@ cmake --build build-test -j2                                          → exit 0
 ctest --test-dir build-test -R '^unit\.'                              → 157/157 PASSED
 ```
 
-**Chưa làm:** chạy lại soak để xác nhận `timefileIdleCloseSec` thật sự hạ phần dư từ +170 xuống
-~+60 (chỉ còn `info.txt`). Cần soak dài hơn ngưỡng 600 s của một chu kỳ bảo trì, hoặc hạ
-`record.timefileIdleCloseSec` trong config của harness.
+### Phần fd thứ ba: `info.txt` — hoá ra là rò thật (`ac1cfb2b`)
+
+Lần đầu tôi kết luận `info.txt` là "thông tin camera nghiệp vụ muốn giữ, để nguyên". **Sai.** Đọc
+`FileRecorder` mới thấy nó **không giữ fd nào cả**: `save_string()` mở `ofstream` với `trunc`, ghi,
+đóng; `load_string()` cũng vậy. Fd đó là handle **bị rơi** trong constructor:
+
+```cpp
+if (!toolkit::File::fileExist(file_path)) {
+    toolkit::File::create_file(file_path, "wb+");   // fopen() rồi trả FILE*, bị bỏ
+```
+
+`File::create_file` được gọi vì nó tạo sẵn các thư mục cha (`mkdir` vòng lặp), nhưng nó cũng `fopen`.
+Mỗi file record tạo mới rò đúng 1 fd suốt đời tiến trình — 1 cho `info.txt` mỗi camera, 1 mỗi
+speaker, 1 mỗi bản ghi audio file (3 chỗ dùng `FileRecorder`). Đã sửa bằng `fclose`, kèm test đếm fd
+của tiến trình trỏ tới đường dẫn; đã kiểm test bắt được lỗi (bỏ `fclose` → fail 0 vs 1).
+
+Vậy cả 3 fd mỗi camera bị giữ lại đều đã xử lý: 2 handle timefile (idle close) + 1 handle rò
+(`fclose`).
+
+**Chưa làm:** chạy lại soak để xác nhận phần dư +170 thật sự về ~0. Cần soak dài hơn ngưỡng 600 s
+của một chu kỳ bảo trì, hoặc hạ `record.timefileIdleCloseSec` trong config của harness.
 
 ---
 
