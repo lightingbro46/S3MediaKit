@@ -20,7 +20,7 @@ Thứ tự đã chốt: **V1 → V6 → V3 → V4 → V7 → V2 → V5**, mỗi 
 | V6 | `keepArchivedMaxForAuto` xoá đoạn ghi đầu tiên | **xong** | `b315c402` |
 | V3 | Mỗi thao tác ONVIF tốn hai lượt đi-về | **xong** | `8d897ea5` |
 | V4 | PTZ chết khi vài camera ONVIF chậm | **xong** | `68827c1e` |
-| V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `PENDING` |
+| V7 | `enforceStoragePolicy()` blocking trên poller | **xong** | `b5f45f6b` |
 | V2 | `ENABLE_TIER_STORAGE=OFF` không biên dịch | code đã sửa, **nằm trong working tree chưa commit**; còn CI + tài liệu | chưa commit |
 | V5 | fd không trả lại sau failover | chưa điều tra | — |
 
@@ -293,7 +293,7 @@ có thể bỏ lệnh mà chưa có số đo nào chứng minh cần.
 
 ---
 
-## V7 — đã xong (`PENDING`)
+## V7 — đã xong (`b5f45f6b`)
 
 ### Pool thứ năm
 
