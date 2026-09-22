@@ -159,6 +159,33 @@ static std::string keyForVariant(const std::string &key, const std::string &loca
     return RecordEncryptionUtils::hasEncSuffix(key) ? key : key + RecordEncryptionUtils::encryptedFileSuffix();
 }
 
+// An object pool holds one of two spellings for the same segment: the plaintext key and,
+// once record encryption is on, that key plus ".enc". A reader that rebuilds the key from the
+// timefile only knows the plaintext spelling, so both must count as present; otherwise every
+// encrypted segment looks lost. Returns the entry found, and its spelling in `out_key`.
+static const TierObjectInfo *findListedObjectVariant(const std::map<std::string, TierObjectInfo> &listed,
+                                                     const std::string &plain_key,
+                                                     std::string &out_key) {
+    auto it = listed.find(plain_key);
+    if (it == listed.end())
+        it = listed.find(plain_key + RecordEncryptionUtils::encryptedFileSuffix());
+    if (it == listed.end()) {
+        out_key.clear();
+        return nullptr;
+    }
+    out_key = it->first;
+    return &it->second;
+}
+
+// The encrypted variant carries a fixed-size trailer on top of the recorded payload, so its
+// object is larger than the size the timefile stores for the segment.
+static bool objectSizeMatchesSegment(int64_t object_size, int64_t segment_size, bool encrypted_variant) {
+    if (segment_size <= 0 || object_size == segment_size)
+        return true;
+    return encrypted_variant &&
+           object_size == segment_size + static_cast<int64_t>(EncryptedFileTrailer::kSize);
+}
+
 static const char kDefaultHotPoolId[] = "pool-default-hot";
 static const char kDefaultHotPoolName[] = "Default HOT Tier Storage";
 static const char kSystemDefaultPolicyId[] = "policy-system-default";
@@ -4540,28 +4567,33 @@ TierStorageManager::checkObjectRange(const StoragePool &pool,
         const auto &segment = out.segments[i];
         if (segment.end_time > verify_before)
             continue;
-        auto it = listed.find(keys[i]);
-        if (it != listed.end()) {
-            if (segment.file_size > 0 && it->second.size != segment.file_size) {
+        std::string listed_key;
+        const TierObjectInfo *listed_object = findListedObjectVariant(listed, keys[i], listed_key);
+        if (listed_object) {
+            if (!objectSizeMatchesSegment(listed_object->size, segment.file_size,
+                                          RecordEncryptionUtils::hasEncSuffix(listed_key))) {
                 if (first_mismatch.empty())
-                    first_mismatch = keys[i];
+                    first_mismatch = listed_key;
                 ++size_mismatches;
             }
             continue;
         }
-        // A listing can lag behind writes; only a 404 proves the loss.
-        switch (_obj_storage.headSegment(pool.id, keys[i])) {
-        case TierObjectPresence::PRESENT:
+        // A listing can lag behind writes; only a 404 proves the loss, and it has to be a 404
+        // for both spellings before the segment is dropped.
+        const TierObjectPresence plain_presence = _obj_storage.headSegment(pool.id, keys[i]);
+        if (plain_presence == TierObjectPresence::PRESENT)
             continue;
-        case TierObjectPresence::ABSENT:
-            out.kinds[i] = 0;
-            out.missing.push_back(segment);
-            if (out.first_missing_key.empty())
-                out.first_missing_key = keys[i];
-            break;
-        default:
+        const TierObjectPresence enc_presence = _obj_storage.headSegment(
+            pool.id, keys[i] + RecordEncryptionUtils::encryptedFileSuffix());
+        if (enc_presence == TierObjectPresence::PRESENT)
+            continue;
+        if (plain_presence != TierObjectPresence::ABSENT ||
+            enc_presence != TierObjectPresence::ABSENT)
             return ObjectRangeCheck::ERROR;
-        }
+        out.kinds[i] = 0;
+        out.missing.push_back(segment);
+        if (out.first_missing_key.empty())
+            out.first_missing_key = keys[i];
     }
     if (size_mismatches > 0 && _object_reconcile_reported.insert("size:" + range.range_id).second) {
         addStorageAlert("WARNING", "TIER_OBJECT_SIZE_MISMATCH", pool.id,
@@ -4709,8 +4741,12 @@ bool TierStorageManager::scanOrphanDayPrefix(const StoragePool &pool,
         if (!collectSegmentFilesForRange(range, segments, error))
             return true;
         for (const auto &segment : segments) {
-            owned.insert(TierObjectStorage::makeS3Key(base_path, segment.camera_id,
-                                                      segment.stream_id, segment.segment_path));
+            const std::string key = TierObjectStorage::makeS3Key(base_path, segment.camera_id,
+                                                                 segment.stream_id, segment.segment_path);
+            owned.insert(key);
+            // The same segment sits under the ".enc" spelling once it was uploaded encrypted;
+            // neither spelling is an orphan.
+            owned.insert(key + RecordEncryptionUtils::encryptedFileSuffix());
         }
     }
 
