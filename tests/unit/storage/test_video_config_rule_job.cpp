@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <future>
 #include <string>
@@ -11,14 +12,18 @@
 #include "Storage/DbStorage.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/VideoConfigRuleJob.h"
+#include "Storage/VideoConfigRuleResult.h"
+#include "Camera/VideoConfigJobManager.h"
+#include "Common/config.h"
+#include "Util/NoticeCenter.h"
 #include "Util/mini.h"
 
 using namespace managerkit;
 using namespace toolkit;
 
-// VideoConfigRuleJobImp against a temporary mserver DB built from the real migrations: writes of
-// the same row from several threads must not collide, and an older transition never overwrites or
-// deletes a newer one.
+// VideoConfigRuleJobImp / VideoConfigRuleResultImp against a temporary mserver DB built from the
+// real migrations: writes of the same row from several threads must not collide, an older transition
+// never overwrites or deletes a newer one, and results are stored per (logId, deviceId).
 
 namespace {
 
@@ -134,4 +139,125 @@ TEST(VideoConfigRuleJobImpTest, RemoveKeepsARowUpdatedAfterTheTransition) {
 
     // Nothing left to remove is not an error.
     EXPECT_TRUE(repo.removeIfNotNewer(job.id, 6000));
+}
+
+TEST(VideoConfigRuleResultImpTest, PendingRowTakesTheResultAndKeepsItsCreationTime) {
+    VideoConfigRuleResultImp repo;
+    ASSERT_TRUE(repo.markPending("log-a", "cam-2", 1000));
+    ASSERT_TRUE(repo.markPending("log-a", "cam-1", 1000));
+    ASSERT_TRUE(repo.markPending("log-other", "cam-1", 1000));
+
+    auto rows = repo.findByLogId("log-a");
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ("cam-1", rows[0].deviceId);
+    EXPECT_EQ("cam-2", rows[1].deviceId);
+    EXPECT_EQ(VideoConfigRuleStatus::kPending, rows[0].status);
+
+    ASSERT_TRUE(repo.recordResult("log-a", "cam-1", false, "CONFIG_NOT_APPLIED", "kept the old config", 5000));
+    ASSERT_TRUE(repo.recordResult("log-a", "cam-2", true, "ignored", "ignored", 6000));
+    rows = repo.findByLogId("log-a");
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ(VideoConfigRuleStatus::kFailed, rows[0].status);
+    EXPECT_EQ("CONFIG_NOT_APPLIED", rows[0].errCode);
+    EXPECT_EQ("kept the old config", rows[0].errMsg);
+    EXPECT_EQ(1000, rows[0].createdAt);
+    EXPECT_EQ(5000, rows[0].updatedAt);
+    EXPECT_EQ(VideoConfigRuleStatus::kSuccess, rows[1].status);
+    EXPECT_EQ("", rows[1].errCode);
+
+    // A request reusing the logId starts the camera over.
+    ASSERT_TRUE(repo.markPending("log-a", "cam-1", 7000));
+    rows = repo.findByLogId("log-a");
+    EXPECT_EQ(VideoConfigRuleStatus::kPending, rows[0].status);
+    EXPECT_EQ("", rows[0].errCode);
+    EXPECT_EQ(7000, rows[0].createdAt);
+}
+
+TEST(VideoConfigRuleResultImpTest, ResultWithoutPendingRowIsCreated) {
+    VideoConfigRuleResultImp repo;
+    ASSERT_TRUE(repo.recordResult("log-recovered", "cam-1", true, "", "", 3000));
+    auto rows = repo.findByLogId("log-recovered");
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(VideoConfigRuleStatus::kSuccess, rows[0].status);
+    EXPECT_EQ(3000, rows[0].createdAt);
+}
+
+TEST(VideoConfigRuleResultImpTest, PruneRemovesRowsNotUpdatedSinceTheCutoff) {
+    VideoConfigRuleResultImp repo;
+    ASSERT_TRUE(repo.markPending("log-prune", "cam-old", 1000));
+    ASSERT_TRUE(repo.markPending("log-prune", "cam-new", 9000));
+    repo.removeUpdatedBefore(5000);
+    auto rows = repo.findByLogId("log-prune");
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ("cam-new", rows[0].deviceId);
+}
+
+// Contract of the receiver of the recording-encryption fork (/api/media-server/action-callback).
+TEST(VideoConfigRuleResultTest, HookBodyMatchesTheForkContract) {
+    VideoConfigRuleResult ok;
+    ok.logId = "log-1";
+    ok.deviceId = "cam-1";
+    ok.status = VideoConfigRuleStatus::kSuccess;
+    ok.errCode = "leftover";
+    auto body = ok.toHookJson();
+    EXPECT_EQ("log-1", body["logId"].asString());
+    EXPECT_EQ("cam-1", body["deviceId"].asString());
+    EXPECT_EQ("SUCCESS", body["status"].asString());
+    EXPECT_TRUE(body.isMember("errorCode"));
+    EXPECT_TRUE(body["errorCode"].isNull());
+    EXPECT_TRUE(body["errorMessage"].isNull());
+    EXPECT_EQ(5u, body.size());
+
+    VideoConfigRuleResult failed = ok;
+    failed.status = VideoConfigRuleStatus::kFailed;
+    failed.errCode = "RULE_EXPIRED";
+    failed.errMsg = "expired";
+    body = failed.toHookJson();
+    EXPECT_EQ("FAILED", body["status"].asString());
+    EXPECT_EQ("RULE_EXPIRED", body["errorCode"].asString());
+    EXPECT_EQ("expired", body["errorMessage"].asString());
+}
+
+namespace {
+
+std::vector<VideoConfigRuleResult> queryResults(const std::string &logId) {
+    auto done = std::make_shared<std::promise<std::vector<VideoConfigRuleResult>>>();
+    auto future = done->get_future();
+    VideoConfigJobManager::Instance().queryResults(logId,
+        [done](const std::vector<VideoConfigRuleResult> &rows, const std::string &error) {
+            EXPECT_EQ("", error);
+            done->set_value(rows);
+        });
+    EXPECT_EQ(std::future_status::ready, future.wait_for(std::chrono::seconds(5)));
+    return future.get();
+}
+
+} // namespace
+
+// The API queues the PENDING rows, then the cameras report on their pollers: every result lands on
+// its row, and a lookup queued afterwards sees them.
+TEST(VideoConfigJobManagerResultTest, ResultsFollowTheAcceptedRowsInOrder) {
+    auto &manager = VideoConfigJobManager::Instance();
+    manager.start();
+
+    manager.recordAccepted("log-m", { "cam-a", "cam-b", "cam-c" });
+    VideoConfigJobManager::reportFailure("log-m", "cam-b", "DEVICE_OFFLINE", "Device is offline");
+    const std::string none;
+    NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, mediakit::Broadcast::kBroadcastVideoConfigRuleResult,
+                std::string("log-m"), std::string("cam-a"), true, none, none);
+
+    auto rows = queryResults("log-m");
+    manager.stop();
+    ASSERT_EQ(3u, rows.size());
+    EXPECT_EQ(VideoConfigRuleStatus::kSuccess, rows[0].status);
+    EXPECT_EQ(VideoConfigRuleStatus::kFailed, rows[1].status);
+    EXPECT_EQ("DEVICE_OFFLINE", rows[1].errCode);
+    EXPECT_EQ(VideoConfigRuleStatus::kPending, rows[2].status);
+
+    // Stopped: results are no longer recorded.
+    NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, mediakit::Broadcast::kBroadcastVideoConfigRuleResult,
+                std::string("log-m"), std::string("cam-c"), true, none, none);
+    rows = queryResults("log-m");
+    ASSERT_EQ(3u, rows.size());
+    EXPECT_EQ(VideoConfigRuleStatus::kPending, rows[2].status);
 }

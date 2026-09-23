@@ -13,6 +13,7 @@
 - [Tích hợp Restore Job cho Web, Desktop và Mobile](./restore-job-client-integration.md)
 - [Kiểm thử tích hợp Storage Tiering với Codex agent](./tier-storage-integration-testing.md)
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
+- [Rule cấu hình video có thời hạn](./api-video-config-rule.md)
 - [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 - [Backlog: API `/media/*` còn blocking trên EventPoller](./api-blocking-backlog.md)
 - [Plan sửa luồng video config rule](./video-config-rule-fix-plan.md)

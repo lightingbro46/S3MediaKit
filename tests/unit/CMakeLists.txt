@@ -77,8 +77,20 @@ target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
 
 # video_config_rule_job writes against a temporary mserver DB built from the real migrations.
-add_s3_unit_test(unit_video_config_rule_job storage/test_video_config_rule_job.cpp)
-target_link_libraries(unit_video_config_rule_job PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
+# VideoConfigJobManager pulls in the cameras, so server/ symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_video_config_rule_job
+  storage/test_video_config_rule_job.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_video_config_rule_job PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_video_config_rule_job PRIVATE "${PROJECT_SOURCE_DIR}/server")
+# Codec plugin logs on stdout break gtest discovery: run the whole binary as one test.
+add_test(NAME unit.video_config_rule_job_all COMMAND unit_video_config_rule_job)
+set_tests_properties(unit.video_config_rule_job_all PROPERTIES LABELS unit TIMEOUT 30)
 target_compile_definitions(unit_video_config_rule_job PRIVATE
   S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)

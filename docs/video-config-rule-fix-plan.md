@@ -28,7 +28,7 @@ CameraController::applyMediaProfileSync (chu kỳ bảo trì ~60 s) → retry ru
 | P2 | #1 Kết quả báo muộn/sai, không retry trong thời hạn | Cao | — |
 | P3 | #4 Yêu cầu gia hạn bị nuốt, ý định mới nhất bị mất | Trung bình | P2 (cùng đường báo kết quả) |
 | P4 | #5 Ghi DB song song, sai thứ tự | Trung bình | — |
-| P5 | #2 Kết quả không có đường ra ngoài | Cao | **Cần chốt quyết định D1** |
+| P5 | #2 Kết quả không có đường ra ngoài | Cao | D1 đã chốt: webhook + DB |
 | P6 | #6, #7 Báo sai ở nhánh phụ, dừng/xoá camera khi đang chạy rule | Thấp | P2, P4 |
 | P7 | #8 `onvifSetVideoConfigs` giằng co với rule đang chạy | Trung bình | P2 (sync mỗi chu kỳ khi rule chờ); theo D4 |
 
@@ -37,11 +37,11 @@ nên phát đúng kết quả trước khi đưa nó ra ngoài.
 
 ## Quyết định cần chốt trước khi làm
 
-- **D1 (P5)** — kênh trả kết quả cho phía gọi. Đề xuất: webhook mới
-  `hook.on_video_config_rule_result` theo mẫu `do_http_hook` trong `server/WebHook.cpp`
-  (body: `logId, deviceId, success, errCode, errMsg`), bỏ trống URL thì không gửi.
-  Phương án khác: API tra cứu theo `logId` (cần lưu kết quả vào DB), hoặc kênh fork đang dùng
-  — nên hỏi phía fork trước.
+- **D1 (P5) — ĐÃ CHỐT 2026-09-23: cả hai** — webhook `hook.on_video_config_rule_result` **và**
+  lưu kết quả vào DB + API tra cứu theo `logId`. Webhook giữ đúng hợp đồng đang có ở fork
+  (nhánh `import/legacy-fork-snapshot`): đường dẫn mặc định `/api/media-server/action-callback`,
+  body `logId, deviceId, status (SUCCESS|FAILED), errorCode, errorMessage` (null khi thành công).
+  Bản fork khai báo `bool success` theo giá trị nên hook của nó thực ra chưa bao giờ được gửi (P2).
 - **D2 (P3)** — ĐÃ CHỐT 2026-09-23 theo đề xuất. Ngữ nghĩa khi yêu cầu mới trùng cấu hình job đang chạy: coi là
   **gia hạn** — `deadlineAt = max(cũ, mới)`, đổi `logId` sang yêu cầu mới, huỷ job QUEUED
   (báo `RULE_SUPERSEDED`), vì yêu cầu mới nhất là ý định hiện tại.
@@ -200,23 +200,51 @@ Thứ tự thực thi của hàng đợi đã có test ở `test_serial_task_que
 Mutation check đã chạy: `addOrUpdate` dùng transaction deferred → test đồng thời đỏ
 (`database is locked`, race nên không đỏ mọi lần); bỏ kiểm tra `updatedAt` → 2 test đỏ.
 
-## P5 — Đưa kết quả ra ngoài (#2) — theo D1
+## P5 — Đưa kết quả ra ngoài (#2) — XONG, theo D1 "cả hai"
 
-Với phương án webhook đề xuất:
+Tài liệu cho phía gọi: [api-video-config-rule.md](./api-video-config-rule.md).
 
-1. `server/WebHook.cpp`: thêm `kOnVideoConfigRuleResult = HOOK_FIELD "on_video_config_rule_result"`,
-   đăng ký default rỗng, listener `kBroadcastVideoConfigRuleResult` gọi `do_http_hook`
-   (dùng retry chung `hook_retry`).
-2. Các nhánh đang im lặng sau khi đã trả `accepted` phải phát kết quả lỗi:
-   camera offline (`WebApiControl.cpp:669`) → `DEVICE_OFFLINE`, không phải camera →
-   `NOT_A_CAMERA`, không xác định profile token (`:684`) → `PROFILE_TOKEN_NOT_FOUND`.
-3. Tài liệu: thêm mục API + webhook vào `docs/` (API mới chưa có tài liệu), liệt kê đủ bảng mã
-   lỗi: `GET_CONFIG_FAILED, SET_CONFIG_FAILED, CONFIG_NOT_APPLIED, CONFIG_NOT_CONFIRMED,
-   CONTROLLER_OFFLINE, RULE_EXPIRED, RULE_SUPERSEDED, DEVICE_OFFLINE, NOT_A_CAMERA,
-   PROFILE_TOKEN_NOT_FOUND`. Cập nhật `conf/config.ini` và `docs/README.md`.
+**Đã sửa:**
 
-**Test:** listener gọi hook đúng body (mock `do_http_hook` hoặc HTTP server giả như các test
-hook hiện có); mỗi `logId` + `deviceId` chỉ nhận đúng 1 kết quả qua các kịch bản P2/P3.
+1. Webhook (`server/WebHook.cpp`): `kOnVideoConfigRuleResult`, mặc định
+   `/api/media-server/action-callback` như fork; listener `kBroadcastVideoConfigRuleResult` gửi
+   `VideoConfigRuleResult::toHookJson()` qua `do_http_hook` (retry chung `hook.retry`), thêm header
+   `Idempotency-Key: logId|deviceId`.
+2. Lưu kết quả: migration `20_video_config_rule_result.sql` (số 19 đã được `develop` dùng), entity +
+   `VideoConfigRuleResultImp` ở `manager/Storage/VideoConfigRuleResult.h` (header-only):
+   `markPending`, `recordResult` (ghi trong `beginWriteTxn`, giữ `createdAt`), `findByLogId`,
+   `removeUpdatedBefore`.
+3. `VideoConfigJobManager`:
+   - `start()`/`stop()` (gọi từ `server/Manager.cpp`, trước khi nạp camera) đăng ký listener ghi kết
+     quả vào DB;
+   - `recordAccepted(logId, deviceIds)` ghi `PENDING`; `queryResults(logId, cb)` đọc;
+   - mọi thao tác DB của job và kết quả đi chung hàng đợi tuần tự `postDbTask` (P4), nên kết quả
+     không bao giờ tới trước dòng `PENDING`, và lần tra cứu thấy mọi lần ghi xếp hàng trước nó;
+   - dọn kết quả cũ theo `video_config_rule.result_keep_hours` (mặc định 168, `<= 0` giữ vĩnh
+     viễn), tối đa một lần mỗi giờ, chạy khi start và khi có request mới.
+4. Handler `onvifApplyVideoConfigRule`: kiểm tra xong toàn bộ danh sách mới ghi `PENDING`, rồi mới
+   giao việc cho poller của camera. Các nhánh trước đây im lặng thì giờ báo `DEVICE_OFFLINE`
+   (camera ngắt kết nối, hoặc statistic đã bị giải phóng), `NOT_A_CAMERA`,
+   `PROFILE_TOKEN_NOT_FOUND`. `deviceId` trùng trong cùng request bị từ chối (`902001`).
+5. API mới `GET /media/mserver/device/onvifGetVideoConfigRuleResult?logId=` (`CHECK_API_KEY`),
+   `runApiCallbackWork` + `queryResults`.
+6. `conf/config.ini`, `docs/README.md`, tài liệu API mới.
+
+**Test** (`tests/unit/storage/test_video_config_rule_job.cpp`, target `unit_video_config_rule_job`
+giờ link như `unit_camera_controller`, dùng stub của tier-storage):
+
+- `VideoConfigRuleResultImpTest` (3 test): `PENDING` → kết quả, giữ `createdAt`, lọc theo `logId`,
+  sắp theo `deviceId`, gửi lại cùng `logId` thì làm lại từ đầu; kết quả không có dòng `PENDING`
+  thì tạo mới; dọn theo mốc thời gian;
+- `VideoConfigRuleResultTest.HookBodyMatchesTheForkContract`;
+- `VideoConfigJobManagerResultTest.ResultsFollowTheAcceptedRowsInOrder`: `recordAccepted` → báo
+  lỗi + phát thành công → tra cứu thấy đủ; sau `stop()` không ghi nữa.
+
+Mutation check đã chạy: listener ghi DB thẳng trên pool `api()` thay vì qua hàng đợi → test thứ tự
+đỏ; body thành công dùng chuỗi thay vì `null` → test hợp đồng đỏ.
+
+Chưa có unit test cho listener webhook (cần link `server/WebHook.cpp`) và handler — kiểm khi chạy
+thật. Test "mỗi `logId` + `deviceId` nhận đúng 1 kết quả" đã có ở mức controller (P2/P3).
 
 ## P6 — Các nhánh phụ (#6, #7)
 

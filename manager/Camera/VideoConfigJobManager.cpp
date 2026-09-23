@@ -4,12 +4,23 @@
 #include "Common/SerialTaskQueue.h"
 #include "server/WebApiErrCode.h"
 #include "Util/util.h"
+#include "Util/NoticeCenter.h"
+#include "Util/onceToken.h"
 
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
+
+namespace VideoConfigRuleConfig {
+#define VIDEO_CONFIG_RULE_FIELD "video_config_rule."
+const string kResultKeepHours = VIDEO_CONFIG_RULE_FIELD "result_keep_hours";
+
+static onceToken token([]() {
+    mINI::Instance()[kResultKeepHours] = 168;
+});
+} // namespace VideoConfigRuleConfig
 
 INSTANCE_IMP(VideoConfigJobManager)
 
@@ -56,14 +67,82 @@ void VideoConfigJobManager::deferRelease(const EventPoller::Ptr &poller, std::sh
     poller->async([obj]() {}, false);
 }
 
-void VideoConfigJobManager::asyncDbTask(std::function<void(VideoConfigRuleJobImp &)> task) {
+void VideoConfigJobManager::postDbTask(std::function<void()> task) {
     // SQLite work stays off the pollers (WorkThreadPool threads run timers and ordered queues), and
     // goes through one strand so rows are written in the order the owner pollers decided them: on the
     // plain api() pool two writes of the same row could run concurrently or swap.
     static SerialTaskQueue::Ptr queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "video-config-rule-db");
-    queue->post([task]() {
+    queue->post(std::move(task));
+}
+
+void VideoConfigJobManager::asyncDbTask(std::function<void(VideoConfigRuleJobImp &)> task) {
+    postDbTask([task]() {
         VideoConfigRuleJobImp repo;
         task(repo);
+    });
+}
+
+void VideoConfigJobManager::start() {
+    // The listener only queues the write: it runs on the emitting camera poller.
+    NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastVideoConfigRuleResult, [](BroadcastVideoConfigRuleResultArgs) {
+        string logId = log_id, deviceId = device_id, errCode = err_code, errMsg = err_msg;
+        bool ok = success;
+        int64_t now = nowMs();
+        postDbTask([logId, deviceId, ok, errCode, errMsg, now]() {
+            VideoConfigRuleResultImp repo;
+            repo.recordResult(logId, deviceId, ok, errCode, errMsg, now);
+        });
+    });
+    pruneResultsIfDue(nowMs());
+}
+
+void VideoConfigJobManager::stop() {
+    NoticeCenter::Instance().delListener(this, Broadcast::kBroadcastVideoConfigRuleResult);
+}
+
+void VideoConfigJobManager::recordAccepted(const string &logId, const vector<string> &deviceIds) {
+    if (deviceIds.empty()) {
+        return;
+    }
+    int64_t now = nowMs();
+    postDbTask([logId, deviceIds, now]() {
+        VideoConfigRuleResultImp repo;
+        for (const auto &deviceId : deviceIds) {
+            repo.markPending(logId, deviceId, now);
+        }
+    });
+    pruneResultsIfDue(now);
+}
+
+void VideoConfigJobManager::queryResults(const string &logId, const ResultsCallback &cb) {
+    postDbTask([logId, cb]() {
+        vector<VideoConfigRuleResult> results;
+        string error;
+        try {
+            VideoConfigRuleResultImp repo;
+            results = repo.findByLogId(logId);
+        } catch (const std::exception &ex) {
+            error = ex.what();
+            WarnL << "[RuleJob] reading results failed, logId=" << logId << ": " << error;
+        }
+        cb(results, error);
+    });
+}
+
+void VideoConfigJobManager::pruneResultsIfDue(int64_t now) {
+    static const int64_t kPruneIntervalMs = 3600 * 1000;
+    int64_t last = _lastResultPruneMs.load();
+    if (now - last < kPruneIntervalMs || !_lastResultPruneMs.compare_exchange_strong(last, now)) {
+        return;
+    }
+    GET_CONFIG(int, keepHours, VideoConfigRuleConfig::kResultKeepHours);
+    if (keepHours <= 0) {
+        return;
+    }
+    int64_t cutoff = now - (int64_t)keepHours * 3600 * 1000;
+    postDbTask([cutoff]() {
+        VideoConfigRuleResultImp repo;
+        repo.removeUpdatedBefore(cutoff);
     });
 }
 
