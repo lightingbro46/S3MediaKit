@@ -54,7 +54,13 @@ public:
                             const std::string &deviceId,
                             const std::string &profileToken);
 
+    // Camera stopped (disabled, restarting): forget its in-memory jobs; the DB rows stay and are
+    // recovered when its controller connects again.
     void releaseDevice(const std::string &deviceId);
+
+    // Camera removed from this media server: no rollback (it is no longer ours). Every request of
+    // the camera still PENDING gets DEVICE_REMOVED, and its job rows are deleted.
+    void removeDevice(const std::string &deviceId);
 
 private:
     VideoConfigJobManager();
@@ -64,6 +70,9 @@ private:
         bool hasQueued = false;
         VideoConfigRuleJob queued;
         toolkit::Timer::Ptr deadlineTimer;
+        // The active job's result was reported outside the controller (by recovery after a restart):
+        // finishJob must not report it again.
+        bool activeReported = false;
     };
     using JobSlotPtr = std::shared_ptr<JobSlot>;
 
@@ -77,6 +86,7 @@ private:
     void insertSlot(const std::string &key, const JobSlotPtr &slot);
     void eraseSlot(const std::string &key);
     bool markRecoverStarted(const std::string &key);
+    void unmarkRecoverStarted(const std::string &key);
 
     void onBaselineReady(const GenericRtspCameraImp::Ptr &device,
                           const std::string &key, const std::string &logId, const std::string &deviceId,
@@ -102,9 +112,11 @@ private:
 
     void rollbackToBaseline(const GenericRtspCameraImp::Ptr &device, const std::string &profileToken);
 
+    // `reported`: logId -> success, for the rows' requests whose final result is already stored.
     void applyRecoveredRows(const GenericRtspCameraImp::Ptr &device, const std::string &key,
                              const std::string &deviceId, const std::string &profileToken,
-                             const std::vector<VideoConfigRuleJob> &rows);
+                             const std::vector<VideoConfigRuleJob> &rows,
+                             const std::unordered_map<std::string, bool> &reported);
 
     static void reportSuccess(const std::string &logId, const std::string &deviceId);
 

@@ -60,6 +60,11 @@ bool VideoConfigJobManager::markRecoverStarted(const string &key) {
     return _recovered.insert(key).second;
 }
 
+void VideoConfigJobManager::unmarkRecoverStarted(const string &key) {
+    lock_guard<mutex> lk(_mtx);
+    _recovered.erase(key);
+}
+
 void VideoConfigJobManager::deferRelease(const EventPoller::Ptr &poller, std::shared_ptr<void> obj) {
     if (!poller || !obj) {
         return;
@@ -67,12 +72,19 @@ void VideoConfigJobManager::deferRelease(const EventPoller::Ptr &poller, std::sh
     poller->async([obj]() {}, false);
 }
 
+// True while the current thread runs a task of the DB strand.
+static thread_local bool t_onDbStrand = false;
+
 void VideoConfigJobManager::postDbTask(std::function<void()> task) {
     // SQLite work stays off the pollers (WorkThreadPool threads run timers and ordered queues), and
     // goes through one strand so rows are written in the order the owner pollers decided them: on the
     // plain api() pool two writes of the same row could run concurrently or swap.
     static SerialTaskQueue::Ptr queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "video-config-rule-db");
-    queue->post(std::move(task));
+    queue->post([task]() {
+        t_onDbStrand = true;
+        onceToken reset(nullptr, []() { t_onDbStrand = false; });
+        task();
+    });
 }
 
 void VideoConfigJobManager::asyncDbTask(std::function<void(VideoConfigRuleJobImp &)> task) {
@@ -83,11 +95,17 @@ void VideoConfigJobManager::asyncDbTask(std::function<void(VideoConfigRuleJobImp
 }
 
 void VideoConfigJobManager::start() {
-    // The listener only queues the write: it runs on the emitting camera poller.
     NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastVideoConfigRuleResult, [](BroadcastVideoConfigRuleResultArgs) {
+        int64_t now = nowMs();
+        if (t_onDbStrand) {
+            // Emitted by a DB task (e.g. removeDevice): write in place, before any read queued meanwhile.
+            VideoConfigRuleResultImp repo;
+            repo.recordResult(log_id, device_id, success, err_code, err_msg, now);
+            return;
+        }
+        // Emitted on a camera poller: only queue the write.
         string logId = log_id, deviceId = device_id, errCode = err_code, errMsg = err_msg;
         bool ok = success;
-        int64_t now = nowMs();
         postDbTask([logId, deviceId, ok, errCode, errMsg, now]() {
             VideoConfigRuleResultImp repo;
             repo.recordResult(logId, deviceId, ok, errCode, errMsg, now);
@@ -306,6 +324,7 @@ void VideoConfigJobManager::extendJob(const GenericRtspCameraImp::Ptr &device, c
 void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, const string &key,
                                           const JobSlotPtr &slot, const VideoConfigRuleJob &job, bool persist) {
     slot->active = job;
+    slot->activeReported = false;
     if (persist) {
         persistJob(job);
     }
@@ -373,6 +392,8 @@ void VideoConfigJobManager::promoteOrRollback(const GenericRtspCameraImp::Ptr &d
     bool hasBaseline = device->getBaselineVideoConfig(profileToken, baseline);
     VideoEncoderConfig nextConfig = next.toVideoEncoderConfig();
     if (hasBaseline && nextConfig == baseline) {
+        // The queued request asks for what the rollback restores: it is satisfied by it.
+        reportSuccess(next.logId, deviceId);
         finishJob(device, key, slot, now);
         return;
     }
@@ -395,7 +416,7 @@ void VideoConfigJobManager::finishJob(const GenericRtspCameraImp::Ptr &device, c
     string deviceId = slot->active.deviceId;
     string profileToken = slot->active.profileToken;
 
-    if (!device->isRuleResultReported(profileToken)) {
+    if (!slot->activeReported && !device->isRuleResultReported(profileToken)) {
         string errCode = "CONTROLLER_OFFLINE";
         string errMsg = "Onvif controller was not reachable when the apply duration ended";
         if (device->isControllerReady()) {
@@ -450,19 +471,29 @@ void VideoConfigJobManager::recoverDeviceJobs(const GenericRtspCameraImp::Ptr &d
         if (rows.empty()) {
             return;
         }
-        poller->async([rows, deviceId, profileToken, key, weak_device]() {
+        // Results reported before the restart must not be reported again.
+        unordered_map<string, bool> reported;
+        VideoConfigRuleResultImp results;
+        for (const auto &row : rows) {
+            bool success = false;
+            if (results.isReported(row.logId, deviceId, success)) {
+                reported[row.logId] = success;
+            }
+        }
+        poller->async([rows, reported, deviceId, profileToken, key, weak_device]() {
             auto strong_device = weak_device.lock();
             if (!strong_device) {
                 return;
             }
-            VideoConfigJobManager::Instance().applyRecoveredRows(strong_device, key, deviceId, profileToken, rows);
+            VideoConfigJobManager::Instance().applyRecoveredRows(strong_device, key, deviceId, profileToken, rows, reported);
         });
     });
 }
 
 void VideoConfigJobManager::applyRecoveredRows(const GenericRtspCameraImp::Ptr &device, const string &key,
                                                     const string &deviceId, const string &profileToken,
-                                                    const vector<VideoConfigRuleJob> &rows) {
+                                                    const vector<VideoConfigRuleJob> &rows,
+                                                    const unordered_map<string, bool> &reported) {
     if (findSlot(key)) {
         return;
     }
@@ -479,23 +510,34 @@ void VideoConfigJobManager::applyRecoveredRows(const GenericRtspCameraImp::Ptr &
         }
     }
 
+    // Only a QUEUED row (the process stopped between removing it and writing it as ACTIVE): it becomes
+    // the active job, and its QUEUED row must go once the job is resumed.
+    bool fromQueuedRow = false;
     if (!hasActive) {
         if (!hasQueued) {
             return;
         }
         activeRow = queuedRow;
         hasQueued = false;
+        fromQueuedRow = true;
     }
+
+    auto reportedIt = reported.find(activeRow.logId);
+    bool activeReported = reportedIt != reported.end();
+    bool activeSucceeded = activeReported && reportedIt->second;
 
     weak_ptr<GenericRtspCameraImp> weak_device = device;
     device->ensureBaselineVideoConfig(profileToken,
-        [weak_device, key, deviceId, profileToken, activeRow, queuedRow, hasQueued]
+        [weak_device, key, deviceId, profileToken, activeRow, queuedRow, hasQueued, fromQueuedRow, activeReported, activeSucceeded]
         (const SockException &ex, const VideoEncoderConfig &baseline) mutable {
             auto strong_device = weak_device.lock();
             if (!strong_device) {
                 return;
             }
             if (ex) {
+                // Nothing restored: let the next controller connection try again.
+                WarnL << "Recovering rule job failed, baseline unavailable, key=" << key << ", err=" << ex.what();
+                VideoConfigJobManager::Instance().unmarkRecoverStarted(key);
                 return;
             }
             auto &self = VideoConfigJobManager::Instance();
@@ -514,6 +556,12 @@ void VideoConfigJobManager::applyRecoveredRows(const GenericRtspCameraImp::Ptr &
             int64_t now = nowMs();
             if (now >= activeRow.deadlineAt) {
                 InfoL << "Job expired while server was down, completing immediately, key=" << key;
+                // No controller state survives a restart: without this, finishJob would blame the
+                // controller (CONTROLLER_OFFLINE / CONFIG_NOT_CONFIRMED) for the downtime.
+                if (!activeReported) {
+                    reportFailure(activeRow.logId, deviceId, "RULE_EXPIRED", "Rule expired while the media server was not running");
+                }
+                slot->activeReported = true;
                 self.promoteOrRollback(strong_device, key, slot, now);
                 return;
             }
@@ -523,6 +571,11 @@ void VideoConfigJobManager::applyRecoveredRows(const GenericRtspCameraImp::Ptr &
                 ruleConfig.vcodec = baseline.vcodec;
             }
             if (ruleConfig == baseline) {
+                // The camera already runs the requested config.
+                if (!activeReported) {
+                    reportSuccess(activeRow.logId, deviceId);
+                }
+                slot->activeReported = true;
                 self.promoteOrRollback(strong_device, key, slot, now);
                 return;
             }
@@ -536,6 +589,12 @@ void VideoConfigJobManager::applyRecoveredRows(const GenericRtspCameraImp::Ptr &
 
             InfoL << "Resumed job after restart, logId=" << resumed.logId << ", deviceId=" << deviceId << ", remaining " << (resumed.deadlineAt - now) / 1000 << "s";
             self.startJob(strong_device, key, slot, resumed, true);
+            if (activeReported) {
+                strong_device->markRuleResultReported(profileToken, activeSucceeded);
+            }
+            if (fromQueuedRow) {
+                persistRemoveQueued(deviceId, profileToken, now);
+            }
         });
 }
 
@@ -564,6 +623,21 @@ void VideoConfigJobManager::releaseDevice(const string &deviceId) {
     if (!released.empty()) {
         InfoL << "Removed " << released.size() << " job in-memory for deviceId=" << deviceId;
     }
+}
+
+void VideoConfigJobManager::removeDevice(const string &deviceId) {
+    releaseDevice(deviceId);
+    // From the result table, not the in-memory jobs: a removed camera was stopped before, so its
+    // jobs are already released. This also covers every request folded into a job and queued ones.
+    postDbTask([deviceId]() {
+        VideoConfigRuleResultImp results;
+        for (const auto &row : results.findPendingByDeviceId(deviceId)) {
+            reportFailure(row.logId, deviceId, "DEVICE_REMOVED", "Camera was removed from this media server");
+        }
+        VideoConfigRuleJobImp jobs;
+        jobs.removeByDeviceId(deviceId);
+        InfoL << "[RuleJob] removed rule jobs of deleted camera, deviceId=" << deviceId;
+    });
 }
 
 static void *s_tag;

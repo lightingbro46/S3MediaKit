@@ -29,7 +29,7 @@ CameraController::applyMediaProfileSync (chu kỳ bảo trì ~60 s) → retry ru
 | P3 | #4 Yêu cầu gia hạn bị nuốt, ý định mới nhất bị mất | Trung bình | P2 (cùng đường báo kết quả) |
 | P4 | #5 Ghi DB song song, sai thứ tự | Trung bình | — |
 | P5 | #2 Kết quả không có đường ra ngoài | Cao | D1 đã chốt: webhook + DB |
-| P6 | #6, #7 Báo sai ở nhánh phụ, dừng/xoá camera khi đang chạy rule | Thấp | P2, P4 |
+| P6 | #6, #7 Báo sai ở nhánh phụ, dừng/xoá camera khi đang chạy rule | Thấp | P2, P4; D3 đã chốt |
 | P7 | #8 `onvifSetVideoConfigs` giằng co với rule đang chạy | Trung bình | P2 (sync mỗi chu kỳ khi rule chờ); theo D4 |
 
 P1 làm trước vì nhỏ, độc lập và là lỗ hổng. P5 để sau P2–P4 vì cần quyết định kênh ra và
@@ -45,9 +45,9 @@ nên phát đúng kết quả trước khi đưa nó ra ngoài.
 - **D2 (P3)** — ĐÃ CHỐT 2026-09-23 theo đề xuất. Ngữ nghĩa khi yêu cầu mới trùng cấu hình job đang chạy: coi là
   **gia hạn** — `deadlineAt = max(cũ, mới)`, đổi `logId` sang yêu cầu mới, huỷ job QUEUED
   (báo `RULE_SUPERSEDED`), vì yêu cầu mới nhất là ý định hiện tại.
-- **D3 (P6)** — khi camera bị xoá lúc rule đang chạy: đề xuất xoá dòng DB, không cố rollback
-  (camera không còn thuộc hệ thống); khi camera chỉ dừng/khởi động lại: giữ nguyên như hiện tại
-  (phục hồi lúc kết nối lại).
+- **D3 (P6) — ĐÃ CHỐT 2026-09-23 theo đề xuất** — camera bị xoá lúc rule đang chạy: xoá dòng DB,
+  không rollback; mọi request còn `PENDING` của camera nhận `DEVICE_REMOVED`. Camera chỉ
+  dừng/khởi động lại: giữ như hiện tại (phục hồi lúc kết nối lại).
 - **D4 (P7) — ĐÃ CHỐT 2026-09-23** — người dùng gọi `onvifSetVideoConfigs` lên profile đang
   bị rule chiếm: **chỉ cập nhật baseline** (`_profileConfigMap` + `stream_settings`), **không**
   gửi SOAP; trả thành công kèm cờ "hoãn tới khi rule hết hạn". Rollback cuối rule sẽ đẩy cấu hình
@@ -246,19 +246,49 @@ Mutation check đã chạy: listener ghi DB thẳng trên pool `api()` thay vì 
 Chưa có unit test cho listener webhook (cần link `server/WebHook.cpp`) và handler — kiểm khi chạy
 thật. Test "mỗi `logId` + `deviceId` nhận đúng 1 kết quả" đã có ở mức controller (P2/P3).
 
-## P6 — Các nhánh phụ (#6, #7)
+## P6 — Các nhánh phụ (#6, #7) — XONG
 
-1. Khôi phục sau restart: job đã hết hạn khi server down → không báo `CONTROLLER_OFFLINE`;
-   báo `RULE_EXPIRED` với thông điệp "hết hạn khi server không chạy" (hoặc không báo gì nếu
-   D1 chọn lưu kết quả vào DB và kết quả đã được lưu trước đó).
-2. `promoteOrRollback` khi QUEUED bằng baseline (`VideoConfigJobManager.cpp:246`): báo
-   `success=true` cho `logId` của QUEUED trước khi `finishJob`.
-3. Theo D3: khi camera bị **xoá** (không chỉ dừng), xoá các dòng `video_config_rule_job` của
-   camera. Cần xác định sự kiện xoá camera (khác `kBroadcastCameraStopped`) — tra
-   `CameraManager` trước khi làm.
-4. Ghi chú trong `docs/` về trường hợp `_keepConfigProfileAndStream=1` + server restart lúc
-   camera offline: cấu hình rule có thể bị nhận làm baseline. Chỉ sửa nếu người dùng yêu cầu
-   (cần lưu baseline kèm job — đổi schema = migration mới `20_…`, không sửa `18_…`).
+**Đã sửa** (`manager/Camera/VideoConfigJobManager.cpp` trừ khi ghi khác):
+
+1. Khôi phục sau restart: đọc bảng kết quả (P5) cùng lúc với các dòng job.
+   - Job hết hạn lúc server không chạy: chưa có kết quả thì báo `RULE_EXPIRED` ("Rule expired while
+     the media server was not running"), đã có thì im lặng. Trước đây `finishJob` báo
+     `CONTROLLER_OFFLINE`/`CONFIG_NOT_CONFIRMED` vì controller mới không có trạng thái rule.
+     `JobSlot::activeReported` chặn `finishJob` báo lần hai; `startJob` xoá cờ.
+   - Cấu hình job bằng baseline: báo `success` (nếu chưa báo) thay vì để `finishJob` báo lỗi.
+   - Job còn hạn mà kết quả đã báo trước restart: `startJob` rồi
+     `CameraController::markRuleResultReported(token, success)`, để lần xác nhận không báo trùng và
+     request gia hạn được trả lời theo kết quả cũ.
+   - Chỉ có dòng QUEUED (dừng giữa lúc promote): job được áp tiếp, rồi xoá dòng QUEUED còn sót
+     (trước đây nó bị áp lại lần nữa sau khi hết hạn).
+   - Không đọc được baseline: bỏ đánh dấu `_recovered` để lần kết nối sau thử lại (trước đây job bị
+     bỏ quên cho tới khi camera dừng).
+2. `promoteOrRollback` khi QUEUED bằng baseline: báo `success` cho `logId` của QUEUED trước
+   `finishJob`.
+3. Theo D3: `CameraManager::delCamera` gọi `VideoConfigJobManager::removeDevice(deviceId)` ở nhánh
+   xoá khỏi `_gcImp`, kể cả khi camera chuyển sang node khác. Camera chỉ bị xoá khi đã disable, nên
+   slot trong bộ nhớ đã được `releaseDevice` dọn từ trước. Vì thế `removeDevice` làm theo DB: mọi
+   dòng kết quả `PENDING` của camera nhận `DEVICE_REMOVED` (bắt được cả `logId` đã gộp khi gia hạn
+   và request đang xếp hàng), rồi xoá job theo `deviceId`.
+4. Lỗ hổng thứ tự tìm thấy khi viết test: kết quả phát **từ bên trong** một task DB (như
+   `removeDevice`) bị listener xếp ghi sau các lần đọc đã vào hàng. Giờ listener ghi tại chỗ khi đang
+   chạy trên hàng đợi DB (cờ `thread_local`).
+5. Ghi chú hạn chế `keepConfigProfileAndStream` + restart vào
+   [api-video-config-rule.md](./api-video-config-rule.md). Không sửa code: cần lưu baseline kèm job,
+   tức đổi schema.
+
+**Test:**
+
+- `CameraControllerRuleExtendTest.RecoveredRuleReportedBeforeTheRestartIsNotReportedAgain`;
+- `VideoConfigRuleResultImpTest.PendingRowsAndReportedStateOfOneCamera`,
+  `VideoConfigRuleJobImpTest.RemoveByDeviceIdKeepsOtherCameras`;
+- `VideoConfigJobManagerResultTest.RemovedCameraFailsItsPendingRequestsAndDropsItsJobs`.
+
+Mutation check đã chạy: `markRuleResultReported` không làm gì → test controller đỏ; listener luôn
+xếp hàng thay vì ghi tại chỗ → test xoá camera đỏ.
+
+Chưa có unit test cho các nhánh khôi phục và `promoteOrRollback` (cần `GenericRtspCameraImp`
+thật) — kiểm khi chạy thật: restart lúc rule còn hạn / đã hết hạn, xoá camera đang có rule.
 
 ## P7 — `onvifSetVideoConfigs` khi rule đang chạy (#8) — theo D4
 

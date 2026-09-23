@@ -594,6 +594,13 @@ bool GenericRtspCameraImp::attachRuleLogId(const std::string &profileToken, cons
     return _controller && _controller->attachRuleLogId(profileToken, logId) == CameraController::RuleAttachResult::ATTACHED;
 }
 
+void GenericRtspCameraImp::markRuleResultReported(const std::string &profileToken, bool success) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call markRuleResultReported in it's owner poller");
+    if (_controller) {
+        _controller->markRuleResultReported(profileToken, success);
+    }
+}
+
 bool GenericRtspCameraImp::reportRuleFailureIfPending(const std::string &profileToken, const std::string &errCode, const std::string &errMsg) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reportRuleFailureIfPending in it's owner poller");
     return _controller ? _controller->reportRuleFailureIfPending(profileToken, errCode, errMsg) : false;

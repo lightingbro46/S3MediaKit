@@ -67,6 +67,17 @@ Hành vi khi camera đang có rule:
 - gửi **cấu hình khác** thì request mới xếp hàng chờ job đang chạy hết hạn. Hàng chờ chỉ có một chỗ,
   request đang chờ trước đó nhận `RULE_SUPERSEDED`.
 
+Camera dừng, restart hoặc bị xoá:
+
+- **MediaServer restart** trong lúc rule chạy: job được khôi phục khi controller ONVIF của camera
+  kết nối lại. Rule còn hạn thì được áp tiếp, và kết quả đã báo trước khi restart không bị báo lại.
+  Rule hết hạn trong lúc server không chạy thì camera được trả về baseline; nếu chưa có kết quả thì
+  báo `RULE_EXPIRED`;
+- **camera bị tắt (disable) hoặc dừng**: job giữ nguyên trong DB và được khôi phục khi camera chạy
+  lại. Kết quả vẫn ở `PENDING` trong lúc đó;
+- **camera bị xoá khỏi node** (kể cả khi chuyển sang node khác): job bị xoá, không rollback; mọi
+  request của camera còn `PENDING` nhận `DEVICE_REMOVED`.
+
 ## Tra cứu kết quả
 
 ```http
@@ -143,8 +154,18 @@ không phải ngay khi lệnh set trả về.
 | `CONFIG_NOT_APPLIED` | Camera nhận lệnh nhưng vẫn giữ cấu hình cũ sau các lần thử lại |
 | `CONFIG_NOT_CONFIRMED` | Hết hạn khi controller vẫn kết nối nhưng chưa xác nhận được cấu hình |
 | `CONTROLLER_OFFLINE` | Hết hạn khi controller ONVIF không kết nối được |
-| `RULE_EXPIRED` | Hết hạn trước khi kịp áp (đang đọc cấu hình gốc hoặc đang xếp hàng) |
+| `RULE_EXPIRED` | Hết hạn trước khi kịp áp (đang đọc cấu hình gốc, đang xếp hàng, hoặc lúc MediaServer không chạy) |
 | `RULE_SUPERSEDED` | Request đang xếp hàng bị một request cấu hình khác thay thế |
+| `DEVICE_REMOVED` | Camera bị xoá khỏi node trước khi có kết quả |
+
+## Hạn chế đã biết
+
+Camera bật `keepConfigProfileAndStream`, và MediaServer restart trong lúc rule chạy: lần đồng bộ
+profile đầu tiên sau khi kết nối lại có thể chạy trước khi job được khôi phục. Khi đó cấu hình rule
+đang có trên camera bị nhận làm baseline (chế độ này coi camera là nguồn đúng), nên hết hạn thì
+camera vẫn giữ cấu hình rule. Tình huống tương tự xảy ra nếu camera offline lúc server restart rồi
+mới kết nối lại. Muốn sửa triệt để thì phải lưu baseline kèm job, tức đổi schema bằng migration
+mới. Chưa làm.
 
 ## Cấu hình
 

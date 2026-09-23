@@ -998,6 +998,27 @@ TEST_F(CameraControllerRuleExtendTest, ExtensionOfARuleTheCameraRefusedIsApplied
     EXPECT_EQ(1u, recorder.results().size()); // the failure is not repeated for log-2
 }
 
+// A job recovered after a restart whose result was already reported: the camera's confirmation
+// does not report it again, and an extension is answered from the stored outcome.
+TEST_F(CameraControllerRuleExtendTest, RecoveredRuleReportedBeforeTheRestartIsNotReportedAgain) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(true)}, "");
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    auto controller = _controller;
+    onPoller([&]() { controller->markRuleResultReported(kRuleToken, true); });
+
+    syncOnce();
+    EXPECT_TRUE(recorder.results().empty());
+    EXPECT_FALSE(failPending("CONFIG_NOT_CONFIRMED"));
+    EXPECT_TRUE(recorder.results().empty());
+
+    EXPECT_EQ(CameraController::RuleAttachResult::ATTACHED, attach("log-2"));
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_EQ("log-2", results[0].log_id);
+    EXPECT_TRUE(results[0].success);
+}
+
 TEST_F(CameraControllerRuleExtendTest, ExpiryFailureReachesEveryRequestOnce) {
     RuleResultRecorder recorder;
     _fake->setProfiles({ruleProfile(false)}, "");

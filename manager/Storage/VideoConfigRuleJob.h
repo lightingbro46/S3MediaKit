@@ -87,6 +87,13 @@ public:
         }
         return ret;
     }
+
+    bool removeByDeviceId(const std::string &deviceId) {
+        return _executor->execDML(
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<VideoConfigRuleJob>::tableName())
+                .where("deviceId = ?", { deviceId }));
+    }
 };
 
 class VideoConfigRuleJobImp : public VideoConfigRuleJobRepository {

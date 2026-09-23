@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "CameraManager.h"
+#include "VideoConfigJobManager.h"
 #include "Util/util.h"
 #include "Thread/WorkThreadPool.h"
 #include "Local/StatisticRecorder.h"
@@ -208,6 +209,8 @@ bool CameraManager::delCamera(const string &key) {
                     DebugL << "Device " << key << " is assigned to another media server. Keep its ESC resource";
                 }
                 stats_imp->remove(keep_in_esc);
+                // Rule jobs are local to this node, also when the camera moved to another one.
+                VideoConfigJobManager::Instance().removeDevice(device_id);
             }
             _gcImp.erase(key);
             return true;

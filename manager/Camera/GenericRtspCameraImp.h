@@ -73,6 +73,9 @@ public:
     // has to be applied again (no controller, no live rule, or the camera never took it).
     bool attachRuleLogId(const std::string &profileToken, const std::string &logId);
 
+    // See CameraController::markRuleResultReported.
+    void markRuleResultReported(const std::string &profileToken, bool success);
+
     // Reports a failure to every request of the rule if nothing was reported yet; false when the
     // controller had nothing to report (already reported, or no controller).
     bool reportRuleFailureIfPending(const std::string &profileToken, const std::string &errCode, const std::string &errMsg);

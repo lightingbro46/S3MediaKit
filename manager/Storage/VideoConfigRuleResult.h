@@ -89,6 +89,32 @@ public:
         return ret;
     }
 
+    std::vector<VideoConfigRuleResult> findPendingByDeviceId(const std::string &deviceId) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<VideoConfigRuleResult>::getColumns())
+                .from(EntityTraits<VideoConfigRuleResult>::tableName())
+                .where("deviceId = ? AND status = ?", { deviceId, VideoConfigRuleStatus::kPending })
+                .orderBy("logId ASC"));
+        std::vector<VideoConfigRuleResult> ret;
+        for (const auto &row : rows) {
+            ret.push_back(EntityTraits<VideoConfigRuleResult>::fromRow(row));
+        }
+        return ret;
+    }
+
+    // Row of (logId, deviceId); false when there is none.
+    bool findOne(const std::string &logId, const std::string &deviceId, VideoConfigRuleResult &out) {
+        VideoConfigRuleResult key;
+        key.id = VideoConfigRuleResult::makeId(logId, deviceId);
+        auto rows = findById(key);
+        if (rows.empty()) {
+            return false;
+        }
+        out = rows[0];
+        return true;
+    }
+
     bool removeUpdatedBefore(int64_t ts) {
         return _executor->execDML(
             toolkit::QueryBuilder()
@@ -124,6 +150,16 @@ protected:
 class VideoConfigRuleResultImp : public VideoConfigRuleResultRepository {
 public:
     VideoConfigRuleResultImp() : VideoConfigRuleResultRepository() {}
+
+    // Whether (logId, deviceId) already has its final result, and which.
+    bool isReported(const std::string &logId, const std::string &deviceId, bool &success) {
+        VideoConfigRuleResult row;
+        if (!findOne(logId, deviceId, row) || row.status == VideoConfigRuleStatus::kPending) {
+            return false;
+        }
+        success = row.status == VideoConfigRuleStatus::kSuccess;
+        return true;
+    }
 
     // The camera was accepted by the API: PENDING until its result arrives. A request that reuses a
     // logId for the same camera starts over.

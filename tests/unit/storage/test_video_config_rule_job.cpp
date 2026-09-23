@@ -192,6 +192,42 @@ TEST(VideoConfigRuleResultImpTest, PruneRemovesRowsNotUpdatedSinceTheCutoff) {
     EXPECT_EQ("cam-new", rows[0].deviceId);
 }
 
+TEST(VideoConfigRuleResultImpTest, PendingRowsAndReportedStateOfOneCamera) {
+    VideoConfigRuleResultImp repo;
+    ASSERT_TRUE(repo.markPending("log-p2", "cam-state", 1000));
+    ASSERT_TRUE(repo.markPending("log-p1", "cam-state", 1000));
+    ASSERT_TRUE(repo.markPending("log-done", "cam-state", 1000));
+    ASSERT_TRUE(repo.markPending("log-p1", "cam-other", 1000));
+    ASSERT_TRUE(repo.recordResult("log-done", "cam-state", false, "RULE_EXPIRED", "expired", 2000));
+
+    auto pending = repo.findPendingByDeviceId("cam-state");
+    ASSERT_EQ(2u, pending.size());
+    EXPECT_EQ("log-p1", pending[0].logId);
+    EXPECT_EQ("log-p2", pending[1].logId);
+
+    bool success = true;
+    EXPECT_FALSE(repo.isReported("log-p1", "cam-state", success));
+    EXPECT_FALSE(repo.isReported("log-unknown", "cam-state", success));
+    EXPECT_TRUE(repo.isReported("log-done", "cam-state", success));
+    EXPECT_FALSE(success);
+}
+
+TEST(VideoConfigRuleJobImpTest, RemoveByDeviceIdKeepsOtherCameras) {
+    VideoConfigRuleJobImp repo;
+    auto active = makeJob("cam-gone", 1000, 640);
+    auto queued = active;
+    queued.status = (int)RuleJobStatus::QUEUED;
+    queued.id = VideoConfigRuleJob::makeId(queued.deviceId, queued.profileToken, RuleJobStatus::QUEUED);
+    auto other = makeJob("cam-stays", 1000, 640);
+    ASSERT_TRUE(repo.addOrUpdate(active));
+    ASSERT_TRUE(repo.addOrUpdate(queued));
+    ASSERT_TRUE(repo.addOrUpdate(other));
+
+    repo.removeByDeviceId("cam-gone");
+    EXPECT_TRUE(repo.findDeviceJobs("cam-gone", "profile_1").empty());
+    EXPECT_EQ(1u, repo.findDeviceJobs("cam-stays", "profile_1").size());
+}
+
 // Contract of the receiver of the recording-encryption fork (/api/media-server/action-callback).
 TEST(VideoConfigRuleResultTest, HookBodyMatchesTheForkContract) {
     VideoConfigRuleResult ok;
@@ -260,4 +296,43 @@ TEST(VideoConfigJobManagerResultTest, ResultsFollowTheAcceptedRowsInOrder) {
     rows = queryResults("log-m");
     ASSERT_EQ(3u, rows.size());
     EXPECT_EQ(VideoConfigRuleStatus::kPending, rows[2].status);
+}
+
+// A camera deleted while its requests are pending: each of them fails with DEVICE_REMOVED, requests
+// already answered keep their result, and the camera's job rows are gone.
+TEST(VideoConfigJobManagerResultTest, RemovedCameraFailsItsPendingRequestsAndDropsItsJobs) {
+    auto &manager = VideoConfigJobManager::Instance();
+    manager.start();
+
+    {
+        VideoConfigRuleJobImp jobs;
+        ASSERT_TRUE(jobs.addOrUpdate(makeJob("cam-del", 1000, 640)));
+    }
+    manager.recordAccepted("log-del-1", { "cam-del", "cam-keep" });
+    manager.recordAccepted("log-del-2", { "cam-del" });
+    manager.recordAccepted("log-del-3", { "cam-del" });
+    const std::string none;
+    NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, mediakit::Broadcast::kBroadcastVideoConfigRuleResult,
+                std::string("log-del-3"), std::string("cam-del"), true, none, none);
+
+    manager.removeDevice("cam-del");
+
+    // Each query also waits for the writes queued before it.
+    auto first = queryResults("log-del-1");
+    auto second = queryResults("log-del-2");
+    auto third = queryResults("log-del-3");
+    manager.stop();
+
+    ASSERT_EQ(2u, first.size());
+    EXPECT_EQ("cam-del", first[0].deviceId);
+    EXPECT_EQ(VideoConfigRuleStatus::kFailed, first[0].status);
+    EXPECT_EQ("DEVICE_REMOVED", first[0].errCode);
+    EXPECT_EQ(VideoConfigRuleStatus::kPending, first[1].status); // cam-keep untouched
+    ASSERT_EQ(1u, second.size());
+    EXPECT_EQ("DEVICE_REMOVED", second[0].errCode);
+    ASSERT_EQ(1u, third.size());
+    EXPECT_EQ(VideoConfigRuleStatus::kSuccess, third[0].status);
+
+    VideoConfigRuleJobImp jobs;
+    EXPECT_TRUE(jobs.findDeviceJobs("cam-del", "profile_1").empty());
 }

@@ -1064,6 +1064,15 @@ CameraController::RuleAttachResult CameraController::attachRuleLogId(const strin
     return RuleAttachResult::ATTACHED;
 }
 
+void CameraController::markRuleResultReported(const string &profileToken, bool success) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end()) {
+        return;
+    }
+    it->second.reported = true;
+    it->second.success = success;
+}
+
 bool CameraController::reportRuleFailureIfPending(const string &profileToken, const string &err_code, const string &err_msg) {
     auto it = _ruleReportMap.find(profileToken);
     if (it == _ruleReportMap.end() || it->second.reported) {

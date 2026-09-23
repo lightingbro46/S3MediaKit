@@ -67,6 +67,10 @@ public:
     // A request that extends the running rule of `profileToken` with the same config.
     RuleAttachResult attachRuleLogId(const std::string &profileToken, const std::string &logId);
 
+    // The rule's result was already reported before a restart (a recovered job): the camera's
+    // confirmation must not report it again.
+    void markRuleResultReported(const std::string &profileToken, bool success);
+
     // Reports a failure to every request of the rule unless its result was already reported;
     // false when there was nothing left to report.
     bool reportRuleFailureIfPending(const std::string &profileToken, const std::string &err_code, const std::string &err_msg);
