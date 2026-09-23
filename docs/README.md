@@ -15,6 +15,7 @@
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
 - [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 - [Backlog: API `/media/*` còn blocking trên EventPoller](./api-blocking-backlog.md)
+- [Plan sửa luồng video config rule](./video-config-rule-fix-plan.md)
 
 ## Mục lục
 
