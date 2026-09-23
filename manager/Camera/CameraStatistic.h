@@ -132,6 +132,9 @@ public:
 
     bool loadVideoEncoderConfig(const std::string token, VideoEncoderConfig &config);
 
+    // ONVIF profile token whose stream URL matches the primary stream, "" when it cannot be resolved.
+    std::string getPrimaryProfileToken() const;
+
 public:
     CameraStatistic getParams();
 

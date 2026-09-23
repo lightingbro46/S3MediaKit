@@ -158,6 +158,11 @@ void GenericRtspCameraImp::stop() {
         _scheduler->stopTimer();
     }
 
+    auto strong_statistic = _statistic.lock();
+    if (strong_statistic) {
+        NOTICE_EMIT(BroadcastCameraStoppedArgs, Broadcast::kBroadcastCameraStopped, strong_statistic->getParams().tuple.device_id);
+    }
+
     onAllStreamReady();
 }
 
@@ -343,6 +348,8 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         caps = &data.get<DeviceCapabilities>();
     }
     strong_statistic->addDeviceCapabilities(connect, status, caps);
+
+    NOTICE_EMIT(BroadcastCameraControllerStateArgs, Broadcast::kBroadcastCameraControllerState, *_src, connect);
 
     MediaGapFillManager::Instance().onDeviceStateChanged(old_params.tuple.device_id, connect);
 
@@ -540,6 +547,71 @@ void GenericRtspCameraImp::saveTransportsSupport() {
     TransportStats stats;
     appendTransportStats(stats, ProtocolOption());
     strong_statistic->setTransportStats(stats);
+}
+
+void GenericRtspCameraImp::applyRuleVideoConfig(const std::string &logId, const std::string &profileToken, const VideoEncoderConfig &config, const std::function<void(const SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call applyRuleVideoConfig in it's owner poller");
+    if (!_controller) {
+        WarnL << "Camera " << _src->getUrl() << " controller is not ready. Ignore apply rule video config request";
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->applyRuleVideoConfigAsync(logId, profileToken, config, cb);
+}
+
+void GenericRtspCameraImp::rollbackRuleVideoConfig(const std::string &profileToken, const VideoEncoderConfig &baseline, const std::function<void(const SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call rollbackRuleVideoConfig in it's owner poller");
+    if (!_controller) {
+        cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    _controller->rollbackRuleVideoConfigAsync(profileToken, baseline, cb);
+}
+
+bool GenericRtspCameraImp::getBaselineVideoConfig(const std::string &profileToken, VideoEncoderConfig &config) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call getBaselineVideoConfig in it's owner poller");
+    return _controller ? _controller->getBaselineVideoConfig(profileToken, config) : false;
+}
+
+void GenericRtspCameraImp::clearRuleVideoConfig(const std::string &profileToken) {
+    if (_controller) {
+        _controller->clearRuleVideoConfig(profileToken);
+    }
+}
+
+bool GenericRtspCameraImp::isRuleResultReported(const std::string &profileToken) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call isRuleResultReported in it's owner poller");
+    return _controller ? _controller->isRuleResultReported(profileToken) : false;
+}
+
+void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileToken, const std::function<void(const SockException &ex, const VideoEncoderConfig &config)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ensureBaselineVideoConfig in it's owner poller");
+
+    VideoEncoderConfig config;
+    if (_controller && _controller->getBaselineVideoConfig(profileToken, config)) {
+        cb(SockException(Err_success, "", ApiErrCode::CODE_SUCCESS), config);
+        return;
+    }
+
+    std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
+    getMediaProfile(profileToken, [weak_self, profileToken, cb](const SockException &ex, VideoEncoderConfig &camConfig) mutable {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            return;
+        }
+        if (ex) {
+            cb(ex, camConfig);
+            return;
+        }
+        VideoEncoderConfig baseline = camConfig;
+        baseline.state.retry_time = 5;
+        baseline.state.status = configStateToString[VideoConfigSetState::EXTERNAL];
+        if (strong_self->_controller) {
+            strong_self->_controller->addProfileConfig(profileToken, baseline, true);
+        }
+        InfoL << "Seed baseline config from camera for profile token: " << profileToken;
+        cb(SockException(Err_success, "", ApiErrCode::CODE_SUCCESS), baseline);
+    });
 }
 
 } // namespace managerkit

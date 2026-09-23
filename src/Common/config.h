@@ -251,6 +251,18 @@ extern const std::string kBroadcastSyncBookmarkDelete;
 extern const std::string kBroadcastStreamSettingChange;
 #define BroadcastStreamSettingChangeArgs const DeviceTuple &args, const std::string &profile_token, const VideoEncoderConfig &video_encoder_config
 
+// Camera controller connected/disconnected; `sender` is the camera's DeviceSource.
+extern const std::string kBroadcastCameraControllerState;
+#define BroadcastCameraControllerStateArgs DeviceSource &sender, bool &connect
+
+// A camera was stopped and its per-device state can be released.
+extern const std::string kBroadcastCameraStopped;
+#define BroadcastCameraStoppedArgs const std::string &device_id
+
+// Outcome of one video config rule job, broadcast once per job.
+extern const std::string kBroadcastVideoConfigRuleResult;
+#define BroadcastVideoConfigRuleResultArgs const std::string &log_id, const std::string &device_id, bool success, const std::string &err_code, const std::string &err_msg
+
 // Broadcast for accessing cluster data. Control cluster authentication through this event.
 extern const std::string kBroadcastClusterAcrossAccess;
 #define BroadcastClusterAcrossAccessArgs const std::string &authorId, const std::string &secretKey, const Broadcast::AuthInvoker &invoker

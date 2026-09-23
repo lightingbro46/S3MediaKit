@@ -52,6 +52,20 @@ public:
 
     void getMediaProfile(const std::string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb);
 
+    // Video config rule jobs, driven by VideoConfigJobManager. All of these run on the owner poller.
+    void applyRuleVideoConfig(const std::string &logId, const std::string &profileToken, const VideoEncoderConfig &config, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    void rollbackRuleVideoConfig(const std::string &profileToken, const VideoEncoderConfig &baseline, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    bool getBaselineVideoConfig(const std::string &profileToken, VideoEncoderConfig &config);
+
+    // Returns the baseline of `profileToken`, seeding it from the camera when it is not known yet.
+    void ensureBaselineVideoConfig(const std::string &profileToken, const std::function<void(const toolkit::SockException &ex, const VideoEncoderConfig &config)> &cb);
+
+    void clearRuleVideoConfig(const std::string &profileToken);
+
+    bool isRuleResultReported(const std::string &profileToken);
+
     void getSDCardInfo(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
 
 public:

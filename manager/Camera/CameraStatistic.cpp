@@ -1144,6 +1144,27 @@ bool CameraStatisticImp::loadVideoEncoderConfig(const std::string token, VideoEn
     return true;
 }
 
+std::string CameraStatisticImp::getPrimaryProfileToken() const {
+    auto stream_it = stream_map.find(PrimaryStream);
+    if (stream_it == stream_map.end()) {
+        return "";
+    }
+
+    const std::string &full_url = stream_it->second.full_url;
+    if (full_url.empty()) {
+        return "";
+    }
+
+    const auto &media_profiles = device_stats.device_caps.onvifProfile.mediaProfiles;
+    for (const auto &profile : media_profiles) {
+        if (profile.url == full_url) {
+            return profile.token;
+        }
+    }
+
+    return "";
+}
+
 template<>
 struct ResourceAdapter<CameraStatistic> {
     static VmsResource toVmsResource(const CameraStatistic &stats) {

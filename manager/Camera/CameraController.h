@@ -47,6 +47,19 @@ public:
 
     void getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
 
+    // Video config rule jobs: a time-boxed encoder override on one profile, rolled back to the
+    // baseline (the _profileConfigMap entry) when the job expires. While a rule owns a token, the
+    // profile sync retries the rule config instead of the baseline.
+    void applyRuleVideoConfigAsync(const std::string &logId, const std::string &profileToken, const VideoEncoderConfig &config, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    void rollbackRuleVideoConfigAsync(const std::string &profileToken, const VideoEncoderConfig &baseline, const std::function<void(const toolkit::SockException &ex)> &cb);
+
+    bool getBaselineVideoConfig(const std::string &profileToken, VideoEncoderConfig &config) const;
+
+    void clearRuleVideoConfig(const std::string &profileToken);
+
+    bool isRuleResultReported(const std::string &profileToken) const;
+
 protected:
     // Creates the device control for `address`; unit tests override it to return a fake device.
     virtual OnvifControl::Ptr createOnvifControl(const std::string &address, const std::string &username,
@@ -67,12 +80,21 @@ private:
         VideoEncoderConfig based_on;   // map entry the decision was made from
         VideoEncoderConfig on_success; // stored when the set command succeeds
         VideoEncoderConfig on_failure; // stored when it fails
+        bool is_rule = false;          // decision came from _ruleConfigMap, not _profileConfigMap
     };
     // Device queue: reads the profiles and hands them to applyMediaProfileSync on _poller.
     void syncMediaProfile(const OnvifControl::Ptr &onvif_ctr);
     void applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles);
     // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
-    void storeProfileSetResult(const ProfileSetRequest &request, bool ok);
+    // `err_msg` carries the SOAP error of a failed set, reported for rule requests.
+    void storeProfileSetResult(const ProfileSetRequest &request, bool ok, const std::string &err_msg = "");
+
+    // _poller: puts the baseline of `profileToken` back into retry, used when a rollback could not
+    // reach the camera so the profile sync pushes the baseline again later.
+    void markBaselineNeedResync(const std::string &profileToken);
+
+    // _poller: broadcasts the outcome of a rule job once; later calls for the same token are ignored.
+    void reportRuleConfigResult(const std::string &profileToken, bool success, const std::string &err_code, const std::string &err_msg);
 
     // _poller: true while a profile config is still waiting to be pushed to the camera (NEW or
     // PROCESSING). Such a camera needs its profiles re-read on every maintenance cycle to drive
@@ -129,6 +151,9 @@ private:
     bool _keepConfigProfileAndStream = false;
     VideoEncoderConfig::VideoEncoderConfigMap _profileConfigMap; // current profile config map, used for checking whether media profile config is changed when camera report controller ready
     SdCardSyncConfig _sd_sync_config;
+    // Tokens currently owned by a video config rule job, and whether each job's result was reported.
+    VideoEncoderConfig::VideoEncoderConfigMap _ruleConfigMap;
+    RuleReportContext::RuleReportContextMap _ruleReportMap;
 };
 
 } // namespace managerkit
