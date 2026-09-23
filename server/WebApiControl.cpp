@@ -605,9 +605,10 @@ void registerControlApis() {
     // Applies a time-boxed video encoder override to a batch of cameras; each camera is rolled back
     // to its baseline when the job expires. Accepted per camera, the result arrives via
     // kBroadcastVideoConfigRuleResult.
+    // Called service-to-service without a JWT: authenticated by manager.apiSecret only, with no
+    // user or per-device permission check.
     api_regist("/media/mserver/device/onvifApplyVideoConfigRule", [](API_ARGS_JSON_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_API_KEY();
         CHECK_ARGS_("logId");
 
         string logId = allArgs["logId"];
