@@ -43,6 +43,11 @@ public:
     static void reportFailure(const std::string &logId, const std::string &deviceId,
                                const std::string &errCode, const std::string &errMsg);
 
+    // When a config deferred by a running rule is expected to reach the camera: the deadline of the
+    // queued job if any, else of the active one (an estimate: a request may still extend it).
+    // False when no rule holds the token.
+    bool getRuleDeadline(const std::string &deviceId, const std::string &profileToken, int64_t &deadlineAt) const;
+
     void handleRuleRequest(const GenericRtspCameraImp::Ptr &device,
                             const std::string &logId,
                             const std::string &deviceId,

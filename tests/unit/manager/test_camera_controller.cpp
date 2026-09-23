@@ -95,10 +95,17 @@ public:
         std::lock_guard<std::mutex> lck(_mtx);
         return _profiles;
     }
-    bool setVideoEncoderConfigByToken(const std::string &token, const VideoEncoderConfig &) override {
+    bool setVideoEncoderConfigByToken(const std::string &token, const VideoEncoderConfig &config) override {
         record("SetVideoEncoderConfig", token);
         std::lock_guard<std::mutex> lck(_mtx);
+        _set_configs.push_back(config);
         return token != _failing_token;
+    }
+
+    // Configs of the SetVideoEncoderConfig calls, in order.
+    std::vector<VideoEncoderConfig> setConfigs() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _set_configs;
     }
 
     void setProfiles(const OnvifMediaProfileMap &profiles, const std::string &failing_token) {
@@ -134,6 +141,7 @@ private:
     EventPoller::Ptr _camera_poller;
     std::mutex _mtx;
     std::vector<Call> _calls;
+    std::vector<VideoEncoderConfig> _set_configs;
     OnvifMediaProfileMap _profiles;
     std::string _failing_token;
     std::atomic<int> _concurrent{0};
@@ -1034,4 +1042,169 @@ TEST_F(CameraControllerRuleExtendTest, ExpiryFailureReachesEveryRequestOnce) {
         EXPECT_FALSE(result.success);
         EXPECT_EQ("CONFIG_NOT_CONFIRMED", result.err_code);
     }
+}
+
+// onvifSetVideoConfigs while a video config rule holds the profile: only the baseline changes, and
+// the rollback at the end of the rule pushes it.
+class CameraControllerDeferredSetTest : public CameraControllerRuleTest {
+protected:
+    struct SetOutcome {
+        bool error = true;
+        int code = -1;
+    };
+
+    static VideoEncoderConfig config(int width, int height, int bitrate, float fps) {
+        VideoEncoderConfig c;
+        c.vcodec = "H264";
+        c.width = width;
+        c.height = height;
+        c.bitrate = bitrate;
+        c.fps = fps;
+        c.quality = 0;
+        return c;
+    }
+    // What the camera ran before the rule (ruleProfile(false)), and what the user asks for meanwhile.
+    static VideoEncoderConfig userOld() { return config(1920, 1080, 4096, 25); }
+    static VideoEncoderConfig userNew() { return config(1600, 900, 2048, 20); }
+
+    static OnvifMediaProfile profileOf(const VideoEncoderConfig &c) {
+        OnvifMediaProfile profile;
+        profile.token = kRuleToken;
+        profile.vcodec = c.vcodec;
+        profile.width = c.width;
+        profile.height = c.height;
+        profile.bitrate = c.bitrate;
+        profile.fps = c.fps;
+        return profile;
+    }
+
+    void seedBaseline(const VideoEncoderConfig &c) {
+        auto controller = _controller;
+        VideoEncoderConfig baseline = c;
+        baseline.state.retry_time = 5;
+        baseline.state.status = configStateToString[VideoConfigSetState::SUCCESS];
+        onPoller([&]() { controller->addProfileConfig(kRuleToken, baseline, false); });
+    }
+
+    VideoEncoderConfig readBaseline() {
+        VideoEncoderConfig out;
+        auto controller = _controller;
+        onPoller([&]() { CameraControllerTestPeer::profileConfig(*controller, kRuleToken, out); });
+        return out;
+    }
+
+    SetOutcome setUser(const VideoEncoderConfig &c) {
+        auto outcome = std::make_shared<SetOutcome>();
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        auto controller = _controller;
+        onPoller([&]() {
+            VideoEncoderConfig requested = c;
+            controller->setMediaProfileAsync(kRuleToken, requested, [outcome, done](const SockException &ex) {
+                outcome->error = (bool)ex;
+                outcome->code = ex.getCustomCode();
+                *done = true;
+            });
+        });
+        EXPECT_TRUE(waitFor([&]() { return done->load(); }));
+        return *outcome;
+    }
+
+    int rollback() {
+        CbProbe probe;
+        auto controller = _controller;
+        auto cb = probe.cb();
+        VideoEncoderConfig baseline = readBaseline();
+        onPoller([&]() { controller->rollbackRuleVideoConfigAsync(kRuleToken, baseline, cb); });
+        EXPECT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+        auto codes = probe.get();
+        return codes.empty() ? -1 : codes.front();
+    }
+
+    // Rule applied and confirmed on the camera, the user's old config as baseline.
+    void runConfirmedRule(RuleResultRecorder &recorder) {
+        seedBaseline(userOld());
+        _fake->setProfiles({ruleProfile(true)}, "");
+        ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+        syncOnce();
+        ASSERT_EQ(1u, recorder.results().size());
+    }
+};
+
+TEST_F(CameraControllerDeferredSetTest, SetDuringRuleOnlyUpdatesTheBaseline) {
+    RuleResultRecorder recorder;
+    runConfirmedRule(recorder);
+    int sets_before = setCallCount(_fake);
+
+    auto outcome = setUser(userNew());
+    EXPECT_FALSE(outcome.error);
+    EXPECT_EQ(ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED, outcome.code);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    EXPECT_EQ(sets_before, setCallCount(_fake)); // nothing sent to the camera
+
+    auto baseline = readBaseline();
+    EXPECT_TRUE(baseline == userNew());
+    EXPECT_EQ(configStateToString[VideoConfigSetState::NEW], baseline.state.status);
+    auto rule = readRule();
+    EXPECT_TRUE(rule == ruleConfig());
+    EXPECT_EQ(configStateToString[VideoConfigSetState::SUCCESS], rule.state.status);
+
+    // The next re-read neither pushes the baseline nor reports the rule again.
+    syncOnce();
+    EXPECT_EQ(sets_before, setCallCount(_fake));
+    EXPECT_EQ(1u, recorder.results().size());
+}
+
+TEST_F(CameraControllerDeferredSetTest, RollbackAfterDeferredSetPushesTheUserConfig) {
+    RuleResultRecorder recorder;
+    runConfirmedRule(recorder);
+    ASSERT_EQ(ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED, setUser(userNew()).code);
+    int sets_before = setCallCount(_fake);
+
+    EXPECT_EQ(ApiErrCode::CODE_SUCCESS, rollback());
+    ASSERT_EQ(sets_before + 1, setCallCount(_fake));
+    EXPECT_TRUE(_fake->setConfigs().back() == userNew());
+
+    // The camera now runs the user's config: the re-read confirms the baseline.
+    _fake->setProfiles({profileOf(userNew())}, "");
+    syncOnce();
+    EXPECT_EQ(configStateToString[VideoConfigSetState::SUCCESS], readBaseline().state.status);
+    EXPECT_EQ(sets_before + 1, setCallCount(_fake));
+}
+
+TEST_F(CameraControllerDeferredSetTest, SetEqualToBaselineDuringRuleIsNotChange) {
+    RuleResultRecorder recorder;
+    runConfirmedRule(recorder);
+
+    auto outcome = setUser(userOld());
+    EXPECT_TRUE(outcome.error);
+    EXPECT_EQ(ApiErrCode::CODE_ONVIF_SET_CONFIG_NOT_CHANGE, outcome.code);
+    EXPECT_EQ(configStateToString[VideoConfigSetState::SUCCESS], readBaseline().state.status);
+}
+
+TEST_F(CameraControllerDeferredSetTest, SetWithoutRuleStillPushesToTheCamera) {
+    seedBaseline(userOld());
+    _fake->setProfiles({profileOf(userOld())}, "");
+
+    auto outcome = setUser(userNew());
+    EXPECT_FALSE(outcome.error);
+    EXPECT_NE(ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED, outcome.code);
+    ASSERT_EQ(1, setCallCount(_fake));
+    EXPECT_TRUE(_fake->setConfigs().back() == userNew());
+}
+
+TEST_F(CameraControllerDeferredSetTest, SeedDoesNotOverwriteAConcurrentUserSet) {
+    auto controller = _controller;
+    VideoEncoderConfig seed = userOld();
+    VideoEncoderConfig used;
+
+    // No baseline yet: the camera read becomes the baseline.
+    onPoller([&]() { used = controller->seedBaselineIfAbsent(kRuleToken, seed); });
+    EXPECT_TRUE(used == userOld());
+    EXPECT_TRUE(readBaseline() == userOld());
+
+    // A user set landed first: the (older) camera read does not replace it.
+    seedBaseline(userNew());
+    onPoller([&]() { used = controller->seedBaselineIfAbsent(kRuleToken, seed); });
+    EXPECT_TRUE(used == userNew());
+    EXPECT_TRUE(readBaseline() == userNew());
 }

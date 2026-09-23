@@ -55,6 +55,9 @@ public:
     void rollbackRuleVideoConfigAsync(const std::string &profileToken, const VideoEncoderConfig &baseline, const std::function<void(const toolkit::SockException &ex)> &cb);
 
     bool getBaselineVideoConfig(const std::string &profileToken, VideoEncoderConfig &config) const;
+    // Stores `seed` (read from the camera) as the baseline unless one appeared meanwhile; returns
+    // the baseline in effect.
+    VideoEncoderConfig seedBaselineIfAbsent(const std::string &profileToken, const VideoEncoderConfig &seed);
 
     void clearRuleVideoConfig(const std::string &profileToken);
 

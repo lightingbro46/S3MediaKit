@@ -95,6 +95,7 @@ namespace managerkit {
     XX(CODE_IMAGING_IRIS_CONTROL_FAILED,    "Imaging iris control failed",      500,         912007) \
     XX(CODE_DEVICE_NO_SUPPORT_RELAY_OUTPUT, "Device does not support relay output control", 500, 912008) \
     XX(CODE_RELAY_OUTPUT_FAILED,            "Relay output control failed",      500,         912009) \
+    XX(CODE_ONVIF_SET_CONFIG_DEFERRED,      "Config saved, applied when the video config rule ends", 200, 912010) \
     /* 913xxx - Sync database errors */                                                              \
     XX(CODE_SNAPSHOT_EMPTY,                 "Snapshot is empty",                404,         913001) \
     /* 914xxx - Storage tier errors */                                                              \

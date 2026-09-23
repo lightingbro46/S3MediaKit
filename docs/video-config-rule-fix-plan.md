@@ -290,7 +290,7 @@ xếp hàng thay vì ghi tại chỗ → test xoá camera đỏ.
 Chưa có unit test cho các nhánh khôi phục và `promoteOrRollback` (cần `GenericRtspCameraImp`
 thật) — kiểm khi chạy thật: restart lúc rule còn hạn / đã hết hạn, xoá camera đang có rule.
 
-## P7 — `onvifSetVideoConfigs` khi rule đang chạy (#8) — theo D4
+## P7 — `onvifSetVideoConfigs` khi rule đang chạy (#8) — XONG, theo D4
 
 **Vấn đề:** `CameraController::setMediaProfileAsync` không biết `_ruleConfigMap` đang giữ token.
 Khi rule đang chạy, người dùng set cấu hình qua `onvifSetVideoConfigs` thì:
@@ -353,6 +353,19 @@ người dùng.
 
 Mutation check: bỏ kiểm tra `_ruleConfigMap` ở bước 1 → test đầu đỏ; seed ghi vô điều kiện → test
 cuối đỏ.
+
+**Kết quả thực hiện (2026-09-23):** làm đúng các bước 1–5 ở trên.
+
+- Mã mới `CODE_ONVIF_SET_CONFIG_DEFERRED` = 912010 (HTTP 200).
+- Handler luôn trả `data.deferred` (`false` khi không hoãn), còn `data.deferredUntil` chỉ có khi hoãn.
+- Tài liệu cho phía gọi nằm trong [api-video-config-rule.md](./api-video-config-rule.md).
+- Test: `CameraControllerDeferredSetTest` gồm 5 test theo danh sách trên. `FakeOnvifControl` giờ
+  ghi lại cấu hình của từng lệnh set.
+- Mutation check đã chạy: bỏ kiểm tra `_ruleConfigMap` → `SetDuringRuleOnlyUpdatesTheBaseline` và
+  `RollbackAfterDeferredSetPushesTheUserConfig` đỏ; seed ghi vô điều kiện →
+  `SeedDoesNotOverwriteAConcurrentUserSet` đỏ.
+- Hệ quả đã chấp nhận: baseline ở `NEW` trong suốt thời gian rule chạy, nên `hasPendingProfileConfig`
+  giữ camera đọc lại profile mỗi chu kỳ (~60 s) cho tới khi rollback được xác nhận.
 
 ## Kiểm tra cuối
 

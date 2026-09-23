@@ -629,7 +629,8 @@ void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileT
         baseline.state.retry_time = 5;
         baseline.state.status = configStateToString[VideoConfigSetState::EXTERNAL];
         if (strong_self->_controller) {
-            strong_self->_controller->addProfileConfig(profileToken, baseline, true);
+            // A user set may have landed while the read waited on the device queue: it wins.
+            baseline = strong_self->_controller->seedBaselineIfAbsent(profileToken, baseline);
         }
         InfoL << "Seed baseline config from camera for profile token: " << profileToken;
         cb(SockException(Err_success, "", ApiErrCode::CODE_SUCCESS), baseline);

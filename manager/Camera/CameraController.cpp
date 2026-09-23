@@ -790,6 +790,14 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
             new_f_config.state.status = configStateToString[VideoConfigSetState::NEW];
             addProfileConfig(profileToken, new_f_config);
         }
+        if (_ruleConfigMap.count(profileToken)) {
+            // A video config rule owns the token: pushing the user config now would fight the rule
+            // (each sync pushes the rule back). Only the baseline changes; the rollback at the end of
+            // the rule pushes it, and stream_settings keeps it across a restart meanwhile.
+            InfoL << "Profile token: " << profileToken << " is held by a video config rule, config deferred until it ends";
+            addProfileConfig(profileToken, new_f_config);
+            return cb(SockException(Err_success, "Config saved, applied when the video config rule ends", ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED));
+        }
         auto onvif_ctr = _onvif_ctr;
         auto poller = _poller;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
@@ -1002,6 +1010,16 @@ void CameraController::storeProfileSetResult(const ProfileSetRequest &request, b
         }
     }
     addProfileConfig(request.token, ok ? request.on_success : request.on_failure);
+}
+
+VideoEncoderConfig CameraController::seedBaselineIfAbsent(const string &profileToken, const VideoEncoderConfig &seed) {
+    auto it = _profileConfigMap.find(profileToken);
+    if (it != _profileConfigMap.end()) {
+        // Set by the user while the camera was being read: that is the baseline now.
+        return it->second;
+    }
+    addProfileConfig(profileToken, seed, true);
+    return seed;
 }
 
 bool CameraController::getBaselineVideoConfig(const string &profileToken, VideoEncoderConfig &config) const {

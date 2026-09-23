@@ -78,6 +78,18 @@ Camera dừng, restart hoặc bị xoá:
 - **camera bị xoá khỏi node** (kể cả khi chuyển sang node khác): job bị xoá, không rollback; mọi
   request của camera còn `PENDING` nhận `DEVICE_REMOVED`.
 
+Người dùng đổi cấu hình qua `onvifSetVideoConfigs` trong lúc rule đang giữ profile đó:
+
+- cấu hình **không** được gửi tới camera ngay (nếu gửi thì mỗi chu kỳ đồng bộ sẽ đẩy rule đè lại, làm
+  encoder khởi động lại liên tục). Cấu hình chỉ được lưu làm baseline, nên sống sót qua restart;
+- hết hạn rule thì bước rollback đẩy cấu hình mới này lên camera. Nếu có request đang xếp hàng
+  thì nó được áp trước, rồi mới tới rollback;
+- API vẫn trả thành công (`code=0`, `data.flag=true`, `data.config` như cũ), kèm
+  `data.deferred=true` và `data.deferredUntil`. `deferredUntil` là thời điểm dự kiến tính bằng ms:
+  hạn của request đang xếp hàng nếu có, không thì hạn của rule đang chạy. Đây chỉ là ước lượng vì
+  rule còn có thể được gia hạn. Khi không bị hoãn thì `data.deferred=false`;
+- gửi đúng cấu hình đang là baseline thì vẫn trả `912001` (không đổi) như trước.
+
 ## Tra cứu kết quả
 
 ```http

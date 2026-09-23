@@ -461,6 +461,14 @@ void registerControlApis() {
                                         val["data"]["config"]["bitrate"] = vConfigSet.bitrate;
                                         val["data"]["config"]["resolution"]["width"] = vConfigSet.width;
                                         val["data"]["config"]["resolution"]["height"] = vConfigSet.height;
+                                        // A video config rule holds the profile: the config is saved and
+                                        // reaches the camera when the rule ends.
+                                        bool deferred = ex.getCustomCode() == ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED;
+                                        val["data"]["deferred"] = deferred;
+                                        int64_t deferredUntil = 0;
+                                        if (deferred && VideoConfigJobManager::Instance().getRuleDeadline(deviceId, token, deferredUntil)) {
+                                            val["data"]["deferredUntil"] = (Json::Int64)deferredUntil;
+                                        }
                                         invoker(200, headerOut, val.toStyledString());
                                     }
                                 });

@@ -45,6 +45,15 @@ VideoConfigJobManager::JobSlotPtr VideoConfigJobManager::findSlot(const string &
     return it == _slots.end() ? nullptr : it->second;
 }
 
+bool VideoConfigJobManager::getRuleDeadline(const string &deviceId, const string &profileToken, int64_t &deadlineAt) const {
+    auto slot = findSlot(makeKey(deviceId, profileToken));
+    if (!slot) {
+        return false;
+    }
+    deadlineAt = slot->hasQueued ? slot->queued.deadlineAt : slot->active.deadlineAt;
+    return true;
+}
+
 void VideoConfigJobManager::insertSlot(const string &key, const JobSlotPtr &slot) {
     lock_guard<mutex> lk(_mtx);
     _slots[key] = slot;
