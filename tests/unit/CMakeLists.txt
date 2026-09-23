@@ -75,6 +75,12 @@ add_test(NAME unit.storage_all COMMAND unit_storage)
 add_s3_unit_test(unit_extract_job storage/test_extract_job.cpp)
 target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
+
+# video_config_rule_job writes against a temporary mserver DB built from the real migrations.
+add_s3_unit_test(unit_video_config_rule_job storage/test_video_config_rule_job.cpp)
+target_link_libraries(unit_video_config_rule_job PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
+target_compile_definitions(unit_video_config_rule_job PRIVATE
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
 set_tests_properties(unit.storage_all PROPERTIES LABELS unit TIMEOUT 15)
 
 if(ENABLE_SYNC_CHANGES)

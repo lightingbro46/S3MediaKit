@@ -93,7 +93,6 @@ private:
     static void persistPromote(const VideoConfigRuleJob &newActive, int64_t ts);
     static void persistClear(const std::string &deviceId, const std::string &profileToken, int64_t ts);
     static void persistRemoveQueued(const std::string &deviceId, const std::string &profileToken, int64_t ts);
-    static void removeIfNotNewer(VideoConfigRuleJobImp &repo, const std::string &id, int64_t ts);
 
 private:
     mutable std::mutex _mtx;

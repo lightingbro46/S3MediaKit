@@ -1,6 +1,7 @@
 #include "VideoConfigJobManager.h"
 #include "VideoConfigRuleDecision.h"
 #include "Common/BlockingExecutors.h"
+#include "Common/SerialTaskQueue.h"
 #include "server/WebApiErrCode.h"
 #include "Util/util.h"
 
@@ -56,25 +57,14 @@ void VideoConfigJobManager::deferRelease(const EventPoller::Ptr &poller, std::sh
 }
 
 void VideoConfigJobManager::asyncDbTask(std::function<void(VideoConfigRuleJobImp &)> task) {
-    // SQLite work: keep it off the pollers (WorkThreadPool threads run timers and ordered queues).
-    BlockingExecutors::api()->async([task]() {
+    // SQLite work stays off the pollers (WorkThreadPool threads run timers and ordered queues), and
+    // goes through one strand so rows are written in the order the owner pollers decided them: on the
+    // plain api() pool two writes of the same row could run concurrently or swap.
+    static SerialTaskQueue::Ptr queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "video-config-rule-db");
+    queue->post([task]() {
         VideoConfigRuleJobImp repo;
         task(repo);
     });
-}
-
-void VideoConfigJobManager::removeIfNotNewer(VideoConfigRuleJobImp &repo, const string &id, int64_t ts) {
-    auto rows = repo.findByIdStr(id);
-    if (rows.empty()) {
-        return;
-    }
-    if (rows[0].updatedAt > ts) {
-        InfoL << "Skipping deletion of row " << id
-            << " because it was superseded by a newer transition"
-            << " (updatedAt=" << rows[0].updatedAt << " > ts=" << ts << ")";
-        return;
-    }
-    repo.removeByIdStr(id);
 }
 
 void VideoConfigJobManager::persistJob(const VideoConfigRuleJob &job) {
@@ -86,7 +76,7 @@ void VideoConfigJobManager::persistJob(const VideoConfigRuleJob &job) {
 void VideoConfigJobManager::persistPromote(const VideoConfigRuleJob &newActive, int64_t ts) {
     string queuedId = VideoConfigRuleJob::makeId(newActive.deviceId, newActive.profileToken, RuleJobStatus::QUEUED);
     asyncDbTask([newActive, queuedId, ts](VideoConfigRuleJobImp &repo) {
-        removeIfNotNewer(repo, queuedId, ts);
+        repo.removeIfNotNewer(queuedId, ts);
         repo.addOrUpdate(newActive);
     });
 }
@@ -95,15 +85,15 @@ void VideoConfigJobManager::persistClear(const string &deviceId, const string &p
     string activeId = VideoConfigRuleJob::makeId(deviceId, profileToken, RuleJobStatus::ACTIVE);
     string queuedId = VideoConfigRuleJob::makeId(deviceId, profileToken, RuleJobStatus::QUEUED);
     asyncDbTask([activeId, queuedId, ts](VideoConfigRuleJobImp &repo) {
-        removeIfNotNewer(repo, activeId, ts);
-        removeIfNotNewer(repo, queuedId, ts);
+        repo.removeIfNotNewer(activeId, ts);
+        repo.removeIfNotNewer(queuedId, ts);
     });
 }
 
 void VideoConfigJobManager::persistRemoveQueued(const string &deviceId, const string &profileToken, int64_t ts) {
     string queuedId = VideoConfigRuleJob::makeId(deviceId, profileToken, RuleJobStatus::QUEUED);
     asyncDbTask([queuedId, ts](VideoConfigRuleJobImp &repo) {
-        removeIfNotNewer(repo, queuedId, ts);
+        repo.removeIfNotNewer(queuedId, ts);
     });
 }
 
@@ -375,8 +365,8 @@ void VideoConfigJobManager::recoverDeviceJobs(const GenericRtspCameraImp::Ptr &d
     auto poller = device->getOwnerPoller(DeviceSource::NullDeviceSource());
     weak_ptr<GenericRtspCameraImp> weak_device = device;
 
-    BlockingExecutors::api()->async([deviceId, profileToken, key, poller, weak_device]() {
-        VideoConfigRuleJobImp repo;
+    // Same strand as the writes, so the read sees every transition persisted before it.
+    asyncDbTask([deviceId, profileToken, key, poller, weak_device](VideoConfigRuleJobImp &repo) {
         auto rows = repo.findDeviceJobs(deviceId, profileToken);
         if (rows.empty()) {
             return;

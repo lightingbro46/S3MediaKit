@@ -173,22 +173,32 @@ Mutation check đã chạy: gia hạn lấy deadline của request → 1 test đ
 Chưa có unit test cho `extendJob`/`onBaselineReady` (singleton + `GenericRtspCameraImp`) — kiểm
 khi chạy thật: gửi lại cùng cấu hình trước hạn → không rollback ở deadline cũ.
 
-## P4 — Ghi DB tuần tự (#5)
+## P4 — Ghi DB tuần tự (#5) — XONG
 
-**Sửa:**
+**Đã sửa:**
 
-1. `VideoConfigJobManager::asyncDbTask`: ghi DB qua một `SerialTaskQueue`
-   (`manager/Common/SerialTaskQueue.h`) chạy trên `BlockingExecutors::api()` — một hàng đợi
-   chung cho manager là đủ (số lệnh ghi rất ít), giữ đúng thứ tự phát sinh trên poller.
-   Không dùng `WorkThreadPool`.
-2. `VideoConfigRuleJobImp::addOrUpdate`: bọc tìm-rồi-ghi trong `beginWriteTxn()`
-   (BEGIN IMMEDIATE), và bỏ qua ghi nếu dòng hiện có `updatedAt` mới hơn — cùng quy tắc
-   `removeIfNotNewer`. Logic "mới hơn thì bỏ qua" là quyết định nghiệp vụ → nằm ở `*Imp`,
-   SQL ở `*Repository`.
+1. `VideoConfigJobManager::asyncDbTask`: mọi thao tác DB (ghi và cả lần đọc của
+   `recoverDeviceJobs`) đi qua một `SerialTaskQueue` chung (`video-config-rule-db`) trên
+   `BlockingExecutors::api()` — chạy đúng thứ tự phát sinh trên poller, lần đọc khi phục hồi thấy
+   mọi chuyển trạng thái đã persist trước nó. Không dùng `WorkThreadPool`.
+2. `VideoConfigRuleJobImp` (`manager/Storage/VideoConfigRuleJob.h`):
+   - `addOrUpdate` tìm-rồi-ghi trong một `beginWriteTxn()` (BEGIN IMMEDIATE); dòng đang có
+     `updatedAt` lớn hơn thì bỏ qua, trả `false`;
+   - `removeIfNotNewer(id, ts)` chuyển từ manager sang `*Imp`, cũng trong `beginWriteTxn()`.
 
-**Test** (`tests/unit/storage/`, theo mẫu `test_tier_txn_lock.cpp`): hai `addOrUpdate` cùng id
-đồng thời không lỗi UNIQUE; ghi bản cũ sau bản mới không đè; thứ tự thực thi của hàng đợi
-đúng thứ tự `post`.
+**Test** (`tests/unit/storage/test_video_config_rule_job.cpp`, target
+`unit_video_config_rule_job`, DB mserver tạm dựng từ migration thật):
+
+- `ConcurrentFirstWritesOfOneRowDoNotCollide`: 8 thread cùng ghi lần đầu một id → không lỗi,
+  dòng còn lại là bản `updatedAt` mới nhất;
+- `OlderWriteDoesNotOverwriteNewerRow`, `NewerOrEqualWriteUpdatesTheRow`;
+- `RemoveKeepsARowUpdatedAfterTheTransition`.
+
+Thứ tự thực thi của hàng đợi đã có test ở `test_serial_task_queue.cpp`
+(`RunsTasksInOrderWithoutOverlap`), không lặp lại.
+
+Mutation check đã chạy: `addOrUpdate` dùng transaction deferred → test đồng thời đỏ
+(`database is locked`, race nên không đỏ mọi lần); bỏ kiểm tra `updatedAt` → 2 test đỏ.
 
 ## P5 — Đưa kết quả ra ngoài (#2) — theo D1
 

@@ -95,12 +95,52 @@ public:
 
     VideoConfigRuleJobImp() : VideoConfigRuleJobRepository() {}
 
+    // Writes `job` unless the stored row carries a newer updatedAt (a later transition already
+    // won). Returns false when skipped. Read and write share one BEGIN IMMEDIATE transaction, so two
+    // writers of the same id cannot both see "absent" and collide on the primary key.
     bool addOrUpdate(const VideoConfigRuleJob &job) {
-        if (!findByIdStr(job.id).empty()) {
-            updateById(job);
-            return true;
+        auto txn = _executor->beginWriteTxn();
+        try {
+            auto rows = findByIdWithTxn(job, txn);
+            if (!rows.empty() && rows[0].updatedAt > job.updatedAt) {
+                InfoL << "Skipping write of row " << job.id << " because it was superseded by a newer transition"
+                      << " (updatedAt=" << rows[0].updatedAt << " > " << job.updatedAt << ")";
+                txn->commit();
+                return false;
+            }
+            bool ok = rows.empty() ? saveWithTxn(job, txn, true) : updateByIdWithTxn(job, txn);
+            txn->commit();
+            return ok;
+        } catch (...) {
+            txn->rollback();
+            throw;
         }
-        return save(job, true);
+    }
+
+    // Deletes row `id` unless it was updated after `ts`. Returns false when skipped.
+    bool removeIfNotNewer(const std::string &id, int64_t ts) {
+        VideoConfigRuleJob key;
+        key.id = id;
+        auto txn = _executor->beginWriteTxn();
+        try {
+            auto rows = findByIdWithTxn(key, txn);
+            if (rows.empty()) {
+                txn->commit();
+                return true;
+            }
+            if (rows[0].updatedAt > ts) {
+                InfoL << "Skipping deletion of row " << id << " because it was superseded by a newer transition"
+                      << " (updatedAt=" << rows[0].updatedAt << " > ts=" << ts << ")";
+                txn->commit();
+                return false;
+            }
+            removeByIdWithTxn(key, txn);
+            txn->commit();
+            return true;
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
     }
 
     void removeByIdStr(const std::string &id) {
