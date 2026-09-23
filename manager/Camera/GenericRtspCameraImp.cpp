@@ -589,6 +589,16 @@ bool GenericRtspCameraImp::isControllerReady() {
     return _controller ? _controller->isReady() : false;
 }
 
+bool GenericRtspCameraImp::attachRuleLogId(const std::string &profileToken, const std::string &logId) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call attachRuleLogId in it's owner poller");
+    return _controller && _controller->attachRuleLogId(profileToken, logId) == CameraController::RuleAttachResult::ATTACHED;
+}
+
+bool GenericRtspCameraImp::reportRuleFailureIfPending(const std::string &profileToken, const std::string &errCode, const std::string &errMsg) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reportRuleFailureIfPending in it's owner poller");
+    return _controller ? _controller->reportRuleFailureIfPending(profileToken, errCode, errMsg) : false;
+}
+
 void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileToken, const std::function<void(const SockException &ex, const VideoEncoderConfig &config)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ensureBaselineVideoConfig in it's owner poller");
 

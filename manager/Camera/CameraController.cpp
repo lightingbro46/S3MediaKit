@@ -1030,12 +1030,47 @@ void CameraController::reportRuleConfigResult(const string &profileToken, bool s
         return;
     }
     it->second.reported = true;
-    InfoL << "Report rule config result, logId: " << it->second.logId
+    it->second.success = success;
+    for (const auto &log_id : it->second.logIds) {
+        emitRuleResult(log_id, profileToken, success, err_code, err_msg);
+    }
+}
+
+void CameraController::emitRuleResult(const string &log_id, const string &profileToken, bool success,
+                                      const string &err_code, const string &err_msg) {
+    InfoL << "Report rule config result, logId: " << log_id
           << ", token: " << profileToken
           << ", status: " << (success ? "SUCCESS" : "FAILED")
           << (success ? "" : (", code: " + err_code + ", msg: " + err_msg));
     NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, Broadcast::kBroadcastVideoConfigRuleResult,
-                it->second.logId, _tuple.device_id, success, err_code, err_msg);
+                log_id, _tuple.device_id, success, err_code, err_msg);
+}
+
+CameraController::RuleAttachResult CameraController::attachRuleLogId(const string &profileToken, const string &logId) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end() || _ruleConfigMap.find(profileToken) == _ruleConfigMap.end()) {
+        return RuleAttachResult::NEEDS_REAPPLY;
+    }
+    auto &ctx = it->second;
+    if (ctx.reported && !ctx.success) {
+        // The camera never took this config: extending must try it again, not repeat the failure.
+        return RuleAttachResult::NEEDS_REAPPLY;
+    }
+    ctx.logIds.push_back(logId);
+    if (ctx.reported) {
+        // Already confirmed on the camera: the extending request is satisfied right away.
+        emitRuleResult(logId, profileToken, true, "", "");
+    }
+    return RuleAttachResult::ATTACHED;
+}
+
+bool CameraController::reportRuleFailureIfPending(const string &profileToken, const string &err_code, const string &err_msg) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end() || it->second.reported) {
+        return false;
+    }
+    reportRuleConfigResult(profileToken, false, err_code, err_msg);
+    return true;
 }
 
 void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
@@ -1046,8 +1081,7 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
     _ruleConfigMap[profileToken] = rule_config;
 
     RuleReportContext ctx;
-    ctx.logId = logId;
-    ctx.reported = false;
+    ctx.logIds.push_back(logId);
     _ruleReportMap[profileToken] = ctx;
 
     if (!_onvif_ctr || !_onvif_ctr->isConnected()) {

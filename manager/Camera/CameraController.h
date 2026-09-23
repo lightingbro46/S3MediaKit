@@ -60,6 +60,17 @@ public:
 
     bool isRuleResultReported(const std::string &profileToken) const;
 
+    enum class RuleAttachResult {
+        ATTACHED,      // `logId` gets the rule's result (at once if the camera already confirmed it)
+        NEEDS_REAPPLY, // no live rule, or the camera never took it: apply the config again
+    };
+    // A request that extends the running rule of `profileToken` with the same config.
+    RuleAttachResult attachRuleLogId(const std::string &profileToken, const std::string &logId);
+
+    // Reports a failure to every request of the rule unless its result was already reported;
+    // false when there was nothing left to report.
+    bool reportRuleFailureIfPending(const std::string &profileToken, const std::string &err_code, const std::string &err_msg);
+
 protected:
     // Creates the device control for `address`; unit tests override it to return a fake device.
     virtual OnvifControl::Ptr createOnvifControl(const std::string &address, const std::string &username,
@@ -95,6 +106,8 @@ private:
 
     // _poller: broadcasts the outcome of a rule job once; later calls for the same token are ignored.
     void reportRuleConfigResult(const std::string &profileToken, bool success, const std::string &err_code, const std::string &err_msg);
+    void emitRuleResult(const std::string &log_id, const std::string &profileToken, bool success,
+                        const std::string &err_code, const std::string &err_msg);
 
     // _poller: true while a profile config is still waiting to be pushed to the camera (NEW or
     // PROCESSING). Such a camera needs its profiles re-read on every maintenance cycle to drive

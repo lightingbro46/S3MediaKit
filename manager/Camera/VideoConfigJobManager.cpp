@@ -1,4 +1,5 @@
 #include "VideoConfigJobManager.h"
+#include "VideoConfigRuleDecision.h"
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
 #include "Util/util.h"
@@ -16,6 +17,14 @@ VideoConfigJobManager::VideoConfigJobManager() {}
 void VideoConfigJobManager::reportFailure(const string &logId, const string &deviceId, const string &errCode, const string &errMsg) {
     DebugL << "[RuleJob] " << errCode << ", logId=" << logId << ", deviceId=" << deviceId << ", msg=" << errMsg;
     NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, Broadcast::kBroadcastVideoConfigRuleResult, logId, deviceId, false, errCode, errMsg);
+}
+
+void VideoConfigJobManager::reportSuccess(const string &logId, const string &deviceId) {
+    DebugL << "[RuleJob] already applied, logId=" << logId << ", deviceId=" << deviceId;
+    // NOTICE_EMIT std::forward-s each argument as its declared const std::string &: a "" literal
+    // would have to become a temporary string there, which std::forward refuses.
+    const string none;
+    NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, Broadcast::kBroadcastVideoConfigRuleResult, logId, deviceId, true, none, none);
 }
 
 VideoConfigJobManager::JobSlotPtr VideoConfigJobManager::findSlot(const string &key) const {
@@ -91,6 +100,13 @@ void VideoConfigJobManager::persistClear(const string &deviceId, const string &p
     });
 }
 
+void VideoConfigJobManager::persistRemoveQueued(const string &deviceId, const string &profileToken, int64_t ts) {
+    string queuedId = VideoConfigRuleJob::makeId(deviceId, profileToken, RuleJobStatus::QUEUED);
+    asyncDbTask([queuedId, ts](VideoConfigRuleJobImp &repo) {
+        removeIfNotNewer(repo, queuedId, ts);
+    });
+}
+
 void VideoConfigJobManager::handleRuleRequest(const GenericRtspCameraImp::Ptr &device,
                                                    const string &logId, const string &deviceId,
                                                    const string &profileToken,
@@ -133,14 +149,33 @@ void VideoConfigJobManager::onBaselineReady(const GenericRtspCameraImp::Ptr &dev
     }
 
     auto slot = findSlot(key);
-    VideoEncoderConfig current = slot ? slot->active.toVideoEncoderConfig() : baseline;
     VideoEncoderConfig target = baseline;
     target.width = width;
     target.height = height;
     target.fps = fps;
     target.bitrate = bitrate;
 
-    if (target == current) {
+    VideoEncoderConfig active = slot ? slot->active.toVideoEncoderConfig() : baseline;
+    auto decision = decideRuleRequest(slot != nullptr, active, slot ? slot->active.deadlineAt : 0,
+                                      slot && slot->hasQueued, baseline, target, deadlineAt);
+
+    if (decision.action == RuleRequestAction::ALREADY_APPLIED) {
+        reportSuccess(logId, deviceId);
+        return;
+    }
+
+    if (decision.supersedeQueued) {
+        reportFailure(slot->queued.logId, deviceId, "RULE_SUPERSEDED", "Replaced by a newer rule request before it could start");
+        slot->hasQueued = false;
+    }
+
+    if (decision.action == RuleRequestAction::EXTEND_ACTIVE) {
+        if (decision.supersedeQueued) {
+            // Only here: a new QUEUED row overwrites the old one, and deleting it too would race
+            // with that write.
+            persistRemoveQueued(deviceId, profileToken, now);
+        }
+        extendJob(device, key, slot, logId, receivedAt, decision.deadlineAt, now);
         return;
     }
 
@@ -153,7 +188,7 @@ void VideoConfigJobManager::onBaselineReady(const GenericRtspCameraImp::Ptr &dev
     job.deadlineAt = deadlineAt;
     job.updatedAt = now;
 
-    if (!slot) {
+    if (decision.action == RuleRequestAction::START) {
         slot = std::make_shared<JobSlot>();
         insertSlot(key, slot);
 
@@ -164,18 +199,39 @@ void VideoConfigJobManager::onBaselineReady(const GenericRtspCameraImp::Ptr &dev
         return;
     }
 
-    if (slot->hasQueued) {
-        reportFailure(slot->queued.logId, deviceId, "RULE_SUPERSEDED", "Replaced by a newer rule request before it could start");
-    }
     job.status = (int)RuleJobStatus::QUEUED;
     job.appliedAt = 0;
     job.id = VideoConfigRuleJob::makeId(deviceId, profileToken, RuleJobStatus::QUEUED);
     slot->queued = job;
     slot->hasQueued = true;
     persistJob(job);
-    InfoL << "Job queued, logId=," << logId << ", deviceId=" << deviceId
+    InfoL << "Job queued, logId=" << logId << ", deviceId=" << deviceId
         << ", current job expires at " << slot->active.deadlineAt
         << ", queued job expires at " << job.deadlineAt;
+}
+
+void VideoConfigJobManager::extendJob(const GenericRtspCameraImp::Ptr &device, const string &key, const JobSlotPtr &slot,
+                                      const string &logId, int64_t receivedAt, int64_t deadlineAt, int64_t now) {
+    const bool deadlineChanged = deadlineAt != slot->active.deadlineAt;
+    slot->active.logId = logId;
+    slot->active.receivedAt = receivedAt;
+    slot->active.deadlineAt = deadlineAt;
+    slot->active.updatedAt = now;
+
+    if (!device->attachRuleLogId(slot->active.profileToken, logId)) {
+        // The camera never took the config (or the controller lost the rule): apply it again for
+        // the extending request, which also re-arms the deadline.
+        InfoL << "Extending job re-applies its config, logId=" << logId << ", deviceId=" << slot->active.deviceId;
+        startJob(device, key, slot, slot->active, true);
+        return;
+    }
+
+    persistJob(slot->active);
+    if (deadlineChanged) {
+        armDeadlineTimer(device, key, slot);
+    }
+    InfoL << "Extended job, logId=" << logId << ", deviceId=" << slot->active.deviceId
+        << ", token=" << slot->active.profileToken << ", expires at " << slot->active.deadlineAt;
 }
 
 void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, const string &key,
@@ -185,8 +241,6 @@ void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, co
         persistJob(job);
     }
 
-    auto poller = device->getOwnerPoller(DeviceSource::NullDeviceSource());
-
     VideoEncoderConfig config = job.toVideoEncoderConfig();
     device->applyRuleVideoConfig(job.logId, job.profileToken, config, [key](const SockException &ex) {
         if (ex) {
@@ -194,7 +248,18 @@ void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, co
         }
     });
 
-    int64_t remaining = job.deadlineAt - nowMs();
+    float delaySec = armDeadlineTimer(device, key, slot);
+
+    InfoL << "Started job, logId=" << job.logId << ", deviceId=" << job.deviceId
+        << ", token=" << job.profileToken
+        << ", " << job.width << "x" << job.height << "@" << job.fps
+        << "fps/" << job.bitrate
+        << ", remaining " << (int)delaySec << "s";
+}
+
+float VideoConfigJobManager::armDeadlineTimer(const GenericRtspCameraImp::Ptr &device, const string &key, const JobSlotPtr &slot) {
+    auto poller = device->getOwnerPoller(DeviceSource::NullDeviceSource());
+    int64_t remaining = slot->active.deadlineAt - nowMs();
     float delaySec = remaining > 0 ? (float)remaining / 1000.0f : 0.1f;
 
     auto oldTimer = slot->deadlineTimer;
@@ -208,12 +273,7 @@ void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, co
     if (oldTimer) {
         deferRelease(poller, oldTimer);
     }
-
-    InfoL << "Started job, logId=" << job.logId << ", deviceId=" << job.deviceId
-        << ", token=" << job.profileToken
-        << ", " << job.width << "x" << job.height << "@" << job.fps
-        << "fps/" << job.bitrate
-        << ", remaining " << (int)delaySec << "s";
+    return delaySec;
 }
 
 void VideoConfigJobManager::onDeadline(const GenericRtspCameraImp::Ptr &device, const string &key) {
@@ -267,10 +327,16 @@ void VideoConfigJobManager::finishJob(const GenericRtspCameraImp::Ptr &device, c
     string profileToken = slot->active.profileToken;
 
     if (!device->isRuleResultReported(profileToken)) {
+        string errCode = "CONTROLLER_OFFLINE";
+        string errMsg = "Onvif controller was not reachable when the apply duration ended";
         if (device->isControllerReady()) {
-            reportFailure(logId, deviceId, "CONFIG_NOT_CONFIRMED", "Camera config could not be confirmed before the apply duration ended");
-        } else {
-            reportFailure(logId, deviceId, "CONTROLLER_OFFLINE", "Onvif controller was not reachable when the apply duration ended");
+            errCode = "CONFIG_NOT_CONFIRMED";
+            errMsg = "Camera config could not be confirmed before the apply duration ended";
+        }
+        // Every request folded into the job gets the failure; without a controller only the
+        // job's latest request is known.
+        if (!device->reportRuleFailureIfPending(profileToken, errCode, errMsg)) {
+            reportFailure(logId, deviceId, errCode, errMsg);
         }
     }
 

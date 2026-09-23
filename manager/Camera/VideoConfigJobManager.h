@@ -63,6 +63,13 @@ private:
     void startJob(const GenericRtspCameraImp::Ptr &device, const std::string &key,
                    const JobSlotPtr &slot, const VideoConfigRuleJob &job, bool persist);
 
+    // Same config as the running job: the job takes the request's logId and the later deadline.
+    void extendJob(const GenericRtspCameraImp::Ptr &device, const std::string &key, const JobSlotPtr &slot,
+                   const std::string &logId, int64_t receivedAt, int64_t deadlineAt, int64_t now);
+
+    // (Re)arms the deadline timer of `slot` from slot->active.deadlineAt; returns the delay in seconds.
+    float armDeadlineTimer(const GenericRtspCameraImp::Ptr &device, const std::string &key, const JobSlotPtr &slot);
+
     void onDeadline(const GenericRtspCameraImp::Ptr &device, const std::string &key);
 
     void promoteOrRollback(const GenericRtspCameraImp::Ptr &device, const std::string &key, const JobSlotPtr &slot, int64_t now);
@@ -77,6 +84,7 @@ private:
 
     static void reportFailure(const std::string &logId, const std::string &deviceId,
                                const std::string &errCode, const std::string &errMsg);
+    static void reportSuccess(const std::string &logId, const std::string &deviceId);
 
     static void deferRelease(const toolkit::EventPoller::Ptr &poller, std::shared_ptr<void> obj);
 
@@ -84,6 +92,7 @@ private:
     static void persistJob(const VideoConfigRuleJob &job);
     static void persistPromote(const VideoConfigRuleJob &newActive, int64_t ts);
     static void persistClear(const std::string &deviceId, const std::string &profileToken, int64_t ts);
+    static void persistRemoveQueued(const std::string &deviceId, const std::string &profileToken, int64_t ts);
     static void removeIfNotNewer(VideoConfigRuleJobImp &repo, const std::string &id, int64_t ts);
 
 private:

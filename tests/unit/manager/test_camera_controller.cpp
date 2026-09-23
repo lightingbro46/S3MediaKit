@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Camera/CameraController.h"
+#include "Camera/VideoConfigRuleDecision.h"
 #include "Common/config.h"
 #include "Poller/EventPoller.h"
 #include "Util/NoticeCenter.h"
@@ -857,4 +858,159 @@ TEST_F(CameraControllerRuleTest, RuleTheCameraNeverAppliesIsReportedOnceAfterThe
     EXPECT_EQ("CONFIG_NOT_APPLIED", results[0].err_code);
     EXPECT_EQ(1 + 5, setCallCount(_fake)); // the direct set, then retry_time re-pushes
     EXPECT_FALSE(pending());
+}
+
+// ── Requests that extend a running rule ──────────────────────────────────────────────────────────
+// A caller keeps a config by sending it again before it expires. That request used to be dropped
+// because it matched the running job: the job still rolled back at its first deadline, and a job
+// queued behind it still ran although the newest request asked for the running config.
+
+namespace {
+
+VideoEncoderConfig ruleVariant(int fps) {
+    VideoEncoderConfig config = ruleConfig();
+    config.fps = fps;
+    return config;
+}
+
+} // namespace
+
+TEST(VideoConfigRuleDecisionTest, FirstRequestStartsUnlessItAsksForTheBaseline) {
+    const VideoEncoderConfig baseline = ruleVariant(25);
+    auto start = decideRuleRequest(false, baseline, 0, false, baseline, ruleVariant(10), 5000);
+    EXPECT_EQ(RuleRequestAction::START, start.action);
+    EXPECT_EQ(5000, start.deadlineAt);
+    EXPECT_FALSE(start.supersedeQueued);
+
+    auto noop = decideRuleRequest(false, baseline, 0, false, baseline, ruleVariant(25), 5000);
+    EXPECT_EQ(RuleRequestAction::ALREADY_APPLIED, noop.action);
+}
+
+TEST(VideoConfigRuleDecisionTest, SameConfigExtendsToTheLaterDeadline) {
+    const VideoEncoderConfig baseline = ruleVariant(25);
+    const VideoEncoderConfig active = ruleVariant(10);
+
+    auto later = decideRuleRequest(true, active, 3000, false, baseline, ruleVariant(10), 9000);
+    EXPECT_EQ(RuleRequestAction::EXTEND_ACTIVE, later.action);
+    EXPECT_EQ(9000, later.deadlineAt);
+    EXPECT_FALSE(later.supersedeQueued);
+
+    // A shorter request never cuts the running job short.
+    auto shorter = decideRuleRequest(true, active, 9000, false, baseline, ruleVariant(10), 3000);
+    EXPECT_EQ(RuleRequestAction::EXTEND_ACTIVE, shorter.action);
+    EXPECT_EQ(9000, shorter.deadlineAt);
+}
+
+TEST(VideoConfigRuleDecisionTest, ExtendingDropsTheWaitingJob) {
+    const VideoEncoderConfig baseline = ruleVariant(25);
+    auto decision = decideRuleRequest(true, ruleVariant(10), 3000, true, baseline, ruleVariant(10), 9000);
+    EXPECT_EQ(RuleRequestAction::EXTEND_ACTIVE, decision.action);
+    EXPECT_TRUE(decision.supersedeQueued);
+}
+
+TEST(VideoConfigRuleDecisionTest, DifferentConfigQueuesAndReplacesTheWaitingJob) {
+    const VideoEncoderConfig baseline = ruleVariant(25);
+    auto first = decideRuleRequest(true, ruleVariant(10), 3000, false, baseline, ruleVariant(15), 9000);
+    EXPECT_EQ(RuleRequestAction::QUEUE, first.action);
+    EXPECT_EQ(9000, first.deadlineAt);
+    EXPECT_FALSE(first.supersedeQueued);
+
+    // Same config as the waiting job still replaces it: the newest request carries the logId.
+    auto again = decideRuleRequest(true, ruleVariant(10), 3000, true, baseline, ruleVariant(15), 9500);
+    EXPECT_EQ(RuleRequestAction::QUEUE, again.action);
+    EXPECT_TRUE(again.supersedeQueued);
+}
+
+TEST(VideoConfigRuleDecisionTest, BaselineRequestDuringAJobWaitsForItsRollback) {
+    const VideoEncoderConfig baseline = ruleVariant(25);
+    auto decision = decideRuleRequest(true, ruleVariant(10), 3000, false, baseline, ruleVariant(25), 9000);
+    EXPECT_EQ(RuleRequestAction::QUEUE, decision.action);
+}
+
+class CameraControllerRuleExtendTest : public CameraControllerRuleTest {
+protected:
+    CameraController::RuleAttachResult attach(const std::string &log_id) {
+        auto controller = _controller;
+        auto result = CameraController::RuleAttachResult::NEEDS_REAPPLY;
+        onPoller([&]() { result = controller->attachRuleLogId(kRuleToken, log_id); });
+        return result;
+    }
+
+    bool failPending(const std::string &code) {
+        auto controller = _controller;
+        bool result = false;
+        onPoller([&]() { result = controller->reportRuleFailureIfPending(kRuleToken, code, "msg"); });
+        return result;
+    }
+
+    static std::vector<std::string> logIds(const std::vector<RuleResultRecorder::Result> &results) {
+        std::vector<std::string> ids;
+        for (const auto &result : results) ids.push_back(result.log_id);
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    }
+};
+
+TEST_F(CameraControllerRuleExtendTest, WithoutARuleTheConfigMustBeAppliedAgain) {
+    EXPECT_EQ(CameraController::RuleAttachResult::NEEDS_REAPPLY, attach("log-2"));
+}
+
+TEST_F(CameraControllerRuleExtendTest, ExtensionBeforeTheConfirmationSharesTheResult) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(true)}, "");
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+
+    EXPECT_EQ(CameraController::RuleAttachResult::ATTACHED, attach("log-2"));
+    EXPECT_TRUE(recorder.results().empty());
+
+    syncOnce();
+    auto results = recorder.results();
+    ASSERT_EQ(2u, results.size());
+    EXPECT_EQ(std::vector<std::string>({"log-1", "log-2"}), logIds(results));
+    for (const auto &result : results) EXPECT_TRUE(result.success);
+}
+
+TEST_F(CameraControllerRuleExtendTest, ExtensionAfterTheConfirmationSucceedsAtOnce) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(true)}, "");
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    syncOnce();
+    ASSERT_EQ(1u, recorder.results().size());
+
+    EXPECT_EQ(CameraController::RuleAttachResult::ATTACHED, attach("log-2"));
+    auto results = recorder.results();
+    ASSERT_EQ(2u, results.size());
+    EXPECT_EQ("log-2", results[1].log_id);
+    EXPECT_TRUE(results[1].success);
+    EXPECT_EQ(1, setCallCount(_fake)); // nothing pushed again
+}
+
+TEST_F(CameraControllerRuleExtendTest, ExtensionOfARuleTheCameraRefusedIsAppliedAgain) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(false)}, "");
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    _fake->setProfiles({ruleProfile(false)}, kRuleToken); // the re-read push fails: SET_CONFIG_FAILED
+    syncOnce();
+    ASSERT_EQ(1u, recorder.results().size());
+    ASSERT_FALSE(recorder.results()[0].success);
+
+    EXPECT_EQ(CameraController::RuleAttachResult::NEEDS_REAPPLY, attach("log-2"));
+    EXPECT_EQ(1u, recorder.results().size()); // the failure is not repeated for log-2
+}
+
+TEST_F(CameraControllerRuleExtendTest, ExpiryFailureReachesEveryRequestOnce) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(false)}, "");
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    ASSERT_EQ(CameraController::RuleAttachResult::ATTACHED, attach("log-2"));
+
+    EXPECT_TRUE(failPending("CONFIG_NOT_CONFIRMED"));
+    EXPECT_FALSE(failPending("CONFIG_NOT_CONFIRMED"));
+    auto results = recorder.results();
+    ASSERT_EQ(2u, results.size());
+    EXPECT_EQ(std::vector<std::string>({"log-1", "log-2"}), logIds(results));
+    for (const auto &result : results) {
+        EXPECT_FALSE(result.success);
+        EXPECT_EQ("CONFIG_NOT_CONFIRMED", result.err_code);
+    }
 }

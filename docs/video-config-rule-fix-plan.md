@@ -42,7 +42,7 @@ nên phát đúng kết quả trước khi đưa nó ra ngoài.
   (body: `logId, deviceId, success, errCode, errMsg`), bỏ trống URL thì không gửi.
   Phương án khác: API tra cứu theo `logId` (cần lưu kết quả vào DB), hoặc kênh fork đang dùng
   — nên hỏi phía fork trước.
-- **D2 (P3)** — ngữ nghĩa khi yêu cầu mới trùng cấu hình job đang chạy. Đề xuất: coi là
+- **D2 (P3)** — ĐÃ CHỐT 2026-09-23 theo đề xuất. Ngữ nghĩa khi yêu cầu mới trùng cấu hình job đang chạy: coi là
   **gia hạn** — `deadlineAt = max(cũ, mới)`, đổi `logId` sang yêu cầu mới, huỷ job QUEUED
   (báo `RULE_SUPERSEDED`), vì yêu cầu mới nhất là ý định hiện tại.
 - **D3 (P6)** — khi camera bị xoá lúc rule đang chạy: đề xuất xoá dòng DB, không cố rollback
@@ -127,24 +127,51 @@ Mutation check đã chạy: bỏ bước 1 → 2 test đỏ; áp trực tiếp �
 Chưa có unit test cho bước 4 (`finishJob`): `VideoConfigJobManager` là singleton gắn với
 `GenericRtspCameraImp`, cần dựng camera thật — kiểm khi chạy thật.
 
-## P3 — Gia hạn và giữ ý định mới nhất (#4) — theo D2
+## P3 — Gia hạn và giữ ý định mới nhất (#4) — D2 đã chốt
 
-**Sửa** `manager/Camera/VideoConfigJobManager.cpp` `onBaselineReady` (dòng 143):
+D2 chốt 2026-09-23 theo đề xuất: yêu cầu trùng cấu hình job đang chạy là **gia hạn** —
+`deadlineAt = max(cũ, mới)`, job mang `logId` mới, job QUEUED bị huỷ (`RULE_SUPERSEDED`).
 
-1. Tách quyết định thành hàm thuần, ví dụ
-   `RuleDecision decideRuleRequest(const SlotView &slot, const VideoEncoderConfig &baseline, const RuleRequest &req)`
-   trả về một trong: `START`, `EXTEND_ACTIVE`, `QUEUE`, `CANCEL_QUEUED_AND_EXTEND`, `NOOP_REPORT_SUCCESS`.
-2. Yêu cầu trùng cấu hình ACTIVE → `EXTEND_ACTIVE`: cập nhật `deadlineAt`, `logId`,
-   `updatedAt`; persist; dựng lại timer. Nếu đang có QUEUED → báo `RULE_SUPERSEDED` cho QUEUED
-   và xoá nó (cả DB).
-3. Không có slot và yêu cầu bằng baseline → báo `success=true` ngay (hiện đang im lặng).
-4. Rule mới được áp khi job ACTIVE đã báo kết quả → phải tạo lại `_ruleReportMap` cho `logId`
-   mới (gia hạn cũng cần báo kết quả cho `logId` mới: báo ngay `success=true` nếu cấu hình
-   hiện đã được xác nhận SUCCESS).
+**Đã sửa:**
 
-**Test:** GTest cho `decideRuleRequest` phủ đủ bảng quyết định (không cần camera thật):
-gia hạn khi đang có QUEUED, gia hạn với deadline ngắn hơn (giữ deadline cũ), yêu cầu bằng
-baseline khi đang ACTIVE (vẫn QUEUE để rollback đúng hạn), trùng QUEUED.
+1. `manager/Camera/VideoConfigRuleDecision.h` (header-only, không cần reconfigure GLOB):
+   `decideRuleRequest(...)` trả `START`, `ALREADY_APPLIED`, `EXTEND_ACTIVE` hoặc `QUEUE`, kèm
+   `supersedeQueued` và deadline của job nhận request. Không đụng camera, timer hay DB.
+2. `VideoConfigJobManager::onBaselineReady` làm theo bảng đó:
+   - `ALREADY_APPLIED` (không có job, yêu cầu bằng baseline) → báo `success=true` ngay (trước đây
+     im lặng);
+   - `EXTEND_ACTIVE` → `extendJob`: cập nhật `logId`, `receivedAt`, `deadlineAt`, `updatedAt`,
+     persist, chỉ dựng lại timer khi deadline đổi (`armDeadlineTimer`, tách từ `startJob`);
+     nếu có QUEUED thì báo `RULE_SUPERSEDED` và xoá dòng QUEUED;
+   - `QUEUE` → như cũ; dòng QUEUED cũ **không** bị xoá riêng mà được `persistJob` ghi đè (xoá
+     rồi ghi cùng id trên pool `api()` nhiều thread có thể đảo thứ tự và mất dòng mới — P4).
+3. Kết quả cho mọi request của một job (`CameraController`):
+   - `RuleReportContext` giữ `logIds` (vector) + `success`; `reportRuleConfigResult` phát cho
+     từng `logId`;
+   - `attachRuleLogId(token, logId)`: rule chưa báo → gắn thêm, cùng nhận kết quả sau;
+     đã báo thành công → báo `success=true` ngay cho `logId` mới; đã báo thất bại hoặc không có
+     rule → `NEEDS_REAPPLY`, `extendJob` áp lại cấu hình qua `startJob`;
+   - `reportRuleFailureIfPending(token, code, msg)`: `finishJob` dùng để báo
+     `CONFIG_NOT_CONFIRMED`/`CONTROLLER_OFFLINE` cho mọi `logId` của job; không có controller
+     thì chỉ báo cho `logId` cuối (như trước).
+4. Bẫy biên dịch: `NOTICE_EMIT` không nhận literal chuỗi `""` cho tham số `const std::string &`
+   (`std::forward` từ chối tạo string tạm) — truyền biến `const string`.
+
+**Test** (`tests/unit/manager/test_camera_controller.cpp`):
+
+- `VideoConfigRuleDecisionTest` (5 test): request đầu START / ALREADY_APPLIED; gia hạn lấy
+  deadline muộn hơn, request ngắn hơn không cắt job; gia hạn huỷ QUEUED; cấu hình khác thì QUEUE
+  và thay QUEUED (kể cả trùng QUEUED); yêu cầu bằng baseline khi đang chạy thì vẫn QUEUE.
+- `CameraControllerRuleExtendTest` (5 test): không có rule → áp lại; gia hạn trước khi xác nhận
+  → cả hai `logId` nhận `success`; gia hạn sau khi xác nhận → `success` ngay, không đẩy lại;
+  camera đã từ chối → áp lại, không lặp lỗi cho `logId` mới; hết hạn → mỗi `logId` nhận đúng
+  một `CONFIG_NOT_CONFIRMED`.
+
+Mutation check đã chạy: gia hạn lấy deadline của request → 1 test đỏ; không gắn `logId` → 2 test
+đỏ; rule bị từ chối vẫn gắn → 1 test đỏ.
+
+Chưa có unit test cho `extendJob`/`onBaselineReady` (singleton + `GenericRtspCameraImp`) — kiểm
+khi chạy thật: gửi lại cùng cấu hình trước hạn → không rollback ở deadline cũ.
 
 ## P4 — Ghi DB tuần tự (#5)
 
@@ -195,10 +222,76 @@ hook hiện có); mỗi `logId` + `deviceId` chỉ nhận đúng 1 kết quả q
    camera offline: cấu hình rule có thể bị nhận làm baseline. Chỉ sửa nếu người dùng yêu cầu
    (cần lưu baseline kèm job — đổi schema = migration mới `20_…`, không sửa `18_…`).
 
+## P7 — `onvifSetVideoConfigs` khi rule đang chạy (#8) — theo D4
+
+**Vấn đề:** `CameraController::setMediaProfileAsync` không biết `_ruleConfigMap` đang giữ token.
+Khi rule đang chạy, người dùng set cấu hình qua `onvifSetVideoConfigs` thì:
+
+- camera bị đẩy cấu hình người dùng ngay, chu kỳ sync kế tiếp đẩy lại cấu hình rule, hết hạn lại
+  rollback về cấu hình người dùng → encoder khởi động lại nhiều lần, stream giật;
+- API trả 200 + cấu hình mới, nhưng camera chỉ giữ nó tới lần sync kế tiếp;
+- lần set đó làm rule tốn thêm một lượt `retry_time`.
+
+Không có data race (mọi map trên owner poller, SOAP qua `_device_queue` tuần tự) — lỗi là ở
+nghiệp vụ.
+
+**Race phụ cùng chỗ:** `GenericRtspCameraImp::ensureBaselineVideoConfig` đọc camera khi token
+chưa có trong `_profileConfigMap`, rồi `addProfileConfig(seed)` **vô điều kiện**. Nếu người dùng
+set trong lúc lệnh đọc đang chờ trên device queue, nhánh "chưa có entry" của
+`setMediaProfileAsync` đã ghi cấu hình người dùng vào map, rồi seed (cấu hình cũ của camera) đè
+lên → baseline và `stream_settings` quay về cấu hình cũ, rollback cuối rule xoá mất thay đổi của
+người dùng.
+
+**Sửa:**
+
+1. `CameraController::setMediaProfileAsync`: sau kiểm tra controller đã kết nối và so sánh với
+   baseline như hiện tại (trùng → `CODE_ONVIF_SET_CONFIG_NOT_CHANGE`), nếu
+   `_ruleConfigMap.count(profileToken)`:
+   - `addProfileConfig(profileToken, new_f_config)` với `NEW`, `retry_time=5` (phát
+     `kBroadcastStreamSettingChange` để `stream_settings` giữ cấu hình người dùng muốn — cần cho
+     restart giữa chừng);
+   - **không** `postDeviceTask` lệnh set; không đụng `_ruleConfigMap`/`_ruleReportMap`;
+   - gọi `cb` thành công với dấu hiệu "hoãn": `SockException(Err_success, ..., ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED)`
+     (mã mới trong `server/WebApiErrCode.h`; `Err_success` nên handler vẫn đi nhánh thành công).
+
+   Quyết định nằm trong controller (không ở handler) vì handler có thể phải đi đường
+   `getMediaProfile` bất đồng bộ trước khi set, rule có thể bắt đầu trong khoảng đó.
+2. Không cần sửa `applyMediaProfileSync`: nhánh rule `continue` nên baseline `NEW` nằm yên tới khi
+   rule kết thúc. `rollbackRuleVideoConfigAsync` đẩy baseline (giờ là cấu hình người dùng); lần
+   sync sau xác nhận `SUCCESS` (P2 giữ sync mỗi chu kỳ vì baseline đang `NEW`); rollback lỗi thì
+   `markBaselineNeedResync` như hiện tại. `promoteOrRollback` so job QUEUED với baseline mới — đúng
+   ý: QUEUED trùng cấu hình người dùng thì kết thúc luôn.
+3. Handler `onvifSetVideoConfigs` (`server/WebApiControl.cpp`): nhận mã hoãn thì trả
+   `code=0`, `data.flag=true`, `data.config` như cũ, thêm `data.deferred=true` và
+   `data.deferredUntil` (ms). `deferredUntil` lấy từ getter mới
+   `VideoConfigJobManager::getRuleDeadline(deviceId, token, int64_t &deadlineAt)` — `deadlineAt`
+   của QUEUED nếu có, không thì của ACTIVE; chỉ là ước lượng vì P3 có thể gia hạn.
+4. Race phụ: tách phần seed thành `CameraController::seedBaselineIfAbsent(token, seed)` trả về
+   baseline thực dùng — chỉ `addProfileConfig` khi token vẫn chưa có entry lúc callback chạy,
+   ngược lại trả entry hiện có. `ensureBaselineVideoConfig` dùng giá trị trả về.
+5. Tài liệu API ở P5: ghi rõ hành vi hoãn và hai trường mới của `onvifSetVideoConfigs`.
+
+**Test** (`tests/unit/manager/test_camera_controller.cpp`, fixture `CameraControllerRuleTest`):
+
+- `SetDuringRuleOnlyUpdatesTheBaseline`: rule đã áp và xác nhận; set cấu hình người dùng →
+  `FakeOnvifControl` không ghi nhận lệnh set nào, `cb` mang mã hoãn, baseline = cấu hình người
+  dùng, entry rule không đổi; sync tiếp theo không đẩy gì và không báo lại kết quả rule;
+- `RollbackAfterDeferredSetPushesTheUserConfig`: rollback → đúng 1 lệnh set với cấu hình người
+  dùng; sync sau đó đánh baseline `SUCCESS`;
+- `SetEqualToBaselineDuringRuleIsNotChange`;
+- `SetWithoutRuleStillPushesToTheCamera` (hồi quy hành vi cũ);
+- `SeedDoesNotOverwriteAConcurrentUserSet`: có entry trước khi seed → seed trả entry đó, map giữ
+  nguyên.
+
+Mutation check: bỏ kiểm tra `_ruleConfigMap` ở bước 1 → test đầu đỏ; seed ghi vô điều kiện → test
+cuối đỏ.
+
 ## Kiểm tra cuối
 
 - `cmake --build build-test -j2` (máy ~7 GB RAM), `ctest --test-dir build-test -R unit.`.
 - Chạy thật với ít nhất 1 camera ONVIF: áp rule 120 s → nhận webhook `success=true` trong
   ~1 chu kỳ; hết hạn → camera về baseline; gửi lại cùng cấu hình trước hạn → deadline được gia
   hạn; rút mạng camera lúc hết hạn → cắm lại thì baseline được đẩy lại.
+- Trong lúc rule chạy, gọi `onvifSetVideoConfigs` → trả `deferred=true`, camera vẫn giữ cấu hình
+  rule (không khởi động lại encoder); hết hạn → camera về cấu hình người dùng vừa set.
 - Gọi API không có hoặc sai `X-Secret-Key` nhận 401.
