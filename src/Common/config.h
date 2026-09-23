@@ -260,8 +260,10 @@ extern const std::string kBroadcastCameraStopped;
 #define BroadcastCameraStoppedArgs const std::string &device_id
 
 // Outcome of one video config rule job, broadcast once per job.
+// `success` must stay a const reference: NOTICE_EMIT forwards a by-value bool as bool&&, which no
+// listener's std::function matches, so the event would silently reach nobody.
 extern const std::string kBroadcastVideoConfigRuleResult;
-#define BroadcastVideoConfigRuleResultArgs const std::string &log_id, const std::string &device_id, bool success, const std::string &err_code, const std::string &err_msg
+#define BroadcastVideoConfigRuleResultArgs const std::string &log_id, const std::string &device_id, const bool &success, const std::string &err_code, const std::string &err_msg
 
 // Broadcast for accessing cluster data. Control cluster authentication through this event.
 extern const std::string kBroadcastClusterAcrossAccess;

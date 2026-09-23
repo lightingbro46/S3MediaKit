@@ -15,6 +15,7 @@
 #include "Local/TierStorageManager.h"
 #include "Local/TierEncryptionManager.h"
 #include "Local/ExtractJobManager.h"
+#include "Camera/VideoConfigJobManager.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
@@ -453,6 +454,9 @@ void installManagerHook () {
 
     initializeTierEncryption();
 
+    // Before any camera is loaded: recovered rule jobs report through this listener.
+    VideoConfigJobManager::Instance().start();
+
     loadSavedDeviceInfo();
 
     loadSavedMediaServerInfo();
@@ -476,6 +480,7 @@ static void releaseSyncDatabase() {
 
 static void releaseActiveJobs() {
     ExtractJobManager::Instance().stop();
+    VideoConfigJobManager::Instance().stop();
 }
 
 void releaseStorageManagers() {

@@ -584,6 +584,28 @@ bool GenericRtspCameraImp::isRuleResultReported(const std::string &profileToken)
     return _controller ? _controller->isRuleResultReported(profileToken) : false;
 }
 
+bool GenericRtspCameraImp::isControllerReady() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call isControllerReady in it's owner poller");
+    return _controller ? _controller->isReady() : false;
+}
+
+bool GenericRtspCameraImp::attachRuleLogId(const std::string &profileToken, const std::string &logId) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call attachRuleLogId in it's owner poller");
+    return _controller && _controller->attachRuleLogId(profileToken, logId) == CameraController::RuleAttachResult::ATTACHED;
+}
+
+void GenericRtspCameraImp::markRuleResultReported(const std::string &profileToken, bool success) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call markRuleResultReported in it's owner poller");
+    if (_controller) {
+        _controller->markRuleResultReported(profileToken, success);
+    }
+}
+
+bool GenericRtspCameraImp::reportRuleFailureIfPending(const std::string &profileToken, const std::string &errCode, const std::string &errMsg) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reportRuleFailureIfPending in it's owner poller");
+    return _controller ? _controller->reportRuleFailureIfPending(profileToken, errCode, errMsg) : false;
+}
+
 void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileToken, const std::function<void(const SockException &ex, const VideoEncoderConfig &config)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ensureBaselineVideoConfig in it's owner poller");
 
@@ -607,7 +629,8 @@ void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileT
         baseline.state.retry_time = 5;
         baseline.state.status = configStateToString[VideoConfigSetState::EXTERNAL];
         if (strong_self->_controller) {
-            strong_self->_controller->addProfileConfig(profileToken, baseline, true);
+            // A user set may have landed while the read waited on the device queue: it wins.
+            baseline = strong_self->_controller->seedBaselineIfAbsent(profileToken, baseline);
         }
         InfoL << "Seed baseline config from camera for profile token: " << profileToken;
         cb(SockException(Err_success, "", ApiErrCode::CODE_SUCCESS), baseline);

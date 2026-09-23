@@ -17,6 +17,7 @@
 #include "Manager.h"
 #include "User/UserAuthorManager.h"
 #include "Storage/Bookmark.h"
+#include "Storage/VideoConfigRuleResult.h"
 #include "Server/ClusterManager.h"
 #include "Camera/CameraManager.h"
 #include "Server/ReaderMonitor.h"
@@ -78,6 +79,7 @@ const string kOnClusterAcrossAuth = HOOK_FIELD "on_cluster_across_auth";
 const string kOnDownloadAudioFile = HOOK_FIELD "on_download_audio_file";
 const string kOnDownloadOverlayImage = HOOK_FIELD "on_download_overlay_image";
 const string kOnVideoExtractionResult = HOOK_FIELD "on_video_extraction_result";
+const string kOnVideoConfigRuleResult = HOOK_FIELD "on_video_config_rule_result";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
 const string kApiUrl = HOOK_FIELD "api_url";
@@ -128,6 +130,8 @@ static onceToken token([]() {
     mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
     mINI::Instance()[kOnDownloadOverlayImage] = "/api/media-server/watermark/assets";
     mINI::Instance()[kOnVideoExtractionResult] = "/api/media-server/video-extractions/result";
+    // Same receiver and body as the recording-encryption fork.
+    mINI::Instance()[kOnVideoConfigRuleResult] = "/api/media-server/action-callback";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
@@ -1738,6 +1742,36 @@ void installWebHook() {
                 WarnL << "hook " << url << " failed, file_id=" << idempotency_key << ": " << err;
             }
             invoker(obj, err);
+        });
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoConfigRuleResult, [](BroadcastVideoConfigRuleResultArgs) {
+        GET_CONFIG(string, hook_video_config_rule_result, Hook::kOnVideoConfigRuleResult);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_video_config_rule_result.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        // Body of the fork's hook: errorCode/errorMessage are null on success.
+        VideoConfigRuleResult result;
+        result.logId = log_id;
+        result.deviceId = device_id;
+        result.status = success ? VideoConfigRuleStatus::kSuccess : VideoConfigRuleStatus::kFailed;
+        result.errCode = err_code;
+        result.errMsg = err_msg;
+        ArgsType body = result.toHookJson();
+
+        // Retries of hook.retry resend the same key; the receiver drops a (logId, deviceId) it has seen.
+        HeaderType header;
+        const string key = VideoConfigRuleResult::makeId(log_id, device_id);
+        header.emplace("Idempotency-Key", key);
+        const string url = hook_api_url + hook_video_config_rule_result;
+        do_http_hook(url, body, header, [url, key](const Value &obj, const string &err) {
+            if (err.empty()) {
+                TraceL << "hook " << url << " success, key=" << key;
+            } else {
+                WarnL << "hook " << url << " failed, key=" << key << ": " << err;
+            }
         });
     });
 

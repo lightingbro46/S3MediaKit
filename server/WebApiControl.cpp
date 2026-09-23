@@ -461,6 +461,14 @@ void registerControlApis() {
                                         val["data"]["config"]["bitrate"] = vConfigSet.bitrate;
                                         val["data"]["config"]["resolution"]["width"] = vConfigSet.width;
                                         val["data"]["config"]["resolution"]["height"] = vConfigSet.height;
+                                        // A video config rule holds the profile: the config is saved and
+                                        // reaches the camera when the rule ends.
+                                        bool deferred = ex.getCustomCode() == ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED;
+                                        val["data"]["deferred"] = deferred;
+                                        int64_t deferredUntil = 0;
+                                        if (deferred && VideoConfigJobManager::Instance().getRuleDeadline(deviceId, token, deferredUntil)) {
+                                            val["data"]["deferredUntil"] = (Json::Int64)deferredUntil;
+                                        }
                                         invoker(200, headerOut, val.toStyledString());
                                     }
                                 });
@@ -603,11 +611,13 @@ void registerControlApis() {
     });
 
     // Applies a time-boxed video encoder override to a batch of cameras; each camera is rolled back
-    // to its baseline when the job expires. Accepted per camera, the result arrives via
-    // kBroadcastVideoConfigRuleResult.
+    // to its baseline when the job expires. Accepted per camera; the result of each accepted camera
+    // (kBroadcastVideoConfigRuleResult) goes to hook.on_video_config_rule_result and to
+    // video_config_rule_result, read back with onvifGetVideoConfigRuleResult.
+    // Called service-to-service without a JWT: authenticated by manager.apiSecret only, with no
+    // user or per-device permission check.
     api_regist("/media/mserver/device/onvifApplyVideoConfigRule", [](API_ARGS_JSON_ASYNC) {
-        CHECK_AUTH_TOKEN();
-        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_API_KEY();
         CHECK_ARGS_("logId");
 
         string logId = allArgs["logId"];
@@ -618,6 +628,8 @@ void registerControlApis() {
         }
 
         Json::Value results(Json::arrayValue);
+        vector<function<void()>> accepted;
+        vector<string> acceptedIds;
 
         for (auto &camReq : camerasReq) {
             string deviceId = camReq.get("deviceId", "").asString();
@@ -627,6 +639,14 @@ void registerControlApis() {
             if (deviceId.empty()) {
                 item["code"] = ApiErrCode::CODE_INVALID_ARGS;
                 item["msg"] = "deviceId is required";
+                results.append(item);
+                continue;
+            }
+
+            if (std::find(acceptedIds.begin(), acceptedIds.end(), deviceId) != acceptedIds.end()) {
+                // One result per (logId, deviceId): a second entry would get its own.
+                item["code"] = ApiErrCode::CODE_INVALID_ARGS;
+                item["msg"] = "Duplicate deviceId in cameras";
                 results.append(item);
                 continue;
             }
@@ -663,36 +683,79 @@ void registerControlApis() {
             item["msg"] = "accepted";
             results.append(item);
 
-            ret->getOwnerPoller()->async([ret, logId, deviceId, width, height, fps, bitrate, applyDuration]() mutable {
-                auto strong_listener = ret->getListener().lock();
-                if (!strong_listener) {
-                    WarnL << "Device offline, deviceId=" << deviceId;
-                    return;
-                }
-                auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-                if (!impl) {
-                    WarnL << "Device is not a camera, deviceId=" << deviceId;
-                    return;
-                }
-                auto statistic = impl->getCameraStatisticImp();
-                if (!statistic) {
-                    WarnL << "Statistic released, deviceId=" << deviceId;
-                    return;
-                }
-                auto token = statistic->getPrimaryProfileToken();
-                if (token.empty()) {
-                    WarnL << "Failed to determine profile token, skipping, deviceId=" << deviceId;
-                    return;
-                }
-                VideoConfigJobManager::Instance().handleRuleRequest(impl, logId, deviceId, token, width,
-                                                                   height, fps, bitrate, applyDuration);
+            accepted.emplace_back([ret, logId, deviceId, width, height, fps, bitrate, applyDuration]() {
+                ret->getOwnerPoller()->async([ret, logId, deviceId, width, height, fps, bitrate, applyDuration]() mutable {
+                    // Accepted already: every way out reports a result for (logId, deviceId).
+                    auto strong_listener = ret->getListener().lock();
+                    if (!strong_listener) {
+                        VideoConfigJobManager::reportFailure(logId, deviceId, "DEVICE_OFFLINE", "Device is offline");
+                        return;
+                    }
+                    auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+                    if (!impl) {
+                        VideoConfigJobManager::reportFailure(logId, deviceId, "NOT_A_CAMERA", "Device is not a camera");
+                        return;
+                    }
+                    auto statistic = impl->getCameraStatisticImp();
+                    if (!statistic) {
+                        VideoConfigJobManager::reportFailure(logId, deviceId, "DEVICE_OFFLINE", "Camera statistic released");
+                        return;
+                    }
+                    auto token = statistic->getPrimaryProfileToken();
+                    if (token.empty()) {
+                        VideoConfigJobManager::reportFailure(logId, deviceId, "PROFILE_TOKEN_NOT_FOUND", "Failed to determine the profile token");
+                        return;
+                    }
+                    VideoConfigJobManager::Instance().handleRuleRequest(impl, logId, deviceId, token, width,
+                                                                       height, fps, bitrate, applyDuration);
+                });
             });
+            acceptedIds.push_back(deviceId);
+        }
+
+        // PENDING rows are queued before any camera can report, so a result never lands before them.
+        VideoConfigJobManager::Instance().recordAccepted(logId, acceptedIds);
+        for (auto &start : accepted) {
+            start();
         }
 
         val["code"] = 0;
         val["msg"] = "success";
         val["data"]["results"] = results;
         invoker(200, headerOut, val.toStyledString());
+    });
+
+    // Results of an onvifApplyVideoConfigRule request by logId: PENDING until the camera reports.
+    // Same authentication as onvifApplyVideoConfigRule.
+    api_regist("/media/mserver/device/onvifGetVideoConfigRuleResult", [](API_ARGS_MAP_ASYNC) {
+        CHECK_API_KEY();
+        CHECK_ARGS("logId");
+
+        string logId = allArgs["logId"];
+        // Read on the rule DB strand, after the PENDING rows of every request accepted before.
+        runApiCallbackWork(apiRequestPoller(sender), apiRequestSession(sender), invoker,
+            [logId, val, invoker, headerOut](const ApiReply &reply) mutable {
+                VideoConfigJobManager::Instance().queryResults(logId,
+                    [val, invoker, headerOut, reply](const vector<VideoConfigRuleResult> &rows, const string &error) mutable {
+                        if (!error.empty()) {
+                            val["code"] = static_cast<int>(ApiErrCode::CODE_OTHER_EXCEPTION);
+                            val["msg"] = "Failed to read video config rule results";
+                            const string body = val.toStyledString();
+                            const int status = getStatusCode(ApiErrCode::CODE_OTHER_EXCEPTION);
+                            reply([invoker, headerOut, body, status]() { invoker(status, headerOut, body); });
+                            return;
+                        }
+                        Json::Value items(Json::arrayValue);
+                        for (const auto &row : rows) {
+                            items.append(row.toJson());
+                        }
+                        val["code"] = 0;
+                        val["msg"] = "success";
+                        val["data"]["results"] = items;
+                        const string body = val.toStyledString();
+                        reply([invoker, headerOut, body]() { invoker(200, headerOut, body); });
+                    });
+            });
     });
 
     DebugL << "Control APIs registered";

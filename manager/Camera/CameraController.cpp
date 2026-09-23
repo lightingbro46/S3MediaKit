@@ -32,14 +32,19 @@ void CameraController::postPriorityDeviceTask(SerialTaskQueue::Task task) {
 
 bool CameraController::hasPendingProfileConfig() const {
     CHECK(_poller->isCurrentThread(), "hasPendingProfileConfig must be called on the owner poller");
-    for (auto &pr : _profileConfigMap) {
-        const auto &status = pr.second.state.status;
-        if (status == configStateToString[VideoConfigSetState::NEW] ||
-            status == configStateToString[VideoConfigSetState::PROCESSING]) {
-            return true;
+    auto pending = [](const VideoEncoderConfig::VideoEncoderConfigMap &configs) {
+        for (auto &pr : configs) {
+            const auto &status = pr.second.state.status;
+            if (status == configStateToString[VideoConfigSetState::NEW] ||
+                status == configStateToString[VideoConfigSetState::PROCESSING]) {
+                return true;
+            }
         }
-    }
-    return false;
+        return false;
+    };
+    // A rule job is time-boxed: it must be confirmed or retried within its apply duration, so it
+    // cannot wait for the slow `profileResyncIntervalSec` re-read either.
+    return pending(_profileConfigMap) || pending(_ruleConfigMap);
 }
 
 void CameraController::postDeviceTaskAfter(int delay_ms, uint64_t ptz_generation,
@@ -785,6 +790,14 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
             new_f_config.state.status = configStateToString[VideoConfigSetState::NEW];
             addProfileConfig(profileToken, new_f_config);
         }
+        if (_ruleConfigMap.count(profileToken)) {
+            // A video config rule owns the token: pushing the user config now would fight the rule
+            // (each sync pushes the rule back). Only the baseline changes; the rollback at the end of
+            // the rule pushes it, and stream_settings keeps it across a restart meanwhile.
+            InfoL << "Profile token: " << profileToken << " is held by a video config rule, config deferred until it ends";
+            addProfileConfig(profileToken, new_f_config);
+            return cb(SockException(Err_success, "Config saved, applied when the video config rule ends", ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED));
+        }
         auto onvif_ctr = _onvif_ctr;
         auto poller = _poller;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
@@ -999,6 +1012,16 @@ void CameraController::storeProfileSetResult(const ProfileSetRequest &request, b
     addProfileConfig(request.token, ok ? request.on_success : request.on_failure);
 }
 
+VideoEncoderConfig CameraController::seedBaselineIfAbsent(const string &profileToken, const VideoEncoderConfig &seed) {
+    auto it = _profileConfigMap.find(profileToken);
+    if (it != _profileConfigMap.end()) {
+        // Set by the user while the camera was being read: that is the baseline now.
+        return it->second;
+    }
+    addProfileConfig(profileToken, seed, true);
+    return seed;
+}
+
 bool CameraController::getBaselineVideoConfig(const string &profileToken, VideoEncoderConfig &config) const {
     auto it = _profileConfigMap.find(profileToken);
     if (it == _profileConfigMap.end()) {
@@ -1025,12 +1048,56 @@ void CameraController::reportRuleConfigResult(const string &profileToken, bool s
         return;
     }
     it->second.reported = true;
-    InfoL << "Report rule config result, logId: " << it->second.logId
+    it->second.success = success;
+    for (const auto &log_id : it->second.logIds) {
+        emitRuleResult(log_id, profileToken, success, err_code, err_msg);
+    }
+}
+
+void CameraController::emitRuleResult(const string &log_id, const string &profileToken, bool success,
+                                      const string &err_code, const string &err_msg) {
+    InfoL << "Report rule config result, logId: " << log_id
           << ", token: " << profileToken
           << ", status: " << (success ? "SUCCESS" : "FAILED")
           << (success ? "" : (", code: " + err_code + ", msg: " + err_msg));
     NOTICE_EMIT(BroadcastVideoConfigRuleResultArgs, Broadcast::kBroadcastVideoConfigRuleResult,
-                it->second.logId, _tuple.device_id, success, err_code, err_msg);
+                log_id, _tuple.device_id, success, err_code, err_msg);
+}
+
+CameraController::RuleAttachResult CameraController::attachRuleLogId(const string &profileToken, const string &logId) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end() || _ruleConfigMap.find(profileToken) == _ruleConfigMap.end()) {
+        return RuleAttachResult::NEEDS_REAPPLY;
+    }
+    auto &ctx = it->second;
+    if (ctx.reported && !ctx.success) {
+        // The camera never took this config: extending must try it again, not repeat the failure.
+        return RuleAttachResult::NEEDS_REAPPLY;
+    }
+    ctx.logIds.push_back(logId);
+    if (ctx.reported) {
+        // Already confirmed on the camera: the extending request is satisfied right away.
+        emitRuleResult(logId, profileToken, true, "", "");
+    }
+    return RuleAttachResult::ATTACHED;
+}
+
+void CameraController::markRuleResultReported(const string &profileToken, bool success) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end()) {
+        return;
+    }
+    it->second.reported = true;
+    it->second.success = success;
+}
+
+bool CameraController::reportRuleFailureIfPending(const string &profileToken, const string &err_code, const string &err_msg) {
+    auto it = _ruleReportMap.find(profileToken);
+    if (it == _ruleReportMap.end() || it->second.reported) {
+        return false;
+    }
+    reportRuleConfigResult(profileToken, false, err_code, err_msg);
+    return true;
 }
 
 void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
@@ -1041,8 +1108,7 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
     _ruleConfigMap[profileToken] = rule_config;
 
     RuleReportContext ctx;
-    ctx.logId = logId;
-    ctx.reported = false;
+    ctx.logIds.push_back(logId);
     _ruleReportMap[profileToken] = ctx;
 
     if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
@@ -1061,7 +1127,10 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
                     if (auto self = weak_self.lock()) {
                         auto it = self->_ruleConfigMap.find(profileToken);
                         if (it != self->_ruleConfigMap.end()) {
-                            it->second.state.status = configStateToString[ex ? VideoConfigSetState::PROCESSING : VideoConfigSetState::SUCCESS];
+                            // PROCESSING whatever the outcome: a camera can accept the set command
+                            // without applying it, so only the next profile re-read may confirm the
+                            // rule (SUCCESS + report) or retry it.
+                            it->second.state.status = configStateToString[VideoConfigSetState::PROCESSING];
                         }
                     }
                     cb(ex);
