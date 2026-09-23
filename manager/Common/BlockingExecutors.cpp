@@ -19,6 +19,7 @@ const string kDeviceThreads = "blocking.deviceThreads";
 const string kDiscoveryThreads = "blocking.discoveryThreads";
 const string kStorageThreads = "blocking.storageThreads";
 const string kFfmpegThreads = "blocking.ffmpegThreads";
+const string kEncryptionThreads = "blocking.encryptionThreads";
 // Read for backward compatibility only; not registered, so fresh configs do not get it.
 const string kLegacyApiWorkerThreads = "api.workerThreads";
 
@@ -95,6 +96,14 @@ int BlockingExecutors::ffmpegThreadCount() {
     return s_threads;
 }
 
+int BlockingExecutors::encryptionThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kEncryptionThreads);
+        return threads > 0 ? threads : 2;
+    }();
+    return s_threads;
+}
+
 TaskExecutor::Ptr BlockingExecutors::api() {
     static TaskExecutor::Ptr s_executor = makePool(apiThreadCount(), "api worker");
     return s_executor;
@@ -112,6 +121,11 @@ TaskExecutor::Ptr BlockingExecutors::discovery() {
 
 TaskExecutor::Ptr BlockingExecutors::storage() {
     static TaskExecutor::Ptr s_executor = makePool(storageThreadCount(), "storage worker");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::encryption() {
+    static TaskExecutor::Ptr s_executor = makePool(encryptionThreadCount(), "encryption worker");
     return s_executor;
 }
 

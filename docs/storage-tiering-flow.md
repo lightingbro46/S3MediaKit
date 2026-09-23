@@ -568,8 +568,9 @@ Với mỗi range, `checkObjectRange()`:
 
 1. Đọc segment từ timefile, dựng key bằng `makeS3Key(base_path, ...)`.
 2. List các day prefix `base_path/camera/stream/YYYY-MM-DD/` của segment đã kết thúc quá `tier_reconcile_min_age_seconds` (range tách ở nửa đêm địa phương nên thường 1–2 prefix). List lỗi (bất kỳ trang nào) thì dừng pool ở lượt này, không đổi gì và không tiến con trỏ.
-3. Key không có trong listing chỉ bị coi là mất khi `headSegment()` trả `ABSENT` (HTTP 404); `PRESENT` thì giữ (listing trễ), lỗi khác thì dừng như trên.
-4. Object có size khác `file_size` của TimeBlock chỉ ghi `TIER_OBJECT_SIZE_MISMATCH` (một lần/range/tiến trình), không đổi range.
+3. Bản ghi mã hoá được upload dưới key `<key>.enc` (xem 8.8), nên cả hai cách viết đều được coi là có mặt: tìm key trơn trước rồi tới `<key>.enc` trong listing.
+4. Key không có trong listing (cả hai cách viết) chỉ bị coi là mất khi `headSegment()` trả `ABSENT` (HTTP 404) cho **cả** key trơn lẫn `<key>.enc`; `PRESENT` ở một trong hai thì giữ (listing trễ), lỗi khác thì dừng như trên.
+5. Object có size khác `file_size` của TimeBlock chỉ ghi `TIER_OBJECT_SIZE_MISMATCH` (một lần/range/tiến trình), không đổi range. Với biến thể `.enc`, size hợp lệ là `file_size` + kích thước trailer mã hoá (80 byte).
 
 Chặn mất hàng loạt (mass-loss guard): range mất toàn bộ object không bị sửa ngay mà chờ trong bộ nhớ đến khi pool chứng minh cấu hình đúng, tức là gặp một range còn ít nhất một object (lúc đó các range chờ được áp dụng), hoặc hết lượt quét mà đã từng gặp object. Nếu `tier_object_reconcile_mass_loss_threshold` (mặc định 20) range liên tiếp mất toàn bộ, hoặc hết lượt quét mà pool không có object nào, backend coi là cấu hình sai (đổi `base_path`, sai bucket/credential, bucket bị reset): không đổi gì, ghi `POOL_OBJECTS_MISSING_SUSPECT` (ERROR) và dừng đối soát pool đó `tier_object_reconcile_pause_seconds` (mặc định 3 600 s). Đổi endpoint/bucket/`base_path` của pool xoá toàn bộ trạng thái đang chờ. Hệ quả: pool chỉ có vài range và đã mất hết object luôn bị giữ nguyên kèm cảnh báo, cần người vận hành xác nhận.
 
@@ -580,7 +581,7 @@ Bucket bật versioning: object đã xoá (delete marker) không có trong `List
 Sau lượt đối soát range, mỗi pool object còn dùng được (không bị pause) chạy `runObjectOrphanSweep()` trong `tier_object_orphan_work_budget_ms` (mặc định 1 000 ms, `0` tắt), tối đa một lượt mỗi `tier_object_orphan_sweep_interval_seconds` (mặc định 1 ngày):
 
 1. Duyệt `base_path/` bằng `listCommonPrefixes` xuống `camera/stream/YYYY-MM-DD/`; thư mục cấp ngày không đúng dạng ngày bị bỏ qua. Trạng thái lượt quét giữ trong bộ nhớ, list lỗi thì thử lại prefix đó ở cycle sau.
-2. Với mỗi day prefix: list object, lấy các range `AVAILABLE/RESTORING/EXPIRED` của pool cho camera/stream đó chồng lên ngày (±1 giờ), đọc segment từ timefile để dựng tập key sở hữu. Timefile đọc lỗi thì coi cả ngày là có chủ.
+2. Với mỗi day prefix: list object, lấy các range `AVAILABLE/RESTORING/EXPIRED` của pool cho camera/stream đó chồng lên ngày (±1 giờ), đọc segment từ timefile để dựng tập key sở hữu (mỗi segment sở hữu cả key trơn lẫn `<key>.enc`). Timefile đọc lỗi thì coi cả ngày là có chủ.
 3. Object không thuộc tập đó và có `LastModified` cũ hơn `tier_object_orphan_min_age_seconds` (mặc định 1 ngày, vì upload ghi object trước khi range chuyển sang pool) được đếm là mồ côi.
 4. Hết lượt: nếu có, ghi một cảnh báo `POOL_ORPHAN_OBJECTS` (WARNING) với số object, tổng byte và key đầu tiên.
 

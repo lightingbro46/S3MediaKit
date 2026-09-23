@@ -595,6 +595,7 @@ const string kPoolHealthFailureThreshold = STORAGE_FIELD "pool_health_failure_th
 const string kPoolHealthRecoveryThreshold = STORAGE_FIELD "pool_health_recovery_threshold";
 const string kPoolHealthStaleAfterSeconds = STORAGE_FIELD "pool_health_stale_after_seconds";
 const string kPoolHealthMetricSnapshotIntervalSeconds = STORAGE_FIELD "pool_health_metric_snapshot_interval_seconds";
+const string kDecryptSavePath = STORAGE_FIELD "decrypt_save_path";
 
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
@@ -603,8 +604,10 @@ static onceToken token([]() {
     mINI::Instance()[kAutoRestoreMaxConcurrent] = 5;
 #if defined(__linux__)
     mINI::Instance()[kRestoreSavePath] = "/dev/shm/restore";
+    mINI::Instance()[kDecryptSavePath] = "/dev/shm/decrypt";
 #else
     mINI::Instance()[kRestoreSavePath] = "./www/restore";
+    mINI::Instance()[kDecryptSavePath] = "./www/decrypt";
 #endif
     mINI::Instance()[kRestoreTTLSeconds] = 3600; // 1 hour
     mINI::Instance()[kObjectReadMode] = "RESTORE";

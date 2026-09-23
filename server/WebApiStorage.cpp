@@ -28,6 +28,8 @@
 #include "Common/StrUtil.h"
 #include "Local/TierStorageBase.h"
 #include "Local/TierStorageManager.h"
+#include "Local/TierEncryptionManager.h"
+#include "Local/TierEncryptionUtils.h"
 #include "Storage/StoragePool.h"
 #include "Storage/StoragePolicy.h"
 #include "Storage/PolicyAssignment.h"
@@ -140,6 +142,51 @@ void splitKnownCameras(const Json::Value &camera_ids_arr,
     }
 }
 
+// Accepts both spellings the clients use: the numeric mode (0/1/2) and its name.
+bool parseEncryptionMode(const std::string &raw, RecordEncryptionMode &out) {
+    if (raw.empty())
+        return false;
+    if (raw.find_first_not_of("0123456789") == std::string::npos) {
+        int v = std::atoi(raw.c_str());
+        if (v < 0 || v >= static_cast<int>(RecordEncryptionMode::kMax))
+            return false;
+        out = static_cast<RecordEncryptionMode>(v);
+        return true;
+    }
+    auto mode = RecordEncryptionUtils::encryptionModeFromString(raw);
+    if (mode == RecordEncryptionMode::kMax)
+        return false;
+    out = mode;
+    return true;
+}
+
+// The encryption manager matches a finished recording to its pool by mount path, so a
+// pool that gains encryption must publish its root before any file is written there.
+void registerEncryptionMountPath(const StoragePool &p) {
+    if (p.tier != tierTypeToString(HotTier))
+        return;
+    std::string root = p.mount_path.value_or("");
+    if (root.empty())
+        root = p.network_path.value_or("");
+    if (root.empty())
+        return;
+    TierEncryptionManager::Instance().registerMountPath(p.id, root);
+}
+
+// Reads encryptMode from a request body. Returns false when the field is absent.
+bool readEncryptionMode(const Json::Value &body, RecordEncryptionMode &out) {
+    if (!body.isMember("encryptMode") || body["encryptMode"].isNull())
+        return false;
+    std::string raw = body["encryptMode"].isString()
+                    ? body["encryptMode"].asString()
+                    : std::to_string(body["encryptMode"].asInt());
+    if (!parseEncryptionMode(raw, out)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS,
+                                   "Invalid encryptMode, expect 0/1/2 or none/light/strong");
+    }
+    return true;
+}
+
 Json::Value failedIdsToJson(const std::vector<std::string> &unknown,
                             const std::vector<std::string> &failed) {
     Json::Value failed_arr(Json::arrayValue);
@@ -175,7 +222,9 @@ void storagePoolDetail(const ArgsMap &allArgs, Json::Value &val) {
     if (pools.empty()) {
         throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
     }
-    val["data"] = TierStorageBase::poolDetailToJson(pools.front());
+    auto pool = pools.front();
+    TierStorageManager::Instance().fillPoolEncryptionUsage(pool);
+    val["data"] = TierStorageBase::poolDetailToJson(pool);
 }
 
 void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
@@ -190,11 +239,60 @@ void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
                                    "high_watermark_percent must be less than critical_watermark_percent");
     }
 
+    RecordEncryptionMode encrypt_mode = RecordEncryptionMode::kNone;
+    readEncryptionMode(allArgs.getArgs(), encrypt_mode);
+    const std::string encrypt_password = allArgs.getArgs().get("encryptPassword", "").asString();
+    const bool encrypt_old_video = allArgs.getArgs().get("encryptOldVideo", false).asBool();
+
+    const bool want_encryption = (encrypt_mode != RecordEncryptionMode::kNone);
+    if (want_encryption) {
+        if (pool.tier != tierTypeToString(HotTier)) {
+            throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS,
+                                       "Encryption is only supported on HOT tier pools");
+        }
+        if (encrypt_password.empty()) {
+            throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS,
+                                       "encryptPassword is required when encryptMode is not none");
+        }
+    }
+
     auto id = TierStorageManager::Instance().createPool(pool);
     if (id.empty()) {
         throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
     }
     val["data"]["id"] = id;
+
+    if (!want_encryption)
+        return;
+
+    pool.id = id;
+    registerEncryptionMountPath(pool);
+    auto &enc_mgr = TierEncryptionManager::Instance();
+    if (!enc_mgr.initialConfigTier(id, encrypt_mode, encrypt_password, encrypt_old_video)) {
+        // A pool whose encryption never came up would record in plaintext while the
+        // client believes it is encrypted, so the creation is rolled back instead.
+        int ref = 0;
+        bool is_default = false;
+        TierStorageManager::Instance().deletePool(id, ref, is_default);
+        enc_mgr.unregisterMountPath(id);
+        throw ApiResponseException(ApiErrCode::CODE_CONFIG_ENCRYPTION_PASSWORD_FALIED,
+                                   "Failed to initialize encryption config, pool creation rolled back");
+    }
+
+    if (encrypt_old_video) {
+        std::string job_err;
+        bool started = enc_mgr.startReencryptJob(id, &job_err);
+        val["data"]["reencrypt_started"] = started;
+        if (!started) {
+            val["data"]["reencrypt_error"] = job_err;
+            WarnL << "Pool " << id << " created, but the re-encryption job for existing data "
+                     "could not be started: " << job_err;
+        }
+    }
+
+    auto created = TierStorageManager::Instance().getPool(id);
+    if (!created.empty())
+        val["data"]["encryption"] = TierStorageBase::encryptionStatusToJson(created.front());
 }
 
 void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
@@ -218,14 +316,124 @@ void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
         throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);
     }
 
+    RecordEncryptionMode encrypt_mode = RecordEncryptionMode::kNone;
+    const bool has_encrypt_mode = readEncryptionMode(body, encrypt_mode);
+    const bool has_encrypt_old = body.isMember("encryptOldVideo") && !body["encryptOldVideo"].isNull();
+    const bool encrypt_old_video = has_encrypt_old && body["encryptOldVideo"].asBool();
+    const std::string encrypt_password = body.get("encryptPassword", "").asString();
+
+    auto &enc_mgr = TierEncryptionManager::Instance();
+    const bool is_hot = (base.tier == tierTypeToString(HotTier));
+    const bool configured = enc_mgr.tierExists(pool_id);
+
+    RecordEncryptionMode current_mode = RecordEncryptionMode::kNone;
+    bool current_eov = false;
+    std::string verify_salt, verify_hash;
+    if (configured) {
+        auto cfg = enc_mgr.getTierConfig(pool_id);
+        current_mode = cfg.mode;
+        current_eov  = cfg.encrypt_old_video;
+        verify_salt  = cfg.verify_salt;
+        verify_hash  = cfg.verify_hash;
+    }
+
+    const bool mode_changed = has_encrypt_mode && (encrypt_mode != current_mode);
+    // encryptOldVideo only means something once a mode is, or is becoming, non-none.
+    const bool eov_applicable = configured || (mode_changed && encrypt_mode != RecordEncryptionMode::kNone);
+    const bool eov_changed = has_encrypt_old && eov_applicable && (encrypt_old_video != current_eov);
+    const bool enc_changed = mode_changed || eov_changed;
+
+    if (enc_changed && !is_hot) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS,
+                                   "Encryption is only supported on HOT tier pools");
+    }
+    if (enc_changed && enc_mgr.isAnyJobRunning()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING,
+                                   "A re-encrypt job is running for tier: " + enc_mgr.getRunningJobTierId());
+    }
+    if (mode_changed) {
+        if (encrypt_password.empty()) {
+            throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, configured
+                                       ? "encryptPassword is required to change encryptMode"
+                                       : "encryptPassword is required to enable encryption");
+        }
+        if (configured && !RecordEncryptionUtils::verifyPassword(encrypt_password, verify_salt, verify_hash)) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_INVALID_OLD_PASSWORD,
+                                       "Invalid encryptPassword");
+        }
+    }
+
     if (!TierStorageManager::Instance().updatePool(base)) {
         throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
     }
     val["data"]["id"] = pool_id;
+
+    registerEncryptionMountPath(base);
+    if (mode_changed && !configured) {
+        if (!enc_mgr.initialConfigTier(pool_id, encrypt_mode, encrypt_password, encrypt_old_video)) {
+            throw ApiResponseException(ApiErrCode::CODE_CONFIG_ENCRYPTION_PASSWORD_FALIED,
+                                       "Failed to initialize encryption config");
+        }
+        if (encrypt_old_video) {
+            std::string job_err;
+            val["data"]["reencrypt_started"] = enc_mgr.startReencryptJob(pool_id, &job_err);
+            if (!job_err.empty())
+                val["data"]["reencrypt_error"] = job_err;
+        }
+    } else {
+        if (eov_changed) {
+            std::string err;
+            // A mode change right after this starts its own pass, and only one job may
+            // run per tier, so the option must not trigger a second one.
+            if (!enc_mgr.updateEncryptOldVideoOption(pool_id, encrypt_old_video,
+                                                     /*trigger_reencrypt=*/!mode_changed, &err)) {
+                throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_MODE_FAILED,
+                                           err.empty() ? "Failed to update encryptOldVideo" : err);
+            }
+        }
+        if (mode_changed) {
+            std::string err;
+            if (!enc_mgr.updateEncryptionMode(pool_id, encrypt_mode, encrypt_password,
+                                              /*trigger_reencrypt=*/true, &err)) {
+                throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_MODE_FAILED,
+                                           err.empty() ? "Failed to change encryptMode" : err);
+            }
+        }
+    }
+
+    auto refreshed = TierStorageManager::Instance().getPool(pool_id);
+    if (!refreshed.empty())
+        val["data"]["encryption"] = TierStorageBase::encryptionStatusToJson(refreshed.front());
 }
 
 void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val) {
     string pool_id = allArgs["id"];
+    auto &enc_mgr = TierEncryptionManager::Instance();
+
+    if (enc_mgr.tierExists(pool_id)) {
+        if (enc_mgr.isAnyJobRunning() && enc_mgr.getRunningJobTierId() == pool_id) {
+            throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING,
+                                       "Cannot delete pool while its re-encrypt job is running");
+        }
+        if (enc_mgr.hasEncryptedData(pool_id)) {
+            // Deleting the pool destroys the key, so any segment still keyed to it would
+            // become unreadable wherever it now sits.
+            int origin_segments = TierStorageManager::Instance().countSegmentsByOriginPool(pool_id);
+            if (origin_segments < 0) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_IN_USE,
+                                           "Cannot verify whether encrypted segments still depend on this pool, retry later");
+            }
+            if (origin_segments > 0) {
+                val["data"]["origin_segment_count"] = origin_segments;
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_IN_USE,
+                                           "Cannot delete pool: " + std::to_string(origin_segments) +
+                                           " encrypted segment(s) still depend on its encryption key. "
+                                           "Enable encryptOldVideo and set encryption mode to none to "
+                                           "decrypt them first.");
+            }
+        }
+    }
+
     int ref_count = 0;
     bool is_default_pool = false;
     if (!TierStorageManager::Instance().deletePool(pool_id, ref_count, is_default_pool)) {
@@ -242,6 +450,58 @@ void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val) {
         }
         throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
     }
+
+    if (enc_mgr.tierExists(pool_id) && !enc_mgr.removeTierConfig(pool_id)) {
+        WarnL << "Pool " << pool_id << " deleted but its encryption config could not be removed";
+    }
+    // Otherwise the dead tier id keeps shadowing the mount for the next pool on it.
+    enc_mgr.unregisterMountPath(pool_id);
+}
+
+void storagePoolEncryptChangePassword(const ArgsMap &allArgs, Json::Value &val) {
+    string pool_id      = allArgs["id"];
+    string old_password = allArgs["old_password"];
+    string new_password = allArgs["new_password"];
+
+    if (new_password.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, "new_password must not be empty");
+    }
+    if (new_password == old_password) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_PASSWORD_SAME,
+                                   "new_password must be different from old_password");
+    }
+
+    auto pools = TierStorageManager::Instance().getPool(pool_id);
+    if (pools.empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+    }
+
+    auto &enc_mgr = TierEncryptionManager::Instance();
+    if (!enc_mgr.tierExists(pool_id)) {
+        throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS,
+                                   "Encryption has not been configured for this pool");
+    }
+    if (enc_mgr.isAnyJobRunning()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING,
+                                   "A re-encrypt job is running for tier: " + enc_mgr.getRunningJobTierId());
+    }
+
+    auto cfg = enc_mgr.getTierConfig(pool_id);
+    if (!RecordEncryptionUtils::verifyPassword(old_password, cfg.verify_salt, cfg.verify_hash)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_INVALID_OLD_PASSWORD, "Invalid old_password");
+    }
+
+    std::string err;
+    // trigger_reencrypt=false: the new key applies to new recordings, and existing
+    // footage is rewritten by the pass the manager schedules for the encrypted scope.
+    if (!enc_mgr.updateEncryptionSalts(pool_id, old_password, new_password,
+                                       /*trigger_reencrypt=*/false, &err)) {
+        throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_PASSWORD_FALIED,
+                                   err.empty() ? "Failed to change encryption password" : err);
+    }
+
+    val["data"]["id"] = pool_id;
+    val["data"]["encryption"] = TierStorageBase::encryptionStatusToJson(pools.front());
 }
 
 void storagePoolTestConnection(const ArgsJson &allArgs, Json::Value &val) {
@@ -288,6 +548,10 @@ void storagePoolOptions(Json::Value &val) {
     data["poolsTypeSupport"]["HOT"]  = poolTypeSupport(TierType::HotTier);
     data["poolsTypeSupport"]["WARM"] = poolTypeSupport(TierType::WarmTier);
     data["poolsTypeSupport"]["COLD"] = poolTypeSupport(TierType::ColdTier);
+    data["encryptionSupport"] = Json::objectValue;
+    data["encryptionSupport"]["HOT"]  = poolEncryptionSupport(TierType::HotTier);
+    data["encryptionSupport"]["WARM"] = poolEncryptionSupport(TierType::WarmTier);
+    data["encryptionSupport"]["COLD"] = poolEncryptionSupport(TierType::ColdTier);
     val["data"] = data;
 }
 
@@ -852,6 +1116,17 @@ void registerStorageApis() {
 
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
             storagePoolDelete(allArgs, val);
+        }, nullptr, apiWorkSerial("storage.mutation"));
+    });
+
+    // POST /media/mserver/storage/pool/encrypt/changePassword
+    api_regist("/media/mserver/storage/pool/encrypt/changePassword", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(MODIFY_MSERVER_PERMISSION_CODE);
+        CHECK_ARGS_("id", "old_password", "new_password");
+
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            storagePoolEncryptChangePassword(allArgs, val);
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 

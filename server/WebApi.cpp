@@ -90,6 +90,7 @@
 #include "Local/TierStorageManager.h"
 #endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
+#include "HlsPlayback.h"
 
 using namespace std;
 using namespace Json;
@@ -2867,6 +2868,15 @@ void installWebApi() {
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
 
+    api_regist("/media/api/storage/pool/encrypt/changePassword", [](API_ARGS_MAP_ASYNC) {
+        CHECK_SECRET();
+        CHECK_ARGS_("id", "old_password", "new_password");
+
+        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
+            storagePoolEncryptChangePassword(allArgs, val);
+        }, nullptr, apiWorkSerial("storage.mutation"));
+    });
+
     api_regist("/media/api/storage/policy/list", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
 
@@ -2969,6 +2979,8 @@ void installWebApi() {
     managerkit::registerStorageApis();
     // Historical sd card sync APIs
     managerkit::registerHistoricalSDCardSyncApis();
+    // Hls playback APIs
+    installHlsPlaybackApi();
 }
 
 void unInstallWebApi(){

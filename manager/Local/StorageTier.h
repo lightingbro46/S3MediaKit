@@ -103,6 +103,22 @@ inline Json::Value poolTypeSupport(TierType t) {
     return v;
 }
 
+// Record encryption is only applied while data sits on the HOT tier.
+inline Json::Value poolEncryptionSupport(TierType t) {
+    Json::Value v;
+    switch (t) {
+    case TierType::HotTier:
+        v["enable"] = true;
+        break;
+    case TierType::WarmTier:
+    case TierType::ColdTier:
+    case TierType::TierMax:
+        v["enable"] = false;
+        break;
+    }
+    return v;
+}
+
 // ===================================================================
 // Pool / tier health
 // ===================================================================

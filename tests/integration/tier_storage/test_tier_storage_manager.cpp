@@ -35,6 +35,7 @@
 #include "Camera/CameraStatistic.h"
 #include "Local/SearchEngine.h"
 #include "Local/StatisticRecorder.h"
+#include "Local/TierEncryptionUtils.h"
 #include "Local/TierStorageManager.h"
 #include "Local/TimeFileDirtyTracker.h"
 #include "Local/TimeMuxer.h"
@@ -4011,6 +4012,79 @@ int scenarioObjectReconcileFixesMissingObjects(const std::string &root) {
     return 0;
 }
 
+int scenarioObjectReconcileKeepsEncryptedObjects(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const std::string enc_suffix = RecordEncryptionUtils::encryptedFileSuffix();
+    // An encrypted upload keeps the plaintext key plus ".enc" and carries the trailer on top
+    // of the size the timefile declares.
+    const int64_t trailer = static_cast<int64_t>(EncryptedFileTrailer::kSize);
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t base = now - 3 * 86400;
+    const int64_t two_days = 2 * 86400;
+
+    // A range that spans a key era change: the first segment was uploaded before encryption
+    // was turned on, the other two after. One present object keeps the range out of the
+    // mass-loss guard, so a wrong key spelling shows up as dropped segments right away.
+    std::vector<std::string> enc_keys;
+    const auto encrypted = seedRangeOnPool(manager, root, cold, "camera-enc", base, 3, 100, enc_keys);
+    server.putObject(bucket, enc_keys[0], 100, two_days);
+    for (size_t i = 1; i < enc_keys.size(); ++i)
+        server.putObject(bucket, enc_keys[i] + enc_suffix, 100 + trailer, two_days);
+    // Encrypted and absent from the listing: only a HEAD on the ".enc" spelling finds it.
+    std::vector<std::string> lag_keys;
+    const auto lagging = seedRangeOnPool(manager, root, cold, "camera-enc-lag", base + 600, 1, 100, lag_keys);
+    server.putObject(bucket, lag_keys[0] + enc_suffix, 100 + trailer, two_days);
+    const std::string lag_prefix = lag_keys[0].substr(0, lag_keys[0].rfind('/') + 1);
+    server.setHandler([lag_prefix](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "GET" || request.target.find("list-type=2") == std::string::npos)
+            return false;
+        std::string encoded;
+        for (char c : lag_prefix)
+            encoded += c == '/' ? std::string("%2F") : std::string(1, c);
+        if (request.target.find("prefix=" + encoded) == std::string::npos &&
+            request.target.find("prefix=" + lag_prefix) == std::string::npos) {
+            return false;
+        }
+        response.body = "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                        "<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>";
+        return true;
+    });
+    // Really lost: neither spelling is in the bucket.
+    std::vector<std::string> gone_keys;
+    const auto gone = seedRangeOnPool(manager, root, cold, "camera-enc-gone", base + 1200, 2, 100, gone_keys);
+
+    runMaintenanceCycle(manager);
+
+    require(rangeStatus(encrypted.range_id) == "AVAILABLE" &&
+                SegmentTierRangeImp().queryByCamera("camera-enc").size() == 1,
+            "An encrypted range changed although every object is in the bucket");
+    require(timelineStarts("camera-enc", base - 60, base + 240).size() == 3,
+            "The timeline lost segments stored under the \".enc\" key");
+    require(!hasAlert("TIER_SEGMENT_MISSING", encrypted.range_id),
+            "Objects stored under the \".enc\" key were reported as missing");
+    require(countAlertsOfType("TIER_OBJECT_SIZE_MISMATCH") == 0,
+            "The encryption trailer was counted as a size mismatch");
+
+    require(rangeStatus(lagging.range_id) == "AVAILABLE",
+            "An encrypted object missing only from the listing was dropped although HEAD found it");
+    require(!server.requests("HEAD", lag_keys[0] + enc_suffix).empty(),
+            "The HEAD fallback never asked for the \".enc\" spelling");
+
+    require(rangeStatus(gone.range_id) == "MISSING",
+            "A range whose object is gone under both spellings was kept");
+    require(countAlerts("POOL_ORPHAN_OBJECTS", cold.id) == 0,
+            "Encrypted objects owned by a range were reported as orphans");
+    manager.stop();
+    return 0;
+}
+
 int scenarioObjectReconcileListFailureAndReportMode(const std::string &root) {
     migrateDatabase(root);
     FakeS3Server server;
@@ -5855,6 +5929,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "object-retention-batch-delete") return scenarioObjectRetentionDeletesInOneBatch(root);
         if (name == "object-list-head-api") return scenarioObjectListAndHeadApi(root);
         if (name == "object-reconcile-fix") return scenarioObjectReconcileFixesMissingObjects(root);
+        if (name == "object-reconcile-enc-keys") return scenarioObjectReconcileKeepsEncryptedObjects(root);
         if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
         if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
         if (name == "restore-missing-object-reconcile") return scenarioRestoreOfMissingObjectPrioritizesReconcile(root);
@@ -6083,6 +6158,11 @@ TEST(TierStorageManagerIntegrationTest, ListsObjectsAndProvesAbsenceOnlyOn404) {
 TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseObjectsAreMissing) {
     TempRoot root;
     EXPECT_EQ(0, runChild("object-reconcile-fix", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsEncryptedObjects) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-reconcile-enc-keys", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsRangesOnListFailureAndInReportMode) {
