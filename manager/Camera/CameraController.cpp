@@ -32,14 +32,19 @@ void CameraController::postPriorityDeviceTask(SerialTaskQueue::Task task) {
 
 bool CameraController::hasPendingProfileConfig() const {
     CHECK(_poller->isCurrentThread(), "hasPendingProfileConfig must be called on the owner poller");
-    for (auto &pr : _profileConfigMap) {
-        const auto &status = pr.second.state.status;
-        if (status == configStateToString[VideoConfigSetState::NEW] ||
-            status == configStateToString[VideoConfigSetState::PROCESSING]) {
-            return true;
+    auto pending = [](const VideoEncoderConfig::VideoEncoderConfigMap &configs) {
+        for (auto &pr : configs) {
+            const auto &status = pr.second.state.status;
+            if (status == configStateToString[VideoConfigSetState::NEW] ||
+                status == configStateToString[VideoConfigSetState::PROCESSING]) {
+                return true;
+            }
         }
-    }
-    return false;
+        return false;
+    };
+    // A rule job is time-boxed: it must be confirmed or retried within its apply duration, so it
+    // cannot wait for the slow `profileResyncIntervalSec` re-read either.
+    return pending(_profileConfigMap) || pending(_ruleConfigMap);
 }
 
 void CameraController::postDeviceTaskAfter(int delay_ms, uint64_t ptz_generation,
@@ -1061,7 +1066,10 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
                     if (auto self = weak_self.lock()) {
                         auto it = self->_ruleConfigMap.find(profileToken);
                         if (it != self->_ruleConfigMap.end()) {
-                            it->second.state.status = configStateToString[ex ? VideoConfigSetState::PROCESSING : VideoConfigSetState::SUCCESS];
+                            // PROCESSING whatever the outcome: a camera can accept the set command
+                            // without applying it, so only the next profile re-read may confirm the
+                            // rule (SUCCESS + report) or retry it.
+                            it->second.state.status = configStateToString[VideoConfigSetState::PROCESSING];
                         }
                     }
                     cb(ex);

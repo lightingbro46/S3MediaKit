@@ -584,6 +584,11 @@ bool GenericRtspCameraImp::isRuleResultReported(const std::string &profileToken)
     return _controller ? _controller->isRuleResultReported(profileToken) : false;
 }
 
+bool GenericRtspCameraImp::isControllerReady() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call isControllerReady in it's owner poller");
+    return _controller ? _controller->isReady() : false;
+}
+
 void GenericRtspCameraImp::ensureBaselineVideoConfig(const std::string &profileToken, const std::function<void(const SockException &ex, const VideoEncoderConfig &config)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call ensureBaselineVideoConfig in it's owner poller");
 

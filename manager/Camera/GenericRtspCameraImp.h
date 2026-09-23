@@ -66,6 +66,9 @@ public:
 
     bool isRuleResultReported(const std::string &profileToken);
 
+    // True while the ONVIF controller is connected to the camera.
+    bool isControllerReady();
+
     void getSDCardInfo(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb);
 
 public:

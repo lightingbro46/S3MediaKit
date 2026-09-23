@@ -38,6 +38,13 @@ public:
         out = it->second;
         return true;
     }
+
+    static bool ruleConfig(CameraController &c, const std::string &token, VideoEncoderConfig &out) {
+        auto it = c._ruleConfigMap.find(token);
+        if (it == c._ruleConfigMap.end()) return false;
+        out = it->second;
+        return true;
+    }
 };
 
 } // namespace managerkit
@@ -660,4 +667,194 @@ TEST_F(CameraControllerTest, PendingProfileConfigIsOnlyNewOrProcessing) {
         controller->addProfileConfig("p-processing", config(configStateToString[VideoConfigSetState::PROCESSING]), false);
     });
     EXPECT_TRUE(pending());
+}
+
+// ── Video config rule jobs ───────────────────────────────────────────────────────────────────────
+// A rule is time-boxed (applyDuration). Its result used to be reported only by a profile re-read,
+// and hasPendingProfileConfig() ignored rules, so with the default 900 s re-read interval a rule
+// that the camera had applied at once was still reported CONTROLLER_OFFLINE when it expired.
+
+namespace {
+
+const char *kRuleToken = "p-rule";
+
+VideoEncoderConfig ruleConfig() {
+    VideoEncoderConfig config;
+    config.vcodec = "H264";
+    config.width = 1280;
+    config.height = 720;
+    config.bitrate = 1024;
+    config.fps = 10;
+    config.quality = 0;
+    return config;
+}
+
+OnvifMediaProfile ruleProfile(bool matches_rule) {
+    OnvifMediaProfile profile;
+    profile.token = kRuleToken;
+    profile.vcodec = "H264";
+    profile.width = matches_rule ? 1280 : 1920;
+    profile.height = matches_rule ? 720 : 1080;
+    profile.bitrate = matches_rule ? 1024 : 4096;
+    profile.fps = matches_rule ? 10 : 25;
+    return profile;
+}
+
+// Collects the kBroadcastVideoConfigRuleResult emissions of the test camera.
+class RuleResultRecorder {
+public:
+    struct Result {
+        std::string log_id;
+        bool success = false;
+        std::string err_code;
+    };
+
+    RuleResultRecorder() {
+        auto self = this;
+        NoticeCenter::Instance().addListener(this, mediakit::Broadcast::kBroadcastVideoConfigRuleResult,
+            [self](BroadcastVideoConfigRuleResultArgs) {
+                if (device_id != "cam-controller-test") return;
+                Result result;
+                result.log_id = log_id;
+                result.success = success;
+                result.err_code = err_code;
+                std::lock_guard<std::mutex> lck(self->_mtx);
+                self->_results.push_back(result);
+            });
+    }
+
+    ~RuleResultRecorder() {
+        NoticeCenter::Instance().delListener(this, mediakit::Broadcast::kBroadcastVideoConfigRuleResult);
+    }
+
+    std::vector<Result> results() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _results;
+    }
+
+private:
+    std::mutex _mtx;
+    std::vector<Result> _results;
+};
+
+int setCallCount(const std::shared_ptr<FakeOnvifControl> &fake) {
+    int count = 0;
+    for (const auto &call : fake->calls()) {
+        if (call.name == "SetVideoEncoderConfig") ++count;
+    }
+    return count;
+}
+
+} // namespace
+
+class CameraControllerRuleTest : public CameraControllerTest {
+protected:
+    VideoEncoderConfig readRule() {
+        VideoEncoderConfig config;
+        auto controller = _controller;
+        onPoller([&]() { CameraControllerTestPeer::ruleConfig(*controller, kRuleToken, config); });
+        return config;
+    }
+
+    bool pending() {
+        bool result = false;
+        auto controller = _controller;
+        onPoller([&]() { result = CameraControllerTestPeer::hasPendingProfileConfig(*controller); });
+        return result;
+    }
+
+    // Applies the rule and waits for the direct set command to finish; returns its error code.
+    int applyRule() {
+        CbProbe probe;
+        auto controller = _controller;
+        auto cb = probe.cb();
+        onPoller([&]() { controller->applyRuleVideoConfigAsync("log-1", kRuleToken, ruleConfig(), cb); });
+        EXPECT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+        auto codes = probe.get();
+        return codes.empty() ? -1 : codes.front();
+    }
+
+    // One profile re-read, driven like the maintenance cycle does from the device queue.
+    void syncOnce() {
+        auto controller = _controller;
+        auto fake = _fake;
+        std::thread device([controller, fake]() { CameraControllerTestPeer::syncMediaProfile(*controller, fake); });
+        device.join();
+        // The decisions and the stored set results are queued on the poller: let them drain,
+        // then let the set commands the decisions posted run and store their results as well.
+        for (int i = 0; i < 3; ++i) {
+            onPoller([]() {});
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+    }
+};
+
+TEST_F(CameraControllerRuleTest, PendingRuleKeepsTheProfileReReadDue) {
+    _fake->setProfiles({ruleProfile(true)}, "");
+    EXPECT_FALSE(pending());
+
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    // The set command succeeded but nothing has confirmed the camera applied it yet.
+    EXPECT_EQ(configStateToString[VideoConfigSetState::PROCESSING], readRule().state.status);
+    EXPECT_TRUE(pending());
+
+    syncOnce();
+    EXPECT_EQ(configStateToString[VideoConfigSetState::SUCCESS], readRule().state.status);
+    EXPECT_FALSE(pending());
+}
+
+TEST_F(CameraControllerRuleTest, AppliedRuleIsReportedOnceWhenTheReReadConfirmsIt) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(true)}, "");
+
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    EXPECT_TRUE(recorder.results().empty()) << "reported before the camera config was read back";
+
+    syncOnce();
+    syncOnce();
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_TRUE(results[0].success);
+    EXPECT_EQ("log-1", results[0].log_id);
+    EXPECT_EQ(1, setCallCount(_fake)); // confirmed without pushing the rule again
+}
+
+TEST_F(CameraControllerRuleTest, FailedDirectSetIsRetriedInsteadOfReported) {
+    RuleResultRecorder recorder;
+    _fake->setProfiles({ruleProfile(false)}, kRuleToken);
+
+    EXPECT_EQ(ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED, applyRule());
+    EXPECT_TRUE(recorder.results().empty());
+    EXPECT_TRUE(pending());
+
+    // The camera answers again: the re-read pushes the rule once more, then confirms it.
+    _fake->setProfiles({ruleProfile(false)}, "");
+    syncOnce();
+    EXPECT_EQ(2, setCallCount(_fake));
+    EXPECT_TRUE(recorder.results().empty());
+
+    _fake->setProfiles({ruleProfile(true)}, "");
+    syncOnce();
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_TRUE(results[0].success);
+}
+
+TEST_F(CameraControllerRuleTest, RuleTheCameraNeverAppliesIsReportedOnceAfterTheRetries) {
+    RuleResultRecorder recorder;
+    // The camera accepts every set command but keeps its old config.
+    _fake->setProfiles({ruleProfile(false)}, "");
+
+    ASSERT_EQ(ApiErrCode::CODE_SUCCESS, applyRule());
+    for (int i = 0; i < 8 && recorder.results().empty(); ++i) {
+        syncOnce();
+    }
+    syncOnce(); // one more re-read must not report again
+
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_FALSE(results[0].success);
+    EXPECT_EQ("CONFIG_NOT_APPLIED", results[0].err_code);
+    EXPECT_EQ(1 + 5, setCallCount(_fake)); // the direct set, then retry_time re-pushes
+    EXPECT_FALSE(pending());
 }

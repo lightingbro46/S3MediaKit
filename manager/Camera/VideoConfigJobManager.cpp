@@ -190,7 +190,7 @@ void VideoConfigJobManager::startJob(const GenericRtspCameraImp::Ptr &device, co
     VideoEncoderConfig config = job.toVideoEncoderConfig();
     device->applyRuleVideoConfig(job.logId, job.profileToken, config, [key](const SockException &ex) {
         if (ex) {
-            TraceL << "Apply not yet successful, waiting for syncMediaProfile retry, key=" << key << ", err=" << ex.what();
+            WarnL << "Apply not yet successful, waiting for syncMediaProfile retry, key=" << key << ", err=" << ex.what();
         }
     });
 
@@ -267,7 +267,11 @@ void VideoConfigJobManager::finishJob(const GenericRtspCameraImp::Ptr &device, c
     string profileToken = slot->active.profileToken;
 
     if (!device->isRuleResultReported(profileToken)) {
-        reportFailure(logId, deviceId, "CONTROLLER_OFFLINE", "Onvif controller was not reachable during the whole apply duration");
+        if (device->isControllerReady()) {
+            reportFailure(logId, deviceId, "CONFIG_NOT_CONFIRMED", "Camera config could not be confirmed before the apply duration ended");
+        } else {
+            reportFailure(logId, deviceId, "CONTROLLER_OFFLINE", "Onvif controller was not reachable when the apply duration ended");
+        }
     }
 
     persistClear(deviceId, profileToken, now);

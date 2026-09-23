@@ -30,6 +30,7 @@ CameraController::applyMediaProfileSync (chu kỳ bảo trì ~60 s) → retry ru
 | P4 | #5 Ghi DB song song, sai thứ tự | Trung bình | — |
 | P5 | #2 Kết quả không có đường ra ngoài | Cao | **Cần chốt quyết định D1** |
 | P6 | #6, #7 Báo sai ở nhánh phụ, dừng/xoá camera khi đang chạy rule | Thấp | P2, P4 |
+| P7 | #8 `onvifSetVideoConfigs` giằng co với rule đang chạy | Trung bình | P2 (sync mỗi chu kỳ khi rule chờ); theo D4 |
 
 P1 làm trước vì nhỏ, độc lập và là lỗ hổng. P5 để sau P2–P4 vì cần quyết định kênh ra và
 nên phát đúng kết quả trước khi đưa nó ra ngoài.
@@ -47,6 +48,10 @@ nên phát đúng kết quả trước khi đưa nó ra ngoài.
 - **D3 (P6)** — khi camera bị xoá lúc rule đang chạy: đề xuất xoá dòng DB, không cố rollback
   (camera không còn thuộc hệ thống); khi camera chỉ dừng/khởi động lại: giữ nguyên như hiện tại
   (phục hồi lúc kết nối lại).
+- **D4 (P7) — ĐÃ CHỐT 2026-09-23** — người dùng gọi `onvifSetVideoConfigs` lên profile đang
+  bị rule chiếm: **chỉ cập nhật baseline** (`_profileConfigMap` + `stream_settings`), **không**
+  gửi SOAP; trả thành công kèm cờ "hoãn tới khi rule hết hạn". Rollback cuối rule sẽ đẩy cấu hình
+  mới này. Phương án bị loại: từ chối yêu cầu bằng mã lỗi riêng.
 
 ## P1 — Xác thực service-to-service bằng `manager.apiSecret` (#3)
 
@@ -95,14 +100,32 @@ secret nhận 401.
    `CONFIG_NOT_CONFIRMED`. Cần thêm một getter kiểu `isControllerConnected()` qua
    `GenericRtspCameraImp`.
 
-**Test** (`tests/unit/manager/test_camera_controller.cpp`, dùng `FakeOnvifControl` có sẵn):
+5. **Lỗi phát hiện khi viết test:** `BroadcastVideoConfigRuleResultArgs` (`src/Common/config.h`)
+   khai báo `bool success` theo giá trị. `NOTICE_EMIT` forward nó thành `bool&&`, không khớp
+   `std::function` của listener nào, nên sự kiện **không bao giờ tới listener** (không lỗi, không
+   log). Sửa thành `const bool &success` theo quy ước của `BroadcastMediaSeeked2Args`. Bắt buộc
+   cho P5: webhook sẽ không nhận được gì nếu thiếu bản sửa này.
 
-- rule áp thành công, camera trả profile khớp → sau 1 chu kỳ có đúng 1 broadcast `success=true`;
-- `hasPendingProfileConfig()` đúng với rule NEW/PROCESSING, sai khi chỉ có rule SUCCESS;
-- camera nhận lệnh nhưng profile vẫn khác sau hết retry → `CONFIG_NOT_APPLIED` đúng 1 lần;
-- set lỗi lần đầu, lần sau thành công → không báo lỗi sớm, cuối cùng báo `success=true`.
+**Test** (`tests/unit/manager/test_camera_controller.cpp`, fixture `CameraControllerRuleTest`,
+dùng `FakeOnvifControl` có sẵn):
 
-Mutation check: bỏ bước 1 thì test chu kỳ phải đỏ.
+- `PendingRuleKeepsTheProfileReReadDue`: sau lần áp trực tiếp, rule ở PROCESSING và
+  `hasPendingProfileConfig()` đúng; sau 1 lần đọc lại thì SUCCESS và hết pending;
+- `AppliedRuleIsReportedOnceWhenTheReReadConfirmsIt`: không báo trước khi đọc lại; đọc lại 2 lần
+  → đúng 1 kết quả `success=true`, không đẩy lại rule;
+- `FailedDirectSetIsRetriedInsteadOfReported`: lần áp trực tiếp lỗi không bị báo, lần đọc lại
+  đẩy lại rule rồi xác nhận → `success=true`;
+- `RuleTheCameraNeverAppliesIsReportedOnceAfterTheRetries`: camera nhận lệnh nhưng giữ cấu hình
+  cũ → 1 lần áp + 5 lần đẩy lại, rồi đúng 1 lần `CONFIG_NOT_APPLIED`.
+
+Giữ nguyên ngữ nghĩa sẵn có: lệnh set **trong lần đọc lại** bị lỗi SOAP thì báo
+`SET_CONFIG_FAILED` ngay (giống nhánh baseline), không retry tiếp.
+
+Mutation check đã chạy: bỏ bước 1 → 2 test đỏ; áp trực tiếp đánh SUCCESS như cũ → 1 test đỏ;
+`bool success` theo giá trị → 3 test đỏ.
+
+Chưa có unit test cho bước 4 (`finishJob`): `VideoConfigJobManager` là singleton gắn với
+`GenericRtspCameraImp`, cần dựng camera thật — kiểm khi chạy thật.
 
 ## P3 — Gia hạn và giữ ý định mới nhất (#4) — theo D2
 
