@@ -220,10 +220,29 @@ struct OnvifAudioOutputProfile {
     int channelNo;
     std::string sampleRate;
     std::string sampleBit;
+    // Audio backchannel (two-way audio): filled from the media profile walk.
+    std::string outputToken;
+    std::string profileToken;
+    int outputLevel = 0;
+    std::string sendPrimacy;
+    std::string decoderToken;
+    std::vector<std::string> supportedDecodingEncodings;
+
+    void clearBackchannel() {
+        outputToken.clear();
+        profileToken.clear();
+        sendPrimacy.clear();
+        decoderToken.clear();
+        supportedDecodingEncodings.clear();
+        outputLevel = 0;
+    }
 
     bool operator==(const OnvifAudioOutputProfile &o) const {
         return enable == o.enable && token == o.token && name == o.name && acodec == o.acodec && channelNo == o.channelNo
-            && sampleRate == o.sampleRate && sampleBit == o.sampleBit;
+            && sampleRate == o.sampleRate && sampleBit == o.sampleBit
+            && outputToken == o.outputToken && profileToken == o.profileToken && outputLevel == o.outputLevel
+            && sendPrimacy == o.sendPrimacy && decoderToken == o.decoderToken
+            && supportedDecodingEncodings == o.supportedDecodingEncodings;
     }
     bool operator!=(const OnvifAudioOutputProfile &o) const { return !(*this == o); }
 };
@@ -236,10 +255,13 @@ struct OnvifAudioInputProfile {
     int channelNo;
     std::string sampleRate;
     std::string sampleBit;
+    // Encoder configuration token, needed to retune the input when the device shares one DSP
+    // pipeline for audio in and out.
+    std::string encoderToken;
 
     bool operator==(const OnvifAudioInputProfile &o) const {
         return enable == o.enable && token == o.token && name == o.name && acodec == o.acodec && channelNo == o.channelNo
-            && sampleRate == o.sampleRate && sampleBit == o.sampleBit;
+            && sampleRate == o.sampleRate && sampleBit == o.sampleBit && encoderToken == o.encoderToken;
     }
     bool operator!=(const OnvifAudioInputProfile &o) const { return !(*this == o); }
 };
@@ -556,6 +578,19 @@ public:
     std::unordered_map<int, std::vector<VideoSegment>> findVideoSegments(time_t startTime, time_t endTime, const int &min_segment_sec);
 
     /**
+     * True when the device exposes an audio output with at least one decoding format,
+     * i.e. it can receive a two-way audio (backchannel) stream.
+     */
+    bool supportAudioBackchannel() { return _audioOutputProfile.enable && !_audioOutputProfile.supportedDecodingEncodings.empty(); }
+
+    /**
+     * Prepare the device for backchannel audio and return the RTSP URI to push to.
+     * `sharedDspPipeline` is for devices whose DSP shares one pipeline for audio in and out:
+     * the input encoder is then forced to a format the output decoder also accepts.
+     */
+    bool setupAudioBackchannel(std::string &backchannelUri, const bool &sharedDspPipeline = false);
+
+    /**
      * Get the recording information retrieved from the camera.
     */
     std::vector<RecordingInformation> getRecordingInformation() { return _recordingInformations; }
@@ -624,6 +659,9 @@ private:
      * get media profiles by soap protocol
      */
     bool getMediaProfiles();
+
+    // Fills _audioOutputProfile.supportedDecodingEncodings from the device's decoder options.
+    bool getAudioDecoderOptions();
 
     /**
      * query audio input/output capabilities via Media API

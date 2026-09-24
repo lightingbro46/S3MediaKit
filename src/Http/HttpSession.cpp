@@ -194,6 +194,11 @@ void HttpSession::setMaxReqSize(size_t max_req_size) {
 }
 
 void HttpSession::onManager() {
+    if (_talk_src) {
+        // The socket belongs to a backchannel session now; it owns its own keep-alive.
+        _talk_src->onManager();
+        return;
+    }
     if (_ticker.elapsedTime() > _keep_alive_sec * 1000) {
         // http timeout
         shutdown(SockException(Err_timeout, "session timeout"));
@@ -250,6 +255,13 @@ bool HttpSession::checkWebSocket() {
     // Determine whether it is websocket-fmp4
     if (checkLiveStreamFMP4ByApp(res_cb)) {
         // This is a websocket-fmp4 live request with only app name
+        res_immediately();
+        return true;
+    }
+
+    // Determine whether it is backchannel
+    if (checkAudioBackchannel(res_cb)) {
+        // This is a websocket audio streaming request
         res_immediately();
         return true;
     }
@@ -1891,6 +1903,92 @@ void HttpSession::onDetach() {
 
 std::shared_ptr<FlvMuxer> HttpSession::getSharedPtr() {
     return dynamic_pointer_cast<FlvMuxer>(shared_from_this());
+}
+
+bool HttpSession::checkAudioBackchannel(const function<void()> &cb) {
+    std::string url = _parser.url();
+    static const std::string url_prefix = "/media";
+    static const std::string kSuffix = "/backchannel";
+
+    auto prefix_size = url_prefix.size();
+    if (prefix_size > 0) {
+        if (url.size() < prefix_size || strncasecmp(url.data(), url_prefix.data(), prefix_size)) {
+            // Prefix not found
+            return false;
+        }
+        // Remove special prefix from url
+        url.erase(0, prefix_size);
+    }
+
+    if (url.size() <= kSuffix.size() || strcasecmp(url.data() + (url.size() - kSuffix.size()), kSuffix.data())) {
+        return false;
+    }
+
+    std::string device_id = url.substr(1, url.size() - kSuffix.size() - 1);
+    if (device_id.empty() || device_id.find('/') != std::string::npos) {
+        return false;
+    }
+
+    std::string virtual_url = "/" + device_id;
+    if (!_parser.params().empty()) {
+        virtual_url += "?";
+        virtual_url += _parser.params();
+    }
+
+    _media_info.parse("backchannel://" + _parser["Host"] + virtual_url);
+
+    if (_media_info.app.empty()) {
+        // URL is invalid
+        return true;
+    }
+
+    _media_info.protocol = overSsl() ? "wss" : "ws";
+
+    bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+
+    // Authentication result callback
+    auto onRes = [weak_self, close_flag](const string &err) {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
+            // This object has been destroyed
+            return;
+        }
+        if (!err.empty()) {
+            // Playback authentication failed
+            strong_self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
+            return;
+        }
+        auto bc = std::make_shared<BackchannelWsSession>(strong_self->getSock());
+        strong_self->_talk_src = bc;
+
+        // From this point on, all data received from the socket is forwarded
+        // directly to BackchannelWsSession, bypassing HttpSession::onRecv()
+        strong_self->getSock()->setOnRead(
+            [bc](const Buffer::Ptr &buf, struct sockaddr *, int) {
+                bc->onRecv(buf);
+            });
+
+        // Forward socket error handling to BackchannelWsSession
+        strong_self->getSock()->setOnErr(
+            [bc](const SockException &err) {
+                bc->onError(err);
+            });
+    };
+
+    Broadcast::AuthInvoker invoker = [weak_self, onRes](const string &err) {
+        if (auto strong_self = weak_self.lock()) {
+            strong_self->async([onRes, err]() { onRes(err); }, false);
+        }
+    };
+
+    auto flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, _media_info, invoker, *this);
+    if (!flag) {
+        // No one is listening to this event, no authentication by default
+        invoker("");
+    }
+
+    return true;
 }
 
 } /* namespace mediakit */

@@ -31,6 +31,10 @@ public:
 
     void validateCredential(const std::string& username, const std::string& password, const int port, OnDeviceResult cb);
 
+    // ================== Backchannel operations ==================
+    // Pushes a stored audio file to the device over its ONVIF backchannel.
+    void playAudioFileByBackchannel(const std::string& fileId, OnDeviceResult cb);
+
     void playAudio(const std::string& fileId, const std::string& fileRemoteId, OnDeviceResult cb, bool autoDisconnect = true);
 
     void uploadAudio(const AudioFile& file, OnDeviceResult cb, bool autoDisconnect = true);
@@ -51,6 +55,10 @@ private:
     void doDisconnect(bool result, const std::string& resultData, OnDeviceResult cb);
 
     void setupDeviceController(const SpeakerOption &option);
+
+    // Device queue: resolves the backchannel RTSP URI and registers it with BackchannelManager.
+    // Takes the controller explicitly because it runs off the owner poller.
+    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr);
 
     std::vector<std::string> getVendorFeatures(const std::string& manufacturer);
 private:
