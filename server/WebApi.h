@@ -353,10 +353,10 @@ bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::
     bool enable_authorize = _enable_authorize;                                                                                                                 \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
-            CHECK_ARGS_("X-Secret-Key");                                                                                                                      \
+            /* A missing key is an authentication failure (401), not a missing parameter (400). */                                                         \
             string api_key = allArgs["X-Secret-Key"];                                                                                                    \
             GET_CONFIG(string, api_secret, Manager::kApiSecret);                                                                                                         \
-            if (!api_secret.empty() && api_key != api_secret) {                                                                                                                       \
+            if (api_key.empty() || (!api_secret.empty() && api_key != api_secret)) {                                                                                  \
                 throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
             }                                                                                                                                                  \
         } while (false);                                                                                                                                       \

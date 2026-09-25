@@ -22,7 +22,7 @@ Content-Type: application/json
 }
 ```
 
-Endpoint này dành cho giao tiếp service-to-service và không sử dụng JWT hoặc quyền người dùng/camera. Khi `manager.enableAuthorize` bật, request phải có header `X-Secret-Key`, và giá trị phải khớp chính xác với `manager.apiSecret`. Lưu ý: nếu `manager.apiSecret` rỗng, MediaServer chỉ yêu cầu header tồn tại mà không so sánh giá trị. Vì vậy môi trường triển khai phải cấu hình secret khác rỗng.
+Endpoint này dành cho giao tiếp service-to-service và không sử dụng JWT hoặc quyền người dùng/camera. Khi `manager.enableAuthorize` bật, request phải có header `X-Secret-Key`, và giá trị phải khớp chính xác với `manager.apiSecret`. Lưu ý: nếu `manager.apiSecret` rỗng, MediaServer chỉ yêu cầu header tồn tại mà không so sánh giá trị. Vì vậy môi trường triển khai phải cấu hình secret khác rỗng. Thiếu hoặc sai secret → HTTP 401, `code=901001`.
 
 | Field | Kiểu | Bắt buộc | Ràng buộc |
 |---|---|---|---|
