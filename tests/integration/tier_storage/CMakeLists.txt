@@ -92,6 +92,7 @@ foreach(manager_case
     ListsObjectsAndProvesAbsenceOnlyOn404
     ReconcilesRangesWhoseObjectsAreMissing
     ObjectReconcileKeepsEncryptedObjects
+    PresignedReadSkipsEncryptedObjects
     ObjectReconcileKeepsRangesOnListFailureAndInReportMode
     ObjectReconcileMassLossGuardPausesPool
     RestoreOfMissingObjectPrioritizesReconcile

@@ -119,6 +119,13 @@ void TierStorageBase::applyPoolPatch(StoragePool &pool, const Json::Value &body)
 }
 
 bool TierStorageBase::validatePoolByType(const StoragePool &pool, std::string &error) {
+#ifndef ENABLE_AWS_SDK
+    // Say why, not just "not supported": the same request works on a build with object storage.
+    if (poolTypeIsObjectStorage(pool.type)) {
+        error = pool.type + " pool requires object storage, which this build does not include (ENABLE_AWS_SDK=OFF)";
+        return false;
+    }
+#endif
     Json::Value support = poolTypeSupport(tierTypeFromString(pool.tier));
     if (support.isMember(pool.type) && !support[pool.type].asBool()) {
         error = pool.type + " pool is not supported for " + pool.tier + " tier";

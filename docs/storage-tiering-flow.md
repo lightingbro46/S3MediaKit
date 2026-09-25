@@ -1102,7 +1102,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `auto_restore_max_concurrent` | `processRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
-| `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ |
+| `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ. Khi có pool bật mã hoá, segment `.enc` (hoặc không HEAD được) luôn đi restore thay vì cấp URL |
 | `presigned_url_ttl_seconds` | Object read resolver | TTL URL tạm, tối đa 7 ngày và phải đủ dài cho extraction |
 | `presigned_extract_max_segments` | HYBRID extraction | Số object tối đa cho direct read; `0` tắt direct extraction |
 | `presigned_extract_max_bytes` | HYBRID extraction | Tổng byte tối đa cho direct read; `0` tắt direct extraction |
@@ -1328,3 +1328,25 @@ cmake -S . -B build-tier-off -DCMAKE_BUILD_TYPE=Debug -DENABLE_TIER_STORAGE=OFF 
 
 Cả hai cạm bẫy trên đều là thứ một job CI sẽ tự bắt được. Chừng nào chưa có CI, hai bước
 (configure lại + `touch` các `.o`) là phần bắt buộc của việc kiểm.
+
+### Tổ hợp tier ON + AWS SDK OFF
+
+Tổ hợp này dùng bản stub của `TierObjectStorage` (nhánh `#else` trong
+`manager/Local/TierObjectStorage.cpp`) và khác hẳn tier-off: tầng tier vẫn chạy, chỉ không có
+object storage. Kiểm lần đầu ngày 2026-09-25. Đặt build type riêng để thư viện ra
+`release/linux/DebugAwsOff/`, nhờ vậy không dính cạm bẫy thư mục output dùng chung ở trên:
+
+```bash
+cmake -S . -B build-aws-off -G Ninja -DCMAKE_BUILD_TYPE=DebugAwsOff \
+      -DENABLE_TIER_STORAGE=ON -DENABLE_AWS_SDK=OFF -DENABLE_TESTS=ON
+cmake --build build-aws-off -j2
+ctest --test-dir build-aws-off -R 'unit\.'
+```
+
+Kết quả mong đợi:
+
+- `ctest -R unit.` xanh. Các test tạo pool MINIO trong `unit.storage_pool_api_all` tự skip sau
+  khi kiểm lời từ chối; test tích hợp `integration.tier-manager.*` không được đăng ký khi AWS OFF.
+- Server từ chối pool object ngay lập tức với HTTP 400, `code=902001`:
+  `"MINIO pool requires object storage, which this build does not include (ENABLE_AWS_SDK=OFF)"`,
+  cả ở `pool/create` lẫn `pool/testConnection`; `pool/options` báo `MINIO=false` cho mọi tier.

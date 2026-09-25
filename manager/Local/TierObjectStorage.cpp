@@ -134,7 +134,14 @@ TierObjectStorage::buildClient(const std::string &endpoint,
                                 long max_retries) const {
     Aws::Auth::AWSCredentials creds{Aws::String(access_key), Aws::String(secret_key)};
 
-    Aws::Client::ClientConfiguration cc;
+    // Credentials are static and the endpoint is explicit, so nothing needs EC2 instance
+    // metadata. Left on, the SDK probes it for a region and stalls every client build for
+    // seconds on any host that is not EC2.
+    Aws::Client::ClientConfigurationInitValues init;
+    init.shouldDisableIMDS = true;
+    Aws::Client::ClientConfiguration cc(init);
+    if (cc.region.empty())
+        cc.region = "us-east-1";
     cc.endpointOverride = Aws::String(endpoint);
     cc.scheme           = endpoint.compare(0, 8, "https://") == 0
                             ? Aws::Http::Scheme::HTTPS

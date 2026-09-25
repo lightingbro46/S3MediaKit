@@ -2240,6 +2240,19 @@ ObjectReadSource TierStorageManager::resolveObjectReadSource(const ObjectReadReq
     const std::string object_key = TierObjectStorage::makeS3Key(
         pool.base_path.value_or(""), request.camera_id, request.stream_id,
         segment_path);
+    // A segment uploaded while encrypted sits under "<key>.enc", which ffmpeg cannot decrypt,
+    // so it has to go through restore. Only the plaintext object may be handed out as a URL.
+    if (s_encryption_active.load(std::memory_order_relaxed)) {
+        const std::string enc_key = object_key + RecordEncryptionUtils::encryptedFileSuffix();
+        if (_obj_storage.headSegment(pool.id, enc_key) == TierObjectPresence::PRESENT) {
+            source.message = "Encrypted segment requires restore";
+            return restore_source();
+        }
+        if (_obj_storage.headSegment(pool.id, object_key) != TierObjectPresence::PRESENT) {
+            source.message = "Object for direct read was not found";
+            return restore_source();
+        }
+    }
     std::string error;
     if (!_obj_storage.createPresignedGetUrl(pool.id, object_key,
                                             static_cast<uint32_t>(ttl),

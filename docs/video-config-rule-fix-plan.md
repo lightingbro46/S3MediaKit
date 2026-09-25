@@ -376,3 +376,22 @@ cuối đỏ.
 - Trong lúc rule chạy, gọi `onvifSetVideoConfigs` → trả `deferred=true`, camera vẫn giữ cấu hình
   rule (không khởi động lại encoder); hết hạn → camera về cấu hình người dùng vừa set.
 - Gọi API không có hoặc sai `X-Secret-Key` nhận 401.
+
+### Kết quả chạy thật trên mock (2026-09-25)
+
+Chạy bằng kịch bản `videorule` của harness stress
+([tests/integration/stress_vms/README.md](../tests/integration/stress_vms/README.md)), 1 node, thiết bị
+ONVIF giả (`onvif_mock.py`), chưa có camera thật:
+
+- phần rule **30/30**: áp rule → webhook `SUCCESS` kèm `Idempotency-Key` và tra cứu ra `SUCCESS`
+  trong ~30 s; hết hạn → về baseline; gửi lại cùng cấu hình giữa chừng → gia hạn, không đẩy lại cấu
+  hình, về baseline ở hạn mới; rút mạng lúc hết hạn (rollback lỗi SOAP) → cắm lại thì baseline được
+  đẩy lại; `onvifSetVideoConfigs` khi rule chạy → `deferred=true`, camera giữ rule, hết hạn → cấu
+  hình người dùng.
+- phần auth **5/5** sau khi restart với `enableAuthorize=1`: sai secret → 401; kết quả vẫn tra
+  cứu được sau restart. Lần chạy đầu tìm ra lỗi: **thiếu** `X-Secret-Key` trả 400/`902001` (lỗi
+  tham số) thay vì 401/`901001` như tài liệu. Đã sửa `CHECK_API_KEY` (`server/WebApi.h`), ảnh
+  hưởng cả `/media/esc/extractArchived/job`.
+
+Còn lại: chạy cùng checklist với ít nhất một camera ONVIF thật (phần B), để thấy stream đổi độ
+phân giải/bitrate thật và cách camera thật phản hồi `SetVideoEncoderConfiguration`.

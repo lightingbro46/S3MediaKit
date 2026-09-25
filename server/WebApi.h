@@ -234,9 +234,12 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
             /*CHECK_SECRET_OVERRIDE();*/                                                                                                                       \
-            CHECK_ARGS_("Authorization");                                                                                                                      \
+            /* A missing token is an authentication failure (401), not a missing parameter (400). */                                                       \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
+            if (jwt_token.empty()) {                                                                                                                           \
+                throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
+            }                                                                                                                                                  \
             token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, allArgs["User-Agent"], sender.get_peer_ip());                                 \
             if (!token_cache->hasProjectAccess()) {                                                                                                            \
                 throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
@@ -353,10 +356,10 @@ bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::
     bool enable_authorize = _enable_authorize;                                                                                                                 \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
-            CHECK_ARGS_("X-Secret-Key");                                                                                                                      \
+            /* A missing key is an authentication failure (401), not a missing parameter (400). */                                                         \
             string api_key = allArgs["X-Secret-Key"];                                                                                                    \
             GET_CONFIG(string, api_secret, Manager::kApiSecret);                                                                                                         \
-            if (!api_secret.empty() && api_key != api_secret) {                                                                                                                       \
+            if (api_key.empty() || (!api_secret.empty() && api_key != api_secret)) {                                                                                  \
                 throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
             }                                                                                                                                                  \
         } while (false);                                                                                                                                       \

@@ -117,6 +117,20 @@ TEST(StoragePoolApiTest, ReplacesCredentialsWhenNewValuesAreProvided) {
     EXPECT_EQ("new-secret", pool.secret_key_enc.value());
 }
 
+// Without the AWS SDK an object pool is refused up front with a clear message, so the
+// object-pool checks after this point only apply to builds that have object storage.
+#ifdef ENABLE_AWS_SDK
+#define SKIP_UNLESS_OBJECT_STORAGE(pool)
+#else
+#define SKIP_UNLESS_OBJECT_STORAGE(pool)                                                   \
+    do {                                                                                   \
+        std::string refused;                                                               \
+        EXPECT_FALSE(TierStorageBase::validatePoolByType(pool, refused));                  \
+        EXPECT_NE(std::string::npos, refused.find("ENABLE_AWS_SDK=OFF")) << refused; \
+        GTEST_SKIP() << "object storage is not built in (ENABLE_AWS_SDK=OFF)";              \
+    } while (false)
+#endif
+
 TEST(StoragePoolApiTest, ParsesAdHocObjectPoolAndValidatesRequiredFields) {
     Json::Value body;
     body["name"] = "Test pool";
@@ -129,6 +143,7 @@ TEST(StoragePoolApiTest, ParsesAdHocObjectPoolAndValidatesRequiredFields) {
     body["secret_key"] = "secret";
 
     StoragePool pool = TierStorageBase::poolFromJson(body);
+    SKIP_UNLESS_OBJECT_STORAGE(pool);
     std::string error;
     EXPECT_TRUE(TierStorageBase::validatePoolByType(pool, error)) << error;
 
@@ -149,6 +164,7 @@ TEST(StoragePoolApiTest, ValidatesQuotaCapacitySource) {
     body["secret_key"] = "secret";
 
     StoragePool pool = TierStorageBase::poolFromJson(body);
+    SKIP_UNLESS_OBJECT_STORAGE(pool);
     std::string error;
     EXPECT_EQ("METRICS", pool.capacity_source);
     EXPECT_FALSE(pool.capacity_quota_bytes.has_value());
