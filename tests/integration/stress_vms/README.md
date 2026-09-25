@@ -30,9 +30,9 @@ tests/integration/stress_vms/run_stress.sh /tmp/s3mk_stress stop
 | Tham số | Giá trị |
 |---|---|
 | `profile` | `smoke` (30 cam / 60 luồng), `mid` (120/240), `full` (300/600) |
-| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak` |
+| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak`, `videorule` |
 | `MEDIASERVER_DIR` | thư mục chứa binary (mặc định `<repo>/release/linux/Debug`) |
-| `NODES` | số node (mặc định 2; `storage` luôn 1) |
+| `NODES` | số node (mặc định 2; `storage` và `videorule` luôn 1) |
 | `PHASE_SEC` | thời lượng mỗi phase (mặc định 60/120/180 theo profile) |
 | `CYCLES` | số chu kỳ `failover`↔`rebalance` của kịch bản `soak` (mặc định 4) |
 
@@ -207,6 +207,31 @@ STORAGE_ARGS="--limit-percent 5 --remove-percent 10" \
 > không phải dung lượng riêng của thư mục. Hạ `limitPercentUsage` xuống dưới mức dùng
 > hiện tại của đĩa là cách duy nhất để kích hoạt nhánh thu hồi mà không phải đổ đầy đĩa.
 
+## Kịch bản `videorule` — chạy thật video config rule không cần camera
+
+Checklist "Kiểm tra cuối" của [docs/video-config-rule-fix-plan.md](../../../docs/video-config-rule-fix-plan.md),
+mỗi mục trên một camera riêng, chạy song song (`check_video_rule.py`):
+
+| Camera | Mục |
+|---|---|
+| `cam-0000` | áp rule 120 s → webhook `SUCCESS` (đúng `Idempotency-Key`) và tra cứu ra `SUCCESS`; hết hạn → về baseline |
+| `cam-0001` | gửi lại cùng cấu hình giữa chừng → gia hạn, không đẩy lại cấu hình; về baseline ở hạn mới |
+| `cam-0002` | rút mạng (fault `offline`) quanh lúc hết hạn → cắm lại thì baseline được đẩy lại |
+| `cam-0003` | `onvifSetVideoConfigs` khi rule chạy → `deferred=true`, camera giữ rule; hết hạn → về cấu hình người dùng |
+
+Sau đó node restart với `manager.enableAuthorize=1` (phase `videorule_auth`) để kiểm thiếu/sai
+`X-Secret-Key` → 401 và kết quả vẫn tra cứu được sau restart. Cả lượt mất ~10 phút:
+
+```bash
+tests/integration/stress_vms/run_stress.sh /tmp/s3mk_vr smoke videorule
+```
+
+Mock phục vụ được kịch bản này nhờ: `onvif_mock.py` trả đúng schema Media2 (`tr2:`) và lưu cấu
+hình encoder theo thiết bị (`GET /_mock/encoders`), `--stream-base` làm `GetStreamUri` trả đúng
+URL luồng của camera (server nhận ra profile chính bằng cách so hai URL này), và `mock_api.py`
+giữ body webhook `action-callback` (`GET /_mock/hooks`). Kết quả từng mục ghi ở
+`<work>/video_rule_rule.json` và `video_rule_auth.json`.
+
 ## Kết quả và lỗi đã phát hiện
 
 Báo cáo đầy đủ của lần chạy 2026-09-20 (300 camera / 600 luồng, 2 node + 1 node tier-off):
@@ -258,3 +283,4 @@ Cờ được áp **sau** các nhánh riêng của từng phase, vì `onvif_stor
 | `mock_api.py` | Service API giả cho hook |
 | `load_driver.py` | Sinh tải REST (PTZ / storage) và đo độ trễ, gồm probe healthcheck |
 | `check_stress.py` | Thu thập bằng chứng, đối chiếu lịch ghi, so DB giữa node, kết luận đạt/trượt |
+| `check_video_rule.py` | Checklist chạy thật của video config rule (kịch bản `videorule`) |

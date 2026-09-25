@@ -5,6 +5,9 @@ Khác với tests/integration/sync_cluster/mock_api.py: không log từng reques
 camera sẽ làm ngập stdout), bật keep-alive, và đếm hook theo path để kịch bản
 kiểm được rằng luồng nào thực sự lên/xuống.
 
+Webhook kết quả video config rule (`.../action-callback`) được giữ nguyên body và header
+`Idempotency-Key`, đọc lại qua `GET /_mock/hooks?path=action-callback`.
+
 Dùng: mock_api.py [port] [--state PATH] [--stats-sec 15]
 """
 import argparse
@@ -17,6 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 COUNTS = defaultdict(int)
 STREAMS = {}
+# Body của các hook cần kiểm nội dung, theo thứ tự nhận.
+RECORDED = []
+RECORD_SUFFIXES = ("action-callback",)
 LOCK = threading.Lock()
 STARTED = time.time()
 
@@ -29,8 +35,17 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         path = self.path.split("?", 1)[0]
+        if path == "/_mock/hooks":
+            return self._send_recorded()
         with LOCK:
             COUNTS[path] += 1
+            if path.endswith(RECORD_SUFFIXES):
+                try:
+                    body = json.loads(raw) if raw else None
+                except ValueError:
+                    body = raw.decode("utf-8", "replace")
+                RECORDED.append({"path": path, "at": time.time(), "body": body,
+                                 "idempotency_key": self.headers.get("Idempotency-Key")})
             # on_stream_changed cho biết luồng nào đang bật/tắt
             if path.endswith("on_stream_changed") and raw:
                 try:
@@ -45,6 +60,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_recorded(self):
+        with LOCK:
+            data = json.dumps(RECORDED).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     do_GET = _reply
     do_POST = _reply

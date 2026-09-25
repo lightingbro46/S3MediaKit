@@ -21,6 +21,11 @@ Dùng:
         "127.0.2.7":  {"fail_ops": ["ContinuousMove"]} # lỗi riêng lệnh PTZ
       }
     }
+
+Cấu hình encoder được lưu theo từng thiết bị: SetVideoEncoderConfiguration (Media2) ghi
+lại, GetProfiles và GetVideoEncoderConfigurations trả đúng giá trị đã set — đủ để kiểm
+luồng video config rule (áp, xác nhận, rollback). --state ghi thêm cấu hình hiện tại
+của từng thiết bị dưới khoá "encoders".
 """
 import argparse
 import json
@@ -60,6 +65,32 @@ def fault(code, reason):
         '</SOAP-ENV:Reason></SOAP-ENV:Fault>' % (code, reason))
 
 
+MEDIA2_NS = b"http://www.onvif.org/ver20/media/wsdl"
+
+
+def is_media2(body):
+    """Lệnh gửi tới Media2 (ver20) hay Media1 (ver10): cùng tên nhưng khác schema trả về."""
+    m = OP_RE.search(body)
+    if not m:
+        return False
+    prefix = m.group(1)
+    if prefix:
+        return re.search(rb'xmlns:' + re.escape(prefix) + rb'="' + re.escape(MEDIA2_NS) + rb'"', body) is not None
+    return re.search(rb'xmlns="' + re.escape(MEDIA2_NS) + rb'"', body) is not None
+
+
+def xml_text(body, tag):
+    m = re.search(rb"<(?:[A-Za-z0-9_.-]+:)?" + tag.encode() + rb"(?:\s[^>]*)?>([^<]*)<", body)
+    return m.group(1).decode("utf-8", "replace").strip() if m else None
+
+
+def profile_of_token(token):
+    """"VEC-Profile_1" hoặc "Profile_1" -> "Profile_1"."""
+    if not token:
+        return None
+    return token[4:] if token.startswith("VEC-") else token
+
+
 class Device(object):
     """Trạng thái của một camera ảo: preset PTZ và vị trí hiện tại."""
 
@@ -75,6 +106,12 @@ class Device(object):
             "Preset1": {"name": "Home", "pan": 0.0, "tilt": 0.0, "zoom": 0.0},
             "Preset2": {"name": "Gate", "pan": 0.4, "tilt": -0.2, "zoom": 0.1},
         }
+        # Cấu hình encoder theo profile token, và số lệnh set mỗi profile đã nhận.
+        self.encoders = {
+            "Profile_1": {"encoding": "H264", "width": 1920, "height": 1080, "fps": 25, "bitrate": 4096},
+            "Profile_2": {"encoding": "H264", "width": 704, "height": 576, "fps": 15, "bitrate": 1024},
+        }
+        self.encoder_sets = defaultdict(int)
 
 
 class Registry(object):
@@ -205,10 +242,15 @@ def _profile(token, name, width, height, fps, bitrate, ip):
 
 
 def op_GetProfiles(dev, body, port):
+    with dev.lock:
+        main = dict(dev.encoders["Profile_1"])
+        sub = dict(dev.encoders["Profile_2"])
     return envelope(
         '<trt:GetProfilesResponse>%s%s</trt:GetProfilesResponse>'
-        % (_profile("Profile_1", "MainStream", 1920, 1080, 25, 4096, dev.ip),
-           _profile("Profile_2", "SubStream", 704, 576, 15, 1024, dev.ip)))
+        % (_profile("Profile_1", "MainStream", main["width"], main["height"], main["fps"],
+                    main["bitrate"], dev.ip),
+           _profile("Profile_2", "SubStream", sub["width"], sub["height"], sub["fps"],
+                    sub["bitrate"], dev.ip)))
 
 
 def op_GetStreamUri(dev, body, port):
@@ -217,40 +259,119 @@ def op_GetStreamUri(dev, body, port):
     if m:
         token = m.group(1).decode("utf-8", "replace")
     stream = "main" if token.endswith("_1") else "sub"
+    uri = stream_uri(dev, stream)
+    if is_media2(body):
+        return envelope(
+            '<tr2:GetStreamUriResponse><tr2:Uri>%s</tr2:Uri></tr2:GetStreamUriResponse>' % uri)
     return envelope(
         '<trt:GetStreamUriResponse><trt:MediaUri>'
-        '<tt:Uri>rtsp://%s:554/%s</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>'
+        '<tt:Uri>%s</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>'
         '<tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT60S</tt:Timeout>'
-        '</trt:MediaUri></trt:GetStreamUriResponse>' % (dev.ip, stream))
+        '</trt:MediaUri></trt:GetStreamUriResponse>' % uri)
+
+
+def stream_uri(dev, stream):
+    """URI luồng của thiết bị. Với --stream-base thì trùng URL camera mà setup_stress.py
+    khai báo (cam-NNNN-main/sub, suy ngược từ địa chỉ 127.1.x.y), như một camera thật: server
+    nhận ra profile chính bằng cách so URI này với URL luồng chính của camera."""
+    base = REG.args.stream_base
+    parts = dev.ip.split(".")
+    if not base or len(parts) != 4 or parts[1] != "1":
+        return "rtsp://%s:554/%s" % (dev.ip, stream)
+    index = (int(parts[2]) - 1) * 250 + int(parts[3]) - 1
+    return "%s/cam-%04d-%s" % (base.rstrip("/"), index, stream)
+
+
+def _encoder2(token, cfg):
+    return (
+        '<tr2:Configurations token="VEC-%s" GovLength="10" Profile="Baseline">'
+        '<tt:Name>VEC-%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding>'
+        '<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>'
+        '<tt:RateControl ConstantBitRate="false"><tt:FrameRateLimit>%s</tt:FrameRateLimit>'
+        '<tt:BitrateLimit>%d</tt:BitrateLimit></tt:RateControl>'
+        '<tt:Quality>4</tt:Quality></tr2:Configurations>'
+        % (token, token, cfg["encoding"], cfg["width"], cfg["height"], _fps_text(cfg["fps"]),
+           cfg["bitrate"]))
+
+
+def _fps_text(fps):
+    return ("%d" % fps) if float(fps) == int(fps) else ("%g" % fps)
+
+
+def _requested_profiles(dev, body):
+    token = profile_of_token(xml_text(body, "ConfigurationToken") or xml_text(body, "ProfileToken"))
+    if token in dev.encoders:
+        return [token]
+    return sorted(dev.encoders)
 
 
 def op_GetVideoEncoderConfigurations(dev, body, port):
+    with dev.lock:
+        tokens = _requested_profiles(dev, body)
+        configs = [(t, dict(dev.encoders[t])) for t in tokens]
+    if is_media2(body):
+        return envelope(
+            '<tr2:GetVideoEncoderConfigurationsResponse>%s</tr2:GetVideoEncoderConfigurationsResponse>'
+            % "".join(_encoder2(t, c) for t, c in configs))
+    token, cfg = configs[0]
     return envelope(
         '<trt:GetVideoEncoderConfigurationsResponse>'
-        '<trt:Configurations token="VEC-Profile_1"><tt:Name>VEC-Profile_1</tt:Name>'
+        '<trt:Configurations token="VEC-%s"><tt:Name>VEC-%s</tt:Name>'
         '<tt:UseCount>1</tt:UseCount><tt:Encoding>H264</tt:Encoding>'
-        '<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>'
-        '<tt:Quality>4</tt:Quality><tt:RateControl><tt:FrameRateLimit>25</tt:FrameRateLimit>'
-        '<tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl>'
+        '<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>'
+        '<tt:Quality>4</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit>'
+        '<tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>%d</tt:BitrateLimit></tt:RateControl>'
         '<tt:H264><tt:GovLength>10</tt:GovLength><tt:H264Profile>Baseline</tt:H264Profile></tt:H264>'
         '<tt:SessionTimeout>PT60S</tt:SessionTimeout></trt:Configurations>'
-        '</trt:GetVideoEncoderConfigurationsResponse>')
+        '</trt:GetVideoEncoderConfigurationsResponse>'
+        % (token, token, cfg["width"], cfg["height"], int(cfg["fps"]), cfg["bitrate"]))
+
+
+RESOLUTIONS = [(1920, 1080), (1280, 720), (704, 576), (640, 360)]
 
 
 def op_GetVideoEncoderConfigurationOptions(dev, body, port):
+    resolutions = "".join(
+        '<tt:ResolutionsAvailable><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:ResolutionsAvailable>'
+        % wh for wh in RESOLUTIONS)
+    if is_media2(body):
+        return envelope(
+            '<tr2:GetVideoEncoderConfigurationOptionsResponse>'
+            '<tr2:Options GovLengthRange="1 60" FrameRatesSupported="30 25 20 15 12 10 8 5 1" '
+            'ProfilesSupported="Baseline Main High" ConstantBitRateSupported="false">'
+            '<tt:Encoding>H264</tt:Encoding>'
+            '<tt:QualityRange><tt:Min>1</tt:Min><tt:Max>6</tt:Max></tt:QualityRange>%s'
+            '<tt:BitrateRange><tt:Min>256</tt:Min><tt:Max>8192</tt:Max></tt:BitrateRange>'
+            '</tr2:Options></tr2:GetVideoEncoderConfigurationOptionsResponse>' % resolutions)
     return envelope(
         '<trt:GetVideoEncoderConfigurationOptionsResponse><trt:Options>'
         '<tt:QualityRange><tt:Min>1</tt:Min><tt:Max>6</tt:Max></tt:QualityRange>'
-        '<tt:H264><tt:ResolutionsAvailable><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:ResolutionsAvailable>'
-        '<tt:ResolutionsAvailable><tt:Width>704</tt:Width><tt:Height>576</tt:Height></tt:ResolutionsAvailable>'
+        '<tt:H264>%s'
         '<tt:GovLengthRange><tt:Min>1</tt:Min><tt:Max>60</tt:Max></tt:GovLengthRange>'
         '<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>30</tt:Max></tt:FrameRateRange>'
         '<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange>'
         '<tt:BitrateRange><tt:Min>256</tt:Min><tt:Max>8192</tt:Max></tt:BitrateRange>'
-        '</tt:H264></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>')
+        '</tt:H264></trt:Options></trt:GetVideoEncoderConfigurationOptionsResponse>' % resolutions)
 
 
 def op_SetVideoEncoderConfiguration(dev, body, port):
+    m = re.search(rb'<(?:[A-Za-z0-9_.-]+:)?Configuration\s[^>]*token="([^"]*)"', body)
+    token = profile_of_token(m.group(1).decode("utf-8", "replace") if m else None)
+    with dev.lock:
+        if token not in dev.encoders:
+            raise ValueError("unknown configuration token %r" % token)
+        cfg = dev.encoders[token]
+        for key, tag, conv in (("encoding", "Encoding", str), ("width", "Width", int),
+                               ("height", "Height", int), ("fps", "FrameRateLimit", float),
+                               ("bitrate", "BitrateLimit", int)):
+            value = xml_text(body, tag)
+            if value:
+                cfg[key] = conv(value)
+        if float(cfg["fps"]) == int(cfg["fps"]):
+            cfg["fps"] = int(cfg["fps"])
+        dev.encoder_sets[token] += 1
+    if is_media2(body):
+        return envelope('<tr2:SetVideoEncoderConfigurationResponse/>')
     return envelope('<trt:SetVideoEncoderConfigurationResponse/>')
 
 
@@ -462,6 +583,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(fault("Action", "mock error: %s" % exc), 500)
         self.reply(xml, 200)
 
+    def do_GET(self):
+        # Cho kịch bản kiểm tra đọc cấu hình encoder hiện tại, không đi qua SOAP.
+        if self.path.split("?", 1)[0] != "/_mock/encoders":
+            return self.reply(fault("ActionNotSupported", "not found"), 404)
+        with REG.lock:
+            device_list = list(REG.devices.values())
+        out = {}
+        for dev in device_list:
+            with dev.lock:
+                out[dev.ip] = {t: dict(c, sets=dev.encoder_sets[t]) for t, c in dev.encoders.items()}
+        data = json.dumps(out).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def reply(self, xml, status):
         data = xml.encode("utf-8")
         self.send_response(status)
@@ -471,11 +609,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def spec_reloader():
+    # Tách khỏi reporter: kịch bản đổi fault spec giữa chừng (rút mạng camera) cần mock
+    # thấy ngay, không phải chờ hết chu kỳ in thống kê.
+    while True:
+        time.sleep(1.0)
+        REG.reload()
+
+
 def reporter():
     last = 0
     while True:
         time.sleep(REG.args.stats_sec)
-        REG.reload()
         with REG.lock:
             total = sum(REG.counts.values())
             top = sorted(REG.counts.items(), key=lambda kv: -kv[1])[:6]
@@ -483,6 +628,11 @@ def reporter():
             snapshot = dict(REG.counts)
             fault_snapshot = dict(REG.faults)
             devices = len(REG.devices)
+            device_list = list(REG.devices.values())
+        encoders = {}
+        for dev in device_list:
+            with dev.lock:
+                encoders[dev.ip] = {t: dict(c, sets=dev.encoder_sets[t]) for t, c in dev.encoders.items()}
         print("[onvif] devices=%d calls=%d (+%d) faults=%d top=%s"
               % (devices, total, total - last, faults,
                  ", ".join("%s:%d" % kv for kv in top)), flush=True)
@@ -492,6 +642,7 @@ def reporter():
             with open(tmp, "w") as fh:
                 json.dump({"devices": devices, "calls": total, "faults": faults,
                            "by_op": snapshot, "fault_by_op": fault_snapshot,
+                           "encoders": encoders,
                            "uptime_sec": time.time() - REG.started}, fh, indent=1)
             os.replace(tmp, REG.args.state)
 
@@ -504,6 +655,8 @@ def main():
     ap.add_argument("--fault-spec", default=None)
     ap.add_argument("--state", default=None)
     ap.add_argument("--stats-sec", type=float, default=15.0)
+    ap.add_argument("--stream-base", default=None,
+                    help="vd rtsp://127.0.0.1:18554: GetStreamUri trả URL luồng của harness")
     ap.add_argument("--verbose", action="store_true")
     REG = Registry(ap.parse_args())
     REG.reload()
@@ -512,6 +665,7 @@ def main():
     srv.daemon_threads = True
     srv.request_queue_size = 256
     threading.Thread(target=reporter, daemon=True).start()
+    threading.Thread(target=spec_reloader, daemon=True).start()
     print("[onvif] nghe tại %s:%d, %d operation được hỗ trợ"
           % (REG.args.host, REG.args.port, len(HANDLERS)), flush=True)
     try:

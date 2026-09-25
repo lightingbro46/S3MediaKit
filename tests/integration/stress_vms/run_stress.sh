@@ -9,7 +9,7 @@
 #   run_stress.sh [work_dir] [profile] [scenario]
 #     profile : smoke (30 cam) | mid (120 cam) | full (300 cam)   [mặc định: mid]
 #     scenario: all | ramp | steady | onvif | flap | schedule | retention
-#               | failover | storage | recover | soak              [mặc định: all]
+#               | failover | storage | recover | soak | videorule  [mặc định: all]
 #   run_stress.sh [work_dir] stop
 #
 # Env:
@@ -41,6 +41,7 @@ PHASE_SEC="${PHASE_SEC:-$DEF_PHASE}"
 NODES="${NODES:-2}"
 CYCLES="${CYCLES:-4}"
 [ "$SCENARIO" = "storage" ] && NODES=1
+[ "$SCENARIO" = "videorule" ] && NODES=1
 
 node_list() {
     local i=0 out=""
@@ -93,6 +94,9 @@ stop_previous_run() {
     old="$(cat "$f")"
     if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null; then
         echo "dừng kịch bản còn chạy dở (pid $old)"
+        # Con của nó (vd check_video_rule.py) sống tiếp sau khi cha bị kill -9 và vẫn
+        # ghi vào fault spec của lần chạy mới, nên phải hạ trước.
+        pkill -9 -P "$old" 2>/dev/null
         kill -9 "$old" 2>/dev/null
         sleep 1
     fi
@@ -209,7 +213,10 @@ nohup python3 "$HERE/rtsp_source.py" "$MEDIA" --port "$RTSP_PORT" --fps 5 \
     > "$WORK/rtsp_source.log" 2>&1 &
 echo $! > "$WORK/rtsp_source.pid"
 
-nohup python3 "$HERE/onvif_mock.py" --port "$ONVIF_PORT" \
+ONVIF_EXTRA=""
+# Video config rule tìm profile chính bằng URI luồng, nên mock phải trả đúng URL camera.
+[ "$SCENARIO" = "videorule" ] && ONVIF_EXTRA="--stream-base rtsp://127.0.0.1:$RTSP_PORT"
+nohup python3 "$HERE/onvif_mock.py" --port "$ONVIF_PORT" $ONVIF_EXTRA \
     --fault-spec "$WORK/onvif_fault_spec.json" --state "$WORK/onvif_state.json" \
     > "$WORK/onvif_mock.log" 2>&1 &
 echo $! > "$WORK/onvif_mock.pid"
@@ -332,6 +339,29 @@ case "$SCENARIO" in
             cycle=$((cycle + 1))
         done
         run_phase recover "$PHASE_SEC" recover
+        ;;
+    videorule)
+        # Checklist chạy thật của video config rule trên onvif_mock.py (không cần camera).
+        # Phần rule chạy với enableAuthorize=0; phần auth restart node với secret để kiểm 401.
+        mark videorule
+        python3 "$HERE/check_video_rule.py" "$WORK" --part rule
+        rule_rc=$?
+        mark videorule_auth
+        stop_nodes
+        python3 "$HERE/setup_stress.py" "$REPO" "$WORK" phase videorule_auth \
+            --cameras "$CAMERAS" --nodes "$NODES" \
+            --rtsp-port "$RTSP_PORT" --onvif-port "$ONVIF_PORT" --api-port "$API_PORT"
+        start_node node-a auth
+        port=$(python3 -c "import json;print(json.load(open('$WORK/inventory.json'))['ports']['node-a']['http'])")
+        wait_http node-a "$port" 180 || exit 1
+        python3 "$HERE/check_video_rule.py" "$WORK" --part auth
+        auth_rc=$?
+        [ "$rule_rc" = 0 ] && [ "$auth_rc" = 0 ] || { echo "FAIL: video config rule"; exit 1; }
+        echo "video config rule: đạt"
+        # Bỏ qua bản kiểm tra cuối chung: node vừa restart cho phần auth nên luồng chưa kịp lên
+        # lại, bất biến "luồng còn phát" không nói gì về kịch bản này.
+        mark done
+        exit 0
         ;;
     *) echo "scenario không hợp lệ: $SCENARIO"; exit 2 ;;
 esac

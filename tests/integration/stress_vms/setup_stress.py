@@ -21,6 +21,8 @@ import sys
 RTSP_SOURCE_PORT = 18554
 ONVIF_PORT = 18580
 API_PORT = 18590
+# Kịch bản videorule: secret của manager.apiSecret khi bật enableAuthorize ở phần auth.
+VIDEO_RULE_SECRET = "video-rule-check-secret"
 
 # Cohort: (tên, tỉ trọng, mô tả). Tỉ trọng cộng lại = 100.
 COHORTS = [
@@ -433,6 +435,11 @@ def phase(repo, work, name, args):
             owned = [c for c in cams if c["priMediaServerId"] == node_id]
             write_json(os.path.join(work, node_id, "api-config.json"),
                        api_config(node_ids, owned, args))
+    elif name == "videorule_auth":
+        # Bật xác thực để kiểm X-Secret-Key của API video config rule. Node phải restart.
+        for node_id in node_ids:
+            cfg = os.path.join(work, node_id, "config.ini")
+            patch_ini(cfg, cfg, {"manager": {"enableAuthorize": 1, "apiSecret": VIDEO_RULE_SECRET}})
     elif name == "purge":
         for node_id in node_ids:
             write_json(os.path.join(work, node_id, "api-config.json"),
