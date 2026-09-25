@@ -1328,3 +1328,25 @@ cmake -S . -B build-tier-off -DCMAKE_BUILD_TYPE=Debug -DENABLE_TIER_STORAGE=OFF 
 
 Cả hai cạm bẫy trên đều là thứ một job CI sẽ tự bắt được. Chừng nào chưa có CI, hai bước
 (configure lại + `touch` các `.o`) là phần bắt buộc của việc kiểm.
+
+### Tổ hợp tier ON + AWS SDK OFF
+
+Tổ hợp này dùng bản stub của `TierObjectStorage` (nhánh `#else` trong
+`manager/Local/TierObjectStorage.cpp`) và khác hẳn tier-off: tầng tier vẫn chạy, chỉ không có
+object storage. Kiểm lần đầu ngày 2026-09-25. Đặt build type riêng để thư viện ra
+`release/linux/DebugAwsOff/`, nhờ vậy không dính cạm bẫy thư mục output dùng chung ở trên:
+
+```bash
+cmake -S . -B build-aws-off -G Ninja -DCMAKE_BUILD_TYPE=DebugAwsOff \
+      -DENABLE_TIER_STORAGE=ON -DENABLE_AWS_SDK=OFF -DENABLE_TESTS=ON
+cmake --build build-aws-off -j2
+ctest --test-dir build-aws-off -R 'unit\.'
+```
+
+Kết quả mong đợi:
+
+- `ctest -R unit.` xanh. Các test tạo pool MINIO trong `unit.storage_pool_api_all` tự skip sau
+  khi kiểm lời từ chối; test tích hợp `integration.tier-manager.*` không được đăng ký khi AWS OFF.
+- Server từ chối pool object ngay lập tức với HTTP 400, `code=902001`:
+  `"MINIO pool requires object storage, which this build does not include (ENABLE_AWS_SDK=OFF)"`,
+  cả ở `pool/create` lẫn `pool/testConnection`; `pool/options` báo `MINIO=false` cho mọi tier.
