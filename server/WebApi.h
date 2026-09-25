@@ -234,9 +234,12 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \
             /*CHECK_SECRET_OVERRIDE();*/                                                                                                                       \
-            CHECK_ARGS_("Authorization");                                                                                                                      \
+            /* A missing token is an authentication failure (401), not a missing parameter (400). */                                                       \
             string bearer_token = allArgs["Authorization"];                                                                                                    \
             string jwt_token = trim(findSubString(bearer_token.data(), "Bearer", nullptr));                                                                    \
+            if (jwt_token.empty()) {                                                                                                                           \
+                throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
+            }                                                                                                                                                  \
             token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, allArgs["User-Agent"], sender.get_peer_ip());                                 \
             if (!token_cache->hasProjectAccess()) {                                                                                                            \
                 throw AuthException("Unauthorized", ApiErrCode::CODE_UNAUTHORIZED);                                                                            \
