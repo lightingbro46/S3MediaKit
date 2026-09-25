@@ -163,6 +163,8 @@ Callback có ngữ nghĩa at-least-once: VMS phải xử lý idempotent theo `fi
 
 Với `storage.object_read_mode=HYBRID`, persistent extraction có thể đọc trực tiếp object qua URL tạm khi pool online, TTL đủ dài và request không vượt giới hạn segment/byte. Khi tạo playlist cho FFmpeg, path của block COLD được thay bằng presigned URL; URL không được trả qua API hoặc lưu trong database. Nếu resolver xác định nguồn trực tiếp cần restore trước khi chạy FFmpeg, job chuyển sang cơ chế restore rồi thực hiện lại.
 
+Segment được tải lên khi đang bật mã hoá bản ghi nằm trên bucket dưới key `<key>.mp4.enc`, FFmpeg không giải mã được. Khi có pool bật mã hoá, trước khi cấp URL resolver gửi HEAD cho key `.enc` rồi tới key trơn: segment mã hoá, hoặc segment không xác nhận được bằng HEAD, luôn đi qua restore. Khi không pool nào bật mã hoá thì resolver không HEAD, nên object `.enc` còn lại từ lúc trước khi tắt mã hoá vẫn bị cấp URL và FFmpeg sẽ báo lỗi đọc.
+
 ## Trạng thái bền vững
 
 Luồng chính là `PENDING -> RESTORING|EXTRACTING -> UPLOADING -> SUCCESS|FAILED`. Callback có trạng thái riêng `NONE -> PENDING -> SENDING -> DELIVERED|DEAD`. Khi khởi động, job bị gián đoạn ở `RESTORING` hoặc `EXTRACTING` được đưa về `PENDING` và tự lập kế hoạch nguồn đọc lại theo cấu hình `storage.object_read_mode`; `SENDING` được đưa về `PENDING`, còn `UPLOADING` tiếp tục từ file tạm đã lưu.

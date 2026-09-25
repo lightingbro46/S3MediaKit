@@ -1102,7 +1102,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `auto_restore_max_concurrent` | `processRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
-| `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ |
+| `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ. Khi có pool bật mã hoá, segment `.enc` (hoặc không HEAD được) luôn đi restore thay vì cấp URL |
 | `presigned_url_ttl_seconds` | Object read resolver | TTL URL tạm, tối đa 7 ngày và phải đủ dài cho extraction |
 | `presigned_extract_max_segments` | HYBRID extraction | Số object tối đa cho direct read; `0` tắt direct extraction |
 | `presigned_extract_max_bytes` | HYBRID extraction | Tổng byte tối đa cho direct read; `0` tắt direct extraction |

@@ -4085,6 +4085,81 @@ int scenarioObjectReconcileKeepsEncryptedObjects(const std::string &root) {
     return 0;
 }
 
+int scenarioObjectReadPresignedSkipsEncryptedObjects(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    const std::string bucket = cold.bucket.value_or("");
+    const std::string enc_suffix = RecordEncryptionUtils::encryptedFileSuffix();
+    reloadConfigValue(Storage::kObjectReadMode, "PRESIGNED");
+    const int64_t base = static_cast<int64_t>(::time(nullptr)) - 3 * 86400;
+
+    // Plaintext, encrypted, plaintext whose HEAD fails, and lost under both spellings.
+    const std::string camera = "camera-presign";
+    std::vector<std::string> keys;
+    seedRangeOnPool(manager, root, cold, camera, base, 4, 100, keys);
+    server.putObject(bucket, keys[0], 100);
+    server.putObject(bucket, keys[1] + enc_suffix, 100);
+    server.putObject(bucket, keys[2], 100);
+    const std::string failing_key = keys[2];
+    server.setHandler([failing_key](const FakeS3Request &request, FakeS3Response &response) {
+        if (request.method != "HEAD" || request.target.find(failing_key) == std::string::npos ||
+            request.target.find(".enc") != std::string::npos) {
+            return false;
+        }
+        response.status = 500;
+        return true;
+    });
+
+    const auto resolve = [&](int index) {
+        const int64_t start = base + index * 60;
+        const std::string key = getTimeStr("%Y-%m-%d/%H-%M-%S", static_cast<time_t>(start));
+        const std::string path = root + "/hot/record/" + camera + "/main/" + key + ".mp4";
+        // Only the object copy is left, as after a move to COLD.
+        File::delete_file(path);
+        ObjectReadRequest request;
+        request.camera_id = camera;
+        request.stream_id = "main";
+        request.timefile_path = path;
+        request.segment_start_time = start;
+        request.segment_size = 100;
+        request.purpose = ObjectReadPurpose::THUMBNAIL;
+        return manager.resolveObjectReadSource(request);
+    };
+
+    // Encryption off: no object is probed, so a leftover ".enc" object still gets a URL.
+    const ObjectReadSource inactive = resolve(1);
+    require(inactive.kind == ObjectReadSourceKind::PRESIGNED_URL,
+            "Presigned read stopped working while record encryption is off");
+    require(server.requests("HEAD", keys[1]).empty(),
+            "Presigned read probed the bucket although record encryption is off");
+
+    manager.setEncryptionActive(true);
+    const ObjectReadSource plain = resolve(0);
+    require(plain.kind == ObjectReadSourceKind::PRESIGNED_URL &&
+                plain.url.find(keys[0]) != std::string::npos &&
+                plain.url.find(".enc") == std::string::npos,
+            "A plaintext object did not resolve to a presigned URL of its own key");
+    const ObjectReadSource encrypted = resolve(1);
+    require(encrypted.kind == ObjectReadSourceKind::RESTORE_REQUIRED && encrypted.url.empty(),
+            "An encrypted object was handed out as a presigned URL");
+    require(!server.requests("HEAD", keys[1] + enc_suffix).empty(),
+            "Presigned read never asked for the \".enc\" spelling");
+    const ObjectReadSource failing = resolve(2);
+    require(failing.kind != ObjectReadSourceKind::PRESIGNED_URL && failing.url.empty(),
+            "A failed HEAD still produced a presigned URL");
+    const ObjectReadSource lost = resolve(3);
+    require(lost.kind != ObjectReadSourceKind::PRESIGNED_URL && lost.url.empty(),
+            "A segment missing under both spellings produced a presigned URL");
+    manager.setEncryptionActive(false);
+    manager.stop();
+    return 0;
+}
+
 int scenarioObjectReconcileListFailureAndReportMode(const std::string &root) {
     migrateDatabase(root);
     FakeS3Server server;
@@ -5930,6 +6005,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "object-list-head-api") return scenarioObjectListAndHeadApi(root);
         if (name == "object-reconcile-fix") return scenarioObjectReconcileFixesMissingObjects(root);
         if (name == "object-reconcile-enc-keys") return scenarioObjectReconcileKeepsEncryptedObjects(root);
+        if (name == "object-read-presigned-enc") return scenarioObjectReadPresignedSkipsEncryptedObjects(root);
         if (name == "object-reconcile-list-failure-report") return scenarioObjectReconcileListFailureAndReportMode(root);
         if (name == "object-reconcile-mass-loss") return scenarioObjectReconcileMassLossGuard(root);
         if (name == "restore-missing-object-reconcile") return scenarioRestoreOfMissingObjectPrioritizesReconcile(root);
@@ -6163,6 +6239,11 @@ TEST(TierStorageManagerIntegrationTest, ReconcilesRangesWhoseObjectsAreMissing) 
 TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsEncryptedObjects) {
     TempRoot root;
     EXPECT_EQ(0, runChild("object-reconcile-enc-keys", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, PresignedReadSkipsEncryptedObjects) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("object-read-presigned-enc", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, ObjectReconcileKeepsRangesOnListFailureAndInReportMode) {
