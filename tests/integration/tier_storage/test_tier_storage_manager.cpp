@@ -6483,8 +6483,6 @@ TEST(TierStorageManagerIntegrationTest, DoesNotDeleteTemporaryMp4ImmediatelyAfte
 
 int main(int argc, char **argv) {
     g_executable = argv[0];
-    // Off EC2 the AWS SDK spends seconds probing instance metadata for a region.
-    ::setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
     std::string scenario;
     std::string root;
     for (int i = 1; i + 1 < argc; ++i) {
