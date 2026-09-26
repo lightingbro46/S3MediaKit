@@ -700,6 +700,13 @@ MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const Transco
         }
         _stack->addTrackCompleted();
     }
+    if (cfg.width <= 0 && cfg.height <= 0) {
+        // No requested size: use the source's (a merged replay sets its largest clip size).
+        auto sized = cfg;
+        sized.width = _option.transcode_width;
+        sized.height = _option.transcode_height;
+        return _stack->ensureTranscode(sized);
+    }
     return _stack->ensureTranscode(cfg);
 }
 #endif // ENABLE_FFMPEG

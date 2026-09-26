@@ -24,7 +24,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 1 | P0 | Replay gộp không phát frame của clip đầu tiên, source chỉ đăng ký khi chuyển clip | RPL-05/06/22, APF-02..05, OVL-08/09, ENC-05b/c | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa |
 | 1b | P0 | Sau lần chuyển Main↔Sub, `tfdt` của fMP4 bắt đầu lại từ 0 | Replay auto trên trình duyệt (MSE) | `728db0cc` (2026-04-26) | ✅ Đã sửa (P1b), chưa thử trên trình duyệt |
 | 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | ✅ Đã sửa, chưa chạy lại E2E |
-| 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | Mở |
+| 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | ✅ Đã sửa, chưa chạy lại E2E |
 | 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
 | 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | Mở |
 | 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Chưa rõ | Mở |
@@ -120,15 +120,22 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - Còn lại: kiểm lại OVL-01..04 bằng ảnh evidence và RPL-13/14/22 (admin không còn đi qua transcode)
   trên camera thật.
 
-### P3 — Độ phân giải đầu ra của overlay khi replay auto (vấn đề 3)
+### P3 — Độ phân giải đầu ra của overlay khi replay auto (vấn đề 3) — ✅ đã sửa
 
-- Làm sau P1, vì chỉ khi đó replay mới thực sự chuyển Sub→Main.
-- Hiện derived transcode ghim canvas theo clip đầu và scale mọi frame về kích thước đó. Đây là mục
-  P2.4 còn mở trong [`overlay-auto-profile-fix-plan.md`](overlay-auto-profile-fix-plan.md).
-- Cần chốt: (a) giữ kích thước đầu ra cố định (upscale Sub, player không phải khởi tạo lại), hay
-  (b) khởi tạo lại encoder và phát init segment mới theo độ phân giải của clip. Đề xuất (a) cho
-  HLS vì player HLS xử lý đổi độ phân giải giữa chừng kém; với fMP4 thì chọn theo yêu cầu phía web.
-- Kiểm: APF-02 có overlay, xem tay chất lượng đoạn Sub sau khi scale.
+- Nguyên nhân: derived transcode sống qua các lần chuyển Main↔Sub, còn `FFmpegEncoder::openEncoder`
+  chốt kích thước theo frame đầu (mặc định `transcode_width/height = 0`). Replay bắt đầu ở Sub thì
+  đoạn Main bị hạ xuống 640x360. Overlay tự dựng lại graph khi đổi kích thước, không lỗi.
+- Đã chốt (2026-09-26): đầu ra cố định bằng độ phân giải lớn nhất của timeline, đoạn Sub được upscale.
+  Không phát init segment mới; đổi lại CPU/băng thông ở mức Main cả trong đoạn Sub.
+- Đã sửa (tối giản):
+  - [`MergedMP4Reader::configureTimelineAudio`](../src/Record/MergedMP4Reader.cpp): khi mở clip đầu của
+    mỗi stream để dò audio, lấy luôn kích thước video lớn nhất ghi vào `_option.transcode_width/height`
+    (option của muxer replay). Bỏ `return` sớm khi audio không tương thích để vẫn dò hết các stream.
+  - [`MultiMediaSourceMuxer::ensureViewOverlayTranscode`](../src/Common/MultiMediaSourceMuxer.cpp):
+    request không chỉ định kích thước thì dùng `transcode_width/height` của source.
+  - Cũng xử lý P2.4 cũ (transcode không overlay đổi Main→Sub): encoder đã cố định kích thước lớn nhất.
+- Giới hạn: Main và Sub khác tỉ lệ khung hình thì đoạn Sub bị kéo giãn. Không thêm unit test.
+- Còn lại: E2E APF-06 (độ phân giải đầu ra không đổi, bằng Main), xem tay chất lượng đoạn Sub.
 
 ### P4 — Job extract bị xoá ngay khi xong (vấn đề 4) — không phải lỗi production
 
@@ -228,7 +235,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | ✅ 2 | P1 | `unit.replay_all` 19/19; E2E APF-02..05, RPL-05/06 |
 | 3 | P1b (✅, còn thử trình duyệt), P2 (✅, còn E2E) | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
 | 4 | 9, 10, P5 | unit test tương ứng; E2E extract, thumbnail, bookmark |
-| 5 | P3 | E2E APF-06, xem tay |
+| 5 | P3 (✅, còn E2E) | E2E APF-06, xem tay |
 | 6 | P6, P7, 11, 12, 13 | E2E RPL-15/17; khởi động lại rồi replay ngay |
 | 7 | Chạy lại toàn bộ trên camera thật | ≥ 10 phút `always` + ≥ 15 phút `RecordLowResAndMotion` (cần ≥ 2 sự kiện motion), tier, mã hoá |
 

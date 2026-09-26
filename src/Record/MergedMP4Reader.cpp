@@ -366,10 +366,19 @@ void MergedMP4Reader::configureTimelineAudio() {
             demuxer->openMP4(clip.file_path);
             Track::Ptr audio;
             for (const auto &track : demuxer->getTracks(false)) {
-                if (track && track->getTrackType() == TrackAudio) {
+                if (track && track->getTrackType() == TrackAudio && !audio) {
                     audio = track;
-                    break;
+                } else if (track && track->getTrackType() == TrackVideo) {
+                    // View overlay transcode keeps the largest clip size across Main<->Sub switches.
+                    auto video = static_pointer_cast<VideoTrack>(track);
+                    if (video->getVideoWidth() * video->getVideoHeight() > _option.transcode_width * _option.transcode_height) {
+                        _option.transcode_width = video->getVideoWidth();
+                        _option.transcode_height = video->getVideoHeight();
+                    }
                 }
+            }
+            if (!_enable_audio) {
+                continue;
             }
 
             const bool has_audio = !!audio;
@@ -397,7 +406,6 @@ void MergedMP4Reader::configureTimelineAudio() {
                 _enable_audio = false;
                 _add_mute_audio = false;
                 InfoL << "Disable replay audio because selected clips have incompatible audio tracks";
-                return;
             }
         } catch (const exception &ex) {
             // Opening the clip itself will report the terminal replay error.
