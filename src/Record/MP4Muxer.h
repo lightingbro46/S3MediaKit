@@ -71,6 +71,9 @@ private:
 private:
     bool _started = false;
     bool _have_video = false;
+    // Video parameter sets received before the first keyframe; written in
+    // front of it once writing starts.
+    std::vector<Frame::Ptr> _pending_config;
     MP4FileIO::Writer _mov_writter;
     int _non_iframe_video_count; // Non-I frames
 

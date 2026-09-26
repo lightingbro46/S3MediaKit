@@ -51,7 +51,8 @@ add_s3_unit_test(unit_replay
   record/test_view_overlay_policy.cpp
   record/test_auto_profile_overlay.cpp
   record/test_replay_timeline_planner.cpp
-  record/test_merged_mp4_reader.cpp)
+  record/test_merged_mp4_reader.cpp
+  record/test_merged_replay_open.cpp)
 target_link_libraries(unit_replay PRIVATE S3MediaKit::ext-codec)
 add_test(NAME unit.replay_all COMMAND unit_replay)
 set_tests_properties(unit.replay_all PROPERTIES LABELS unit TIMEOUT 15)

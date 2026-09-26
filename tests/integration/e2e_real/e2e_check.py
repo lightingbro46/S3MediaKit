@@ -4,7 +4,7 @@
 Dùng:
     e2e_check.py <work> <nhóm> [<nhóm> ...] [tuỳ chọn]
 
-Nhóm: smoke live auth overlay record replay bookmark extract proxy
+Nhóm: smoke live auth overlay record replay auto-profile bookmark extract proxy
       tier-setup tier-verify encrypt-setup encrypt-verify all-basic
 
 Kết quả từng kịch bản in ra màn hình và gộp vào <work>/report.json (theo ID, lần chạy sau
@@ -241,6 +241,14 @@ def grab_frame(url, dst, seek=0):
         return subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0
     except subprocess.TimeoutExpired:
         return False
+
+
+def file_start_time(path):
+    """Epoch bắt đầu của file ghi, lấy từ tên `YYYY-MM-DD-HH-MM-SS-<n>.mp4[.enc]` (giờ local)."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-", os.path.basename(path))
+    if not m:
+        return None
+    return int(time.mktime(tuple(int(x) for x in m.groups()) + (0, 0, -1)))
 
 
 def same_res(probe, ref):
@@ -631,6 +639,14 @@ def g_replay(ctx):
                os.path.join(ctx.evidence, "RPL-04_first_frame_%d.jpg" % stamp))
     ctx.record("RPL-04", None, "kiểm tay: OSD trong evidence/RPL-04_first_frame_%d.jpg phải ≈ %s (≤ 1 GOP)"
                % (stamp, time.strftime("%H:%M:%S", time.localtime(stamp))))
+    # RPL-22: request đầu tiên của replay gộp, stamp chưa mở lần nào (source chưa có sẵn).
+    cold = stamp - 7
+    st1, t1 = first_request(ctx, "/media/record/%s/vod/%d.live2.mp4" % (cam, cold),
+                            {"token": tok, "quality": "auto", "prefered": "hi"})
+    st2, t2 = first_request(ctx, "/media/record/%s/vod/%d/hls.m3u8" % (cam, cold - 3),
+                            {"token": tok, "quality": "auto", "prefered": "hi", "session_id": "e2e-rpl22"})
+    ctx.record("RPL-22", st1 == 200 and st2 in (200, 302) and max(t1, t2) <= 3,
+               "request đầu: live2 HTTP %s sau %.2fs, HLS HTTP %s sau %.2fs (yêu cầu ≤ 3 s)" % (st1, t1, st2, t2))
     play("RPL-05a", "/media/record/%s/vod/%d.live2.mp4" % (cam, stamp), main, 10, quality="hi")
     play("RPL-05b", "/media/record/%s/vod/%d.live2.mp4" % (cam, stamp), sub, 10, quality="lo")
     play("RPL-06", "/media/record/%s/vod/%d.live2.mp4" % (cam, stamp), main, 10,
@@ -690,39 +706,163 @@ def g_replay(ctx):
     ctx.record("RPL-19", ok, "thumbnail HTTP %s/%s, lần 1 %.2fs lần 2 %.2fs (cache)" % (st, st2, d1, d2))
 
 
+def first_request(ctx, path, params, timeout=30):
+    """Một request duy nhất (không gọi lại): trả (HTTP status, giây tới header)."""
+    t0 = time.time()
+    st, _, _ = ctx.http("GET", path, params, raw=True, max_bytes=1024, timeout=timeout)
+    return st, time.time() - t0
+
+
+def resolution_changes(url, media_sec):
+    """Giải mã media_sec giây, trả [(pts, 'WxH')] mỗi khi độ phân giải đổi, số dòng lỗi, giây đồng hồ."""
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-rw_timeout", "20000000", "-i", url,
+           "-t", str(media_sec), "-map", "0:v:0", "-vf", "showinfo", "-f", "null", "-"]
+    t0 = time.time()
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=media_sec * 3 + 60)
+    except subprocess.TimeoutExpired:
+        return [], -1, time.time() - t0
+    seq = []
+    for line in out.stderr.splitlines():
+        m = re.search(r"pts_time:([\d.]+).* s:(\d+)x(\d+)", line)
+        if m:
+            res = "%sx%s" % (m.group(2), m.group(3))
+            if not seq or seq[-1][1] != res:
+                seq.append((round(float(m.group(1)), 2), res))
+    errs = len([l for l in out.stderr.splitlines() if " error" in l.lower()])
+    return seq, errs, time.time() - t0
+
+
+def g_auto_profile(ctx):
+    """Replay quality=auto trên dữ liệu RecordLowResAndMotion (camera --mode lowres_motion --motion 1).
+
+    Chọn stamp trong đoạn chỉ có Sub, ngay trước một đoạn Main (sự kiện motion): luồng phải bắt
+    đầu bằng Sub rồi chuyển sang Main đúng thời điểm (RPL-06 bản đầy đủ).
+    """
+    res = ctx.resolutions()
+    main_res, sub_res = res.get(ctx.main) or {}, res.get(ctx.sub) or {}
+    main_wh = "%sx%s" % (main_res.get("width"), main_res.get("height"))
+    sub_wh = "%sx%s" % (sub_res.get("width"), sub_res.get("height"))
+    if main_wh == sub_wh:
+        ctx.record("APF-01", None, "Main và Sub cùng độ phân giải, không phân biệt được")
+        return
+    now = int(time.time())
+    since = ctx.args.since or now - 1800
+    tl = timeline(ctx) or []
+
+    def blocks(stream):
+        return sorted((max(t["start"], since), t["end"]) for t in tl
+                      if t["stream"] == stream and t["end"] > since)
+
+    mb, sb = blocks(ctx.main), blocks(ctx.sub)
+    span = now - since
+    sub_total, main_total = sum(b - a for a, b in sb), sum(b - a for a, b in mb)
+    ctx.record("APF-01", sub_total >= span * 0.8 and 0 < main_total < sub_total,
+               "từ %s: Sub %ds/%ds (%d block), Main %ds (%d block motion)"
+               % (time.strftime("%H:%M:%S", time.localtime(since)), sub_total, span, len(sb), main_total, len(mb)))
+
+    lead = 20
+    cand = None
+    for i, (a, b) in enumerate(mb):
+        prev_end = mb[i - 1][1] if i else since
+        s_ = a - lead
+        if s_ >= prev_end + 2 and b - a >= 10 and b < now - 30 and any(x <= s_ and a <= y for x, y in sb):
+            cand = (s_, a, b)
+    if not cand:
+        ctx.record("APF-02", None, "chưa có đoạn Sub-only ≥ %d s ngay trước một đoạn Main ≥ 10 s" % lead)
+        return
+    stamp, m_start, m_end = cand
+    print("  stamp=%s, Main %s dài %ds" % (time.strftime("%H:%M:%S", time.localtime(stamp)),
+                                         time.strftime("%H:%M:%S", time.localtime(m_start)), m_end - m_start))
+    # overlay=false: phát source replay gốc, tách lỗi replay khỏi overlay transcode (kiểm ở APF-06).
+    raw_tok = ctx.jwt(user="e2e-apf", role=ctx.inv["roles"]["admin"], overlay=False)
+    path = "/media/record/%s/vod/%d.live2.mp4" % (ctx.cam, stamp)
+    q = {"quality": "auto", "prefered": "hi"}
+    st, ttfb = first_request(ctx, path, dict(q, token=raw_tok))
+    ctx.record("APF-05", st == 200 and ttfb <= 3, "request đầu HTTP %s sau %.2fs (yêu cầu 200, ≤ 3 s)" % (st, ttfb))
+
+    # Dừng trước khi hết đoạn Main để chỉ có một lần chuyển Sub→Main. Replay bắt đầu ở keyframe
+    # đầu tiên từ stamp, nên khung đầu cách stamp ≤ 1 GOP.
+    media = lead + max(4, min(10, m_end - m_start - 2))
+    # `duration` thuộc id của source replay: giá trị riêng cho mỗi phép đo để không nhập vào source
+    # mà request trước đã mở (người xem sau sẽ vào giữa luồng, không từ stamp).
+    seq, errs, wall = resolution_changes(ctx.url(path, raw_tok, duration=media + 1, **q), media)
+    ok = (len(seq) == 2 and seq[0][1] == sub_wh and seq[0][0] <= 2.5 and seq[1][1] == main_wh
+          and abs(seq[1][0] - (m_start - stamp)) <= 3)
+    ctx.record("APF-02", ok, "(pts, độ phân giải)=%s; kỳ vọng [(≤2.5, %s), (~%d, %s)]; %ds media mất %.1fs"
+               % (seq, sub_wh, m_start - stamp, main_wh, media, wall))
+    # Player đọc fMP4 tuần tự (ffmpeg, VLC) không dùng init segment mới khi đổi track, nên cần
+    # SPS/PPS trong luồng ở IDR đầu tiên sau lần chuyển. Trình duyệt (MSE) dùng init segment mới.
+    ctx.record("APF-07", errs == 0, "lỗi decode quanh lần chuyển Sub→Main (fMP4 đọc tuần tự): %s dòng" % errs)
+
+    st, _ = first_request(ctx, path, {"token": raw_tok, "quality": "hi"})
+    st_lo, _ = first_request(ctx, path, {"token": raw_tok, "quality": "lo"})
+    p_lo = ffprobe(ctx.url(path, raw_tok, quality="lo")) if st_lo == 200 else {}
+    ctx.record("APF-03", st == 404 and st_lo == 200 and same_res(p_lo, sub_res),
+               "quality=hi -> %s (chỉ có Sub nên phải 404); quality=lo -> %s %s" % (st, st_lo, p_lo))
+
+    hls = "/media/record/%s/vod/%d/hls.m3u8" % (ctx.cam, stamp)
+    hq = dict(q, session_id="e2e-apf04")
+    st, ttfb = first_request(ctx, hls, dict(hq, token=raw_tok))
+    hls_seq, hls_errs, _ = (resolution_changes(ctx.url(hls, raw_tok, duration=media + 2, **dict(hq, session_id="e2e-apf04b")), media)
+                            if st in (200, 302) else ([], -1, 0))
+    ctx.record("APF-04", st in (200, 302) and ttfb <= 3 and len(hls_seq) == 2 and hls_errs == 0,
+               "HLS auto HTTP %s sau %.2fs; (pts, độ phân giải)=%s, lỗi decode=%s" % (st, ttfb, hls_seq, hls_errs))
+
+    # Cùng stamp, role viewer có overlay: đầu ra đi qua derived transcode (P3 của fix plan).
+    view_tok = ctx.jwt(user="e2e-apf-viewer")
+    seq, errs, wall = resolution_changes(ctx.url(path, view_tok, duration=media + 3, **q), media)
+    ctx.record("APF-06", len(seq) >= 1 and errs == 0,
+               "overlay viewer: (pts, độ phân giải)=%s, lỗi=%s — xem tay chất lượng đoạn Sub" % (seq, errs))
+
+
 def g_bookmark(ctx):
     tok = ctx.admin()
     stamp = pick_stamp(ctx, back=120, need=30)
     if not stamp:
         ctx.record("BKM-01", None, "chưa có bản ghi")
         return
-    name = "e2e-bkm-%d" % int(time.time())
+    # Tên có dấu '-' và ':' để kiểm cả tìm kiếm full-text (FTS5 coi chúng là toán tử).
+    name = "e2e-bkm:%d" % int(time.time())
     steps = []
+
+    def ok(r):
+        return isinstance(r, dict) and r.get("code") == 0
+
+    def search(keyword):
+        # sort chỉ nhận asc|desc (BookmarkIndexImp::search), page bắt đầu từ 0.
+        _, _, r = ctx.api("/media/esc/bookmark/search", {
+            "camera_id": ctx.cam, "start_time": stamp - 60, "end_time": stamp + 60,
+            "page": 0, "size": 50, "sort": "desc", "search": keyword}, token=tok)
+        items = (r.get("data") or []) if isinstance(r, dict) else []
+        return r, [b for b in items if isinstance(b, dict)]
+
     _, _, r = ctx.api("/media/esc/bookmark/create", body={
         "name": name, "camera_id": ctx.cam, "start_time": stamp, "duration": 20,
         "description": "e2e", "tags": "e2e,incident"}, token=tok)
     steps.append(("create", r))
-    _, _, r = ctx.api("/media/esc/bookmark/search", {"cameraId": ctx.cam, "keyword": name}, token=tok)
+    r, items = search("")
     steps.append(("search", r))
-    items = []
-    if isinstance(r, dict):
-        data = r.get("data")
-        items = data.get("items", data) if isinstance(data, dict) else (data or [])
-    bid = next((b.get("id") for b in items if isinstance(b, dict) and b.get("name") == name), None)
+    bid = next((b.get("id") for b in items if b.get("name") == name), None)
+    for sid, keyword in (("BKM-03a", name), ("BKM-03b", "incident")):
+        r, found = search(keyword)
+        ctx.record(sid, ok(r) and any(b.get("id") == bid for b in found),
+                   "search=%r -> code=%s msg=%s, %d kết quả"
+                   % (keyword, (r or {}).get("code"), str((r or {}).get("msg"))[:120], len(found)))
     if bid:
-        _, _, r = ctx.api("/media/esc/bookmark/detail", {"id": bid}, token=tok); steps.append(("detail", r))
+        _, _, r = ctx.api("/media/esc/bookmark/detail", {"ids": bid}, token=tok); steps.append(("detail", r))
         _, _, r = ctx.api("/media/esc/bookmark/update", body={
             "id": bid, "camera_id": ctx.cam, "start_time": stamp, "duration": 25, "name": name + "-u"},
             token=tok); steps.append(("update", r))
-        _, _, r = ctx.api("/media/esc/bookmark/recent", {"cameraId": ctx.cam}, token=tok); steps.append(("recent", r))
-        _, _, r = ctx.api("/media/esc/bookmark/mostUsedTags", {}, token=tok); steps.append(("tags", r))
+        _, _, r = ctx.api("/media/esc/bookmark/recent",
+                          {"camera_id": ctx.cam, "size": 10, "sort": "desc"}, token=tok); steps.append(("recent", r))
+        _, _, r = ctx.api("/media/esc/bookmark/mostUsedTags", {"size": 10}, token=tok); steps.append(("tags", r))
         st, _, img = ctx.http("GET", "/media/esc/bookmark/recordThumbnail", {"id": bid}, token=tok,
                               raw=True, timeout=30)
         ctx.record("BKM-02", img[:3] == b"\xff\xd8\xff", "recordThumbnail HTTP %s" % st)
         _, _, r = ctx.api("/media/esc/bookmark/delete", body={"id": bid}, token=tok); steps.append(("delete", r))
-    bad = [n for n, r in steps if not (isinstance(r, dict) and r.get("code") == 0)]
-    ctx.record("BKM-01", bid is not None and not bad,
-               "id=%s, bước lỗi=%s (search có thể cần tham số khác: xem docs/api-bookmark.md)" % (bid, bad))
+    bad = ["%s(%s)" % (n, (r or {}).get("code") if isinstance(r, dict) else r) for n, r in steps if not ok(r)]
+    ctx.record("BKM-01", bid is not None and not bad, "id=%s, bước lỗi=%s" % (bid, bad))
 
 
 def g_extract(ctx):
@@ -1081,9 +1221,17 @@ def g_encrypt_verify(ctx):
 
     tok = ctx.admin()
     res = ctx.resolutions()
-    stamp = None
-    if enc_files:
-        stamp = int(os.path.getmtime(enc_files[0])) - ctx.inv["segment_sec"] + 10
+    # Stamp nằm trong file mã hoá dài nhất: file đầu tiên sau khi bật mã hoá có thể chỉ dài vài
+    # giây, nên suy từ mtime của nó dễ rơi ra trước dữ liệu.
+    stamp, longest = None, 0
+    for f in enc_files:
+        begin = file_start_time(f)
+        if begin and os.path.getmtime(f) - begin > longest:
+            longest = os.path.getmtime(f) - begin
+            stamp = begin + 5
+    if stamp and longest < 20:
+        ctx.record("ENC-05a", None, "chưa có file mã hoá dài ≥ 20 s")
+        stamp = None
     if stamp:
         urls = {
             "ENC-05a": ("/media/record/%s/%s/vod/%d.live.mp4" % (ctx.cam, ctx.main, stamp), {}),
@@ -1105,7 +1253,7 @@ def g_encrypt_verify(ctx):
 GROUPS = {
     "smoke": g_smoke, "live": g_live, "auth": g_auth, "overlay": g_overlay, "record": g_record,
     "replay": g_replay, "bookmark": g_bookmark, "extract": g_extract, "proxy": g_proxy,
-    "tier-setup": g_tier_setup, "tier-verify": g_tier_verify,
+    "auto-profile": g_auto_profile, "tier-setup": g_tier_setup, "tier-verify": g_tier_verify,
     "encrypt-setup": g_encrypt_setup, "encrypt-verify": g_encrypt_verify,
 }
 BASIC = ["smoke", "live", "auth", "replay", "bookmark", "extract"]
@@ -1122,6 +1270,7 @@ def main():
     ap.add_argument("--back", type=int, default=300, help="replay: stamp cách hiện tại tối thiểu (s)")
     ap.add_argument("--three-tier", action="store_true", help="tier-setup: HOT→WARM→COLD")
     ap.add_argument("--encrypt-mode", type=int, choices=[1, 2], default=1)
+    ap.add_argument("--since", type=int, help="auto-profile: epoch bắt đầu dữ liệu lowres_motion")
     args = ap.parse_args()
     ctx = Ctx(os.path.abspath(args.work), args)
     groups = []

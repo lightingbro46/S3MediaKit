@@ -83,7 +83,14 @@ public:
 
     ~MergedMP4Reader();
 
-    void openForReplay(uint64_t sample_ms = 0, bool ref_self = true, bool file_repeat = false);
+    /**
+     * Builds the replay timeline and starts playing it. The output source
+     * registers on the reader's poller once the first clip's tracks are ready,
+     * so it is not yet findable when this returns.
+     * @return false when the timeline has no clip at the requested time or its
+     *         first clip cannot be opened
+     */
+    bool openForReplay(uint64_t sample_ms = 0, bool ref_self = true, bool file_repeat = false);
     void stopReplay();
 
 private:
@@ -157,6 +164,7 @@ private:
     };
     PreparedClip _timeline_next;
     Frame::Ptr _timeline_pending_frame;
+    bool _timeline_pending_key = false; // MP4 sync-sample flag of _timeline_pending_frame
     bool _timeline_priming = false;
     uint64_t _timeline_discard_before_ms = 0;
     bool _timeline_mode = false;

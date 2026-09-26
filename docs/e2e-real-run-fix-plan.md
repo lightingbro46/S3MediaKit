@@ -1,0 +1,226 @@
+# Plan xử lý lỗi từ lần chạy E2E camera thật (2026-09-26)
+
+Nhánh `feature/overlay-with-auto-profile`, sau hai commit `3ebc08e5` (overlay + auto profile) và
+`ee287304` (harness `tests/integration/e2e_real`). Kịch bản gốc ở
+[`docs/e2e-test-plan.md`](e2e-test-plan.md).
+
+## 1. Bối cảnh lần chạy
+
+- Camera thật: Main 1920x1080 H.264 + AAC, Sub 640x360 H.264 + AAC 8 kHz mono, 25 fps, GOP 2 s.
+  Camera nằm ngoài mạng nội bộ; URL RTSP và thông tin MinIO chỉ đưa qua biến môi trường `E2E_*`.
+- MinIO làm tầng COLD (bucket test, prefix `e2e-<epoch>`; đã xoá sau khi chạy).
+- Thứ tự: `always` (~10 phút) → `RecordLowResAndMotion` + motion + overlay (~10 phút) → tier HOT→COLD
+  → mã hoá mode 2 trên work dir thứ hai.
+- Kết quả: 60 PASS / 20 FAIL / 1 SKIP. Nhóm smoke/live/auth, record, tier và mã hoá (ghi, đọc lại)
+  đạt. Ghi theo `RecordLowResAndMotion` đúng: Sub ghi liên tục, Main chỉ ghi khi có motion.
+- Unit test tại `ee287304`: `ctest -R unit.` 161/161 pass.
+
+## 2. Danh sách vấn đề
+
+Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
+
+| # | Mức | Vấn đề | Kịch bản bị ảnh hưởng | Nguồn gốc | Trạng thái |
+|---|---|---|---|---|---|
+| 1 | P0 | Replay gộp không phát frame của clip đầu tiên, source chỉ đăng ký khi chuyển clip | RPL-05/06/22, APF-02..05, OVL-08/09, ENC-05b/c | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa |
+| 1b | P0 | Sau lần chuyển Main↔Sub, `tfdt` của fMP4 bắt đầu lại từ 0 | Replay auto trên trình duyệt (MSE) | `728db0cc` (2026-04-26) | ⛔ Cần chốt hướng sửa |
+| 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | Mở |
+| 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | Mở |
+| 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
+| 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | Mở |
+| 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Chưa rõ | Mở |
+| 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Chưa rõ | Mở |
+| 8 | P2 | Lỗi harness | BKM-01, ENC-05/13, config | Harness | ✅ Đã sửa |
+| 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | Mới, mở |
+| 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | Mới, mở |
+| 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Mới, cần chốt |
+| 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
+| 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
+
+## 3. Chi tiết và cách xử lý
+
+### P1 — Replay gộp mất clip đầu (vấn đề 1) — ✅ đã sửa
+
+**Hiện tượng (trước khi sửa)**
+
+- `GET /media/record/<cam>/vod/<stamp>.live2.mp4` (mọi `quality`) và HLS replay trả `404` ngay
+  (≤ 10 ms). Gọi lại liên tục thì phát được sau 20–55 s.
+- `quality=auto&prefered=hi` tại stamp chỉ có Sub, 20 s sau mới có Main: luồng bỏ hẳn 20 s Sub và
+  bắt đầu ở đoạn Main.
+
+**Nguyên nhân gốc** (tái hiện bằng `MergedReplayOpenTest`, fail trước khi sửa và pass sau khi sửa)
+
+1. `readTimelineTick` chờ IDR đầu tiên của clip (`_timeline_priming`) bằng `Frame::keyFrame()` trên
+   frame thô của `MP4Demuxer`. Keyframe do recorder ghi mang SPS/PPS phía trước IDR trong cùng
+   sample, nên frame thô là config frame (`keyFrame()=false`). Priming không bao giờ kết thúc và cả
+   clip đầu bị bỏ; source chỉ đăng ký khi clip sau được mở.
+2. Không thể chờ IDR sau bước tách NAL của track clone: `H264Track::inputFrame_l` ép slice đầu tiên
+   sau một config frame thành keyframe, mà track clone kế thừa trạng thái "vừa nhận SPS/PPS" từ
+   `setExtraData`, nên một P-frame sẽ kết thúc priming (đã thấy trên dữ liệu thật: luồng mở đầu bằng
+   ~23 P-frame).
+3. `createFromMP4ByApp` gọi `find()` ngay sau `openForReplay()`, trong khi source đăng ký bất đồng bộ;
+   mỗi lần client gọi lại tạo thêm một reader.
+
+**Đã sửa**
+
+- [`MergedMP4Reader::readTimelineTick`](../src/Record/MergedMP4Reader.cpp): priming dùng cờ
+  sync-sample của MP4 (`readFrame(key, eof)`), giữ cờ này cho `_timeline_pending_frame`; các frame
+  bị bỏ trước IDR không bị tính nhịp, đồng hồ replay nhảy tới IDR nên phát ngay thay vì chờ tới 1 GOP.
+- [`MediaSource.cpp`](../src/Common/MediaSource.cpp): `findAsyncByApp_l` lắng nghe
+  `kBroadcastMediaChanged` trước, rồi mới mở reader trên pool `replay open`, và trả kết quả khi source
+  đăng ký (timeout `general.maxStreamWaitMS`). `ReplayOpenRegistry` cho các request cùng id dùng
+  chung một reader; không có clip thì trả 404 ngay. `openForReplay()` trả `bool`.
+- [`MP4MuxerInterface::inputFrame`](../src/Record/MP4Muxer.cpp): giữ SPS/PPS đến trước keyframe đầu
+  tiên (sau `resetTracks`) và ghi chúng cùng sample với keyframe, để lần chuyển Main↔Sub có
+  SPS/PPS trong luồng. Ảnh hưởng cả recorder: sample đầu của file ghi giờ có SPS/PPS (chuẩn, vô hại).
+- Unit test: `MergedReplayOpenTest.RegistersSourceWhileFirstClipPlays` (tự ghi recording bằng
+  `MP4Muxer`, source phải đăng ký ≤ 500 ms), `MP4MuxerParameterSetsTest.FirstKeyframeSampleCarriesSpsAndPps`.
+
+**Kết quả E2E sau khi sửa** (camera thật, dữ liệu `RecordLowResAndMotion`)
+
+- APF-02: Sub từ pts 0, chuyển Main đúng thời điểm (18,9–19,9 s cho đoạn Main bắt đầu sau 20 s), về
+  Sub khi hết đoạn Main. APF-05: request đầu 200 sau 0,01 s. APF-03: `quality=hi` 404, `lo` phát Sub.
+  APF-04: HLS auto 302 sau 2,0 s, chuyển Sub→Main không lỗi decode.
+- RPL-05a/05b/06 PASS (trước đây 404). RPL-22 với token admin còn 2,4 s (live2) / 6,9 s (HLS) vì
+  admin vẫn bị áp watermark (vấn đề 2) nên đi qua transcode overlay.
+- Nhịp phát replay auto đúng 1x.
+
+### P1b — `tfdt` về 0 sau lần chuyển Main↔Sub (vấn đề 1b) — cần chốt hướng
+
+- Khi đổi track, `switchToMuxer` gọi `resetTracks`; `FMP4MediaSourceMuxer` tạo writer libmov mới và
+  gửi init segment mới. libmov ghi `tfdt = samples[0].dts - start_dts`, với `start_dts` là dts của
+  sample đầu tiên của writer, nên fragment đầu sau lần chuyển có `tfdt=0`. Cơ chế
+  `seedStampOffsets(_pending_dts_offset)` (commit `728db0cc`) chỉ đặt lại `Stamp` và không có tác dụng.
+- Theo cơ chế MSE (chưa thử trên trình duyệt): media segment sau init segment mới được đặt ở t=0,
+  vị trí phát hiện tại (~18 s) không có dữ liệu mới, nên video đứng hình (đúng tình trạng comment
+  trong `FMP4MediaSourceMuxer::addTrackCompleted` mô tả). ffmpeg đọc tuần tự thì tự bù và gắn cờ discard.
+- Hướng sửa, cần chọn:
+  1. Vá `tfdt` (và `earliest_presentation_time` của `sidx`) trong segment do
+     `FMP4MediaSourceMuxer::onSegmentData` tạo ra, cộng offset đã lưu. Gọn trong một lớp, không đụng
+     submodule.
+  2. Thêm API đặt `start_dts` vào libmov (`3rdpart/media-server`, submodule, phải sửa ở repo của nó).
+  3. Không tạo writer mới khi chỉ đổi độ phân giải cùng codec: vẫn phải có init segment mới nên vẫn
+     cần 1 hoặc 2.
+- Đề xuất 1. Kiểm bằng unit test đọc `tfdt` của fragment đầu sau `resetTracks`, và thử tay trên trình
+  duyệt với player web.
+
+### P2 — Loại trừ watermark theo role (vấn đề 2)
+
+- [`loadWatermarkTemplateFromMap`](../server/Manager.cpp) gán `option.watermarkExcludedRoleIds = ""`
+  mỗi khi tìm thấy template, sau khi `fromJson` đã đọc danh sách từ cấu hình camera. Kết quả:
+  role admin được bỏ privacy mask (đúng) nhưng vẫn có watermark (ảnh `OVL_live_admin.jpg`).
+- Việc cần làm:
+  1. Xác nhận với phía VMS rằng `watermarkExcludedRoleIds` có hiệu lực cả khi camera dùng
+     `watermarkTemplateId` (chưa có tài liệu hợp đồng nào nói ngược lại).
+  2. Bỏ dòng gán rỗng. Thêm unit test cho chính sách: camera có template + excluded role → policy
+     `watermark_excluded = true` với role đó, `false` với role khác.
+  3. Kiểm lại OVL-01..04 bằng ảnh evidence.
+
+### P3 — Độ phân giải đầu ra của overlay khi replay auto (vấn đề 3)
+
+- Làm sau P1, vì chỉ khi đó replay mới thực sự chuyển Sub→Main.
+- Hiện derived transcode ghim canvas theo clip đầu và scale mọi frame về kích thước đó. Đây là mục
+  P2.4 còn mở trong [`overlay-auto-profile-fix-plan.md`](overlay-auto-profile-fix-plan.md).
+- Cần chốt: (a) giữ kích thước đầu ra cố định (upscale Sub, player không phải khởi tạo lại), hay
+  (b) khởi tạo lại encoder và phát init segment mới theo độ phân giải của clip. Đề xuất (a) cho
+  HLS vì player HLS xử lý đổi độ phân giải giữa chừng kém; với fMP4 thì chọn theo yêu cầu phía web.
+- Kiểm: APF-02 có overlay, xem tay chất lượng đoạn Sub sau khi scale.
+
+### P4 — Job extract bị xoá ngay khi xong (vấn đề 4) — không phải lỗi production
+
+- `conf/config.ini` không dùng cho production: config.ini production được sinh từ default trong
+  code, và default của `ffmpeg.delay_close_sec` là 300 s. Lỗi chỉ xảy ra khi chạy bằng file mẫu. Từ nay
+  harness không dùng `conf/config.ini` nữa (P8). Việc còn lại là làm cho file mẫu và comment khớp code.
+
+
+- `conf/config.ini` ghi `delay_close_sec=0` kèm comment "0 là không tự đóng". Nhưng
+  `FFmpegExtractor::closeAfterDelaySec()` hiểu 0 là đóng ngay: ffmpeg xong sau 0,5 s thì
+  `close()` xoá file, gỡ key, và `progress` trả `909001`. Code mặc định là 300 s.
+- Việc cần làm:
+  1. `closeAfterDelaySec()`: `delay_close_sec == 0` thì không hẹn giờ đóng (đúng như comment). File
+     được dọn khi gọi `extractArchived/delete` hoặc khi server dừng.
+  2. `conf/config.ini`: đặt `delay_close_sec=300` như mặc định trong code, để đĩa không đầy với
+     cấu hình mẫu.
+  3. Unit test trong `unit.extract_start_all`: với 0 thì job còn tồn tại sau khi hoàn tất; với N > 0
+     thì bị dọn sau N giây.
+  4. Kiểm lại EXT-01/03a/03b (mp4/mkv/avi, dài 60 ± 5 s, đúng độ phân giải Main).
+
+### P5 — Tìm bookmark theo từ khoá (vấn đề 5)
+
+- [`BookmarkIndexRepository::findByTimeRange` / `countByTimeRange`](../manager/Storage/BookmarkIndex.h)
+  truyền thô `search_term` vào `bookmark_index_fts MATCH ?`. FTS5 hiểu `e2e-bkm-…` là toán tử và cột
+  (`no such column: bkm`, API trả `-200`).
+- Với từ khoá thường, API trả `-400 basic_string: construction from null`. Câu lệnh JOIN với
+  `bookmark_index_fts` và chọn cột không kèm tên bảng (`bookmark_guid` có ở cả hai bảng), nên có cột
+  đọc ra NULL và `fromRow` dựng `std::string` từ con trỏ null.
+- Việc cần làm:
+  1. Chuyển từ khoá thành FTS5 phrase: bọc trong `"`, nhân đôi `"` bên trong, thêm `*` nếu muốn tìm
+     theo tiền tố. Dùng chung một hàm cho `find` và `count`.
+  2. Chọn cột kèm tên bảng (`bookmark_index.<col>`) khi có JOIN; `fromRow` chịu được NULL.
+  3. `sort`: repository chỉ nhận `desc`/`asc`, còn `docs/api-bookmark.md` ghi ví dụ
+     `"start_time DESC"` (bị hiểu thành `ASC`). Sửa tài liệu cho khớp hoặc chấp nhận cả hai dạng.
+  4. Unit test repository: từ khoá có `-`, `:`, `"`, dấu tiếng Việt; từ khoá rỗng; đếm khớp số dòng.
+  5. Kiểm lại BKM-01 sau khi sửa harness (P8).
+
+### P6 — Replay đoạn đang ghi không kết thúc (vấn đề 6)
+
+- RPL-17: `stamp = now − 90 s`, `.live.mp4` per-stream, vẫn chưa kết thúc sau 240 s. Kỳ vọng: phát
+  hết dữ liệu hiện có (~90 s) rồi kết thúc.
+- Việc cần làm: ghi log tại thời điểm mở replay (danh sách file, `end_time` của file đang ghi) và khi
+  replay đọc tới cuối file đang mở. Xác định replay đang đọc theo file đang lớn dần hay timeline lấy
+  `end = now` rồi đợi. Sửa để lấy `end` cố định tại lúc mở.
+
+### P7 — `403` ngay sau khi khởi động (vấn đề 7)
+
+- Khi chạy lại server có sẵn bản ghi, request `quality=hi` đầu tiên (vài giây sau healthcheck) trả
+  `403 View Overlay Required`, các lần sau thì bình thường. Nhiều khả năng `ViewOverlayPolicy` trả
+  `Unavailable` vì cấu hình camera từ hook chưa nạp xong.
+- Việc cần làm: xác nhận bằng log. Nếu đúng thì trả `503` (thử lại được) thay vì `403` khi cấu hình
+  camera chưa sẵn sàng, để không lẫn với trường hợp thiếu quyền overlay thật.
+
+### P8 — Sửa harness (vấn đề 8) — ✅ đã sửa
+
+- `setup_e2e.py`: `config.ini` của work dir chỉ chứa các khoá harness cần đổi, mọi khoá khác lấy
+  default trong code như production; bỏ override `hook.on_play` (default đã đúng) và khoá không tồn
+  tại `record.fileSecond`; `api.extractRoot` trỏ vào work dir.
+- `g_bookmark`: đúng tham số `search` (`camera_id, start_time, end_time, page, size, sort=desc,
+  search`), `recent` và `mostUsedTags`; tên bookmark có `-` và `:`; tách BKM-03a/03b cho tìm kiếm
+  full-text.
+- `g_encrypt_verify`: stamp lấy từ tên file mã hoá dài nhất (`file_start_time`).
+- Nhóm mới `auto-profile` (APF-01..07, tham số `--since`), dùng JWT `overlay=false` cho APF-02..05;
+  mỗi phép đo dùng `duration` riêng để có source mới (vấn đề 11).
+- RPL-22 trong nhóm replay: một request duy nhất, không gọi lại.
+
+### Vấn đề mới phát hiện khi làm P8 + P1
+
+- **9 — Download extract luôn 401.** `extractArchived/download` dùng `CHECK_USER_AUTHOR("key")`, tra
+  `UserAuthorManager` theo `(key, jwt)`. Cache này chỉ được ghi theo `device_id` (`WebHook.cpp`), nên
+  key extract không bao giờ có trong cache. Hướng sửa: kiểm quyền theo camera của job
+  (`CHECK_USER_DEVICE_AUTHOR_ASYNC(ffmpeg->getCameraId(), …)`) như `progress`.
+- **10 — Thumbnail có overlay lỗi.** `recordedThumnail` ([`WebApiPlayback.cpp`](../server/WebApiPlayback.cpp))
+  và `bookmark/recordThumbnail` ([`WebApiBookmark.cpp`](../server/WebApiBookmark.cpp)) đặt file SVG
+  overlay là `<pos>.overlay` / `<t>.bookmark.overlay`. ffmpeg (librsvg) chỉ nhận dạng SVG theo đuôi,
+  nên `movie=` lỗi (đã thử: `.svg` được, `.overlay` không). Extract đúng vì dùng `.overlay.svg`.
+  Sửa: thêm đuôi `.svg`.
+- **11 — Người xem sau vào giữa luồng.** Source replay dùng chung theo id (stamp + quality + prefered +
+  duration). Người xem thứ hai trong lúc source còn sống sẽ nhận từ vị trí hiện tại. Cần chốt: tách
+  source theo phiên (mỗi request một reader) hay chấp nhận.
+- **12 — RPL-15.** `playback/speed` 2x: lần đầu (config mẫu) 10,7 s, với config sinh từ code 16–23 s.
+  Đi qua `MP4Reader` per-stream, không qua phần đã sửa. Cần so hai bộ config.
+- **13 — Khựng ~1 s ở biên file.** Đo nhịp replay auto và `lo`: 4 s media mất 5,1 s quanh biên file ghi
+  kế tiếp. File kế tiếp cùng stream chỉ được mở khi file trước hết (không chuẩn bị trước như lần
+  chuyển Main↔Sub).
+
+## 4. Thứ tự làm và kiểm
+
+| Bước | Nội dung | Kiểm |
+|---|---|---|
+| ✅ 1 | P8 (harness) | smoke/live/auth 28/28 với config sinh từ code |
+| ✅ 2 | P1 | `unit.replay_all` 19/19; E2E APF-02..05, RPL-05/06 |
+| 3 | P1b (chốt hướng), P2 | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
+| 4 | 9, 10, P5 | unit test tương ứng; E2E extract, thumbnail, bookmark |
+| 5 | P3 | E2E APF-06, xem tay |
+| 6 | P6, P7, 11, 12, 13 | E2E RPL-15/17; khởi động lại rồi replay ngay |
+| 7 | Chạy lại toàn bộ trên camera thật | ≥ 10 phút `always` + ≥ 15 phút `RecordLowResAndMotion` (cần ≥ 2 sự kiện motion), tier, mã hoá |
+
+Mỗi bước build `build-test` bằng `-j2` và chạy `ctest --test-dir build-test -R unit.` trước khi
+chạy E2E.

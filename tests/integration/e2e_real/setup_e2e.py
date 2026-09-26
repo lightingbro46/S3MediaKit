@@ -5,7 +5,9 @@ Dùng:
     setup_e2e.py <repo> <work> layout
     setup_e2e.py <repo> <work> camera [--mode always] [--overlay] [--disable-sub] ...
 
-`layout` tạo config.ini, khoá JWT, api-config.json và thư mục dữ liệu. Nguồn RTSP lấy từ
+`layout` tạo config.ini, khoá JWT, api-config.json và thư mục dữ liệu. config.ini chỉ chứa các
+khoá harness cần đổi; mọi khoá khác lấy default đăng ký trong code (như bản production, nơi
+config.ini được sinh từ code). Không dựa trên conf/config.ini của repo. Nguồn RTSP lấy từ
 biến môi trường E2E_RTSP_MAIN / E2E_RTSP_SUB (không nhận qua tham số để URL có mật khẩu
 không nằm trong shell history).
 
@@ -23,7 +25,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "stress_vms"))
-from setup_stress import patch_ini, server_entry, write_json  # noqa: E402
+from setup_stress import server_entry, write_json  # noqa: E402
 
 NODE_ID = "e2e-node"
 PROJECT_ID = "e2e-project"
@@ -56,6 +58,17 @@ DEFAULT_STATE = {
     "keep_min_hours": 0,
     "present": True,
 }
+
+
+def write_ini(dst, overrides):
+    """Ghi {section: {key: value}} thành ini. MediaServer chỉ ghi đè các khoá này lên default."""
+    lines = []
+    for section in sorted(overrides):
+        lines.append("[%s]" % section)
+        lines.extend("%s=%s" % (k, v) for k, v in sorted(overrides[section].items()))
+        lines.append("")
+    with open(os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write("\n".join(lines))
 
 
 def ports(base):
@@ -216,7 +229,7 @@ def layout(repo, work, args):
     public_key = gen_keys(work)
     overrides = {
         "general": {"mediaServerId": NODE_ID},
-        "api": {"secret": api_secret, "apiDebug": 0},
+        "api": {"secret": api_secret, "apiDebug": 0, "extractRoot": work + "/extract/"},
         "http": {"port": p["http"], "sslport": 0, "rootPath": work + "/www", "keepAliveSecond": 30},
         "rtsp": {"port": p["rtsp"], "sslport": 0},
         "rtmp": {"port": p["rtmp"], "sslport": 0},
@@ -232,11 +245,8 @@ def layout(repo, work, args):
         # Template test không có overlayAssetId (SVG do VMS cấp qua watermark/assets), nên
         # render watermark bằng component. Chế độ asset là kịch bản OVL-12 riêng.
         "overlay": {"use_watermark_asset": 0, "overlay_root": work + "/www/overlay/"},
-        "record": {"fileSecond": args.segment_sec, "timefileIdleCloseSec": 60},
-        # conf/config.ini để on_play rỗng, ghi đè mặc định trong code; khi enableAuthorize=1
-        # mà on_play rỗng thì mọi phiên media bị từ chối trước khi hỏi quyền camera.
+        "record": {"timefileIdleCloseSec": 60},
         "hook": {"enable": 1, "api_url": "http://127.0.0.1:%d" % p["api"],
-                 "on_play": "/api/camera/check-camera-of-user",
                  "report_interval": 10.0, "alive_interval": 5.0, "timeoutSec": 5, "retry": 0},
         "database": {"db_save_path": work + "/db", "updates_save_path": work + "/updates",
                      "mserver_updates_save_path": work + "/mserver_updates",
@@ -251,8 +261,7 @@ def layout(repo, work, args):
                     "pool_health_check_interval_seconds": 10,
                     "auto_restore_on_record_access": 0},
     }
-    patch_ini(os.path.join(repo, "conf", "config.ini"), os.path.join(work, "config.ini"), overrides)
-    os.chmod(os.path.join(work, "config.ini"), 0o600)
+    write_ini(os.path.join(work, "config.ini"), overrides)
 
     write_json(os.path.join(work, "inventory.json"), {
         "ports": p, "node_id": NODE_ID, "project_id": PROJECT_ID, "camera_id": CAMERA_ID,

@@ -42,9 +42,12 @@ $H $W check replay bookmark extract
 $H $W camera --overlay 1          # nạp lại cấu hình camera (≤ 10 s), không restart
 $H $W check overlay               # rồi xem ảnh trong $W/evidence/
 
-$H $W camera --mode lowres_motion --overlay 0
-sleep 180
-$H $W check record --expect-main 0 --expect-sub 1 --scenario REC-04
+# Auto profile: cần dữ liệu RecordLowResAndMotion (Sub ghi liên tục, Main chỉ ghi khi có motion)
+SINCE=$(date +%s)
+$H $W camera --mode lowres_motion --motion 1 --overlay 1
+sleep 900                         # cần ≥ 1 sự kiện motion ≥ 10 s, cách lần trước ≥ 20 s
+$H $W check record --expect-sub 1 --window 8 --scenario REC-04
+$H $W check auto-profile --since $SINCE   # APF-01..06, xem mục "Kết quả"
 
 $H $W check tier-setup            # cần E2E_S3_*; policy HOT(0 ngày)→COLD MinIO
 sleep 700                         # ≥ 2 chu kỳ tiering 300 s
@@ -79,13 +82,18 @@ Tham số `camera` (giá trị không truyền được giữ nguyên từ lần
 - `<work>/mock_api_events.jsonl`: mọi hook server đã gọi (kiểm AUTH-06, EXT-07).
 - Log server: `<work>/stdout.log`, `<work>/log/`.
 
+Nhóm `auto-profile` phát replay bằng JWT `overlay=false` để kiểm riêng dữ liệu replay
+(APF-02..05); APF-06 phát lại cùng stamp qua overlay của role viewer. RPL-22 và APF-04/05 chỉ gửi
+**một** request: gọi lại liên tục sẽ che mất lỗi replay chậm đăng ký source.
+
 `SKIP` không phải `PASS`. Kịch bản **M** trong kế hoạch vẫn phải làm tay.
 
 ## Những điều harness phải làm khác cấu hình mặc định (và vì sao)
 
-- `hook.on_play=/api/camera/check-camera-of-user`: `conf/config.ini` để trống khoá này,
-  ghi đè mặc định trong code. Với `manager.enableAuthorize=1`, `on_play` rỗng làm **mọi**
-  phiên media bị từ chối "Unauthorized" mà không gọi hook nào.
+- `config.ini` của work dir chỉ chứa các khoá harness cần đổi (cổng, đường dẫn, hook, secret, …).
+  Mọi khoá khác lấy default đăng ký trong code, giống bản production (config.ini production được
+  sinh từ code). **Không** dựa trên `conf/config.ini` của repo: file đó không dùng cho production
+  và có giá trị khác default (ví dụ `hook.on_play` rỗng, `ffmpeg.delay_close_sec=0`).
 - Mock trả `media_server: {}` ở top-level cho hook cấu hình: khi `manager.apiSecret` khác
   rỗng, server coi body là cấu hình mã hoá trừ khi có khoá đó.
 - Mock từ chối quyền bằng **HTTP 403**: server không xét trường `code` của body hook

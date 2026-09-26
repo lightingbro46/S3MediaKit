@@ -62,6 +62,7 @@ uint64_t MP4MuxerInterface::getDuration() const {
 void MP4MuxerInterface::resetTracks() {
     _started = false;
     _have_video = false;
+    _pending_config.clear();
     _mov_writter = nullptr;
     _tracks.clear();
 }
@@ -88,11 +89,28 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
     if (!_started) {
         // This logic ensures that the first frame is a keyframe when there is video
         if (_have_video && !frame->keyFrame()) {
-            // Contains video, but not a keyframe, then the previous frames are discarded
+            // Contains video, but not a keyframe, then the previous frames are discarded.
+            // Parameter sets right before the keyframe are kept: after a track reset
+            // they carry a new resolution in-band, which players reading fMP4
+            // progressively need because they ignore a second init segment.
+            if (frame->getTrackType() == TrackVideo) {
+                if (frame->configFrame()) {
+                    _pending_config.emplace_back(Frame::getCacheAbleFrame(frame));
+                } else {
+                    _pending_config.clear();
+                }
+            }
             return false;
         }
         // Start writing the file
         _started = true;
+        auto pending_config = std::move(_pending_config);
+        _pending_config.clear();
+        for (auto &config : pending_config) {
+            if (config->dts() == frame->dts()) {
+                inputFrame(config);
+            }
+        }
     }
 
     // fmp4 encapsulation exceeds a certain I-frame interval, force refresh segment to prevent memory increase

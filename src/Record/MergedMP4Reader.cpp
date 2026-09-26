@@ -20,11 +20,6 @@ namespace mediakit {
 static const int MUTE_AUDIO_INDEX = 0xFFFF;
 static uint8_t s_mute_adts_cfg[] = {0x15, 0x88};
 
-static bool isVideoIDR(const Frame::Ptr &frame, bool have_video) {
-    if (!frame->keyFrame() || frame->configFrame()) return false;
-    return !have_video || frame->getTrackType() == TrackVideo;
-}
-
 bool parseReplayStartTime(const string &stream, uint64_t &start_s) {
     const auto parts = split(stream.substr(0, stream.find(".replay.")), "/");
     if (parts.size() <= 2) return false;
@@ -237,6 +232,7 @@ void MergedMP4Reader::closeTimelineClip() {
     _timeline_demuxer.reset();
     _timeline_track_map.clear();
     _timeline_pending_frame.reset();
+    _timeline_pending_key = false;
     _timeline_priming = false;
 }
 
@@ -276,6 +272,7 @@ bool MergedMP4Reader::openTimelineClip(size_t index) {
         _timeline_clip_idx = index;
         _timeline_window = window;
         _timeline_pending_frame.reset();
+        _timeline_pending_key = false;
         _timeline_priming = false;
         for (const auto &track : tracks) {
             if (track->getTrackType() == TrackVideo) {
@@ -416,7 +413,7 @@ bool MergedMP4Reader::readTimelineTick() {
     if (_replay_paused) return true;
 
     GET_CONFIG(uint32_t, sample_ms, Record::kSampleMS);
-    const uint64_t target_ms = _replay_current_ms + uint64_t(sample_ms * _replay_speed);
+    uint64_t target_ms = _replay_current_ms + uint64_t(sample_ms * _replay_speed);
 
     for (;;) {
         if (_timeline_clip_idx >= _timeline_clips.size()) {
@@ -438,8 +435,13 @@ bool MergedMP4Reader::readTimelineTick() {
         if (!_timeline_demuxer && !openTimelineClip(_timeline_clip_idx)) return false;
 
         bool key = false, eof = false;
-        Frame::Ptr raw = _timeline_pending_frame ? std::move(_timeline_pending_frame)
-                                                  : _timeline_demuxer->readFrame(key, eof);
+        Frame::Ptr raw;
+        if (_timeline_pending_frame) {
+            raw = std::move(_timeline_pending_frame);
+            key = _timeline_pending_key;
+        } else {
+            raw = _timeline_demuxer->readFrame(key, eof);
+        }
         if (eof || !raw) {
             closeTimelineClip();
             ++_timeline_clip_idx;
@@ -456,19 +458,30 @@ bool MergedMP4Reader::readTimelineTick() {
         // Frames before the clip start belong to the previous clip's range.
         if (_timeline_window.beforeStart(mapped_dts)) continue;
         if (mapped_dts < static_cast<int64_t>(_timeline_discard_before_ms)) continue;
+        if (_timeline_priming) {
+            // Skip to the clip's first video sync sample. The MP4 sync flag is
+            // used rather than Frame::keyFrame(): a recorded keyframe sample
+            // carries SPS/PPS in front of the IDR (a config frame), and the
+            // clip's track clone may flag the first slice after a config
+            // frame as a keyframe (H264Track), so a P-frame would end priming.
+            if (raw->getTrackType() != TrackVideo || !key) continue;
+            _timeline_priming = false;
+            // The skipped frames are not paced: playback starts at the
+            // keyframe at once instead of up to one GOP after the request.
+            if (mapped_dts > static_cast<int64_t>(_replay_current_ms)) {
+                _replay_current_ms = static_cast<uint64_t>(mapped_dts);
+                target_ms = _replay_current_ms + uint64_t(sample_ms * _replay_speed);
+            }
+        }
         if (mapped_dts > static_cast<int64_t>(target_ms)) {
             _timeline_pending_frame = std::move(raw);
+            _timeline_pending_key = key;
             _replay_current_ms = target_ms;
             return true;
         }
 
         auto stamped = make_shared<FrameStamp>(raw);
         stamped->setStamp(mapped_dts, mapped_pts);
-        if (_timeline_priming) {
-            if (raw->getTrackType() == TrackVideo && !isVideoIDR(raw, true)) continue;
-            if (raw->getTrackType() == TrackVideo && isVideoIDR(raw, true)) _timeline_priming = false;
-            if (_timeline_priming) continue;
-        }
 
         onTrackFrame(_timeline_track_map, stamped, [this](const Frame::Ptr &frame) {
             frame->setIndex(frame->getTrackType() == TrackVideo ? 0 : 1);
@@ -542,14 +555,16 @@ bool MergedMP4Reader::startTimelineReplay(uint64_t sample_ms, bool ref_self, boo
     return true;
 }
 
-void MergedMP4Reader::openForReplay(uint64_t sample_ms, bool ref_self, bool file_repeat) {
+bool MergedMP4Reader::openForReplay(uint64_t sample_ms, bool ref_self, bool file_repeat) {
     if (!_replay_mode) {
         WarnL << "Replay mode is unavailable for app=" << _tuple.app;
-        return;
+        return false;
     }
     if (!startTimelineReplay(sample_ms, ref_self, file_repeat)) {
         WarnL << "Replay timeline could not be built for " << _tuple.shortUrl();
+        return false;
     }
+    return true;
 }
 
 void MergedMP4Reader::stopReplay() {
