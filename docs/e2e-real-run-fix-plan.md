@@ -30,7 +30,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Chưa rõ | Mở |
 | 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Chưa rõ | Mở |
 | 8 | P2 | Lỗi harness | BKM-01, ENC-05/13, config | Harness | ✅ Đã sửa |
-| 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | Mới, mở |
+| 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
 | 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | Mới, mở |
 | 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Mới, cần chốt |
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
@@ -208,6 +208,8 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   `UserAuthorManager` theo `(key, jwt)`. Cache này chỉ được ghi theo `device_id` (`WebHook.cpp`), nên
   key extract không bao giờ có trong cache. Hướng sửa: kiểm quyền theo camera của job
   (`CHECK_USER_DEVICE_AUTHOR_ASYNC(ffmpeg->getCameraId(), …)`) như `progress`.
+  ✅ Đã sửa trong [`WebApiExtract.cpp`](../server/WebApiExtract.cpp) đúng theo hướng này, thêm cả
+  `CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE)` như `progress`/`delete`. Còn E2E EXT-01/03.
 - **10 — Thumbnail có overlay lỗi.** `recordedThumnail` ([`WebApiPlayback.cpp`](../server/WebApiPlayback.cpp))
   và `bookmark/recordThumbnail` ([`WebApiBookmark.cpp`](../server/WebApiBookmark.cpp)) đặt file SVG
   overlay là `<pos>.overlay` / `<t>.bookmark.overlay`. ffmpeg (librsvg) chỉ nhận dạng SVG theo đuôi,

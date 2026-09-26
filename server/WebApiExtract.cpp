@@ -154,27 +154,40 @@ void registerExtractionApis() {
     });
 
     api_regist("/media/esc/extractArchived/download", [](API_ARGS_MAP_ASYNC) {
-        CHECK_USER_AUTHOR("key");
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(EXTRACT_PERMISSION_CODE);
+        CHECK_ARGS_("key");
 
-        auto key = allArgs["key"];
-        auto ffmpeg = s_ffmpeg_extractor.find(allArgs["key"]);
+        const string key = allArgs["key"];
+        auto ffmpeg = s_ffmpeg_extractor.find(key);
         if (!ffmpeg) {
             RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
             return;
         }
-        auto status = ffmpeg->status();
-        if (!status.finished || !status.success) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
-            return;
-        }
 
-        StrCaseMap res_header;
-        auto save_name = ffmpeg->getFilename();
-        auto save_path = ffmpeg->getSavePath();
-        if (!save_name.empty()) {
-            res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
-        }
-        invoker.responseFile(allArgs.parser.getHeader(), res_header, save_path);
+        auto req_header = allArgs.parser.getHeader();
+        auto on_access = [key, req_header, val, invoker, headerOut]() mutable {
+            auto current = s_ffmpeg_extractor.find(key);
+            if (!current) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
+                return;
+            }
+            auto status = current->status();
+            if (!status.finished || !status.success) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_KEY_NOT_FOUND, "Key not found");
+                return;
+            }
+
+            StrCaseMap res_header;
+            auto save_name = current->getFilename();
+            auto save_path = current->getSavePath();
+            if (!save_name.empty()) {
+                res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
+            }
+            invoker.responseFile(req_header, res_header, save_path);
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(ffmpeg->getCameraId(), on_access);
     });
 
     api_regist("/media/esc/extractArchived/delete", [](API_ARGS_MAP_ASYNC) {
