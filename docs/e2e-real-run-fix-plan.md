@@ -31,7 +31,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Chưa rõ | Mở |
 | 8 | P2 | Lỗi harness | BKM-01, ENC-05/13, config | Harness | ✅ Đã sửa |
 | 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
-| 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | Mới, mở |
+| 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | ✅ Đã sửa, chưa chạy lại E2E |
 | 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Mới, cần chốt |
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
@@ -214,7 +214,8 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   và `bookmark/recordThumbnail` ([`WebApiBookmark.cpp`](../server/WebApiBookmark.cpp)) đặt file SVG
   overlay là `<pos>.overlay` / `<t>.bookmark.overlay`. ffmpeg (librsvg) chỉ nhận dạng SVG theo đuôi,
   nên `movie=` lỗi (đã thử: `.svg` được, `.overlay` không). Extract đúng vì dùng `.overlay.svg`.
-  Sửa: thêm đuôi `.svg`.
+  Sửa: thêm đuôi `.svg`. ✅ Đã sửa: `<pos>.overlay.svg` / `<t>.bookmark.overlay.svg`, giống extract.
+  Còn E2E RPL-19, BKM-02.
 - **11 — Người xem sau vào giữa luồng.** Source replay dùng chung theo id (stamp + quality + prefered +
   duration). Người xem thứ hai trong lúc source còn sống sẽ nhận từ vị trí hiện tại. Cần chốt: tách
   source theo phiên (mỗi request một reader) hay chấp nhận.
