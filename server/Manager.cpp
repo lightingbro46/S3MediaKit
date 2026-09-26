@@ -918,7 +918,6 @@ static void loadWatermarkTemplateFromMap(CameraOption &option,  const unordered_
         auto it = watermark_templates.find(option.watermarkTemplateId);
         if (it != watermark_templates.end()) {
             option.watermarkTemplate = it->second;
-            option.watermarkExcludedRoleIds = "";
             DebugL << "Load watermark template from map: id=" << option.watermarkTemplateId << ". Set enforceWatermarkOnView to true.";
             option.enforceWatermarkOnView = true;
         } else {

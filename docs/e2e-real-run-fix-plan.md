@@ -23,7 +23,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 |---|---|---|---|---|---|
 | 1 | P0 | Replay gộp không phát frame của clip đầu tiên, source chỉ đăng ký khi chuyển clip | RPL-05/06/22, APF-02..05, OVL-08/09, ENC-05b/c | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa |
 | 1b | P0 | Sau lần chuyển Main↔Sub, `tfdt` của fMP4 bắt đầu lại từ 0 | Replay auto trên trình duyệt (MSE) | `728db0cc` (2026-04-26) | ✅ Đã sửa (P1b), chưa thử trên trình duyệt |
-| 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | Mở |
+| 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | ✅ Đã sửa, chưa chạy lại E2E |
 | 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | Mở |
 | 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
 | 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | Mở |
@@ -107,17 +107,18 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - Còn lại: thử tay trên trình duyệt với player web. Đặc điểm có sẵn của `DeltaStamp`: dts vào bằng 0
   làm frame thứ hai cũng nhận delta 0 (hai sample đầu cùng thời điểm); không thuộc lần chuyển, chưa sửa.
 
-### P2 — Loại trừ watermark theo role (vấn đề 2)
+### P2 — Loại trừ watermark theo role (vấn đề 2) — ✅ đã sửa
 
 - [`loadWatermarkTemplateFromMap`](../server/Manager.cpp) gán `option.watermarkExcludedRoleIds = ""`
   mỗi khi tìm thấy template, sau khi `fromJson` đã đọc danh sách từ cấu hình camera. Kết quả:
   role admin được bỏ privacy mask (đúng) nhưng vẫn có watermark (ảnh `OVL_live_admin.jpg`).
-- Việc cần làm:
-  1. Xác nhận với phía VMS rằng `watermarkExcludedRoleIds` có hiệu lực cả khi camera dùng
-     `watermarkTemplateId` (chưa có tài liệu hợp đồng nào nói ngược lại).
-  2. Bỏ dòng gán rỗng. Thêm unit test cho chính sách: camera có template + excluded role → policy
-     `watermark_excluded = true` với role đó, `false` với role khác.
-  3. Kiểm lại OVL-01..04 bằng ảnh evidence.
+- Không cần hỏi lại VMS: dòng gán rỗng có từ `a8c8b0ae`, lúc `fromJson` chưa đọc
+  `watermarkExcludedRoleIds`. `4e54a7b2` ("nhận giá trị watermarkExcludedRoleIds từ api") thêm phần
+  đọc nhưng không bỏ dòng này, nên đây là phần sót lại chứ không phải quy tắc.
+- Đã sửa: bỏ dòng gán rỗng trong `loadWatermarkTemplateFromMap`. Không thêm unit test vì hàm là
+  `static` trong `Manager.cpp`; kiểm bằng E2E.
+- Còn lại: kiểm lại OVL-01..04 bằng ảnh evidence và RPL-13/14/22 (admin không còn đi qua transcode)
+  trên camera thật.
 
 ### P3 — Độ phân giải đầu ra của overlay khi replay auto (vấn đề 3)
 
@@ -225,7 +226,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 |---|---|---|
 | ✅ 1 | P8 (harness) | smoke/live/auth 28/28 với config sinh từ code |
 | ✅ 2 | P1 | `unit.replay_all` 19/19; E2E APF-02..05, RPL-05/06 |
-| 3 | P1b (✅, còn thử trình duyệt), P2 | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
+| 3 | P1b (✅, còn thử trình duyệt), P2 (✅, còn E2E) | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
 | 4 | 9, 10, P5 | unit test tương ứng; E2E extract, thumbnail, bookmark |
 | 5 | P3 | E2E APF-06, xem tay |
 | 6 | P6, P7, 11, 12, 13 | E2E RPL-15/17; khởi động lại rồi replay ngay |
