@@ -1202,7 +1202,9 @@ void installWebHook() {
         NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, false, jwt_token, policy_cb, sender);
 
         if (overlay_forbidden) {
-            invoker("OverlayForbidden");
+            // Saved camera info loads asynchronously after startup: until then the policy cannot be
+            // resolved, so answer "retry later" (503) instead of 403.
+            invoker(CameraManager::Instance().isReady() ? "OverlayForbidden" : "ResourceUnavailable");
             return;
         }
         

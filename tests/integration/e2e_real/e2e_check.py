@@ -815,8 +815,10 @@ def g_auto_profile(ctx):
     # Cùng stamp, role viewer có overlay: đầu ra đi qua derived transcode (P3 của fix plan).
     view_tok = ctx.jwt(user="e2e-apf-viewer")
     seq, errs, wall = resolution_changes(ctx.url(path, view_tok, duration=media + 3, **q), media)
-    ctx.record("APF-06", len(seq) >= 1 and errs == 0,
-               "overlay viewer: (pts, độ phân giải)=%s, lỗi=%s — xem tay chất lượng đoạn Sub" % (seq, errs))
+    # Derived transcode giữ độ phân giải lớn nhất của timeline (Main) suốt luồng, đoạn Sub được upscale.
+    ctx.record("APF-06", len(seq) == 1 and seq[0][1] == main_wh and errs == 0,
+               "overlay viewer: (pts, độ phân giải)=%s, lỗi=%s; kỳ vọng chỉ %s — xem tay chất lượng đoạn Sub"
+               % (seq, errs, main_wh))
 
 
 def g_bookmark(ctx):

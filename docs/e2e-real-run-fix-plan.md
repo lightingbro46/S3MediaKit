@@ -27,12 +27,12 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | ✅ Đã sửa, chưa chạy lại E2E |
 | 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
 | 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
-| 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Chưa rõ | Mở |
-| 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Chưa rõ | Mở |
+| 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Thiết kế có sẵn | Không phải lỗi (đúng ý đồ) |
+| 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
 | 8 | P2 | Lỗi harness | BKM-01, ENC-05/13, config | Harness | ✅ Đã sửa |
 | 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
 | 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | ✅ Đã sửa, chưa chạy lại E2E |
-| 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Mới, cần chốt |
+| 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Giữ như hiện tại (chốt 2026-09-26) |
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
 | 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | Chưa rõ | Mới, mở |
@@ -135,7 +135,8 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
     request không chỉ định kích thước thì dùng `transcode_width/height` của source.
   - Cũng xử lý P2.4 cũ (transcode không overlay đổi Main→Sub): encoder đã cố định kích thước lớn nhất.
 - Giới hạn: Main và Sub khác tỉ lệ khung hình thì đoạn Sub bị kéo giãn. Không thêm unit test.
-- Còn lại: E2E APF-06 (độ phân giải đầu ra không đổi, bằng Main), xem tay chất lượng đoạn Sub.
+- Harness: APF-06 giờ yêu cầu đầu ra chỉ một độ phân giải, bằng Main (trước chỉ cần ≥ 1).
+- Còn lại: chạy E2E APF-06, xem tay chất lượng đoạn Sub.
 
 ### P4 — Job extract bị xoá ngay khi xong (vấn đề 4) — không phải lỗi production
 
@@ -183,21 +184,28 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   (giới hạn của trigram, có từ trước).
 - Còn lại: E2E BKM-01, BKM-03a/03b.
 
-### P6 — Replay đoạn đang ghi không kết thúc (vấn đề 6)
+### P6 — Replay đoạn đang ghi không kết thúc (vấn đề 6) — không phải lỗi
 
-- RPL-17: `stamp = now − 90 s`, `.live.mp4` per-stream, vẫn chưa kết thúc sau 240 s. Kỳ vọng: phát
-  hết dữ liệu hiện có (~90 s) rồi kết thúc.
-- Việc cần làm: ghi log tại thời điểm mở replay (danh sách file, `end_time` của file đang ghi) và khi
-  replay đọc tới cuối file đang mở. Xác định replay đang đọc theo file đang lớn dần hay timeline lấy
-  `end = now` rồi đợi. Sửa để lấy `end` cố định tại lúc mở.
+- RPL-17: `stamp = now − 90 s`, `.live.mp4` per-stream, chưa kết thúc sau 240 s.
+- Đây là hành vi đúng thiết kế (xác nhận 2026-09-26): replay per-stream (`MP4Reader` →
+  `MultiMP4Demuxer::findNextSegment`) cố ý nối tiếp các file ghi mới, đuổi theo bản ghi. Không sửa code.
+- Kỳ vọng của RPL-17 trong `docs/e2e-test-plan.md` ("không chờ bản ghi mới") cần đổi theo thiết kế này.
+- Triệu chứng "dừng sau 15 s kèm lỗi" với config sinh từ code chưa rõ; xem lại log ở lần chạy tới.
 
-### P7 — `403` ngay sau khi khởi động (vấn đề 7)
+### P7 — `403` ngay sau khi khởi động (vấn đề 7) — ✅ đã sửa
 
 - Khi chạy lại server có sẵn bản ghi, request `quality=hi` đầu tiên (vài giây sau healthcheck) trả
-  `403 View Overlay Required`, các lần sau thì bình thường. Nhiều khả năng `ViewOverlayPolicy` trả
-  `Unavailable` vì cấu hình camera từ hook chưa nạp xong.
-- Việc cần làm: xác nhận bằng log. Nếu đúng thì trả `503` (thử lại được) thay vì `403` khi cấu hình
-  camera chưa sẵn sàng, để không lẫn với trường hợp thiếu quyền overlay thật.
+  `403 View Overlay Required`, các lần sau thì bình thường.
+- Nguyên nhân (đọc code, chưa xác nhận bằng log): `CameraManager::loadSavedCameraInfo` nạp `info.txt`
+  của các camera bất đồng bộ trên work thread, còn HTTP server nhận request ngay. Trong lúc đó
+  listener `kBroadcastMediaViewOverlay` không tìm thấy camera ở `DeviceSource` lẫn `StatisticRecorder`
+  nên trả `Unavailable` → `OverlayForbidden` → `403`. (`getTokenCache` luôn tạo cache nên không phải
+  nguyên nhân.)
+- Đã sửa (tối giản, [`WebHook.cpp`](../server/WebHook.cpp)): policy `Unavailable` khi
+  `CameraManager::isReady()` còn `false` thì trả `ResourceUnavailable` (HTTP/HLS `503`), sau đó
+  giữ `403` như cũ. RTSP/RTMP không có nhánh riêng cho `ResourceUnavailable` (như giới hạn tài
+  nguyên hiện nay).
+- Còn lại: khởi động lại server có bản ghi rồi replay ngay; phải nhận `503` rồi `200`, không `403`.
 
 ### P8 — Sửa harness (vấn đề 8) — ✅ đã sửa
 
@@ -229,6 +237,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - **11 — Người xem sau vào giữa luồng.** Source replay dùng chung theo id (stamp + quality + prefered +
   duration). Người xem thứ hai trong lúc source còn sống sẽ nhận từ vị trí hiện tại. Cần chốt: tách
   source theo phiên (mỗi request một reader) hay chấp nhận.
+  Đã chốt 2026-09-26: giữ như hiện tại, không sửa.
 - **12 — RPL-15.** `playback/speed` 2x: lần đầu (config mẫu) 10,7 s, với config sinh từ code 16–23 s.
   Đi qua `MP4Reader` per-stream, không qua phần đã sửa. Cần so hai bộ config.
 - **13 — Khựng ~1 s ở biên file.** Đo nhịp replay auto và `lo`: 4 s media mất 5,1 s quanh biên file ghi
