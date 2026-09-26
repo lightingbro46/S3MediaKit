@@ -26,7 +26,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | ✅ Đã sửa, chưa chạy lại E2E |
 | 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | ✅ Đã sửa, chưa chạy lại E2E |
 | 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
-| 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | Mở |
+| 5 | P1 | Tìm bookmark theo từ khoá lỗi (`-200` / `-400`) | BKM-03a/03b | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
 | 6 | P2 | Replay `.live.mp4` với `stamp = now − 90 s`: lần đầu không kết thúc sau 240 s, với config sinh từ code thì dừng sau 15 s kèm lỗi | RPL-17 | Chưa rõ | Mở |
 | 7 | P2 | Request replay đầu tiên ngay sau khi khởi động trả `403` | (quan sát khi thử nghiệm) | Chưa rõ | Mở |
 | 8 | P2 | Lỗi harness | BKM-01, ENC-05/13, config | Harness | ✅ Đã sửa |
@@ -156,7 +156,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
      thì bị dọn sau N giây.
   4. Kiểm lại EXT-01/03a/03b (mp4/mkv/avi, dài 60 ± 5 s, đúng độ phân giải Main).
 
-### P5 — Tìm bookmark theo từ khoá (vấn đề 5)
+### P5 — Tìm bookmark theo từ khoá (vấn đề 5) — ✅ đã sửa
 
 - [`BookmarkIndexRepository::findByTimeRange` / `countByTimeRange`](../manager/Storage/BookmarkIndex.h)
   truyền thô `search_term` vào `bookmark_index_fts MATCH ?`. FTS5 hiểu `e2e-bkm-…` là toán tử và cột
@@ -172,6 +172,16 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
      `"start_time DESC"` (bị hiểu thành `ASC`). Sửa tài liệu cho khớp hoặc chấp nhận cả hai dạng.
   4. Unit test repository: từ khoá có `-`, `:`, `"`, dấu tiếng Việt; từ khoá rỗng; đếm khớp số dòng.
   5. Kiểm lại BKM-01 sau khi sửa harness (P8).
+- Đã sửa (tối giản, [`BookmarkIndex.h`](../manager/Storage/BookmarkIndex.h)):
+  - `ftsPhrase`: bọc từ khoá trong `"`, nhân đôi `"` bên trong; dùng cho cả `find` và `count`.
+    Tokenizer trigram nên phrase khớp theo chuỗi con, không phân biệt hoa thường.
+  - Cột SELECT kèm tên bảng `bookmark_index.` (tái hiện bằng sqlite3: không kèm thì lỗi
+    `ambiguous column name: bookmark_guid` vì bảng FTS cũng có cột này).
+  - Kiểm bằng sqlite3 trên db dựng từ migration: từ khoá có `-`/`:`, tiếng Việt, `"`, không khớp;
+    `COUNT` khớp số dòng. Không thêm unit test.
+- Chưa làm: mục 3 (`sort` trong `docs/api-bookmark.md`). Từ khoá dưới 3 ký tự không khớp gì
+  (giới hạn của trigram, có từ trước).
+- Còn lại: E2E BKM-01, BKM-03a/03b.
 
 ### P6 — Replay đoạn đang ghi không kết thúc (vấn đề 6)
 
