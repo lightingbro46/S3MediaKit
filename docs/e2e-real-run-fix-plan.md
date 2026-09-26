@@ -22,7 +22,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | # | Mức | Vấn đề | Kịch bản bị ảnh hưởng | Nguồn gốc | Trạng thái |
 |---|---|---|---|---|---|
 | 1 | P0 | Replay gộp không phát frame của clip đầu tiên, source chỉ đăng ký khi chuyển clip | RPL-05/06/22, APF-02..05, OVL-08/09, ENC-05b/c | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa |
-| 1b | P0 | Sau lần chuyển Main↔Sub, `tfdt` của fMP4 bắt đầu lại từ 0 | Replay auto trên trình duyệt (MSE) | `728db0cc` (2026-04-26) | ⛔ Cần chốt hướng sửa |
+| 1b | P0 | Sau lần chuyển Main↔Sub, `tfdt` của fMP4 bắt đầu lại từ 0 | Replay auto trên trình duyệt (MSE) | `728db0cc` (2026-04-26) | ✅ Đã sửa (P1b), chưa thử trên trình duyệt |
 | 2 | P0 | `watermarkExcludedRoleIds` bị xoá khi nạp template, role loại trừ vẫn thấy watermark | OVL-04; RPL-13/14/22 chậm vì admin vẫn đi qua transcode | `a8c8b0ae` (2026-08-04) | Mở |
 | 3 | P1 | Overlay transcode giữ cố định độ phân giải của clip đầu khi replay chuyển Main↔Sub | APF-06 | Nhánh này | Mở |
 | 4 | P2 | `conf/config.ini` có `[ffmpeg] delay_close_sec=0`, code hiểu là xoá job extract ngay | EXT-01/03 (chỉ khi dùng file mẫu) | Có từ trước | Không phải lỗi production |
@@ -35,6 +35,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Mới, cần chốt |
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
+| 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | Chưa rõ | Mới, mở |
 
 ## 3. Chi tiết và cách xử lý
 
@@ -84,24 +85,27 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   admin vẫn bị áp watermark (vấn đề 2) nên đi qua transcode overlay.
 - Nhịp phát replay auto đúng 1x.
 
-### P1b — `tfdt` về 0 sau lần chuyển Main↔Sub (vấn đề 1b) — cần chốt hướng
+### P1b — `tfdt` về 0 sau lần chuyển Main↔Sub (vấn đề 1b) — ĐÃ SỬA
 
-- Khi đổi track, `switchToMuxer` gọi `resetTracks`; `FMP4MediaSourceMuxer` tạo writer libmov mới và
-  gửi init segment mới. libmov ghi `tfdt = samples[0].dts - start_dts`, với `start_dts` là dts của
-  sample đầu tiên của writer, nên fragment đầu sau lần chuyển có `tfdt=0`. Cơ chế
-  `seedStampOffsets(_pending_dts_offset)` (commit `728db0cc`) chỉ đặt lại `Stamp` và không có tác dụng.
-- Theo cơ chế MSE (chưa thử trên trình duyệt): media segment sau init segment mới được đặt ở t=0,
-  vị trí phát hiện tại (~18 s) không có dữ liệu mới, nên video đứng hình (đúng tình trạng comment
-  trong `FMP4MediaSourceMuxer::addTrackCompleted` mô tả). ffmpeg đọc tuần tự thì tự bù và gắn cờ discard.
-- Hướng sửa, cần chọn:
-  1. Vá `tfdt` (và `earliest_presentation_time` của `sidx`) trong segment do
-     `FMP4MediaSourceMuxer::onSegmentData` tạo ra, cộng offset đã lưu. Gọn trong một lớp, không đụng
-     submodule.
-  2. Thêm API đặt `start_dts` vào libmov (`3rdpart/media-server`, submodule, phải sửa ở repo của nó).
-  3. Không tạo writer mới khi chỉ đổi độ phân giải cùng codec: vẫn phải có init segment mới nên vẫn
-     cần 1 hoặc 2.
-- Đề xuất 1. Kiểm bằng unit test đọc `tfdt` của fragment đầu sau `resetTracks`, và thử tay trên trình
-  duyệt với player web.
+- Nguyên nhân: khi đổi track, `FMP4MediaSourceMuxer::resetTracks` tạo writer libmov mới. libmov ghi
+  `tfdt = samples[0].dts - start_dts` (`start_dts` = dts sample đầu của writer) nhưng `sidx` ghi pts
+  tuyệt đối. `seedStampOffsets` đưa dts tiếp nối vào libmov, nhưng libmov trừ lại, nên fragment đầu
+  sau lần chuyển có `tfdt=0`. MSE sẽ đặt nó ở t=0 và đứng hình.
+- Thêm một lỗi đi kèm: offset được lấy bằng `getDuration()`, tức dts của sample cuối, nên IDR đầu
+  sau lần chuyển trùng dts với frame cuối trước đó (ffmpeg báo `non monotonically increasing dts`).
+- Đã sửa (hướng 1, không đụng submodule):
+  - `MP4MuxerInterface` lưu dts sample đầu của mỗi track (`start_dts`), dts cuối và khoảng cách
+    sample cuối. `MP4MuxerMemory` gọi `reviseDecodeTime` trước `onSegmentData` để cộng `start_dts`
+    vào mọi `tfdt`. Khi `start_dts` bằng 0 (luồng không reset) thì không đổi gì. Audio có `start_dts`
+    khác 0 do sync A/V cũng được sửa: trước đây `tfdt` của audio lệch so với `sidx`.
+  - `FMP4MediaSourceMuxer::resetTracks` flush trước rồi lấy offset bằng `getNextDts()`
+    (dts cuối + khoảng cách sample cuối).
+- Kiểm tra:
+  - unit test `FMP4DecodeTimeTest.TfdtContinuesAcrossTrackReset`: fail trên code cũ (`tfdt` 0 sau
+    reset, `sidx` 2920), pass sau khi sửa.
+  - Replay auto camera thật: `tfdt` của cả hai track tăng liên tục qua init segment thứ hai.
+- Còn lại: thử tay trên trình duyệt với player web. Đặc điểm có sẵn của `DeltaStamp`: dts vào bằng 0
+  làm frame thứ hai cũng nhận delta 0 (hai sample đầu cùng thời điểm); không thuộc lần chuyển, chưa sửa.
 
 ### P2 — Loại trừ watermark theo role (vấn đề 2)
 
@@ -209,6 +213,11 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - **13 — Khựng ~1 s ở biên file.** Đo nhịp replay auto và `lo`: 4 s media mất 5,1 s quanh biên file ghi
   kế tiếp. File kế tiếp cùng stream chỉ được mở khi file trước hết (không chuẩn bị trước như lần
   chuyển Main↔Sub).
+- **14 — Kết nối không đóng khi hết `duration`.** Đo thời điểm nhận byte trên `live2.mp4` với
+  `quality=auto` và `lo`: dữ liệu đến đúng nhịp 1x và đủ `duration` (tfdt cuối ≈ duration), nhưng EOF
+  đến sau thêm ~30 s (duration 20 → EOF 49,9 s; 33 → 63 s). Player chờ vô ích, còn `ffmpeg` thử đọc
+  lại và báo `Input/output error`. Cần tìm chỗ source/session chỉ đóng sau timeout thay vì khi reader
+  báo hết timeline. Chưa đo với `MP4Reader` per-stream.
 
 ## 4. Thứ tự làm và kiểm
 
@@ -216,7 +225,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 |---|---|---|
 | ✅ 1 | P8 (harness) | smoke/live/auth 28/28 với config sinh từ code |
 | ✅ 2 | P1 | `unit.replay_all` 19/19; E2E APF-02..05, RPL-05/06 |
-| 3 | P1b (chốt hướng), P2 | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
+| 3 | P1b (✅, còn thử trình duyệt), P2 | unit test `tfdt`; thử trên trình duyệt; E2E overlay, RPL-13/14/22 |
 | 4 | 9, 10, P5 | unit test tương ứng; E2E extract, thumbnail, bookmark |
 | 5 | P3 | E2E APF-06, xem tay |
 | 6 | P6, P7, 11, 12, 13 | E2E RPL-15/17; khởi động lại rồi replay ngay |

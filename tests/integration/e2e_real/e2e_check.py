@@ -729,7 +729,10 @@ def resolution_changes(url, media_sec):
             res = "%sx%s" % (m.group(2), m.group(3))
             if not seq or seq[-1][1] != res:
                 seq.append((round(float(m.group(1)), 2), res))
-    errs = len([l for l in out.stderr.splitlines() if " error" in l.lower()])
+    # Server đóng kết nối khi hết `duration` (ffmpeg báo "Stream ends prematurely" rồi
+    # "Input/output error" mỗi lần thử đọc lại): đó là kết thúc luồng, không phải lỗi decode.
+    errs = len([l for l in out.stderr.splitlines()
+                if " error" in l.lower() and "input/output error" not in l.lower()])
     return seq, errs, time.time() - t0
 
 
