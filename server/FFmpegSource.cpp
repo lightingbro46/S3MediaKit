@@ -1323,8 +1323,13 @@ bool FFmpegOverlayFilter::buildThumbnailOverlay(const MediaTuple &tuple, const s
                                                 string &policy_key) {
     const Broadcast::ViewOverlayPolicy policy = resolveViewOverlayPolicy(tuple, jwt_token);
 
-    const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
-    const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+    if (policy.isUnavailable()) {
+        WarnL << "Thumbnail overlay policy is unavailable for " << tuple.app;
+        return false;
+    }
+
+    const bool use_watermark = policy.requiresWatermark();
+    const bool use_privacy_mask = policy.requiresPrivacyMask();
     policy_key = StrPrinter << use_watermark << "|" << use_privacy_mask << "|"
                             << policy.watermark_template << "|" << policy.privacy_mask_regions
                             << "|" << policy.username << "|" << policy.camera_name;
@@ -1645,6 +1650,14 @@ void FFmpegExtractor::startFfmpeg() {
     auto overlay_svg_path = File::absolutePath(key + ".overlay.svg", root_path);
     std::vector<std::string> temporary_paths;
     const Broadcast::ViewOverlayPolicy policy = resolveViewOverlayPolicy(_tuple, _options.jwt_token);
+    if (policy.isUnavailable()) {
+        const SockException ex(Err_other, "Unable to resolve required watermark/privacy mask policy",
+                               ApiErrCode::CODE_EXTRACT_FAILED);
+        WarnL << "Extract video: " << ex.what() << " for " << _tuple.app;
+        completeOnce(false, ex.what(), ex.getCustomCode());
+        notifyStartOnce(ex);
+        return;
+    }
     bool overlay_required = false;
     auto filter_complex = FFmpegOverlayFilter::build(_tuple, policy, _options, overlay_svg_path,
                                                      temporary_paths, overlay_required);

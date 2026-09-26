@@ -10,6 +10,8 @@
 #include "Record/MP4Reader.h"
 #include "Record/MergedMP4Reader.h"
 #include "PacketCache.h"
+#include "Util/MD5.h"
+#include "Thread/ThreadPool.h"
 
 using namespace std;
 using namespace toolkit;
@@ -40,6 +42,7 @@ string getOriginTypeString(MediaOriginType type){
         SWITCH_CASE(device_chn);
         SWITCH_CASE(rtc_push);
         SWITCH_CASE(srt_push);
+        SWITCH_CASE(transcode);
         default : return "unknown";
     }
 }
@@ -536,13 +539,25 @@ bool equalMediaTuple(const MediaTuple& a, const MediaTuple& b) {
     return a.vhost == b.vhost && a.app == b.app && a.stream == b.stream;
 }
 
-static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &vhost_in, const string &app, const string &id, const string &params, bool from_mp4) {
-    string vhost = vhost_in;
+static string normalizeVhost(const string &vhost) {
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
-    if(vhost.empty() || !enableVhost){
-        vhost = DEFAULT_VHOST;
-    }
+    return vhost.empty() || !enableVhost ? DEFAULT_VHOST : vhost;
+}
 
+static bool isReplaySchema(const string &schema) {
+    return schema == FMP4_SCHEMA || schema == HLS_SCHEMA || schema == HLS_FMP4_SCHEMA ||
+           schema == TS_SCHEMA || schema == RTMP_SCHEMA || schema == RTSP_SCHEMA;
+}
+
+// Opening a merged replay queries the recording index and parses MP4 headers.
+// It runs on a dedicated blocking pool, never on the session poller or on a
+// WorkThreadPool poller. Intentionally leaked: tasks may still be queued at exit.
+static ThreadPool &replayOpenPool() {
+    static ThreadPool *pool = new ThreadPool(2, ThreadPool::PRIORITY_NORMAL, true, false, "replay open");
+    return *pool;
+}
+
+static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &vhost, const string &app, const string &id) {
     if (app.empty()) {
         // If no app is specified, then it is traversal instead of searching, so it should return search failure
         return {};
@@ -551,28 +566,35 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
     vector<MediaSource::Ptr> results;
     MediaSource::for_each_media([&](const MediaSource::Ptr &src) { results.emplace_back(src); },
         schema, vhost, app, id /*empty = all streams*/);
-
-    if(!results.size() && from_mp4 && schema == FMP4_SCHEMA){
-        // Quality-aware dual-stream replay (FMP4 only, stream = "<app>/vod/<ts>")
-        auto ret = MediaSource::createFromMP4ByApp(schema, vhost, app, id, params);
-        if (ret) { results.emplace_back(ret); }
-    }
-
     return results;
 }
 
-static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, bool retry, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
-    auto results = findByApp_l(info.schema, info.vhost, info.app, info.stream, info.params, true);
-    if (!results.empty() || !retry) {
+static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
+    const string vhost = normalizeVhost(info.vhost);
+    auto results = findByApp_l(info.schema, vhost, info.app, info.stream);
+    if (!results.empty() || info.app.empty() || !isReplaySchema(info.schema)) {
         cb(std::move(results));
         return;
     }
 
-    // todo: pull from origin if not found, then wait for a while
+    // Quality-aware dual-stream replay. MergedMP4Reader publishes only the
+    // requested output adapter under an internal parameter-specific id.
+    weak_ptr<Session> weak_session = session;
+    auto poller = session->getPoller();
+    replayOpenPool().async([info, vhost, weak_session, poller, cb]() {
+        if (!weak_session.lock()) return;
+        auto src = MediaSource::createFromMP4ByApp(info.schema, vhost, info.app, info.stream, info.params);
+        poller->async([weak_session, src, cb]() {
+            if (!weak_session.lock()) return;
+            vector<MediaSource::Ptr> found;
+            if (src) found.emplace_back(src);
+            cb(found);
+        }, false);
+    });
 }
 
 void MediaSource::findAsyncByApp(const MediaInfo &info, const std::shared_ptr<Session> &session, const std::function<void(const std::vector<Ptr> &)> &cb) {
-    return findAsyncByApp_l(info, session, false, cb);
+    return findAsyncByApp_l(info, session, cb);
 }
 
 /////////////////////////////////////MediaInfo//////////////////////////////////////
@@ -664,10 +686,58 @@ MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const str
     }
 #ifdef ENABLE_MP4
     try {
-        MediaTuple tuple = {vhost, app, stream, params};
-        auto reader = std::make_shared<MergedMP4Reader>(tuple);
-        reader->openForReplay();
-        return MediaSource::find(schema, vhost, app, stream);
+        const auto request_args = Parser::parseArgs(params);
+        const auto quality_it = request_args.find("quality");
+        const auto preferred_it = request_args.find("prefered");
+        const auto duration_it = request_args.find("duration");
+        const string selection_params = StrPrinter
+            << "quality=" << (quality_it == request_args.end() ? "auto" : quality_it->second)
+            << "&prefered=" << (preferred_it == request_args.end() ? "hi" : preferred_it->second)
+            << "&duration=" << (duration_it == request_args.end() ? "0" : duration_it->second);
+        // Replay source identity contains data-selection inputs only. JWT,
+        // role and HLS session parameters belong to the overlay/output layer.
+        const string internal_stream = stream + ".replay." + MD5(selection_params).hexdigest();
+        auto existing = MediaSource::find(schema, vhost, app, internal_stream);
+        if (existing) {
+            return existing;
+        }
+
+        MediaTuple tuple = {vhost, app, internal_stream, selection_params};
+        ProtocolOption option;
+        option.enable_mp4 = false;
+        option.enable_rtsp = false;
+        option.enable_rtmp = false;
+        option.enable_hls = false;
+        option.enable_hls_fmp4 = false;
+        option.enable_ts = false;
+        option.enable_fmp4 = false;
+        option.max_track = 16;
+        option.hls_demand = false;
+        option.rtsp_demand = false;
+        option.rtmp_demand = false;
+        option.ts_demand = false;
+        option.fmp4_demand = false;
+        if (schema == FMP4_SCHEMA) option.enable_fmp4 = true;
+        else if (schema == HLS_SCHEMA) option.enable_hls = true;
+        else if (schema == HLS_FMP4_SCHEMA) option.enable_hls_fmp4 = true;
+        else if (schema == TS_SCHEMA) option.enable_ts = true;
+        else if (schema == RTMP_SCHEMA) option.enable_rtmp = true;
+        else if (schema == RTSP_SCHEMA) option.enable_rtsp = true;
+        else return nullptr;
+
+        auto reader = std::make_shared<MergedMP4Reader>(tuple, option);
+        try {
+            reader->openForReplay();
+        } catch (std::invalid_argument &ex) {
+            // A concurrent request registered the same replay first.
+            auto registered = MediaSource::find(schema, vhost, app, internal_stream);
+            if (registered) {
+                reader->stopReplay();
+                return registered;
+            }
+            throw;
+        }
+        return MediaSource::find(schema, vhost, app, internal_stream);
     } catch (std::exception &ex) {
         WarnL << ex.what();
         return nullptr;

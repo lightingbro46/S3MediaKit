@@ -107,7 +107,31 @@ Khi không chọn stream cụ thể, console dùng merged replay:
 /media/record/{cameraId}/vod/{stamp}.live2.mp4?quality=auto
 ```
 
-`quality` hỗ trợ `auto`, `hi`, `lo`; `auto` ưu tiên stream phù hợp và fallback khi một quality không có dữ liệu.
+`quality` hỗ trợ `auto`, `hi`, `lo` và tiếp tục kết hợp với `prefered`:
+
+- `hi`: OnlyHigh, chỉ MainStream.
+- `lo`: OnlyLow, chỉ SubStream.
+- `auto&prefered=hi`: AutoHigh, MainStream thắng vùng overlap.
+- `auto&prefered=lo`: AutoLow, SubStream thắng vùng overlap.
+
+Không có fallback cho `OnlyHigh`/`OnlyLow`. Mọi mode bắt đầu từ recording chứa
+`stamp`. Khoảng hở không quá `record.replayMaxGapSec` giây (mặc định 2) được bỏ qua
+và phát tiếp clip sau; khoảng hở dài hơn thì replay dừng. Ở mode Auto, đoạn của stream
+ưu tiên ngắn hơn `record.replayMinSwitchSec` giây (mặc định 5) vẫn phát tiếp stream
+đang chạy nếu stream đó còn dữ liệu, để không đổi Main/Sub liên tục. Khi đổi Main↔Sub
+giữa file, clip sau phát ngay từ keyframe của nó tại hoặc trước điểm giao, còn clip trước
+dừng tại keyframe đó, nên không hụt GOP. Các trường hợp khác (seek, clip sau khoảng hở)
+vẫn chờ IDR đầu tiên từ điểm bắt đầu. Audio không
+tương thích giữa các block được chọn sẽ bị tắt cho toàn replay.
+
+Live và replay đều áp dụng overlay privacy của camera, bao gồm watermark và
+privacy mask. Exclusion hiện tại (`overlay=false`, watermark excluded roles,
+privacy-mask excluded roles) được giữ nguyên và đánh giá độc lập. Playback mở
+cho mọi giao thức: HTTP/HLS render overlay qua derived transcode, còn RTSP, RTMP,
+WebRTC và Motion MJPEG phát source gốc. Server chỉ trả `403` khi không xác định được chính
+sách overlay. Stream có `.transcode.` chỉ được tin cậy khi source thực tế có origin
+`transcode` và tag policy ở cuối tên stream khớp với policy overlay của người xem. Overlay được áp dụng sau bước
+merge/chọn MainStream/SubStream nên tiếp tục tồn tại qua lần chuyển auto profile.
 
 ### WebSocket FMP4
 

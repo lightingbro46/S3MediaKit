@@ -163,4 +163,56 @@ string HlsViewerSession::rewritePlaylist(const string &playlist, const string &s
     return result;
 }
 
+//////////////////////////// HlsViewerPolicyCache ////////////////////////////
+
+static const uint64_t kPurgeIntervalMS = 10 * 1000;
+
+HlsViewerPolicyCache &HlsViewerPolicyCache::Instance() {
+    static HlsViewerPolicyCache instance;
+    return instance;
+}
+
+void HlsViewerPolicyCache::put(const string &key, const Broadcast::ViewOverlayPolicy &policy, uint64_t ttl_ms, uint64_t now_ms) {
+    lock_guard<mutex> lck(_mtx);
+    purgeExpired_l(now_ms);
+    auto &entry = _entries[key];
+    entry.policy = policy;
+    entry.ttl_ms = ttl_ms;
+    entry.expire_ms = now_ms + ttl_ms;
+}
+
+bool HlsViewerPolicyCache::get(const string &key, uint64_t now_ms, Broadcast::ViewOverlayPolicy &policy) {
+    lock_guard<mutex> lck(_mtx);
+    auto it = _entries.find(key);
+    if (it == _entries.end()) {
+        return false;
+    }
+    if (it->second.expire_ms <= now_ms) {
+        _entries.erase(it);
+        return false;
+    }
+    it->second.expire_ms = now_ms + it->second.ttl_ms;
+    policy = it->second.policy;
+    return true;
+}
+
+size_t HlsViewerPolicyCache::size() {
+    lock_guard<mutex> lck(_mtx);
+    return _entries.size();
+}
+
+void HlsViewerPolicyCache::purgeExpired_l(uint64_t now_ms) {
+    if (now_ms < _next_purge_ms) {
+        return;
+    }
+    _next_purge_ms = now_ms + kPurgeIntervalMS;
+    for (auto it = _entries.begin(); it != _entries.end();) {
+        if (it->second.expire_ms <= now_ms) {
+            it = _entries.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 } // namespace mediakit

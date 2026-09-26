@@ -6,6 +6,9 @@
 #include "Util/onceToken.h"
 #include "macros.h"
 #include <functional>
+#include <map>
+#include <string>
+#include <vector>
 #include <json/json.h>
 
 namespace mediakit {
@@ -71,6 +74,13 @@ using AuthInvoker = std::function<void(const std::string &err)>;
 // Result of the manager-side view overlay policy check.  The media layer only
 // consumes this value and never includes managerkit headers.
 struct ViewOverlayPolicy {
+    enum class Status {
+        NotApplicable,
+        Resolved,
+        Unavailable,
+    };
+
+    Status status = Status::NotApplicable;
     bool watermark_enforce = false;
     bool watermark_excluded = false;
     bool privacy_mask_enforce = false;
@@ -79,6 +89,22 @@ struct ViewOverlayPolicy {
     std::string privacy_mask_regions;
     std::string username;
     std::string camera_name;
+
+    bool requiresWatermark() const {
+        return watermark_enforce && !watermark_excluded;
+    }
+
+    bool requiresPrivacyMask() const {
+        return privacy_mask_enforce && !privacy_mask_excluded;
+    }
+
+    bool requiresOverlay() const {
+        return requiresWatermark() || requiresPrivacyMask();
+    }
+
+    bool isUnavailable() const {
+        return status == Status::Unavailable;
+    }
 };
 
 using ViewOverlayPolicyInvoker = std::function<void(const ViewOverlayPolicy &policy)>;
@@ -157,6 +183,20 @@ using RecordedMP4Invoker = std::function<void(const std::map<std::string, std::m
 // Broadcast for finding recorded mp4 file events. Control playback seeking through this event.
 extern const std::string kBroadcastGetRecordedMP4;
 #define BroadcastGetRecordedMP4Args const MediaTuple& args, const uint64_t &stamp, const uint64_t &max_duration, const Broadcast::RecordedMP4Invoker &invoker
+
+// Internal replay timeline. The manager resolves recording blocks while the
+// media layer only consumes the selected, non-overlapping data intervals.
+struct ReplayClip {
+    int source = 0; // 0 = Main/Primary, 1 = Sub/Secondary
+    std::string stream_id;
+    std::string file_path;
+    uint64_t start_time = 0; // unix seconds
+    uint32_t duration = 0;   // seconds
+    uint64_t file_start_time = 0; // unix seconds, used when a file is clipped
+};
+using ReplayTimelineInvoker = std::function<void(const std::vector<ReplayClip> &, uint64_t total_duration_s)>;
+extern const std::string kBroadcastGetReplayTimeline;
+#define BroadcastGetReplayTimelineArgs const std::string &vhost, const std::string &app, const std::string &main_stream_id, const std::string &sub_stream_id, const uint64_t &stamp, const uint64_t &max_duration, const std::string &quality, const std::string &preferred, const Broadcast::ReplayTimelineInvoker &invoker
 
 // Broadcast to query the stream quality map (PrimaryStream=0 → hi, SecondaryStream=1 → lo) for a given device_id
 // Invoker is called with map<int/*StreamType*/, string/*stream_id*/>.
@@ -578,6 +618,10 @@ extern const std::string kFileRepeat;
 extern const std::string kEnableFmp4;
 //  App name for record metadata, used to distinguish different types of recordings, for example, "record" for regular recording, "motion_record" for motion detection recording, etc.
 extern const std::string kArchiveName;
+// Replay skips a recording hole up to this many seconds; a longer hole ends the replay
+extern const std::string kReplayMaxGapSec;
+// Auto-quality replay stays on the current stream for a preferred-stream stretch shorter than this (seconds)
+extern const std::string kReplayMinSwitchSec;
 } // namespace Record
 
 // //////////HLS related configuration///////////

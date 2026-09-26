@@ -360,6 +360,11 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
         }
 
         if (!err.empty()) {
+            if (err == "OverlayForbidden") {
+                strong_self->sendResponse(403, close_flag, nullptr, KeyValue(),
+                                          std::make_shared<HttpStringBody>("403 View Overlay Required"));
+                return;
+            }
             if (err == "ResourceUnavailable") {
                 strong_self->sendResponse(503, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("503 Service Unavailable"));
                 return;
@@ -416,8 +421,13 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
     Broadcast::ViewOverlayPolicyInvoker policy_cb = [weak_self, source, cb](const Broadcast::ViewOverlayPolicy &policy) {
         auto self = weak_self.lock();
         if (!self) return;
-        const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
-        const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+        if (policy.isUnavailable()) {
+            self->sendResponse(403, true, nullptr, KeyValue(),
+                               make_shared<HttpStringBody>("View overlay is required but unavailable for this output"));
+            return;
+        }
+        const bool use_watermark = policy.requiresWatermark();
+        const bool use_privacy_mask = policy.requiresPrivacyMask();
         bool use_transcode = false;
 #if defined(ENABLE_FFMPEG)
         TranscodeRequest transcode_request;
@@ -430,6 +440,13 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         use_transcode = transcode_request.enabled;
 #endif
         if (!use_watermark && !use_privacy_mask && !use_transcode) {
+            cb(source);
+            return;
+        }
+        if (self->_media_info.schema == MOTION_MJPEG_SCHEMA) {
+            // The derived transcode has no MJPEG output. Like RTSP/RTMP/WebRTC,
+            // the motion debug view plays the source without overlay.
+            DebugL << "View overlay is not rendered for motion MJPEG: " << self->_media_info.shortUrl();
             cb(source);
             return;
         }
@@ -452,31 +469,34 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
             std::string watermark_asset_error;
             if (!OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
                                                             overlay_options.prebuilt_svg_path, watermark_asset_error)) {
-                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(watermark_asset_error));
+                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(watermark_asset_error));
                 return;
             }
         } else if (use_watermark) {
             if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
-                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
+                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
                 return;
             }
             std::string local_image_error;
             if (!OverlayPrivacyUtils::resolveLocalImages(components, local_image_error)) {
-                self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
+                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
                 return;
             }
         }
         if (use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
                                                                           overlay_options.privacy_masks,
                                                                           overlay_options)) {
-            self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Privacy mask configuration is invalid"));
+            self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Privacy mask configuration is invalid"));
             return;
         }
-        const string key = string(transcode_codec == CodecH265 ? "h265" : "h264") + "|" +
-                           to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
-                           to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
-                           policy.watermark_template + "|" + policy.privacy_mask_regions;
-        const string stream_suffix = TRANSCODE_SUFFIX + MD5(key).hexdigest();
+        const string transcode_key = string(transcode_codec == CodecH265 ? "h265" : "h264") + "|" +
+                                     to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
+                                     to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
+                                     to_string(transcode_gop);
+        // "<stream>.transcode.<output md5>.<policy tag>": HLS segment requests
+        // are trusted only when the tag matches the viewer's own policy.
+        const string stream_suffix = TRANSCODE_SUFFIX + MD5(transcode_key).hexdigest() + "." +
+                                     makeViewOverlayPolicyTag(policy);
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
         auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
@@ -540,13 +560,48 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         };
         start_transcode(components);
 #else
-        self->sendResponse(503, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
+        self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
 #endif
     };
     auto flag = NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, _media_info, false, jwt_token, policy_cb, *this);
     if (!flag) {
         policy_cb(Broadcast::ViewOverlayPolicy());
     }
+}
+
+Broadcast::ViewOverlayPolicy HttpSession::resolveHlsViewOverlayPolicy(
+    const std::string &viewer_key, const std::string &jwt_token, uint64_t ttl_ms, uint64_t now_ms,
+    const std::function<Broadcast::ViewOverlayPolicy()> &resolve) {
+    auto &cache = HlsViewerPolicyCache::Instance();
+    Broadcast::ViewOverlayPolicy policy;
+    if (jwt_token.empty() && !viewer_key.empty() && cache.get(viewer_key, now_ms, policy)) {
+        return policy;
+    }
+    policy = resolve();
+    if (!jwt_token.empty() && !viewer_key.empty()) {
+        cache.put(viewer_key, policy, ttl_ms, now_ms);
+    }
+    return policy;
+}
+
+std::string HttpSession::makeViewOverlayPolicyTag(const Broadcast::ViewOverlayPolicy &policy) {
+    string key = "wm:";
+    if (policy.requiresWatermark()) {
+        key += policy.watermark_template + "|" + policy.username + "|" + policy.camera_name;
+    }
+    key += "|pm:";
+    if (policy.requiresPrivacyMask()) {
+        key += policy.privacy_mask_regions;
+    }
+    return MD5(key).hexdigest();
+}
+
+bool HttpSession::isTrustedViewOverlayDerivedSource(const MediaSource::Ptr &source, const std::string &policy_tag) {
+    if (!source || source->getOriginType() != MediaOriginType::transcode || policy_tag.empty()) {
+        return false;
+    }
+    const auto &stream = source->getMediaTuple().stream;
+    return stream.find(TRANSCODE_SUFFIX) != string::npos && end_with(stream, "." + policy_tag);
 }
 
 // http-fmp4 link format: http://vhost-url:port/media/app/streamid.live.mp4?key1=value1&key2=value2
@@ -830,86 +885,135 @@ bool HttpSession::checkLiveStreamHls() {
         needs_session_redirect = identity.origin != HlsViewerSession::Identity::Query;
     }
 
-#if defined(ENABLE_FFMPEG)
-    // Keep the normal HLS file-serving path unchanged. Only an explicit
-    // transcode request is intercepted here: create the derived HLS source and
-    // redirect the client to its playlist. The derived playlist and segments
-    // are then handled by the existing HLS/HttpFileManager path.
     auto request_args = Parser::parseArgs(_parser.params());
     auto transcode_it = request_args.find("transcode");
     const bool transcode_requested = transcode_it != request_args.end() && !strcasecmp(transcode_it->second.data(), "true");
-    bool camera_overlay_requested = false;
-    if (is_playlist && !transcode_requested && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
-        const auto args = Parser::parseArgs(_media_info.params);
-        const auto token_it = args.find("token");
-        const string jwt_token = token_it == args.end() ? "" : token_it->second;
-        Broadcast::ViewOverlayPolicyInvoker policy_cb = [&camera_overlay_requested](const Broadcast::ViewOverlayPolicy &value) {
-            camera_overlay_requested =
-                (value.watermark_enforce && !value.watermark_excluded) ||
-                (value.privacy_mask_enforce && !value.privacy_mask_excluded);
-        };
-        NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay,
-                    _media_info, false, jwt_token, policy_cb, *this);
-        if (camera_overlay_requested) {
-            DebugL << "HLS view overlay policy requires derived transcode: " << _media_info.shortUrl();
+    const auto args = Parser::parseArgs(_media_info.params);
+    const auto token_it = args.find("token");
+    const string jwt_token = token_it == args.end() ? "" : token_it->second;
+    // Segment/init/key URIs carry only the session id (query or cookie), so
+    // their policy comes from the session's playlist request.
+    string viewer_session_id = playlist_session_id;
+    if (!is_playlist) {
+        auto identity = HttpFileManager::resolveHlsViewerIdentity(_parser, _media_info);
+        if (identity.origin == HlsViewerSession::Identity::Query ||
+            identity.origin == HlsViewerSession::Identity::Cookie) {
+            viewer_session_id = identity.session_id;
         }
     }
-    const bool view_transcode_requested = transcode_requested || camera_overlay_requested;
-    if (view_transcode_requested && is_playlist && _media_info.stream.find(TRANSCODE_SUFFIX) == string::npos) {
+    const string viewer_key = viewer_session_id.empty()
+        ? string() : HttpFileManager::getHlsViewerKey(_media_info, viewer_session_id);
+    const auto view_policy = resolveHlsViewOverlayPolicy(
+        viewer_key, jwt_token, HttpFileManager::getHlsViewerLifeSecond() * 1000ULL, getCurrentMillisecond(true),
+        [&]() {
+            Broadcast::ViewOverlayPolicy value;
+            Broadcast::ViewOverlayPolicyInvoker policy_cb = [&](const Broadcast::ViewOverlayPolicy &resolved) {
+                value = resolved;
+            };
+            NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay,
+                        _media_info, false, jwt_token, policy_cb, *this);
+            return value;
+        });
+    const bool camera_overlay_requested = view_policy.requiresOverlay();
+    const bool camera_overlay_forbidden = view_policy.isUnavailable();
+    if (camera_overlay_requested) {
+        DebugL << "HLS view overlay policy requires derived transcode: " << _media_info.shortUrl();
+    }
+    if (camera_overlay_forbidden) {
+        sendResponse(403, true, nullptr, KeyValue(),
+                     make_shared<HttpStringBody>("View overlay is required but unavailable for HLS"));
+        return true;
+    }
+    const bool has_transcode_suffix = _media_info.stream.find(TRANSCODE_SUFFIX) != string::npos;
+    MediaSource::Ptr named_derived_source;
+    if (has_transcode_suffix) {
+        named_derived_source = MediaSource::find(_media_info.schema, _media_info.vhost,
+                                                 _media_info.app, _media_info.stream, false);
+    }
+    const bool trusted_derived_source =
+        isTrustedViewOverlayDerivedSource(named_derived_source, makeViewOverlayPolicyTag(view_policy));
+    if (camera_overlay_requested && has_transcode_suffix && !trusted_derived_source) {
+        sendResponse(403, true, nullptr, KeyValue(),
+                     make_shared<HttpStringBody>("Untrusted HLS derived stream is forbidden by view overlay policy"));
+        return true;
+    }
+    if (camera_overlay_requested && !trusted_derived_source && !is_playlist) {
+        // Segment/init/key requests must use the derived stream selected by
+        // the protected playlist. Never serve an original HLS artifact when
+        // either watermark or privacy mask is effective.
+        sendResponse(403, true, nullptr, KeyValue(),
+                     make_shared<HttpStringBody>("Original HLS segment is forbidden by view overlay policy"));
+        return true;
+    }
+    const bool view_transcode_requested = !trusted_derived_source &&
+                                          (transcode_requested || camera_overlay_requested);
+
+    GET_CONFIG(string, record_app, Record::kAppName);
+    const bool replay_playlist = is_playlist && _media_info.app == record_app &&
+                                 _media_info.stream.find(".replay.") == string::npos;
+    // Overlay HLS and merged replay HLS are both published under an internal
+    // stream id. Redirect before HttpFileManager can serve an original/raw
+    // playlist.
+    if ((view_transcode_requested || replay_playlist) && is_playlist && !trusted_derived_source) {
         MediaInfo source_info = _media_info;
         const string request_path = _parser.toOriginalUrl(_parser.url());
         const string request_params = _parser.params();
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-        authorizeHlsRedirect([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag]() {
+        auto redirect_source = [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &derived) {
+            auto self = weak_self.lock();
+            if (!self) return;
+            self->async([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag, derived]() {
+                auto self = weak_self.lock();
+                if (!self) return;
+                if (!derived) {
+                    self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("HLS source is not ready"));
+                    return;
+                }
+
+                const auto &derived_tuple = derived->getMediaTuple();
+                const string marker = "/" + source_info.stream + "/";
+                const auto pos = request_path.find(marker);
+                if (derived_tuple.app.empty() || derived_tuple.stream.empty() || pos == string::npos) {
+                    self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build HLS redirect"));
+                    return;
+                }
+
+                string location = request_path;
+                location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
+                auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
+                    location, request_params, playlist_session_id);
+                self->sendResponse(302, close_flag, nullptr, headers);
+            }, false);
+        };
+
+        auto on_source = [weak_self, close_flag, view_transcode_requested, redirect_source](const MediaSource::Ptr &source) {
+            auto self = weak_self.lock();
+            if (!self) return;
+            if (!source) {
+                self->sendNotFound(close_flag);
+                return;
+            }
+            if (view_transcode_requested) self->applyViewOverlayPolicy(source, redirect_source);
+            else redirect_source(source);
+        };
+
+        authorizeHlsRedirect([weak_self, source_info, replay_playlist, on_source]() {
             auto self = weak_self.lock();
             if (!self) {
                 return;
             }
-            MediaSource::findAsync(source_info, self,
-                [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &source) {
-                    auto self = weak_self.lock();
-                    if (!self) return;
-                    if (!source) {
-                        self->sendNotFound(close_flag);
-                        return;
-                    }
-
-                    self->applyViewOverlayPolicy(source, [weak_self, source_info, request_path, request_params, playlist_session_id, close_flag](const MediaSource::Ptr &derived) {
-                        auto self = weak_self.lock();
-                        if (!self) return;
-                        self->async([weak_self, source_info, request_path, request_params, playlist_session_id, close_flag, derived]() {
-                            auto self = weak_self.lock();
-                            if (!self) return;
-                            if (!derived) {
-                                self->sendResponse(503, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Transcoded HLS source is not ready"));
-                                return;
-                            }
-
-                            const auto &derived_tuple = derived->getMediaTuple();
-                            if (derived_tuple.app.empty() || derived_tuple.stream.empty()) {
-                                self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
-                                return;
-                            }
-
-                            string location = request_path;
-                            const string marker = "/" + source_info.stream + "/";
-                            const auto pos = request_path.find(marker);
-                            if (pos == string::npos) {
-                                self->sendResponse(500, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Cannot build transcoded HLS redirect"));
-                                return;
-                            }
-                            location.replace(pos + 1, source_info.stream.size(), derived_tuple.stream);
-                            auto headers = HlsViewerSession::makeHlsPlaylistRedirectHeader(
-                                location, request_params, playlist_session_id);
-                            self->sendResponse(302, close_flag, nullptr, headers);
-                        }, false);
+            if (replay_playlist) {
+                MediaSource::findAsyncByApp(source_info, static_pointer_cast<Session>(self),
+                    [on_source](const vector<MediaSource::Ptr> &sources) {
+                        on_source(sources.empty() ? nullptr : sources.front());
                     });
-                });
+            } else {
+                MediaSource::findAsync(source_info, static_pointer_cast<Session>(self), on_source);
+            }
         });
         return true;
     }
-#endif // ENABLE_FFMPEG
 
     if (needs_session_redirect) {
         const bool close_flag = !strcasecmp(_parser["Connection"].data(), "close");
@@ -1475,6 +1579,11 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
             return;
         }
         if (!err.empty()) {
+           if (err == "OverlayForbidden") {
+                strong_self->sendResponse(403, close_flag, nullptr, KeyValue(),
+                                          std::make_shared<HttpStringBody>("403 View Overlay Required"));
+                return;
+           }
            if (err == "ResourceUnavailable") {
                 strong_self->sendResponse(503, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("503 Service Unavailable"));
                 return;
@@ -1534,6 +1643,9 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
                 auto kv = Parser::parseArgs(src->getMediaTuple().params);
                 auto it = kv.find("quality");
                 if (it != kv.end() && it->second == target) {
+                    return src;
+                }
+                if (target == "auto" && it == kv.end()) {
                     return src;
                 }
             }

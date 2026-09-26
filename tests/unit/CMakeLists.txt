@@ -32,8 +32,10 @@ add_s3_unit_test(unit_common_str_util
 add_s3_unit_test(unit_parser common/test_parser.cpp)
 add_s3_unit_test(unit_stamp common/test_stamp.cpp)
 add_s3_unit_test(unit_str_coding common/test_str_coding.cpp)
-add_s3_unit_test(unit_http http/test_http_const.cpp http/test_http_cookie.cpp http/test_http_cookie_manager.cpp http/test_hls_viewer_session.cpp)
+add_s3_unit_test(unit_http http/test_http_const.cpp http/test_http_cookie.cpp http/test_http_cookie_manager.cpp http/test_hls_viewer_session.cpp http/test_hls_overlay_guard.cpp)
 target_link_libraries(unit_http PRIVATE S3MediaKit::ext-codec)
+add_test(NAME unit.http_all COMMAND unit_http)
+set_tests_properties(unit.http_all PROPERTIES LABELS unit TIMEOUT 15)
 add_s3_unit_test(unit_rtcp rtcp/test_rtcp_fci.cpp)
 target_sources(unit_rtcp PRIVATE rtcp/test_rtcp_packets.cpp rtcp/test_rtcp_context.cpp)
 add_s3_unit_test(unit_rtmp rtmp/test_amf.cpp rtmp/test_rtmp_utils.cpp rtmp/test_flv_splitter.cpp rtmp/test_rtmp_protocol.cpp rtmp/test_rtmp_demuxer.cpp)
@@ -45,6 +47,14 @@ target_sources(unit_hls PRIVATE record/test_hls_maker.cpp record/test_hls_media_
 target_link_libraries(unit_hls PRIVATE S3MediaKit::ext-codec)
 add_test(NAME unit.hls_all COMMAND unit_hls)
 set_tests_properties(unit.hls_all PROPERTIES LABELS unit TIMEOUT 15)
+add_s3_unit_test(unit_replay
+  record/test_view_overlay_policy.cpp
+  record/test_auto_profile_overlay.cpp
+  record/test_replay_timeline_planner.cpp
+  record/test_merged_mp4_reader.cpp)
+target_link_libraries(unit_replay PRIVATE S3MediaKit::ext-codec)
+add_test(NAME unit.replay_all COMMAND unit_replay)
+set_tests_properties(unit.replay_all PROPERTIES LABELS unit TIMEOUT 15)
 add_s3_unit_test(unit_http_body http/test_http_body.cpp)
 add_s3_unit_test(unit_http_splitters http/test_http_splitters.cpp http/test_websocket_splitter.cpp)
 add_s3_unit_test(unit_xml onvif/test_pugixml.cpp onvif/test_soap_object.cpp)

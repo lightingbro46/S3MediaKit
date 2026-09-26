@@ -292,7 +292,7 @@ int MultiMediaSourceMuxer::totalReaderCount() const {
            (_mp4 ? _option.mp4_as_player : 0) +
            (_hls ? _hls->readerCount() : 0) +
            (_hls_fmp4 ? _hls_fmp4->readerCount() : 0) +
-#ifdef ENABLE_FFMPEG
+#if defined(ENABLE_FFMPEG)
            (_stack? _stack->readerCount() : 0) +
 #endif // ENABLE_FFMPEG
            (_ring ? _ring->readerCount() : 0);
@@ -1047,7 +1047,9 @@ bool MultiMediaSourceMuxer::isEnabled(){
                      (_ring ? (bool)_ring->readerCount() : false)  ||
                      (_hls ? _hls->isEnabled() : false) ||
                      (_hls_fmp4 ? _hls_fmp4->isEnabled() : false) ||
+#if defined(ENABLE_FFMPEG)
                      (_stack ? _stack->isEnabled() : false) ||
+#endif // ENABLE_FFMPEG
                      _mp4;
 
         if (_is_enable) {
