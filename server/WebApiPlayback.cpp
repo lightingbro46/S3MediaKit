@@ -317,12 +317,14 @@ void registerPlaybackApis() {
             url.erase(0, prefix_size);
         }
         string schema;
+        bool merged = false;
         if (end_with(url, fmp4_suffix)) {
             schema = FMP4_SCHEMA;
             url.erase(url.size() - fmp4_suffix.size());
         } else if (end_with(url, fmp4_merged_suffix)) {
             schema = FMP4_SCHEMA;
             url.erase(url.size() - fmp4_merged_suffix.size());
+            merged = true;
         } else if (end_with(url, ts_suffix)) {
             schema = TS_SCHEMA;
             url.erase(url.size() - ts_suffix.size());
@@ -340,7 +342,10 @@ void registerPlaybackApis() {
             return false;
         }
 
-        ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, media_info.stream);
+        // The merged replay registers under an id derived from its data-selection
+        // params (quality, prefered, duration), taken from the url's query.
+        const string stream = merged ? MediaSource::replayStreamId(media_info.stream, info_in.params) : media_info.stream;
+        ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, stream);
         return ret != nullptr;
     };
 

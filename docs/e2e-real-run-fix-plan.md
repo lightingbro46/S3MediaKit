@@ -36,6 +36,8 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Hệ quả của vấn đề 2 (admin đi qua overlay transcode) | Không phải lỗi speed; hết cùng vấn đề 2, chưa chạy lại E2E |
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa, chưa chạy lại E2E |
 | 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | `8b9aff00` (2026-04-06) | ✅ Đã sửa, chưa chạy lại E2E |
+| 15 | P2 | `playback/speed` với URL `live2.mp4` luôn trả `906001 Playback stream not found` | RPL-15b (mới) | Id nội bộ `.replay.<md5>` của replay gộp | ✅ Đã sửa (P9 bước 1), chưa chạy lại E2E camera thật |
+| 16 | P2 | `duration` chỉ có tác dụng ở HTTP-fMP4 per-stream; RTSP/RTMP/TS/FLV/HLS per-stream bỏ qua, và người xem khác `duration` dùng chung một `MP4Reader` | RPL (per-stream) | Có từ trước | Mới, mở (P9 bước 2) |
 
 ## 3. Chi tiết và cách xử lý
 
@@ -219,6 +221,39 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - Nhóm mới `auto-profile` (APF-01..07, tham số `--since`), dùng JWT `overlay=false` cho APF-02..05;
   mỗi phép đo dùng `duration` riêng để có source mới (vấn đề 11).
 - RPL-22 trong nhóm replay: một request duy nhất, không gọi lại.
+
+### P9 — `playback/speed` cho `live2.mp4` và `duration` trong `MP4Reader` (vấn đề 15, 16)
+
+Chốt 2026-09-27: làm chung một plan, hai bước, commit riêng.
+
+**Bước 1 — vấn đề 15.** `findPlaybackStream` ([`WebApiPlayback.cpp`](../server/WebApiPlayback.cpp)) bỏ đuôi
+`.live2.mp4` rồi `find` theo `cam/vod/<stamp>`, nhưng source gộp đăng ký dưới
+`cam/vod/<stamp>.replay.<md5(quality, prefered, duration)>` (`replayInternalStream`, static trong
+`MediaSource.cpp`). Đã tái hiện: cả URL trần lẫn URL kèm query đều trả `906001`, 20 s media vẫn 1x.
+- Mở `MediaSource::replayStreamId(stream, params)` (bọc `replayInternalStream`, một chỗ định nghĩa id).
+- `findPlaybackStream`: với `.live2.mp4` tính id từ query của `url` (mặc định `auto`/`hi`/`0` như lúc
+  tạo source; `token`, `session_id` không ảnh hưởng). Không đoán theo tiền tố `.replay.*` để khỏi đổi
+  nhầm luồng của người xem khác.
+- Tài liệu API: `url` phải kèm đúng `quality`, `prefered`, `duration` của luồng đang phát.
+- Kiểm: harness RPL-15b (`live2.mp4` `quality=auto`, 2x, 20 s media ≈ 11 s).
+- Ngoài phạm vi: HLS replay (`/vod/<stamp>/hls.m3u8`) chưa có trong danh sách đuôi của API.
+- ✅ Đã làm 2026-09-27. Camera giả: URL trần và URL kèm `quality=auto&prefered=hi` đều `code 0`, 20 s
+  media mất 11,2 s; `quality=lo` khi đang phát `auto` trả `906001` (không đổi nhầm luồng). Harness
+  `check replay`: RPL-15 và RPL-15b PASS. Unit test 161/161.
+
+**Bước 2 — vấn đề 16.** Đưa `duration` vào `MP4Reader` per-stream, xử lý trong timeline như replay gộp.
+- `duration` = khung thời gian `[stamp, stamp + duration]`, giống replay gộp (bản ghi có khoảng hở thì
+  nhận ít hơn).
+- Id chỉ đổi khi `duration > 0` (dùng `replayStreamId`); không có `duration` thì giữ
+  `cam/<stream>/vod/<stamp>`, nên client cũ, RPL-17 (đuổi bản ghi mới) và `loadMP4File` /
+  `seekRecordStamp` / `setRecordSpeed` không đổi. Người có `duration` dùng source riêng.
+- Truyền params vào đường tạo source (`find_l(from_mp4)` → `createFromMP4`).
+- `MultiMP4Demuxer`: eof khi vượt `duration`, `findNextSegment` không nối file sau điểm đó. Reader tự
+  huỷ khi hết, mọi protocol nhận EOF (nhờ bản sửa vấn đề 14).
+- Giới hạn `duration` trong `HttpSession` giữ làm lớp bảo vệ thứ hai.
+- `findPlaybackStream` với `.live.mp4` dùng cùng `replayStreamId`.
+- Kiểm: unit test `MultiMP4Demuxer` dừng đúng `duration`; E2E trên camera giả `.live.mp4`/RTSP/TS có
+  `duration`, speed per-stream, hai người xem khác `duration` cùng stamp.
 
 ### Vấn đề mới phát hiện khi làm P8 + P1
 

@@ -841,6 +841,11 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
 #endif //ENABLE_MP4
 }
 
+string MediaSource::replayStreamId(const string &stream, const string &params) {
+    string selection_params;
+    return replayInternalStream(stream, params, selection_params);
+}
+
 MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const string &vhost, const string &app, const string &stream, const string &params, bool check_app){
     GET_CONFIG(string, appName, Record::kAppName);
     if (check_app && app != appName) {

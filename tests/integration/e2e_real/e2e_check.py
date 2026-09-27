@@ -685,6 +685,21 @@ def g_replay(ctx):
     ctx.record("RPL-15", code == 0 and wall < 16,
                "speed=2 code=%s; 20 s media mất %.1fs (mong đợi ~11 s)" % (code, wall))
 
+    # RPL-15b: như RPL-15 với replay gộp; url của API phải kèm đúng quality/prefered/duration đang phát.
+    path2 = "/media/record/%s/vod/%d.live2.mp4" % (cam, stamp)
+    proc = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                             "-i", ctx.url(path2, tok, quality="auto", prefered="hi"), "-t", "20",
+                             "-map", "0:v:0", "-f", "null", "-"], stderr=subprocess.PIPE)
+    time.sleep(2)
+    play_url = "http://%s:%d%s?quality=auto&prefered=hi" % (ctx.host, ctx.port["http"], path2)
+    st, _, res_speed = ctx.api("/media/mserver/playback/speed", body={"url": play_url, "speed": 2})
+    t0 = time.time()
+    proc.wait(timeout=120)
+    wall = time.time() - t0 + 2
+    code = isinstance(res_speed, dict) and res_speed.get("code")
+    ctx.record("RPL-15b", code == 0 and wall < 16,
+               "live2 auto speed=2 code=%s; 20 s media mất %.1fs (mong đợi ~11 s)" % (code, wall))
+
     recent = int(time.time()) - 90
     wall, errs, msg = pace(ctx.url("/media/record/%s/%s/vod/%d.live.mp4" % (cam, main, recent), tok),
                            600, timeout=240)

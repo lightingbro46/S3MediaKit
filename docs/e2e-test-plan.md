@@ -308,6 +308,7 @@ hiện tại ±1 để thấy chuyển mốc trong buổi test.
 | RPL-13 | P0 | A | HLS replay `/media/record/<cam>/vod/<stamp>/hls.m3u8?quality=auto` | 302 sang opaque id; playlist không chứa đường dẫn `.mp4`; segment phát được |
 | RPL-14 | P1 | A | HLS fMP4 replay `hls.fmp4.m3u8` | như trên |
 | RPL-15 | P1 | A | `/media/mserver/playback/speed` 2x, 4x, 0.5x | pacing đổi tương ứng (30 s media trong ~15 s / ~7.5 s / ~60 s) |
+| RPL-15b | P2 | A | `playback/speed` 2x trên `live2.mp4` `quality=auto`; `url` kèm đúng `quality`/`prefered`/`duration` đang phát | code 0, 20 s media trong ~11 s |
 | RPL-16 | P1 | M | Seek: đóng kết nối, mở `stamp` mới | phát từ stamp mới, không rò session (getMediaList giảm sau ≤ 30 s) |
 | RPL-17 | P1 | A | Replay đoạn đang ghi (stamp = now − 90 s) | phát tới hết dữ liệu hiện có rồi kết thúc, không chờ bản ghi mới |
 | RPL-18 | P1 | A | 5 replay song song cùng camera khác stamp | tất cả đúng pacing, CPU hợp lý |
