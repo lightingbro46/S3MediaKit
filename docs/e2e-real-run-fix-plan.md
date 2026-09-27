@@ -33,9 +33,9 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 9 | P1 | Tải file extract luôn `401 No permission on key` khi `enableAuthorize=1` | EXT-01/03 | Có từ trước | ✅ Đã sửa, chưa chạy lại E2E |
 | 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | ✅ Đã sửa, chưa chạy lại E2E |
 | 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Giữ như hiện tại (chốt 2026-09-26) |
-| 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Chưa rõ | Mới, mở |
+| 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Hệ quả của vấn đề 2 (admin đi qua overlay transcode) | Không phải lỗi speed; hết cùng vấn đề 2, chưa chạy lại E2E |
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
-| 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | Chưa rõ | Mới, mở |
+| 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | `8b9aff00` (2026-04-06) | ✅ Đã sửa, chưa chạy lại E2E |
 
 ## 3. Chi tiết và cách xử lý
 
@@ -240,6 +240,25 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   Đã chốt 2026-09-26: giữ như hiện tại, không sửa.
 - **12 — RPL-15.** `playback/speed` 2x: lần đầu (config mẫu) 10,7 s, với config sinh từ code 16–23 s.
   Đi qua `MP4Reader` per-stream, không qua phần đã sửa. Cần so hai bộ config.
+  Đã điều tra 2026-09-27, **không phải lỗi speed**:
+  - So config mẫu với config sinh từ code (dump từ binary): không khoá nào liên quan tới nhịp đọc
+    (`record.sampleMS`, `protocol.modify_stamp`, `paced_sender_ms`, `mergeWriteMS` đều giống nhau).
+    Khác biệt thật nằm ở harness: lần sau có `overlay.use_watermark_asset=0` và camera bật overlay, nên
+    request của admin (JWT `e2e-admin`) đi qua overlay transcode vì vấn đề 2 (role loại trừ bị xoá khi
+    nạp template). `playback/speed` đặt tốc độ trên source gốc; transcode theo nhịp đó nhưng thêm độ
+    trễ và tốn CPU encode 1080p ở 50 fps trên bản Debug.
+  - Tái hiện tại chỗ (camera giả 1080p 25 fps bằng `stress_vms/rtsp_source.py`, config sinh từ code,
+    đúng phép đo RPL-15, `-t 20`, đổi tốc độ sau 2 s):
+
+    | Đường đi | 1x | 2x | 4x |
+    |---|---|---|---|
+    | Trực tiếp (admin được loại trừ, hoặc không overlay) | 20,8 s | 11,3 s | 6,8 s |
+    | Overlay transcode (viewer có watermark) | 25,1 s | 14,6 s | 8,4 s |
+
+    Cả hai đường đều đổi nhịp đúng; transcode chỉ trễ thêm ~4 s media (chia theo tốc độ). Trên camera
+    thật cùng lúc ghi + motion, 16–23 s khớp với đường transcode.
+  - Không sửa code: vấn đề 2 đã sửa nên admin trong RPL-15 không còn qua transcode. Còn chạy lại E2E
+    RPL-15 (mong đợi ≈ 11 s).
 - **13 — Khựng ~1 s ở biên file.** Đo nhịp replay auto và `lo`: 4 s media mất 5,1 s quanh biên file ghi
   kế tiếp. File kế tiếp cùng stream chỉ được mở khi file trước hết (không chuẩn bị trước như lần
   chuyển Main↔Sub).
@@ -248,6 +267,24 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
   đến sau thêm ~30 s (duration 20 → EOF 49,9 s; 33 → 63 s). Player chờ vô ích, còn `ffmpeg` thử đọc
   lại và báo `Input/output error`. Cần tìm chỗ source/session chỉ đóng sau timeout thay vì khi reader
   báo hết timeline. Chưa đo với `MP4Reader` per-stream.
+  ✅ Đã sửa 2026-09-27. Nguyên nhân: khi hết timeline, timer của `MergedMP4Reader` trả `false`, reader
+  và muxer bị huỷ ngay, nhưng lambda `setReadCB` của session HTTP-fMP4 giữ `shared_ptr` tới
+  `FMP4MediaSource` (thêm cùng tham số `duration`, `8b9aff00`). Source vì vậy còn sống và còn đăng ký,
+  ring không bao giờ detach, và session chỉ đóng khi hết `http.keepAliveSecond` (harness 30 s,
+  default code 15 s). Sửa trong [`HttpSession.cpp`](../src/Http/HttpSession.cpp): hai nhánh fMP4
+  (`checkLiveStreamFMP4` và `checkLiveStreamFMP4ByApp`) giữ `weak_ptr`. HTTP-TS không giữ source nên
+  không bị. `MP4Reader` per-stream không bị vì reader đọc tiếp quá `duration` và đóng theo giới hạn.
+  Đo tại chỗ (camera giả 1080p, `duration=20`):
+
+  | Luồng | Trước | Sau |
+  |---|---|---|
+  | `live2.mp4` `quality=auto`, admin | EOF 49,0 s (session timeout) | EOF 18,6 s (ring detached) |
+  | `live2.mp4` `quality=auto`, viewer có watermark (transcode) | EOF 49,9 s | EOF 18,6 s |
+  | `live.mp4` per-stream, admin / viewer | — | EOF 20,2 s / 23,3 s (giới hạn `duration`) |
+
+  Còn lại: viewer đi qua overlay transcode chỉ nhận ~16 s video của 20 s. Transcode bắt đầu trễ ~2,5 s
+  và bị huỷ cùng source khi hết timeline, nên đoạn cuối còn trong transcode bị mất (trước khi sửa cũng
+  vậy: 15,6 s). Chưa sửa; E2E APF-02.
 
 ## 4. Thứ tự làm và kiểm
 

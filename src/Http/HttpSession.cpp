@@ -640,7 +640,11 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
             }
             strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
         });
-        _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested](const FMP4MediaSource::RingDataType &fmp4_list) {
+        // Weak: holding the source would keep its ring alive after the muxer ends
+        // (replay reached the end of its timeline), so the detach callback never
+        // fired and the viewer waited for the keep-alive timeout instead of EOF.
+        std::weak_ptr<FMP4MediaSource> weak_src = fmp4_src;
+        _fmp4_reader->setReadCB([weak_self, weak_src, dur_sec, end_dts, stop_requested](const FMP4MediaSource::RingDataType &fmp4_list) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 // This object has been destroyed
@@ -664,7 +668,9 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
                     if (ts->time_stamp > limit) {
                         if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
                             WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
-                            fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
+                            if (auto src = weak_src.lock()) {
+                                src->getOwnerPoller()->async([src]() { src->close(false); });
+                            }
                             strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
                         }
                         return;
@@ -1715,7 +1721,9 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
                     }
                 }
             });
-            _fmp4_reader->setReadCB([weak_self, fmp4_src, dur_sec, end_dts, stop_requested]
+            // Weak for the same reason as in checkLiveStreamFMP4().
+            std::weak_ptr<FMP4MediaSource> weak_src = fmp4_src;
+            _fmp4_reader->setReadCB([weak_self, weak_src, dur_sec, end_dts, stop_requested]
                                     (const FMP4MediaSource::RingDataType &fmp4_list) {
                 auto strong_self = weak_self.lock();
                 if (!strong_self) return;
@@ -1734,7 +1742,9 @@ bool HttpSession::checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_lis
                         if (ts->time_stamp > limit) {
                             if (!stop_requested->exchange(true, std::memory_order_acq_rel)) {
                                 WarnL << "http-mp4 duration limit reached, time_stamp:" << ts->time_stamp << ", limit:" << limit;
-                                fmp4_src->getOwnerPoller()->async([fmp4_src]() { fmp4_src->close(false); });
+                                if (auto src = weak_src.lock()) {
+                                    src->getOwnerPoller()->async([src]() { src->close(false); });
+                                }
                                 strong_self->shutdown(SockException(Err_shutdown, "fmp4 duration limit reached"));
                             }
                             return;
