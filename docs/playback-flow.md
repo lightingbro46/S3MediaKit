@@ -153,6 +153,15 @@ API này tìm playback stream đang chạy theo URL và gọi `MediaSource::spee
 | `url` | `string` | Có | URL playback đang phát |
 | `speed` | `float` | Có | Tốc độ mong muốn, ví dụ `0.5`, `1`, `2`, `4` |
 
+`url` phải là URL tuyệt đối (`http://host:port/media/...`) và giữ nguyên các tham số chọn dữ liệu của
+luồng đang phát, vì mỗi bộ tham số là một source riêng:
+
+- `.live2.mp4` (replay gộp): `quality`, `prefered`, `duration` (không truyền thì mặc định `auto`, `hi`, `0`).
+- `.live.mp4` / `.live.ts` / `.live.flv` per-stream: `duration` nếu luồng mở với `duration`.
+
+`token`, `session_id` và các tham số khác không ảnh hưởng. Tham số lệch với luồng đang phát thì trả
+`906001 Playback stream not found` (hoặc đổi tốc độ của một source khác cùng stamp đang mở).
+
 ```js
 await fetch('/media/mserver/playback/speed', {
   method: 'POST',

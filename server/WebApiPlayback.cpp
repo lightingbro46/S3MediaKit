@@ -342,9 +342,10 @@ void registerPlaybackApis() {
             return false;
         }
 
-        // The merged replay registers under an id derived from its data-selection
-        // params (quality, prefered, duration), taken from the url's query.
-        const string stream = merged ? MediaSource::replayStreamId(media_info.stream, info_in.params) : media_info.stream;
+        // Replays register under an id derived from the url's query: the merged one
+        // from quality/prefered/duration, a per-stream one from duration (if any).
+        const string stream = merged ? MediaSource::replayStreamId(media_info.stream, info_in.params)
+                                     : MediaSource::perStreamReplayId(media_info.stream, info_in.params);
         ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, stream);
         return ret != nullptr;
     };

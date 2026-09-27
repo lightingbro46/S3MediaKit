@@ -217,6 +217,61 @@ TEST_F(MergedReplayOpenTest, NextFileOfSameStreamPlaysWithoutGap) {
     File::delete_file(second);
 }
 
+// Per-stream replay (".../vod/<stamp>") opened with ?duration=N stops at the end
+// of [stamp, stamp + N] instead of reading on into later recordings.
+class PerStreamReplayDurationTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        _first = exeDir() + "per_stream_duration_a.mp4";
+        _second = exeDir() + "per_stream_duration_b.mp4";
+        writeRecording(_first, 10000, 2000);
+        writeRecording(_second, 10000, 2000);
+        const auto first = _first, second = _second;
+        const uint64_t file_start = kFileStart;
+        NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastMediaSeeked2,
+            [first, second, file_start](BroadcastMediaSeeked2Args) {
+                map<string, map<uint64_t, string>> files;
+                files["main"][file_start] = first;
+                files["main"][file_start + 10] = second;
+                invoker(20 - (stamp - file_start), files);
+            });
+    }
+    void TearDown() override {
+        NoticeCenter::Instance().delListener(this);
+        File::delete_file(_first);
+        File::delete_file(_second);
+    }
+
+    // Reads the whole replay; returns the last video dts, -1 when nothing was read.
+    int64_t lastVideoDts(uint64_t duration_s) {
+        MultiMP4Demuxer demuxer;
+        demuxer.setMaxDuration(duration_s);
+        demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
+        int64_t last = -1;
+        bool key = false, eof = false;
+        for (int i = 0; i < 5000 && !eof; ++i) {
+            auto frame = demuxer.readFrame(key, eof);
+            if (frame && frame->getTrackType() == TrackVideo) last = frame->dts();
+        }
+        EXPECT_TRUE(eof);
+        return last;
+    }
+
+    static const uint64_t kFileStart = 1790000300;
+    string _first, _second;
+};
+
+TEST_F(PerStreamReplayDurationTest, StopsAtStampPlusDuration) {
+    // Timestamps count from the first file's start: the window [4 s, 10 s).
+    const auto last = lastVideoDts(6);
+    EXPECT_GE(last, 9000);
+    EXPECT_LT(last, 10000);
+}
+
+TEST_F(PerStreamReplayDurationTest, WithoutDurationReadsOnIntoTheNextFile) {
+    EXPECT_GE(lastVideoDts(0), 19000);
+}
+
 // The first keyframe keeps the SPS/PPS that precede it: after a track reset
 // (Main<->Sub switch) they carry the new resolution in-band for players that
 // read fMP4 progressively and ignore the second init segment.

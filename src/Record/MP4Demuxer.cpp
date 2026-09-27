@@ -338,6 +338,9 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     _consumed_timeline_segments.clear();
 
     auto total_duration = findSegmentDuration(tuple, start_time);
+    if (_max_duration_s && total_duration > _max_duration_s) {
+        total_duration = _max_duration_s;
+    }
     int64_t offset = 0;
 
     if (total_duration > 0) {
@@ -382,6 +385,10 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
     uint64_t next_time = 0;
 
     if (start_segment <= 0) {
+        return -1;
+    }
+    if (_max_duration_s && start_segment >= _stats.start_time + _max_duration_s) {
+        // The requested window ends here: do not follow later recordings.
         return -1;
     }
 
@@ -453,6 +460,11 @@ Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
         if (ret) {
             ret->setIndex(ret->getTrackType());
             auto it = _tracks.find(ret->getIndex());
+            if (_max_duration_s && _it->first + ret->dts() >= (_stats.start_time + _max_duration_s - _stats.first_time) * 1000) {
+                // Timestamps count from the first file's start; past stamp + duration.
+                eof = true;
+                return nullptr;
+            }
             if (it != _tracks.end()) {
                 auto ret2 = std::make_shared<FrameStamp>(ret);
                 ret2->setStamp(_it->first + ret->dts(), _it->first + ret->pts());

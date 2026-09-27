@@ -37,7 +37,8 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa, chưa chạy lại E2E |
 | 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | `8b9aff00` (2026-04-06) | ✅ Đã sửa, chưa chạy lại E2E |
 | 15 | P2 | `playback/speed` với URL `live2.mp4` luôn trả `906001 Playback stream not found` | RPL-15b (mới) | Id nội bộ `.replay.<md5>` của replay gộp | ✅ Đã sửa (P9 bước 1), chưa chạy lại E2E camera thật |
-| 16 | P2 | `duration` chỉ có tác dụng ở HTTP-fMP4 per-stream; RTSP/RTMP/TS/FLV/HLS per-stream bỏ qua, và người xem khác `duration` dùng chung một `MP4Reader` | RPL (per-stream) | Có từ trước | Mới, mở (P9 bước 2) |
+| 16 | P2 | `duration` chỉ có tác dụng ở HTTP-fMP4 per-stream; RTSP/RTMP/TS/FLV/HLS per-stream bỏ qua, và người xem khác `duration` dùng chung một `MP4Reader` | RPL (per-stream) | Có từ trước | ✅ Đã sửa (P9 bước 2), chưa chạy lại E2E camera thật |
+| 17 | P2 | Thumbnail (`recordedThumnail`) `504` khi `pos` nằm xa đầu file: lệnh `ffmpeg.snap` mặc định đặt `-ss` sau `-i`, giải mã từ đầu file, vượt `recorded_thumbnail_timeout_sec=5` (1080p: giây 59 > 5 s, giây 22 mất 3,7 s) | RPL-19 (tuỳ stamp) | Có từ trước | Mới, mở |
 
 ## 3. Chi tiết và cách xử lý
 
@@ -254,6 +255,18 @@ Chốt 2026-09-27: làm chung một plan, hai bước, commit riêng.
 - `findPlaybackStream` với `.live.mp4` dùng cùng `replayStreamId`.
 - Kiểm: unit test `MultiMP4Demuxer` dừng đúng `duration`; E2E trên camera giả `.live.mp4`/RTSP/TS có
   `duration`, speed per-stream, hai người xem khác `duration` cùng stamp.
+- ✅ Đã làm 2026-09-27: `MediaSource::perStreamReplayId`, `findAsync_l` → `find_l` → `createFromMP4`
+  mang `duration` vào tuple params, `MP4Reader` gọi `MultiMP4Demuxer::setMaxDuration`, demuxer eof khi dts
+  vượt `stamp + duration` và không nối file sau đó; `findPlaybackStream` dùng cùng id. Kiểm:
+  - Unit test `PerStreamReplayDurationTest` (2 test; tắt điều kiện dừng thì fail: dts cuối 19 800 ms).
+    `ctest -R unit.` 161/161.
+  - Camera giả, `duration=10`: `.live.mp4` 10,3 s, `.live.ts` 10,2 s, RTSP 10,2 s tới EOF (trước đây TS và
+    RTSP bỏ qua `duration`). Hai người xem cùng stamp `duration` 6 và 14: 6,1 s và 14,2 s. Không
+    `duration`: như cũ. Speed kèm `?duration=20`: 20 s media mất 11,3 s. `check replay`: RPL-15/15b PASS.
+  - ffmpeg báo `Input/output error` khi server đóng luồng HTTP không có độ dài (rc 0), và RTSP replay báo
+    `non monotonically increasing dts` (có cả khi không `duration`, có từ trước).
+  - Một lần `stop` server kẹt sau "The program exit is completed" (phải `kill -9`), không lặp lại ở lần
+    sau (13 s). Chưa rõ nguyên nhân, cần theo dõi.
 
 ### Vấn đề mới phát hiện khi làm P8 + P1
 

@@ -344,7 +344,8 @@ void MediaSource::for_each_media(const function<void(const Ptr &src)> &cb,
     }
 }
 
-static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4) {
+static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, const string &app, const string &id, bool from_mp4,
+                              const string &params = "") {
     string vhost = vhost_in;
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
     if(vhost.empty() || !enableVhost){
@@ -362,15 +363,25 @@ static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, con
     if(!ret && from_mp4){
         // If the media source is not found, read mp4 to create one
         // Playing hls does not trigger mp4 on-demand (because HLS can also be used for recording, not purely live)
-        ret = MediaSource::createFromMP4(schema, vhost, app, id);
+        ret = MediaSource::createFromMP4(schema, vhost, app, id, "", true, params);
     }
 
     return ret;
 }
 
-static void findAsync_l(const MediaInfo &info, const std::shared_ptr<Session> &session, bool retry,
+static void findAsync_l(const MediaInfo &info_in, const std::shared_ptr<Session> &session, bool retry,
                         const function<void(const MediaSource::Ptr &src)> &cb){
-    auto src = find_l(info.schema, info.vhost, info.app, info.stream, true);
+    GET_CONFIG(string, record_app, Record::kAppName);
+    MediaInfo info = info_in;
+    string mp4_params;
+    if (info.app == record_app) {
+        info.stream = MediaSource::perStreamReplayId(info_in.stream, info_in.params);
+        if (info.stream != info_in.stream) {
+            // Its reader limits the replay to the requested duration.
+            mp4_params = "duration=" + to_string(strtoull(Parser::parseArgs(info_in.params)["duration"].data(), nullptr, 10));
+        }
+    }
+    auto src = find_l(info.schema, info.vhost, info.app, info.stream, true, mp4_params);
     if (src || !retry) {
         cb(src);
         return;
@@ -403,7 +414,7 @@ static void findAsync_l(const MediaInfo &info, const std::shared_ptr<Session> &s
     };
 
     weak_ptr<Session> weak_session = session;
-    auto on_register = [weak_session, info, cb_once, cancel_all, poller](BroadcastMediaChangedArgs) {
+    auto on_register = [weak_session, info, info_in, cb_once, cancel_all, poller](BroadcastMediaChangedArgs) {
         if (!bRegist ||
             sender.getSchema() != info.schema ||
             !equalMediaTuple(sender.getMediaTuple(), info)) {
@@ -411,13 +422,13 @@ static void findAsync_l(const MediaInfo &info, const std::shared_ptr<Session> &s
             return;
         }
 
-        poller->async([weak_session, cancel_all, info, cb_once]() {
+        poller->async([weak_session, cancel_all, info_in, cb_once]() {
             cancel_all();
             if (auto strong_session = weak_session.lock()) {
                 // The stream requested by the player is finally registered, switch to its own thread and reply
-                DebugL << "Receive media registration event, reply to player:" << info.getUrl();
+                DebugL << "Receive media registration event, reply to player:" << info_in.getUrl();
                 // Find the media source again, usually it can be found
-                findAsync_l(info, strong_session, false, cb_once);
+                findAsync_l(info_in, strong_session, false, cb_once);
             }
         }, false);
     };
@@ -812,7 +823,7 @@ void MediaInfo::parse(const std::string &url_in){
     }
 }
 
-MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &vhost, const string &app, const string &stream, const string &file_path , bool check_app){
+MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &vhost, const string &app, const string &stream, const string &file_path , bool check_app, const string &params){
     GET_CONFIG(string, appName, Record::kAppName);
     if (check_app && app != appName) {
         return nullptr;
@@ -824,7 +835,7 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
     }
 #ifdef ENABLE_MP4
     try {
-        MediaTuple tuple = {vhost, app, stream, ""};
+        MediaTuple tuple = {vhost, app, stream, params};
         ProtocolOption option;
         option.enable_mp4 = false;
         option.max_track = 16;
@@ -844,6 +855,15 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
 string MediaSource::replayStreamId(const string &stream, const string &params) {
     string selection_params;
     return replayInternalStream(stream, params, selection_params);
+}
+
+string MediaSource::perStreamReplayId(const string &stream, const string &params) {
+    if (stream.find(".replay.") != string::npos) return stream;
+    const auto parts = split(stream, "/");
+    if (parts.size() != 4 || parts[2] != "vod") return stream;
+    const auto duration = strtoull(Parser::parseArgs(params)["duration"].data(), nullptr, 10);
+    if (!duration) return stream;
+    return stream + ".replay." + MD5("duration=" + to_string(duration)).hexdigest();
 }
 
 MediaSource::Ptr MediaSource::createFromMP4ByApp(const string &schema, const string &vhost, const string &app, const string &stream, const string &params, bool check_app){
