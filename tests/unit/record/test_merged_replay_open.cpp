@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
 #include "Common/MediaSource.h"
@@ -13,6 +14,7 @@
 #include "Record/MergedMP4Reader.h"
 #include "Util/File.h"
 #include "Util/NoticeCenter.h"
+#include "Poller/EventPoller.h"
 
 using namespace std;
 using namespace toolkit;
@@ -146,6 +148,73 @@ TEST_F(MergedReplayOpenTest, RegistersSourceWhileFirstClipPlays) {
     // Frames before the 6 s keyframe are skipped without pacing: no wait of a GOP.
     EXPECT_LE(registered_ms, 500);
     File::delete_file(sub);
+}
+
+// The recorder's next file of a stream overlaps the previous one by up to a
+// second (whole-second index). The next clip starts inside that file: it must
+// be switched at the file's first keyframe, not at the clip start, where the
+// frames up to the next keyframe (a GOP) would be dropped.
+TEST_F(MergedReplayOpenTest, NextFileOfSameStreamPlaysWithoutGap) {
+    const string first = exeDir() + "merged_replay_file_a.mp4";
+    const string second = exeDir() + "merged_replay_file_b.mp4";
+    writeRecording(first, 6000, 2000);
+    writeRecording(second, 6000, 2000);
+
+    // File B starts 1 s before file A ends; the planner cuts A at 6 s and
+    // starts B at 1 s into its file. B's keyframes map to 5, 7 and 9 s.
+    const uint64_t start = 1790000200;
+    provideTimeline({clipOf(0, first, start, start, 6), clipOf(0, second, start + 5, start + 6, 5)});
+
+    GET_CONFIG(string, record_app, Record::kAppName);
+    MediaTuple tuple = {DEFAULT_VHOST, record_app, "cam/vod/" + to_string(start) + ".replay.files",
+                        "quality=hi&prefered=hi&duration=0"};
+    ProtocolOption option;
+    option.enable_mp4 = option.enable_rtsp = option.enable_rtmp = false;
+    option.enable_hls = option.enable_hls_fmp4 = option.enable_ts = false;
+    option.enable_fmp4 = true;
+    option.fmp4_demand = false;
+    option.max_track = 16;
+    option.modify_stamp = ProtocolOption::kModifyStampOff; // keep the timeline's own timestamps
+    _reader = make_shared<MergedMP4Reader>(tuple, option);
+    ASSERT_TRUE(_reader->openForReplay());
+    ASSERT_GE(waitRegistered(tuple, 5000), 0);
+    auto src = dynamic_pointer_cast<FMP4MediaSource>(MediaSource::find(FMP4_SCHEMA, tuple.vhost, tuple.app, tuple.stream));
+    ASSERT_TRUE(src);
+
+    auto poller = EventPollerPool::Instance().getPoller();
+    auto stamps = make_shared<vector<uint64_t>>();
+    auto mtx = make_shared<mutex>();
+    FMP4MediaSource::RingType::RingReader::Ptr reader;
+    poller->sync([&]() {
+        reader = src->getRing()->attach(poller);
+        reader->setReadCB([stamps, mtx](const FMP4MediaSource::RingDataType &list) {
+            lock_guard<mutex> lck(*mtx);
+            list->for_each([&](const FMP4Packet::Ptr &packet) { stamps->push_back(packet->time_stamp); });
+        });
+    });
+    src->speed(10.0f);
+    for (int i = 0; i < 100; ++i) {
+        {
+            lock_guard<mutex> lck(*mtx);
+            if (!stamps->empty() && stamps->back() >= 10500) break;
+        }
+        this_thread::sleep_for(chrono::milliseconds(50));
+    }
+    poller->sync([&]() { reader.reset(); });
+
+    lock_guard<mutex> lck(*mtx);
+    ASSERT_GE(stamps->size(), 2u);
+    uint64_t max_gap = 0, gap_at = 0;
+    for (size_t i = 1; i < stamps->size(); ++i) {
+        if ((*stamps)[i] > (*stamps)[i - 1] && (*stamps)[i] - (*stamps)[i - 1] > max_gap) {
+            max_gap = (*stamps)[i] - (*stamps)[i - 1];
+            gap_at = (*stamps)[i - 1];
+        }
+    }
+    EXPECT_GE(stamps->back(), 10000u) << "replay did not reach the second file";
+    EXPECT_LE(max_gap, 200u) << "gap of " << max_gap << " ms after " << gap_at << " ms";
+    File::delete_file(first);
+    File::delete_file(second);
 }
 
 // The first keyframe keeps the SPS/PPS that precede it: after a track reset

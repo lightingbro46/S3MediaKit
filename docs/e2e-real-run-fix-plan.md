@@ -34,7 +34,7 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 10 | P1 | Thumbnail có overlay lỗi: file SVG overlay thiếu đuôi `.svg`, ffmpeg không mở được | RPL-19, BKM-02 | `79e823d0` (2026-09-20) | ✅ Đã sửa, chưa chạy lại E2E |
 | 11 | P2 | Người xem thứ hai của cùng một replay (cùng tham số) vào giữa luồng, không từ `stamp` | Replay mở song song | Thiết kế có sẵn | Giữ như hiện tại (chốt 2026-09-26) |
 | 12 | P2 | `playback/speed` 2x trên `.live.mp4` không còn đổi nhịp (20 s media mất 16–23 s) với config sinh từ code | RPL-15 | Hệ quả của vấn đề 2 (admin đi qua overlay transcode) | Không phải lỗi speed; hết cùng vấn đề 2, chưa chạy lại E2E |
-| 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Chưa rõ | Mới, mở |
+| 13 | P3 | Khựng ~1 s ở biên file ghi khi replay qua hai file liên tiếp cùng stream | APF (đo nhịp) | Nhánh này (`MergedMP4Reader`) | ✅ Đã sửa, chưa chạy lại E2E |
 | 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | `8b9aff00` (2026-04-06) | ✅ Đã sửa, chưa chạy lại E2E |
 
 ## 3. Chi tiết và cách xử lý
@@ -262,6 +262,24 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 - **13 — Khựng ~1 s ở biên file.** Đo nhịp replay auto và `lo`: 4 s media mất 5,1 s quanh biên file ghi
   kế tiếp. File kế tiếp cùng stream chỉ được mở khi file trước hết (không chuẩn bị trước như lần
   chuyển Main↔Sub).
+  ✅ Đã sửa 2026-09-27 trong [`MergedMP4Reader.cpp`](../src/Record/MergedMP4Reader.cpp). Hai nguyên nhân:
+  - Index ghi theo giây nguyên, nên file kế tiếp của cùng stream có thể chồng lên file trước tới 1 s.
+    Planner cắt clip trước ở cuối block và cho clip sau bắt đầu ở giây thứ 1 trong file. Keyframe đầu
+    file (0 ms) nằm trước điểm bắt đầu nên bị bỏ, và priming chờ keyframe kế tiếp (GOP 2 s), làm mất
+    ~1 s hình. `prepareNextClip` đã có cách xử lý (mở trước, dời điểm chuyển về keyframe của file sau)
+    nhưng chỉ áp dụng cho Main↔Sub. Sửa: bỏ điều kiện loại trừ cùng stream.
+  - `readTimelineTick`: khi frame cuối của clip trước còn cách điểm bắt đầu clip sau vài chục ms,
+    nhánh chờ khe hở `return` luôn và bỏ phí phần còn lại của tick (tới 500 ms), nên timeline tụt so
+    với wall-clock ở mỗi lần chuyển clip. Sửa: chỉ `return` khi clip sau bắt đầu sau tick hiện tại.
+  - Unit test `MergedReplayOpenTest.NextFileOfSameStreamPlaysWithoutGap` (fail trước khi sửa: hở
+    1080 ms ở biên). Đo tại chỗ (camera giả 1080p, biên file có chồng 1 s, 12 s):
+
+    | | Media nhận được | Wall-clock | Trễ tại biên |
+    |---|---|---|---|
+    | Trước | 9,88 s | 10,14 s | +0,5 s |
+    | Sau (`hi` và `auto`) | 10,92 s | 10,63 s | không |
+
+    Biên không chồng và per-stream `.live.mp4` không bị lỗi này.
 - **14 — Kết nối không đóng khi hết `duration`.** Đo thời điểm nhận byte trên `live2.mp4` với
   `quality=auto` và `lo`: dữ liệu đến đúng nhịp 1x và đủ `duration` (tfdt cuối ≈ duration), nhưng EOF
   đến sau thêm ~30 s (duration 20 → EOF 49,9 s; 33 → 63 s). Player chờ vô ích, còn `ffmpeg` thử đọc

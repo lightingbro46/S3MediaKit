@@ -314,9 +314,10 @@ void MergedMP4Reader::prepareNextClip(size_t index) {
     const size_t next_index = index + 1;
     if (next_index >= _timeline_clips.size()) return;
     const auto &clip = _timeline_clips[next_index];
-    // Only a Main<->Sub switch at a shared boundary: the next stream was
-    // already recording, so its file has a keyframe before the boundary.
-    if (clip.source == _timeline_clips[index].source) return;
+    // Only a clip that starts inside its file at a shared boundary: a Main<->Sub
+    // switch (the next stream was already recording), or the next file of the
+    // same stream overlapping the previous one (it starts with a keyframe).
+    // Opening it at the boundary would drop frames up to its next keyframe.
     const auto next_window = makeReplayClipWindow(clip, _replay_start_time_s);
     if (next_window.file_offset_ms <= 0 || next_window.start_ms != _timeline_window.end_ms) return;
 
@@ -437,8 +438,10 @@ bool MergedMP4Reader::readTimelineTick() {
 
         const uint64_t clip_start = static_cast<uint64_t>(max<int64_t>(0, clipPlayFromMs(_timeline_clip_idx)));
         if (_replay_current_ms < clip_start) {
+            // Wait out a real gap only; a clip starting within this tick plays
+            // now, else each clip switch loses the rest of the tick.
             _replay_current_ms = min(target_ms, clip_start);
-            return true;
+            if (clip_start > target_ms) return true;
         }
         if (!_timeline_demuxer && !openTimelineClip(_timeline_clip_idx)) return false;
 
