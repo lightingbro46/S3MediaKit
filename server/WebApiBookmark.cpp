@@ -204,6 +204,50 @@ void registerBookmarkApis() {
         });
     });
 
+    api_regist("/media/esc/bookmark/create-internal", [](API_ARGS_MAP_ASYNC) {
+        CHECK_API_KEY();
+        CHECK_ARGS_("name", "camera_id", "start_time", "duration");
+
+        auto poller = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+
+        runApiCallbackWork(poller, session, invoker, [allArgs, val, invoker, headerOut](const ApiReply &reply) mutable {
+            string name = allArgs["name"];
+            string description = allArgs["description"];
+            string camera_id = allArgs["camera_id"];
+            int64_t start_time = allArgs["start_time"];
+            int64_t duration = allArgs["duration"];
+            string tags = allArgs["tags"];
+
+            auto ret = findDeviceSource(camera_id);
+            if (!ret) {
+                reply([val, invoker, headerOut]() mutable {
+                    val["data"]["flag"] = false;
+                    RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                });
+                return;
+            }
+
+            Bookmark bm;
+            bm.name = name;
+            bm.description = description;
+            bm.camera_guid = camera_id;
+            bm.start_time = start_time;
+            bm.end_time = start_time + duration;
+            bm.duration = duration;
+            bm.creator_guid = std::string("00000000-0000-0000-0000-000000000000");
+            bm.created = time(nullptr);
+
+            auto imp = std::make_shared<BookmarkImp>();
+            imp->add(bm, tags);
+
+            reply([val, invoker, headerOut]() mutable {
+                val["data"]["flag"] = true;
+                invoker(200, headerOut, val.toStyledString());
+            });
+        });
+    });
+
     api_regist("/media/esc/bookmark/update", [](API_ARGS_MAP_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_USER_PERMISSION(PLAYBACK_PERMISSION_CODE);
