@@ -659,7 +659,7 @@ static onceToken token([]() {
     mINI::Instance()[kTierRangeBackfillMaxAttempts] = 5;
     mINI::Instance()[kTierRangeBackfillRetryBaseSeconds] = 30;
     mINI::Instance()[kTierTmpCleanupEnabled] = 1;
-    mINI::Instance()[kTierTmpCleanupDryRun] = 1;
+    mINI::Instance()[kTierTmpCleanupDryRun] = 0;
     mINI::Instance()[kTierTmpCleanupMaxFilesPerCycle] = 1000;
     mINI::Instance()[kTierTmpCleanupWorkBudgetMs] = 500;
     mINI::Instance()[kPoolHealthCheckIntervalSeconds] = 30;
