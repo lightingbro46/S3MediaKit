@@ -2089,7 +2089,8 @@ PlaybackPathResolveResult TierStorageManager::accessRecordedSegment(
         int64_t segment_size,
         bool enqueue_restore,
         const std::string &reason,
-        bool retain_restore_cache) {
+        bool retain_restore_cache,
+        bool async_enqueue) {
     PlaybackPathResolveResult result;
     if (retain_restore_cache) {
         std::lock_guard<std::mutex> lk(_restore_request_mtx);
@@ -2104,6 +2105,13 @@ PlaybackPathResolveResult TierStorageManager::accessRecordedSegment(
     }
     if (!result.restore_required || !enqueue_restore)
         return result;
+
+    if (async_enqueue) {
+        requestRestoreSegmentAsync(camera_id, stream_id, segment_start_time, timefile_path, reason,
+                                   segment_size);
+        result.restore_status = "QUEUED";
+        return result;
+    }
 
     auto restore = requestRestoreSegment(camera_id, stream_id, segment_start_time,
                                          timefile_path, reason, segment_size);
@@ -6289,6 +6297,44 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreSegment(const std::str
     ret.message = "Segment is in COLD tier. Restore has been queued";
     processRestoreJobs();
     return ret;
+}
+
+void TierStorageManager::requestRestoreSegmentAsync(const std::string &camera_id,
+                                                    const std::string &stream_id,
+                                                    int64_t segment_start_time,
+                                                    const std::string &timefile_path,
+                                                    const std::string &reason,
+                                                    int64_t segment_size) {
+    if (_stopping)
+        return;
+    auto state = _restore_dispatch_state;
+    {
+        std::lock_guard<std::mutex> lk(state->mutex);
+        ++state->tasks_in_flight;
+    }
+    weak_ptr<TierStorageManager> weak_self = shared_from_this();
+    BlockingExecutors::restore()->async([weak_self, state, camera_id, stream_id, segment_start_time,
+                                         timefile_path, reason, segment_size]() {
+        {
+            auto self = weak_self.lock();
+            if (self && !self->_stopping) {
+                try {
+                    auto restore = self->requestRestoreSegment(camera_id, stream_id, segment_start_time,
+                                                               timefile_path, reason, segment_size);
+                    if (!restore.handled) {
+                        WarnL << "Restore was not queued, camera=" << camera_id << " stream=" << stream_id
+                              << " start_time=" << segment_start_time << " message=" << restore.message;
+                    }
+                } catch (const std::exception &ex) {
+                    WarnL << "Restore request failed, camera=" << camera_id << " stream=" << stream_id
+                          << " start_time=" << segment_start_time << ": " << ex.what();
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lk(state->mutex);
+        --state->tasks_in_flight;
+        state->completed.notify_all();
+    }, false);
 }
 
 ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::string &camera_id,

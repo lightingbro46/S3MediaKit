@@ -138,7 +138,8 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
     const int64_t block_size = static_cast<int64_t>(block.file_size());
     auto resolved = TierStorageManager::Instance().accessRecordedSegment(
         block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
-        timefile_path, block_size, auto_restore, "AUTO_RECORD_ACCESS");
+        timefile_path, block_size, auto_restore, "AUTO_RECORD_ACCESS", false,
+        true /* async_enqueue: runs on the media poller; the job is written on the restore pool */);
 
     if (resolved.ready && !resolved.read_path.empty())
         return resolved.read_path;
@@ -149,7 +150,6 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
               << " start_time=" << block.start_time()
               << " pool=" << resolved.pool_id
               << " range=" << resolved.range_id
-              << " restore_job=" << resolved.restore_job_id
               << " status=" << resolved.restore_status;
     } else {
         WarnL << "Recorded MP4 segment path is not ready, camera=" << block.app()

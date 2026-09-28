@@ -2608,6 +2608,59 @@ int scenarioMoveThresholdAlignedToGranularity(const std::string &root) {
     return 0;
 }
 
+// Playback on a media poller only needs the restore to start: the job is planned and written on
+// the restore pool, the call returns at once, and repeated requests still make one job.
+int scenarioRestoreAsyncEnqueue(const std::string &root) {
+    migrateDatabase(root);
+    SlowS3Server server;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    auto pool = makeObjectPool(root, server.endpoint(), "test", "test", "test-bucket");
+    require(manager.createPool(pool) == pool.id, "Object pool creation failed");
+
+    const std::string camera = "camera-async-restore";
+    const std::string stream = "main";
+    const int64_t start = static_cast<int64_t>(::time(nullptr)) - 600;
+    const std::string path = root + "/hot/record/" + camera + "/" + stream + "/2026-08-20/16-20-00.mp4";
+    writeTimeBlock(root, camera, stream, path, start, start + 60, 32);
+
+    SegmentTierRange range;
+    range.range_id = "range-async-restore";
+    range.camera_id = camera;
+    range.stream_id = stream;
+    range.tier = tierTypeToString(ColdTier);
+    range.pool_id = pool.id;
+    range.status = segmentStatusToString(SegmentStatus::AVAILABLE);
+    range.start_time = start;
+    range.end_time = start + 60;
+    range.segment_count = 1;
+    range.size_bytes = 32;
+    require(SegmentTierRangeImp().mergeOrInsert(range), "Cannot seed COLD restore range");
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        auto resolved = manager.accessRecordedSegment(camera, stream, start, path, 32, true,
+                                                      "ASYNC_TEST", false, true);
+        require(resolved.restore_required && !resolved.ready, "COLD segment was not reported as restore required");
+        require(resolved.restore_status == "QUEUED" && resolved.restore_job_id.empty(),
+                "Async enqueue returned a job instead of QUEUED");
+    }
+    require(waitUntil([&]() { return !RestoreJobImp().query(camera).empty(); }, 5000),
+            "Async restore request never created a job");
+    require(waitUntil([&]() {
+        for (const auto &job : RestoreJobImp().query(camera)) {
+            for (const auto &child : RestoreJobSegmentImp().queryByJob(job.job_id)) {
+                if (child.status == "PENDING" || child.status == "RUNNING")
+                    return false;
+            }
+        }
+        return true;
+    }, 10000), "Async restore did not finish");
+    require(RestoreJobImp().query(camera).size() == 1, "Repeated async requests created more than one job");
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
 int scenarioRestoreConcurrencyLimit(const std::string &root) {
     migrateDatabase(root);
     mINI::Instance()[Storage::kAutoRestoreMaxConcurrent] = 2;
@@ -6030,6 +6083,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
+        if (name == "restore-async-enqueue") return scenarioRestoreAsyncEnqueue(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
         if (name == "policy-lifecycle-storage") return scenarioPolicyLifecycleChangesCameraStorage(root);
@@ -6329,6 +6383,11 @@ TEST(TierStorageManagerIntegrationTest, AlignsMoveThresholdToSplitGranularity) {
 TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
     TempRoot root;
     EXPECT_EQ(0, runChild("restore-concurrency-limit", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, QueuesRestoreAsynchronouslyForMediaPoller) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("restore-async-enqueue", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, SearchEngineReflectsTierMetadata) {

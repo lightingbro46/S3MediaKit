@@ -77,6 +77,7 @@ foreach(manager_case
     RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks
     AlignsMoveThresholdToSplitGranularity
     EnforcesRestoreConcurrencyLimit
+    QueuesRestoreAsynchronouslyForMediaPoller
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot
     PolicyLifecycleChangesCameraStorage

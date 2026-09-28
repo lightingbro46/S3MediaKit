@@ -358,9 +358,11 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
   vẫn chờ ffmpeg trên một poller của `WorkThreadPool`. Đây là API của repo gốc, cố ý giữ
   nguyên contract. Nếu muốn xử lý mà không đổi contract: cho `makeSnap` gọi `makeSnapOnWorker`
   thay vì `WorkThreadPool`.
-- `TierStorageManager::requestRestoreSegment()` vẫn ghi restore job vào SQLite trên thread gọi. Khi
-  phát lại chạm segment COLD, thread đó là poller media (`Manager::resolveRecordedBlockPath`). Claim và
-  tải đã chuyển sang pool `restore`; sửa nốt phần ghi job phải đổi contract của `accessRecordedSegment`.
+- Replay per-stream (`find_l()` → `MediaSource::createFromMP4()` → `MP4Reader`) mở trên poller của
+  session, khác replay gộp (pool `replay open`). Việc ghi restore job khi chạm segment COLD đã chuyển
+  sang pool `restore` (`accessRecordedSegment(..., async_enqueue=true)`), nhưng phần đọc vẫn nằm trên
+  poller: `TimeQuery` đọc timefile, `resolvePlaybackSegmentPath` đọc SQLite, và
+  `MultiMP4Demuxer::findNextSegment` truy vấn lại khi hết segment.
 - Chu kỳ tiering, transfer job (upload S3), backfill và health check (HEAD S3) của `TierStorageManager`
   vẫn chạy trên `WorkThreadPool`.
 - `SubnetScan::scanRange()` (bản đồng bộ) giữ một thread của pool `api` trong suốt lần quét.

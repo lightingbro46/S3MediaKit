@@ -270,6 +270,16 @@ public:
                                                    const std::string &reason,
                                                    int64_t segment_size = 0);
 
+    // Same as requestRestoreSegment() but returns at once: planning the restore and writing the
+    // job (SQLite) run on BlockingExecutors::restore(). For callers on a media poller that only
+    // need the restore to start, not its job id.
+    void requestRestoreSegmentAsync(const std::string &camera_id,
+                                    const std::string &stream_id,
+                                    int64_t segment_start_time,
+                                    const std::string &timefile_path,
+                                    const std::string &reason,
+                                    int64_t segment_size = 0);
+
     ColdAccessRestoreResult requestRestoreWindow(const std::string &camera_id,
                                                   const std::string &stream_id,
                                                   int64_t start_time,
@@ -337,7 +347,10 @@ public:
                                                     int64_t segment_size,
                                                     bool enqueue_restore,
                                                     const std::string &reason,
-                                                    bool retain_restore_cache = false);
+                                                    bool retain_restore_cache = false,
+                                                    // Queue the restore with requestRestoreSegmentAsync(): the
+                                                    // result then has restore_status "QUEUED" and no job id.
+                                                    bool async_enqueue = false);
 
     ObjectReadSource resolveObjectReadSource(const ObjectReadRequest &request);
 

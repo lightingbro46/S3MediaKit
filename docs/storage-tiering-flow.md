@@ -832,7 +832,7 @@ processRestoreJobs()       gọi từ bất kỳ thread nào (poller media, API 
 - Mọi `async` vào pool restore dùng `may_sync=false`: `toolkit::ThreadPool::async` chạy task ngay tại chỗ nếu được gọi từ chính thread của pool, mà task cuối cùng lại vào `dispatchRestoreJobs()` dưới `_restore_dispatch_mtx` — chạy tại chỗ là tự deadlock.
 - Task capture `weak_ptr<TierStorageManager>` và lock trước khi chạy, không capture raw `this`.
 - `stop()` chờ mọi task restore đã xếp hàng chạy xong (đếm trong `RestoreDispatchState`) trước khi trả về, nên `shutdown()` không cắt AWS SDK giữa lúc đang tải. Child đã claim nhưng chưa bắt đầu khi đang dừng được trả về `PENDING`; `start()` cũng đưa child `RUNNING` còn sót về `PENDING`.
-- Hạn chế còn lại: `requestRestoreSegment()` vẫn ghi parent/child job vào SQLite ngay trên thread gọi. Khi phát lại chạm segment COLD, thread đó là poller media (`Manager::resolveRecordedBlockPath`).
+- `requestRestoreSegment()` ghi parent/child job vào SQLite trên thread gọi, nên chỉ dùng từ thread được phép blocking (API worker, pool restore, ffmpeg worker). `Manager::resolveRecordedBlockPath` chạy trên poller media khi mở replay per-stream, nên gọi `accessRecordedSegment(..., async_enqueue=true)`: hàm này chỉ xếp `requestRestoreSegmentAsync()` lên pool restore và trả `restore_status="QUEUED"` không kèm `restore_job_id`. Nhiều request cho cùng segment vẫn chỉ tạo một job nhờ `queryActiveSegment` dưới `_restore_request_mtx`.
 
 ### 8.6 Restore Worker
 
