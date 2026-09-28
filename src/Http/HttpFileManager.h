@@ -66,6 +66,15 @@ public:
 
     static HlsViewerSession::Identity resolveHlsViewerIdentity(const Parser &parser, const MediaInfo &media_info);
 
+    /**
+     * Key of one HLS playback session: camera scope (vhost, live/record,
+     * camera) + session_id. Same key as the HLS authorization cookie.
+     */
+    static std::string getHlsViewerKey(const MediaInfo &media_info, const std::string &session_id);
+
+    /** Lifetime of an idle HLS session (hls.viewerTimeoutSec, default 60 s). */
+    static uint32_t getHlsViewerLifeSecond();
+
 private:
     HttpFileManager() = delete;
     ~HttpFileManager() = delete;

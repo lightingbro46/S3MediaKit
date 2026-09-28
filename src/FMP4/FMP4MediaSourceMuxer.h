@@ -71,12 +71,13 @@ public:
     }
 
     void resetTracks() override {
-        // Capture current timeline position BEFORE clearing tracks, so we can
-        // re-seed the new Stamp objects in addTrackCompleted().
-        _pending_dts_offset = static_cast<int64_t>(getDuration());
-        DebugL << "FMP4Muxer resetTracks: saving dts_offset=" << _pending_dts_offset << "ms";
         // Flush any pending segment data before resetting muxer state
         try { MP4MuxerMemory::flush(); } catch (...) {}
+        // Capture the timeline position BEFORE clearing tracks, so we can
+        // re-seed the new Stamp objects in addTrackCompleted(). It is the slot
+        // after the last sample: the new clip's first IDR must not reuse its dts.
+        _pending_dts_offset = static_cast<int64_t>(getNextDts());
+        DebugL << "FMP4Muxer resetTracks: saving dts_offset=" << _pending_dts_offset << "ms";
         // Reset muxer state (clears _init_segment, _memory_file, all tracks)
         MP4MuxerMemory::resetTracks();
         // Clear GOP cache so readers wait for the incoming new moov box

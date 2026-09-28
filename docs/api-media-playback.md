@@ -2,6 +2,27 @@
 
 Tài liệu này mô tả URL để tích hợp xem trực tiếp và xem lại trên S3MediaKit.
 
+Mọi URL live/replay đều áp dụng chính sách **overlay privacy** của camera, gồm
+watermark và privacy mask. Hai thành phần có cấu hình/excluded-role độc lập.
+Khi JWT có `overlay=false`, hoặc role trong JWT được exclude khỏi thành phần
+tương ứng, thành phần đó không được fill như hành vi hiện tại.
+
+Playback mở cho mọi giao thức; server không chặn theo giao thức/output. Overlay
+chỉ được render ở các output HTTP có derived transcode:
+
+| Output | Watermark / privacy mask |
+|---|---|
+| HTTP/WS fMP4, HTTP TS/FLV | Có, khi build với FFmpeg (derived transcode) |
+| HLS MPEG-TS, HLS fMP4 | Có, qua derived output; raw playlist/segment không được phục vụ |
+| RTSP, RTMP, WebRTC, Motion MJPEG | Không render overlay, phát source gốc |
+
+Build không có FFmpeg: output HTTP trả `403` khi camera còn overlay bắt buộc.
+Server vẫn trả `403` (RTSP `403 Forbidden`, RTMP `403 View Overlay Required`) khi
+không xác định được chính sách overlay, ví dụ JWT không hợp lệ hoặc camera replay
+không còn cấu hình. Derived output có tên `<stream>.transcode.<md5 tham số>.<tag policy>`.
+Request HLS tới stream đó chỉ được phục vụ khi source đang đăng ký có origin `transcode`
+**và** tag khớp với policy overlay của chính người xem; không khớp thì trả `403`.
+
 Quy ước dùng trong tài liệu:
 
 - `BASE_URL`: địa chỉ HTTP của MediaServer, ví dụ `https://media.example.com`.
@@ -81,6 +102,11 @@ GET {BASE_URL}/media/live/{cameraId}/{streamId}/hls.m3u8?session_id={SESSION_ID}
 
 Mỗi player nên tạo một `session_id` riêng có độ ngẫu nhiên cao (khuyến nghị UUID), giữ nguyên giá trị đó trong suốt một phiên xem và không dùng chung giữa các tab/player. Nếu client không truyền `session_id`, server tái sử dụng session từ cookie đúng phạm vi camera hoặc tự sinh một giá trị, sau đó trả HTTP 302 đến chính playlist với `session_id` trong query. HLS.js và trình phát HLS native sẽ theo redirect rồi tiếp tục reload URL có session này. Server cũng đưa ID đã chọn vào URI của playlist con, init segment, key và media segment để nhiều HTTP connection của cùng player vẫn chỉ được tính là một người xem. Phiên sẽ hết hạn nếu không có request trong `hls.viewerTimeoutSec` (mặc định 60 giây).
 
+URI segment/init/key không mang `token`. Server lưu chính sách overlay (watermark, privacy mask và các
+exclusion theo role) lấy từ request playlist có `token`, theo camera + `session_id`, và dùng lại cho các
+request segment của cùng phiên. Mỗi lần reload playlist có `token` sẽ làm mới chính sách này. Segment
+của phiên không xác định được thì áp chính sách đầy đủ của camera.
+
 Server hỗ trợ đồng thời query `session_id` và cookie `S3_COOKIE`. Query ID có độ ưu tiên cao hơn cookie để các tab/player trong cùng trình duyệt vẫn được đếm riêng. Nếu URI con làm mất `session_id`, cookie được dùng làm fallback; ngược lại, nếu cookie bị chặn nhưng URI vẫn giữ ID thì server vẫn nhận diện được phiên. `session_id` có ký tự không hợp lệ hoặc dài quá 128 ký tự bị từ chối với HTTP 400.
 
 Nếu không biết trước `streamId`, dùng HLS master playlist:
@@ -139,10 +165,21 @@ https://media.example.com/media/record/camera-001/main/vod/1710000000.live.mp4?t
 Tự chọn chất lượng:
 
 ```text
-GET {BASE_URL}/media/record/{cameraId}/vod/{stamp}.live2.mp4?quality=auto
+GET {BASE_URL}/media/record/{cameraId}/vod/{stamp}.live2.mp4?quality=auto&prefered=hi
 ```
 
-Các giá trị `quality` là `auto`, `hi` và `lo`. URL `.live.mp4` dành cho stream đã biết; URL `.live2.mp4` dùng khi backend cần chọn giữa các stream chất lượng.
+Các giá trị `quality` là `auto`, `hi` và `lo`. Mapping nội bộ:
+
+- `quality=hi`: chỉ MainStream; thiếu dữ liệu tại `stamp` trả `404`.
+- `quality=lo`: chỉ SubStream; thiếu dữ liệu tại `stamp` trả `404`.
+- `quality=auto&prefered=hi`: dùng cả hai stream, MainStream thắng phần overlap.
+- `quality=auto&prefered=lo`: dùng cả hai stream, SubStream thắng phần overlap.
+
+Replay bắt đầu từ dữ liệu chứa `stamp`. Khoảng hở không quá `record.replayMaxGapSec`
+giây (mặc định 2) được bỏ qua; khoảng hở dài hơn thì replay kết thúc. Server không chờ
+recording mới. Với `quality=auto`, đoạn stream ưu tiên ngắn hơn `record.replayMinSwitchSec`
+giây (mặc định 5) vẫn phát stream đang chạy nếu stream đó còn dữ liệu.
+Nếu audio giữa các block được chọn không tương thích, replay được phát video-only.
 
 ### 3.2. WS-MP4 xem lại
 
@@ -157,17 +194,21 @@ Client xử lý dữ liệu fMP4 giống WS-MP4 trực tiếp. Khi người dùn
 
 ### 3.3. HLS và HLS fMP4 khi xem lại
 
-HLS (`hls.m3u8`) và HLS fMP4 (`hls.fmp4.m3u8`) là các endpoint phát trực tiếp của MediaSource. Replay recording hỗ trợ HLS fMP4 on-demand theo URL riêng bên dưới; không dùng cách đổi trực tiếp URL `.live.mp4` thành `hls.m3u8`.
-
-Replay HLS fMP4 on-demand dùng URL:
+Replay HLS MPEG-TS và HLS fMP4 on-demand dùng URL:
 
 ```text
-/media/record/{cameraId}/{streamId}/vod/{stamp}/hls.fmp4.m3u8?session_id={SESSION_ID}
+/media/record/{cameraId}/vod/{stamp}/hls.m3u8?quality=auto&prefered=hi&session_id={SESSION_ID}
+/media/record/{cameraId}/vod/{stamp}/hls.fmp4.m3u8?quality=auto&prefered=hi&session_id={SESSION_ID}
 ```
 
-Trong đó `{stamp}` là Unix timestamp giây tại điểm bắt đầu replay. Giữ nguyên `session_id` khi seek nếu vẫn là cùng player. Server đọc recording MP4 tương ứng, tạo một `HlsMediaSource` dùng chung cho các request đồng thời và dùng cùng sliding window với HLS live theo `hls.segNum`, `hls.segRetain`, `hls.deleteDelaySec`. Segment cũ không được giữ toàn bộ; source tự đóng/xoá khi replay không còn người xem. Seek được thực hiện bằng cách mở URL mới với `{stamp}` khác.
-
-URL trên dành cho replay single-stream đã biết chất lượng. Master playlist `quality=auto` cho nhiều stream sẽ được bổ sung ở bước tiếp theo; hiện vẫn dùng endpoint `.live2.mp4` cho trường hợp đó.
+Trong đó `{stamp}` là Unix timestamp giây tại điểm bắt đầu replay. Giữ nguyên
+`session_id` khi seek nếu vẫn là cùng player. Server tạo source nội bộ riêng theo
+nhóm tham số chọn dữ liệu (`quality`, `prefered`, `duration`) và redirect playlist
+sang opaque stream id; playlist không expose
+đường dẫn MP4 trên filesystem. Khi overlay privacy có hiệu lực, HLS được tạo từ
+derived transcode đã fill đủ watermark/privacy mask.
+Việc chọn/merge block MainStream và SubStream hoàn tất trước bước transcode, vì
+vậy overlay được giữ nguyên khi auto profile chuyển giữa hai stream.
 
 ## 4. Hàm tạo URL
 
@@ -218,6 +259,7 @@ function replayUrl(baseUrl, cameraId, streamId, stamp, ws, token) {
 ## 6. Lỗi thường gặp
 
 - `404`: camera/stream không online hoặc `stamp` không thuộc timeline recording.
+- `403`: không xác định được chính sách watermark/privacy mask của camera, hoặc cấu hình overlay không hợp lệ.
 - `401`: thiếu hoặc hết hạn JWT; kiểm tra `Authorization` hoặc `token`.
 - HLS không phát: kiểm tra player có hỗ trợ HLS/HLS fMP4 và URL playlist có thể truy cập từ trình duyệt.
 - WS-MP4 không phát: dùng `wss` khi trang chạy trên HTTPS và bảo đảm proxy hỗ trợ WebSocket upgrade.

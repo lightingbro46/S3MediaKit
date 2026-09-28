@@ -52,6 +52,13 @@ public:
      */
     uint64_t getDuration() const;
 
+    /**
+     * Timestamp right after the last written sample (its dts plus the track's
+     * last sample interval), in milliseconds: where the next writer continues
+     * the timeline without repeating a dts.
+     */
+    uint64_t getNextDts() const;
+
 protected:
     virtual MP4FileIO::Writer createWriter() = 0;
 
@@ -65,12 +72,27 @@ protected:
      */
     void seedStampOffsets(int64_t offset_ms);
 
+    /**
+     * libmov writes each fragment's tfdt relative to the track's first sample
+     * (tfdt = dts - start_dts) while sidx keeps the absolute pts. Once the
+     * stamps are seeded after a track reset, start_dts is no longer 0 and the
+     * first fragment of the new writer restarts at tfdt 0, so MSE players
+     * append it at t=0 and freeze. Adds each track's start dts back into the
+     * tfdt boxes of an fMP4 media segment.
+     */
+    void reviseDecodeTime(std::string &segment) const;
+
 private:
     void stampSync();
+    struct MP4Track;
+    void onSampleWritten(MP4Track &track, int64_t dts_out);
 
 private:
     bool _started = false;
     bool _have_video = false;
+    // Video parameter sets received before the first keyframe; written in
+    // front of it once writing starts.
+    std::vector<Frame::Ptr> _pending_config;
     MP4FileIO::Writer _mov_writter;
     int _non_iframe_video_count; // Non-I frames
 
@@ -81,6 +103,11 @@ private:
 
     struct MP4Track {
         int track_id = -1;
+        // dts of the first sample written to libmov, in milliseconds (the
+        // writer's track timescale); INT64_MIN until one is written
+        int64_t start_dts = INT64_MIN;
+        int64_t last_dts = INT64_MIN;
+        int64_t last_interval = 0;
         Stamp stamp;
         FrameMergerImp merger;
     };

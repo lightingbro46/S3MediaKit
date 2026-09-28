@@ -78,6 +78,15 @@ static string getHlsCookieSessionId(const string &hls_scope, const HttpServerCoo
     return "";
 }
 
+string HttpFileManager::getHlsViewerKey(const MediaInfo &media_info, const string &session_id) {
+    return getHlsViewerUid(getHlsScope(media_info), session_id);
+}
+
+uint32_t HttpFileManager::getHlsViewerLifeSecond() {
+    GET_CONFIG(uint32_t, viewer_timeout_sec, Hls::kViewerTimeoutSec);
+    return viewer_timeout_sec > 0 ? viewer_timeout_sec : kHlsCookieSecond;
+}
+
 HlsViewerSession::Identity HttpFileManager::resolveHlsViewerIdentity(const Parser &parser, const MediaInfo &media_info) {
     if (parser.getUrlArgs().find(HlsViewerSession::kSessionIdParam) != parser.getUrlArgs().end()) {
         return HlsViewerSession::resolve(parser, "");
@@ -336,8 +345,7 @@ static bool emitHlsPlayed(const Parser &parser, const MediaInfo &media_info, con
     // The hls.m3u8 ending of the access, we convert it to the kBroadcastMediaPlayed event
     Broadcast::AuthInvoker auth_invoker = [invoker](const string &err) {
         // The cookie validity period is kViewerTimeoutSec or kHlsCookieSecond
-        GET_CONFIG(uint32_t, viewer_timeout_sec, Hls::kViewerTimeoutSec);
-        invoker(err, "", viewer_timeout_sec > 0 ? viewer_timeout_sec : kHlsCookieSecond);
+        invoker(err, "", HttpFileManager::getHlsViewerLifeSecond());
     };
     bool flag = NOTICE_EMIT(BroadcastMediaPlayedArgs, Broadcast::kBroadcastMediaPlayed, media_info, auth_invoker, sender);
     if (!flag) {

@@ -413,7 +413,10 @@ void MultiMediaSourceProcessor::resetTracks() {
 #endif // ENABLE_MOTION
         _transcode_queue.clear();
         _transcode_dropped_frames = 0;
-        _transcodes.clear();
+        // Keep derived transcodes alive across source track/profile switches.
+        // They own the effective watermark/privacy-mask policy for the
+        // playback session; clearing them here would silently expose the raw
+        // source after MergedMP4Reader switches Main/Sub blocks.
         if (_ring) {
             _ring->clearCache();
         }

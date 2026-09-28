@@ -19,7 +19,8 @@ MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max
     _info.folder = path;
     auto params = Parser::parseArgs(tuple.params);
     if (params.find("start_time_ms") != params.end()) {
-        _next_file_time_ms = (time_t)atoi(params["start_time_ms"].data());
+        // Epoch milliseconds exceed int: atoi overflowed into 1970 file names.
+        _next_file_time_ms = (time_t)strtoll(params["start_time_ms"].data(), nullptr, 10);
     }
     if (params.find("continuous") != params.end()) {
         _continuous_file_time = (bool)atoi(params["continuous"].data());

@@ -491,9 +491,15 @@ public:
     // Traverse all streams
     static void for_each_media(const std::function<void(const Ptr &src)> &cb, const std::string &schema = "", const std::string &vhost = "", const std::string &app = "", const std::string &stream = "");
     // Generate MediaSource from mp4 file
-    static MediaSource::Ptr createFromMP4(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &file_path = "", bool check_app = true);
+    static MediaSource::Ptr createFromMP4(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &file_path = "", bool check_app = true, const std::string &params = "");
     // Generate a quality-aware FMP4 source (dual-stream hi/lo switching) for app-level requests.
     static MediaSource::Ptr createFromMP4ByApp(const std::string &schema, const std::string &vhost, const std::string &app, const std::string &stream, const std::string &params, bool check_app = true);
+    // Internal id of an app-level replay source: the requested stream id plus a digest of the
+    // data-selection params (quality, prefered, duration; defaults when absent).
+    static std::string replayStreamId(const std::string &stream, const std::string &params);
+    // Internal id of a per-stream replay "<device>/<stream>/vod/<stamp>" requested with
+    // ?duration=N (N > 0): it gets its own reader limited to that window. Other ids unchanged.
+    static std::string perStreamReplayId(const std::string &stream, const std::string &params);
 
 protected:
     // Media registration

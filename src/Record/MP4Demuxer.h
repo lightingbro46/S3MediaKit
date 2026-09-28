@@ -91,6 +91,12 @@ public:
     void openMP4(const std::string &file);
 
     /**
+     * Limit a ".../vod/<stamp>" replay to the time window [stamp, stamp + duration_s].
+     * Call before openMP4(); 0 (default) plays on and follows new recordings.
+     */
+    void setMaxDuration(uint64_t duration_s) { _max_duration_s = duration_s; }
+
+    /**
      * @brief Batch Close mp4 Files
      */
     void closeMP4();
@@ -137,6 +143,7 @@ private:
     std::map<uint64_t, MP4Demuxer::Ptr>::iterator _it;
     std::map<uint64_t, MP4Demuxer::Ptr> _demuxers;
     bool _use_timeline = false;
+    uint64_t _max_duration_s = 0;
     SegmentStats _stats;
     std::set<std::pair<uint64_t, std::string>> _timeline_segments;
     std::set<std::pair<uint64_t, std::string>> _consumed_timeline_segments;
