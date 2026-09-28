@@ -56,6 +56,14 @@ TEST(BlockingExecutorsTest, PoolsAreSingletons) {
     EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::device().get());
     EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::discovery().get());
     EXPECT_NE(BlockingExecutors::storage().get(), BlockingExecutors::ffmpeg().get());
+
+    EXPECT_EQ(BlockingExecutors::restore().get(), BlockingExecutors::restore().get());
+    // A viewer waiting for a cold segment must not queue behind a maintenance cycle or a
+    // re-encryption job, and a slow download must not hold REST threads.
+    EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::api().get());
+    EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::storage().get());
+    EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::encryption().get());
+    EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::ffmpeg().get());
 }
 
 TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
@@ -76,6 +84,11 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     auto storage = runOn(BlockingExecutors::storage());
     EXPECT_EQ(0u, storage.thread_name.find("storage worker")) << storage.thread_name;
     EXPECT_FALSE(storage.on_poller);
+
+    // Object storage downloads for restore used to run on a `work poller N` thread.
+    auto restore = runOn(BlockingExecutors::restore());
+    EXPECT_EQ(0u, restore.thread_name.find("restore ")) << restore.thread_name;
+    EXPECT_FALSE(restore.on_poller);
 }
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
@@ -85,6 +98,8 @@ TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     EXPECT_EQ(4, BlockingExecutors::ffmpegThreadCount());
     // One thread on purpose: it also keeps two maintenance cycles from ever running at once.
     EXPECT_EQ(1, BlockingExecutors::storageThreadCount());
+    // Matches the storage.auto_restore_max_concurrent default.
+    EXPECT_EQ(5, BlockingExecutors::restoreThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really
     // runs `threads` tasks at the same time.

@@ -54,6 +54,7 @@
 #include "Util/base64.h"
 #include "Util/mini.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/TimeTicker.h"
 
 using namespace managerkit;
 using namespace mediakit;
@@ -2645,6 +2646,8 @@ int scenarioRestoreConcurrencyLimit(const std::string &root) {
     require(request.handled && !request.job_id.empty(), "Restore window was not accepted");
 
     int maximum_running = 0;
+    bool probed_pollers = false;
+    int64_t slowest_poller_ms = 0;
     bool observed_full_capacity = false;
     bool observed_pending_at_capacity = false;
     require(waitUntil([&]() {
@@ -2659,6 +2662,15 @@ int scenarioRestoreConcurrencyLimit(const std::string &root) {
         }
         maximum_running = std::max(maximum_running, running);
         require(running <= 2, "Restore concurrency exceeded configured limit");
+        if (running == 2 && !probed_pollers) {
+            // Downloads are held 750 ms by the server; they must not occupy a work poller.
+            probed_pollers = true;
+            WorkThreadPool::Instance().for_each([&](const TaskExecutor::Ptr &executor) {
+                Ticker ticker;
+                executor->sync([]() {});
+                slowest_poller_ms = std::max<int64_t>(slowest_poller_ms, ticker.elapsedTime());
+            });
+        }
         observed_full_capacity = observed_full_capacity || running == 2;
         observed_pending_at_capacity = observed_pending_at_capacity || (running == 2 && pending > 0);
         return static_cast<int>(children.size()) == segment_count && terminal == segment_count;
@@ -2667,8 +2679,36 @@ int scenarioRestoreConcurrencyLimit(const std::string &root) {
             "Restore workers never reached configured concurrency");
     require(observed_pending_at_capacity,
             "No pending restore remained while worker capacity was full");
+    require(probed_pollers && slowest_poller_ms < 300,
+            "A work poller was blocked while restores were downloading: " +
+                std::to_string(slowest_poller_ms) + " ms");
+
+    // stop() waits for downloads in flight and hands unstarted ones back: nothing stays RUNNING.
+    const std::string stop_camera = "camera-concurrency-stop";
+    for (int index = 0; index < segment_count; ++index) {
+        const std::string key = "2026-08-20/16-10-0" + std::to_string(index);
+        const std::string path = root + "/hot/record/" + stop_camera + "/" + stream + "/" + key + ".mp4";
+        writeTimeBlock(root, stop_camera, stream, path, start + index * 60,
+                       start + (index + 1) * 60, 32);
+    }
+    SegmentTierRange stop_range = range;
+    stop_range.range_id = "range-concurrency-stop";
+    stop_range.camera_id = stop_camera;
+    require(SegmentTierRangeImp().mergeOrInsert(stop_range), "Cannot seed second COLD restore range");
+    auto again = manager.requestRestoreWindow(
+        stop_camera, stream, stop_range.start_time, stop_range.end_time, "concurrency stop test");
+    require(again.handled && !again.job_id.empty(), "Second restore window was not accepted");
+    require(waitUntil([&]() {
+        for (const auto &child : RestoreJobSegmentImp().queryByJob(again.job_id)) {
+            if (child.status == "RUNNING")
+                return true;
+        }
+        return false;
+    }, 5000), "Second restore never started");
     drainWorkThreadPool();
     manager.stop();
+    for (const auto &child : RestoreJobSegmentImp().queryByJob(again.job_id))
+        require(child.status != "RUNNING", "stop() returned while a restore was still running");
     return 0;
 }
 

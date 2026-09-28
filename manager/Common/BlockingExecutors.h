@@ -50,6 +50,13 @@ public:
     // Size: `blocking.encryptionThreads` (<= 0 means 2).
     static toolkit::TaskExecutor::Ptr encryption();
 
+    // Restoring segments from object storage (S3/MinIO download into the restore cache). One
+    // download can take tens of seconds, so it must not sit on a WorkThreadPool poller, and a
+    // viewer waiting for a restore must not queue behind the `storage` maintenance cycle or an
+    // `encryption` job. `storage.auto_restore_max_concurrent` still bounds how many run at once.
+    // Threads are named "restore N". Size: `blocking.restoreThreads` (<= 0 means 5).
+    static toolkit::TaskExecutor::Ptr restore();
+
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();
     static int deviceThreadCount();
@@ -57,6 +64,7 @@ public:
     static int discoveryThreadCount();
     static int storageThreadCount();
     static int ffmpegThreadCount();
+    static int restoreThreadCount();
 };
 
 namespace Blocking {

@@ -819,13 +819,20 @@ Backend insert atomic một `restore_jobs` parent và một hay nhiều `restore
 
 ### 8.5 Thread Và Lifetime
 
-Restore không chạy trên EventPoller/HTTP thread. Backend capture `weak_ptr<TierStorageManager>` rồi dispatch sang:
+Restore không chạy trên EventPoller/HTTP thread và cũng không chạy trên `WorkThreadPool`: một lần tải object có thể kéo dài hàng chục giây, còn mỗi thread của `WorkThreadPool` là một `EventPoller` đang giữ timer và hàng đợi có thứ tự. Mọi việc của restore chạy trên pool riêng `BlockingExecutors::restore()` (thread `restore N`, cấu hình `blocking.restoreThreads`, mặc định 5):
 
-```cpp
-WorkThreadPool::Instance().getExecutor()->async(...);
+```text
+processRestoreJobs()       gọi từ bất kỳ thread nào (poller media, API worker, tiering cycle); không đụng SQLite
+  -> restore pool: dispatchRestoreJobs()   giữ _restore_dispatch_mtx, claimPending, gắn job RUNNING
+       -> restore pool: executeRestoreSegment(child)   tải S3, rename, cập nhật child/parent
+            -> dispatchRestoreJobs()   lấy tiếp phần còn PENDING
 ```
 
-Worker lock weak pointer trước khi gọi `executeRestoreSegment(...)`, tránh giữ manager sống cưỡng bức hoặc capture raw `this`.
+- Số child chạy đồng thời vẫn do `storage.auto_restore_max_concurrent` quyết định (đọc lại mỗi lần dispatch); kích thước pool chỉ là trần.
+- Mọi `async` vào pool restore dùng `may_sync=false`: `toolkit::ThreadPool::async` chạy task ngay tại chỗ nếu được gọi từ chính thread của pool, mà task cuối cùng lại vào `dispatchRestoreJobs()` dưới `_restore_dispatch_mtx` — chạy tại chỗ là tự deadlock.
+- Task capture `weak_ptr<TierStorageManager>` và lock trước khi chạy, không capture raw `this`.
+- `stop()` chờ mọi task restore đã xếp hàng chạy xong (đếm trong `RestoreDispatchState`) trước khi trả về, nên `shutdown()` không cắt AWS SDK giữa lúc đang tải. Child đã claim nhưng chưa bắt đầu khi đang dừng được trả về `PENDING`; `start()` cũng đưa child `RUNNING` còn sót về `PENDING`.
+- Hạn chế còn lại: `requestRestoreSegment()` vẫn ghi parent/child job vào SQLite ngay trên thread gọi. Khi phát lại chạm segment COLD, thread đó là poller media (`Manager::resolveRecordedBlockPath`).
 
 ### 8.6 Restore Worker
 
@@ -1099,7 +1106,7 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | Biến | Nơi dùng | Ghi chú |
 |------|----------|---------|
 | `auto_restore_on_record_access` | `handleColdAccessByPath()` | Phải bật mới tạo auto-restore job |
-| `auto_restore_max_concurrent` | `processRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
+| `auto_restore_max_concurrent` | `dispatchRestoreJobs()` | Giới hạn số child restore chạy đồng thời |
 | `restore_save_path` | `buildRestoreSegmentPath()` | Root cache restore tạm |
 | `restore_ttl_seconds` | API resolve và cleanup | Tính `expires_at`, xóa exact child cache của job terminal cũ |
 | `object_read_mode` | Thumbnail và persistent extraction | `RESTORE`, `PRESIGNED` hoặc `HYBRID`; mặc định giữ cơ chế restore cũ. Khi có pool bật mã hoá, segment `.enc` (hoặc không HEAD được) luôn đi restore thay vì cấp URL |
@@ -1225,7 +1232,7 @@ void TierStorageManager::executeRestoreSegment(...) {
 
 ## 13. Rủi Ro Và Lưu Ý
 
-- Download được dispatch sang `WorkThreadPool`, không block EventPoller và được giới hạn bởi `storage.auto_restore_max_concurrent`.
+- Claim và download chạy trên `BlockingExecutors::restore()` (xem 8.5), không block EventPoller hay `WorkThreadPool`, và được giới hạn bởi `storage.auto_restore_max_concurrent`.
 - Manual restore và auto-restore đều được scheduler consume; manual request tương đương được deduplicate, còn request khác thông số có thể restore cùng segment độc lập và chịu chung giới hạn concurrency.
 - Restore cache phải được cleanup theo `restore_jobs.updated_at + storage.restore_ttl_seconds`; cleanup chỉ xóa thư mục của job hết TTL rồi chuyển job đó sang `EXPIRED`.
 - Worker dùng kết quả download/rename và file size; chưa verify checksum nội dung.

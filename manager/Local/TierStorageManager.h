@@ -679,7 +679,11 @@ private:
 
     void executeRestoreSegment(const RestoreJobSegment &segment);
 
+    // Non-blocking: queues a dispatch on BlockingExecutors::restore(); callable from any thread.
     void processRestoreJobs();
+    // Runs on BlockingExecutors::restore(): claims pending segments (SQLite) and queues their
+    // downloads on the same pool.
+    void dispatchRestoreJobs();
 
     void updateRestoreParent(const std::string &job_id);
 
@@ -778,6 +782,14 @@ private:
         int callbacks_in_flight = 0;
     };
 
+    struct RestoreDispatchState {
+        std::mutex mutex;
+        std::condition_variable completed;
+        // Dispatch and download tasks queued on the restore pool and not yet finished; drops
+        // only after the task released the manager, like TransferDispatchState::callbacks_in_flight.
+        int tasks_in_flight = 0;
+    };
+
     struct TemporaryMp4Observation {
         uint64_t device = 0;
         uint64_t inode = 0;
@@ -816,6 +828,7 @@ private:
     std::unordered_map<std::string, PoolHealthRuntimeState> _pool_health_cache;
     std::shared_ptr<HealthCycleState> _health_cycle_state = std::make_shared<HealthCycleState>();
     std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
+    std::shared_ptr<RestoreDispatchState> _restore_dispatch_state = std::make_shared<RestoreDispatchState>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
     // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.

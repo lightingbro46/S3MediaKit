@@ -20,6 +20,7 @@ const string kDiscoveryThreads = "blocking.discoveryThreads";
 const string kStorageThreads = "blocking.storageThreads";
 const string kFfmpegThreads = "blocking.ffmpegThreads";
 const string kEncryptionThreads = "blocking.encryptionThreads";
+const string kRestoreThreads = "blocking.restoreThreads";
 // Read for backward compatibility only; not registered, so fresh configs do not get it.
 const string kLegacyApiWorkerThreads = "api.workerThreads";
 
@@ -29,6 +30,7 @@ static onceToken token([]() {
     mINI::Instance()[kDiscoveryThreads] = 8;
     mINI::Instance()[kStorageThreads] = 1;
     mINI::Instance()[kFfmpegThreads] = 4;
+    mINI::Instance()[kRestoreThreads] = 5;
 });
 } // namespace Blocking
 
@@ -104,6 +106,14 @@ int BlockingExecutors::encryptionThreadCount() {
     return s_threads;
 }
 
+int BlockingExecutors::restoreThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kRestoreThreads);
+        return threads > 0 ? threads : 5;
+    }();
+    return s_threads;
+}
+
 TaskExecutor::Ptr BlockingExecutors::api() {
     static TaskExecutor::Ptr s_executor = makePool(apiThreadCount(), "api worker");
     return s_executor;
@@ -126,6 +136,11 @@ TaskExecutor::Ptr BlockingExecutors::storage() {
 
 TaskExecutor::Ptr BlockingExecutors::encryption() {
     static TaskExecutor::Ptr s_executor = makePool(encryptionThreadCount(), "encryption worker");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::restore() {
+    static TaskExecutor::Ptr s_executor = makePool(restoreThreadCount(), "restore");
     return s_executor;
 }
 

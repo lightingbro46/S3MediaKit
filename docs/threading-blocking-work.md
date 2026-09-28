@@ -16,12 +16,14 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | Executor | Loại | Dùng cho |
 |---|---|---|
 | `EventPollerPool` | `EventPoller` | Socket, session, `MediaSource`/muxer, timer của media |
-| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, tier storage, health check của `ClusterManager` |
+| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, chu kỳ tier storage, health check của `ClusterManager` |
 | `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
 | `BlockingExecutors::storage()` | `ThreadPool` | Chu kỳ bảo trì kho: quét cây thư mục ghi, xoá file hết hạn, dựng lại timefile, dọn thư mục tạm |
 | `BlockingExecutors::ffmpeg()` | `ThreadPool` | Chờ tiến trình ffmpeg/ffprobe (snapshot, thumbnail) |
+| `BlockingExecutors::encryption()` | `ThreadPool` | Mã hoá segment vừa đóng, job mã hoá lại toàn pool |
+| `BlockingExecutors::restore()` | `ThreadPool` | Restore segment COLD từ object storage: claim job (SQLite) và tải S3/MinIO về restore cache |
 
 Điểm mấu chốt: **mỗi thread của `WorkThreadPool` là một `EventPoller`**, không phải thread
 rảnh. Nó đang chạy timer và các hàng đợi cần giữ thứ tự. Một lời gọi blocking dài ở đó
@@ -35,6 +37,8 @@ Các pool được tách riêng theo nhóm công việc để một việc chậ
   tách khỏi `device`.
 - Một thumbnail chậm **không** được ăn hết thread phục vụ API → `ffmpeg` tách khỏi `api`.
 - Một chu kỳ dọn kho có thể chạy hàng phút (nó đi qua từng file đã ghi) → `storage` tách khỏi `api`.
+- Người xem đang chờ restore segment COLD **không** được xếp hàng sau chu kỳ dọn kho hay job mã hoá lại,
+  và một lần tải chậm **không** được giữ poller → `restore` tách khỏi `storage`, `encryption` và `WorkThreadPool`.
 
 ## 2. Quy Tắc
 
@@ -325,6 +329,8 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 | `blocking.discoveryThreads` | 8 | |
 | `blocking.storageThreads` | 1 | Một thread là đủ, và nhờ đó hai chu kỳ bảo trì không bao giờ chạy cùng lúc |
 | `blocking.ffmpegThreads` | 4 | |
+| `blocking.encryptionThreads` | 2 | Không được đăng ký default, chỉ đọc nếu có trong config |
+| `blocking.restoreThreads` | 5 | Trần của pool; số restore chạy đồng thời thực tế do `storage.auto_restore_max_concurrent` giới hạn |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
 
@@ -352,6 +358,11 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
   vẫn chờ ffmpeg trên một poller của `WorkThreadPool`. Đây là API của repo gốc, cố ý giữ
   nguyên contract. Nếu muốn xử lý mà không đổi contract: cho `makeSnap` gọi `makeSnapOnWorker`
   thay vì `WorkThreadPool`.
+- `TierStorageManager::requestRestoreSegment()` vẫn ghi restore job vào SQLite trên thread gọi. Khi
+  phát lại chạm segment COLD, thread đó là poller media (`Manager::resolveRecordedBlockPath`). Claim và
+  tải đã chuyển sang pool `restore`; sửa nốt phần ghi job phải đổi contract của `accessRecordedSegment`.
+- Chu kỳ tiering, transfer job (upload S3), backfill và health check (HEAD S3) của `TierStorageManager`
+  vẫn chạy trên `WorkThreadPool`.
 - `SubnetScan::scanRange()` (bản đồng bộ) giữ một thread của pool `api` trong suốt lần quét.
   Quét dải lớn toàn IP không route được sẽ giữ thread đó rất lâu.
 
@@ -362,6 +373,7 @@ Unit test:
 | Target | Nội dung |
 |---|---|
 | `unit_blocking_executors` | Pool là singleton và tách biệt nhau, thread không phải poller, tên thread, số thread song song đúng cấu hình |
+| `integration.tier-manager.EnforcesRestoreConcurrencyLimit` | Giới hạn restore đồng thời; poller của `WorkThreadPool` vẫn trả lời < 300 ms khi đang tải; `stop()` không trả về khi còn child `RUNNING` |
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |

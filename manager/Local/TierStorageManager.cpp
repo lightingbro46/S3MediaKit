@@ -21,6 +21,7 @@
 #include "Common/Parser.h"
 #include "Common/StrUtil.h"
 #include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 #include "Server/GlobalMonitor.h"
 #include "Local/StatisticRecorder.h"
 #include "Local/TierEncryptionManager.h"
@@ -1082,6 +1083,12 @@ void TierStorageManager::stop() {
         std::unique_lock<std::mutex> lk(_transfer_dispatch_state->mutex);
         while (_transfer_dispatch_state->callbacks_in_flight > 0)
             _transfer_dispatch_state->completed.wait(lk);
+    }
+    {
+        // An object download in flight must finish before shutdown() tears down the AWS SDK.
+        std::unique_lock<std::mutex> lk(_restore_dispatch_state->mutex);
+        while (_restore_dispatch_state->tasks_in_flight > 0)
+            _restore_dispatch_state->completed.wait(lk);
     }
     _backfill_tasks_initialized = false;
     {
@@ -6426,38 +6433,79 @@ ColdAccessRestoreResult TierStorageManager::requestRestoreWindow(const std::stri
 }
 
 void TierStorageManager::processRestoreJobs() {
+    if (_stopping)
+        return;
+    auto state = _restore_dispatch_state;
+    {
+        std::lock_guard<std::mutex> lk(state->mutex);
+        ++state->tasks_in_flight;
+    }
+    weak_ptr<TierStorageManager> weak_self = shared_from_this();
+    // Callers include media pollers (cold playback) and the API workers, so even the claim, which
+    // is SQLite, runs on the restore pool.
+    BlockingExecutors::restore()->async([weak_self, state]() {
+        {
+            auto self = weak_self.lock();
+            if (self && !self->_stopping)
+                self->dispatchRestoreJobs();
+        }
+        std::lock_guard<std::mutex> lk(state->mutex);
+        --state->tasks_in_flight;
+        state->completed.notify_all();
+    }, false);
+}
+
+void TierStorageManager::dispatchRestoreJobs() {
     std::lock_guard<std::mutex> dispatch_lk(_restore_dispatch_mtx);
     GET_CONFIG(int, max_concurrent, Storage::kAutoRestoreMaxConcurrent);
     max_concurrent = std::max(1, max_concurrent);
     const int capacity = max_concurrent - _restore_inflight.load();
     if (capacity <= 0)
         return;
+    auto state = _restore_dispatch_state;
     auto children = RestoreJobSegmentImp().claimPending(capacity);
     for (const auto &child : children) {
         ++_restore_inflight;
         RestoreJobImp().updateStatus(child.job_id, "RUNNING");
+        {
+            std::lock_guard<std::mutex> lk(state->mutex);
+            ++state->tasks_in_flight;
+        }
         weak_ptr<TierStorageManager> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getExecutor()->async([weak_self, child]() {
-            auto self = weak_self.lock();
-            if (!self) return;
+        // Never run inline: ThreadPool::async runs the task in place when called from one of its
+        // own threads, and the task re-enters dispatchRestoreJobs() under _restore_dispatch_mtx.
+        BlockingExecutors::restore()->async([weak_self, state, child]() {
             {
-                struct RestoreGuard {
-                    std::atomic<int> &inflight;
-                    explicit RestoreGuard(std::atomic<int> &value) : inflight(value) {}
-                    ~RestoreGuard() { --inflight; }
-                } guard(self->_restore_inflight);
-                try {
-                    self->executeRestoreSegment(child);
-                } catch (const std::exception &ex) {
-                    RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, ex.what());
-                    self->updateRestoreParent(child.job_id);
-                } catch (...) {
-                    RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, "Unknown restore error");
-                    self->updateRestoreParent(child.job_id);
+                auto self = weak_self.lock();
+                if (self) {
+                    struct RestoreGuard {
+                        std::atomic<int> &inflight;
+                        explicit RestoreGuard(std::atomic<int> &value) : inflight(value) {}
+                        ~RestoreGuard() { --inflight; }
+                    } guard(self->_restore_inflight);
+                    if (self->_stopping) {
+                        // Hand the segment back so the next start() claims it again.
+                        RestoreJobSegmentImp().updateStatus(child, "PENDING", 0);
+                    } else {
+                        try {
+                            self->executeRestoreSegment(child);
+                        } catch (const std::exception &ex) {
+                            RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, ex.what());
+                            self->updateRestoreParent(child.job_id);
+                        } catch (...) {
+                            RestoreJobSegmentImp().updateStatus(child, "FAILED", 0, "Unknown restore error");
+                            self->updateRestoreParent(child.job_id);
+                        }
+                    }
                 }
+                if (self && !self->_stopping)
+                    self->dispatchRestoreJobs();
             }
-            self->processRestoreJobs();
-        }, false); // never run inline: the task re-enters processRestoreJobs() under _restore_dispatch_mtx
+            // Signal stop() only after self is released, as the transfer callbacks do.
+            std::lock_guard<std::mutex> lk(state->mutex);
+            --state->tasks_in_flight;
+            state->completed.notify_all();
+        }, false);
     }
 }
 
