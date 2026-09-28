@@ -278,6 +278,43 @@ TEST_F(PerStreamReplayDurationTest, WithoutDurationReadsOnIntoTheNextFile) {
     EXPECT_GE(lastVideoDts(0), 19000);
 }
 
+// The batch after the current one used to be looked up (recording index, tier lookups) on the
+// reader's poller when the batch ran out. It is now looked up ahead on "replay next", and the
+// reader still plays on into it.
+TEST_F(PerStreamReplayDurationTest, LooksUpTheNextBatchAhead) {
+    NoticeCenter::Instance().delListener(this, Broadcast::kBroadcastMediaSeeked2);
+    auto next_batch_thread = make_shared<string>();
+    auto mtx = make_shared<mutex>();
+    const auto first = _first, second = _second;
+    const uint64_t file_start = kFileStart;
+    NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastMediaSeeked2,
+        [first, second, file_start, next_batch_thread, mtx](BroadcastMediaSeeked2Args) {
+            map<string, map<uint64_t, string>> files;
+            if (stamp >= file_start + 30) {
+                invoker(0, files); // nothing recorded yet
+                return;
+            }
+            if (stamp >= file_start + 20) {
+                // A third recording, found only by the lookup for the next batch.
+                if (resolve_recorded_block_path) {
+                    lock_guard<mutex> lck(*mtx);
+                    *next_batch_thread = getThreadName();
+                }
+                files["main"][file_start + 20] = first;
+                invoker(10, files);
+                return;
+            }
+            files["main"][file_start] = first;
+            files["main"][file_start + 10] = second;
+            invoker(20 - (stamp - file_start), files);
+        });
+
+    EXPECT_GE(lastVideoDts(0), 29000) << "the replay did not play on into the next batch";
+    lock_guard<mutex> lck(*mtx);
+    EXPECT_EQ(0u, next_batch_thread->find("replay next")) << "looked up on " << *next_batch_thread;
+}
+
+
 namespace {
 class IdleSession : public Session {
 public:

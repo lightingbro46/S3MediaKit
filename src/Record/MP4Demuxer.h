@@ -4,6 +4,8 @@
 
 #include <map>
 #include <set>
+#include <mutex>
+#include <condition_variable>
 #include "MP4.h"
 #include "Extension/Track.h"
 #include "Util/ResourcePool.h"
@@ -138,6 +140,21 @@ private:
 
     Frame::Ptr readFrameWithTimeline(bool &keyFrame, bool &eof);
 
+    // Queues the lookup of the batch after the current one on the "replay next" pool, so the
+    // reader does not read the recording index on its poller when it reaches the end of a batch.
+    void prefetchNextSegment();
+
+    struct NextSegmentLookup {
+        std::mutex mtx;
+        std::condition_variable done;
+        bool pending = false;
+        bool ready = false;
+        uint64_t start = 0;          // the stamp the lookup was made for
+        uint64_t max_duration = 0;
+        uint64_t duration = 0;       // findSegmentFiles() result
+        std::map<uint64_t, std::string> files;
+    };
+
 private:
     std::map<int, Track::Ptr> _tracks;
     std::map<uint64_t, MP4Demuxer::Ptr>::iterator _it;
@@ -147,6 +164,8 @@ private:
     SegmentStats _stats;
     std::set<std::pair<uint64_t, std::string>> _timeline_segments;
     std::set<std::pair<uint64_t, std::string>> _consumed_timeline_segments;
+    // Shared with the lookup task, which may outlive the demuxer.
+    std::shared_ptr<NextSegmentLookup> _next_lookup = std::make_shared<NextSegmentLookup>();
 };
 
 }//namespace mediakit

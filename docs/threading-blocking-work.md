@@ -28,6 +28,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::tierTransfer()` | `ThreadPool` | Transfer job của tier storage: copy segment sang NAS, upload lên S3/MinIO |
 | `rec close N` (`MP4Recorder::closeExecutorFor`, `src/`) | `ThreadPool` 1 thread × `record.closeThreads` | Đóng segment MP4 (ghi moov, rename) và mọi listener `kBroadcastRecordMP4`: ghi timefile, đăng ký range HOT (SQLite), xếp mã hoá, hook `on_record_mp4`. Chọn theo `hash(vhost/app/stream)` nên các segment của một stream đóng đúng thứ tự |
 | `replay open` (`MediaSource.cpp`) | `ThreadPool` 2 | Mở replay gộp và replay per-stream: đọc index timefile, tra tier, đọc header MP4 |
+| `replay next` (`MP4Demuxer.cpp`) | `ThreadPool` 2 | Tra trước batch segment kế tiếp của replay per-stream khi reader vào file cuối của batch |
 
 Điểm mấu chốt: **mỗi thread của `WorkThreadPool` là một `EventPoller`**, không phải thread
 rảnh. Nó đang chạy timer và các hàng đợi cần giữ thứ tự. Một lời gọi blocking dài ở đó
@@ -370,8 +371,9 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
 - `MediaSource::find(..., from_mp4=true)` đồng bộ vẫn mở `MP4Reader` trên thread gọi. Người gọi là
   `/index/api/startSendRtp*` (tham số `from_mp4` do client gửi) và C API `mk_media_source_find*`: API
   của repo gốc, ABI đã đóng băng, cố ý giữ contract. Player đi qua `findAsync`, mở trên `replay open`.
-- Replay per-stream khi hết batch vẫn tra index (`MultiMP4Demuxer::findNextSegment`) và mở header MP4
-  của batch mới trên poller của reader.
+- Replay per-stream khi chuyển batch vẫn mở header MP4 (`MP4Demuxer::openMP4`) của batch mới trên
+  poller của reader; chỉ phần tra index được làm trước trên `replay next`. Khi lần tra trước không
+  thấy file mới (replay đang đuổi bản ghi mới), lúc chuyển batch vẫn tra lại đồng bộ một lần.
 - `SubnetScan::scanRange()` (bản đồng bộ) giữ một thread của pool `api` trong suốt lần quét.
   Quét dải lớn toàn IP không route được sẽ giữ thread đó rất lâu.
 
@@ -388,6 +390,7 @@ Unit test:
 | `unit_replay` `MP4RecorderCloseTest` | Segment của một stream đóng đúng thứ tự, trên thread `rec close N`, không phải poller |
 | `unit_replay` `PerStreamReplayDurationTest.OpensOffTheSessionPoller` | Replay per-stream mở trên `replay open`: poller không bị chặn khi index chậm, source vẫn đăng ký, hai request cùng lúc chỉ mở một reader |
 | `unit_replay` `PerStreamReplayOpenTest.DerivedStreamWaitsForRegistration` | Luồng dẫn xuất (overlay/transcode) trong app record vẫn chờ đăng ký, không trả "không có" ngay |
+| `unit_replay` `PerStreamReplayDurationTest.LooksUpTheNextBatchAhead` | Batch kế tiếp được tra trên `replay next`, reader phát tiếp sang batch đó |
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
