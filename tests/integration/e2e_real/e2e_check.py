@@ -168,9 +168,17 @@ class Ctx:
         return out
 
     def resolutions(self):
+        """Độ phân giải từng stream; work dir chưa chạy `smoke` thì lấy từ luồng live và lưu lại."""
         path = os.path.join(self.work, "streams.json")
         if os.path.exists(path):
             return json.load(open(path))
+        for _ in range(20):
+            info = self.stream_info()
+            if self.main in info and self.sub in info and info[self.main].get("width"):
+                with open(path, "w") as fh:
+                    json.dump(info, fh, indent=1)
+                return info
+            time.sleep(1)
         return {}
 
 
@@ -1123,10 +1131,15 @@ def g_tier_verify(ctx):
                % (counts, len(cold), len(ranges), (now - st["setup_at"]) / 60.0))
     if not cold:
         return
-    rng = cold[0]
-    s, e = int(rng["start"]), int(rng["end"])
-    probe_s = s + 5
-    probe_e = min(e, probe_s + 30)
+    # Probe inside a COLD period of Main itself: the first COLD range may belong to Sub, or start
+    # with a gap (recording restarts when a pool is created) where a replay has nothing to play.
+    main_cold = [p for p in timeline(ctx, st["setup_at"] - 3600, now, stream=ctx.main) or []
+                 if p.get("tier") == "COLD" and p["end"] - p["start"] >= 20]
+    if not main_cold:
+        ctx.record("TIR-07", None, "chưa có period COLD ≥ 20 s của Main (%d range COLD)" % len(cold))
+        return
+    probe_s = main_cold[0]["start"] + 2
+    probe_e = min(main_cold[0]["end"], probe_s + 30)
     _, _, rs = ctx.api("/media/mserver/storage/playback/resolve",
                        {"camera_id": ctx.cam, "start_time": probe_s, "end_time": probe_e, "stream_id": ctx.main},
                        token=tok, method="POST")
