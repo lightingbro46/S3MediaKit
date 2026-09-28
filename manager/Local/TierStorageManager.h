@@ -117,6 +117,10 @@ public:
 
     void start();
     void stop();
+    // Blocks until the cycle, health, transfer and restore tasks already queued on the blocking
+    // pools have finished. stop() uses it; tests use it as a barrier after runTieringCycle().
+    // Never call it from one of those pools.
+    void waitForBackgroundWork();
     // Process exit: stop() and shut the object storage SDK down. Called explicitly on shutdown
     // (also after a failed startup) so none of it runs during static destruction.
     void shutdown();
@@ -693,6 +697,9 @@ private:
     void executeRestoreSegment(const RestoreJobSegment &segment);
 
     // Non-blocking: queues a dispatch on BlockingExecutors::restore(); callable from any thread.
+    // Runs `task` on BlockingExecutors::tier(), counted in _cycle_tasks for waitForBackgroundWork().
+    void postCycleTask(const std::function<void()> &task);
+
     void processRestoreJobs();
     // Runs on BlockingExecutors::restore(): claims pending segments (SQLite) and queues their
     // downloads on the same pool.
@@ -795,11 +802,11 @@ private:
         int callbacks_in_flight = 0;
     };
 
-    struct RestoreDispatchState {
+    // Tasks queued on a blocking pool and not yet finished. The count drops only after the task
+    // released the manager, like TransferDispatchState::callbacks_in_flight.
+    struct InFlightTasks {
         std::mutex mutex;
         std::condition_variable completed;
-        // Dispatch and download tasks queued on the restore pool and not yet finished; drops
-        // only after the task released the manager, like TransferDispatchState::callbacks_in_flight.
         int tasks_in_flight = 0;
     };
 
@@ -841,7 +848,10 @@ private:
     std::unordered_map<std::string, PoolHealthRuntimeState> _pool_health_cache;
     std::shared_ptr<HealthCycleState> _health_cycle_state = std::make_shared<HealthCycleState>();
     std::shared_ptr<TransferDispatchState> _transfer_dispatch_state = std::make_shared<TransferDispatchState>();
-    std::shared_ptr<RestoreDispatchState> _restore_dispatch_state = std::make_shared<RestoreDispatchState>();
+    // Restore dispatch/download tasks (BlockingExecutors::restore()).
+    std::shared_ptr<InFlightTasks> _restore_dispatch_state = std::make_shared<InFlightTasks>();
+    // Tiering and backfill cycles (BlockingExecutors::tier()); the health cycle has its own state.
+    std::shared_ptr<InFlightTasks> _cycle_tasks = std::make_shared<InFlightTasks>();
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
     // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.

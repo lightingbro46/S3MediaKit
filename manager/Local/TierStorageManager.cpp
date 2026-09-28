@@ -20,7 +20,6 @@
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "Common/StrUtil.h"
-#include "Thread/WorkThreadPool.h"
 #include "Common/BlockingExecutors.h"
 #include "Server/GlobalMonitor.h"
 #include "Local/StatisticRecorder.h"
@@ -1074,22 +1073,9 @@ void TierStorageManager::stop() {
     _timer.reset();
     _backfill_timer.reset();
     _health_timer.reset();
-    {
-        std::unique_lock<std::mutex> lk(_health_cycle_state->mutex);
-        while (_health_cycle_state->running)
-            _health_cycle_state->completed.wait(lk);
-    }
-    {
-        std::unique_lock<std::mutex> lk(_transfer_dispatch_state->mutex);
-        while (_transfer_dispatch_state->callbacks_in_flight > 0)
-            _transfer_dispatch_state->completed.wait(lk);
-    }
-    {
-        // An object download in flight must finish before shutdown() tears down the AWS SDK.
-        std::unique_lock<std::mutex> lk(_restore_dispatch_state->mutex);
-        while (_restore_dispatch_state->tasks_in_flight > 0)
-            _restore_dispatch_state->completed.wait(lk);
-    }
+    // Object storage calls in flight (reconcile, upload, download) must finish before shutdown()
+    // tears down the AWS SDK.
+    waitForBackgroundWork();
     _backfill_tasks_initialized = false;
     {
         std::lock_guard<std::mutex> lk(_temporary_mp4_observations_mtx);
@@ -1097,6 +1083,38 @@ void TierStorageManager::stop() {
         _temporary_mp4_next_pool_index = 0;
     }
     InfoL << "TierStorageManager stopped";
+}
+
+void TierStorageManager::waitForBackgroundWork() {
+    // A cycle can queue transfers and restores, and a finished transfer queues the next one, so
+    // repeat until one pass finds every group idle without having to wait.
+    bool waited = true;
+    while (waited) {
+        waited = false;
+        auto wait_tasks = [&waited](const std::shared_ptr<InFlightTasks> &tasks) {
+            std::unique_lock<std::mutex> lk(tasks->mutex);
+            while (tasks->tasks_in_flight > 0) {
+                waited = true;
+                tasks->completed.wait(lk);
+            }
+        };
+        wait_tasks(_cycle_tasks);
+        {
+            std::unique_lock<std::mutex> lk(_health_cycle_state->mutex);
+            while (_health_cycle_state->running) {
+                waited = true;
+                _health_cycle_state->completed.wait(lk);
+            }
+        }
+        {
+            std::unique_lock<std::mutex> lk(_transfer_dispatch_state->mutex);
+            while (_transfer_dispatch_state->callbacks_in_flight > 0) {
+                waited = true;
+                _transfer_dispatch_state->completed.wait(lk);
+            }
+        }
+        wait_tasks(_restore_dispatch_state);
+    }
 }
 
 void TierStorageManager::shutdown() {
@@ -1565,6 +1583,22 @@ bool TierStorageManager::processBackfillTask(const TierBackfillTask &task) {
     return false;
 }
 
+void TierStorageManager::postCycleTask(const std::function<void()> &task) {
+    auto tasks = _cycle_tasks;
+    {
+        std::lock_guard<std::mutex> lk(tasks->mutex);
+        ++tasks->tasks_in_flight;
+    }
+    // may_sync=false: tests call the cycles from any thread, and nothing may run inline.
+    BlockingExecutors::tier()->async([tasks, task]() {
+        // `task` holds only a weak_ptr; any manager reference it took is gone once it returns.
+        task();
+        std::lock_guard<std::mutex> lk(tasks->mutex);
+        --tasks->tasks_in_flight;
+        tasks->completed.notify_all();
+    }, false);
+}
+
 void TierStorageManager::runBackfillCycle() {
 #ifdef ENABLE_MP4
     GET_CONFIG(bool, backfill_enabled, Storage::kTierRangeBackfillEnabled);
@@ -1572,7 +1606,7 @@ void TierStorageManager::runBackfillCycle() {
         return;
 
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+    postCycleTask([weak_self]() {
         auto self = weak_self.lock();
         if (!self)
             return;
@@ -3367,7 +3401,7 @@ void TierStorageManager::runTieringCycle() {
     }
 
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+    postCycleTask([weak_self]() {
         auto self = weak_self.lock();
         if (!self) return;
 
@@ -5631,7 +5665,9 @@ void TierStorageManager::dispatchPendingTieringJobs() {
 
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
     for (auto job : dispatch_jobs) {
-        WorkThreadPool::Instance().getPoller()->async(
+        // may_sync=false: this callback calls dispatchPendingTieringJobs() from a tierTransfer()
+        // thread, which must queue the next job instead of running it inline.
+        BlockingExecutors::tierTransfer()->async(
             [weak_self, state, job]() mutable {
                 {
                     auto self = weak_self.lock();
@@ -5669,12 +5705,12 @@ void TierStorageManager::dispatchPendingTieringJobs() {
                 }
 
                 // Signal stop() only after self is released; otherwise the last
-                // reference could drop here and destroy the manager on this poller
+                // reference could drop here and destroy the manager on this thread
                 // while the process is tearing down.
                 std::lock_guard<std::mutex> lk(state->mutex);
                 --state->callbacks_in_flight;
                 state->completed.notify_all();
-            });
+            }, false);
     }
 }
 
@@ -6977,7 +7013,7 @@ void TierStorageManager::runPoolHealthCycle() {
     }
 
     weak_ptr<TierStorageManager> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self, cycle_state]() {
+    BlockingExecutors::tier()->async([weak_self, cycle_state]() {
         struct HealthGuard {
             std::shared_ptr<HealthCycleState> state;
             explicit HealthGuard(const std::shared_ptr<HealthCycleState> &value) : state(value) {}
@@ -7001,7 +7037,7 @@ void TierStorageManager::runPoolHealthCycle() {
         } catch (...) {
             WarnL << "Storage pool health cycle failed with unknown error";
         }
-    });
+    }, false);
 }
 
 bool TierStorageManager::getPoolHealth(const std::string &pool_id,

@@ -64,6 +64,16 @@ TEST(BlockingExecutorsTest, PoolsAreSingletons) {
     EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::storage().get());
     EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::encryption().get());
     EXPECT_NE(BlockingExecutors::restore().get(), BlockingExecutors::ffmpeg().get());
+
+    EXPECT_EQ(BlockingExecutors::tier().get(), BlockingExecutors::tier().get());
+    EXPECT_EQ(BlockingExecutors::tierTransfer().get(), BlockingExecutors::tierTransfer().get());
+    // A burst of uploads must not delay the pool health check, and neither may hold a viewer's
+    // restore or the storage maintenance cycle.
+    EXPECT_NE(BlockingExecutors::tier().get(), BlockingExecutors::tierTransfer().get());
+    EXPECT_NE(BlockingExecutors::tier().get(), BlockingExecutors::restore().get());
+    EXPECT_NE(BlockingExecutors::tier().get(), BlockingExecutors::storage().get());
+    EXPECT_NE(BlockingExecutors::tierTransfer().get(), BlockingExecutors::restore().get());
+    EXPECT_NE(BlockingExecutors::tierTransfer().get(), BlockingExecutors::api().get());
 }
 
 TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
@@ -89,6 +99,14 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     auto restore = runOn(BlockingExecutors::restore());
     EXPECT_EQ(0u, restore.thread_name.find("restore ")) << restore.thread_name;
     EXPECT_FALSE(restore.on_poller);
+
+    // Tier cycles and transfers used to run on `work poller N` threads.
+    auto tier = runOn(BlockingExecutors::tier());
+    EXPECT_EQ(0u, tier.thread_name.find("tier ")) << tier.thread_name;
+    EXPECT_FALSE(tier.on_poller);
+    auto transfer = runOn(BlockingExecutors::tierTransfer());
+    EXPECT_EQ(0u, transfer.thread_name.find("tier xfer ")) << transfer.thread_name;
+    EXPECT_FALSE(transfer.on_poller);
 }
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
@@ -100,6 +118,10 @@ TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     EXPECT_EQ(1, BlockingExecutors::storageThreadCount());
     // Matches the storage.auto_restore_max_concurrent default.
     EXPECT_EQ(5, BlockingExecutors::restoreThreadCount());
+    // One thread each for the tiering cycle, backfill and health check.
+    EXPECT_EQ(3, BlockingExecutors::tierThreadCount());
+    // Matches the storage.tiering_transfer_max_concurrent default.
+    EXPECT_EQ(4, BlockingExecutors::tierTransferThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really
     // runs `threads` tasks at the same time.

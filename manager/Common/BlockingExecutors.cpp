@@ -21,6 +21,8 @@ const string kStorageThreads = "blocking.storageThreads";
 const string kFfmpegThreads = "blocking.ffmpegThreads";
 const string kEncryptionThreads = "blocking.encryptionThreads";
 const string kRestoreThreads = "blocking.restoreThreads";
+const string kTierThreads = "blocking.tierThreads";
+const string kTierTransferThreads = "blocking.tierTransferThreads";
 // Read for backward compatibility only; not registered, so fresh configs do not get it.
 const string kLegacyApiWorkerThreads = "api.workerThreads";
 
@@ -31,6 +33,8 @@ static onceToken token([]() {
     mINI::Instance()[kStorageThreads] = 1;
     mINI::Instance()[kFfmpegThreads] = 4;
     mINI::Instance()[kRestoreThreads] = 5;
+    mINI::Instance()[kTierThreads] = 3;
+    mINI::Instance()[kTierTransferThreads] = 4;
 });
 } // namespace Blocking
 
@@ -114,6 +118,22 @@ int BlockingExecutors::restoreThreadCount() {
     return s_threads;
 }
 
+int BlockingExecutors::tierThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kTierThreads);
+        return threads > 0 ? threads : 3;
+    }();
+    return s_threads;
+}
+
+int BlockingExecutors::tierTransferThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kTierTransferThreads);
+        return threads > 0 ? threads : 4;
+    }();
+    return s_threads;
+}
+
 TaskExecutor::Ptr BlockingExecutors::api() {
     static TaskExecutor::Ptr s_executor = makePool(apiThreadCount(), "api worker");
     return s_executor;
@@ -141,6 +161,16 @@ TaskExecutor::Ptr BlockingExecutors::encryption() {
 
 TaskExecutor::Ptr BlockingExecutors::restore() {
     static TaskExecutor::Ptr s_executor = makePool(restoreThreadCount(), "restore");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::tier() {
+    static TaskExecutor::Ptr s_executor = makePool(tierThreadCount(), "tier");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::tierTransfer() {
+    static TaskExecutor::Ptr s_executor = makePool(tierTransferThreadCount(), "tier xfer");
     return s_executor;
 }
 

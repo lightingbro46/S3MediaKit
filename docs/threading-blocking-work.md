@@ -16,7 +16,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | Executor | Loại | Dùng cho |
 |---|---|---|
 | `EventPollerPool` | `EventPoller` | Socket, session, `MediaSource`/muxer, timer của media |
-| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, chu kỳ tier storage, health check của `ClusterManager` |
+| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, health check của `ClusterManager` |
 | `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
@@ -24,6 +24,8 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::ffmpeg()` | `ThreadPool` | Chờ tiến trình ffmpeg/ffprobe (snapshot, thumbnail) |
 | `BlockingExecutors::encryption()` | `ThreadPool` | Mã hoá segment vừa đóng, job mã hoá lại toàn pool |
 | `BlockingExecutors::restore()` | `ThreadPool` | Restore segment COLD từ object storage: claim job (SQLite) và tải S3/MinIO về restore cache |
+| `BlockingExecutors::tier()` | `ThreadPool` | Chu kỳ tier storage: tiering/bảo trì (quét range, đối soát object LIST/DELETE, dọn cache), backfill, health check pool (statvfs, HEAD/metrics S3) |
+| `BlockingExecutors::tierTransfer()` | `ThreadPool` | Transfer job của tier storage: copy segment sang NAS, upload lên S3/MinIO |
 
 Điểm mấu chốt: **mỗi thread của `WorkThreadPool` là một `EventPoller`**, không phải thread
 rảnh. Nó đang chạy timer và các hàng đợi cần giữ thứ tự. Một lời gọi blocking dài ở đó
@@ -39,6 +41,8 @@ Các pool được tách riêng theo nhóm công việc để một việc chậ
 - Một chu kỳ dọn kho có thể chạy hàng phút (nó đi qua từng file đã ghi) → `storage` tách khỏi `api`.
 - Người xem đang chờ restore segment COLD **không** được xếp hàng sau chu kỳ dọn kho hay job mã hoá lại,
   và một lần tải chậm **không** được giữ poller → `restore` tách khỏi `storage`, `encryption` và `WorkThreadPool`.
+- Một đợt upload lớn **không** được làm trễ health check pool (dùng để chặn phát lại khi pool offline)
+  → `tierTransfer` tách khỏi `tier`. Timer của `TierStorageManager` vẫn nằm trên `_poller` và chỉ xếp việc.
 
 ## 2. Quy Tắc
 
@@ -331,6 +335,8 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 | `blocking.ffmpegThreads` | 4 | |
 | `blocking.encryptionThreads` | 2 | Không được đăng ký default, chỉ đọc nếu có trong config |
 | `blocking.restoreThreads` | 5 | Trần của pool; số restore chạy đồng thời thực tế do `storage.auto_restore_max_concurrent` giới hạn |
+| `blocking.tierThreads` | 3 | Một thread cho mỗi loại chu kỳ (tiering, backfill, health); mỗi loại có cờ chống chồng lấn |
+| `blocking.tierTransferThreads` | 4 | Trần của pool; số transfer đồng thời do `storage.tiering_transfer_max_concurrent` và `..._per_pool` giới hạn |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
 
@@ -363,8 +369,6 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
   sang pool `restore` (`accessRecordedSegment(..., async_enqueue=true)`), nhưng phần đọc vẫn nằm trên
   poller: `TimeQuery` đọc timefile, `resolvePlaybackSegmentPath` đọc SQLite, và
   `MultiMP4Demuxer::findNextSegment` truy vấn lại khi hết segment.
-- Chu kỳ tiering, transfer job (upload S3), backfill và health check (HEAD S3) của `TierStorageManager`
-  vẫn chạy trên `WorkThreadPool`.
 - `SubnetScan::scanRange()` (bản đồng bộ) giữ một thread của pool `api` trong suốt lần quét.
   Quét dải lớn toàn IP không route được sẽ giữ thread đó rất lâu.
 
@@ -376,6 +380,8 @@ Unit test:
 |---|---|
 | `unit_blocking_executors` | Pool là singleton và tách biệt nhau, thread không phải poller, tên thread, số thread song song đúng cấu hình |
 | `integration.tier-manager.EnforcesRestoreConcurrencyLimit` | Giới hạn restore đồng thời; poller của `WorkThreadPool` vẫn trả lời < 300 ms khi đang tải; `stop()` không trả về khi còn child `RUNNING` |
+| `integration.tier-manager.QueuesRestoreAsynchronouslyForMediaPoller` | `accessRecordedSegment(..., async_enqueue=true)` trả `QUEUED` ngay, job được tạo sau trên pool `restore`, request lặp lại chỉ tạo một job |
+| `integration.tier-manager.TransferLeavesWorkPollersFree` | Upload chậm chạy trên `tierTransfer`: poller của `WorkThreadPool` vẫn trả lời < 300 ms |
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |

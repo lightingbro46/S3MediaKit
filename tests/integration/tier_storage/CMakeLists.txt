@@ -78,6 +78,7 @@ foreach(manager_case
     AlignsMoveThresholdToSplitGranularity
     EnforcesRestoreConcurrencyLimit
     QueuesRestoreAsynchronouslyForMediaPoller
+    TransferLeavesWorkPollersFree
     SearchEngineReflectsTierMetadata
     LoadsAndRefreshesSavedCameraRecordRoot
     PolicyLifecycleChangesCameraStorage

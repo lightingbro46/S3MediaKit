@@ -57,6 +57,19 @@ public:
     // Threads are named "restore N". Size: `blocking.restoreThreads` (<= 0 means 5).
     static toolkit::TaskExecutor::Ptr restore();
 
+    // Tier storage cycles: the tiering/maintenance cycle (range scans, object reconcile LIST/DELETE,
+    // cache cleanup; minutes on a large archive), the backfill dispatch and the pool health check
+    // (statvfs, S3 HEAD/metrics). Each has its own overlap flag, so at most three run at once and
+    // the health check never waits behind a long cycle. Threads are named "tier N".
+    // Size: `blocking.tierThreads` (<= 0 means 3).
+    static toolkit::TaskExecutor::Ptr tier();
+
+    // Tier transfer jobs: copying a segment to NAS or uploading it to S3/MinIO. Kept apart from
+    // `tier` so a burst of uploads never delays the health check. `storage.tiering_transfer_max_concurrent`
+    // and its per-pool limit still bound how many run at once. Threads are named "tier xfer N".
+    // Size: `blocking.tierTransferThreads` (<= 0 means 4).
+    static toolkit::TaskExecutor::Ptr tierTransfer();
+
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();
     static int deviceThreadCount();
@@ -65,6 +78,8 @@ public:
     static int storageThreadCount();
     static int ffmpegThreadCount();
     static int restoreThreadCount();
+    static int tierThreadCount();
+    static int tierTransferThreadCount();
 };
 
 namespace Blocking {

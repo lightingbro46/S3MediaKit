@@ -383,7 +383,7 @@ Task chuyển qua `PENDING -> RUNNING -> PENDING/COMPLETED`. Lỗi chuyển sang
 
 ## 5. Luồng Chuyển Tầng
 
-`TierStorageManager::runTieringCycle()` chạy định kỳ bằng timer của `TierStorageManager` (hiện 300 giây/lần). Hàm này dispatch async sang `WorkThreadPool`.
+`TierStorageManager::runTieringCycle()` chạy định kỳ bằng timer của `TierStorageManager` (hiện 300 giây/lần). Timer chỉ xếp việc: chu kỳ tiering, backfill và health check chạy trên `BlockingExecutors::tier()` (thread `tier N`), còn transfer job (copy NAS, upload S3) chạy trên `BlockingExecutors::tierTransfer()` (thread `tier xfer N`). Không việc nào của tier storage chạy trên `WorkThreadPool`. Mọi `async` vào hai pool này dùng `may_sync=false`, vì transfer callback và health cycle gọi lại `dispatchPendingTieringJobs()` từ chính thread của pool. `stop()` gọi `waitForBackgroundWork()` để chờ cycle, health, transfer và restore đang chạy xong trước khi `shutdown()` tắt AWS SDK; test integration dùng cùng hàm này làm rào chắn sau `runTieringCycle()`.
 
 Health monitoring không còn phụ thuộc chu kỳ này. `TierStorageManager` dispatch
 một health cycle riêng theo `storage.pool_health_check_interval_seconds`, probe

@@ -420,7 +420,10 @@ bool waitUntil(const std::function<bool()> &predicate, int timeout_ms) {
     return predicate();
 }
 
+// Barrier after runTieringCycle()/dispatch: the tier work itself runs on BlockingExecutors
+// (tier, tierTransfer, restore), the timers still on WorkThreadPool.
 void drainWorkThreadPool() {
+    TierStorageManager::Instance().waitForBackgroundWork();
     WorkThreadPool::Instance().for_each([](const TaskExecutor::Ptr &executor) {
         executor->sync([]() {});
     });
@@ -3593,6 +3596,61 @@ std::string rangeStatus(const std::string &range_id) {
     return ranges.empty() ? std::string() : ranges.front().status;
 }
 
+// A slow upload runs on the tierTransfer pool: every WorkThreadPool poller keeps answering.
+int scenarioTierTransferLeavesPollersFree(const std::string &root) {
+    migrateDatabase(root);
+    FakeS3Server server;
+    server.setHandler([](const FakeS3Request &request, FakeS3Response &) {
+        if (request.method == "PUT")
+            ::usleep(1000000);
+        return false;
+    });
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    drainWorkThreadPool();
+    auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool cold = makeFakeObjectPool(root, server);
+    require(manager.createPool(cold) == cold.id, "Fake COLD pool creation failed");
+    auto policy = makeColdMovePolicy(hot_pools.front().id, cold.id);
+    require(manager.createPolicy(policy) == policy.id, "Cold policy creation failed");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    auto fixture = makeSegmentFixture(root, "camera-transfer-off-poller", "2026-08-20/16-30-00",
+                                      "tier-transfer-off-poller", now - 600);
+    require(manager.assignPolicyToCamera(fixture.camera, policy.id, "off-poller test"),
+            "Cold policy assignment failed");
+    require(manager.registerHotSegmentRange(
+                fixture.camera, fixture.stream, fixture.source_path,
+                fixture.start, fixture.end, static_cast<int64_t>(fixture.payload.size())),
+            "HOT range registration failed");
+
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(fixture.camera);
+        return !jobs.empty() && jobs.front().status == "RUNNING" && !server.requests("PUT", "/").empty();
+    }, 10000), "Transfer never started uploading");
+    int64_t slowest_poller_ms = 0;
+    WorkThreadPool::Instance().for_each([&](const TaskExecutor::Ptr &executor) {
+        Ticker ticker;
+        executor->sync([]() {});
+        slowest_poller_ms = std::max<int64_t>(slowest_poller_ms, ticker.elapsedTime());
+    });
+    require(slowest_poller_ms < 300,
+            "A work poller was blocked while a transfer was uploading: " +
+                std::to_string(slowest_poller_ms) + " ms");
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(fixture.camera);
+        return !jobs.empty() && (jobs.front().status == "DONE" || jobs.front().status == "FAILED");
+    }, 15000), "Transfer did not finish");
+    auto jobs = manager.listTieringJobs(fixture.camera);
+    require(jobs.front().status == "DONE",
+            "Transfer failed: " + jobs.front().error_message.value_or(""));
+    drainWorkThreadPool();
+    manager.stop();
+    return 0;
+}
+
 int scenarioObjectRetentionDeletesInOneBatch(const std::string &root) {
     migrateDatabase(root);
     FakeS3Server server;
@@ -6084,6 +6142,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
         if (name == "restore-concurrency-limit") return scenarioRestoreConcurrencyLimit(root);
         if (name == "restore-async-enqueue") return scenarioRestoreAsyncEnqueue(root);
+        if (name == "transfer-off-poller") return scenarioTierTransferLeavesPollersFree(root);
         if (name == "search-tier-metadata") return scenarioSearchEngineReflectsTierMetadata(root);
         if (name == "load-saved-camera-root") return scenarioLoadsSavedCameraRecordRoot(root);
         if (name == "policy-lifecycle-storage") return scenarioPolicyLifecycleChangesCameraStorage(root);
@@ -6388,6 +6447,11 @@ TEST(TierStorageManagerIntegrationTest, EnforcesRestoreConcurrencyLimit) {
 TEST(TierStorageManagerIntegrationTest, QueuesRestoreAsynchronouslyForMediaPoller) {
     TempRoot root;
     EXPECT_EQ(0, runChild("restore-async-enqueue", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, TransferLeavesWorkPollersFree) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("transfer-off-poller", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, SearchEngineReflectsTierMetadata) {
