@@ -369,6 +369,11 @@ static MediaSource::Ptr find_l(const string &schema, const string &vhost_in, con
     return ret;
 }
 
+static string normalizeVhost(const string &vhost);
+static void openReplayAsync(const string &schema, const MediaTuple &target, const shared_ptr<Session> &session,
+                            const function<void(const MediaSource::Ptr &src)> &cb,
+                            const function<shared_ptr<void>()> &open);
+
 static void findAsync_l(const MediaInfo &info_in, const std::shared_ptr<Session> &session, bool retry,
                         const function<void(const MediaSource::Ptr &src)> &cb){
     GET_CONFIG(string, record_app, Record::kAppName);
@@ -381,7 +386,20 @@ static void findAsync_l(const MediaInfo &info_in, const std::shared_ptr<Session>
             mp4_params = "duration=" + to_string(strtoull(Parser::parseArgs(info_in.params)["duration"].data(), nullptr, 10));
         }
     }
-    auto src = find_l(info.schema, info.vhost, info.app, info.stream, true, mp4_params);
+    if (info.app == record_app && retry && info.stream.find(TRANSCODE_SUFFIX) == string::npos &&
+        !find_l(info.schema, info.vhost, info.app, info.stream, false)) {
+        // Per-stream replay: opening the reader reads the recording index, resolves tiered
+        // segments and parses MP4 headers, so it runs on replayOpenPool(), not on this poller.
+        // A derived (transcode/overlay) stream is published by TranscodeProcessor, never opened
+        // from MP4: it keeps waiting for its registration below.
+        const MediaTuple target = {normalizeVhost(info.vhost), info.app, info.stream, mp4_params};
+        const string schema = info.schema;
+        openReplayAsync(schema, target, session, cb, [schema, target]() -> shared_ptr<void> {
+            return MediaSource::createFromMP4(schema, target.vhost, target.app, target.stream, "", true, target.params);
+        });
+        return;
+    }
+    auto src = find_l(info.schema, info.vhost, info.app, info.stream, info.app != record_app, mp4_params);
     if (src || !retry) {
         cb(src);
         return;
@@ -580,8 +598,8 @@ static vector<MediaSource::Ptr> findByApp_l(const string &schema, const string &
     return results;
 }
 
-// Merged replays that are being opened or are already playing, keyed by
-// schema/vhost/app/internal stream. A request for the same replay joins the
+// Replays (merged or per-stream) that are being opened or are already playing,
+// keyed by schema/vhost/app/stream. A request for the same replay joins the
 // existing reader instead of opening a second one that could never register.
 class ReplayOpenRegistry {
 public:
@@ -614,7 +632,9 @@ public:
         return true;
     }
 
-    void finish(const string &key, const MergedMP4Reader::Ptr &reader) {
+    // `reader` is what keeps the opened replay alive (the reader or its source); null when the
+    // open failed.
+    void finish(const string &key, const shared_ptr<void> &reader) {
         vector<Waiter> waiters;
         {
             lock_guard<mutex> lck(_mtx);
@@ -631,7 +651,7 @@ public:
 private:
     struct Entry {
         bool opening = false;
-        weak_ptr<MergedMP4Reader> reader;
+        weak_ptr<void> reader;
         vector<Waiter> waiters;
     };
     mutex _mtx;
@@ -695,25 +715,15 @@ static MergedMP4Reader::Ptr openMergedReplay(const string &schema, const MediaTu
 #endif //ENABLE_MP4
 }
 
-static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
-    const string vhost = normalizeVhost(info.vhost);
-    auto results = findByApp_l(info.schema, vhost, info.app, info.stream);
-    GET_CONFIG(string, record_app, Record::kAppName);
-    if (!results.empty() || info.app.empty() || info.app != record_app || !isReplaySchema(info.schema)) {
-        cb(std::move(results));
-        return;
-    }
-
-    // Quality-aware dual-stream replay. MergedMP4Reader publishes only the
-    // requested output adapter under an internal parameter-specific id; its
-    // source registers once the first clip's tracks are ready, so wait for the
-    // registration like findAsync() does for a live stream.
-    string selection_params;
-    const MediaTuple target = {vhost, info.app, replayInternalStream(info.stream, info.params, selection_params),
-                               selection_params};
-    const string schema = info.schema;
+// Opens a replay off the session poller and answers `cb` on that poller once its source
+// registers. `open` is blocking (recording index, tier lookups, MP4 headers) and runs on
+// replayOpenPool(); it returns what keeps the replay alive, or null when nothing can be played,
+// which answers `cb(nullptr)` at once instead of waiting for the timeout. Concurrent requests
+// for the same replay join one open.
+static void openReplayAsync(const string &schema, const MediaTuple &target, const shared_ptr<Session> &session,
+                            const function<void(const MediaSource::Ptr &src)> &cb,
+                            const function<shared_ptr<void>()> &open) {
     const string key = schema + "/" + target.shortUrl();
-
     GET_CONFIG(int, maxWaitMS, General::kMaxStreamWaitTimeMS);
     auto poller = session->getPoller();
     // Unique per request: several requests of one session may wait at once.
@@ -721,9 +731,7 @@ static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &s
     std::shared_ptr<atomic_flag> invoked(new atomic_flag{false});
     auto cb_once = [cb, invoked](const MediaSource::Ptr &src) {
         if (invoked->test_and_set()) return;
-        vector<MediaSource::Ptr> found;
-        if (src) found.emplace_back(src);
-        cb(found);
+        cb(src);
     };
     auto on_timeout = poller->doDelayTask(maxWaitMS, [cb_once, listener_tag, target]() {
         NoticeCenter::Instance().delListener(listener_tag.get(), Broadcast::kBroadcastMediaChanged);
@@ -760,10 +768,44 @@ static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &s
         }, false);
     };
     if (ReplayOpenRegistry::Instance().join(key, on_opened)) {
-        replayOpenPool().async([schema, target, key]() {
-            ReplayOpenRegistry::Instance().finish(key, openMergedReplay(schema, target));
+        replayOpenPool().async([key, open]() {
+            shared_ptr<void> reader;
+            try {
+                reader = open();
+            } catch (std::exception &ex) {
+                WarnL << "Open replay " << key << " failed: " << ex.what();
+            }
+            ReplayOpenRegistry::Instance().finish(key, reader);
         });
     }
+}
+
+static void findAsyncByApp_l(const MediaInfo &info, const shared_ptr<Session> &session, const function<void(const vector<MediaSource::Ptr> &)> &cb) {
+    const string vhost = normalizeVhost(info.vhost);
+    auto results = findByApp_l(info.schema, vhost, info.app, info.stream);
+    GET_CONFIG(string, record_app, Record::kAppName);
+    if (!results.empty() || info.app.empty() || info.app != record_app || !isReplaySchema(info.schema)) {
+        cb(std::move(results));
+        return;
+    }
+
+    // Quality-aware dual-stream replay. MergedMP4Reader publishes only the
+    // requested output adapter under an internal parameter-specific id; its
+    // source registers once the first clip's tracks are ready, so wait for the
+    // registration like findAsync() does for a live stream.
+    string selection_params;
+    const MediaTuple target = {vhost, info.app, replayInternalStream(info.stream, info.params, selection_params),
+                               selection_params};
+    const string schema = info.schema;
+    const string key = schema + "/" + target.shortUrl();
+
+    openReplayAsync(schema, target, session,
+        [cb](const MediaSource::Ptr &src) {
+            vector<MediaSource::Ptr> found;
+            if (src) found.emplace_back(src);
+            cb(found);
+        },
+        [schema, target]() -> shared_ptr<void> { return openMergedReplay(schema, target); });
 }
 
 void MediaSource::findAsyncByApp(const MediaInfo &info, const std::shared_ptr<Session> &session, const std::function<void(const std::vector<Ptr> &)> &cb) {

@@ -20,6 +20,7 @@
 #include "Util/util.h"
 #include "Util/NoticeCenter.h"
 #include "Poller/EventPoller.h"
+#include "Network/Session.h"
 
 using namespace std;
 using namespace toolkit;
@@ -275,6 +276,98 @@ TEST_F(PerStreamReplayDurationTest, StopsAtStampPlusDuration) {
 
 TEST_F(PerStreamReplayDurationTest, WithoutDurationReadsOnIntoTheNextFile) {
     EXPECT_GE(lastVideoDts(0), 19000);
+}
+
+namespace {
+class IdleSession : public Session {
+public:
+    using Session::Session;
+    void onRecv(const Buffer::Ptr &) override {}
+    void onError(const SockException &) override {}
+    void onManager() override {}
+};
+} // namespace
+
+// A derived (overlay/transcode) replay stream is published by TranscodeProcessor, not opened from
+// MP4: findAsync must keep waiting for its registration instead of answering "not found" at once.
+TEST(PerStreamReplayOpenTest, DerivedStreamWaitsForRegistration) {
+    auto &wait_ms = mINI::Instance()[General::kMaxStreamWaitTimeMS];
+    const string saved = wait_ms;
+    wait_ms = "1000";
+    GET_CONFIG(string, record_app, Record::kAppName);
+    MediaInfo info;
+    info.schema = FMP4_SCHEMA;
+    info.vhost = DEFAULT_VHOST;
+    info.app = record_app;
+    info.stream = string("cam-derived/vod/1790000400") + TRANSCODE_SUFFIX + ".overlay.test";
+
+    auto poller = EventPollerPool::Instance().getPoller();
+    auto session = make_shared<IdleSession>(Socket::createSocket(poller, false));
+    auto answered_at = make_shared<atomic<int64_t>>(-1);
+    auto begin = chrono::steady_clock::now();
+    poller->sync([&]() {
+        MediaSource::findAsync(info, session, [answered_at, begin](const MediaSource::Ptr &) {
+            *answered_at = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - begin).count();
+        });
+    });
+    for (int i = 0; i < 100 && *answered_at < 0; ++i) this_thread::sleep_for(chrono::milliseconds(30));
+    wait_ms = saved;
+    EXPECT_GE(answered_at->load(), 900) << "answered before the stream could register";
+    poller->sync([&]() { session.reset(); });
+}
+
+// A per-stream replay used to be opened (recording index, tier lookups, MP4 headers) on the
+// session's poller. It now opens on "replay open": the poller stays free while the index is slow,
+// the source still registers for the player, and two requests at once open one reader.
+TEST_F(PerStreamReplayDurationTest, OpensOffTheSessionPoller) {
+    NoticeCenter::Instance().delListener(this, Broadcast::kBroadcastMediaSeeked2);
+    auto opens = make_shared<atomic<int>>(0);
+    auto on_poller = make_shared<atomic<bool>>(false);
+    const auto first = _first, second = _second;
+    const uint64_t file_start = kFileStart;
+    NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastMediaSeeked2,
+        [first, second, file_start, opens, on_poller](BroadcastMediaSeeked2Args) {
+            if (!resolve_recorded_block_path) { // findSegmentDuration(): once per open
+                ++*opens;
+                if (EventPoller::getCurrentPoller()) *on_poller = true;
+                this_thread::sleep_for(chrono::milliseconds(400)); // a slow recording index
+            }
+            map<string, map<uint64_t, string>> files;
+            files["main"][file_start] = first;
+            files["main"][file_start + 10] = second;
+            invoker(20 - (stamp - file_start), files);
+        });
+
+    GET_CONFIG(string, record_app, Record::kAppName);
+    MediaInfo info;
+    info.schema = RTSP_SCHEMA;
+    info.vhost = DEFAULT_VHOST;
+    info.app = record_app;
+    info.stream = "cam-open/main/vod/" + to_string(kFileStart + 4);
+
+    auto poller = EventPollerPool::Instance().getPoller();
+    auto session = make_shared<IdleSession>(Socket::createSocket(poller, false));
+    auto found = make_shared<promise<int>>();
+    auto found_future = found->get_future();
+    auto answers = make_shared<atomic<int>>(0);
+    poller->sync([&]() {
+        for (int i = 0; i < 2; ++i) {
+            MediaSource::findAsync(info, session, [found, answers](const MediaSource::Ptr &src) {
+                if (++*answers == 2) found->set_value(src ? 1 : 0);
+            });
+        }
+    });
+    // While the index lookup sleeps on the replay open thread, the poller answers at once.
+    auto begin = chrono::steady_clock::now();
+    poller->sync([]() {});
+    EXPECT_LT(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - begin).count(), 100);
+
+    ASSERT_EQ(future_status::ready, found_future.wait_for(chrono::seconds(10)));
+    EXPECT_EQ(1, found_future.get()) << "the replay source never registered";
+    EXPECT_EQ(1, opens->load()) << "two requests opened two readers";
+    EXPECT_FALSE(on_poller->load()) << "the recording index was read on a poller";
+    if (auto src = MediaSource::find(RTSP_SCHEMA, info.vhost, info.app, info.stream)) src->close(true);
+    poller->sync([&]() { session.reset(); });
 }
 
 // The first keyframe keeps the SPS/PPS that precede it: after a track reset
