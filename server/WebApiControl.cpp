@@ -94,6 +94,8 @@ void registerControlApis() {
         option.defaultPort = allArgs["defaultPort"];
         option.username = (string)allArgs["username"];
         option.password = (string)allArgs["password"];
+        // Missing `type` reads as 0 (Camera), so older clients keep scanning cameras.
+        option.type = static_cast<DeviceType>((int)allArgs["type"]);
 
         auto respond = [val, headerOut, invoker](const SockException &ex, const DeviceScanResult &data) mutable {
             val["data"] = toJsonValue(data);
@@ -154,6 +156,7 @@ void registerControlApis() {
         option.defaultPort = defaultPort;
         option.username = username;
         option.password = password;
+        option.type = static_cast<DeviceType>((int)allArgs["type"]);
 
         // Synchronous scan of the whole range: the API worker waits while the IPs are probed in
         // parallel (bounded by searcher.max_parallel) on the discovery pool; devices keep IP order.
@@ -166,7 +169,7 @@ void registerControlApis() {
     });
 
     static auto addSubnetScan = [](SubnetScanOption &option, const function<void(const SockException &ex, const string &key)> &cb) {
-        string full_key = (StrPrinter << option.startIp << "/" << option.endIp << "/" << option.port << "/" << option.username << "/" << option.password);
+        string full_key = (StrPrinter << option.startIp << "/" << option.endIp << "/" << option.port << "/" << option.username << "/" << option.password << "/" << static_cast<int>(option.type));
         string key = MD5(full_key).hexdigest();
         if (s_subnet_scan.find(key)){
             // Already create
@@ -208,6 +211,7 @@ void registerControlApis() {
         option.defaultPort = defaultPort;
         option.username = username;
         option.password = password;
+        option.type = static_cast<DeviceType>((int)allArgs["type"]);
 
         addSubnetScan(option, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
             if (ex) {
@@ -523,6 +527,28 @@ void registerControlApis() {
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
     });
 
+    api_regist("/media/mserver/device/onvifGetPrimaryConfigProfiles", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_USER_PERMISSION(ADD_CAMERA_PERMISSION_CODE);
+        CHECK_ARGS_("deviceId");
+
+        auto on_access = [allArgs, val, invoker, headerOut]() mutable {
+            string deviceId = allArgs["deviceId"];
+            auto ret = findDeviceSource(deviceId);
+            if (!ret) {
+                RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
+                return;
+            }
+
+            ret->getOwnerPoller()->async([=]() mutable {
+                val["data"] = makePrimaryMediaProfileJson(ret);
+                invoker(200, headerOut, val.toStyledString());
+            });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
     api_regist("/media/mserver/device/speaker/playAudioFile", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
         CHECK_ARGS_("fileId");
@@ -564,15 +590,13 @@ void registerControlApis() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    api_regist("/media/mserver/device/validateCredential", [](API_ARGS_MAP_ASYNC) {
+    api_regist("/media/mserver/device/setAudioVolume", [](API_ARGS_JSON_ASYNC) {
         CHECK_AUTH_TOKEN();
-        CHECK_ARGS_("deviceId");
+        CHECK_ARGS_("deviceId", "volume");
 
         auto on_access = [allArgs, val, invoker, headerOut]() mutable {
             std::string deviceId = allArgs["deviceId"];
-            std::string username = allArgs["deviceUsername"];
-            std::string password = allArgs["devicePassword"];
-            int port = allArgs["devicePort"];
+            int volume = allArgs["volume"];
 
             auto ret = findDeviceSource(deviceId, GENERIC_IP_SPEAKER_SCHEMA);
             if (!ret) {
@@ -591,10 +615,11 @@ void registerControlApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener);
                     if (impl) {
-                        impl->validateCredential(username, password, port, [=](const SockException &ex) mutable {
+                        impl->setAudioVolume(volume, [=](const SockException &ex) mutable {
                             if (ex) {
                                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                             } else {
+                                val["msg"] = ex.what();
                                 invoker(200, headerOut, val.toStyledString());
                             }
                         });

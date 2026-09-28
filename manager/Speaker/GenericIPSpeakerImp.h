@@ -27,7 +27,7 @@ public:
 
     void playAudioFile(const std::string& speakerId, const std::string& fileId, const std::function<void(const toolkit::SockException &ex)> &cb);
 
-    void validateCredential(const std::string& username, const std::string& password, const int port, const std::function<void(const toolkit::SockException &ex)> &cb);
+    void setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb);
 
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////

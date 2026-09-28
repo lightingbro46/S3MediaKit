@@ -1176,11 +1176,18 @@ void installWebHook() {
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
         auto device_id = args.app;
         bool record_stream = false;
+        bool is_backchannel = (args.schema == "backchannel");
+
         GET_CONFIG(string, app_name, Record::kAppName);
         if (args.app == app_name) {
             device_id = split(args.stream, "/")[0];
             record_stream = true;
         }
+
+        enum class AccessType { kBackchannel, kPlayback, kLive };
+        AccessType access_type = is_backchannel ? AccessType::kBackchannel
+                                : record_stream ? AccessType::kPlayback
+                                                : AccessType::kLive;
 
         auto params = Parser::parseArgs(args.params);
         string jwt_token = params["token"];
@@ -1213,9 +1220,12 @@ void installWebHook() {
             invoker("TranscodeDisabled");
             return;
         }
-        
 
-        auto isStreamLimit = [invoker, device_id, record_stream, transcode_stream]() {
+        auto isStreamLimit = [invoker, device_id, record_stream, is_backchannel, transcode_stream]() {
+            if (is_backchannel) {
+                invoker("");
+                return;
+            }
             auto resource_limit = GlobalMonitor::Instance().isReaderResourceLimit(transcode_stream);
             auto stream_limit = GlobalMonitor::Instance().isReaderCountLimit(device_id, record_stream);
             invoker(resource_limit ? "ResourceUnavailable" : (stream_limit ? "MaxRequest" : ""));
@@ -1259,9 +1269,27 @@ void installWebHook() {
             return;
         }
 
-        bool has_feature_permission = token_cache->hasPermissionCode(record_stream ? PLAYBACK_PERMISSION_CODE : LIVE_VIEW_PERMISSION_CODE);
+        std::string permission_code;
+        std::string feature_name;
+        switch (access_type) {
+            case AccessType::kBackchannel:
+                permission_code = BACKCHANNEL_PERMISSION_CODE;
+                feature_name = "backchannel";
+                break;
+            case AccessType::kPlayback:
+                permission_code = PLAYBACK_PERMISSION_CODE;
+                feature_name = "playback";
+                break;
+            case AccessType::kLive:
+            default:
+                permission_code = LIVE_VIEW_PERMISSION_CODE;
+                feature_name = "live";
+                break;
+        }
+
+        bool has_feature_permission = token_cache->hasPermissionCode(permission_code);
         if (!has_feature_permission) {
-            string msg = StrPrinter << "No " << (record_stream ? "playback" : "live") << " permission";
+            string msg = StrPrinter << "No " << feature_name << " permission";
             WarnL << "Permission denied: " << msg;
             invoker(msg);
             return;

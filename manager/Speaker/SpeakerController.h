@@ -19,6 +19,11 @@ public:
 
     ~SpeakerController() = default;
 
+    static void probe(const std::string& ip, int port,
+                      const std::string& username, const std::string& password,
+                      std::function<void(const toolkit::SockException&, managerkit::IDevice::Ptr)> cb,
+                      size_t brandIndex = 0);
+
     void createTimer();
 
     void setListener(const std::shared_ptr<DeviceSourceEvent> &listener);
@@ -29,38 +34,42 @@ public:
 
     void stopController();
 
-    void validateCredential(const std::string& username, const std::string& password, const int port, OnDeviceResult cb);
+    // ================== Vendor-specific operations ==================
+    void playAudioFileByVendorApi(const std::string& fileId, const std::string& fileRemoteId, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
+
+    void uploadAudio(const AudioFile& file, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
+
+    void stopAudio(const std::string& remoteId, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
+
+    void deleteAudio(const std::string& remoteId, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
+
+    void listAudio(managerkit::OnDeviceResult cb, bool autoDisconnect = true);
+
+    void setAudioVolume(int volume, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
 
     // ================== Backchannel operations ==================
-    // Pushes a stored audio file to the device over its ONVIF backchannel.
-    void playAudioFileByBackchannel(const std::string& fileId, OnDeviceResult cb);
-
-    void playAudio(const std::string& fileId, const std::string& fileRemoteId, OnDeviceResult cb, bool autoDisconnect = true);
-
-    void uploadAudio(const AudioFile& file, OnDeviceResult cb, bool autoDisconnect = true);
-
-    void stopAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect = true);
-
-    void deleteAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect = true);
-
-    void listAudio(OnDeviceResult cb, bool autoDisconnect = true);
+    void playAudioFileByBackchannel(const std::string& fileId, managerkit::OnDeviceResult cb);
 
 private:
     void onManager();
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
-    void doUploadAudio(const AudioFile& file, OnDeviceResult cb);
+    void setupDeviceController();
 
-    void doDisconnect(bool result, const std::string& resultData, OnDeviceResult cb);
+    // ================== Vendor-specific operations ==================
+    // Owner poller: the device a vendor operation runs on, or nullptr after answering `cb`.
+    IDevice::Ptr vendorDevice(const OnDeviceResult &cb);
 
-    void setupDeviceController(const SpeakerOption &option);
+    static void doUploadAudio(const IDevice::Ptr &device, const managerkit::AudioFile& file, managerkit::OnDeviceResult cb);
 
+    static void doDisconnect(const IDevice::Ptr &device, bool result, const std::string& resultData, OnDeviceResult cb);
+
+    // ================== Backchannel operations ==================
     // Device queue: resolves the backchannel RTSP URI and registers it with BackchannelManager.
-    // Takes the controller explicitly because it runs off the owner poller.
-    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr);
-
-    std::vector<std::string> getVendorFeatures(const std::string& manufacturer);
+    // Takes the controller and credentials explicitly because it runs off the owner poller.
+    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const std::string &username,
+                                  const std::string &password, bool sharedDspPipeline);
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
@@ -71,12 +80,13 @@ private:
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
     OnvifControl::Ptr _onvif_ctr;
+    // ONVIF account _onvif_ctr logs in with (speaker.onvifUsername on vendors that need their own account).
+    std::string _onvif_username;
     IDevice::Ptr _device_ctr;
     IAudioPlayback* _audio_playback_ctr = nullptr;
     std::string _address;
-    std::string _device_name;
-    bool _requires_device_credential = false;
     ControllerOption _ctrl_option;
+    std::string _device_name;
 };
 
 } // namespace managerkit

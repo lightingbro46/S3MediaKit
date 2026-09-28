@@ -275,7 +275,7 @@ extern const std::string kBroadcastMotionKeepThreshold;
 #define BroadcastMotionKeepThresholdArgs const std::string &device_id, bool &start, uint64_t &threshold
 
 extern const std::string kBroadcastTierKeepThreshold;
-#define BroadcastTierKeepThresholdArgs const DeviceTuple &args, int &tier_type, bool start, uint64_t &threshold
+#define BroadcastTierKeepThresholdArgs const DeviceTuple &args, int &tier_type, bool &start, uint64_t &threshold
 
 extern const std::string kBroadcastRebuildTimeFile;
 #define BroadcastRebuildTimeFileArgs const std::string &device_id, const uint64_t &threshold
@@ -912,6 +912,8 @@ extern const std::string kSpeakerDir;
 extern const std::string kAudioFilesDir;
 // Maximum allowed audio file size in bytes
 extern const std::string kMaxAudioFileSizeBytes;
+// ONVIF account created on speakers whose vendor API needs its own credentials (Bosch)
+extern const std::string kOnvifUsername;
 } // namespace Speaker
 
 } // namespace mediakit

@@ -260,7 +260,7 @@ void installManagerHook () {
         auto device_id = args.app;
         GET_CONFIG(string, record_app, Record::kAppName);
         const bool replay_request = args.app == record_app;
-        if (args.app == record_app) {
+        if (replay_request) {
             device_id = split(args.stream, "/")[0];
         }
 
@@ -645,7 +645,6 @@ static void fromJson(DeviceTuple &tuple, const Json::Value &data) {
 
 static void fromJson(CameraOption &option, const Json::Value &data) {
     GET_OPTION_PROPERTY(option, name, data, name)
-    GET_OPTION_PROPERTY(option, enableReduceQualityOnView, data, enableReduceQualityOnView)
     GET_OPTION_PROPERTY(option, manufacturer, data, manufacturer)
     GET_OPTION_PROPERTY(option, model, data, model)
     GET_OPTION_PROPERTY(option, username, data, username)
@@ -811,6 +810,12 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
         std::string excludedRoleIds = ss.str();
         option.watermarkExcludedRoleIds = excludedRoleIds.empty() ? "" : excludedRoleIds.substr(0, excludedRoleIds.size() - 1);
     }
+
+    if (data.isMember("reduceQualityOnViewConfig") && !data["reduceQualityOnViewConfig"].isNull()) {
+        const Json::Value &rq = data["reduceQualityOnViewConfig"];
+
+        GET_OPTION_PROPERTY(option, enableReduceQualityOnView, rq, enabled)
+    }
 }
 
 static void fromJson(unordered_map<int, StreamTuple> &ret, const Json::Value &data) {
@@ -854,24 +859,44 @@ static void fromJson(SpeakerOption &option, const Json::Value &data) {
     GET_OPTION_PROPERTY(option, username, data, username)
     GET_OPTION_PROPERTY(option, password, data, password)
     GET_OPTION_PROPERTY(option, ip, data, ip)
-    GET_OPTION_PROPERTY(option, deviceUsername, data, deviceUsername)
-    GET_OPTION_PROPERTY(option, devicePassword, data, devicePassword)
     // http port default 80
     GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, port, data, httpPort, 80)
-    GET_OPTION_PROPERTY_OR_DEFAULT_VALUE(option, devicePort, data, devicePort, 80)
     GET_OPTION_PROPERTY(option, enableActive, data, enabled)
     GET_OPTION_PROPERTY(option, preferedMediaServer, data, priMediaServerId)
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
-    if (data.isMember("vendorFeaturesConfig") && !data["vendorFeaturesConfig"].isNull()) {
-        const Json::Value &vfc = data["vendorFeaturesConfig"];
 
-        GET_OPTION_PROPERTY(option, enableVendorFeature, vfc, enableVendorFeature)
-        GET_OPTION_PROPERTY(option, separateCredentialConfigured, vfc, separateCredentialConfigured)
+    if (data.isMember("speakerAdvanceConfig") && !data["speakerAdvanceConfig"].isNull()) {
+        const Json::Value &adv = data["speakerAdvanceConfig"];
 
-        if (vfc.isMember("enabledVendorFeatures") && !vfc["enabledVendorFeatures"].isNull()) {
-            for (const auto &feature : vfc["enabledVendorFeatures"]) {
-                option.enabledVendorFeatures.push_back(feature.asString());
-            }
+        if (adv.isMember("audioPlaybackMode") && !adv["audioPlaybackMode"].isNull()) {
+            const Json::Value &pm = adv["audioPlaybackMode"];
+
+            auto parsePlaybackMode = [](const Json::Value &v) {
+                if (v.isNull() || !v.isString())
+                    return SpeakerOption::kAudioPlaybackModeAuto;
+                if (v.asString() == "VENDOR_API_FILE")
+                    return SpeakerOption::kAudioPlaybackModeVendorAudioFile;
+                if (v.asString() == "BACKCHANNEL")
+                    return SpeakerOption::kAudioPlaybackModeOnvifBackchannel;
+                if (v.asString() == "AUTO")
+                    return SpeakerOption::kAudioPlaybackModeAuto;
+                return SpeakerOption::kAudioPlaybackModeAuto;
+            };
+            option.audioPlaybackMode = parsePlaybackMode(adv["audioPlaybackMode"]);
+        }
+
+        if (adv.isMember("mediaPort") && !adv["mediaPort"].isNull()) {
+            const Json::Value &mp = adv["mediaPort"];
+
+            GET_OPTION_PROPERTY(option, mediaPort, mp, mediaPort)
+            GET_OPTION_PROPERTY(option, autoMediaPort, mp, useDefaultMediaPort)
+        }
+
+        if (adv.isMember("webPage") && !adv["webPage"].isNull()) {
+            const Json::Value &wp = adv["webPage"];
+
+            GET_OPTION_PROPERTY(option, webPort, wp, webPort)
+            GET_OPTION_PROPERTY(option, autoWebPort, wp, useDefaultWebPort)
         }
     }
 }
@@ -1317,6 +1342,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                             return;
                         }
                         Json::Value item;
+                        item["deviceType"] = static_cast<int>(DeviceType::Camera);
                         item["deviceId"] = params.tuple.device_id;
                         // Get both stream status
                         if (camera->hasStreamTuple(PrimaryStream)) {
@@ -1356,6 +1382,7 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                         auto params = stats_imp->getParams();
                         auto option = params.option;
                         Json::Value item;
+                        item["deviceType"] = static_cast<int>(DeviceType::Speaker);
                         item["deviceId"] = params.tuple.device_id;
                         // Currently, the speaker online status is determined based on the ONVIF connection status.
                         item["status"] = params.connect;
@@ -1434,17 +1461,27 @@ static Json::Value getOnvifProfileJsonArray(const std::vector<OnvifMediaProfile>
     return ret;
 }
 
-static Json::Value getVendorFeatureSupportJson(const VendorFeatureSupport &features) {
+static Json::Value getAudioVolumeInfoJson(const AudioVolumeInfo &info) {
     Json::Value ret = Json::objectValue;
-    ret["requiresSeparateCredential"] = features.requiresSeparateCredential;
-    ret["supportsVendorFeatures"] = features.supportsVendorFeatures;
-
-    Json::Value featureArray = Json::arrayValue;
-    for (const auto &feature : features.supportedVendorFeatures) {
-        featureArray.append(feature);
+    // Always use [0, 100] volume range for client
+    ret["minAudioVolume"] = 0;
+    ret["maxAudioVolume"] = 100;
+    if (info.configuredAudioVolume < 0) {
+        ret["currentAudioVolume"] = info.toNormalizedVolume();
+    } else {
+        ret["currentAudioVolume"] = info.configuredAudioVolume;
     }
-    ret["supportedVendorFeatures"] = featureArray;
 
+    return ret;
+}
+
+static Json::Value getAudioPlaybackModeString(bool supportsBackchannel) {
+    Json::Value ret = Json::arrayValue;
+    ret.append("VENDOR_API_FILE");
+    if (supportsBackchannel) {
+        ret.append("AUTO");
+        ret.append("BACKCHANNEL");
+    }
     return ret;
 }
 
@@ -1505,7 +1542,9 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
                 data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
                 data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
-                data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
+                data["supportsAudioBackchannel"] = false;
+                data["supportsAudioVolumeControl"] = caps->supportsAudioVolumeControl;
+                data["audioVolumeInfo"] = getAudioVolumeInfoJson(caps->audioVolumeInfo);
                 GET_CONFIG(bool, enablePrivacymaskSupport, OverlayPrivacyConfig::kEnablePrivacyMask)
                 data["enablePrivacyMaskSupport"] = enablePrivacymaskSupport;
                 GET_CONFIG(bool, enableWatermarkSupport, OverlayPrivacyConfig::kEnableWatermark)
@@ -1546,9 +1585,12 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["enableAutoProfile"] = false;
             data["enableOnvifProfileConfig"] = false;
             data["supportsSdCardPlayback"] = false;
+            data["supportsAudioBackchannel"] = caps->supportsAudioBackchannel;
+            data["supportsAudioVolumeControl"] = caps->supportsAudioVolumeControl;
+            data["supportedAudioPlaybackModes"] = getAudioPlaybackModeString(caps->supportsAudioBackchannel);
+            data["audioVolumeInfo"] = getAudioVolumeInfoJson(caps->audioVolumeInfo);
             data["enablePrivacyMaskSupport"] = false;
             data["enableWatermarkSupport"] = false;
-            data["vendorFeatures"] = getVendorFeatureSupportJson(caps->vendorFeatureSupport);
         }
     }
     return data;
@@ -1805,6 +1847,9 @@ Json::Value makeSpeakerOptionJson(const SpeakerOption &option) {
 
     val["preferedMediaServer"]     = option.preferedMediaServer;
     val["enableActive"]            = option.enableActive;
+    val["mediaPort"]               = option.mediaPort;
+    val["autoMediaPort"]           = option.autoMediaPort;
+    val["audioPlaybackMode"]       = option.audioPlaybackMode;
 
     // Web access
     val["webPort"]                 = option.webPort;
@@ -1823,6 +1868,7 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
             if (stats_imp) {
                 auto params = stats_imp->getParams();
                 auto option = params.option;
+                item["deviceType"] = static_cast<int>(DeviceType::Camera);
                 item["deviceId"] = params.tuple.device_id;
                 // Get both stream status
                 if (camera->hasStreamTuple(PrimaryStream)) {
@@ -1865,6 +1911,7 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
             if (stats_imp) {
                 auto params = stats_imp->getParams();
                 auto option = params.option;
+                item["deviceType"] = static_cast<int>(DeviceType::Speaker);
                 item["deviceId"] = params.tuple.device_id;
                 // Currently, the speaker online status is determined based on the ONVIF connection status.
                 item["status"] = params.connect;
@@ -1984,3 +2031,67 @@ managerkit::DeviceSource::Ptr findDeviceSource(const std::string &deviceId, cons
     }
     return DeviceSource::find(tuple.vhost, tuple.device_id);
 };
+
+Json::Value makePrimaryMediaProfileJson(const managerkit::DeviceSource::Ptr &device) {
+    Json::Value item;
+    auto weak_listener = device->getListener();
+    if (auto strong_listener = weak_listener.lock()) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+        if (impl) {
+            auto stats_imp = impl->getCameraStatisticImp();
+            if (stats_imp) {
+                auto params = stats_imp->getParams();
+                auto option = params.option;
+                auto deviceId = params.tuple.device_id;
+                if (option.enableFailover && !impl->isEnabled()) {
+                    return item;
+                }
+                if (!params.device_stats.device_caps.isOnvifDevice) {
+                    return item;
+                }
+
+                auto token = stats_imp->getPrimaryProfileToken();
+                if (token.empty()) {
+                    TraceL << "Skip main profile caps, primary profile token is empty, deviceId=" << deviceId;
+                    return item;
+                }
+
+                const auto &mediaProfiles = params.device_stats.device_caps.onvifProfile.mediaProfiles;
+                const OnvifMediaProfile *mainProfile = nullptr;
+                for (const auto &mp : mediaProfiles) {
+                    if (mp.token == token) {
+                        mainProfile = &mp;
+                        break;
+                    }
+                }
+                if (!mainProfile) {
+                    TraceL << "Skip main profile caps, token '" << token << "' not found in media profiles, deviceId=" << deviceId;
+                    return item;
+                }
+
+                auto vo_it = mainProfile->vEncoderOptionMap.find(mainProfile->vcodec);
+                if (vo_it == mainProfile->vEncoderOptionMap.end()) {
+                    TraceL << "Skip main profile caps, no encoder option for codec '" << mainProfile->vcodec << "', deviceId=" << deviceId << ", token=" << token;
+                    return item;
+                }
+
+                const auto &opt = vo_it->second;
+                if (opt.ResolutionsAvailable.empty()) {
+                    TraceL << "Skip main profile caps, no resolution available, deviceId=" << deviceId << ", codec=" << mainProfile->vcodec;
+                    return item;
+                }
+
+                item["fps"] = opt.FrameRatesSupported;
+                item["bitrate"] = opt.BitRateRange;
+                item["resolutions"] = Json::arrayValue;
+                for (const auto &r : opt.ResolutionsAvailable) {
+                    Json::Value resolution;
+                    resolution["width"] = r.first;
+                    resolution["height"] = r.second;
+                    item["resolutions"].append(resolution);
+                }
+            }
+        }
+    }
+    return item;
+}

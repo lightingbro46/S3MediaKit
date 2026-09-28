@@ -159,6 +159,7 @@ target_link_libraries(unit_subnet_scan PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_subnet_scan PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.subnet_scan_all COMMAND unit_subnet_scan)

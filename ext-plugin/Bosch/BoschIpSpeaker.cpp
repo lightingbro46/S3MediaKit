@@ -17,19 +17,21 @@ BoschIpSpeaker::BoschIpSpeaker(const SpeakerConfig& cfg)
 void BoschIpSpeaker::connect(OnDeviceResult cb) {
     TraceL << "[Bosch:" << m_cfg.id << "] Login " << m_cfg.ip << ":" << m_cfg.port;
 
-    std::string body =
-        "{\"darkMode\":false,"
-        "\"group\":\"API\","
-        "\"id\":null,"
-        "\"languageCode\":\"en\","
-        "\"password\":\"" + m_cfg.password + "\","
-        "\"username\":\"" + m_cfg.username + "\"}";
+    // Built with the JSON writer so a password with quotes or backslashes stays one valid string.
+    Json::Value obj;
+    obj["darkMode"]     = false;
+    obj["group"]        = "API";
+    obj["id"]           = Json::nullValue;
+    obj["languageCode"] = "en";
+    obj["password"]     = m_cfg.password;
+    obj["username"]     = m_cfg.username;
+    std::string body = StrJsonUtils::writeJsonString(obj);
 
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("POST", /*withCookie=*/false);
     req->setBody(std::make_shared<HttpStringBody>(body));
 
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/login",
         [weak_self, cb, req](const SockException& ex, const Parser& parser) {
             auto self = weak_self.lock();
@@ -50,16 +52,64 @@ void BoschIpSpeaker::connect(OnDeviceResult cb) {
                 cb(false, "Failed to retrieve SESSID from /api/login");
                 return;
             }
-            InfoL << "[Bosch:" << self->m_cfg.id << "] Login OK, SESSID=" << self->m_sessionId;
+            InfoL << "[Bosch:" << self->m_cfg.id << "] Login OK";
 
-            self->verifySession(cb);
+            self->verifySession([weak_self, cb](bool ok, const std::string& data) {
+                auto self = weak_self.lock();
+                if (!self) {
+                    return;
+                }
+                if (!ok) {
+                    cb(false, "Verify session failed: " + data);
+                    return;
+                }
+
+                self->fetchDeviceSettings([weak_self, cb](bool infoOk, const std::string& infoData) {
+                    auto self = weak_self.lock();
+                    if (!self) {
+                        return;
+                    }
+                    if (!infoOk) {
+                        cb(false, "Fetch device info failed: " + infoData);
+                        return;
+                    }
+                    
+                    self->fetchAudioSettings([weak_self, cb](bool audioOk, const std::string& audioData) {
+                        auto self = weak_self.lock();
+                        if (!self) {
+                            return;
+                        }
+                        if (!audioOk) {
+                            cb(true, "Fetching audio settings failed, but the connection is still considered successful");
+                            return;
+                        }
+
+                        Json::Value obj;
+                        if (!StrJsonUtils::readJsonString(audioData, obj) || !obj.isMember("user_level")) {
+                            cb(true, "Fetching audio settings failed, but the connection is still considered successful");
+                            return;
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(self->m_mtx);
+                            self->m_audioSettings.minAudioVolume = -80;
+                            self->m_audioSettings.maxAudioVolume = 20;
+                            self->m_audioSettings.deviceAudioVolume = obj["user_level"].asInt64();
+                        }
+                        cb(true, "Connect success");
+                    });
+                });
+            });
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::disconnect(OnDeviceResult cb) {
-    if (m_sessionId.empty()) {
+    bool loggedIn;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        loggedIn = !m_sessionId.empty();
+    }
+    if (!loggedIn) {
         cb(true, "already disconnected");
         return;
     }
@@ -68,15 +118,19 @@ void BoschIpSpeaker::disconnect(OnDeviceResult cb) {
 
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("POST");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/logout",
         [weak_self, cb, req](const SockException& ex, const Parser& parser) {
             auto self = weak_self.lock();
             if (!self) {
                 return;
             }
-            self->m_sessionId.clear();
-            self->m_pendingReqs.clear();
+            std::vector<HttpRequester::Ptr> pending;
+            {
+                std::lock_guard<std::mutex> lock(self->m_mtx);
+                self->m_sessionId.clear();
+                pending.swap(self->m_pendingReqs);
+            }
 
             if (ex) {
                 WarnL << "[Bosch:" << self->m_cfg.id << "] Logout error: " << ex.what();
@@ -87,7 +141,46 @@ void BoschIpSpeaker::disconnect(OnDeviceResult cb) {
             cb(true, "logged out");
         }
     );
-    keep(req);
+}
+
+void BoschIpSpeaker::createOnvifUser(const std::string& username, const std::string& password, OnDeviceResult cb) {
+    InfoL << "[Bosch:" << m_cfg.id << "] create onvif user";
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+
+    fetchUsers([weak_self, username, password, cb](bool ok, const std::vector<BoschUser>& users, const std::string& err) {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        if (!ok) {
+            cb(false, "Fetch users failed: " + err);
+            return;
+        }
+
+        std::vector<BoschUser> onvifUsers;
+        for (const auto& u : users) {
+            if (u.group == kOnvifGroup) {
+                onvifUsers.push_back(u);
+            }
+        }
+
+        if (!onvifUsers.empty()) {
+            bool duplicated = std::any_of(onvifUsers.begin(), onvifUsers.end(),
+                [&username](const BoschUser& u) {
+                    return u.username == username;
+                });
+
+            if (duplicated) {
+                cb(false, "ONVIF user with username: " + username + " already exists");
+                return;
+            }
+
+            self->addUser(username, password, kOnvifGroup, cb);
+            return;
+        }
+
+        self->addUser(username, password, kOnvifGroup, cb);
+    });
 }
 
 void BoschIpSpeaker::uploadAudio(const AudioFile& file, OnDeviceResult cb) {
@@ -138,9 +231,10 @@ void BoschIpSpeaker::uploadAudio(const AudioFile& file, OnDeviceResult cb) {
             return;
         }
 
-        if (self->m_lastDeviceInfo.freeProjectSpace >= 0 && static_cast<uint64_t>(self->m_lastDeviceInfo.freeProjectSpace) < fileSize) {
+        int64_t freeSpace = self->freeStorageSpace();
+        if (freeSpace >= 0 && static_cast<uint64_t>(freeSpace) < fileSize) {
             std::string err = "Insufficient speaker storage: free="
-                            + std::to_string(self->m_lastDeviceInfo.freeProjectSpace)
+                            + std::to_string(freeSpace)
                             + " bytes, required=" + std::to_string(fileSize) + " bytes";
             WarnL << "[Bosch:" << self->m_cfg.id << "] " << err;
             cb(false, err);
@@ -176,7 +270,7 @@ void BoschIpSpeaker::stopAudio(const std::string& remoteId, OnDeviceResult cb) {
 void BoschIpSpeaker::deleteAudio(const std::string& remoteId, OnDeviceResult cb) {
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("DELETE");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/messages/" + remoteId,
         [weak_self, remoteId, cb, req](const SockException& ex,
                                     const Parser& parser) {
@@ -197,17 +291,16 @@ void BoschIpSpeaker::deleteAudio(const std::string& remoteId, OnDeviceResult cb)
                 if (!self) {
                     return;
                 }
-                TraceL << "[Bosch:" << self->m_cfg.id << "] freeProjectSpace after deletion: " << self->m_lastDeviceInfo.freeProjectSpace << " bytes";
+                TraceL << "[Bosch:" << self->m_cfg.id << "] freeStorageSpace after deletion: " << self->freeStorageSpace() << " bytes";
                 cb(true, "deleted");
             });
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::listAudio(OnDeviceResult cb) {
     auto req = makeReq("GET");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/messages",
         [cb, req](const SockException& ex, const Parser& parser) {
             if (ex) { cb(false, ex.what()); return; }
@@ -217,7 +310,39 @@ void BoschIpSpeaker::listAudio(OnDeviceResult cb) {
             cb(true, parser.content());
         }
     );
-    keep(req);
+}
+
+void BoschIpSpeaker::setAudioVolume(int volume, OnDeviceResult cb) {
+    std::string body =
+        "{\"key\":\"audio/user_level\","
+        "\"value\":" + std::to_string(volume) + "}";
+
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    auto req = makeReq("PATCH");
+    req->setBody(std::make_shared<HttpStringBody>(body));
+
+    send(req,
+        m_baseUrl + "/api/key",
+        [weak_self, cb, volume, req](const SockException& ex, const Parser& parser) {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (ex) {
+                cb(false, ex.what());
+                return;
+            }
+            if (parser.status() != "200") {
+                cb(false, "Change volume HTTP " + parser.status());
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(self->m_mtx);
+                self->m_audioSettings.deviceAudioVolume = volume;
+            }
+            cb(true, "Change volume success");
+        }
+    );
 }
 
 HttpRequester::Ptr BoschIpSpeaker::makeReq(const std::string& method, bool withCookie) {
@@ -226,8 +351,13 @@ HttpRequester::Ptr BoschIpSpeaker::makeReq(const std::string& method, bool withC
     req->addHeader("Content-Type", "application/json");
     req->addHeader("Accept",       "application/json");
 
-    if (withCookie && !m_sessionId.empty()) {
-        req->addHeader("Cookie", "SESSID=" + m_sessionId);
+    std::string sessionId;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        sessionId = m_sessionId;
+    }
+    if (withCookie && !sessionId.empty()) {
+        req->addHeader("Cookie", "SESSID=" + sessionId);
     }
     return req;
 }
@@ -257,6 +387,7 @@ bool BoschIpSpeaker::parseSetCookie(const Parser& parser) {
         ? cookieLine.substr(eq + 1)
         : cookieLine.substr(eq + 1, semi - eq - 1);
 
+    std::lock_guard<std::mutex> lock(m_mtx);
     m_sessionId = value;
     return !m_sessionId.empty();
 }
@@ -264,7 +395,7 @@ bool BoschIpSpeaker::parseSetCookie(const Parser& parser) {
 void BoschIpSpeaker::verifySession(OnDeviceResult cb) {
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("GET");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/session",
         [weak_self, cb, req](const SockException& ex, const Parser& parser) {
             auto self = weak_self.lock();
@@ -302,13 +433,12 @@ void BoschIpSpeaker::verifySession(OnDeviceResult cb) {
             cb(true, "connected");
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::fetchDeviceInfo(OnDeviceResult cb) {
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("GET");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/info",
         [weak_self, cb, req](const SockException& ex, const Parser& parser) {
             auto self = weak_self.lock();
@@ -326,11 +456,149 @@ void BoschIpSpeaker::fetchDeviceInfo(OnDeviceResult cb) {
                 return;
             }
 
-            self->m_lastDeviceInfo.freeProjectSpace = obj["freeProjectSpace"].asInt64();
+            {
+                std::lock_guard<std::mutex> lock(self->m_mtx);
+                self->m_freeStorageSpace = obj["freeProjectSpace"].asInt64();
+            }
             cb(true, parser.content());
         }
     );
-    keep(req);
+}
+
+void BoschIpSpeaker::fetchDeviceSettings(OnDeviceResult cb) {
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    auto req = makeReq("GET");
+    send(req,
+        m_baseUrl + "/api/settings",
+        [weak_self, cb, req](const SockException& ex, const Parser& parser) {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (ex) { cb(false, ex.what()); return; }
+            if (parser.status() != "200") {
+                cb(false, "Info HTTP " + parser.status()); return;
+            }
+
+            Json::Value obj;
+            if (!StrJsonUtils::readJsonString(parser.content(), obj)
+                || !obj.isMember("productName")
+                || !obj.isMember("firmwareVersion")
+                || !obj.isMember("serialNumber")
+                || !obj.isMember("macAddress")) {
+                cb(false, "Parse device info failed: " + parser.content());
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(self->m_mtx);
+                self->m_deviceInfo.manufacturer    = "Bosch";
+                self->m_deviceInfo.model           = obj["productName"].asString();
+                self->m_deviceInfo.firmwareVersion = obj["firmwareVersion"].asString();
+                self->m_deviceInfo.serialNumber    = obj["serialNumber"].asString();
+                self->m_deviceInfo.macAddress      = obj["macAddress"].asString();
+            }
+
+            cb(true, parser.content());
+        }
+    );
+}
+
+void BoschIpSpeaker::fetchUsers(OnUsersResult cb) {
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    auto req = makeReq("GET");
+    send(req,
+        m_baseUrl + "/api/users",
+        [weak_self, cb, req](const SockException& ex, const Parser& parser) {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (ex) {
+                cb(false, {}, ex.what());
+                return;
+            }
+            if (parser.status() != "200") {
+                cb(false, {}, "Get users HTTP " + parser.status());
+                return;
+            }
+
+            Json::Value arr;
+            if (!StrJsonUtils::readJsonString(parser.content(), arr) || !arr.isArray()) {
+                cb(false, {}, "Parse users list failed: " + parser.content());
+                return;
+            }
+
+            std::vector<BoschUser> users;
+            users.reserve(arr.size());
+            for (const auto& item : arr) {
+                if (!item.isMember("group") || !item.isMember("id") || !item.isMember("username")) continue;
+
+                BoschUser u;
+                u.group    = item["group"].asString();
+                u.id       = item["id"].asString();
+                u.username = item["username"].asString();
+                users.push_back(std::move(u));
+            }
+
+            cb(true, users, "");
+        }
+    );
+}
+
+void BoschIpSpeaker::addUser(const std::string& username, const std::string& password, const std::string& group, OnDeviceResult cb) {
+    // Built with the JSON writer so a password with quotes or backslashes stays one valid string.
+    Json::Value obj;
+    obj["darkMode"]     = false;
+    obj["group"]        = group;
+    obj["id"]           = Json::nullValue;
+    obj["languageCode"] = "en";
+    obj["password"]     = password;
+    obj["username"]     = username;
+    std::string body = StrJsonUtils::writeJsonString(obj);
+
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    auto req = makeReq("POST");
+    req->setBody(std::make_shared<HttpStringBody>(body));
+
+    send(req,
+        m_baseUrl + "/api/users",
+        [weak_self, cb, req](const SockException& ex, const Parser& parser) {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (ex) {
+                cb(false, ex.what());
+                return;
+            }
+            if (parser.status() != "200" && parser.status() != "201" && parser.status() != "204") {
+                cb(false, "Add user HTTP " + parser.status());
+                return;
+            }
+            cb(true, "Add user success");
+        }
+    );
+}
+
+void BoschIpSpeaker::fetchAudioSettings(OnDeviceResult cb) {
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    auto req = makeReq("GET");
+    send(req,
+        m_baseUrl + "/api/audioSettings",
+        [weak_self, cb, req](const SockException& ex, const Parser& parser) {
+            auto self = weak_self.lock();
+            if (!self) {
+                return;
+            }
+            if (ex) { cb(false, ex.what()); return; }
+            if (parser.status() != "200") {
+                cb(false, "Info HTTP " + parser.status()); return;
+            }
+
+            cb(true, parser.content());
+        }
+    );
 }
 
 void BoschIpSpeaker::uploadChunk(const AudioFile& file, const std::string& mimeType, uint64_t fileSize, size_t chunkIndex, OnDeviceResult cb) {
@@ -365,7 +633,7 @@ void BoschIpSpeaker::uploadChunk(const AudioFile& file, const std::string& mimeT
     auto req = makeReq("POST");
     req->setBody(std::make_shared<HttpStringBody>(body));
 
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/file",
         [weak_self, file, mimeType, fileSize, chunkIndex, totalChunks, cb, req]
         (const SockException& ex, const Parser& parser) {
@@ -402,17 +670,13 @@ void BoschIpSpeaker::uploadChunk(const AudioFile& file, const std::string& mimeT
                         if (!self) {
                             return;
                         }
-                        InfoL << "[Bosch:" << self->m_cfg.id
-                                << "] freeProjectSpace updated: "
-                                << self->m_lastDeviceInfo.freeProjectSpace
-                                << " bytes";
+                        InfoL << "[Bosch:" << self->m_cfg.id << "] freeStorageSpace updated: " << self->freeStorageSpace() << " bytes";
                         cb(true, data);
                     });
                 }
             );
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::createMessage(const std::string& label, const std::string& fileName, OnDeviceResult cb) {
@@ -429,7 +693,7 @@ void BoschIpSpeaker::createMessage(const std::string& label, const std::string& 
     auto req = makeReq("POST");
     req->setBody(std::make_shared<HttpStringBody>(body));
 
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/messages",
         [weak_self, label, fileName, cb, req]
         (const SockException& ex, const Parser& parser) {
@@ -446,13 +710,12 @@ void BoschIpSpeaker::createMessage(const std::string& label, const std::string& 
             self->resolveMessageId(label, fileName, cb);
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::resolveMessageId(const std::string& label, const std::string& fileName, OnDeviceResult cb) {
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
     auto req = makeReq("GET");
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/messages",
         [weak_self, label, fileName, cb, req]
         (const SockException& ex, const Parser& parser) {
@@ -498,7 +761,6 @@ void BoschIpSpeaker::resolveMessageId(const std::string& label, const std::strin
             cb(true, remoteId);
         }
     );
-    keep(req);
 }
 
 void BoschIpSpeaker::putMessage(const std::string& remoteId, const std::string& action, OnDeviceResult cb) {
@@ -515,7 +777,7 @@ void BoschIpSpeaker::putMessage(const std::string& remoteId, const std::string& 
     auto req = makeReq("PUT", /*withCookie=*/true);
     req->setBody(std::make_shared<HttpStringBody>(body));
 
-    req->startRequester(
+    send(req,
         m_baseUrl + "/api/messages/" + remoteId + "/" + action,
         [action, remoteId, cb, req](const SockException& ex, const Parser& parser) {
             if (ex) { cb(false, ex.what()); return; }
@@ -525,7 +787,6 @@ void BoschIpSpeaker::putMessage(const std::string& remoteId, const std::string& 
             cb(true, remoteId);
         }
     );
-    keep(req);
 }
 
 std::string BoschIpSpeaker::readChunkAsBase64(const std::string& path, uint64_t offset, size_t length) {
@@ -548,8 +809,52 @@ std::string BoschIpSpeaker::readChunkAsBase64(const std::string& path, uint64_t 
     return encodeBase64(buf);
 }
 
+AudioSettings BoschIpSpeaker::getAudioSettings() const {
+    std::lock_guard<std::mutex> lock(m_mtx);
+    return m_audioSettings;
+}
+
+SpeakerDeviceInfo BoschIpSpeaker::getDeviceInfo() const {
+    std::lock_guard<std::mutex> lock(m_mtx);
+    return m_deviceInfo;
+}
+
+int64_t BoschIpSpeaker::freeStorageSpace() const {
+    std::lock_guard<std::mutex> lock(m_mtx);
+    return m_freeStorageSpace;
+}
+
+void BoschIpSpeaker::send(const HttpRequester::Ptr &req, const std::string &url, const HttpRequester::HttpRequesterResult &cb) {
+    std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
+    std::weak_ptr<HttpRequester> weak_req = req;
+    keep(req);
+    req->startRequester(url, [weak_self, weak_req, cb](const SockException &ex, const Parser &parser) {
+        cb(ex, parser);
+        auto self = weak_self.lock();
+        auto req = weak_req.lock();
+        if (self && req) {
+            self->release(req);
+        }
+    });
+}
+
 void BoschIpSpeaker::keep(HttpRequester::Ptr req) {
+    std::lock_guard<std::mutex> lock(m_mtx);
     m_pendingReqs.push_back(std::move(req));
+}
+
+void BoschIpSpeaker::release(const HttpRequester::Ptr &req) {
+    HttpRequester::Ptr released;
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        auto it = std::find(m_pendingReqs.begin(), m_pendingReqs.end(), req);
+        if (it == m_pendingReqs.end()) {
+            return;
+        }
+        // Destroyed outside the lock.
+        released = std::move(*it);
+        m_pendingReqs.erase(it);
+    }
 }
 
 } //namespace managerkit

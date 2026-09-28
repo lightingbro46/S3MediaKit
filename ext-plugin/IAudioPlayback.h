@@ -28,6 +28,12 @@ struct AudioFile {
     }
 };
 
+struct AudioSettings {
+    int minAudioVolume = 0;
+    int maxAudioVolume = 0;
+    int deviceAudioVolume = 0;
+};
+
 class IAudioPlayback {
 public:
     using Ptr = std::shared_ptr<IAudioPlayback>;
@@ -47,6 +53,12 @@ public:
 
     // Retrieve the list of audio files stored on the device.
     virtual void listAudio(OnDeviceResult cb) = 0;
+
+    // Set the playback volume of the device.
+    virtual void setAudioVolume(int volume, OnDeviceResult cb) = 0;
+
+    // Retrieve the current audio settings of the device.
+    virtual AudioSettings getAudioSettings() const = 0;
 };
 
 } //namespace managerkit

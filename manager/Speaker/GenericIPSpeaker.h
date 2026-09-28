@@ -3,6 +3,7 @@
 
 #include "Common/DeviceSource.h"
 #include "Common/DeviceOption.h"
+#include "Network/Socket.h"
 
 namespace managerkit {
 
@@ -15,23 +16,14 @@ public:
     // speaker name
     std::string name;
 
-    // Device API username (separate from ONVIF credentials)
-    std::string deviceUsername;
+    // ONVIF username for device
+    std::string onvifUsername;
 
-    // Device API password (separate from ONVIF credentials)
-    std::string devicePassword;
+    // ONVIF password for device
+    std::string onvifPassword;
 
-    // Device API port (separate from ONVIF credentials)
-    int devicePort = 80;
-
-    // Whether vendor-specific features are enabled
-    bool enableVendorFeature = false;
-
-    // List of enabled vendor-specific features
-    std::vector<std::string> enabledVendorFeatures;
-
-    // Whether separate device credentials have been configured
-    bool separateCredentialConfigured = false;
+    // ONVIF service port of device
+    int onvifPort = 80;
 
     // speaker model
     std::string model;
@@ -41,6 +33,17 @@ public:
 
     // whether to enable speaker
     bool enableActive = false;
+
+    int mediaPort = 0;
+
+    bool autoMediaPort = true;
+
+    enum {
+        kAudioPlaybackModeAuto = 0,
+        kAudioPlaybackModeOnvifBackchannel = 1,
+        kAudioPlaybackModeVendorAudioFile = 2
+    };
+    int audioPlaybackMode = kAudioPlaybackModeAuto;
 
     bool operator==(const SpeakerOption& other) const{
         return name == other.name &&
@@ -54,12 +57,9 @@ public:
                autoWebPort == other.autoWebPort &&
                preferedMediaServer == other.preferedMediaServer &&
                enableActive == other.enableActive &&
-               deviceUsername == other.deviceUsername &&
-               devicePassword == other.devicePassword &&
-               devicePort == other.devicePort &&
-               enableVendorFeature == other.enableVendorFeature &&
-               separateCredentialConfigured == other.separateCredentialConfigured &&
-               enabledVendorFeatures == other.enabledVendorFeatures;
+               mediaPort == other.mediaPort &&
+               autoMediaPort == other.autoMediaPort &&
+               audioPlaybackMode == other.audioPlaybackMode;
     }
 
     bool operator!=(const SpeakerOption& other) const {

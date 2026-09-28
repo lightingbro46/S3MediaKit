@@ -301,8 +301,6 @@ bool OnvifControl::connect() {
         return false;
     }
 
-    getAudioCapabilities(); // non-critical
-
     getImagingCapabilities(); // non-critical
 
     getRelayOutputCapabilities(); // non-critical
@@ -600,33 +598,38 @@ bool OnvifControl::getDeviceCapabilities() {
 }
 
 bool OnvifControl::getAudioCapabilities() {
-    if (_proxyMedia == nullptr) {
+    _audioOutputProfile.supportedDecodingEncodings.clear();
+    // TODO: Check whether AudioOutputConfiguration is exposed. If not, add it
+    if (_proxyMedia == nullptr || _audioOutputProfile.profileToken.empty() || _audioOutputProfile.decoderToken.empty()) {
         return false;
     }
+
+    _trt__GetAudioDecoderConfigurationOptions *GetAudioDecoderConfigurationOptions = soap_new__trt__GetAudioDecoderConfigurationOptions(_m_soap);
+    GetAudioDecoderConfigurationOptions->ConfigurationToken = &_audioOutputProfile.decoderToken;
+    GetAudioDecoderConfigurationOptions->ProfileToken = &_audioOutputProfile.profileToken;
+    _trt__GetAudioDecoderConfigurationOptionsResponse GetAudioDecoderConfigurationOptionsResponse;
     if (!setCredentials()) {
         return false;
     }
 
-    // Probe audio inputs (sources)
-    _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
-    _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
-    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse) == SOAP_OK) {
-        _audioInputProfile.enable = !GetAudioSourcesResponse.AudioSources.empty();
-        // todo: store audio input profile information if needed
-        TraceL << "AudioSources count: " << GetAudioSourcesResponse.AudioSources.size();
-    }
-
-    if (!setCredentials()) {
+    if (_proxyMedia->GetAudioDecoderConfigurationOptions(GetAudioDecoderConfigurationOptions, GetAudioDecoderConfigurationOptionsResponse)) {
+        reportError();
         return false;
     }
 
-    // Probe audio outputs
-    _trt__GetAudioOutputs *GetAudioOutputs = soap_new__trt__GetAudioOutputs(_m_soap);
-    _trt__GetAudioOutputsResponse GetAudioOutputsResponse;
-    if (_proxyMedia->GetAudioOutputs(GetAudioOutputs, GetAudioOutputsResponse) == SOAP_OK) {
-        // todo: store audio output profile information if needed
-        _audioOutputProfile.enable = !GetAudioOutputsResponse.AudioOutputs.empty();
-        TraceL << "AudioOutputs count: " << GetAudioOutputsResponse.AudioOutputs.size();
+    if (GetAudioDecoderConfigurationOptionsResponse.Options == nullptr) {
+        return false;
+    }
+
+    if (GetAudioDecoderConfigurationOptionsResponse.Options->AACDecOptions != nullptr) {
+        // No standard ONVIF ACC test case exists for backchannel -> Skip for now
+        // _audioOutputProfile.supportedDecodingEncodings.push_back("ACC");
+    }
+    if (GetAudioDecoderConfigurationOptionsResponse.Options->G711DecOptions != nullptr) {
+        _audioOutputProfile.supportedDecodingEncodings.push_back("G711");
+    }
+    if (GetAudioDecoderConfigurationOptionsResponse.Options->G726DecOptions != nullptr) {        
+        _audioOutputProfile.supportedDecodingEncodings.push_back("G726");
     }
 
     return true;
@@ -652,8 +655,8 @@ bool OnvifControl::getMediaProfiles() {
     // note: reset media profile list every time when get media profiles since profile token may change after device reboot
     _mediaProfile.clear();
     _imageProfile.videoSourceToken.clear();
-    _audioOutputProfile.clearBackchannel();
-    _audioInputProfile.encoderToken.clear();
+    _audioInputProfile.clear();
+    _audioOutputProfile.clear();
 
     for (const auto &profile : GetProfilesResponse.Profiles) {
         if (!profile || profile->token.empty()) {
@@ -664,40 +667,6 @@ bool OnvifControl::getMediaProfiles() {
 
         OnvifMediaProfile _profile;
         _profile.token = profile->token;
-
-        // Audio input encoder details, used when the device shares one DSP pipeline for in and out.
-        if (_audioInputProfile.encoderToken.empty() && profile->AudioEncoderConfiguration) {
-            switch (profile->AudioEncoderConfiguration->Encoding) {
-                case tt__AudioEncoding__G711: _audioInputProfile.acodec = "G711"; break;
-                case tt__AudioEncoding__G726: _audioInputProfile.acodec = "G726"; break;
-                case tt__AudioEncoding__AAC: _audioInputProfile.acodec = "AAC"; break;
-                default: _audioInputProfile.acodec = "UNKNOWN"; break;
-            }
-            if (_audioInputProfile.acodec != "UNKNOWN") {
-                _audioInputProfile.encoderToken = profile->AudioEncoderConfiguration->token;
-                _audioInputProfile.sampleBit = profile->AudioEncoderConfiguration->Bitrate ? to_string(profile->AudioEncoderConfiguration->Bitrate) : "";
-                _audioInputProfile.sampleRate = profile->AudioEncoderConfiguration->SampleRate ? to_string(profile->AudioEncoderConfiguration->SampleRate) : "";
-                TraceL << "Audio input codec: " << _audioInputProfile.acodec
-                       << ", encoderToken: " << _audioInputProfile.encoderToken;
-            }
-        }
-
-        // Audio backchannel: remember the first profile that exposes an audio output with a decoder.
-        if (_audioOutputProfile.outputToken.empty() && profile->Extension &&
-            profile->Extension->AudioOutputConfiguration && profile->Extension->AudioDecoderConfiguration) {
-            _audioOutputProfile.profileToken = profile->token;
-            _audioOutputProfile.token = profile->Extension->AudioOutputConfiguration->token;
-            _audioOutputProfile.name = profile->Extension->AudioOutputConfiguration->Name;
-            _audioOutputProfile.outputToken = profile->Extension->AudioOutputConfiguration->OutputToken;
-            _audioOutputProfile.outputLevel = profile->Extension->AudioOutputConfiguration->OutputLevel;
-            _audioOutputProfile.sendPrimacy = profile->Extension->AudioOutputConfiguration->SendPrimacy
-                ? *profile->Extension->AudioOutputConfiguration->SendPrimacy : "";
-            _audioOutputProfile.decoderToken = profile->Extension->AudioDecoderConfiguration->token;
-            TraceL << "Audio output token: " << _audioOutputProfile.token
-                   << ", outputToken: " << _audioOutputProfile.outputToken
-                   << ", decoderToken: " << _audioOutputProfile.decoderToken
-                   << ", sendPrimacy: " << _audioOutputProfile.sendPrimacy;
-        }
         if (profile->VideoSourceConfiguration && profile->VideoEncoderConfiguration) {
             // profile has video source
             _profile.hasVideo = true;
@@ -792,66 +761,82 @@ bool OnvifControl::getMediaProfiles() {
             }
         }
 
-        // if (profile->AudioSourceConfiguration && profile->AudioEncoderConfiguration) {
-        //     // profile has audio source
-        //     _profile.hasAudio = true;
+        // Audio input and audio output (backchannel) are detected independently: a speaker may
+        // expose an output without a microphone, and a camera a microphone without an output.
+        if (profile->AudioSourceConfiguration && profile->AudioEncoderConfiguration) {
+            if (_audioInputProfile.token.empty()) {
+                // Audio inputs (sources)
+                _audioInputProfile.token = profile->AudioSourceConfiguration->token;
+                TraceL << "Audio input token: " << _audioInputProfile.token;
+                _audioInputProfile.sourceToken = profile->AudioSourceConfiguration->SourceToken;
+                TraceL << "Audio input source token: " << _audioInputProfile.sourceToken;
+                _audioInputProfile.name = profile->AudioSourceConfiguration->Name;
+                TraceL << "Audio input name: " << _audioInputProfile.name;
 
-        //     // get audio configuration in profile
-        //     switch (profile->AudioEncoderConfiguration->Encoding) {
-        //         case tt__AudioEncoding__G711: _profile.acodec = "G711"; break;
-        //         case tt__AudioEncoding__G726: _profile.acodec = "G726"; break;
-        //         case tt__AudioEncoding__AAC: _profile.acodec = "AAC"; break;
-        //         default: _profile.acodec = "UNKNOWN"; break;
-        //     }
+                _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
+                _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
+                if (setCredentials()) {
+                    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse) == SOAP_OK) {
+                        _audioInputProfile.enable = !GetAudioSourcesResponse.AudioSources.empty();
+                        for (const auto &audioSource : GetAudioSourcesResponse.AudioSources) {
+                            if (audioSource->token == _audioInputProfile.sourceToken) {
+                                _audioInputProfile.channelNo = audioSource->Channels ? audioSource->Channels : 0;
+                                break;
+                            }
+                        }
+                        TraceL << "Channel No: " << _audioInputProfile.channelNo;
+                    } else {
+                        reportError();
+                    }
+                } else {
+                    reportError();
+                }
 
-        //     if (_profile.acodec == "UNKNOWN") {
-        //         WarnL << "Unsupported audio codec: " << profile->AudioEncoderConfiguration->Encoding << ". Ignore";
-        //         continue;
-        //     }
 
-        //     TraceL << "Audio Codec: " << profile->AudioEncoderConfiguration->Encoding << ">> " << _profile.acodec;
-        //     _profile.sampleBit = profile->AudioEncoderConfiguration->Bitrate ? profile->AudioEncoderConfiguration->Bitrate : 0;
-        //     TraceL << "Sample Bit Limit: " << _profile.sampleBit;
-        //     int sample = profile->VideoEncoderConfiguration->RateControl ? profile->VideoEncoderConfiguration->RateControl->FrameRateLimit : 0;
-        //     TraceL << "Sample Rate Limit: " << _profile.sampleRate;
-        //     _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
-        //     _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
-        //     if (!setCredentials()) {
-        //         disconnect();
-        //         return false;
-        //     }
+                switch (profile->AudioEncoderConfiguration->Encoding) {
+                    case tt__AudioEncoding__G711: _audioInputProfile.acodec = "G711"; break;
+                    case tt__AudioEncoding__G726: _audioInputProfile.acodec = "G726"; break;
+                    case tt__AudioEncoding__AAC: _audioInputProfile.acodec = "AAC"; break;
+                    default: _audioInputProfile.acodec = "UNKNOWN"; break;
+                }
 
-        //     if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse)) {
-        //         reportError();
-        //         disconnect();
-        //         return false;
-        //     }
-        //     auto sourceToken = profile->AudioSourceConfiguration->SourceToken;
-        //     for (const auto &audioSource : GetAudioSourcesResponse.AudioSources) {
-        //         WarnL << "Found audio source token: " << sourceToken << ", " << audioSource->token;
-        //         if (audioSource->token == sourceToken) {
-        //             _profile.channelNo = audioSource->Channels ? audioSource->Channels : 0;
-        //             break;
-        //         }
-        //     }
+                if (_audioInputProfile.acodec != "UNKNOWN") {
+                    TraceL << "Audio Codec: " << _audioInputProfile.acodec;
+                    _audioInputProfile.sampleBit = profile->AudioEncoderConfiguration->Bitrate ? to_string(profile->AudioEncoderConfiguration->Bitrate) : "";
+                    TraceL << "Sample Bit Limit: " << _audioInputProfile.sampleBit;
+                    _audioInputProfile.sampleRate = profile->AudioEncoderConfiguration->SampleRate ? to_string(profile->AudioEncoderConfiguration->SampleRate) : "";
+                    TraceL << "Sample Rate Limit: " << _audioInputProfile.sampleRate;
+                    _audioInputProfile.encoderToken = profile->AudioEncoderConfiguration->token;
+                    TraceL << "Encoder token: " << _audioInputProfile.encoderToken;
+                    _audioInputProfile.enable = true;
+                    // profile has audio source
+                    _profile.hasAudio = true;
+                } else {
+                    _audioInputProfile.clear();
+                }
+            }
+        }
 
-        //     TraceL << "Channel No: " << _profile.channelNo;
-        //     // todo: get audio configuration option in profile
-        //     // _trt__GetAudioEncoderConfigurationOptions* GetAudioConfigOptions = soap_new__trt__GetAudioEncoderConfigurationOptions(_m_soap);
-        //     // _trt__GetAudioEncoderConfigurationOptionsResponse GetAudioConfigOptionResponse;
-        //     // GetAudioConfigOptions->ProfileToken = &profile->token;
-        //     // GetAudioConfigOptions->ConfigurationToken =  &profile->AudioEncoderConfiguration->token;
-        //     // if (!setCredentials()) {
-        //     //     disconnect();
-        //     //     return false;
-        //     // }
-
-        //     // if (_proxyMedia->GetAudioEncoderConfigurationOptions(GetAudioConfigOptions, GetAudioConfigOptionResponse)) {
-        //     //     reportError();
-        //     //     disconnect();
-        //     //     return false;
-        //     // }
-        // }
+        if (profile->Extension && profile->Extension->AudioOutputConfiguration &&
+            profile->Extension->AudioDecoderConfiguration) {
+            if (_audioOutputProfile.token.empty()) {
+                // Audio outputs
+                _audioOutputProfile.profileToken = profile->token;
+                _audioOutputProfile.token = profile->Extension->AudioOutputConfiguration->token;
+                TraceL << "Audio output token: " << _audioOutputProfile.token;
+                _audioOutputProfile.name = profile->Extension->AudioOutputConfiguration->Name;
+                TraceL << "Audio output name: " << _audioOutputProfile.name;
+                _audioOutputProfile.outputToken = profile->Extension->AudioOutputConfiguration->OutputToken;
+                TraceL << "Audio output outputToken: " << _audioOutputProfile.outputToken;
+                _audioOutputProfile.outputLevel = profile->Extension->AudioOutputConfiguration->OutputLevel;
+                TraceL << "Output Level: " << _audioOutputProfile.outputLevel;
+                _audioOutputProfile.sendPrimacy = profile->Extension->AudioOutputConfiguration->SendPrimacy ? *profile->Extension->AudioOutputConfiguration->SendPrimacy : "";
+                TraceL << "sendPrimacy: " << _audioOutputProfile.sendPrimacy;
+                _audioOutputProfile.decoderToken = profile->Extension->AudioDecoderConfiguration->token;
+                TraceL << "Decoder token: " << _audioOutputProfile.decoderToken;
+                _audioOutputProfile.enable = !_audioOutputProfile.token.empty() && !_audioOutputProfile.outputToken.empty() && !_audioOutputProfile.decoderToken.empty();
+            }
+        }
 
         if (_profile.hasVideo) {
             // profile has video stream, get stream uri
@@ -887,44 +872,10 @@ bool OnvifControl::getMediaProfiles() {
         _mediaProfile.push_back(_profile);
     }
 
-    // Now that the decoder token is known, ask the device which formats it can decode.
-    getAudioDecoderOptions();
+    // Now that the decoder token is known, ask the device which formats it can decode. Done on
+    // every refresh because the audio output profile (and its formats) was just reset above.
+    getAudioCapabilities(); // non-critical
 
-    return true;
-}
-
-bool OnvifControl::getAudioDecoderOptions() {
-    if (_proxyMedia == nullptr || _audioOutputProfile.profileToken.empty() || _audioOutputProfile.decoderToken.empty()) {
-        return false;
-    }
-
-    _trt__GetAudioDecoderConfigurationOptions *GetAudioDecoderConfigurationOptions = soap_new__trt__GetAudioDecoderConfigurationOptions(_m_soap);
-    GetAudioDecoderConfigurationOptions->ConfigurationToken = &_audioOutputProfile.decoderToken;
-    GetAudioDecoderConfigurationOptions->ProfileToken = &_audioOutputProfile.profileToken;
-    _trt__GetAudioDecoderConfigurationOptionsResponse GetAudioDecoderConfigurationOptionsResponse;
-    if (!setCredentials()) {
-        return false;
-    }
-
-    if (_proxyMedia->GetAudioDecoderConfigurationOptions(GetAudioDecoderConfigurationOptions, GetAudioDecoderConfigurationOptionsResponse)) {
-        reportError();
-        return false;
-    }
-
-    if (GetAudioDecoderConfigurationOptionsResponse.Options == nullptr) {
-        return false;
-    }
-
-    _audioOutputProfile.supportedDecodingEncodings.clear();
-    if (GetAudioDecoderConfigurationOptionsResponse.Options->G711DecOptions != nullptr) {
-        _audioOutputProfile.supportedDecodingEncodings.push_back("G711");
-    }
-    if (GetAudioDecoderConfigurationOptionsResponse.Options->G726DecOptions != nullptr) {
-        _audioOutputProfile.supportedDecodingEncodings.push_back("G726");
-    }
-    // AAC is left out on purpose: there is no standard ONVIF backchannel test case for it.
-
-    TraceL << "Audio decoder options: " << _audioOutputProfile.supportedDecodingEncodings.size() << " format(s)";
     return true;
 }
 
@@ -2251,6 +2202,14 @@ bool OnvifControl::findEvents(time_t& startTime, time_t& endTime, const Recordin
     time_t sys_start = build_camera_utc(_camTimeInfo.TZ, startTime);
     time_t sys_end = build_camera_utc(_camTimeInfo.TZ, endTime);
 
+    TraceL << "Camera timezone=" << _camTimeInfo.TZ
+        << ", cameraTime=" << _camTimeInfo.cam_time
+        << ", cameraSystemTime=" << _camTimeInfo.cam_sys_time
+        << ", startTime=" << startTime
+        << ", systemStartTime=" << sys_start
+        << ", endTime=" << endTime
+        << ", systemEndTime=" << sys_end;
+
     startTime = std::max(sys_start, info.earliestRecording);
     endTime = std::min(sys_end, info.latestRecording);
 
@@ -2359,7 +2318,10 @@ bool OnvifControl::getEventSearchResults(const std::string& searchToken, const R
 }
 
 void OnvifControl::reconstructVideoSegments(const std::vector<TrackStateEvent>& events, const time_t& startTime, const time_t& endTime, const int &min_segment_sec, std::vector<VideoSegment>& outSegments) {
-    if (events.empty()) return;
+    if (events.empty()) {
+        DebugL << "Events is EMPTY, nothing to do";
+        return;
+    }
 
     // Group events (recordingToken + trackToken)
     using GroupKey = std::string;
@@ -2371,10 +2333,11 @@ void OnvifControl::reconstructVideoSegments(const std::vector<TrackStateEvent>& 
     }
 
     for (auto& group : groups) {
-        // Sort by time in ascending order
-        std::sort(group.second.begin(), group.second.end(),
+        std::stable_sort(group.second.begin(), group.second.end(),
             [](const TrackStateEvent* a, const TrackStateEvent* b) {
-                return a->time < b->time;
+                if (a->time != b->time) return a->time < b->time;
+                if (a->isStartState != b->isStartState) return a->isStartState;
+                return false;
             });
 
         const std::string& recToken = group.second.front()->recordingToken;
@@ -2453,6 +2416,11 @@ void OnvifControl::reconstructVideoSegments(const std::vector<TrackStateEvent>& 
                 outSegments.push_back(seg);
 
                 InfoL << "[Segment] " << recToken << "|" << trackToken << " dur=" << dur << "s (open->close at reconnect)";
+            } else {
+                DebugL  << "[Skip] " << recToken << "|" << trackToken
+                        << " open->close at endTime, clampedStart=" << segStart
+                        << " clampedEnd=" << segEnd << " dur=" << dur << "s"
+                        << " reason=" << (segStart >= segEnd ? "invalid_range(<=0)" : "too_short(<min_segment_sec)");
             }
         }
     }
@@ -2518,21 +2486,23 @@ VideoEncoderConfig OnvifControl::GetRecordingVideoEncoder(const std::string& rec
     return config;
 }
 
-std::unordered_map<int, std::vector<VideoSegment>> OnvifControl::findVideoSegments(time_t startTime, time_t endTime, const int &min_segment_sec) {
+std::unordered_map<int, std::vector<VideoSegment>> OnvifControl::findVideoSegments(const time_t startTime, const time_t endTime, const int &min_segment_sec) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     std::unordered_map<int, std::vector<VideoSegment>> outSegments;
 
     std::vector<VideoSegment> segments;
 
     if (startTime >= endTime) {
-        ErrorL << "Invalid: startTime >= endTime";
+        DebugL << "Invalid input time range: startTime >= endTime";
         return outSegments;
     }
 
     InfoL << " Searching ["<< startTime << ", " << endTime << "]";
 
+    _recordingInformations.clear();
     getRecordingSearchResults();
     if (_recordingInformations.empty()) {
-        InfoL << "No segments found in the session: startTime=" << startTime << ", endTime=" << endTime;
+        DebugL << "No recording information found";
         return outSegments;
     }
 
@@ -2543,7 +2513,9 @@ std::unordered_map<int, std::vector<VideoSegment>> OnvifControl::findVideoSegmen
         std::vector<TrackStateEvent> events;
         // Step 1: FindEvents
         std::string searchToken;
-        if (!findEvents(startTime, endTime, info, searchToken))
+        time_t effStart = startTime;
+        time_t effEnd = endTime;
+        if (!findEvents(effStart, effEnd, info, searchToken))
             continue;
 
         // Step 2: Collect events
@@ -2551,7 +2523,7 @@ std::unordered_map<int, std::vector<VideoSegment>> OnvifControl::findVideoSegmen
             continue;
 
         // Step 4: Reconstruct + filter
-        reconstructVideoSegments(events, startTime, endTime, min_segment_sec, segments);
+        reconstructVideoSegments(events, effStart, effEnd, min_segment_sec, segments);
     }
 
     for (const auto &info : _recordingInformations) {
@@ -2580,7 +2552,6 @@ void OnvifControl::getRecordingSummary() {
 
     if (_proxySearch->GetRecordingSummary(GetRecordingSummary, GetRecordingSummaryResponse)) {
         reportError();
-        disconnect();
         return;
     }
 

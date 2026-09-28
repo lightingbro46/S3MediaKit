@@ -1,6 +1,8 @@
 #ifndef S3MEDIAKIT_ISPEAKER_H
 #define S3MEDIAKIT_ISPEAKER_H
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -22,9 +24,13 @@ enum class DeviceBrand {
     TOA,
 };
 
-enum class SupportedFeatures {
-    PlayAudioFile,
-    // Todo: add more feature
+struct IDeviceInfo {
+    std::string manufacturer;
+    std::string model;
+    std::string firmwareVersion;
+    std::string serialNumber;
+    std::string hardwareId;
+    std::string macAddress;
 };
 
 struct IDeviceConfig {
@@ -37,17 +43,21 @@ struct IDeviceConfig {
     DeviceType  type;
     DeviceBrand brand = DeviceBrand::BOSCH;
 };
+using SpeakerDeviceInfo = IDeviceInfo;
 using SpeakerConfig = IDeviceConfig;
 
 static DeviceBrand getDeviceBrand(const std::string& manufacturer) {
-    if (manufacturer == "Bosch") {
+    std::string name = manufacturer;
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    if (name.find("bosch") != std::string::npos) {
         return DeviceBrand::BOSCH;
     }
 
-    if (manufacturer == "TOA") {
+    if (name == "toa") {
         return DeviceBrand::TOA;
     }
 
+    // Unknown vendors are driven over plain ONVIF with the speaker's own credentials.
     return DeviceBrand::UNKNOWN;
 }
 
@@ -73,6 +83,12 @@ public:
 
     // Disconnect from the device and terminate the session.
     virtual void disconnect(OnDeviceResult cb) = 0;
+
+    // Create an ONVIF user on the device.
+    virtual void createOnvifUser(const std::string& username, const std::string& password, OnDeviceResult cb) = 0;
+
+    // Get the device information.
+    virtual IDeviceInfo getDeviceInfo() const = 0;
 
     // Get the device type (Speaker, Camera, ...).
     virtual DeviceType getDeviceType() const = 0;

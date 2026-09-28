@@ -7,7 +7,8 @@ using namespace toolkit;
 
 namespace mediakit {
 
-BackchannelWsSession::BackchannelWsSession(const Socket::Ptr& sock) : Session(sock) {
+BackchannelWsSession::BackchannelWsSession(const Socket::Ptr& sock, const std::string& authDeviceId)
+    : Session(sock), _authDeviceId(authDeviceId) {
     TraceL << "Created backchannel session: " << getIdentifier();
 }
 
@@ -65,6 +66,14 @@ void BackchannelWsSession::dispatchMessage(const char* data, size_t len) {
     BackchannelMessage msg;
     if (!BackchannelProtocol::parseMessage(data, len, msg)) {
         sendReply(BackchannelReplyType::Error, "malformed message");
+        return;
+    }
+
+    // Authorization covered the device in the URL only; a message naming another device would
+    // start, feed or stop that device's session without the user's permission on it.
+    if (msg.device_id != _authDeviceId) {
+        WarnL << "Backchannel message for device " << msg.device_id << " rejected, session is authorized for " << _authDeviceId;
+        sendReply(BackchannelReplyType::Error, "device mismatch");
         return;
     }
 

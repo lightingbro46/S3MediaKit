@@ -100,55 +100,95 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         return;
     }
 
-    // An ONVIF backchannel streams the file straight to the speaker, so it needs neither a
-    // vendor API nor the file to be uploaded to the device first.
-    if (strong_statistic->getParams().device_caps.supportsAudioBackchannel) {
-        _controller->playAudioFileByBackchannel(fileId, [speakerId, cb](bool ok, const std::string& data) {
-            if (ok) {
-                cb(SockException(Err_success, "Trigger play [" + speakerId + "]: OK", ApiErrCode::CODE_SUCCESS));
-            } else {
-                cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
-            }
-        });
-        return;
-    }
-
-    if (!strong_statistic->isFeatureSupported(SupportedFeatures::PlayAudioFile)) {
-        WarnL << "Speaker " << _src->getUrl() << " does not support this feature";
-        cb(SockException(Err_other, "Speaker does not support this feature", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
-        return;
-    }
-
-    std::string fileRemoteId = strong_statistic->getAudioRemoteId(fileId);
     auto controller = _controller;
+    bool supportsBackchannel = strong_statistic->getParams().device_caps.supportsAudioBackchannel;
 
-    controller->playAudio(fileId, fileRemoteId,
-        [controller, strong_statistic, speakerId, fileId, fileRemoteId, cb](bool ok, const std::string& data) {
-            if (ok) {
-                if (fileRemoteId.empty()) {
+    auto resultCb = [controller, speakerId, cb](bool ok, const std::string& data) {
+        if (ok) {
+            cb(SockException(Err_success, "Trigger play [" + speakerId + "]: OK", ApiErrCode::CODE_SUCCESS));
+        } else {
+            cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+        }
+    };
+
+    auto playByBackchannel = [controller, fileId, resultCb]() {
+        controller->playAudioFileByBackchannel(fileId, resultCb);
+    };
+
+    auto playByVendorApi = [controller, strong_statistic, fileId, resultCb]() {
+        std::string fileRemoteId = strong_statistic->getAudioRemoteId(fileId);
+        controller->playAudioFileByVendorApi(fileId, fileRemoteId,
+            [strong_statistic, fileId, fileRemoteId, resultCb](bool ok, const std::string& data) {
+                if (ok && fileRemoteId.empty()) {
                     // File does not exist on the speaker -> save remoteId to file
                     strong_statistic->setAudioRemoteId(fileId, data);
                 }
-                cb(SockException(Err_success, "Trigger play [" + speakerId + "]: OK", ApiErrCode::CODE_SUCCESS));
-            } else {
-                cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
-            }
-        });
+                resultCb(ok, data);
+            });
+    };
+
+    typedef std::function<void()> ModeHandler;
+    typedef std::pair<int, ModeHandler> ModeHandlerPair;
+
+    const std::vector<ModeHandlerPair> kModeHandlers = {
+        { SpeakerOption::kAudioPlaybackModeAuto, supportsBackchannel ? ModeHandler(playByBackchannel) : ModeHandler(playByVendorApi) },
+        { SpeakerOption::kAudioPlaybackModeOnvifBackchannel, ModeHandler(playByBackchannel) },
+        { SpeakerOption::kAudioPlaybackModeVendorAudioFile, ModeHandler(playByVendorApi) },
+    };
+
+    if (_option.audioPlaybackMode == SpeakerOption::kAudioPlaybackModeOnvifBackchannel && !supportsBackchannel) {
+        cb(SockException(Err_other, "Device does not support backchannel playback mode", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+        return;
+    }
+
+    int mode = _option.audioPlaybackMode;
+    std::vector<ModeHandlerPair>::const_iterator it = std::find_if(
+        kModeHandlers.begin(), kModeHandlers.end(),
+        [mode](const ModeHandlerPair& entry) { return entry.first == mode; });
+
+    if (it == kModeHandlers.end()) {
+        cb(SockException(Err_other, "Playback mode is not supported", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+        return;
+    }
+
+    it->second();
 }
 
-void GenericIPSpeakerImp::validateCredential(const std::string& username, const std::string& password, const int port, const std::function<void(const toolkit::SockException &ex)> &cb) {
-    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call validateCredential in it's owner poller");
+void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setAudioVolume in it's owner poller");
     if (!_controller) {
-        WarnL << "Speaker " << _src->getUrl() << " controller is not ready. Ignoring request";
+        WarnL << "Speaker " << _src->getUrl() << " controller is not ready. Ignoring set audio volume request";
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
 
-    _controller->validateCredential(username, password, port, [cb](bool ok, const std::string& data) {
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic) {
+        WarnL << "Speaker " << _src->getUrl() << " statistic has been released. Ignore request";
+        cb(SockException(Err_other, "Speaker statistic has been released", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+
+    auto audioVolumeInfo = strong_statistic->getAudioVolumeInfo();
+    if (!audioVolumeInfo.supportsControl()) {
+        cb(SockException(Err_other, "The device is not support audio volume configuration", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+        return;
+    }
+
+    int cVolume = volume;
+    if (cVolume == audioVolumeInfo.configuredAudioVolume) {
+        cb(SockException(Err_other, "The requested volume is the same as the current volume", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+        return;
+    }
+
+    volume = audioVolumeInfo.toDeviceVolume(volume);
+    auto controller = _controller;
+    controller->setAudioVolume(volume, [controller, strong_statistic, volume, cVolume, cb](bool ok, const std::string& data) {
         if (ok) {
-            cb(SockException(Err_success, data, ApiErrCode::CODE_SUCCESS));
+            strong_statistic->setAudioVolume(volume, cVolume);
+            cb(SockException(Err_success, "Set audio volume OK", ApiErrCode::CODE_SUCCESS));
         } else {
-            cb(SockException(Err_other, data, ApiErrCode::CODE_DEVICE_NOT_FOUND));
+            cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
         }
     });
 }
@@ -180,7 +220,8 @@ void GenericIPSpeakerImp::onControllerReady(DeviceSource &sender, bool connect, 
     strong_statistic->addDeviceCapabilities(connect, status, caps);
 
     bool is_restart = !prev_connect && connect;
-    bool caps_changed = caps && (*caps != prev_caps);
+    // Compare what was stored: the statistic merges in the configured volume the controller lacks.
+    bool caps_changed = caps && (strong_statistic->getParams().device_caps != prev_caps);
     if (!is_restart && !caps_changed) {
         return;
     }

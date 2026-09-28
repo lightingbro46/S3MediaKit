@@ -3,6 +3,7 @@
 
 #include "Control/OnvifDeviceControl.h"
 #include "ext-plugin/IDevice.h"
+#include "ext-plugin/IAudioPlayback.h"
 
 namespace managerkit {
 
@@ -70,23 +71,53 @@ struct OnvifProfile {
     bool operator!=(const OnvifProfile &o) const { return !(*this == o); }
 };
 
-struct VendorFeatureSupport {
-    bool requiresSeparateCredential = false;
-    bool supportsVendorFeatures = false;
-    std::vector<std::string> supportedVendorFeatures;
+struct AudioVolumeInfo {
+    int minAudioVolume = 0;
+    int maxAudioVolume = 0;
+    int deviceAudioVolume = 0;
+    int configuredAudioVolume = -1; // Not configured yet
 
-    bool operator==(const VendorFeatureSupport &o) const {
-        return requiresSeparateCredential   == o.requiresSeparateCredential
-            && supportsVendorFeatures       == o.supportsVendorFeatures
-            && supportedVendorFeatures      == o.supportedVendorFeatures;
+    bool operator==(const AudioVolumeInfo &o) const {
+        return minAudioVolume         == o.minAudioVolume
+            && maxAudioVolume         == o.maxAudioVolume
+            && deviceAudioVolume      == o.deviceAudioVolume
+            && configuredAudioVolume  == o.configuredAudioVolume;
     }
-    bool operator!=(const VendorFeatureSupport &o) const { return !(*this == o); }
+    bool operator!=(const AudioVolumeInfo &o) const { return !(*this == o); }
 
-    static std::string toString(SupportedFeatures feature) {
-        switch (feature) {
-            case SupportedFeatures::PlayAudioFile: return "PlayAudioFile";
-            default: return "unknown";
+    AudioVolumeInfo &operator=(const AudioSettings &o) {
+        minAudioVolume      = o.minAudioVolume;
+        maxAudioVolume      = o.maxAudioVolume;
+        deviceAudioVolume   = o.deviceAudioVolume;
+        return *this;
+    }
+
+    // AudioVolumeInfo &operator=(const OnvifAudioOutputProfile &o)
+
+    bool supportsControl() const {
+        return maxAudioVolume      > minAudioVolume
+            && deviceAudioVolume   <= maxAudioVolume
+            && deviceAudioVolume   >= minAudioVolume;
+    }
+
+    // Convert a normalized volume [0, 100] to the device-specific volume range
+    int toDeviceVolume(int volume) const {
+        if (maxAudioVolume <= minAudioVolume) {
+            return minAudioVolume;
         }
+
+        volume = std::max(0, std::min(100, volume));
+        return minAudioVolume + (volume * (maxAudioVolume - minAudioVolume)) / 100;
+    }
+
+    // Normalize the device audio volume to the [0, 100] range
+    int toNormalizedVolume() const {
+        if (maxAudioVolume <= minAudioVolume) {
+            return 0;
+        }
+
+        int volume = std::max(minAudioVolume, std::min(deviceAudioVolume, maxAudioVolume));
+        return (volume - minAudioVolume) * 100 / (maxAudioVolume - minAudioVolume);
     }
 };
 
@@ -94,16 +125,17 @@ struct DeviceCapabilities {
     bool isOnvifDevice = false;
     OnvifProfile onvifProfile;
     bool supportsSdCardPlayback = false;
-    VendorFeatureSupport vendorFeatureSupport;
-    // Device accepts a two-way audio (backchannel) stream.
     bool supportsAudioBackchannel = false;
+    bool supportsAudioVolumeControl = false;
+    AudioVolumeInfo audioVolumeInfo;
 
     bool operator==(const DeviceCapabilities &o) const {
         return isOnvifDevice == o.isOnvifDevice
             && onvifProfile == o.onvifProfile
             && supportsSdCardPlayback == o.supportsSdCardPlayback
-            && vendorFeatureSupport == o.vendorFeatureSupport
-            && supportsAudioBackchannel == o.supportsAudioBackchannel;
+            && supportsAudioBackchannel == o.supportsAudioBackchannel
+            && supportsAudioVolumeControl == o.supportsAudioVolumeControl
+            && audioVolumeInfo == o.audioVolumeInfo;
     }
     bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }
 };

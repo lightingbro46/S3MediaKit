@@ -9,6 +9,7 @@
 #include "Network/sockutil.h"
 #include "Poller/Timer.h"
 #include "Thread/WorkThreadPool.h"
+#include "Common/DeviceOption.h"
 
 namespace Searcher {
 extern const std::string kTimeoutSec;
@@ -25,6 +26,7 @@ struct SubnetScanOption {
     bool defaultPort = true;
     std::string username;
     std::string password;
+    DeviceType type = DeviceType::Camera;
 };
 
 struct DeviceScanResult {

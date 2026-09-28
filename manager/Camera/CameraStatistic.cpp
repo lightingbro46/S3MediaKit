@@ -315,23 +315,31 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
     imageProfile["irisMax"]             = profile.imageProfile.irisMax;
     ret["imageProfile"] = imageProfile;
     Json::Value audioOutput = Json::objectValue;
-    audioOutput["enable"]     = profile.audioOutputProfile.enable;
-    audioOutput["token"]      = profile.audioOutputProfile.token;
-    audioOutput["name"]       = profile.audioOutputProfile.name;
-    audioOutput["acodec"]     = profile.audioOutputProfile.acodec;
-    audioOutput["channelNo"]  = profile.audioOutputProfile.channelNo;
-    audioOutput["sampleRate"] = profile.audioOutputProfile.sampleRate;
-    audioOutput["sampleBit"]  = profile.audioOutputProfile.sampleBit;
+    audioOutput["enable"]       = profile.audioOutputProfile.enable;
+    audioOutput["token"]        = profile.audioOutputProfile.token;
+    audioOutput["name"]         = profile.audioOutputProfile.name;
+    audioOutput["outputToken"]  = profile.audioOutputProfile.outputToken;
+    audioOutput["profileToken"] = profile.audioOutputProfile.profileToken;
+    audioOutput["outputLevel"]  = profile.audioOutputProfile.outputLevel;
+    audioOutput["sendPrimacy"]  = profile.audioOutputProfile.sendPrimacy;
+    audioOutput["decoderToken"] = profile.audioOutputProfile.decoderToken;
+    Json::Value supportedArray  = Json::arrayValue;
+    for (const auto &it : profile.audioOutputProfile.supportedDecodingEncodings) {
+        supportedArray.append(it);
+    }
+    audioOutput["supportedDecodingEncodings"] = supportedArray;
     ret["audioOutputProfile"] = audioOutput;
     Json::Value audioInput = Json::objectValue;
-    audioInput["enable"]     = profile.audioInputProfile.enable;
-    audioInput["token"]      = profile.audioInputProfile.token;
-    audioInput["name"]       = profile.audioInputProfile.name;
-    audioInput["acodec"]     = profile.audioInputProfile.acodec;
-    audioInput["channelNo"]  = profile.audioInputProfile.channelNo;
-    audioInput["sampleRate"] = profile.audioInputProfile.sampleRate;
-    audioInput["sampleBit"]  = profile.audioInputProfile.sampleBit;
-    ret["audioInputProfile"] = audioInput;
+    audioInput["enable"]        = profile.audioInputProfile.enable;
+    audioInput["token"]         = profile.audioInputProfile.token;
+    audioInput["name"]          = profile.audioInputProfile.name;
+    audioInput["sourceToken"]   = profile.audioInputProfile.sourceToken;
+    audioInput["encoderToken"]  = profile.audioInputProfile.encoderToken;
+    audioInput["acodec"]        = profile.audioInputProfile.acodec;
+    audioInput["channelNo"]     = profile.audioInputProfile.channelNo;
+    audioInput["sampleRate"]    = profile.audioInputProfile.sampleRate;
+    audioInput["sampleBit"]     = profile.audioInputProfile.sampleBit;
+    ret["audioInputProfile"]    = audioInput;
     Json::Value relayProfiles = Json::arrayValue;
     for (const auto &relay : profile.relayOutputProfiles) {
         Json::Value r = Json::objectValue;
@@ -456,23 +464,29 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
     }
     // audio output profile
     if (!data["audioOutputProfile"].isNull() && data["audioOutputProfile"].isObject()) {
-        profile.audioOutputProfile.enable     = data["audioOutputProfile"]["enable"].asBool();
-        profile.audioOutputProfile.token      = data["audioOutputProfile"]["token"].asString();
-        profile.audioOutputProfile.name       = data["audioOutputProfile"]["name"].asString();
-        profile.audioOutputProfile.acodec     = data["audioOutputProfile"]["acodec"].asString();
-        profile.audioOutputProfile.channelNo  = data["audioOutputProfile"]["channelNo"].asInt();
-        profile.audioOutputProfile.sampleRate = data["audioOutputProfile"]["sampleRate"].asString();
-        profile.audioOutputProfile.sampleBit  = data["audioOutputProfile"]["sampleBit"].asString();
+        profile.audioOutputProfile.enable       = data["audioOutputProfile"]["enable"].asBool();
+        profile.audioOutputProfile.token        = data["audioOutputProfile"]["token"].asString();
+        profile.audioOutputProfile.name         = data["audioOutputProfile"]["name"].asString();
+        profile.audioOutputProfile.outputToken  = data["audioOutputProfile"]["outputToken"].asString();
+        profile.audioOutputProfile.profileToken = data["audioOutputProfile"]["profileToken"].asString();
+        profile.audioOutputProfile.outputLevel  = data["audioOutputProfile"]["outputLevel"].asInt();
+        profile.audioOutputProfile.sendPrimacy  = data["audioOutputProfile"]["sendPrimacy"].asString();
+        profile.audioOutputProfile.decoderToken = data["audioOutputProfile"]["decoderToken"].asString();
+        for (const auto &it : data["audioOutputProfile"]["supportedDecodingEncodings"]) {
+            profile.audioOutputProfile.supportedDecodingEncodings.push_back(it.asString());
+        }
     }
     // audio input profile
     if (!data["audioInputProfile"].isNull() && data["audioInputProfile"].isObject()) {
-        profile.audioInputProfile.enable     = data["audioInputProfile"]["enable"].asBool();
-        profile.audioInputProfile.token      = data["audioInputProfile"]["token"].asString();
-        profile.audioInputProfile.name       = data["audioInputProfile"]["name"].asString();
-        profile.audioInputProfile.acodec     = data["audioInputProfile"]["acodec"].asString();
-        profile.audioInputProfile.channelNo  = data["audioInputProfile"]["channelNo"].asInt();
-        profile.audioInputProfile.sampleRate = data["audioInputProfile"]["sampleRate"].asString();
-        profile.audioInputProfile.sampleBit  = data["audioInputProfile"]["sampleBit"].asString();
+        profile.audioInputProfile.enable        = data["audioInputProfile"]["enable"].asBool();
+        profile.audioInputProfile.token         = data["audioInputProfile"]["token"].asString();
+        profile.audioInputProfile.name          = data["audioInputProfile"]["name"].asString();
+        profile.audioInputProfile.sourceToken   = data["audioInputProfile"]["sourceToken"].asString();
+        profile.audioInputProfile.encoderToken  = data["audioInputProfile"]["encoderToken"].asString();
+        profile.audioInputProfile.acodec        = data["audioInputProfile"]["acodec"].asString();
+        profile.audioInputProfile.channelNo     = data["audioInputProfile"]["channelNo"].asInt();
+        profile.audioInputProfile.sampleRate    = data["audioInputProfile"]["sampleRate"].asString();
+        profile.audioInputProfile.sampleBit     = data["audioInputProfile"]["sampleBit"].asString();
     }
     // relay output profiles
     if (!data["relayOutputProfiles"].isNull() && data["relayOutputProfiles"].isArray()) {
@@ -1375,7 +1389,7 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("sdCardSyncMinSegmentGapSec", std::to_string(opt.sdCardSyncMinSegmentGapSec)));
         kvs.push_back(make("sdCardSyncRetryCount",       std::to_string(opt.sdCardSyncRetryCount)));
         kvs.push_back(make("enforceWatermarkOnView",     std::to_string(opt.enforceWatermarkOnView)));
-        kvs.push_back(make("enableReduceQualityOnView", std::to_string(opt.enableReduceQualityOnView)));
+        kvs.push_back(make("enableReduceQualityOnView",  std::to_string(opt.enableReduceQualityOnView)));
         kvs.push_back(make("watermarkExcludedRoleIds",   opt.watermarkExcludedRoleIds));
         kvs.push_back(make("watermarkTemplate",          opt.watermarkTemplate));
         kvs.push_back(make("enforcePrivacyMaskOnView",   std::to_string(opt.enforcePrivacyMaskOnView)));

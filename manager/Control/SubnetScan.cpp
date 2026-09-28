@@ -1,3 +1,4 @@
+#include <condition_variable>
 #include <future>
 #include "Util/onceToken.h"
 #include "Util/util.h"
@@ -9,6 +10,7 @@
 #include "Camera/GenericRtspCamera.h"
 #include "Control/OnvifDeviceControl.h"
 #include "SubnetScan.h"
+#include "Speaker/SpeakerController.h"
 
 using namespace std;
 using namespace toolkit;
@@ -88,8 +90,13 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
     const string &username = option.username;
     const string &password = option.password;
     const bool defaultPort = option.defaultPort;
+    const auto type        = option.type;
     DeviceScanResult ret;
     if (start_with(address, "rtsp://")) {
+        if (type != DeviceType::Camera) {
+            cb(SockException(Err_other, "RTSP URL only supports camera", ApiErrCode::CODE_INVALID_ARGS), ret);
+            return;
+        }
         // address is rtsp url
         string url = address;
         
@@ -135,49 +142,112 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
             }
         });
     } else if (isIP(address.data())) {
-        // address is ip
-        const string &ip = address;
-        const int port = defaultPort ? 80 : option.port;
-        string ipAddress = StrPrinter << ip << ":" << port;
-        auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
-        if (!onvif->connect()) {
-            ret.address = "http://" + ipAddress;
-            ret.err_msg = onvif->getSoapErrMsg();
-            cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
-            return;
-        }
+        if (type == DeviceType::Camera) {
+            // address is ip
+            const string &ip = address;
+            const int port = defaultPort ? 80 : option.port;
+            string ipAddress = StrPrinter << ip << ":" << port;
+            auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
+            if (!onvif->connect()) {
+                ret.address = "http://" + ipAddress;
+                ret.err_msg = onvif->getSoapErrMsg();
+                cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
+                return;
+            }
 
-        auto info = onvif->getDeviceInfo();
-        ret.manufacturer = info.manufacturer;
-        ret.model = info.model;
-        ret.firmwareVersion = info.firmwareVersion;
-        ret.serialNumber = info.serialNumber;
-        ret.hardwareId = info.hardwareId;
-        ret.macAddress = info.macAddress;
-        ret.address = "http://" + ipAddress; 
-        ret.ip = ip;
-        ret.port = port;
-        ret.webPortAuto = defaultPort;
-        ret.isPtz = onvif->enablePTZ();
-        ret.isAudioOutput = onvif->enableAudioOutput();
-        ret.isAudioInput = onvif->enableAudioInput();
-        ret.isImageFocus = onvif->enableFocus();
-        ret.isImageIris = onvif->enableIris();
-        ret.isRelayOutput = onvif->enableRelayOutput();
-        // todo: check is new device or not
-        ret.isNewDevice = true;
-        auto profiles = onvif->selectStreamUrls();
-        for (const auto &it : profiles) {
-            DeviceScanResult::StreamProfile stream;
-            stream.vcodec = it.vcodec;
-            stream.width = it.width;
-            stream.height = it.height;
-            stream.fps = it.fps;
-            stream.bitrate = it.bitrate;
-            stream.url = UriUtils::replaceIp(it.url, ip);
-            ret.profiles.push_back(stream);
+            auto info = onvif->getDeviceInfo();
+            ret.manufacturer = info.manufacturer;
+            ret.model = info.model;
+            ret.firmwareVersion = info.firmwareVersion;
+            ret.serialNumber = info.serialNumber;
+            ret.hardwareId = info.hardwareId;
+            ret.macAddress = info.macAddress;
+            ret.address = "http://" + ipAddress;
+            ret.ip = ip;
+            ret.port = port;
+            ret.webPortAuto = defaultPort;
+            ret.isPtz = onvif->enablePTZ();
+            ret.isAudioOutput = onvif->enableAudioOutput();
+            ret.isAudioInput = onvif->enableAudioInput();
+            ret.isImageFocus = onvif->enableFocus();
+            ret.isImageIris = onvif->enableIris();
+            ret.isRelayOutput = onvif->enableRelayOutput();
+            // todo: check is new device or not
+            ret.isNewDevice = true;
+            auto profiles = onvif->selectStreamUrls();
+            for (const auto &it : profiles) {
+                DeviceScanResult::StreamProfile stream;
+                stream.vcodec = it.vcodec;
+                stream.width = it.width;
+                stream.height = it.height;
+                stream.fps = it.fps;
+                stream.bitrate = it.bitrate;
+                stream.url = UriUtils::replaceIp(it.url, ip);
+                ret.profiles.push_back(stream);
+            }
+            cb(SockException(Err_success), ret);
+        } else if (type == DeviceType::Speaker) {
+            // address is ip
+            const string &ip = address;
+            const int port = defaultPort ? 80 : option.port;
+            string ipAddress = StrPrinter << ip << ":" << port;
+
+            // The vendor probe answers on an HTTP poller; wait for it here so that, like the ONVIF
+            // branch, cb runs on the calling thread before this returns.
+            struct ProbeResult {
+                std::mutex mtx;
+                std::condition_variable cv;
+                bool done = false;
+                SockException ex;
+                IDevice::Ptr device;
+            };
+            auto result = std::make_shared<ProbeResult>();
+            SpeakerController::probe(ip, port, username, password,
+                [result](const SockException& ex, IDevice::Ptr device) {
+                    std::lock_guard<std::mutex> lock(result->mtx);
+                    result->ex = ex;
+                    result->device = std::move(device);
+                    result->done = true;
+                    result->cv.notify_all();
+                });
+            SockException ex;
+            IDevice::Ptr device;
+            {
+                std::unique_lock<std::mutex> lock(result->mtx);
+                if (!result->cv.wait_for(lock, std::chrono::seconds(30), [&result]() { return result->done; })) {
+                    result->ex = SockException(Err_timeout, "Speaker probe timeout");
+                }
+                ex = result->ex;
+                device = std::move(result->device);
+            }
+            if (ex) {
+                ret.address = "http://" + ipAddress;
+                ret.err_msg = ex.what();
+                cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
+                return;
+            }
+            auto info = device->getDeviceInfo();
+            ret.manufacturer = info.manufacturer;
+            ret.model = info.model;
+            ret.firmwareVersion = info.firmwareVersion;
+            ret.serialNumber = info.serialNumber;
+            ret.hardwareId = info.hardwareId;
+            ret.macAddress = info.macAddress;
+            ret.address = "http://" + ipAddress;
+            ret.ip = ip;
+            ret.port = port;
+            ret.webPortAuto = defaultPort;
+            ret.isPtz = false;
+            ret.isAudioOutput = false;
+            ret.isAudioInput = false;
+            ret.isImageFocus = false;
+            ret.isImageIris = false;
+            ret.isRelayOutput = false;
+            ret.isNewDevice = true;
+            cb(SockException(Err_success), ret);
+        } else {
+            cb(SockException(Err_other, "Device is not supported", ApiErrCode::CODE_INVALID_ARGS), ret);
         }
-        cb(SockException(Err_success), ret);
     } else {
         cb(SockException(Err_other, "Address must be ip or rtsp url", ApiErrCode::CODE_INVALID_ARGS), ret);
     }

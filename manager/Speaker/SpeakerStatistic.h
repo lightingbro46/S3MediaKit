@@ -58,7 +58,9 @@ public:
 
     void setAudioRemoteId(const std::string &fileId, const std::string &remoteId);
 
-    bool isFeatureSupported(SupportedFeatures feature);
+    AudioVolumeInfo getAudioVolumeInfo();
+
+    void setAudioVolume(const int deviceVolume, const int configuredVolume);
 
 public:
     SpeakerStatistic getParams();
@@ -71,6 +73,8 @@ private:
     void load();
 
     void save();
+
+    void saveOnvifCredentials();
 
 private:
     std::mutex _mtx;

@@ -2045,7 +2045,7 @@ bool HttpSession::checkAudioBackchannel(const function<void()> &cb) {
     weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
 
     // Authentication result callback
-    auto onRes = [weak_self, close_flag](const string &err) {
+    auto onRes = [weak_self, close_flag, device_id](const string &err) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             // This object has been destroyed
@@ -2056,7 +2056,7 @@ bool HttpSession::checkAudioBackchannel(const function<void()> &cb) {
             strong_self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
             return;
         }
-        auto bc = std::make_shared<BackchannelWsSession>(strong_self->getSock());
+        auto bc = std::make_shared<BackchannelWsSession>(strong_self->getSock(), device_id);
         strong_self->_talk_src = bc;
 
         // From this point on, all data received from the socket is forwarded

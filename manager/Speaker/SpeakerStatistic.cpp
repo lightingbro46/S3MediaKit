@@ -22,22 +22,44 @@ static Json::Value makeDeviceStatisticJson(const bool &connect, const string &st
     ret["status"] = status;
     // deviceInfo
     Json::Value deviceInfo = Json::objectValue;
-    deviceInfo["manufacturer"] = caps.onvifProfile.deviceInfo.manufacturer;
-    deviceInfo["model"] = caps.onvifProfile.deviceInfo.model;
-    deviceInfo["firmwareVersion"] = caps.onvifProfile.deviceInfo.firmwareVersion;
-    deviceInfo["serialNumber"] = caps.onvifProfile.deviceInfo.serialNumber;
-    deviceInfo["hardwareId"] = caps.onvifProfile.deviceInfo.hardwareId;
-    deviceInfo["macAddress"] = caps.onvifProfile.deviceInfo.macAddress;
+    deviceInfo["manufacturer"]      = caps.onvifProfile.deviceInfo.manufacturer;
+    deviceInfo["model"]             = caps.onvifProfile.deviceInfo.model;
+    deviceInfo["firmwareVersion"]   = caps.onvifProfile.deviceInfo.firmwareVersion;
+    deviceInfo["serialNumber"]      = caps.onvifProfile.deviceInfo.serialNumber;
+    deviceInfo["hardwareId"]        = caps.onvifProfile.deviceInfo.hardwareId;
+    deviceInfo["macAddress"]        = caps.onvifProfile.deviceInfo.macAddress;
     ret["capabilities"]["onvifProfile"]["deviceInfo"] = deviceInfo;
-    Json::Value vendorFeatureSupport = Json::objectValue;
-    vendorFeatureSupport["requiresSeparateCredential"] = caps.vendorFeatureSupport.requiresSeparateCredential;
-    vendorFeatureSupport["supportsVendorFeatures"] = caps.vendorFeatureSupport.supportsVendorFeatures;
-    Json::Value featureArray = Json::arrayValue;
-    for (const auto &it : caps.vendorFeatureSupport.supportedVendorFeatures) {
-        featureArray.append(it);
+    Json::Value audioOutput = Json::objectValue;
+    audioOutput["enable"]       = caps.onvifProfile.audioOutputProfile.enable;
+    audioOutput["token"]        = caps.onvifProfile.audioOutputProfile.token;
+    audioOutput["name"]         = caps.onvifProfile.audioOutputProfile.name;
+    audioOutput["outputToken"]  = caps.onvifProfile.audioOutputProfile.outputToken;
+    audioOutput["profileToken"] = caps.onvifProfile.audioOutputProfile.profileToken;
+    audioOutput["outputLevel"]  = caps.onvifProfile.audioOutputProfile.outputLevel;
+    audioOutput["sendPrimacy"]  = caps.onvifProfile.audioOutputProfile.sendPrimacy;
+    audioOutput["decoderToken"] = caps.onvifProfile.audioOutputProfile.decoderToken;
+    Json::Value supportedArray  = Json::arrayValue;
+    for (const auto &it : caps.onvifProfile.audioOutputProfile.supportedDecodingEncodings) {
+        supportedArray.append(it);
     }
-    vendorFeatureSupport["supportedVendorFeatures"] = featureArray;
-    ret["capabilities"]["vendorFeatureSupport"] = vendorFeatureSupport;
+    audioOutput["supportedDecodingEncodings"] = supportedArray;
+    ret["capabilities"]["onvifProfile"]["audioOutputProfile"] = audioOutput;
+    Json::Value audioInput = Json::objectValue;
+    audioInput["enable"]        = caps.onvifProfile.audioInputProfile.enable;
+    audioInput["token"]         = caps.onvifProfile.audioInputProfile.token;
+    audioInput["name"]          = caps.onvifProfile.audioInputProfile.name;
+    audioInput["sourceToken"]   = caps.onvifProfile.audioInputProfile.sourceToken;
+    audioInput["encoderToken"]  = caps.onvifProfile.audioInputProfile.encoderToken;
+    audioInput["acodec"]        = caps.onvifProfile.audioInputProfile.acodec;
+    audioInput["channelNo"]     = caps.onvifProfile.audioInputProfile.channelNo;
+    audioInput["sampleRate"]    = caps.onvifProfile.audioInputProfile.sampleRate;
+    audioInput["sampleBit"]     = caps.onvifProfile.audioInputProfile.sampleBit;
+    ret["capabilities"]["onvifProfile"]["audioInputProfile"] = audioInput;
+    ret["capabilities"]["supportsAudioVolumeControl"] = caps.supportsAudioVolumeControl;
+    ret["capabilities"]["audioVolumeInfo"]["minAudioVolume"] = caps.audioVolumeInfo.minAudioVolume;
+    ret["capabilities"]["audioVolumeInfo"]["maxAudioVolume"] = caps.audioVolumeInfo.maxAudioVolume;
+    ret["capabilities"]["audioVolumeInfo"]["deviceAudioVolume"] = caps.audioVolumeInfo.deviceAudioVolume;
+    ret["capabilities"]["audioVolumeInfo"]["configuredAudioVolume"] = caps.audioVolumeInfo.configuredAudioVolume;
     ret["capabilities"]["supportsAudioBackchannel"] = caps.supportsAudioBackchannel;
     return ret;
 }
@@ -47,21 +69,47 @@ static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     stats.isOnvifDevice = !data["isOnvifDevice"].empty() ? data["isOnvifDevice"].asBool() : false;
     // deviceInfo
     OnvifProfile profile;
-    profile.deviceInfo.manufacturer = data["onvifProfile"]["deviceInfo"]["manufacturer"].asString();
-    profile.deviceInfo.model = data["onvifProfile"]["deviceInfo"]["model"].asString();
-    profile.deviceInfo.firmwareVersion = data["onvifProfile"]["deviceInfo"]["firmwareVersion"].asString();
-    profile.deviceInfo.serialNumber = data["onvifProfile"]["deviceInfo"]["serialNumber"].asString();
-    profile.deviceInfo.hardwareId = data["onvifProfile"]["deviceInfo"]["hardwareId"].asString();
-    profile.deviceInfo.macAddress = data["onvifProfile"]["deviceInfo"]["macAddress"].asString();
-    stats.onvifProfile = profile;
-    VendorFeatureSupport features;
-    features.requiresSeparateCredential = data["vendorFeatureSupport"]["requiresSeparateCredential"].asBool();
-    features.supportsVendorFeatures = data["vendorFeatureSupport"]["supportsVendorFeatures"].asBool();
-    stats.supportsAudioBackchannel = !data["supportsAudioBackchannel"].empty() ? data["supportsAudioBackchannel"].asBool() : false;
-    for (const auto &it : data["vendorFeatureSupport"]["supportedVendorFeatures"]) {
-        features.supportedVendorFeatures.push_back(it.asString());
+    profile.deviceInfo.manufacturer     = data["onvifProfile"]["deviceInfo"]["manufacturer"].asString();
+    profile.deviceInfo.model            = data["onvifProfile"]["deviceInfo"]["model"].asString();
+    profile.deviceInfo.firmwareVersion  = data["onvifProfile"]["deviceInfo"]["firmwareVersion"].asString();
+    profile.deviceInfo.serialNumber     = data["onvifProfile"]["deviceInfo"]["serialNumber"].asString();
+    profile.deviceInfo.hardwareId       = data["onvifProfile"]["deviceInfo"]["hardwareId"].asString();
+    profile.deviceInfo.macAddress       = data["onvifProfile"]["deviceInfo"]["macAddress"].asString();
+    // audio output profile
+    if (!data["onvifProfile"]["audioOutputProfile"].isNull() && data["onvifProfile"]["audioOutputProfile"].isObject()) {
+        profile.audioOutputProfile.enable       = data["onvifProfile"]["audioOutputProfile"]["enable"].asBool();
+        profile.audioOutputProfile.token        = data["onvifProfile"]["audioOutputProfile"]["token"].asString();
+        profile.audioOutputProfile.name         = data["onvifProfile"]["audioOutputProfile"]["name"].asString();
+        profile.audioOutputProfile.outputToken  = data["onvifProfile"]["audioOutputProfile"]["outputToken"].asString();
+        profile.audioOutputProfile.profileToken = data["onvifProfile"]["audioOutputProfile"]["profileToken"].asString();
+        profile.audioOutputProfile.outputLevel  = data["onvifProfile"]["audioOutputProfile"]["outputLevel"].asInt();
+        profile.audioOutputProfile.sendPrimacy  = data["onvifProfile"]["audioOutputProfile"]["sendPrimacy"].asString();
+        profile.audioOutputProfile.decoderToken = data["onvifProfile"]["audioOutputProfile"]["decoderToken"].asString();
+        for (const auto &it : data["onvifProfile"]["audioOutputProfile"]["supportedDecodingEncodings"]) {
+            profile.audioOutputProfile.supportedDecodingEncodings.push_back(it.asString());
+        }
     }
-    stats.vendorFeatureSupport = features;
+    // audio input profile
+    if (!data["onvifProfile"]["audioInputProfile"].isNull() && data["onvifProfile"]["audioInputProfile"].isObject()) {
+        profile.audioInputProfile.enable        = data["onvifProfile"]["audioInputProfile"]["enable"].asBool();
+        profile.audioInputProfile.token         = data["onvifProfile"]["audioInputProfile"]["token"].asString();
+        profile.audioInputProfile.name          = data["onvifProfile"]["audioInputProfile"]["name"].asString();
+        profile.audioInputProfile.sourceToken   = data["onvifProfile"]["audioInputProfile"]["sourceToken"].asString();
+        profile.audioInputProfile.encoderToken  = data["onvifProfile"]["audioInputProfile"]["encoderToken"].asString();
+        profile.audioInputProfile.acodec        = data["onvifProfile"]["audioInputProfile"]["acodec"].asString();
+        profile.audioInputProfile.channelNo     = data["onvifProfile"]["audioInputProfile"]["channelNo"].asInt();
+        profile.audioInputProfile.sampleRate    = data["onvifProfile"]["audioInputProfile"]["sampleRate"].asString();
+        profile.audioInputProfile.sampleBit     = data["onvifProfile"]["audioInputProfile"]["sampleBit"].asString();
+    }
+    stats.onvifProfile = profile;
+    stats.supportsAudioVolumeControl = !data["supportsAudioVolumeControl"].empty() ? data["supportsAudioVolumeControl"].asBool() : false;
+    if (!data["audioVolumeInfo"].isNull() && data["audioVolumeInfo"].isObject()) {
+        stats.audioVolumeInfo.minAudioVolume            = data["audioVolumeInfo"]["minAudioVolume"].asInt();
+        stats.audioVolumeInfo.maxAudioVolume            = data["audioVolumeInfo"]["maxAudioVolume"].asInt();
+        stats.audioVolumeInfo.deviceAudioVolume        = data["audioVolumeInfo"]["deviceAudioVolume"].asInt();
+        stats.audioVolumeInfo.configuredAudioVolume    = data["audioVolumeInfo"]["configuredAudioVolume"].asInt();
+    }
+    stats.supportsAudioBackchannel = !data["supportsAudioBackchannel"].empty() ? data["supportsAudioBackchannel"].asBool() : false;
     return stats;
 }
 
@@ -83,13 +131,20 @@ bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic 
     option.name = ret["name"].asString();
     option.ip = ret["ip"].asString();
     option.port = ret["port"].asInt();
+    option.webPort = ret["webPort"].asInt();
+    option.autoWebPort = ret["autoWebPort"].asBool();
     option.manufacturer = ret["manufacturer"].asString();
     option.model = ret["model"].asString();
     option.username = ret["username"].asString();
     option.password = ret["password"].asString();
-    option.devicePort = ret["devicePort"].asInt();
-    option.deviceUsername = ret["deviceUsername"].asString();
-    option.devicePassword = ret["devicePassword"].asString();
+    option.onvifPort = ret["onvifPort"].asInt();
+    option.onvifUsername = ret["onvifUsername"].asString();
+    option.onvifPassword = ret["onvifPassword"].asString();
+    option.preferedMediaServer = ret["preferedMediaServer"].asString();
+    option.enableActive = ret["enableActive"].asBool();
+    option.mediaPort = ret["mediaPort"].asInt();
+    option.autoMediaPort = ret["autoMediaPort"].asBool();
+    option.audioPlaybackMode = ret["audioPlaybackMode"].asInt();
     stats.option = option;
 
     stats.connect = ret["connect"].asBool();
@@ -112,7 +167,9 @@ bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic 
     stats.created_at = ret["created_at"].asUInt64();
     stats.updated_at= ret["updated_at"].asUInt64();
 
-    for (const auto& file : ret["audioFiles"]) {
+    // Files saved before the key was renamed are stored under "audioFiles".
+    const Json::Value &uploaded = ret.isMember("audioFileUploaded") ? ret["audioFileUploaded"] : ret["audioFiles"];
+    for (const auto& file : uploaded) {
         SpeakerAudioRef ref;
 
         ref.id = file["id"].asString();
@@ -137,14 +194,20 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
     root["name"] = stats.option.name;
     root["ip"] = stats.option.ip;
     root["port"] = stats.option.port;
+    root["webPort"] = stats.option.webPort;
+    root["autoWebPort"] = stats.option.autoWebPort;
     root["manufacturer"] = stats.option.manufacturer;
     root["model"] = stats.option.model;
     root["username"] = stats.option.username;
     root["password"] = stats.option.password;
-    root["devicePort"] = stats.option.devicePort;
-    root["deviceUsername"] = stats.option.deviceUsername;
-    root["devicePassword"] = stats.option.devicePassword;
+    root["onvifPort"] = stats.option.onvifPort;
+    root["onvifUsername"] = stats.option.onvifUsername;
+    root["onvifPassword"] = stats.option.onvifPassword;
     root["preferedMediaServer"] = stats.option.preferedMediaServer;
+    root["enableActive"] = stats.option.enableActive;
+    root["mediaPort"] = stats.option.mediaPort;
+    root["autoMediaPort"] = stats.option.autoMediaPort;
+    root["audioPlaybackMode"] = stats.option.audioPlaybackMode;
 
     // add params
     Json::Value params = Json::arrayValue;
@@ -156,7 +219,7 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
     root["created_at"] = stats.created_at;
     root["updated_at"] = stats.updated_at;
 
-    Json::Value audioFiles(Json::arrayValue);
+    Json::Value audioFileUploaded(Json::arrayValue);
     for (const auto& item : stats.fileUploaded) {
         const auto& ref = item.second;
 
@@ -165,10 +228,10 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
         file["remoteId"] = ref.remoteId;
         file["uploaded_at"] = ref.uploaded_at;
 
-        audioFiles.append(file);
+        audioFileUploaded.append(file);
     }
 
-    root["audioFiles"] = audioFiles;
+    root["audioFileUploaded"] = audioFileUploaded;
 
     return root.toStyledString();
 }
@@ -204,7 +267,8 @@ void SpeakerStatisticImp::load() {
         created_at = saved_stats.created_at;
         updated_at = saved_stats.updated_at;
         fileUploaded = saved_stats.fileUploaded;
-        device_caps.vendorFeatureSupport = saved_stats.device_caps.vendorFeatureSupport;
+        // The volume the user configured is only known here: the device reports its own level.
+        device_caps.audioVolumeInfo.configuredAudioVolume = saved_stats.device_caps.audioVolumeInfo.configuredAudioVolume;
     }
 }
 
@@ -234,8 +298,12 @@ void SpeakerStatisticImp::addDeviceCapabilities(bool input_connect, string input
     connect = input_connect;
     status = input_status;
     if (input_caps) {
+        // The controller does not know the configured volume: keep the one set through setAudioVolume().
+        int configured_volume = device_caps.audioVolumeInfo.configuredAudioVolume;
         device_caps = *input_caps;
+        device_caps.audioVolumeInfo.configuredAudioVolume = configured_volume;
     }
+    saveOnvifCredentials();
     DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << connect << ", Status=" << status
            << ", isOnvifDevice=" << device_caps.isOnvifDevice;
     save();
@@ -268,13 +336,16 @@ void SpeakerStatisticImp::setAudioRemoteId(const std::string &fileId, const std:
     save();
 }
 
-bool SpeakerStatisticImp::isFeatureSupported(SupportedFeatures feature) {
+AudioVolumeInfo SpeakerStatisticImp::getAudioVolumeInfo() {
     std::lock_guard<std::mutex> lck(_mtx);
-    std::string str_feature = VendorFeatureSupport::toString(feature);
-    auto supportedVendorFeatures = device_caps.vendorFeatureSupport.supportedVendorFeatures;
-    return std::find(supportedVendorFeatures.begin(),
-              supportedVendorFeatures.end(),
-              str_feature) != supportedVendorFeatures.end();
+    return device_caps.audioVolumeInfo;
+}
+
+void SpeakerStatisticImp::setAudioVolume(const int deviceVolume, const int configuredVolume) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    device_caps.audioVolumeInfo.deviceAudioVolume = deviceVolume;
+    device_caps.audioVolumeInfo.configuredAudioVolume = configuredVolume;
+    save();
 }
 
 SpeakerStatistic SpeakerStatisticImp::getParams() {
@@ -294,6 +365,17 @@ void SpeakerStatisticImp::remove() {
     }
     if (_on_remove && removed) {
         _on_remove(tuple.device_id);
+    }
+}
+
+void SpeakerStatisticImp::saveOnvifCredentials() {
+    if (connect) {
+        // Same account SpeakerController::setupDeviceController() logs in with.
+        bool vendor_account = requiresSeparateDeviceCredential(getDeviceBrand(option.manufacturer));
+        GET_CONFIG(std::string, onvif_username, mediakit::Speaker::kOnvifUsername);
+        option.onvifUsername = vendor_account ? onvif_username : option.username;
+        option.onvifPassword = option.password;
+        option.onvifPort = option.port;
     }
 }
 

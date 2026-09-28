@@ -12,7 +12,9 @@ class BackchannelWsSession : public toolkit::Session, public mediakit::WebSocket
 public:
     using Ptr = std::shared_ptr<BackchannelWsSession>;
 
-    explicit BackchannelWsSession(const toolkit::Socket::Ptr& sock);
+    // `authDeviceId` is the device the upgrade request was authorized for (URL path): every
+    // message must target it.
+    BackchannelWsSession(const toolkit::Socket::Ptr& sock, const std::string& authDeviceId);
     ~BackchannelWsSession() override;
 
     void attachServer(const toolkit::Server& server) override;
@@ -34,6 +36,7 @@ private:
     void sendReply(BackchannelReplyType type, const std::string &reason);
 
 private:
+    const std::string _authDeviceId;
     std::string _deviceId;
     BackchannelEncoding _encoding = BackchannelEncoding::PCM16LE;
     std::string _payload_buf;
