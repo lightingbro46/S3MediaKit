@@ -66,6 +66,8 @@ DECLARE_ENTITY(BookmarkIndex, "bookmark_index",
     &BookmarkIndex::start_time,    "start_time",
     &BookmarkIndex::end_time,      "end_time",
     &BookmarkIndex::name,          "name",
+    &BookmarkIndex::description,   "description",
+    &BookmarkIndex::tags_csv,      "tags_csv",
     &BookmarkIndex::creator_guid,  "creator_guid",
     &BookmarkIndex::created,       "created"
 )

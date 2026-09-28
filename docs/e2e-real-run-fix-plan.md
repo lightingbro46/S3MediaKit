@@ -38,7 +38,11 @@ Trạng thái cập nhật 2026-09-26 sau khi làm P8 + P1 (xem mục 5).
 | 14 | P2 | Replay gộp (`auto`/`lo`) phát xong `duration` nhưng kết nối HTTP fMP4 còn mở thêm ~30 s | APF-02 (30 s media mất 61 s) | `8b9aff00` (2026-04-06) | ✅ Đã sửa, chưa chạy lại E2E |
 | 15 | P2 | `playback/speed` với URL `live2.mp4` luôn trả `906001 Playback stream not found` | RPL-15b (mới) | Id nội bộ `.replay.<md5>` của replay gộp | ✅ Đã sửa (P9 bước 1), chưa chạy lại E2E camera thật |
 | 16 | P2 | `duration` chỉ có tác dụng ở HTTP-fMP4 per-stream; RTSP/RTMP/TS/FLV/HLS per-stream bỏ qua, và người xem khác `duration` dùng chung một `MP4Reader` | RPL (per-stream) | Có từ trước | ✅ Đã sửa (P9 bước 2), chưa chạy lại E2E camera thật |
-| 17 | P2 | Thumbnail (`recordedThumnail`) `504` khi `pos` nằm xa đầu file: lệnh `ffmpeg.snap` mặc định đặt `-ss` sau `-i`, giải mã từ đầu file, vượt `recorded_thumbnail_timeout_sec=5` (1080p: giây 59 > 5 s, giây 22 mất 3,7 s) | RPL-19 (tuỳ stamp) | Có từ trước | Mới, mở |
+| 17 | P2 | Thumbnail (`recordedThumnail`) `504` khi `pos` nằm xa đầu file: lệnh `ffmpeg.snap` mặc định đặt `-ss` sau `-i`, giải mã từ đầu file, vượt `recorded_thumbnail_timeout_sec=5` (1080p: giây 59 > 5 s, giây 22 mất 3,7 s) | RPL-19 (tuỳ stamp) | `cfcffc00` (2026-06-16) | ✅ Đã sửa |
+| 18 | P1 | File Main ghi theo motion (pre-record) tên `1970-01--4/…`: `MP4Recorder` đọc `start_time_ms` (epoch ms) bằng `atoi`, tràn `int` | REC-05, APF (tìm Main theo timeline) | `d5624d99` (2026-08-31) | ✅ Đã sửa |
+| 19 | P1 | Segment HLS của mọi người xem có overlay (live và replay) trả `403 Untrusted HLS derived stream`: stream id của request segment dính đường dẫn segment nên không tìm thấy source dẫn xuất | OVL-09 (và HLS live có overlay) | Nhánh này | ✅ Đã sửa |
+| 20 | P1 | Người không cần overlay (admin được loại trừ) đọc được playlist dẫn xuất của viewer khác (watermark mang tên người đó) | OVL-03 | Lộ ra sau khi sửa vấn đề 2 | ✅ Đã sửa |
+| 21 | P2 | Tìm bookmark theo tag hoặc mô tả không ra: `DECLARE_ENTITY(BookmarkIndex)` thiếu cột `description`, `tags_csv` nên FTS của ESC chỉ có tên | BKM-03b | `3fe8dca4` (2026-06-02) | ✅ Đã sửa (bookmark cũ có lại tag/mô tả khi được cập nhật) |
 
 ## 3. Chi tiết và cách xử lý
 
@@ -351,6 +355,29 @@ Chốt 2026-09-27: làm chung một plan, hai bước, commit riêng.
   Còn lại: viewer đi qua overlay transcode chỉ nhận ~16 s video của 20 s. Transcode bắt đầu trễ ~2,5 s
   và bị huỷ cùng source khi hết timeline, nên đoạn cuối còn trong transcode bị mất (trước khi sửa cũng
   vậy: 15,6 s). Chưa sửa; E2E APF-02.
+
+### Lần chạy E2E camera giả 2026-09-27 (vấn đề 17–21)
+
+Camera giả hai nguồn RTSP (`stress_vms/rtsp_source.py`): Main 1920x1080, Sub 640x360, 25 fps, GOP 2 s,
+chu kỳ 60 s gồm 30 s tĩnh, 15 s chuyển động, 15 s tĩnh; không có âm thanh. Không có MinIO nên không
+chạy tier và mã hoá.
+
+- **17 — thumbnail 504.** Default `ffmpeg.snap` đưa `-ss` lên trước `-i`; `FFmpegSnap::snap` chọn thứ tự
+  tham số theo vị trí `-ss` và thay template cũ (default của `cfcffc00`, đã nằm trong `config.ini` các
+  máy) bằng dạng mới. Giây 59 của file 1080p: 504 → 0,32 s.
+- **18 — tên file 1970.** `strtoll` thay `atoi`. Cũng sửa luôn `start_time_ms` của `StreamSource` và
+  `MediaGapFillManager` (cùng chỗ đọc).
+- **19 — segment HLS có overlay 403.** Khi tìm source dẫn xuất, cắt stream id tại `/` đầu tiên sau
+  `.transcode.`. Segment live và replay 200; segment gọi bằng session lạ vẫn 401.
+- **20 — playlist dẫn xuất của người khác.** Stream dẫn xuất có tag khác policy người gọi luôn `403`,
+  không phụ thuộc người gọi có cần overlay.
+- **21 — tìm bookmark theo tag.** Thêm `description`, `tags_csv` vào `DECLARE_ENTITY(BookmarkIndex)`
+  (bảng và migration đã có cột).
+- Harness: `rtsp_source.py` bỏ qua RTCP interleaved (`$`) thay vì đóng phiên (camera giả tự rớt sau
+  ~70 s); PRX-01 chờ tới 30 s cho source HLS của proxy được gỡ (giữ ~10–15 s là đúng thiết kế).
+
+Kết quả: `auto-profile` 11/11 PASS (APF-01..07), `overlay` 8/8, `bookmark` + `proxy` 6/6, replay/extract
+PASS trừ RPL-17 (vấn đề 6, đúng thiết kế) và RPL-04 (kiểm tay). Unit test 161/161.
 
 ## 4. Thứ tự làm và kiểm
 

@@ -950,8 +950,13 @@ def g_proxy(ctx):
         time.sleep(5)
         online = any(m.get("app") == "proxy" and m.get("stream") == "e2e" for m in ctx.media_list())
         r2 = ctx.index_api("delStreamProxy", key=key or "")
-        time.sleep(2)
-        gone = not any(m.get("app") == "proxy" for m in ctx.media_list())
+        # HLS sources stay registered ~10-15 s after the proxy is gone (last segments still served).
+        gone = False
+        for _ in range(30):
+            time.sleep(1)
+            gone = not any(m.get("app") == "proxy" for m in ctx.media_list())
+            if gone:
+                break
         ctx.record("PRX-01", bool(key) and online and gone,
                    "add code=%s online=%s del code=%s gone=%s" % (r.get("code"), online, r2.get("code"), gone))
 

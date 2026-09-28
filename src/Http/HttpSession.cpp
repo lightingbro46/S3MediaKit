@@ -933,12 +933,19 @@ bool HttpSession::checkLiveStreamHls() {
     const bool has_transcode_suffix = _media_info.stream.find(TRANSCODE_SUFFIX) != string::npos;
     MediaSource::Ptr named_derived_source;
     if (has_transcode_suffix) {
+        // A segment request's stream also carries the segment path
+        // ("<id>.transcode.<md5>.<tag>/<date>/<hour>/<name>.ts"): look up the id only.
+        string derived_stream = _media_info.stream;
+        const auto slash = derived_stream.find('/', derived_stream.find(TRANSCODE_SUFFIX));
+        if (slash != string::npos) derived_stream.resize(slash);
         named_derived_source = MediaSource::find(_media_info.schema, _media_info.vhost,
-                                                 _media_info.app, _media_info.stream, false);
+                                                 _media_info.app, derived_stream, false);
     }
     const bool trusted_derived_source =
         isTrustedViewOverlayDerivedSource(named_derived_source, makeViewOverlayPolicyTag(view_policy));
-    if (camera_overlay_requested && has_transcode_suffix && !trusted_derived_source) {
+    // A derived stream is served only to the policy it was rendered for, also when the caller
+    // needs no overlay: it carries another viewer's watermark (user name) and mask.
+    if (has_transcode_suffix && !trusted_derived_source) {
         sendResponse(403, true, nullptr, KeyValue(),
                      make_shared<HttpStringBody>("Untrusted HLS derived stream is forbidden by view overlay policy"));
         return true;

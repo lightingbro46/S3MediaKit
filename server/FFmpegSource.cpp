@@ -60,7 +60,8 @@ onceToken token([]() {
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
     // mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 -an %s"; // backward compatibility, do not delete
-    mINI::Instance()[kSnap] = "%s -i %s -ss %s -y -f mjpeg -frames:v 1 -an %s";
+    // -ss before -i seeks in the input; after -i ffmpeg decodes from the file start (seconds far into a file).
+    mINI::Instance()[kSnap] = "%s -ss %s -i %s -y -f mjpeg -frames:v 1 -an %s";
     mINI::Instance()[kSnapOverlay] = "%s -ss %s -i %s -y -filter_complex %s -map [v] -frames:v 1 -f mjpeg -an %s";
     // mINI::Instance()[kExtract] = "%s -f concat -safe 0 -i %s -y -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c copy %s"; // backward compatibility, do not delete
     mINI::Instance()[kExtract] = "%s -protocol_whitelist file,crypto,tcp,tls,http,https -f concat -safe 0 -i %s -y -ss %s -to %s -metadata title=%s -metadata comment=%s -metadata date=%s -metadata artist=%s -c:v copy -c:a aac %s";
