@@ -255,7 +255,9 @@ Chốt 2026-09-27: làm chung một plan, hai bước, commit riêng.
 - Truyền params vào đường tạo source (`find_l(from_mp4)` → `createFromMP4`).
 - `MultiMP4Demuxer`: eof khi vượt `duration`, `findNextSegment` không nối file sau điểm đó. Reader tự
   huỷ khi hết, mọi protocol nhận EOF (nhờ bản sửa vấn đề 14).
-- Giới hạn `duration` trong `HttpSession` giữ làm lớp bảo vệ thứ hai.
+- ~~Giới hạn `duration` trong `HttpSession` giữ làm lớp bảo vệ thứ hai.~~ Đã bỏ 2026-09-28: lớp session
+  tính mốc từ gói đầu của người xem và `close(false)` đóng source dùng chung; `duration` chỉ còn tác
+  dụng qua stream id + reader, `?duration` trên luồng live không còn tác dụng.
 - `findPlaybackStream` với `.live.mp4` dùng cùng `replayStreamId`.
 - Kiểm: unit test `MultiMP4Demuxer` dừng đúng `duration`; E2E trên camera giả `.live.mp4`/RTSP/TS có
   `duration`, speed per-stream, hai người xem khác `duration` cùng stamp.
