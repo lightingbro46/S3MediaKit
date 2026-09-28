@@ -26,6 +26,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::restore()` | `ThreadPool` | Restore segment COLD từ object storage: claim job (SQLite) và tải S3/MinIO về restore cache |
 | `BlockingExecutors::tier()` | `ThreadPool` | Chu kỳ tier storage: tiering/bảo trì (quét range, đối soát object LIST/DELETE, dọn cache), backfill, health check pool (statvfs, HEAD/metrics S3) |
 | `BlockingExecutors::tierTransfer()` | `ThreadPool` | Transfer job của tier storage: copy segment sang NAS, upload lên S3/MinIO |
+| `rec close N` (`MP4Recorder::closeExecutorFor`, `src/`) | `ThreadPool` 1 thread × `record.closeThreads` | Đóng segment MP4 (ghi moov, rename) và mọi listener `kBroadcastRecordMP4`: ghi timefile, đăng ký range HOT (SQLite), xếp mã hoá, hook `on_record_mp4`. Chọn theo `hash(vhost/app/stream)` nên các segment của một stream đóng đúng thứ tự |
 
 Điểm mấu chốt: **mỗi thread của `WorkThreadPool` là một `EventPoller`**, không phải thread
 rảnh. Nó đang chạy timer và các hàng đợi cần giữ thứ tự. Một lời gọi blocking dài ở đó
@@ -336,6 +337,7 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 | `blocking.encryptionThreads` | 2 | Không được đăng ký default, chỉ đọc nếu có trong config |
 | `blocking.restoreThreads` | 5 | Trần của pool; số restore chạy đồng thời thực tế do `storage.auto_restore_max_concurrent` giới hạn |
 | `blocking.tierThreads` | 3 | Một thread cho mỗi loại chu kỳ (tiering, backfill, health); mỗi loại có cờ chống chồng lấn |
+| `record.closeThreads` | 2 | Số pool 1 thread đóng segment MP4 (`src/`, đọc một lần ở lần đóng đầu tiên) |
 | `blocking.tierTransferThreads` | 4 | Trần của pool; số transfer đồng thời do `storage.tiering_transfer_max_concurrent` và `..._per_pool` giới hạn |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
@@ -382,6 +384,7 @@ Unit test:
 | `integration.tier-manager.EnforcesRestoreConcurrencyLimit` | Giới hạn restore đồng thời; poller của `WorkThreadPool` vẫn trả lời < 300 ms khi đang tải; `stop()` không trả về khi còn child `RUNNING` |
 | `integration.tier-manager.QueuesRestoreAsynchronouslyForMediaPoller` | `accessRecordedSegment(..., async_enqueue=true)` trả `QUEUED` ngay, job được tạo sau trên pool `restore`, request lặp lại chỉ tạo một job |
 | `integration.tier-manager.TransferLeavesWorkPollersFree` | Upload chậm chạy trên `tierTransfer`: poller của `WorkThreadPool` vẫn trả lời < 300 ms |
+| `unit_replay` `MP4RecorderCloseTest` | Segment của một stream đóng đúng thứ tự, trên thread `rec close N`, không phải poller |
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |

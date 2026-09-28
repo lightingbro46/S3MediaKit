@@ -641,6 +641,10 @@ extern const std::string kArchiveName;
 extern const std::string kReplayMaxGapSec;
 // Auto-quality replay stays on the current stream for a preferred-stream stretch shorter than this (seconds)
 extern const std::string kReplayMinSwitchSec;
+// Threads that close finished MP4 segments (write moov, rename, emit kBroadcastRecordMP4 whose
+// listeners write the timefile and SQLite). Segments of one stream always close on the same thread,
+// in order. Read once at the first close.
+extern const std::string kCloseThreads;
 } // namespace Record
 
 // //////////HLS related configuration///////////

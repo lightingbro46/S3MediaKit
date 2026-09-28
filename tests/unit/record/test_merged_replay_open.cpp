@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <future>
+#include <set>
+#include <vector>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -12,7 +15,9 @@
 #include "Record/MP4Demuxer.h"
 #include "Record/MP4Muxer.h"
 #include "Record/MergedMP4Reader.h"
+#include "Record/MP4Recorder.h"
 #include "Util/File.h"
+#include "Util/util.h"
 #include "Util/NoticeCenter.h"
 #include "Poller/EventPoller.h"
 
@@ -292,4 +297,38 @@ TEST(MP4MuxerParameterSetsTest, FirstKeyframeSampleCarriesSpsAndPps) {
     EXPECT_EQ(first_video->data()[first_video->prefixSize()] & 0x1f, 7) << "first video sample does not start with SPS";
     demuxer.closeMP4();
     File::delete_file(path);
+}
+
+// Closing a segment (moov write, rename, kBroadcastRecordMP4 listeners that write the timefile and
+// SQLite) used to run on a WorkThreadPool poller. It now runs on "rec close N" threads, and the
+// segments of one stream close one after another in order.
+TEST(MP4RecorderCloseTest, SegmentsOfAStreamCloseInOrderOffPollers) {
+    const string key = "__defaultVhost__/record/cam-close/main";
+    auto executor = MP4Recorder::closeExecutorFor(key);
+    ASSERT_TRUE(executor);
+    EXPECT_EQ(executor.get(), MP4Recorder::closeExecutorFor(key).get());
+
+    mutex mtx;
+    vector<int> order;
+    set<string> threads;
+    bool on_poller = false;
+    const int count = 20;
+    auto done = make_shared<promise<void>>();
+    auto finished = done->get_future();
+    for (int i = 0; i < count; ++i) {
+        executor->async([&, i, done]() {
+            // Later tasks must not overtake an earlier, slower one.
+            if (i % 5 == 0) this_thread::sleep_for(chrono::milliseconds(5));
+            lock_guard<mutex> lck(mtx);
+            order.push_back(i);
+            threads.insert(getThreadName());
+            on_poller = on_poller || static_cast<bool>(EventPoller::getCurrentPoller());
+            if (static_cast<int>(order.size()) == count) done->set_value();
+        }, false);
+    }
+    ASSERT_EQ(future_status::ready, finished.wait_for(chrono::seconds(5)));
+    for (int i = 0; i < count; ++i) EXPECT_EQ(i, order[i]);
+    ASSERT_EQ(1u, threads.size());
+    EXPECT_EQ(0u, threads.begin()->find("rec close ")) << *threads.begin();
+    EXPECT_FALSE(on_poller);
 }

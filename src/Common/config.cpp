@@ -403,6 +403,7 @@ const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
 const string kArchiveName = RECORD_FIELD "archiveName";
 const string kReplayMaxGapSec = RECORD_FIELD "replayMaxGapSec";
 const string kReplayMinSwitchSec = RECORD_FIELD "replayMinSwitchSec";
+const string kCloseThreads = RECORD_FIELD "closeThreads";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -414,6 +415,7 @@ static onceToken token([]() {
     mINI::Instance()[kArchiveName] = "archive";
     mINI::Instance()[kReplayMaxGapSec] = 2;
     mINI::Instance()[kReplayMinSwitchSec] = 5;
+    mINI::Instance()[kCloseThreads] = 2;
 });
 } // namespace Record
 

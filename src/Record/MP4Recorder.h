@@ -6,6 +6,7 @@
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
 #include "MP4Muxer.h"
+#include "Thread/TaskExecutor.h"
 
 namespace mediakit {
 
@@ -18,6 +19,10 @@ public:
 
     MP4Recorder(const MediaTuple &tuple, const std::string &path, size_t max_second);
     ~MP4Recorder() override;
+
+    // Single-thread pool ("rec close N") that closes the segments of `stream_key`
+    // (MediaTuple::shortUrl()); the same key always maps to the same pool.
+    static toolkit::TaskExecutor::Ptr closeExecutorFor(const std::string &stream_key);
 
     /**
      * Reset all Tracks

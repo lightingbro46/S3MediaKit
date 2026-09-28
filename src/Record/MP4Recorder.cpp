@@ -5,13 +5,31 @@
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "MP4Recorder.h"
-#include "Thread/WorkThreadPool.h"
+#include "Thread/ThreadPool.h"
 #include "MP4Muxer.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace mediakit {
+
+TaskExecutor::Ptr MP4Recorder::closeExecutorFor(const string &stream_key) {
+    // Closing blocks on disk (moov write, rename) and so do the kBroadcastRecordMP4 listeners
+    // (timefile, SQLite), so none of it may run on a poller. One single-thread pool per slot keeps
+    // the segments of a stream in order while different streams close in parallel.
+    // Intentionally leaked, like the replay open pool: closes may still be queued at exit.
+    static vector<TaskExecutor::Ptr> *pools = []() {
+        GET_CONFIG(int, threads, Record::kCloseThreads);
+        threads = std::max(1, threads);
+        auto ret = new vector<TaskExecutor::Ptr>();
+        for (int i = 0; i < threads; ++i) {
+            ret->emplace_back(std::make_shared<ThreadPool>(1, ThreadPool::PRIORITY_NORMAL, true, false,
+                                                           "rec close " + to_string(i)));
+        }
+        return ret;
+    }();
+    return (*pools)[std::hash<string>()(stream_key) % pools->size()];
+}
 
 MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max_second) {
     // ///record Business Logic//////
@@ -82,7 +100,7 @@ void MP4Recorder::asyncClose() {
     auto full_path_tmp = _full_path_tmp;
     auto info = _info;
     TraceL << "Start close tmp mp4 file: " << full_path_tmp;
-    WorkThreadPool::Instance().getExecutor()->async([muxer, full_path_tmp, info]() mutable {
+    closeExecutorFor(_info.shortUrl())->async([muxer, full_path_tmp, info]() mutable {
         info.time_len = muxer->getDuration() / 1000.0f;
         // Closing mp4 can be very time-consuming, so it should be executed in the background thread
         TraceL << "Closing tmp mp4 file: " << full_path_tmp;
