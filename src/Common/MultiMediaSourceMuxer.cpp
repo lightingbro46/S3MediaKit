@@ -292,7 +292,7 @@ int MultiMediaSourceMuxer::totalReaderCount() const {
            (_mp4 ? _option.mp4_as_player : 0) +
            (_hls ? _hls->readerCount() : 0) +
            (_hls_fmp4 ? _hls_fmp4->readerCount() : 0) +
-#ifdef ENABLE_FFMPEG
+#if defined(ENABLE_FFMPEG)
            (_stack? _stack->readerCount() : 0) +
 #endif // ENABLE_FFMPEG
            (_ring ? _ring->readerCount() : 0);
@@ -700,6 +700,13 @@ MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const Transco
         }
         _stack->addTrackCompleted();
     }
+    if (cfg.width <= 0 && cfg.height <= 0) {
+        // No requested size: use the source's (a merged replay sets its largest clip size).
+        auto sized = cfg;
+        sized.width = _option.transcode_width;
+        sized.height = _option.transcode_height;
+        return _stack->ensureTranscode(sized);
+    }
     return _stack->ensureTranscode(cfg);
 }
 #endif // ENABLE_FFMPEG
@@ -1047,7 +1054,9 @@ bool MultiMediaSourceMuxer::isEnabled(){
                      (_ring ? (bool)_ring->readerCount() : false)  ||
                      (_hls ? _hls->isEnabled() : false) ||
                      (_hls_fmp4 ? _hls_fmp4->isEnabled() : false) ||
+#if defined(ENABLE_FFMPEG)
                      (_stack ? _stack->isEnabled() : false) ||
+#endif // ENABLE_FFMPEG
                      _mp4;
 
         if (_is_enable) {

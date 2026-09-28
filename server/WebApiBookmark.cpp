@@ -495,7 +495,7 @@ void registerBookmarkApis() {
                     string filter_complex;
                     string policy_key;
                     vector<string> overlay_temp_paths;
-                    const string overlay_prefix = StrPrinter << scan_path << start_time << ".bookmark.overlay";
+                    const string overlay_prefix = StrPrinter << scan_path << start_time << ".bookmark.overlay.svg";
                     if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
                                                                     filter_complex, overlay_temp_paths, policy_key)) {
                         for (const auto &temp_path : overlay_temp_paths) {

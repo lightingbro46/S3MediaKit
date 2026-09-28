@@ -181,6 +181,7 @@ TEST(MediaSourceHelpersTest, ConvertsOriginsAndComparesTuples) {
     EXPECT_EQ("device_chn", getOriginTypeString(MediaOriginType::device_chn));
     EXPECT_EQ("rtc_push", getOriginTypeString(MediaOriginType::rtc_push));
     EXPECT_EQ("srt_push", getOriginTypeString(MediaOriginType::srt_push));
+    EXPECT_EQ("transcode", getOriginTypeString(MediaOriginType::transcode));
     EXPECT_EQ("unknown", getOriginTypeString(static_cast<MediaOriginType>(255)));
 
     EXPECT_TRUE(equalMediaTuple(MediaTuple("v", "a", "s", "x"), MediaTuple("v", "a", "s", "y")));

@@ -1187,19 +1187,28 @@ void installWebHook() {
 
         bool transcode_stream = false;
         bool reduce_quality_allowed = true;
+        bool overlay_forbidden = false;
         auto transcode_it = params.find("transcode");
         if (transcode_it != params.end()) {
             transcode_stream = transcode_it->second == "1" || transcode_it->second == "true";
         }
         const bool reduce_quality_requested = transcode_stream;
 
+        // Playback is open for every protocol. The policy feeds resource
+        // accounting and rejects unresolved overlays or disabled quality requests.
         Broadcast::ViewOverlayPolicyInvoker policy_cb = [&](const Broadcast::ViewOverlayPolicy &policy) {
-            const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
-            const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+            transcode_stream = transcode_stream || policy.requiresOverlay();
+            overlay_forbidden = policy.isUnavailable();
             reduce_quality_allowed = policy.reduce_quality_enabled;
-            transcode_stream = transcode_stream || use_watermark || use_privacy_mask;
         };
         NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, false, jwt_token, policy_cb, sender);
+
+        if (overlay_forbidden) {
+            // Saved camera info loads asynchronously after startup: until then the policy cannot be
+            // resolved, so answer "retry later" (503) instead of 403.
+            invoker(CameraManager::Instance().isReady() ? "OverlayForbidden" : "ResourceUnavailable");
+            return;
+        }
         if (reduce_quality_requested && !reduce_quality_allowed) {
             invoker("TranscodeDisabled");
             return;

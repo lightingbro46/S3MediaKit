@@ -66,6 +66,8 @@ DECLARE_ENTITY(BookmarkIndex, "bookmark_index",
     &BookmarkIndex::start_time,    "start_time",
     &BookmarkIndex::end_time,      "end_time",
     &BookmarkIndex::name,          "name",
+    &BookmarkIndex::description,   "description",
+    &BookmarkIndex::tags_csv,      "tags_csv",
     &BookmarkIndex::creator_guid,  "creator_guid",
     &BookmarkIndex::created,       "created"
 )
@@ -75,6 +77,17 @@ public:
     BookmarkIndexRepository() : SqliteRepository<BookmarkIndex>(Database::kEdgeStorageControllerDb) {}
 
 protected:
+    // Match the term as one FTS5 phrase (substring with the trigram tokenizer), so '-', ':' etc.
+    // are not parsed as query operators or column filters.
+    static std::string ftsPhrase(const std::string &term) {
+        std::string phrase = "\"";
+        for (char c : term) {
+            phrase += c;
+            if (c == '"') phrase += '"';
+        }
+        return phrase + "\"";
+    }
+
     std::vector<BookmarkIndex> findByTimeRange(
             int64_t start_time, int64_t end_time,
             const std::string &camera_guid, const std::string &creator_guid,
@@ -99,11 +112,16 @@ protected:
         if (!search_term.empty()) {
             join << "bookmark_index_fts ON bookmark_index_fts.rowid = bookmark_index.rowid";
             where << " AND bookmark_index_fts MATCH ? ";
-            params.push_back(search_term);
+            params.push_back(ftsPhrase(search_term));
         }
 
+        // bookmark_index_fts also has a bookmark_guid column: qualify to avoid "ambiguous column name".
+        auto columns = EntityTraits<BookmarkIndex>::getColumns();
+        for (auto &column : columns) {
+            column = EntityTraits<BookmarkIndex>::tableName() + "." + column;
+        }
         auto query = toolkit::QueryBuilder()
-                         .select(EntityTraits<BookmarkIndex>::getColumns())
+                         .select(columns)
                          .from(EntityTraits<BookmarkIndex>::tableName());
         if (!join.str().empty()) {
             query.join(join.str());
@@ -141,7 +159,7 @@ protected:
         if (!search_term.empty()) {
             join << "bookmark_index_fts ON bookmark_index_fts.rowid = bookmark_index.rowid";
             where << " AND bookmark_index_fts MATCH ? ";
-            params.push_back(search_term);
+            params.push_back(ftsPhrase(search_term));
         }
 
         auto query = toolkit::QueryBuilder()

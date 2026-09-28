@@ -334,7 +334,7 @@ void RtmpSession::sendPlayResponse(const string &err, const RtmpMediaSource::Ptr
 void RtmpSession::doPlayResponse(const string &err,const std::function<void(bool)> &cb){
     if(!err.empty()){
         //Authentication failed, direct return to playback failed
-        sendPlayResponse(err, nullptr);
+        sendPlayResponse(err == "OverlayForbidden" ? "403 View Overlay Required" : err, nullptr);
         cb(false);
         return;
     }

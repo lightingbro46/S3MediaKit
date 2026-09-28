@@ -75,6 +75,7 @@ const string kBroadcastPlayerCountChanged = "kBroadcastPlayerCountChanged";
 const string kBroadcastMediaSeeked = "kBroadcastMediaSeeked";
 const string kBroadcastMediaSeeked2 = "kBroadcastMediaSeeked2";
 const string kBroadcastGetRecordedMP4 = "kBroadcastGetRecordedMP4";
+const string kBroadcastGetReplayTimeline = "kBroadcastGetReplayTimeline";
 const string kBroadcastGetStreamQuality = "kBroadcastGetStreamQuality";
 const string kBroadcastRestartServer = "kBroadcastRestartServer";
 const string kBroadcastSystemAlert = "kBroadcastSystemAlert";
@@ -400,6 +401,8 @@ const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
 const string kArchiveName = RECORD_FIELD "archiveName";
+const string kReplayMaxGapSec = RECORD_FIELD "replayMaxGapSec";
+const string kReplayMinSwitchSec = RECORD_FIELD "replayMinSwitchSec";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -409,6 +412,8 @@ static onceToken token([]() {
     mINI::Instance()[kFileRepeat] = false;
     mINI::Instance()[kEnableFmp4] = false;
     mINI::Instance()[kArchiveName] = "archive";
+    mINI::Instance()[kReplayMaxGapSec] = 2;
+    mINI::Instance()[kReplayMinSwitchSec] = 5;
 });
 } // namespace Record
 

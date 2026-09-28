@@ -54,3 +54,7 @@
 vtscloud.vn
 api-config.json
 /tools/git-patch
+
+# Python bytecode (test harness scripts)
+__pycache__/
+*.pyc

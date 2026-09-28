@@ -252,9 +252,16 @@ class Server(object):
         owned = []
         try:
             while True:
-                line = await reader.readline()
-                if not line:
+                first = await reader.read(1)
+                if not first:
                     break
+                if first == b"$":
+                    # RTCP interleaved on the RTSP connection ($, channel, length): skip it,
+                    # otherwise it is parsed as a malformed request and the session drops.
+                    hdr = await reader.readexactly(3)
+                    await reader.readexactly(struct.unpack("!H", hdr[1:])[0])
+                    continue
+                line = first + await reader.readline()
                 try:
                     request = line.decode("utf-8", "replace").strip()
                 except UnicodeDecodeError:

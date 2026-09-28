@@ -59,9 +59,30 @@ uint64_t MP4MuxerInterface::getDuration() const {
     return ret;
 }
 
+uint64_t MP4MuxerInterface::getNextDts() const {
+    int64_t ret = 0;
+    for (auto &pr : _tracks) {
+        if (pr.second.last_dts != INT64_MIN) {
+            ret = std::max(ret, pr.second.last_dts + pr.second.last_interval);
+        }
+    }
+    return ret;
+}
+
+void MP4MuxerInterface::onSampleWritten(MP4Track &track, int64_t dts_out) {
+    if (track.start_dts == INT64_MIN) {
+        track.start_dts = dts_out;
+    }
+    if (track.last_dts != INT64_MIN && dts_out > track.last_dts) {
+        track.last_interval = dts_out - track.last_dts;
+    }
+    track.last_dts = dts_out;
+}
+
 void MP4MuxerInterface::resetTracks() {
     _started = false;
     _have_video = false;
+    _pending_config.clear();
     _mov_writter = nullptr;
     _tracks.clear();
 }
@@ -88,11 +109,28 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
     if (!_started) {
         // This logic ensures that the first frame is a keyframe when there is video
         if (_have_video && !frame->keyFrame()) {
-            // Contains video, but not a keyframe, then the previous frames are discarded
+            // Contains video, but not a keyframe, then the previous frames are discarded.
+            // Parameter sets right before the keyframe are kept: after a track reset
+            // they carry a new resolution in-band, which players reading fMP4
+            // progressively need because they ignore a second init segment.
+            if (frame->getTrackType() == TrackVideo) {
+                if (frame->configFrame()) {
+                    _pending_config.emplace_back(Frame::getCacheAbleFrame(frame));
+                } else {
+                    _pending_config.clear();
+                }
+            }
             return false;
         }
         // Start writing the file
         _started = true;
+        auto pending_config = std::move(_pending_config);
+        _pending_config.clear();
+        for (auto &config : pending_config) {
+            if (config->dts() == frame->dts()) {
+                inputFrame(config);
+            }
+        }
     }
 
     // fmp4 encapsulation exceeds a certain I-frame interval, force refresh segment to prevent memory increase
@@ -118,6 +156,7 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
             track.merger.inputFrame(frame, [this, &track](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
                 int64_t dts_out, pts_out;
                 track.stamp.revise(dts, pts, dts_out, pts_out);
+                onSampleWritten(track, dts_out);
                 mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, have_idr ? MOV_AV_FLAG_KEYFREAME : 0);
             });
             break;
@@ -126,11 +165,111 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
         default: {
             int64_t dts_out, pts_out;
             track.stamp.revise(frame->dts(), frame->pts(), dts_out, pts_out);
+            onSampleWritten(track, dts_out);
             mp4_writer_write(_mov_writter.get(), track.track_id, frame->data() + frame->prefixSize(), frame->size() - frame->prefixSize(), pts_out, dts_out, frame->keyFrame() ? MOV_AV_FLAG_KEYFREAME : 0);
             break;
         }
     }
     return true;
+}
+
+namespace {
+
+uint32_t readU32(const char *ptr) {
+    auto p = reinterpret_cast<const uint8_t *>(ptr);
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+void writeU32(char *ptr, uint32_t value) {
+    for (int i = 3; i >= 0; --i, value >>= 8) {
+        ptr[i] = static_cast<char>(value & 0xFF);
+    }
+}
+
+uint64_t readU64(const char *ptr) {
+    return (uint64_t(readU32(ptr)) << 32) | readU32(ptr + 4);
+}
+
+void writeU64(char *ptr, uint64_t value) {
+    writeU32(ptr, static_cast<uint32_t>(value >> 32));
+    writeU32(ptr + 4, static_cast<uint32_t>(value));
+}
+
+// Calls cb(type, box_begin, box_size, header_size) for each box in [begin, end).
+template <typename CB>
+void forEachBox(char *begin, char *end, CB &&cb) {
+    while (end - begin >= 8) {
+        uint64_t size = readU32(begin);
+        size_t header = 8;
+        if (size == 1) {
+            if (end - begin < 16) {
+                return;
+            }
+            size = readU64(begin + 8);
+            header = 16;
+        } else if (size == 0) {
+            size = end - begin;
+        }
+        if (size < header || size > uint64_t(end - begin)) {
+            return;
+        }
+        cb(std::string(begin + 4, 4), begin, static_cast<size_t>(size), header);
+        begin += size;
+    }
+}
+
+} // namespace
+
+void MP4MuxerInterface::reviseDecodeTime(std::string &segment) const {
+    bool need_revise = false;
+    for (auto &pr : _tracks) {
+        if (pr.second.start_dts != INT64_MIN && pr.second.start_dts != 0) {
+            need_revise = true;
+        }
+    }
+    if (!need_revise) {
+        return;
+    }
+
+    auto data = &segment[0];
+    forEachBox(data, data + segment.size(), [&](const std::string &type, char *moof, size_t size, size_t header) {
+        if (type != "moof") {
+            return;
+        }
+        forEachBox(moof + header, moof + size, [&](const std::string &type, char *traf, size_t size, size_t header) {
+            if (type != "traf") {
+                return;
+            }
+            int64_t start_dts = 0;
+            forEachBox(traf + header, traf + size, [&](const std::string &type, char *box, size_t size, size_t header) {
+                if (type == "tfhd" && size >= header + 8) {
+                    // libmov numbers tkhd track_ID from 1 in the order the tracks were added
+                    auto track_id = static_cast<int>(readU32(box + header + 4)) - 1;
+                    for (auto &pr : _tracks) {
+                        if (pr.second.track_id == track_id && pr.second.start_dts != INT64_MIN) {
+                            start_dts = pr.second.start_dts;
+                        }
+                    }
+                    return;
+                }
+                if (type != "tfdt" || start_dts <= 0 || size < header + 8) {
+                    return;
+                }
+                auto version = static_cast<uint8_t>(box[header]);
+                auto value = box + header + 4;
+                if (version == 1 && size >= header + 12) {
+                    writeU64(value, readU64(value) + start_dts);
+                } else if (version == 0) {
+                    uint64_t decode_time = uint64_t(readU32(value)) + start_dts;
+                    if (decode_time > UINT32_MAX) {
+                        WarnL << "tfdt overflows 32 bits after revise: " << decode_time;
+                        return;
+                    }
+                    writeU32(value, static_cast<uint32_t>(decode_time));
+                }
+            });
+        });
+    });
 }
 
 void MP4MuxerInterface::stampSync() {
@@ -227,6 +366,7 @@ bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
 
     auto data = _memory_file->getAndClearMemory();
     if (!data.empty()) {
+        reviseDecodeTime(data);
         // Output segment data
         onSegmentData(std::move(data), _last_dst, _key_frame);
         _key_frame = false;
@@ -252,6 +392,7 @@ void MP4MuxerMemory::flush() {
 
     auto data = _memory_file->getAndClearMemory();
     if (!data.empty()) {
+        reviseDecodeTime(data);
         onSegmentData(std::move(data), _last_dst, _key_frame);
         _key_frame = false;
     }

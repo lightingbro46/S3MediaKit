@@ -131,6 +131,19 @@ private:
                                 const std::function<void(const MediaSource::Ptr &)> &cb);
 
 protected:
+    // Tag of the overlay a viewer policy enforces; the last component of a
+    // view-overlay derived stream id. Viewers with the same effective overlay
+    // share the tag, so a derived stream is only trusted for a matching policy.
+    static std::string makeViewOverlayPolicyTag(const Broadcast::ViewOverlayPolicy &policy);
+    // View policy of an HLS request. A request with a token resolves the policy
+    // and stores it under viewer_key (camera scope + HLS session id); a request
+    // without one (segment/init/key) reuses the stored policy and resolves only
+    // when none is stored, i.e. without the viewer's exclusions.
+    static Broadcast::ViewOverlayPolicy resolveHlsViewOverlayPolicy(
+        const std::string &viewer_key, const std::string &jwt_token, uint64_t ttl_ms, uint64_t now_ms,
+        const std::function<Broadcast::ViewOverlayPolicy()> &resolve);
+    static bool isTrustedViewOverlayDerivedSource(const MediaSource::Ptr &source, const std::string &policy_tag);
+
     MediaInfo _media_info;
 
 private:

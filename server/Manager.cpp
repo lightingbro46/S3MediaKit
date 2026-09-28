@@ -7,6 +7,7 @@
 #include "Common/config.h"
 #include "Common/MediaSource.h"
 #include "Record/Recorder.h"
+#include "Record/ReplayTimelinePlanner.h"
 #include "Local/TimeRecorderManager.h"
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
@@ -258,39 +259,62 @@ void installManagerHook () {
         Broadcast::ViewOverlayPolicy policy;
         auto device_id = args.app;
         GET_CONFIG(string, record_app, Record::kAppName);
+        const bool replay_request = args.app == record_app;
         if (args.app == record_app) {
             device_id = split(args.stream, "/")[0];
         }
 
+        CameraOption option;
+        CameraStatistic camera_params;
+        bool option_resolved = false;
+        bool params_resolved = false;
         auto device = DeviceSource::find(args.vhost, device_id);
-        if (!device) {
-            invoker(policy);
-            return;
+        if (device) {
+            auto strong_listener = device->getListener().lock();
+            auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
+            if (impl) {
+                auto stats_imp = impl->getCameraStatisticImp();
+                if (stats_imp) {
+                    camera_params = stats_imp->getParams();
+                    option = camera_params.option;
+                    params_resolved = true;
+                } else {
+                    option = impl->getCameraOption();
+                }
+                option_resolved = true;
+            }
         }
-        auto weak_listener = device->getListener();
-        auto strong_listener = weak_listener.lock();
-        if (!strong_listener) {
-            invoker(policy);
-            return;
+
+        // Replay must retain the camera overlay policy when the camera is
+        // offline. CameraStatistic is persisted independently of DeviceSource.
+        if (!option_resolved) {
+            auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
+            if (recorder) {
+                camera_params = recorder->getParams();
+                option = camera_params.option;
+                option_resolved = true;
+                params_resolved = true;
+            }
         }
-        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener);
-        if (!impl) {
+
+        if (!option_resolved) {
+            policy.status = replay_request || device
+                ? Broadcast::ViewOverlayPolicy::Status::Unavailable
+                : Broadcast::ViewOverlayPolicy::Status::NotApplicable;
             invoker(policy);
             return;
         }
 
-        auto stats_imp = impl->getCameraStatisticImp();
-        if (!stats_imp) {
-            invoker(policy);
-            return;
-        }
-        const auto params = stats_imp->getParams();
-        const auto &option = params.option;
-        const auto quality = ReduceQualityCapabilityBuilder::build(option, params.stream_map, params.sinfo_map);
-        policy.reduce_quality_enabled = quality.supported;
-        for (const auto &profile : quality.profiles) {
-            if (profile.source_stream_id == args.stream) {
-                policy.reduce_quality_profiles.emplace_back(profile);
+        policy.status = Broadcast::ViewOverlayPolicy::Status::Resolved;
+        policy.reduce_quality_enabled = option.enableReduceQualityOnView;
+        if (params_resolved) {
+            const auto quality = ReduceQualityCapabilityBuilder::build(
+                option, camera_params.stream_map, camera_params.sinfo_map);
+            policy.reduce_quality_enabled = quality.supported;
+            for (const auto &profile : quality.profiles) {
+                if (profile.source_stream_id == args.stream) {
+                    policy.reduce_quality_profiles.emplace_back(profile);
+                }
             }
         }
         policy.watermark_enforce = option.enforceWatermarkOnView;
@@ -311,6 +335,11 @@ void installManagerHook () {
         }
 
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token);
+        if (!token_cache) {
+            policy.status = Broadcast::ViewOverlayPolicy::Status::Unavailable;
+            invoker(policy);
+            return;
+        }
         auto role_code = token_cache->getRoleCode();
         auto overlay = force_overlay || token_cache->getOverlay();
 
@@ -362,6 +391,60 @@ void installManagerHook () {
             });
         }
         invoker(files);
+    });
+
+    // Resolve recorded Main/Sub blocks into the first contiguous replay range.
+    // MergedMP4Reader consumes only the selected data and has no motion
+    // dependency.
+    NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetReplayTimeline, [](BroadcastGetReplayTimelineArgs) {
+        const uint64_t query_end = stamp + (max_duration ? max_duration : 24 * 60 * 60);
+        std::vector<ReplayBlock> blocks;
+
+        auto collect = [&](int source, const std::string &stream_id) {
+            if (stream_id.empty()) return;
+            try {
+                MediaTuple tuple(vhost, app, stream_id, "");
+                TimeQuery query(tuple);
+                query.getRecordedTimePeriod(stamp, query_end, [&](std::vector<TimeBlock> &ret) {
+                    for (const auto &block : ret) {
+                        auto path = resolveRecordedBlockPath(block);
+                        if (path.empty() || block.time_len() <= 0) continue;
+                        const uint64_t begin = std::max<uint64_t>(stamp, block.start_time());
+                        const uint64_t finish = std::min<uint64_t>(query_end, block.start_time() + block.time_len());
+                        if (finish > begin) {
+                            ReplayBlock replay_block;
+                            replay_block.source = source;
+                            replay_block.stream_id = stream_id;
+                            replay_block.file_path = path;
+                            replay_block.start_time = begin;
+                            replay_block.end_time = finish;
+                            replay_block.file_start_time = block.start_time();
+                            blocks.push_back(replay_block);
+                        }
+                    }
+                });
+            } catch (const std::exception &ex) {
+                WarnL << "Replay timeline query failed for stream=" << stream_id << ": " << ex.what();
+            }
+        };
+
+        collect(0, main_stream_id);
+        collect(1, sub_stream_id);
+
+        if (blocks.empty()) {
+            invoker(std::vector<Broadcast::ReplayClip>(), 0);
+            return;
+        }
+        GET_CONFIG(uint32_t, replay_max_gap_s, Record::kReplayMaxGapSec);
+        GET_CONFIG(uint32_t, replay_min_switch_s, Record::kReplayMinSwitchSec);
+        ReplayPlanOptions plan_options;
+        plan_options.max_gap_s = replay_max_gap_s;
+        plan_options.min_switch_s = replay_min_switch_s;
+        const auto mode = ReplayTimelinePlanner::resolveMode(quality, preferred);
+        const auto clips = ReplayTimelinePlanner::build(blocks, stamp, query_end, mode, plan_options);
+        const uint64_t total = clips.empty()
+            ? 0 : clips.back().start_time + clips.back().duration - stamp;
+        invoker(clips, total);
     });
 
 #endif // ENABLE_MP4
@@ -859,7 +942,6 @@ static void loadWatermarkTemplateFromMap(CameraOption &option,  const unordered_
         auto it = watermark_templates.find(option.watermarkTemplateId);
         if (it != watermark_templates.end()) {
             option.watermarkTemplate = it->second;
-            option.watermarkExcludedRoleIds = "";
             DebugL << "Load watermark template from map: id=" << option.watermarkTemplateId << ". Set enforceWatermarkOnView to true.";
             option.enforceWatermarkOnView = true;
         } else {

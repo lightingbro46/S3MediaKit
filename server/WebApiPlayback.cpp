@@ -228,7 +228,7 @@ void registerPlaybackApis() {
                 string filter_complex;
                 string policy_key;
                 vector<string> overlay_temp_paths;
-                const string overlay_prefix = StrPrinter << scan_path << pos_time << ".overlay";
+                const string overlay_prefix = StrPrinter << scan_path << pos_time << ".overlay.svg";
                 if (!FFmpegOverlayFilter::buildThumbnailOverlay(tuple, allArgs["_jwt_token"], overlay_prefix,
                                                                 filter_complex, overlay_temp_paths, policy_key)) {
                     for (const auto &temp_path : overlay_temp_paths) {
@@ -317,12 +317,14 @@ void registerPlaybackApis() {
             url.erase(0, prefix_size);
         }
         string schema;
+        bool merged = false;
         if (end_with(url, fmp4_suffix)) {
             schema = FMP4_SCHEMA;
             url.erase(url.size() - fmp4_suffix.size());
         } else if (end_with(url, fmp4_merged_suffix)) {
             schema = FMP4_SCHEMA;
             url.erase(url.size() - fmp4_merged_suffix.size());
+            merged = true;
         } else if (end_with(url, ts_suffix)) {
             schema = TS_SCHEMA;
             url.erase(url.size() - ts_suffix.size());
@@ -340,7 +342,11 @@ void registerPlaybackApis() {
             return false;
         }
 
-        ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, media_info.stream);
+        // Replays register under an id derived from the url's query: the merged one
+        // from quality/prefered/duration, a per-stream one from duration (if any).
+        const string stream = merged ? MediaSource::replayStreamId(media_info.stream, info_in.params)
+                                     : MediaSource::perStreamReplayId(media_info.stream, info_in.params);
+        ret = MediaSource::find(media_info.schema, media_info.vhost, media_info.app, stream);
         return ret != nullptr;
     };
 

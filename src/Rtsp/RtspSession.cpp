@@ -327,6 +327,12 @@ void RtspSession::emitOnPlay(){
             return;
         }
         if (!err.empty()) {
+            if (err == "OverlayForbidden") {
+                strong_self->sendRtspResponse("403 Forbidden", {"Content-Type", "text/plain"},
+                                              "403 View Overlay Required");
+                strong_self->shutdown(SockException(Err_shutdown, "403 View Overlay Required"));
+                return;
+            }
             if (err == "MaxRequest") {
                 //Too many connections
                 strong_self->sendRtspResponse("429 Too Many Requests", {"Content-Type", "text/plain"}, "429 Too Many Requests");

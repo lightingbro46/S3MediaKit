@@ -2,6 +2,7 @@
 
 #include "MP4Reader.h"
 #include "Common/config.h"
+#include "Common/Parser.h"
 #include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
 
@@ -42,6 +43,8 @@ void MP4Reader::setup(const MediaTuple &tuple, const std::string &file_path, con
     }
 
     _demuxer = std::make_shared<MultiMP4Demuxer>();
+    // A per-stream replay opened with ?duration=N (see MediaSource::perStreamReplayId)
+    _demuxer->setMaxDuration(strtoull(Parser::parseArgs(tuple.params)["duration"].data(), nullptr, 10));
     _demuxer->openMP4(_file_path);
 
     if (tuple.stream.empty()) {
