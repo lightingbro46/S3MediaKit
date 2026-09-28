@@ -6,6 +6,7 @@
 #include "Util/onceToken.h"
 #include "macros.h"
 #include <functional>
+#include <vector>
 #include <json/json.h>
 
 namespace mediakit {
@@ -68,9 +69,26 @@ extern const std::string kBroadcastMediaPublish;
 // If err is empty, it means authentication is successful.
 using AuthInvoker = std::function<void(const std::string &err)>;
 
-// Result of the manager-side view overlay policy check.  The media layer only
+struct ReduceQualityProfile {
+    std::string source_stream_id;
+    std::string codec;
+    int width = 0;
+    int height = 0;
+    int bitrate = 0;
+    int fps = 0;
+
+    bool operator==(const ReduceQualityProfile &other) const {
+        return source_stream_id == other.source_stream_id && codec == other.codec &&
+               width == other.width && height == other.height &&
+               bitrate == other.bitrate && fps == other.fps;
+    }
+};
+
+// Result of the manager-side view transform policy check.  The media layer only
 // consumes this value and never includes managerkit headers.
 struct ViewOverlayPolicy {
+    bool reduce_quality_enabled = false;
+    std::vector<ReduceQualityProfile> reduce_quality_profiles;
     bool watermark_enforce = false;
     bool watermark_excluded = false;
     bool privacy_mask_enforce = false;
@@ -444,6 +462,8 @@ extern const std::string kGopCacheSize;
 
 // Whether to enable the on-demand transcode (decode+re-encode) video stream, published as a derived stream_id "<stream>.transcode" (schema fmp4)
 extern const std::string kEnableTranscode;
+// Allow reduce-quality requests whose parameters are not present in the advertised profile list. Default: 0
+extern const std::string kAllowUnadvertisedTranscodeProfile;
 // Whether the transcode stream is on-demand (only encode while a viewer is connected). Default: 1
 extern const std::string kTranscodeDemand;
 // Output width of the transcode stream, 0 = keep source width

@@ -1186,20 +1186,23 @@ void installWebHook() {
         string jwt_token = params["token"];
 
         bool transcode_stream = false;
-        bool use_transcode = false;
+        bool reduce_quality_allowed = true;
         auto transcode_it = params.find("transcode");
         if (transcode_it != params.end()) {
             transcode_stream = transcode_it->second == "1" || transcode_it->second == "true";
         }
+        const bool reduce_quality_requested = transcode_stream;
 
-        if (!transcode_stream) {
-            Broadcast::ViewOverlayPolicyInvoker policy_cb = [&](const Broadcast::ViewOverlayPolicy &policy) {
-                const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
-                const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
-
-                transcode_stream = use_watermark || use_privacy_mask;
-            };
-            NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, false, jwt_token, policy_cb, sender);
+        Broadcast::ViewOverlayPolicyInvoker policy_cb = [&](const Broadcast::ViewOverlayPolicy &policy) {
+            const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
+            const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
+            reduce_quality_allowed = policy.reduce_quality_enabled;
+            transcode_stream = transcode_stream || use_watermark || use_privacy_mask;
+        };
+        NOTICE_EMIT(BroadcastMediaViewOverlayArgs, Broadcast::kBroadcastMediaViewOverlay, args, false, jwt_token, policy_cb, sender);
+        if (reduce_quality_requested && !reduce_quality_allowed) {
+            invoker("TranscodeDisabled");
+            return;
         }
         
 

@@ -2,6 +2,11 @@
 The subdirectory DeviceHK is an adapter for Hikvision IPC. You need to download Hikvision SDK before compiling.
 Due to the troublesome operation, the source code is only for reference only.
 
+Integration scenarios:
+
+- [Real-camera transcode-on-view](integration/real_camera/README.md): manual end-to-end validation
+  of `enableReduceQualityOnView`, advertised profiles, playback, overlays, reconnect and restart.
+
 - test_benchmark.cpp
     
     rtsp/rtmp performance testing client

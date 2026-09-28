@@ -61,7 +61,8 @@ bool parseTranscodeRequest(const std::string &params,
         }
     }
 
-    auto get_int = [&args](const std::string &name, int fallback) {
+    bool valid_numbers = true;
+    auto get_int = [&args, &valid_numbers](const std::string &name, int fallback) {
         auto it = args.find(name);
         if (it == args.end() || it->second.empty()) {
             return fallback;
@@ -69,6 +70,7 @@ bool parseTranscodeRequest(const std::string &params,
         char *end = nullptr;
         const long value = strtol(it->second.data(), &end, 10);
         if (end == it->second.data() || *end != '\0' || value < 0 || value > INT_MAX) {
+            valid_numbers = false;
             return fallback;
         }
         return static_cast<int>(value);
@@ -88,6 +90,10 @@ bool parseTranscodeRequest(const std::string &params,
     request.bitrate = get_int("target_bitrate", request.bitrate);
     request.fps = get_int("target_fps", request.fps);
     request.gop = get_int("target_gop", request.gop);
+    if (!valid_numbers) {
+        error = "transcode parameters must be non-negative integers";
+        return false;
+    }
     if (request.fps <= 0) {
         request.fps = defaults.transcode_fps > 0 ? defaults.transcode_fps : 5;
     } else {
@@ -101,6 +107,27 @@ bool parseTranscodeRequest(const std::string &params,
         request.gop = std::max(request.gop, request.fps * 4);
     }
     return true;
+}
+
+bool matchesReduceQualityProfile(const TranscodeRequest &request,
+                                 const std::string &source_stream_id,
+                                 const std::vector<Broadcast::ReduceQualityProfile> &profiles) {
+    const std::string codec = request.codec == CodecH265 ? "H265" : "H264";
+    for (const auto &profile : profiles) {
+        if (profile.source_stream_id == source_stream_id && profile.codec == codec &&
+            profile.width == request.width && profile.height == request.height &&
+            profile.bitrate == request.bitrate && profile.fps == request.fps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isReduceQualityProfileAllowed(const TranscodeRequest &request,
+                                   const std::string &source_stream_id,
+                                   const std::vector<Broadcast::ReduceQualityProfile> &profiles,
+                                   bool allow_unadvertised) {
+    return allow_unadvertised || matchesReduceQualityProfile(request, source_stream_id, profiles);
 }
 
 TranscodeProcessor::TranscodeProcessor(const MediaTuple &tuple, const ProtocolOption &option, Config cfg,

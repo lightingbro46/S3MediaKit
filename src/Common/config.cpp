@@ -193,6 +193,7 @@ const string kEnableGopCache = string(kFieldName) + "enable_gop_cache";
 const string kGopCacheSize = string(kFieldName) + "gop_cache_size";
 
 const string kEnableTranscode = string(kFieldName) + "enable_transcode";
+const string kAllowUnadvertisedTranscodeProfile = string(kFieldName) + "allow_unadvertised_transcode_profile";
 const string kTranscodeDemand = string(kFieldName) + "transcode_demand";
 const string kTranscodeWidth = string(kFieldName) + "transcode_width";
 const string kTranscodeHeight = string(kFieldName) + "transcode_height";
@@ -247,6 +248,7 @@ static onceToken token([]() {
     mINI::Instance()[kGopCacheSize] = 5;
 
     mINI::Instance()[kEnableTranscode] = 0;
+    mINI::Instance()[kAllowUnadvertisedTranscodeProfile] = 0;
     mINI::Instance()[kTranscodeDemand] = 1;
     mINI::Instance()[kTranscodeWidth] = 0;
     mINI::Instance()[kTranscodeHeight] = 0;

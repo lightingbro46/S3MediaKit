@@ -11,6 +11,7 @@
 
 #include "Codec/Transcode.h"
 #include "Common/macros.h"
+#include "Common/config.h"
 #include "TranscodeOverlay.h"
 #include "Common/MediaSink.h"
 #include "Common/MediaSource.h"
@@ -35,6 +36,15 @@ bool parseTranscodeRequest(const std::string &params,
                            const ProtocolOption &defaults,
                            TranscodeRequest &request,
                            std::string &error);
+
+bool isReduceQualityProfileAllowed(const TranscodeRequest &request,
+                                   const std::string &source_stream_id,
+                                   const std::vector<Broadcast::ReduceQualityProfile> &profiles,
+                                   bool allow_unadvertised);
+
+bool matchesReduceQualityProfile(const TranscodeRequest &request,
+                                 const std::string &source_stream_id,
+                                 const std::vector<Broadcast::ReduceQualityProfile> &profiles);
 
 /**
  * TranscodeProcessor builds an on-demand, re-encoded video stream from the

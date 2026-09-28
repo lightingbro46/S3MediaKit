@@ -140,6 +140,9 @@ public:
     int sdCardSyncMinSegmentGapSec = 0;
     int sdCardSyncRetryCount = 0;
 
+    // whether viewers may request a lower-quality transcoded stream
+    bool enableReduceQualityOnView = false;
+
     // whether to enforce privacy mask, default false
     bool enforcePrivacyMaskOnView = false;
 
@@ -270,6 +273,7 @@ public:
                watermarkTemplateId == other.watermarkTemplateId &&
                watermarkExcludedRoleIds == other.watermarkExcludedRoleIds &&
                watermarkTemplate == other.watermarkTemplate &&
+               enableReduceQualityOnView == other.enableReduceQualityOnView &&
                enforcePrivacyMaskOnView == other.enforcePrivacyMaskOnView &&
                privacyMaskExcludedRoleIds == other.privacyMaskExcludedRoleIds &&
                privacyMaskRegions == other.privacyMaskRegions;

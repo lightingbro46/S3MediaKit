@@ -42,6 +42,7 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
     _option = option;
     _enabled = option.enableActive;
     saveCameraOption(option);
+    publishDeviceCapabilities(false);
     
     if (!_enabled.load()) {
         stop();
@@ -277,6 +278,7 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
         }
         strong_statistic->addStreamStatistic(type, live, updated_status, info);
     }
+    publishDeviceCapabilities(false);
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
 #ifndef ENABLE_DEBUG
         // only emit event when stream status changed
@@ -361,23 +363,7 @@ void GenericRtspCameraImp::onControllerReady(DeviceSource &sender, bool connect,
         return;
     }
 
-#ifndef ENABLE_DEBUG
-    std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
-        }
-        auto &src = *strong_self->_src;
-        auto strong_statistic = strong_self->_statistic.lock();
-        if (strong_statistic) {
-            auto params = strong_statistic->getParams();
-            NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged, params.device_stats.device_caps, src);
-        }
-    });
-#else
-    DebugL << "Sent controller ready event for camera " << _src->getUrl() << " connect=" << connect << ", status=" << status;
-#endif
+    publishDeviceCapabilities(true);
 }
 
 void GenericRtspCameraImp::setupStreamRegist(int type, bool regist) {
@@ -536,6 +522,27 @@ static void appendTransportStats(TransportStats &stats, const ProtocolOption &op
         stats.liveTransports.push_back("RTMP");
         stats.replayTransports.push_back("RTMP");
     }
+}
+
+void GenericRtspCameraImp::publishDeviceCapabilities(bool force) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only publish capabilities in camera owner poller");
+    auto strong_statistic = _statistic.lock();
+    if (!strong_statistic || !_src) return;
+    const auto params = strong_statistic->getParams();
+    const auto capability = ReduceQualityCapabilityBuilder::build(params.option, params.stream_map, params.sinfo_map);
+    if (!force && _reduce_quality_capability_initialized && capability == _last_reduce_quality_capability) return;
+    _last_reduce_quality_capability = capability;
+    _reduce_quality_capability_initialized = true;
+    std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (!self) return;
+        auto statistic = self->_statistic.lock();
+        if (!statistic || !self->_src) return;
+        auto snapshot = statistic->getParams();
+        NOTICE_EMIT(BroadcastDeviceCapsChangedArgs, Broadcast::kBroadcastDeviceCapsChanged,
+                    snapshot.device_stats.device_caps, *self->_src);
+    });
 }
 
 void GenericRtspCameraImp::saveTransportsSupport() {

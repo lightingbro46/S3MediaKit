@@ -1,4 +1,8 @@
 #include "CameraStatistic.h"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <set>
 #include "Common/config.h"
 #include "Common/StrUtil.h"
 #include "Local/TierStorageManager.h"
@@ -10,6 +14,109 @@ using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
+
+namespace {
+
+std::string normalizeReduceQualityCodec(const std::string &codec) {
+    std::string value(codec);
+    std::transform(value.begin(), value.end(), value.begin(), [](char ch) {
+        return static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
+    });
+    if (value == "h264" || value == "avc") return "H264";
+    if (value == "h265" || value == "hevc") return "H265";
+    return "";
+}
+
+bool higherReduceQuality(const Broadcast::ReduceQualityProfile &a,
+                         const Broadcast::ReduceQualityProfile &b) {
+    const long long pixels_a = static_cast<long long>(a.width) * a.height;
+    const long long pixels_b = static_cast<long long>(b.width) * b.height;
+    if (pixels_a != pixels_b) return pixels_a > pixels_b;
+    if (a.bitrate != b.bitrate) return a.bitrate > b.bitrate;
+    if (a.fps != b.fps) return a.fps > b.fps;
+    if (a.source_stream_id != b.source_stream_id) return a.source_stream_id < b.source_stream_id;
+    return a.codec < b.codec;
+}
+
+} // namespace
+
+ReduceQualityCapability ReduceQualityCapabilityBuilder::build(
+    const CameraOption &option,
+    const std::unordered_map<int, StreamTuple> &stream_map,
+    const std::unordered_map<int, StreamStatistic> &statistics) {
+    ReduceQualityCapability result;
+#if !defined(ENABLE_FFMPEG)
+    (void)option;
+    (void)stream_map;
+    (void)statistics;
+    return result;
+#else
+    result.supported = option.enableReduceQualityOnView;
+    if (!result.supported) return result;
+    static const int ladder[][4] = {
+        {1920, 1080, 4000000, 25}, {1280, 720, 2000000, 20},
+        {854, 480, 1000000, 15}, {640, 360, 512000, 15}, {426, 240, 256000, 10}
+    };
+    std::set<std::string> seen;
+    for (const auto &entry : ladder) {
+        const StreamTuple *best_tuple = nullptr;
+        const StreamStatistic *best = nullptr;
+        long long best_pixels = 0;
+        for (const auto &pair : statistics) {
+            auto tuple_it = stream_map.find(pair.first);
+            const auto &stat = pair.second;
+            if (tuple_it == stream_map.end() || !stat.live || !stat.has_video ||
+                stat.width <= 0 || stat.height <= 0 ||
+                normalizeReduceQualityCodec(stat.vcodec).empty()) continue;
+            const double scale = std::min(static_cast<double>(entry[0]) / stat.width,
+                                          static_cast<double>(entry[1]) / stat.height);
+            if (scale >= 1.0) continue;
+            const long long pixels = static_cast<long long>(stat.width) * stat.height;
+            if (!best || pixels < best_pixels) {
+                best = &stat; best_tuple = &tuple_it->second; best_pixels = pixels;
+            }
+        }
+        if (!best || !best_tuple) continue;
+        const double scale = std::min(static_cast<double>(entry[0]) / best->width,
+                                      static_cast<double>(entry[1]) / best->height);
+        Broadcast::ReduceQualityProfile profile;
+        profile.source_stream_id = best_tuple->stream_id;
+        profile.codec = normalizeReduceQualityCodec(best->vcodec);
+        profile.width = std::max(2, static_cast<int>(std::floor(best->width * scale)) & ~1);
+        profile.height = std::max(2, static_cast<int>(std::floor(best->height * scale)) & ~1);
+        profile.bitrate = best->bitrate > 0 ? std::min(best->bitrate, entry[2]) : entry[2];
+        profile.fps = best->fps > 0
+            ? std::min(static_cast<int>(std::floor(best->fps)), entry[3])
+            : entry[3];
+        const std::string key = profile.source_stream_id + "|" + profile.codec + "|" +
+            std::to_string(profile.width) + "|" + std::to_string(profile.height) + "|" +
+            std::to_string(profile.bitrate) + "|" + std::to_string(profile.fps);
+        if (profile.fps > 0 && profile.bitrate > 0 && seen.emplace(key).second) {
+            result.profiles.emplace_back(profile);
+        }
+    }
+    std::sort(result.profiles.begin(), result.profiles.end(), higherReduceQuality);
+    return result;
+#endif
+}
+
+Json::Value ReduceQualityCapabilityBuilder::toJson(const ReduceQualityCapability &capability) {
+    Json::Value json(Json::objectValue);
+    json["supported"] = capability.supported;
+    json["profiles"] = Json::arrayValue;
+    for (const auto &profile : capability.profiles) {
+        Json::Value item(Json::objectValue);
+        item["sourceStreamId"] = profile.source_stream_id;
+        item["codec"] = profile.codec;
+        item["width"] = profile.width;
+        item["height"] = profile.height;
+        item["bitrate"] = profile.bitrate;
+        item["fps"] = profile.fps;
+        json["profiles"].append(item);
+    }
+    return json;
+}
+
 
 static Json::Value makeJsonKeyValue(const string &key, const string &value) {
     Json::Value ret;
@@ -535,6 +642,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.sdCardSyncMinSegmentGapSec = ret["sdCardSyncMinSegmentGapSec"].asInt();
     option.sdCardSyncRetryCount = ret["sdCardSyncRetryCount"].asInt();
     option.enforceWatermarkOnView = ret["enforceWatermarkOnView"].asBool();
+    option.enableReduceQualityOnView = ret["enableReduceQualityOnView"].asBool();
     option.watermarkExcludedRoleIds = ret["watermarkExcludedRoleIds"].asString();
     option.watermarkTemplate = ret["watermarkTemplate"].asString();
     option.enforcePrivacyMaskOnView = ret["enforcePrivacyMaskOnView"].asBool();
@@ -665,6 +773,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["sdCardSyncMinSegmentGapSec"] = stats.option.sdCardSyncMinSegmentGapSec;
     root["sdCardSyncRetryCount"] = stats.option.sdCardSyncRetryCount;
     root["enforceWatermarkOnView"] = stats.option.enforceWatermarkOnView;
+    root["enableReduceQualityOnView"] = stats.option.enableReduceQualityOnView;
     root["watermarkExcludedRoleIds"] = stats.option.watermarkExcludedRoleIds;
     root["watermarkTemplate"] = stats.option.watermarkTemplate;
     root["enforcePrivacyMaskOnView"] = stats.option.enforcePrivacyMaskOnView;
@@ -1266,6 +1375,7 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("sdCardSyncMinSegmentGapSec", std::to_string(opt.sdCardSyncMinSegmentGapSec)));
         kvs.push_back(make("sdCardSyncRetryCount",       std::to_string(opt.sdCardSyncRetryCount)));
         kvs.push_back(make("enforceWatermarkOnView",     std::to_string(opt.enforceWatermarkOnView)));
+        kvs.push_back(make("enableReduceQualityOnView", std::to_string(opt.enableReduceQualityOnView)));
         kvs.push_back(make("watermarkExcludedRoleIds",   opt.watermarkExcludedRoleIds));
         kvs.push_back(make("watermarkTemplate",          opt.watermarkTemplate));
         kvs.push_back(make("enforcePrivacyMaskOnView",   std::to_string(opt.enforcePrivacyMaskOnView)));
@@ -1394,6 +1504,8 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.sdCardSyncRetryCount = std::stoi(kv.value);
                 } else if (kv.name == "enforceWatermarkOnView") {
                     stats.option.enforceWatermarkOnView = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableReduceQualityOnView") {
+                    stats.option.enableReduceQualityOnView = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "watermarkExcludedRoleIds") {
                     stats.option.watermarkExcludedRoleIds = kv.value;
                 } else if (kv.name == "watermarkTemplate") {

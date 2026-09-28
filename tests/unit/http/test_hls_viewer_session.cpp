@@ -110,3 +110,35 @@ TEST(HlsViewerSessionTest, RewritesMediaAndMasterPlaylistUris) {
               rewritten.find("/media/camera/low/hls.m3u8?quality=lo&session_id=viewer-1\r\n"));
     EXPECT_EQ(std::string::npos, rewritten.find("token=secret"));
 }
+
+#if defined(ENABLE_FFMPEG)
+#include "Transcode/TranscodeProcessor.h"
+
+TEST(TranscodeRequestTest, MatchesOnlyAdvertisedProfile) {
+    TranscodeRequest request;
+    request.enabled = true;
+    request.codec = CodecH264;
+    request.width = 1280;
+    request.height = 720;
+    request.bitrate = 2000000;
+    request.fps = 20;
+
+    Broadcast::ReduceQualityProfile profile;
+    profile.source_stream_id = "main";
+    profile.codec = "H264";
+    profile.width = 1280;
+    profile.height = 720;
+    profile.bitrate = 2000000;
+    profile.fps = 20;
+    std::vector<Broadcast::ReduceQualityProfile> profiles(1, profile);
+
+    EXPECT_TRUE(matchesReduceQualityProfile(request, "main", profiles));
+    request.bitrate = 2000001;
+    EXPECT_FALSE(matchesReduceQualityProfile(request, "main", profiles));
+    request.bitrate = 2000000;
+    EXPECT_FALSE(matchesReduceQualityProfile(request, "sub", profiles));
+    EXPECT_FALSE(isReduceQualityProfileAllowed(request, "sub", profiles, false));
+    EXPECT_TRUE(isReduceQualityProfileAllowed(request, "sub", profiles, true));
+    EXPECT_FALSE(toolkit::mINI::Instance()[Protocol::kAllowUnadvertisedTranscodeProfile].as<bool>());
+}
+#endif

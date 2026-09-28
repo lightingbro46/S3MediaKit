@@ -92,6 +92,23 @@ struct CameraStatistic {
     }
 };
 
+struct ReduceQualityCapability {
+    bool supported = false;
+    std::vector<mediakit::Broadcast::ReduceQualityProfile> profiles;
+
+    bool operator==(const ReduceQualityCapability &other) const {
+        return supported == other.supported && profiles == other.profiles;
+    }
+};
+
+class ReduceQualityCapabilityBuilder {
+public:
+    static ReduceQualityCapability build(const CameraOption &option,
+                                         const std::unordered_map<int, StreamTuple> &stream_map,
+                                         const std::unordered_map<int, StreamStatistic> &statistics);
+    static Json::Value toJson(const ReduceQualityCapability &capability);
+};
+
 class CameraStatisticImp : private CameraStatistic, public std::enable_shared_from_this<CameraStatisticImp> {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;

@@ -16,6 +16,7 @@
 #include "Local/TierEncryptionManager.h"
 #include "Local/ExtractJobManager.h"
 #include "Camera/VideoConfigJobManager.h"
+#include "Camera/CameraStatistic.h"
 #include "Server/GlobalMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
@@ -278,7 +279,20 @@ void installManagerHook () {
             return;
         }
 
-        const auto &option = impl->getCameraOption();
+        auto stats_imp = impl->getCameraStatisticImp();
+        if (!stats_imp) {
+            invoker(policy);
+            return;
+        }
+        const auto params = stats_imp->getParams();
+        const auto &option = params.option;
+        const auto quality = ReduceQualityCapabilityBuilder::build(option, params.stream_map, params.sinfo_map);
+        policy.reduce_quality_enabled = quality.supported;
+        for (const auto &profile : quality.profiles) {
+            if (profile.source_stream_id == args.stream) {
+                policy.reduce_quality_profiles.emplace_back(profile);
+            }
+        }
         policy.watermark_enforce = option.enforceWatermarkOnView;
         policy.watermark_template = option.watermarkTemplate;
         policy.privacy_mask_enforce = option.enforcePrivacyMaskOnView;
@@ -548,6 +562,7 @@ static void fromJson(DeviceTuple &tuple, const Json::Value &data) {
 
 static void fromJson(CameraOption &option, const Json::Value &data) {
     GET_OPTION_PROPERTY(option, name, data, name)
+    GET_OPTION_PROPERTY(option, enableReduceQualityOnView, data, enableReduceQualityOnView)
     GET_OPTION_PROPERTY(option, manufacturer, data, manufacturer)
     GET_OPTION_PROPERTY(option, model, data, model)
     GET_OPTION_PROPERTY(option, username, data, username)
@@ -1413,6 +1428,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 data["enablePrivacyMaskSupport"] = enablePrivacymaskSupport;
                 GET_CONFIG(bool, enableWatermarkSupport, OverlayPrivacyConfig::kEnableWatermark)
                 data["enableWatermarkSupport"] = enableWatermarkSupport;
+                data["reduceQualityOnView"] = ReduceQualityCapabilityBuilder::toJson(
+                    ReduceQualityCapabilityBuilder::build(option, params.stream_map, params.sinfo_map));
                 data["liveTransports"] = Json::arrayValue;
                 for (const auto &transport : params.transport_stats.liveTransports) {
                     data["liveTransports"].append(transport);
@@ -1682,6 +1699,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
 
     // View overlay policy
     val["enforceWatermarkOnView"] = option.enforceWatermarkOnView;
+    val["enableReduceQualityOnView"] = option.enableReduceQualityOnView;
     val["watermarkTemplateId"] = option.watermarkTemplateId;
     val["watermarkExcludedRoleIds"] = option.watermarkExcludedRoleIds;
     val["watermarkTemplate"] = option.watermarkTemplate;

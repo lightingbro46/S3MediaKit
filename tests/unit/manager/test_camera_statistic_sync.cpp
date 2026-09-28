@@ -320,3 +320,128 @@ TEST_F(CameraStatisticSyncTest, StreamStatusHistoryIsWrittenFromEscQueue) {
     EXPECT_GE(gaps[0].disconnect_time, before);
     EXPECT_LE(gaps[0].disconnect_time, after);
 }
+
+#ifdef ENABLE_FFMPEG
+TEST(ReduceQualityCapabilityTest, BuildsStableProfilesFromTwoStreams) {
+    CameraOption option;
+    option.enableReduceQualityOnView = true;
+    std::unordered_map<int, StreamTuple> streams;
+    StreamTuple main;
+    main.stream_id = "main";
+    streams[PrimaryStream] = main;
+    StreamTuple sub;
+    sub.stream_id = "sub";
+    streams[SecondaryStream] = sub;
+
+    std::unordered_map<int, StreamStatistic> stats;
+    StreamStatistic main_stats;
+    main_stats.live = true;
+    main_stats.has_video = true;
+    main_stats.vcodec = "H264";
+    main_stats.width = 3840;
+    main_stats.height = 2160;
+    main_stats.bitrate = 8000000;
+    main_stats.fps = 30;
+    stats[PrimaryStream] = main_stats;
+    StreamStatistic sub_stats = main_stats;
+    sub_stats.width = 1280;
+    sub_stats.height = 720;
+    sub_stats.bitrate = 1500000;
+    sub_stats.fps = 20;
+    stats[SecondaryStream] = sub_stats;
+
+    const auto capability = ReduceQualityCapabilityBuilder::build(option, streams, stats);
+    ASSERT_TRUE(capability.supported);
+    ASSERT_FALSE(capability.profiles.empty());
+    EXPECT_EQ("main", capability.profiles.front().source_stream_id);
+    EXPECT_EQ(1920, capability.profiles.front().width);
+    EXPECT_EQ(1080, capability.profiles.front().height);
+    for (size_t i = 1; i < capability.profiles.size(); ++i) {
+        EXPECT_GE(static_cast<long long>(capability.profiles[i - 1].width) * capability.profiles[i - 1].height,
+                  static_cast<long long>(capability.profiles[i].width) * capability.profiles[i].height);
+    }
+
+    const Json::Value json = ReduceQualityCapabilityBuilder::toJson(capability);
+    EXPECT_TRUE(json["supported"].asBool());
+    EXPECT_EQ(capability.profiles.size(), json["profiles"].size());
+}
+
+TEST(ReduceQualityCapabilityTest, DisabledOptionPublishesNoProfiles) {
+    CameraOption option;
+    const auto capability = ReduceQualityCapabilityBuilder::build(
+        option, std::unordered_map<int, StreamTuple>(), std::unordered_map<int, StreamStatistic>());
+    EXPECT_FALSE(capability.supported);
+    EXPECT_TRUE(capability.profiles.empty());
+}
+
+TEST(ReduceQualityCapabilityTest, BuildsProfilesWhenSourceFpsIsInitiallyUnknown) {
+    CameraOption option;
+    option.enableReduceQualityOnView = true;
+    std::unordered_map<int, StreamTuple> streams;
+    StreamTuple main;
+    main.stream_id = "main";
+    streams[PrimaryStream] = main;
+
+    std::unordered_map<int, StreamStatistic> stats;
+    StreamStatistic source;
+    source.live = true;
+    source.has_video = true;
+    source.vcodec = "H264";
+    source.width = 1920;
+    source.height = 1080;
+    source.bitrate = 4000000;
+    source.fps = 0;
+    stats[PrimaryStream] = source;
+
+    const auto capability = ReduceQualityCapabilityBuilder::build(option, streams, stats);
+    ASSERT_TRUE(capability.supported);
+    ASSERT_FALSE(capability.profiles.empty());
+    EXPECT_EQ("main", capability.profiles.front().source_stream_id);
+    EXPECT_GT(capability.profiles.front().fps, 0);
+}
+
+TEST(ReduceQualityCapabilityTest, CapsProfileFpsWhenSourceFpsBecomesKnown) {
+    CameraOption option;
+    option.enableReduceQualityOnView = true;
+    std::unordered_map<int, StreamTuple> streams;
+    StreamTuple main;
+    main.stream_id = "main";
+    streams[PrimaryStream] = main;
+
+    std::unordered_map<int, StreamStatistic> stats;
+    StreamStatistic source;
+    source.live = true;
+    source.has_video = true;
+    source.vcodec = "H264";
+    source.width = 1920;
+    source.height = 1080;
+    source.bitrate = 4000000;
+    source.fps = 8;
+    stats[PrimaryStream] = source;
+
+    const auto capability = ReduceQualityCapabilityBuilder::build(option, streams, stats);
+    ASSERT_FALSE(capability.profiles.empty());
+    for (const auto &profile : capability.profiles) {
+        EXPECT_LE(profile.fps, 8);
+    }
+}
+
+#endif
+
+TEST_F(CameraStatisticSyncTest, ReduceQualityOptionPersistsAndSyncs) {
+    std::string guid = "cam-stat-reduce-quality";
+    {
+        auto stats = makeCamera(guid);
+        CameraOption option = activeOption(3600);
+        option.enableReduceQualityOnView = true;
+        stats->setCameraOption(option);
+        ASSERT_TRUE(waitFor([&] { return kvValue(guid, "enableReduceQualityOnView") == "1"; }));
+    }
+
+    auto reloaded = std::make_shared<CameraStatisticImp>(_dir + "/" + guid);
+    EXPECT_TRUE(reloaded->getParams().option.enableReduceQualityOnView);
+
+    CameraStatistic from_esc;
+    ASSERT_TRUE(CameraStatisticImp::syncFromEsc(guid, from_esc));
+    EXPECT_TRUE(from_esc.option.enableReduceQualityOnView);
+}

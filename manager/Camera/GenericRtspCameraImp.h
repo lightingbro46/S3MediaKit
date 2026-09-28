@@ -113,6 +113,8 @@ private:
 
     void saveTransportsSupport();
 
+    void publishDeviceCapabilities(bool force = false);
+
     void resetMediaHealth(int type);
 
     bool updateMediaHealth(int type, const mediakit::TranslationInfo &info);
@@ -130,6 +132,8 @@ private:
     std::weak_ptr<CameraStatisticImp> _statistic;
     uint64_t _last_total_bytes[StreamMax] = {0, 0};
     uint8_t _no_progress_samples[StreamMax] = {0, 0};
+    ReduceQualityCapability _last_reduce_quality_capability;
+    bool _reduce_quality_capability_initialized = false;
     bool _media_health_initialized[StreamMax] = {false, false};
     bool _media_stalled[StreamMax] = {false, false};
 };

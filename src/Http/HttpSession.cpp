@@ -369,6 +369,10 @@ bool HttpSession::checkLiveStream(const string &schema, const string &url_prefix
                 strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
                 return;
             }
+            if (err == "TranscodeDisabled") {
+                strong_self->sendResponse(403, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("Reduce quality on view is disabled"));
+                return;
+            }
             // Playback authentication failed
             strong_self->sendResponse(401, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>(err));
             return;
@@ -419,6 +423,8 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const bool use_watermark = policy.watermark_enforce && !policy.watermark_excluded;
         const bool use_privacy_mask = policy.privacy_mask_enforce && !policy.privacy_mask_excluded;
         bool use_transcode = false;
+        const bool direct_quality_stream = self->_media_info.stream.find(TRANSCODE_SUFFIX + std::string("quality.")) != std::string::npos ||
+                                           self->_media_info.stream.find(TRANSCODE_SUFFIX + std::string("quality-overlay.")) != std::string::npos;
 #if defined(ENABLE_FFMPEG)
         TranscodeRequest transcode_request;
         std::string transcode_error;
@@ -428,6 +434,16 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
             return;
         }
         use_transcode = transcode_request.enabled;
+        if ((use_transcode || direct_quality_stream) && !policy.reduce_quality_enabled) {
+            self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Reduce quality on view is disabled"));
+            return;
+        }
+        GET_CONFIG(bool, allow_unadvertised_transcode_profile, Protocol::kAllowUnadvertisedTranscodeProfile);
+        if (use_transcode && !isReduceQualityProfileAllowed(transcode_request, self->_media_info.stream,
+                                                          policy.reduce_quality_profiles, allow_unadvertised_transcode_profile)) {
+            self->sendResponse(400, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Unsupported reduce-quality profile"));
+            return;
+        }
 #endif
         if (!use_watermark && !use_privacy_mask && !use_transcode) {
             cb(source);
@@ -476,7 +492,8 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                            to_string(transcode_width) + "|" + to_string(transcode_height) + "|" +
                            to_string(transcode_bitrate) + "|" + to_string(transcode_fps) + "|" +
                            policy.watermark_template + "|" + policy.privacy_mask_regions;
-        const string stream_suffix = TRANSCODE_SUFFIX + MD5(key).hexdigest();
+        const string variant_kind = use_transcode ? ((use_watermark || use_privacy_mask) ? "quality-overlay." : "quality.") : "overlay.";
+        const string stream_suffix = TRANSCODE_SUFFIX + variant_kind + MD5(key).hexdigest();
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
         auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
@@ -723,6 +740,10 @@ void HttpSession::authorizeHlsRedirect(const function<void()> &on_authorized) {
             }
             if (err_msg == "MaxRequest") {
                 self->sendResponse(429, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            if (err_msg == "TranscodeDisabled") {
+                self->sendResponse(403, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>("Reduce quality on view is disabled"));
                 return;
             }
             self->sendResponse(401, close_flag, nullptr, KeyValue(), make_shared<HttpStringBody>(err_msg));
