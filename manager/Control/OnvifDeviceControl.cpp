@@ -2330,6 +2330,9 @@ bool OnvifControl::getEventSearchResults(const std::string& searchToken, const R
             ev.isStartState = result->StartStateEvent;
             // Parse IsDataPresent from XML Event
             std::string isDataPresent = "";
+            if (!result || !result->Event || !result->Event->Message.__any) {
+                continue;
+            }
             if (!parseIsDataPresentFromXml(result->Event->Message.__any, "IsDataPresent", isDataPresent)) {
                 TraceL << "[ParseEvent] Cannot parse IsDataPresent: "
                         << ev.recordingToken << "|" << ev.trackToken
