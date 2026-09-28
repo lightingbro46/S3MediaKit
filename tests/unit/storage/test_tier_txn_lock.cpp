@@ -166,6 +166,31 @@ TEST(TierTxnLockTest, MergeNormalizedRangeWaitsForConcurrentWriter) {
     EXPECT_EQ(base + 120, stored[0].end_time);
 }
 
+// Regression: a COLD range recorded on an encrypted HOT pool was merged into the adjacent COLD
+// range of the unencrypted default pool and lost its origin, so restored segments could not be
+// decrypted.
+TEST(TierTxnLockTest, MergeNormalizedRangeKeepsDifferentOriginsApart) {
+    Exposed<SegmentTierRangeRepository> repo;
+    const int64_t base = baseTime();
+    auto plain = makeRange("origin-plain", "cam-origin", base, base + 60);
+    plain.tier = "COLD";
+    plain.pool_id = "pool-cold";
+    plain.origin_pool_id = "pool-hot";
+    ASSERT_TRUE(repo.save(plain, true));
+    auto encrypted = makeRange("origin-enc", "cam-origin", base + 61, base + 120);
+    encrypted.tier = "COLD";
+    encrypted.pool_id = "pool-cold";
+    encrypted.origin_pool_id = "pool-hot-enc";
+
+    ASSERT_TRUE(repo.mergeNormalizedRange(encrypted, 10, now()));
+    auto stored_plain = repo.findById(plain);
+    ASSERT_EQ(1u, stored_plain.size());
+    EXPECT_EQ(base + 60, stored_plain[0].end_time);
+    auto stored_enc = repo.findById(encrypted);
+    ASSERT_EQ(1u, stored_enc.size());
+    EXPECT_EQ("pool-hot-enc", stored_enc[0].origin_pool_id);
+}
+
 TEST(TierTxnLockTest, NormalizeRangeByIdWaitsForConcurrentWriter) {
     Exposed<SegmentTierRangeRepository> repo;
     const int64_t base = baseTime();

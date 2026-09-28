@@ -6457,7 +6457,7 @@ void TierStorageManager::processRestoreJobs() {
                 }
             }
             self->processRestoreJobs();
-        });
+        }, false); // never run inline: the task re-enters processRestoreJobs() under _restore_dispatch_mtx
     }
 }
 

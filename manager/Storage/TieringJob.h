@@ -1143,6 +1143,16 @@ public:
         params.push_back(range.status);
         where << " AND pool_id = ?";
         params.push_back(range.pool_id);
+        // Ranges recorded on different pools carry different encryption keys; merging them
+        // would leave the merged range with only one origin.
+        // An empty origin on a HOT range means the pool it sits in.
+        if (range.tier == tierTypeToString(HotTier)) {
+            where << " AND (origin_pool_id = ? OR origin_pool_id = '')";
+            params.push_back(range.origin_pool_id.empty() ? range.pool_id : range.origin_pool_id);
+        } else {
+            where << " AND origin_pool_id = ?";
+            params.push_back(range.origin_pool_id);
+        }
         where << " AND end_time >= ? AND start_time <= ?";
         params.push_back(std::to_string(range.start_time - merge_gap_seconds));
         params.push_back(std::to_string(range.end_time + merge_gap_seconds));
