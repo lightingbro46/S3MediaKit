@@ -691,6 +691,10 @@ static MergedMP4Reader::Ptr openMergedReplay(const string &schema, const MediaTu
     option.rtmp_demand = false;
     option.ts_demand = false;
     option.fmp4_demand = false;
+    // Keep one GOP of frames: a view overlay transcode created after the replay started
+    // decodes from the last keyframe instead of dropping the start of the replay.
+    option.enable_gop_cache = true;
+    option.gop_cache_size = 1;
     if (schema == FMP4_SCHEMA) option.enable_fmp4 = true;
     else if (schema == HLS_SCHEMA) option.enable_hls = true;
     else if (schema == HLS_FMP4_SCHEMA) option.enable_hls_fmp4 = true;
@@ -881,6 +885,9 @@ MediaSource::Ptr MediaSource::createFromMP4(const string &schema, const string &
         ProtocolOption option;
         option.enable_mp4 = false;
         option.max_track = 16;
+        // One GOP for a view overlay transcode created after playback started (see above).
+        option.enable_gop_cache = true;
+        option.gop_cache_size = 1;
         auto reader = std::make_shared<MP4Reader>(tuple, file_path, option);
         reader->startReadMP4();
         return MediaSource::find(schema, vhost, app, stream);

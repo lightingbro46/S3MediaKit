@@ -64,6 +64,14 @@ public:
         return true;
     }
 
+    // Sends every cached frame now; used when the muxer closes so the tail is not dropped.
+    void flush() {
+        std::lock_guard<std::recursive_mutex> lck(_mtx);
+        if (!_cache.empty()) {
+            flushCache(_cache.rbegin()->first);
+        }
+    }
+
 private:
     void onTick() {
         std::lock_guard<std::recursive_mutex> lck(_mtx);
@@ -673,6 +681,7 @@ bool MultiMediaSourceMuxer::isMotionDetecting() {
 MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const TranscodeProcessor::Config &cfg) {
     auto owner_poller = getOwnerPoller(MediaSource::NullMediaSource());
     CHECK(owner_poller && owner_poller->isCurrentThread(), "View overlay transcode must be created on the source poller");
+    const bool new_stack = !_stack;
     if (!_stack) {
         ProtocolOption option = _option;
         option.enable_motion = false;
@@ -700,14 +709,19 @@ MediaSource::Ptr MultiMediaSourceMuxer::ensureViewOverlayTranscode(const Transco
         }
         _stack->addTrackCompleted();
     }
+    auto sized = cfg;
     if (cfg.width <= 0 && cfg.height <= 0) {
         // No requested size: use the source's (a merged replay sets its largest clip size).
-        auto sized = cfg;
         sized.width = _option.transcode_width;
         sized.height = _option.transcode_height;
-        return _stack->ensureTranscode(sized);
     }
-    return _stack->ensureTranscode(cfg);
+    auto derived = _stack->ensureTranscode(sized);
+    if (new_stack && _ring) {
+        // The decoder of a new processor would otherwise wait for the next keyframe and the
+        // transcode would miss up to one GOP (a replay started from its stamp loses its start).
+        _ring->flushGop([this](const Frame::Ptr &frame) { _stack->inputFrame(frame); });
+    }
+    return derived;
 }
 #endif // ENABLE_FFMPEG
 
@@ -804,6 +818,10 @@ EventPoller::Ptr MultiMediaSourceMuxer::getOwnerPoller(MediaSource &sender) {
 
 bool MultiMediaSourceMuxer::close(MediaSource &sender) {
     MediaSourceEventInterceptor::close(sender);
+    if (_paced_sender) {
+        // A derived transcode keeps up to seconds of frames here; deliver them before the outputs go.
+        _paced_sender->flush();
+    }
     _rtmp = nullptr;
     _rtsp = nullptr;
     _fmp4 = nullptr;
@@ -914,15 +932,14 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     }
 #endif
 
-#if defined(ENABLE_MOTION)
     // enable_gop_cache: pre-create GOP ring buffer so that makeRecorder() can
     // immediately backfill historical frames when recording is started later
-    // (e.g. seamless RecordLowResAndMotion stream switch).
+    // (e.g. seamless RecordLowResAndMotion stream switch), and so that a view
+    // overlay transcode created after playback started decodes from the last keyframe.
     if (_option.enable_gop_cache && !_ring) {
         GET_CONFIG(int, default_gop_cache, Protocol::kGopCacheSize);
         createGopCacheIfNeed(_option.gop_cache_size > 0 ? _option.gop_cache_size : default_gop_cache);
     }
-#endif
 
     Stamp *first = nullptr;
     for (auto &pr : _stamps) {

@@ -356,7 +356,18 @@ Chốt 2026-09-27: làm chung một plan, hai bước, commit riêng.
 
   Còn lại: viewer đi qua overlay transcode chỉ nhận ~16 s video của 20 s. Transcode bắt đầu trễ ~2,5 s
   và bị huỷ cùng source khi hết timeline, nên đoạn cuối còn trong transcode bị mất (trước khi sửa cũng
-  vậy: 15,6 s). Chưa sửa; E2E APF-02.
+  vậy: 15,6 s).
+  ✅ Đã sửa 2026-09-28. Đo bằng clip có số thứ tự frame mã hoá thành dải ô trên hình, so với luồng
+  admin cùng stamp (`duration=21`): viewer nhận 2402→2757 (14,2 s nội dung) → 1803→2304 (20,0 s).
+  - Đầu: processor dẫn xuất (decoder) chỉ được tạo khi có transcode đầu tiên, nên chờ keyframe kế tiếp
+    và mất 1 GOP (52 frame). Reader replay (`MediaSource.cpp`, cả `.live.mp4` và `.live2.mp4`) giữ 1 GOP
+    frame (`enable_gop_cache`), và `ensureViewOverlayTranscode` đẩy GOP đó vào processor mới tạo.
+    Việc tạo ring theo `enable_gop_cache` không còn nằm trong `#if ENABLE_MOTION`.
+  - Cuối: muxer dẫn xuất có `paced_sender_ms=10`, cache của paced sender (29 frame lúc đo) bị bỏ khi
+    đóng. `MultiMediaSourceMuxer::close()` đẩy hết cache trước khi huỷ các muxer con.
+  - Còn ~0,8 s cuối: frame đang trong thread decoder bị bỏ khi processor đóng (`stopThread(true)`);
+    muốn giữ phải đổi cách tắt decoder, chưa làm. pts đầu ra của transcode (5 fps) cũng không khớp nội
+    dung (16,8 s pts cho 14,2 s nội dung trước khi sửa, 23,2 s cho 20,0 s sau khi sửa); chưa xử lý.
 
 ### Lần chạy E2E camera giả 2026-09-27 (vấn đề 17–21)
 
