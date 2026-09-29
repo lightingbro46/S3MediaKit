@@ -1030,7 +1030,7 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     int maxConnectOnMserver = !data["maxStream"].isNull() ? data["maxStream"].asInt() : -1;
     int maxConnectOnMserverByLicense = !data["streamMaxOfLicense"].isNull() ? data["streamMaxOfLicense"].asInt() : -1;
     if (!unlimitedConnectOnMserver && maxConnectOnMserver > 0 && maxConnectOnMserverByLicense > 0) {
-        auto value = min(maxConnectPerCamera, maxConnectPerCameraByLicense);
+        auto value = min(maxConnectOnMserver, maxConnectOnMserverByLicense);
         GlobalMonitor::Instance().setThreshold(ResourceType::READER, value, (int)(value * 1.1));
     } else if (unlimitedConnectOnMserver && maxConnectOnMserverByLicense > 0) {
         GlobalMonitor::Instance().setThreshold(ResourceType::READER, maxConnectOnMserverByLicense, (int)(maxConnectOnMserverByLicense * 1.1));

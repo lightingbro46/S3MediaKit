@@ -152,7 +152,7 @@ bool ReaderMonitor::isReaderCountLimit(const string &camera_id, bool record) {
         auto count = it->second;
         int current_count = count.first + count.second;
         lock_guard<mutex> lck(_mtx);
-        if (_stream_reader_critical_threshold > 0 && current_count + 1 >= _stream_reader_critical_threshold) {
+        if (_stream_reader_critical_threshold > 0 && current_count + 1 > _stream_reader_critical_threshold) {
             WarnL << "Camera " << camera_id << " has reader count that reached the critical threshold " << current_count << "/"  << _stream_reader_critical_threshold << ". Ignore new reader";
             return true;
         }
