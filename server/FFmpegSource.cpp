@@ -752,8 +752,8 @@ void RecordedThumbnailTask::start() {
         auto self = weak_self.lock();
         return self ? self->tick() : false;
     }, _poller);
-    // The first tick resolves the object read source (SQLite, and possibly object storage), so it
-    // runs on the task poller like every later tick instead of on whichever thread called start().
+    // The first tick runs now instead of after one second; like every tick it hands the source
+    // resolution to the api pool.
     _poller->async([weak_self]() {
         auto self = weak_self.lock();
         if (self) {
@@ -783,10 +783,30 @@ bool RecordedThumbnailTask::tick() {
     }
     {
         lock_guard<mutex> lock(_mutex);
-        if (_snap_started)
+        if (_snap_started || _resolving)
             return true;
+        _resolving = true;
     }
+    // Resolving the source reads SQLite and may HEAD object storage, so it runs on the api pool;
+    // the timer on _poller only keeps the deadline.
+    weak_ptr<RecordedThumbnailTask> weak_self = shared_from_this();
+    managerkit::BlockingExecutors::api()->async([weak_self]() {
+        auto self = weak_self.lock();
+        if (self) {
+            self->resolveSource();
+            lock_guard<mutex> lock(self->_mutex);
+            self->_resolving = false;
+        }
+    });
+    return true;
+}
 
+void RecordedThumbnailTask::resolveSource() {
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (_completed || _snap_started)
+            return;
+    }
     string source_path = _request.source_path;
 #ifdef ENABLE_TIER_STORAGE
     ObjectReadRequest read_request;
@@ -815,7 +835,7 @@ bool RecordedThumbnailTask::tick() {
         lock_guard<mutex> lock(_mutex);
         _stage = "RESTORING";
         _progress_percent = source.progress_percent;
-        return true;
+        return;
     } else {
         Result result;
         result.stage = "RESOLVING";
@@ -824,11 +844,10 @@ bool RecordedThumbnailTask::tick() {
         result.recording_unavailable = !source.storage_unavailable && !source.restore_unavailable;
         result.error = source.message.empty() ? "Recorded segment is unavailable" : source.message;
         complete(result);
-        return false;
+        return;
     }
 #endif
     startSnap(source_path);
-    return true;
 }
 
 void RecordedThumbnailTask::startSnap(const string &source_path) {
@@ -1372,16 +1391,17 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
         return;
     }
     updateLifecycleStatus(Stage::QUEUED, 0.0f);
-    // The timefile query, restore planning and ffmpeg start run on the extractor's own poller
-    // (where its restore/ffmpeg timers already run), not on the caller's thread, which is an
-    // HTTP request poller for extractArchived/create.
+    // The timefile query, restore planning, object read source resolution and ffmpeg start block
+    // on SQLite, disk and object storage, so they run on the api pool, not on a WorkThreadPool
+    // poller nor on the caller's HTTP request poller. Each step starts the next one, so they
+    // never run concurrently.
     weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
-    _poller->async([weak_self]() {
+    managerkit::BlockingExecutors::api()->async([weak_self]() {
         auto self = weak_self.lock();
         if (self) {
             self->prepareExtractSource();
         }
-    }, false);
+    });
 }
 
 const char *FFmpegExtractor::stageToString(Stage stage) {
@@ -1542,11 +1562,7 @@ void FFmpegExtractor::startRestore() {
     }
     updateLifecycleStatus(Stage::RESTORING,
                           static_cast<float>(snapshot.segment_progress_percent));
-    weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
-    _timer = std::make_shared<Timer>(1.0f, [weak_self]() {
-        auto self = weak_self.lock();
-        return self ? self->pollRestore() : false;
-    }, _poller);
+    schedulePollRestore();
 #else
     startFfmpeg();
 #endif
@@ -1557,7 +1573,7 @@ bool FFmpegExtractor::pollRestore() {
     string restore_job_id;
     {
         lock_guard<mutex> lock(_status_mtx);
-        if (_complete_emitted || _stage != Stage::RESTORING) {
+        if (_cancelled || _complete_emitted || _stage != Stage::RESTORING) {
             return false;
         }
         restore_job_id = _restore_job_id;
@@ -1600,6 +1616,21 @@ bool FFmpegExtractor::pollRestore() {
 #else
     return false;
 #endif
+}
+
+// One poll a second: the delay runs on _poller, the poll (SQLite) on the api pool. The next delay
+// is armed only after a poll asks for it, so at most one poll is pending or running.
+void FFmpegExtractor::schedulePollRestore() {
+    weak_ptr<FFmpegExtractor> weak_self = shared_from_this();
+    _poller->doDelayTask(1000, [weak_self]() {
+        managerkit::BlockingExecutors::api()->async([weak_self]() {
+            auto self = weak_self.lock();
+            if (self && self->pollRestore()) {
+                self->schedulePollRestore();
+            }
+        });
+        return 0;
+    });
 }
 
 void FFmpegExtractor::startFfmpeg() {

@@ -5,9 +5,12 @@
 #include <cstdlib>
 #include <future>
 #include <memory>
+#include <pthread.h>
+#include <string>
 #include <thread>
 #include <unistd.h>
 
+#include "Common/BlockingExecutors.h"
 #include "FFmpegSource.h"
 #include "Poller/EventPoller.h"
 #include "Storage/DbStorage.h"
@@ -20,7 +23,8 @@ using namespace mediakit;
 using namespace toolkit;
 
 // extractArchived/create: makeExtract() used to query the timefiles synchronously on the caller's
-// thread (an HTTP request poller). The preparation now runs on the extractor's own poller.
+// thread (an HTTP request poller). The preparation (SQLite, disk, object storage) now runs on the
+// api pool of BlockingExecutors, not on the caller nor on a WorkThreadPool poller.
 
 namespace {
 
@@ -34,6 +38,8 @@ public:
         ASSERT_NE(nullptr, dir);
         g_db_dir = dir;
         mINI::Instance()[Database::kDbSavePath] = g_db_dir;
+        // One api worker, so blockApiPool() holds the whole pool.
+        mINI::Instance()[Blocking::kApiThreads] = 1;
         std::make_shared<MigrationHistoryImp>(Database::kMediaServerDb)->migrate(S3_MSERVER_MIGRATION_DIR);
     }
 
@@ -49,19 +55,25 @@ public:
 
 struct StartResult {
     SockException ex;
-    bool on_extractor_poller = false;
+    std::string thread_name;
 };
 
-// Blocks `poller` until the returned promise is set.
-std::shared_ptr<std::promise<void>> blockPoller(const EventPoller::Ptr &poller) {
+std::string currentThreadName() {
+    char name[32] = { 0 };
+    pthread_getname_np(pthread_self(), name, sizeof(name));
+    return name;
+}
+
+// Blocks the (single-thread) api pool until the returned promise is set.
+std::shared_ptr<std::promise<void>> blockApiPool() {
     auto release = std::make_shared<std::promise<void>>();
     auto released = release->get_future().share();
     auto started = std::make_shared<std::promise<void>>();
     auto started_future = started->get_future();
-    poller->async([released, started]() {
+    BlockingExecutors::api()->async([released, started]() {
         started->set_value();
         released.wait_for(std::chrono::seconds(5));
-    }, false);
+    });
     started_future.wait();
     return release;
 }
@@ -75,29 +87,29 @@ FFmpegExtractor::Ptr makeExtractor(const EventPoller::Ptr &poller) {
 
 } // namespace
 
-TEST(ExtractStartTest, PreparesOnExtractorPollerNotOnCaller) {
+TEST(ExtractStartTest, PreparesOnApiPoolNotOnCaller) {
     auto poller = EventPollerPool::Instance().getPoller();
     auto extractor = makeExtractor(poller);
-    auto release = blockPoller(poller);
+    auto release = blockApiPool();
 
     auto result = std::make_shared<std::promise<StartResult>>();
     auto result_future = result->get_future();
     std::atomic<int> calls{0};
-    extractor->makeExtract("extract-start-key", g_db_dir + "/extract", [result, poller, &calls](const SockException &ex) {
+    extractor->makeExtract("extract-start-key", g_db_dir + "/extract", [result, &calls](const SockException &ex) {
         if (++calls == 1) {
             StartResult r;
             r.ex = ex;
-            r.on_extractor_poller = poller->isCurrentThread();
+            r.thread_name = currentThreadName();
             result->set_value(r);
         }
     });
-    // makeExtract returned while the extractor poller is still busy: nothing ran on this thread.
+    // makeExtract returned while the api pool is still busy: nothing ran on this thread.
     EXPECT_EQ(0, calls.load());
     release->set_value();
 
     ASSERT_EQ(std::future_status::ready, result_future.wait_for(std::chrono::seconds(10)));
     auto r = result_future.get();
-    EXPECT_TRUE(r.on_extractor_poller);
+    EXPECT_EQ(0u, r.thread_name.find("api worker")) << r.thread_name;
     EXPECT_EQ(ApiErrCode::CODE_EXTRACT_SEGMENT_NO_DATA, r.ex.getCustomCode());
     auto status = extractor->status();
     EXPECT_TRUE(status.finished);
@@ -109,7 +121,7 @@ TEST(ExtractStartTest, PreparesOnExtractorPollerNotOnCaller) {
 TEST(ExtractStartTest, CancelBeforePreparationStopsIt) {
     auto poller = EventPollerPool::Instance().getPoller();
     auto extractor = makeExtractor(poller);
-    auto release = blockPoller(poller);
+    auto release = blockApiPool();
 
     auto result = std::make_shared<std::promise<SockException>>();
     auto result_future = result->get_future();

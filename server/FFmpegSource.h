@@ -112,6 +112,7 @@ public:
 
 private:
     bool tick();
+    void resolveSource();
     void startSnap(const std::string &source_path);
     void onSnap(bool success, const std::string &error);
     void complete(const Result &result);
@@ -129,6 +130,7 @@ private:
     std::string _stage = "RESOLVING";
     float _progress_percent = 0.0f;
     bool _snap_started = false;
+    bool _resolving = false;
     bool _completed = false;
     bool _cleanup_deferred = false;
     std::mutex _mutex;
@@ -325,6 +327,7 @@ private:
     void prepareExtractSource();
     void startRestore();
     bool pollRestore();
+    void schedulePollRestore();
     void startFfmpeg();
     void updateLifecycleStatus(Stage stage, float stage_progress);
     void notifyStartOnce(const toolkit::SockException &ex);

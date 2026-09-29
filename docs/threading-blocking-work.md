@@ -237,7 +237,14 @@ bound `searcher.max_parallel`; probe mặc định gọi thẳng bản blocking 
 
 `RecordedThumbnailTask` (dùng cho `bookmark/recordThumbnail`) dùng `makeSnapOnWorker`. Callback
 `onSnap`/`complete()` có mutex riêng và vốn không chạy trên `_poller`, nên gọi từ pool nào cũng
-an toàn.
+an toàn. Timer 1 s trên `_poller` chỉ giữ deadline; `resolveObjectReadSource()` (SQLite, restore,
+HEAD S3 khi bật mã hoá) chạy trên `BlockingExecutors::api()`, mỗi lúc tối đa một lần (`_resolving`).
+
+`FFmpegExtractor` (extract job): chuỗi `prepareExtractSource` → `startRestore`/`pollRestore` →
+`startFfmpeg` (truy vấn timefile, lập plan restore, resolve object, dựng manifest, chạy ffmpeg) chạy
+trên `BlockingExecutors::api()`; bước nào gọi bước kế nên chúng không chạy song song. Poll restore
+là delay task 1 s trên `_poller` rồi nhảy sang pool, chỉ đặt lại sau khi lần poll trước xong; `cancel()`
+dừng nó qua cờ `_cancelled`. Timer theo dõi process ffmpeg vẫn ở `_poller` (không blocking).
 
 ### 4.3 Điều khiển thiết bị
 
