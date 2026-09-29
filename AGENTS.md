@@ -85,6 +85,7 @@ The repository skill sources are under `.agents/skills/` and `.codex/skills/`. T
 - Shared lifecycle: `requirement-analysis`, `codebase-exploration`, `architecture-design`, `implementation-planning`, `implementation`, `test-design`, `code-review`, `bug-investigation`.
 - Shared safety: `shared-safe-git`.
 - S3MediaKit: `s3mediakit-development`, `s3mediakit-api`, `s3mediakit-database`, `s3mediakit-media-codec`.
+- Workflow (`.claude/skills/`): `export-feature` — package commits from a start commit to `HEAD` with `tools/git-patch/export-feature.sh` and list the changed features.
 
 Load only the skill relevant to the task. Read its `references/` files only when the task enters that topic.
 

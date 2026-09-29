@@ -141,6 +141,7 @@ that topic.
 | `s3mediakit-database` | SQLite schema, migrations, entities, repositories, cluster sync |
 | `s3mediakit-media-codec` | Codecs, tracks/frames, packetization, muxers, protocol conversion |
 | `s3mediakit-testing` | Adding/running unit tests, tier-storage integration tests |
+| `export-feature` | `/export-feature <start-commit>`: package commits to `HEAD` via `tools/git-patch/export-feature.sh` and list the changed features |
 
 `.agents/skills/` holds the generic lifecycle playbooks (requirement-analysis,
 codebase-exploration, architecture-design, implementation-planning, implementation,
