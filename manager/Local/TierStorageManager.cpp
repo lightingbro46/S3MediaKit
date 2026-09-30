@@ -8311,7 +8311,14 @@ static onceToken g_token(
         int64_t start_time = static_cast<int64_t>(info.start_time);
         int64_t end_time = start_time + std::max<int64_t>(1, static_cast<int64_t>(std::round(info.time_len)));
         auto origin_stream = StrMediaUtils::originStream(info.stream);
-        TierStorageManager::Instance().registerHotSegmentRange(info.app, origin_stream, info.file_path, start_time, end_time, static_cast<int64_t>(info.file_size));
+        // An exception escaping a listener stops NoticeCenter from calling the listeners after it
+        // (encryption, motion .mblk) for this segment, so a busy database must stop here.
+        try {
+            TierStorageManager::Instance().registerHotSegmentRange(info.app, origin_stream, info.file_path, start_time, end_time, static_cast<int64_t>(info.file_size));
+        } catch (const std::exception &ex) {
+            WarnL << "Register HOT segment range failed camera=" << info.app << " stream=" << origin_stream
+                  << " path=" << info.file_path << ": " << ex.what();
+        }
     });
 #endif
 },

@@ -86,6 +86,19 @@ private:
 class DeviceSource : public std::enable_shared_from_this<DeviceSource> {
 public:
     static DeviceSource& NullDeviceSource();
+
+    /**
+     * Event poller for a long-lived device object (camera, speaker) and everything it pulls.
+     *
+     * Round-robin over EventPollerPool instead of EventPollerPool::getPoller():
+     * - getPoller() (prefer_current_thread) returns the caller's poller, so devices loaded in a loop on
+     *   one thread all land on that thread;
+     * - getPoller(false) picks the least loaded poller, but load is a trailing CPU ratio that does not
+     *   move while a batch of devices is created, so a batch added on a busy node (config reload,
+     *   failover takeover) all lands on the one poller that was least loaded at that moment.
+     */
+    static toolkit::EventPoller::Ptr nextDevicePoller();
+
     using Ptr = std::shared_ptr<DeviceSource>;
     DeviceSource(const std::string &schema, const DeviceTuple &tuple);
     virtual ~DeviceSource();

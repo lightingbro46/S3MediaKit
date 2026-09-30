@@ -1,4 +1,6 @@
+#include <atomic>
 #include <mutex>
+#include <vector>
 #include "DeviceSource.h"
 #include "Common/config.h"
 
@@ -26,6 +28,18 @@ string getOriginTypeString(DeviceOriginType type){
         SWITCH_CASE(mobile_device);
         default : return "unknown";
     }
+}
+
+EventPoller::Ptr DeviceSource::nextDevicePoller() {
+    static const vector<EventPoller::Ptr> s_pollers = []() {
+        vector<EventPoller::Ptr> pollers;
+        EventPollerPool::Instance().for_each([&pollers](const TaskExecutor::Ptr &executor) {
+            pollers.emplace_back(static_pointer_cast<EventPoller>(executor));
+        });
+        return pollers;
+    }();
+    static atomic<size_t> s_next { 0 };
+    return s_pollers[s_next++ % s_pollers.size()];
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////

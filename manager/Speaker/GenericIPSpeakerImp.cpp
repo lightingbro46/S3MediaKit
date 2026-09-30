@@ -11,7 +11,7 @@ namespace managerkit {
 
 GenericIPSpeakerImp::GenericIPSpeakerImp(const DeviceTuple &tuple, const SpeakerStatisticImp::Ptr &statistic)
     : _statistic(statistic) {
-    _poller = EventPollerPool::Instance().getPoller();
+    _poller = DeviceSource::nextDevicePoller();
     CHECK(_poller != nullptr, "Failed to get poller for GenericIPSpeakerImp");
     _src = std::make_shared<GenericIPSpeaker>(tuple);
     statistic->setDeviceTuple(tuple);

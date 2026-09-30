@@ -12,7 +12,7 @@ namespace managerkit {
 
 GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::unordered_map<int, StreamTuple>& stream_map, const CameraStatisticImp::Ptr& statistic)
     : _statistic(statistic) {
-    _poller = EventPollerPool::Instance().getPoller();
+    _poller = DeviceSource::nextDevicePoller();
     CHECK(_poller != nullptr, "Failed to get poller for GenericRtspCameraImp");
     _src = std::make_shared<GenericRtspCamera>(tuple, stream_map);
     statistic->setDeviceTuple(tuple);
