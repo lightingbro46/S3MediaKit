@@ -112,6 +112,27 @@ flowchart TD
     J --> K[Xóa resource cache của device, giữ token và device khác]
 ```
 
+### WebRTC: chưa chạy thật — kiểm lại khi phát triển tính năng WebRTC
+
+Phần WebRTC ở trên (2026-09-30, commit `0c247111`) mới chỉ **biên dịch được**. RTSP, HTTP-FLV và
+HLS đã chạy thật; WebRTC thì chưa, vì mọi build dir đang tắt `ENABLE_WEBRTC`. Trước khi đưa WebRTC
+vào dùng, cần làm các việc sau:
+
+1. Build với `-DENABLE_WEBRTC=ON -DENABLE_RTPPROXY=ON`. Thiếu `ENABLE_RTPPROXY` thì build hỏng, vì
+   `webrtc/WebRtcTalk.h` dùng `RtpSender` mà class này chỉ có khi bật RTP proxy.
+2. Phát bằng `/index/api/webrtc?type=play` và bằng WHEP (`/index/api/whep`), có `token` trong URL,
+   dùng harness `tests/integration/e2e_real` (camera giả, `deny_users.json`, `hook_fault.json`).
+   Kiểm cả ba kịch bản:
+   - Hook chậm hoặc 5xx ngắn hạn: phiên vẫn sống.
+   - Hook từ chối (4xx): transport bị `safeShutdown` trong ≤ 60 s.
+   - JWT hết hạn: transport bị đóng.
+3. Kiểm log có dòng `Revoked media access ...`, và phía client thấy peer connection bị đóng thật.
+   Chỉ riêng request HTTP signaling bị đóng thì chưa đủ.
+4. **Signaling qua `WebRtcSignalingPeer` (room/P2P) chưa được bảo vệ:** sender ở đường này là một
+   `TcpClient` chứ không phải `Session`, nên listener play không đăng ký gì và phiên không bao giờ bị
+   thu hồi. Ngoài ra `play_plugin` đang `static_pointer_cast<Session>` trên sender đó, tức là cast sai
+   kiểu (có từ trước). Cần sửa trước khi bật tính năng room.
+
 ## 5. Threading
 
 - Mọi truy cập map đều nằm trong `_mtx` (recursive). `revokeTokenDevice()` là public và tự lock.

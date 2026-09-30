@@ -182,8 +182,12 @@ bool UserSessionCache::hasPermissionCode(std::string code) {
 };
 
 void UserSessionCache::saveUserSession() {
+    if (_session_id.empty()) {
+        DebugL << "JWT of user " << _user_name << " has no session_id claim, session not recorded";
+        return;
+    }
     UserSession session;
-    session.token = _token;
+    session.sessionId = _session_id;
     session.userId = _user_id;
     session.creationTimeS = _created_at;
     auto imp_session = std::make_shared<UserSessionImp>();

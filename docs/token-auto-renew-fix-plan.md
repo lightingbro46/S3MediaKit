@@ -19,7 +19,8 @@ P1–P7 đã làm theo các khuyến nghị: D1a, D2a (xoá cookie HLS gọn hơ
   `ENABLE_RTPPROXY=ON` (`WebRtcTalk.h` dùng `RtpSender`). Mới chỉ biên dịch object `WebRtcTransport.cpp`.
 - **Follow-up ngoài plan:**
   - Lần phát đầu (không phải gia hạn) vẫn cache REJECT 600 s khi hook lỗi mạng/timeout.
-  - Log Trace của `SqliteConnection` in nguyên JWT trong SQL của `user_sessions`.
+  - ~~Log Trace của `SqliteConnection` in nguyên JWT trong SQL của `user_sessions`.~~ Đã xử lý: bảng
+    `user_auth_sessions` (migration 21) chỉ lưu claim `session_id`, không lưu JWT.
 
 ## Bối cảnh
 
