@@ -1669,6 +1669,16 @@ void play_plugin(SocketHelper &sender, const WebRtcArgs &args, const onCreateWeb
             info.schema = "rtc";
             auto rtc = Type::create(EventPollerPool::Instance().getPoller(), src, info,
                 WebRtcTransport::Role::PEER, WebRtcTransport::SignalingProtocols::WHEP_WHIP);
+            // Revoking media access must close this transport, not the signaling request that created it.
+            // Compiled but not yet run for real: WebRTC checklist in docs/user-author-manager-flow.md, section 4.
+            std::weak_ptr<WebRtcTransportImp> weak_rtc = rtc;
+            std::weak_ptr<void> owner = rtc;
+            std::function<void(const string &)> close = [weak_rtc](const string &reason) {
+                if (auto strong_rtc = weak_rtc.lock()) {
+                    strong_rtc->safeShutdown(SockException(Err_shutdown, "Session revoked: " + reason));
+                }
+            };
+            NOTICE_EMIT(BroadcastMediaSessionTransferArgs, Broadcast::kBroadcastMediaSessionTransfer, *session_ptr, owner, close);
             cb(*rtc);
         });
     };

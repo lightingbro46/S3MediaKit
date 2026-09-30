@@ -213,6 +213,16 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
     }
 }
 
+// A 4xx answer is the backend refusing the request. Network errors, 5xx, 408 and 429 may pass on retry.
+static bool isHookDenied(const string &err) {
+    static const string prefix = "[bad http status code]:";
+    if (err.compare(0, prefix.size(), prefix) != 0 || err.size() < prefix.size() + 3 || err[prefix.size()] != '4') {
+        return false;
+    }
+    const string status = err.substr(prefix.size(), 3);
+    return status != "408" && status != "429";
+}
+
 static string overlayImageExtension(const string &path) {
     const string data = File::loadFile(path);
     string probe = data;
@@ -1372,9 +1382,19 @@ void installWebHook() {
             bool cached = true;
             if (!force_refresh || err.empty()) {
                 cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty(), 600, force_refresh);
+            } else if (isHookDenied(err)) {
+                // The backend refused the refresh: close the sessions now instead of at the grant expiry.
+                // Other failures keep the grant so the next timer tick retries.
+                UserAuthorManager::Instance().revokeTokenDevice(jwt_token, device_id, "media authorization denied");
             }
             invoker(err.empty() && cached ? "" : "Unauthorized");
         });
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaSessionTransfer, [](BroadcastMediaSessionTransferArgs) {
+        if (auto session = dynamic_cast<toolkit::Session *>(&sender)) {
+            UserAuthorManager::Instance().transferMediaSession(session, owner, close);
+        }
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastFlowReport, [](BroadcastFlowReportArgs) {

@@ -3,6 +3,7 @@
 #include "Common/Parser.h"
 #include "Common/config.h"
 #include "Common/strCoding.h"
+#include "Poller/EventPoller.h"
 #include "Record/HlsMediaSource.h"
 #include "HlsViewerSession.h"
 #include "HttpConst.h"
@@ -486,6 +487,18 @@ static void canAccessPath(Session &sender, const Parser &parser, const MediaInfo
             if (is_hls) {
                 auto selected = HttpCookieManager::Instance().getOrAddCookie(kCookieName, uid, life_second, std::move(any));
                 auto &selected_attach = selected->getAttach<HttpCookieAttachment>();
+                if (selected_attach._err_msg.empty()) {
+                    // The cookie, not this connection, keeps the viewer authorized: revoking media access
+                    // deletes it, so segments are refused and the next playlist request is authorized again.
+                    std::weak_ptr<HttpServerCookie> weak_cookie = selected;
+                    std::weak_ptr<void> owner = selected;
+                    std::function<void(const string &)> close = [weak_cookie](const string &) {
+                        EventPollerPool::Instance().getPoller()->async([weak_cookie]() {
+                            HttpCookieManager::Instance().delCookie(weak_cookie.lock());
+                        });
+                    };
+                    NOTICE_EMIT(BroadcastMediaSessionTransferArgs, Broadcast::kBroadcastMediaSessionTransfer, *strong_session, owner, close);
+                }
                 callback(selected_attach._err_msg, selected);
             } else {
                 callback(err_msg, HttpCookieManager::Instance().addCookie(kCookieName, uid, life_second, std::move(any)));

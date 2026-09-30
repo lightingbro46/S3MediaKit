@@ -1,8 +1,10 @@
 #include "UserAuthorManager.h"
 #include "Common/config.h"
+#include "Common/BlockingExecutors.h"
 #include "Network/Session.h"
 #include "Util/logger.h"
 #include "Util/NoticeCenter.h"
+#include "server/Manager.h"
 #include <algorithm>
 
 using namespace std;
@@ -11,7 +13,9 @@ using namespace mediakit;
 
 namespace managerkit {
 
-static const uint64_t kAuthorizationRefreshLeadTime = 60;
+// The timer runs every 60 s and a hook may take its whole timeout (10 s by default). Refreshing
+// 180 s ahead gives each token/device pair two or three attempts before its authorization expires.
+static const uint64_t kAuthorizationRefreshLeadTime = 180;
 INSTANCE_IMP(UserAuthorManager);
 
 UserAuthorManager::UserAuthorManager() {
@@ -33,6 +37,13 @@ UserAuthorManager::~UserAuthorManager() {
 void UserAuthorManager::onManager() {
     {
         lock_guard<recursive_mutex> lck(_mtx);
+        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+        if (!enable_authorize) {
+            // Authorization was turned off at runtime: forget per-device grants without closing
+            // the sessions that were opened under them.
+            _map_token_resource.clear();
+            _map_token_sessions.clear();
+        }
         cleanExpiredTokenCache();
         cleanExpiredAuthorCache();
         cleanExpiredClusterAuthorCache();
@@ -50,17 +61,36 @@ void UserAuthorManager::registerMediaSession(const string &jwt_token, const stri
     lock_guard<recursive_mutex> lck(_mtx);
     auto &sessions = _map_token_sessions[jwt_token];
     for (auto it = sessions.begin(); it != sessions.end();) {
-        auto existingSession = it->session.lock();
-        if (!existingSession) {
+        auto existingOwner = it->owner.lock();
+        if (!existingOwner) {
             it = sessions.erase(it);
             continue;
         }
-        if (it->device_id == device_id && existingSession == newSession) {
+        if (it->device_id == device_id && existingOwner.get() == static_cast<void *>(newSession.get())) {
             return;
         }
         ++it;
     }
-    sessions.push_back({device_id, session});
+    weak_ptr<toolkit::Session> weakSession = session;
+    sessions.push_back({device_id, session, [weakSession](const string &reason) {
+        if (auto strongSession = weakSession.lock()) {
+            strongSession->shutdown(SockException(Err_shutdown, "Session revoked: " + reason));
+        }
+    }});
+}
+
+void UserAuthorManager::transferMediaSession(const toolkit::Session *from, const weak_ptr<void> &owner,
+                                             const function<void(const string &reason)> &close) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    for (auto &tokenSessions : _map_token_sessions) {
+        for (auto &item : tokenSessions.second) {
+            auto itemOwner = item.owner.lock();
+            if (itemOwner && itemOwner.get() == static_cast<const void *>(from)) {
+                item.owner = owner;
+                item.close = close;
+            }
+        }
+    }
 }
 
 void UserAuthorManager::checkActiveTokenAuthorizations() {
@@ -75,7 +105,7 @@ void UserAuthorManager::checkActiveTokenAuthorizations() {
                                        tokenCacheIt->second->getExpiredAt() <= now + kAuthorizationRefreshLeadTime;
 
             for (auto sessionIt = tokenIt->second.begin(); sessionIt != tokenIt->second.end();) {
-                if (sessionIt->session.expired()) {
+                if (sessionIt->owner.expired()) {
                     sessionIt = tokenIt->second.erase(sessionIt);
                     continue;
                 }
@@ -144,8 +174,8 @@ void UserAuthorManager::revokeToken(const string &jwt_token, const string &reaso
     auto sessionIt = _map_token_sessions.find(jwt_token);
     if (sessionIt != _map_token_sessions.end()) {
         for (auto &item : sessionIt->second) {
-            if (auto session = item.session.lock()) {
-                session->shutdown(SockException(Err_shutdown, "Session revoked: " + reason));
+            if (!item.owner.expired()) {
+                item.close(reason);
             }
         }
         _map_token_sessions.erase(sessionIt);
@@ -165,6 +195,7 @@ void UserAuthorManager::revokeToken(const string &jwt_token, const string &reaso
 
 void UserAuthorManager::revokeTokenDevice(const string &jwt_token, const string &device_id,
                                           const string &reason) {
+    lock_guard<recursive_mutex> lck(_mtx);
     _token_checks.erase(jwt_token + ":" + device_id);
     auto sessionIt = _map_token_sessions.find(jwt_token);
     if (sessionIt != _map_token_sessions.end()) {
@@ -173,8 +204,8 @@ void UserAuthorManager::revokeTokenDevice(const string &jwt_token, const string 
                 ++it;
                 continue;
             }
-            if (auto session = it->session.lock()) {
-                session->shutdown(SockException(Err_shutdown, "Session revoked: " + reason));
+            if (!it->owner.expired()) {
+                it->close(reason);
             }
             it = sessionIt->second.erase(it);
         }
@@ -200,7 +231,8 @@ void UserAuthorManager::cleanExpiredAuthorCache() {
     vector<pair<string, string>> expired;
     for (const auto &tokenResources : _map_token_resource) {
         for (const auto &resource : tokenResources.second) {
-            if (resource.second.second <= now) {
+            // A refresh still waiting for the hook decides this pair when it answers.
+            if (resource.second.second <= now && !_token_checks.count(tokenResources.first + ":" + resource.first)) {
                 expired.emplace_back(tokenResources.first, resource.first);
             }
         }
@@ -225,16 +257,30 @@ void UserAuthorManager::cleanExpiredTokenCache() {
 }
 
 UserSessionCache::Ptr UserAuthorManager::getTokenCache(const string &jwt_token, const string &user_agent, const std::string &client_ip) {
-    lock_guard<recursive_mutex> lck(_mtx);
-    auto tokenIt = _map_token_cache.find(jwt_token);
-    return tokenIt != _map_token_cache.end() ? tokenIt->second : addTokenCache(jwt_token, user_agent, client_ip);
+    {
+        lock_guard<recursive_mutex> lck(_mtx);
+        auto tokenIt = _map_token_cache.find(jwt_token);
+        if (tokenIt != _map_token_cache.end()) {
+            return tokenIt->second;
+        }
+    }
+    return addTokenCache(jwt_token, user_agent, client_ip);
 }
 
 UserSessionCache::Ptr UserAuthorManager::addTokenCache(const string &jwt_token, const string &user_agent, const std::string &client_ip) {
-    lock_guard<recursive_mutex> lck(_mtx);
+    // Verify the RSA signature outside the lock; a concurrent caller for the same token keeps the first cache.
     auto cache = std::make_shared<UserSessionCache>(jwt_token, user_agent, client_ip);
-    // add to cache map
-    _map_token_cache[jwt_token] = cache;
+    {
+        lock_guard<recursive_mutex> lck(_mtx);
+        auto ret = _map_token_cache.emplace(jwt_token, cache);
+        if (!ret.second) {
+            return ret.first->second;
+        }
+    }
+    if (cache->hasProjectAccess()) {
+        // SQLite write: keep it off the session poller.
+        BlockingExecutors::api()->async([cache]() { cache->saveUserSession(); });
+    }
     return cache;
 }
 
@@ -260,12 +306,14 @@ bool UserAuthorManager::addAuthorCache(const string &resource_id, const string &
         return false;
     }
     if (only_if_active) {
+        // Refresh only a grant that was not revoked meanwhile. It may have just expired: the hook can
+        // answer after the expiry, and cleanExpiredAuthorCache() keeps a grant whose refresh is in flight.
         auto resourceTokenIt = _map_token_resource.find(jwt_token);
         if (resourceTokenIt == _map_token_resource.end()) {
             return false;
         }
         auto resourceIt = resourceTokenIt->second.find(resource_id);
-        if (resourceIt == resourceTokenIt->second.end() || resourceIt->second.second <= now) {
+        if (resourceIt == resourceTokenIt->second.end() || !resourceIt->second.first) {
             return false;
         }
     }

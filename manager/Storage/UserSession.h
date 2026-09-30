@@ -10,15 +10,17 @@ using namespace toolkit;
 
 namespace managerkit {
 
+// One row per login session, keyed by the session_id claim of the JWT. The JWT itself is a bearer
+// secret and is never stored.
 struct UserSession {
-    std::string token;
+    std::string sessionId;
     std::string userId;
     int64_t creationTimeS;
 };
 
-DECLARE_ENTITY(UserSession, "user_sessions", 
-    { "token" },
-    &UserSession::token, "token",
+DECLARE_ENTITY(UserSession, "user_auth_sessions",
+    { "sessionId" },
+    &UserSession::sessionId, "sessionId",
     &UserSession::userId, "userId",
     &UserSession::creationTimeS, "creationTimeS"
 )
@@ -67,7 +69,10 @@ public:
     UserSessionImp() : UserSessionRepository() {}
 
     void add(UserSession &session, const std::string &username) {
-        auto sessions = findById(session.token);
+        if (session.sessionId.empty()) {
+            return;
+        }
+        auto sessions = findById(session.sessionId);
         if (sessions.size() == 0) {
             save(session, true);
 
@@ -82,16 +87,16 @@ public:
     }
 
     // delete
-    void remove(const std::string &token) {
+    void remove(const std::string &session_id) {
         UserSession s;
-        s.token = token;
+        s.sessionId = session_id;
         removeById(s);
     }
 
     // find
     std::vector<UserSession> findById(std::string id) {
         UserSession session_search;
-        session_search.token = id;
+        session_search.sessionId = id;
         return UserSessionRepository::findById(session_search);
     }
 

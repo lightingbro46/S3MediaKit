@@ -201,7 +201,10 @@ TEST(ReaderMonitorTest, AppliesGlobalAndPerStreamThresholds) {
     monitor.setStreamReaderCount("camera", "camera|live:rtsp", 2);
     EXPECT_FALSE(monitor.isReaderCountAvailable("camera"));
     EXPECT_FALSE(monitor.isReaderCountLimit("camera"));
+    // The critical threshold is the number of readers a camera may have: the 4th reader is still admitted.
     monitor.setStreamReaderCount("camera", "camera|live:rtsp", 3);
+    EXPECT_FALSE(monitor.isReaderCountLimit("camera"));
+    monitor.setStreamReaderCount("camera", "camera|live:rtsp", 4);
     EXPECT_TRUE(monitor.isReaderCountLimit("camera"));
 
     monitor.setStreamReaderCount("other", "other|live:rtsp", 3);

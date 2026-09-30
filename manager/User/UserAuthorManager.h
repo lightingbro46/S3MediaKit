@@ -1,6 +1,7 @@
 #ifndef MANAGER_USERAUTHORMANAGER_H
 #define MANAGER_USERAUTHORMANAGER_H
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -48,6 +49,14 @@ public:
                               const std::weak_ptr<toolkit::Session> &session);
 
     /**
+     * Move the media sessions registered for `from` to `owner`, the object that really carries the media
+     * (the WebRTC transport created by a signaling request, the HLS cookie of an m3u8 request).
+     * `close` runs under the manager lock when access is revoked: it must not block or take other locks.
+     */
+    void transferMediaSession(const toolkit::Session *from, const std::weak_ptr<void> &owner,
+                              const std::function<void(const std::string &reason)> &close);
+
+    /**
      *  get user-resource author cache
      */
     UserAuthorPermit getAuthorCache(const std::string &resource_id, const std::string &jwt_token);
@@ -57,6 +66,18 @@ public:
      */
     bool addAuthorCache(const std::string &resource_id, const std::string &jwt_token, bool permit = false,
                         uint64_t max_elapsed = 600, bool only_if_active = false);
+
+    /**
+     * Revoke a specific device session associated with a token, and notify the user of the reason for revocation.
+     * @param jwt_token The token associated with the device session to revoke.
+     * @param device_id The ID of the device session to revoke.
+     * @param reason The reason for revocation.
+     * This function will remove the specific device session from the cache, terminate the session,
+     * and notify the user of the revocation reason.
+     * It is intended to be called when a device session is deemed invalid or compromised, to ensure that the user is aware of the revocation and can take appropriate action.
+     */
+    void revokeTokenDevice(const std::string &jwt_token, const std::string &device_id,
+                           const std::string &reason);
 
     /**
      * Add cluster author cache
@@ -126,25 +147,14 @@ private:
      */
     void revokeToken(const std::string &jwt_token, const std::string &reason);
 
-    /**
-     * Revoke a specific device session associated with a token, and notify the user of the reason for revocation.
-     * @param jwt_token The token associated with the device session to revoke.
-     * @param device_id The ID of the device session to revoke.
-     * @param reason The reason for revocation.
-     * This function will remove the specific device session from the cache, terminate the session,
-     * and notify the user of the revocation reason.
-     * It is intended to be called when a device session is deemed invalid or compromised, to ensure that the user is aware of the revocation and can take appropriate action.
-     */
-    void revokeTokenDevice(const std::string &jwt_token, const std::string &device_id,
-                           const std::string &reason);
-
 private:
     std::unordered_map<std::string /*token*/, UserSessionCache::Ptr> _map_token_cache;
     std::unordered_map<std::string /*token*/, std::unordered_map<std::string /*resourceId*/, std::pair<bool /*permit*/, uint64_t /*expired_time*/>>> _map_token_resource;
     std::unordered_map<std::string /*authorId + ":" + secretKey*/, std::pair<bool /*permit*/, uint64_t /*expired_time*/>> _map_cluster_author;
     struct MediaSessionInfo {
         std::string device_id;
-        std::weak_ptr<toolkit::Session> session;
+        std::weak_ptr<void> owner;
+        std::function<void(const std::string &reason)> close;
     };
     std::unordered_map<std::string /*token*/, std::vector<MediaSessionInfo>> _map_token_sessions;
     std::unordered_set<std::string /*token:device*/> _token_checks;

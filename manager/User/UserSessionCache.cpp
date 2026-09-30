@@ -30,7 +30,8 @@ bool UserSessionHelper::verifyJwtToken(const string &jwt_token) {
         // step 3. verify jwt token
         jwt::verify<traits>()
             .allow_algorithm(jwt::algorithm::rs256(decoded_public_key)) // allow RS256 algorithm
-            .leeway(300) // 5 minutes leeway for nbf, iat, exp
+            .leeway(300) // 5 minutes clock-skew leeway for nbf, iat
+            .expires_at_leeway(0) // exp must match the cache expiry that revokes media sessions
             .verify(decoded); // verify token
 
     } catch (exception &ex) {
@@ -129,7 +130,10 @@ ClientOSInfo parseUserAgent(const std::string& ua) {
 
 UserSessionCache::UserSessionCache(const string &token, const string &user_agent, const string &client_ip) : _token(token), _client_ip(client_ip) {
     if (!UserSessionHelper::verifyJwtToken(token)) {
-        WarnL << "Invalid token: " << token;
+        // Never log the token itself: an "invalid" token is usually a real one that just expired.
+        Json::Value payload;
+        UserSessionHelper::decodeJwtToken(payload, token);
+        WarnL << "Invalid token, user: " << payload["sub"].asString() << ", length: " << token.size();
         _has_access = false;
         _created_at = time(nullptr);
         _expired_at = _created_at;
@@ -166,8 +170,6 @@ UserSessionCache::UserSessionCache(const string &token, const string &user_agent
     }
     _has_access = true;
     _client_os_info = parseUserAgent(user_agent);
-
-    saveUserSession();
 }
 
 bool UserSessionCache::hasPermissionCode(std::string code) {
@@ -180,8 +182,12 @@ bool UserSessionCache::hasPermissionCode(std::string code) {
 };
 
 void UserSessionCache::saveUserSession() {
+    if (_session_id.empty()) {
+        DebugL << "JWT of user " << _user_name << " has no session_id claim, session not recorded";
+        return;
+    }
     UserSession session;
-    session.token = _token;
+    session.sessionId = _session_id;
     session.userId = _user_id;
     session.creationTimeS = _created_at;
     auto imp_session = std::make_shared<UserSessionImp>();

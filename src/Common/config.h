@@ -7,6 +7,7 @@
 #include "macros.h"
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include <json/json.h>
@@ -240,6 +241,11 @@ extern const std::string kBroadcastDeviceChanged;
 // Broadcast for accessing device data. Control device authentication through this event.
 extern const std::string kBroadcastDeviceAccess;
 #define BroadcastDeviceAccessArgs const std::string &device_id, const std::string &jwt_token, const bool &force_refresh, const Broadcast::AuthInvoker &invoker
+
+// Media access granted to the session `sender` now belongs to `owner`, the object created for it that
+// carries the media (WebRTC transport, HLS cookie). `close` ends that access; it must not block or take locks.
+extern const std::string kBroadcastMediaSessionTransfer;
+#define BroadcastMediaSessionTransferArgs SockInfo &sender, const std::weak_ptr<void> &owner, const std::function<void(const std::string &reason)> &close
 
 // Broadcast for device capabilities changed event.
 extern const std::string kBroadcastDeviceCapsChanged;

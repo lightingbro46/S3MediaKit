@@ -88,10 +88,12 @@ add_s3_unit_test(unit_extract_job storage/test_extract_job.cpp)
 target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)
 
-# video_config_rule_job writes against a temporary mserver DB built from the real migrations.
+# video_config_rule_job writes against a temporary mserver DB built from the real migrations;
+# user_session reuses that DB environment.
 # VideoConfigJobManager pulls in the cameras, so server/ symbols come from the tier-storage stubs.
 add_s3_unit_test(unit_video_config_rule_job
   storage/test_video_config_rule_job.cpp
+  storage/test_user_session.cpp
   "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
 target_link_libraries(unit_video_config_rule_job PRIVATE
   -Wl,--start-group

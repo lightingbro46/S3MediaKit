@@ -6,6 +6,10 @@ tức `hook.on_play`) có thể **từ chối**: nếu `user_id` trong JWT của
 trong `<work>/deny_users.json` thì trả HTTP 403. JWT không được kiểm chữ ký ở đây —
 MediaServer đã kiểm trước khi gọi hook.
 
+`<work>/hook_fault.json` (đọc lại mỗi request, không có thì bỏ qua) làm hook đó chậm hoặc lỗi để
+thử cơ chế gia hạn quyền: `{"delay_sec": 10}` trả lời sau 10 s, `{"status": 503}` trả 503 cho
+mọi user. `deny_users.json` vẫn được xét trước.
+
 Mọi request được ghi (path, thời điểm, body rút gọn) vào `<work>/mock_api_events.jsonl`
 để kịch bản đối chiếu hook nào đã tới, ví dụ callback kết quả job trích xuất.
 
@@ -51,6 +55,13 @@ def denied(user):
         return False
 
 
+def hook_fault():
+    try:
+        return json.load(open(os.path.join(WORK, "hook_fault.json")))
+    except (OSError, ValueError):
+        return {}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -62,8 +73,13 @@ class Handler(BaseHTTPRequestHandler):
         user = ""
         if path == CHECK_CAMERA:
             user = jwt_user(self.headers.get("Authorization", ""))
+            fault = hook_fault()
+            if fault.get("delay_sec"):
+                time.sleep(float(fault["delay_sec"]))
             if denied(user):
                 code = 403
+            elif fault.get("status"):
+                code = int(fault["status"])
         record = {"t": time.time(), "path": path, "code": code}
         if user:
             record["user"] = user
@@ -75,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in CONFIG_HOOKS:
             reply["media_server"] = {}
         body = json.dumps(reply).encode()
-        self.send_response(403 if code else 200)
+        self.send_response(code or 200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

@@ -120,9 +120,8 @@ public:
      */
     std::string getClientIp() { return _client_ip; }
 
-private:
     /**
-     *  save user session into database
+     * save user session into database (blocking SQLite write)
      */
     void saveUserSession();
 
