@@ -16,8 +16,8 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | Executor | Loại | Dùng cho |
 |---|---|---|
 | `EventPollerPool` | `EventPoller` | Socket, session, `MediaSource`/muxer, timer của media |
-| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, health check của `ClusterManager` |
-| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST; refresh `HddMonitor` (`statvfs` từng mount, mỗi lúc tối đa một lần) |
+| `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, health check của `ClusterManager` |
+| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST; ghi ESC của từng camera (`SerialTaskQueue` `esc <camera>`, giữ thứ tự theo camera); refresh `HddMonitor` (`statvfs` từng mount, mỗi lúc tối đa một lần) |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
 | `BlockingExecutors::storage()` | `ThreadPool` | Chu kỳ bảo trì kho: quét cây thư mục ghi, xoá file hết hạn, dựng lại timefile, dọn thư mục tạm |

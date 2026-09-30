@@ -7,7 +7,7 @@
 #include "Common/StrUtil.h"
 #include "Local/TierStorageManager.h"
 #include "Extension/Resource.h"
-#include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 
 using namespace std;
 using namespace toolkit;
@@ -842,8 +842,9 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
 
 CameraStatisticImp::CameraStatisticImp(const std::string &src_path, int sync_interval_sec) : _sync_interval_sec(sync_interval_sec) {
     CHECK(!src_path.empty(), "Source path cannot be empty");
-    // One fixed worker per camera keeps its ESC writes (assign/release, upsert, status, remove) in order.
-    _esc_poller = WorkThreadPool::Instance().getPoller();
+    // One serial queue per camera keeps its ESC writes (assign/release, upsert, status, remove) in
+    // order; different cameras run in parallel. A pool, not a poller: a locked DB waits out busy_timeout.
+    _esc_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "esc " + src_path);
     setup(src_path);
 }
 
@@ -1566,8 +1567,8 @@ struct ResourceAdapter<CameraStatistic> {
 };
 
 void CameraStatisticImp::postEscTask(const std::function<void()> &task) {
-    // may_sync=false: never run inline, callers hold _mtx.
-    _esc_poller->async(task, false);
+    // Never runs inline (callers hold _mtx).
+    _esc_queue->post(task);
 }
 
 bool CameraStatisticImp::syncToEsc(bool force) {
