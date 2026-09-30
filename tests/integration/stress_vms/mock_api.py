@@ -8,7 +8,12 @@ kiểm được rằng luồng nào thực sự lên/xuống.
 Webhook kết quả video config rule (`.../action-callback`) được giữ nguyên body và header
 `Idempotency-Key`, đọc lại qua `GET /_mock/hooks?path=action-callback`.
 
-Dùng: mock_api.py [port] [--state PATH] [--stats-sec 15]
+Với `--config-root WORK`, hook lấy cấu hình (`/api/media-server/configuration-2nd-gen`) trả nội
+dung `WORK/<mediaServerId>/api-config.json`, đọc lại mỗi lần. Bản Release không đọc
+`api-config.json` (chỉ có dưới ENABLE_DEBUG) mà lấy cấu hình qua hook này; khi `manager.apiSecret`
+rỗng nó nhận JSON thô (server/WebHook.cpp::decryptServerConfigJson).
+
+Dùng: mock_api.py [port] [--state PATH] [--stats-sec 15] [--config-root WORK]
 """
 import argparse
 import json
@@ -25,6 +30,16 @@ RECORDED = []
 RECORD_SUFFIXES = ("action-callback",)
 LOCK = threading.Lock()
 STARTED = time.time()
+CONFIG_ROOT = None
+CONFIG_SUFFIX = "configuration-2nd-gen"
+
+
+def server_id(raw):
+    try:
+        return json.loads(raw).get("mediaServerId", "")
+    except (ValueError, AttributeError):
+        from urllib.parse import parse_qs
+        return (parse_qs(raw.decode("utf-8", "replace")).get("mediaServerId") or [""])[0]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -37,6 +52,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/_mock/hooks":
             return self._send_recorded()
+        if CONFIG_ROOT and path.endswith(CONFIG_SUFFIX):
+            with LOCK:
+                COUNTS[path] += 1
+            return self._send_config(server_id(raw))
         with LOCK:
             COUNTS[path] += 1
             if path.endswith(RECORD_SUFFIXES):
@@ -60,6 +79,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_config(self, node_id):
+        cfg = os.path.join(CONFIG_ROOT, os.path.basename(node_id or ""), "api-config.json")
+        try:
+            with open(cfg, "rb") as fh:
+                data = fh.read()
+            code = 200
+        except OSError:
+            data, code = json.dumps({"code": -1, "msg": "no config for %s" % node_id}).encode(), 404
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _send_recorded(self):
         with LOCK:
@@ -104,7 +137,10 @@ def main():
     ap.add_argument("port", nargs="?", type=int, default=18590)
     ap.add_argument("--state", default=None)
     ap.add_argument("--stats-sec", type=float, default=15.0)
+    ap.add_argument("--config-root", default=None, help="phục vụ <root>/<node>/api-config.json cho bản Release")
     args = ap.parse_args()
+    global CONFIG_ROOT
+    CONFIG_ROOT = args.config_root
 
     threading.Thread(target=reporter, args=(args,), daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

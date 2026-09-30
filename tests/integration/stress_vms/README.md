@@ -30,11 +30,15 @@ tests/integration/stress_vms/run_stress.sh /tmp/s3mk_stress stop
 | Tham số | Giá trị |
 |---|---|
 | `profile` | `smoke` (30 cam / 60 luồng), `mid` (120/240), `full` (300/600) |
-| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak`, `videorule` |
+| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak`, `videorule`, `ccu`, `ccu_storm`, `ccu_churn`, `ccu_soak`, `ccu_admission` |
 | `MEDIASERVER_DIR` | thư mục chứa binary (mặc định `<repo>/release/linux/Debug`) |
 | `NODES` | số node (mặc định 2; `storage` và `videorule` luôn 1) |
 | `PHASE_SEC` | thời lượng mỗi phase (mặc định 60/120/180 theo profile) |
 | `CYCLES` | số chu kỳ `failover`↔`rebalance` của kịch bản `soak` (mặc định 4) |
+| `MEDIA_PROFILE` | `light` (176x144 5 fps 48 kbps, mặc định) hoặc `realistic` (main 1080p25 ~3,7 Mbps, sub 640x360 25 fps 512 kbps, GOP 2 s) |
+| `RTSP_PROCS` | số tiến trình nguồn RTSP cùng cổng (mặc định 1 với `light`, nproc/2 với `realistic`) |
+
+`run_stress.sh` không có bit thực thi trong git — chạy bằng `bash run_stress.sh ...`.
 
 ## Hệ thống giả lập
 
@@ -42,9 +46,9 @@ Toàn bộ tải đến từ ba tiến trình Python, không cần camera thật
 
 | File | Vai trò |
 |---|---|
-| `rtsp_source.py` | Máy chủ RTSP phát lại một vòng H.264 đã đóng gói RTP sẵn. Mọi path đều phục vụ được nên 600 luồng chỉ tốn chi phí vá seq/timestamp. Chỉ RTP/AVP/TCP. Đã đo: **600 phiên ổn định ở ~32 Mbps, ~4400 pps, một tiến trình Python**. |
+| `rtsp_source.py` | Máy chủ RTSP phát lại vòng H.264 đã đóng gói RTP sẵn; luồng có path `-sub` phát file riêng khi có `--sub-media`. Mọi phiên dùng chung bộ đếm frame nên mỗi frame chỉ đóng gói một lần rồi ghi cho mọi phiên. Chỉ RTP/AVP/TCP. `--procs N` chạy N tiến trình cùng cổng (`SO_REUSEPORT`). Đã đo 2026-09-29: **600 phiên bitrate thật = 1,29 Gbps, 4 tiến trình, mỗi tiến trình ~4% một lõi, lệch nhịp p99 < 2 ms**. |
 | `onvif_mock.py` | Thiết bị ONVIF giả cho N camera trên **một** cổng; danh tính thiết bị lấy từ địa chỉ loopback đích (127.1.x.y). Phủ đủ chuỗi `OnvifControl::connect()` và nhánh PTZ. Operation ngoài danh sách trả `ActionNotSupported` — giống camera đời thấp. |
-| `mock_api.py` | Service API giả, trả 200 cho mọi hook, đếm hook theo path. |
+| `mock_api.py` | Service API giả, trả 200 cho mọi hook, đếm hook theo path. Hook lấy cấu hình (`configuration-2nd-gen`) trả `<work>/<node>/api-config.json` — nhờ đó chạy được bản **Release** (bản Release không đọc `api-config.json`). |
 
 Điều kiện lỗi được điều khiển qua hai file JSON, cả hai tiến trình đọc lại mỗi giây
 nên đổi được giữa chừng mà không cần restart:
@@ -232,6 +236,70 @@ URL luồng của camera (server nhận ra profile chính bằng cách so hai UR
 giữ body webhook `action-callback` (`GET /_mock/hooks`). Kết quả từng mục ghi ở
 `<work>/video_rule_rule.json` và `video_rule_auth.json`.
 
+## Kịch bản `ccu*` — đo ngưỡng người xem đồng thời
+
+Thiết kế đầy đủ, tiêu chí và lý do: [docs/ccu-capacity-test-design.md](../../../docs/ccu-capacity-test-design.md).
+Mức nghiệm thu mặc định **400 CCU/node** (`CCU_ACCEPT`). Các kịch bản `ccu*` luôn chạy 1 node,
+chạy MediaServer **không** kèm `-t 4 --affinity 0`, và dựng `config.ini` từ **mặc định trong code**
+(`CONFIG_BASE=code`) thay vì `conf/config.ini` — như production. `conf/config.ini` của repo đặt
+`general.broadcast_player_count_changed=0`, khiến `ReaderMonitor` không đếm được reader và giới
+hạn `maxStream`/`maxStreamPerCamera` không bao giờ chặn.
+
+### Chạy trên server đích: một file
+
+```bash
+tests/integration/stress_vms/make_ccu_bundle.sh release/ccu_test.sh   # máy dev, cần ffmpeg
+scp release/ccu_test.sh server-dich:
+./ccu_test.sh /opt/s3mk/MediaServer --suite standard                  # trên server đích
+# -> ccu_result_<máy>_<thời gian>.tar.gz
+```
+
+`ccu_test.sh` (≈7 MB) chứa `ccu_runner.sh` + payload (harness, migration, `config.ini`,
+`default.pem`, clip dựng sẵn). Máy đích chỉ cần `python3` ≥ 3.6, `curl`, `ss`, `ip`, `tar`,
+`gzip`. `--suite quick` (~45 phút), `standard` (~2,5 giờ), `full` (~8 giờ, gồm soak 4 giờ);
+`--only step_hot,storm` để chọn kịch bản; `--help` cho đủ tuỳ chọn. Biến `CCU_*` đặt sẵn từ ngoài
+được giữ nguyên để tinh chỉnh.
+
+```bash
+# kiểm công cụ trên máy dev — không công bố số
+PHASE_SEC=60 MEDIA_PROFILE=realistic CCU_STEPS=0,20,50,100 CCU_HOLD_SEC=75 CCU_ACCEPT=50 \
+    bash tests/integration/stress_vms/run_stress.sh /tmp/s3mk_ccu smoke ccu
+
+# đo thật: bản Release, 300 camera, bitrate thật, viewer trên máy khác
+MEDIASERVER_DIR=/opt/s3mk-release MEDIA_PROFILE=realistic CCU_MIX=vms CCU_DIST=hot \
+CCU_NIC=eth0 VIEWER_HOSTS=10.0.0.21,10.0.0.22 CCU_CTL_HOST=10.0.0.5 CCU_SERVER_HOST=10.0.0.5 \
+    bash tests/integration/stress_vms/run_stress.sh /data/s3mk_ccu full ccu
+
+bash run_stress.sh /data/s3mk_ccu full ccu_storm       # A3: 400 viewer mở trong 5 s
+CCU_DURATION=1800  bash run_stress.sh ... full ccu_churn   # A5
+CCU_DURATION=14400 bash run_stress.sh ... full ccu_soak    # A4
+bash run_stress.sh /data/s3mk_ccu full ccu_admission   # A2 + giới hạn production
+```
+
+| File | Vai trò |
+|---|---|
+| `viewer_load.py` | Controller (HTTP :18600) + worker asyncio. Viewer fMP4 (`/media/live/<cam>/<stream>.live.mp4`), RTSP/TCP, HLS (`hls.m3u8?session_id=`), replay (`/media/record/<cam>/<stream>/vod/<epoch>.live.mp4`). Không giải mã; đọc moof/tfdt, RTP timestamp, `#EXTINF` rồi chạy mô hình player để ra TTFF, khựng, trôi, tốc độ media. Worker báo CPU và trễ vòng lặp của chính nó. |
+| `check_ccu.py` | Điều khiển bậc, lấy mẫu server trong cửa sổ đo (healthcheck 4 lần/s, `getThreadsLoad`, CPU theo luồng từ `/proc`, NIC, RSS, fd, `getMediaList`, khoảng hở file ghi), chấm tiêu chí, chia đôi ngưỡng. Ghi `<work>/ccu_report.{json,md}` (kịch bản khác: `ccu_<tên>_report.*`). |
+
+Env chính: `CCU_MIX` (`vms`, `fmp4-sub`, `fmp4-main`, `rtsp`, `hls`, `replay`), `CCU_DIST`
+(`hot`, `uniform`), `CCU_STEPS`, `CCU_HOLD_SEC`, `CCU_ACCEPT`, `CCU_LEVEL`, `CCU_DURATION`,
+`CCU_JOIN_RATE`, `CCU_WORKERS`, `CCU_NIC`, `CCU_REST_LOAD`, `VIEWER_HOSTS`,
+`VIEWER_WORKERS_PER_HOST`, `CCU_CTL_HOST`, `CCU_SERVER_HOST`, `CCU_ARGS` (vd
+`"--th stall_ratio=0.01 --bisect 0"`). Danh sách đầy đủ ở đầu `run_stress.sh`.
+
+Đọc kết quả:
+
+- Một bậc **không hợp lệ** (không phải trượt) khi bộ sinh tải quá tải: worker > 85% một lõi hoặc
+  trễ vòng lặp p99 > 200 ms, nguồn RTSP > 70% một lõi hoặc lệch nhịp p99 > 100 ms, hoặc thiếu
+  worker báo số. Khi đó thêm máy/worker rồi chạy lại.
+- `reader_delta` (reader phía server so với bậc 0) phải xấp xỉ số viewer đang phát; lệch nhiều là
+  viewer không thật sự được phục vụ.
+- Cột "ghi hình": khoảng hở > 5 s giữa hai file liên tiếp, hoặc file mới nhất không được ghi quá
+  20 s, trên camera cohort `always`. Viewer làm hỏng ghi hình thì bậc đó trượt dù viewer vẫn mượt.
+- Máy client ở xa nhận script qua stdin (`ssh host python3 - worker ...`), không cần checkout repo,
+  chỉ cần `python3` và SSH không mật khẩu.
+- Bitrate thật ghi đĩa rất nhanh: 300 camera ≈ 170 MB/s. Để ý dung lượng thư mục work.
+
 ## Kết quả và lỗi đã phát hiện
 
 Báo cáo đầy đủ của lần chạy 2026-09-20 (300 camera / 600 luồng, 2 node + 1 node tier-off):
@@ -284,3 +352,5 @@ Cờ được áp **sau** các nhánh riêng của từng phase, vì `onvif_stor
 | `load_driver.py` | Sinh tải REST (PTZ / storage) và đo độ trễ, gồm probe healthcheck |
 | `check_stress.py` | Thu thập bằng chứng, đối chiếu lịch ghi, so DB giữa node, kết luận đạt/trượt |
 | `check_video_rule.py` | Checklist chạy thật của video config rule (kịch bản `videorule`) |
+| `viewer_load.py` | Bộ sinh viewer cho kịch bản `ccu*` |
+| `check_ccu.py` | Chạy bậc, lấy mẫu và chấm tiêu chí CCU |

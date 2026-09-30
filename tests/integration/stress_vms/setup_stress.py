@@ -348,6 +348,22 @@ def write_specs(work, cams, by_cohort, phase):
     write_json(fault_path, faults)
 
 
+def config_base(repo, work, args):
+    """File ini nền cho node.
+
+    repo: conf/config.ini của repo (mặc định cũ). File này KHÔNG phải cấu hình production — ví dụ
+          nó đặt general.broadcast_player_count_changed=0 nên ReaderMonitor không bao giờ đếm được
+          reader và giới hạn maxStream/maxStreamPerCamera không có tác dụng.
+    code: file rỗng — MediaServer giữ mặc định trong code cho mọi khoá harness không ghi đè, đúng
+          như cấu hình production sinh ra lần đầu. Dùng cho đo CCU.
+    """
+    if args.config_base == "repo":
+        return os.path.join(repo, "conf/config.ini")
+    empty = os.path.join(work, "config.code-defaults.ini")
+    open(empty, "w").close()
+    return empty
+
+
 def layout(repo, work, args):
     node_ids = ["node-%s" % chr(ord("a") + i) for i in range(args.nodes)]
     cams, by_cohort = build_cameras(args.cameras, node_ids, args)
@@ -361,7 +377,7 @@ def layout(repo, work, args):
         shutil.copytree(os.path.join(repo, "migration/updates"), os.path.join(d, "updates"))
         shutil.copytree(os.path.join(repo, "migration/mserver_updates"),
                         os.path.join(d, "mserver_updates"))
-        patch_ini(os.path.join(repo, "conf/config.ini"), os.path.join(d, "config.ini"),
+        patch_ini(config_base(repo, work, args), os.path.join(d, "config.ini"),
                   node_overrides(node_id, d, node_ports(i), args))
         # Mỗi node chỉ nhận các camera mà nó sở hữu; phần còn lại đến qua sync.
         owned = [c for c in cams if c["priMediaServerId"] == node_id]
@@ -460,6 +476,8 @@ def add_args(ap):
     ap.add_argument("--device-threads", type=int, default=8)
     ap.add_argument("--limit-percent", type=int, default=90)
     ap.add_argument("--remove-percent", type=int, default=5)
+    ap.add_argument("--config-base", choices=("repo", "code"), default="repo",
+                    help="repo = conf/config.ini; code = chỉ mặc định trong code (như production)")
 
 
 def main():

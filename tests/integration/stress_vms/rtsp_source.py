@@ -6,8 +6,20 @@ Mỗi URL (bất kể path) đều được chấp nhận và trả về cùng m
 Chỉ hỗ trợ RTP/AVP/TCP (interleaved) để không phải mở thêm cổng UDP cho 600 luồng.
 
 Dùng:
-    rtsp_source.py <h264_file> [--port 8554] [--fps 5] [--stats-sec 10]
-                   [--drop-spec PATH] [--state PATH]
+    rtsp_source.py <h264_file> [--sub-media <h264_file>] [--port 8554] [--fps 5]
+                   [--procs N] [--stats-sec 10] [--drop-spec PATH] [--state PATH]
+
+--sub-media: luồng có path kết thúc bằng "-sub" phát file này (luồng phụ độ phân giải thấp),
+còn lại phát <h264_file>. Không có thì mọi luồng phát cùng một file.
+
+Mọi phiên phát chung một bộ đếm frame: frame hiện tại được đóng gói RTP **một lần** cho mỗi
+file rồi ghi cùng bytes đó cho mọi phiên (seq/timestamp liên tục với từng phiên vì bộ đếm chỉ
+tăng). Phiên mới vào giữa GOP như camera thật; server chờ keyframe kế tiếp.
+
+--procs N: N tiến trình con cùng nghe một cổng (SO_REUSEPORT, kernel chia kết nối). Tiến trình
+cha gộp state của các con vào --state. State có thêm `tick_late_p99_ms` (độ lệch nhịp gửi) và
+`cpu_pct_max` (tiến trình con bận nhất, % một lõi) — hai số này cho biết chính nguồn có phải
+nút cổ chai không (docs/ccu-capacity-test-design.md mục 2.1).
 
 --drop-spec trỏ tới file JSON do kịch bản ghi ra để mô phỏng camera lỗi:
     {"offline": ["cam-0007-main"], "flaky": ["cam-0012-sub"], "flaky_sec": 20}
@@ -18,7 +30,6 @@ import asyncio
 import base64
 import json
 import os
-import random
 import struct
 import sys
 import time
@@ -130,18 +141,15 @@ class Loop(object):
 
 # ---------------------------------------------------------------- session state
 class Session(object):
-    __slots__ = ("sid", "path", "writer", "channel", "seq", "ts", "ssrc",
-                 "frame_idx", "playing", "started", "packets", "closed")
+    __slots__ = ("sid", "path", "writer", "channel", "media", "playing", "started",
+                 "packets", "closed")
 
-    def __init__(self, sid, path, writer):
+    def __init__(self, sid, path, writer, media):
         self.sid = sid
         self.path = path
         self.writer = writer
         self.channel = 0
-        self.seq = random.randint(0, 0xFFFF)
-        self.ts = random.randint(0, 0x7FFFFFFF)
-        self.ssrc = random.randint(1, 0xFFFFFFFF)
-        self.frame_idx = 0
+        self.media = media
         self.playing = False
         self.started = 0.0
         self.packets = 0
@@ -149,9 +157,17 @@ class Session(object):
 
 
 class Server(object):
-    def __init__(self, loop_media, args):
+    SSRC = 0x53334D4B
+
+    def __init__(self, loop_media, args, sub_media=None):
         self.media = loop_media
+        self.sub_media = sub_media or loop_media
         self.args = args
+        # bộ đếm chung: frame thứ bao nhiêu, seq/ts kế tiếp của từng file
+        self.frame_no = 0
+        self.seq = {id(self.media): 0, id(self.sub_media): 0}
+        self.ts = {id(self.media): 0, id(self.sub_media): 0}
+        self.late = []
         self.sessions = {}
         self.next_sid = 1
         self.drop = {"offline": set(), "flaky": set(), "flaky_sec": 30}
@@ -185,7 +201,30 @@ class Server(object):
         }
 
     def stream_key(self, path):
-        return path.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]
+        """Tên luồng trong URL. URL của SETUP/PLAY là <content-base>/trackID=0, nên phải bỏ
+        thành phần track, nếu không mọi phiên đều mang khoá "trackID=0" (luồng -sub phát nhầm
+        file chính, danh sách flaky không bao giờ khớp)."""
+        parts = path.split("?", 1)[0].rstrip("/").split("/")
+        if len(parts) > 1 and parts[-1].lower().startswith("trackid="):
+            parts.pop()
+        return parts[-1]
+
+    def media_for(self, path):
+        return self.sub_media if self.stream_key(path).endswith("-sub") else self.media
+
+    def build_frame(self, media, channel):
+        """Frame hiện tại của `media` thành bytes interleaved, dùng chung cho mọi phiên."""
+        frame = media.frames[self.frame_no % len(media.frames)]
+        key = id(media)
+        seq, ts = self.seq[key], self.ts[key]
+        buf = bytearray()
+        last = len(frame) - 1
+        for i, payload in enumerate(frame):
+            hdr = struct.pack("!BBHII", 0x80, 96 | (0x80 if i == last else 0),
+                              (seq + i) & 0xFFFF, ts & 0xFFFFFFFF, self.SSRC)
+            pkt = hdr + payload
+            buf += struct.pack("!BBH", 0x24, channel, len(pkt)) + pkt
+        return bytes(buf), len(frame)
 
     # -------------------------------------------------- vòng phát
     async def ticker(self):
@@ -197,9 +236,12 @@ class Server(object):
             delay = next_at - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(delay)
-            else:
-                next_at = time.monotonic()  # tụt nhịp: bỏ qua phần trễ
             now = time.monotonic()
+            self.late.append((now - next_at) * 1000.0)
+            if len(self.late) > 4000:
+                self.late = self.late[-2000:]
+            if now - next_at > interval:
+                next_at = now  # tụt nhịp: bỏ qua phần trễ
             if now - last_reload > 1.0:
                 last_reload = now
                 self.reload_drop_spec()
@@ -208,6 +250,7 @@ class Server(object):
     def tick(self, now):
         flaky_sec = self.drop["flaky_sec"]
         dead = []
+        cache = {}
         for sess in self.sessions.values():
             if not sess.playing or sess.closed:
                 continue
@@ -217,26 +260,26 @@ class Server(object):
                 if now - sess.started > flaky_sec:
                     dead.append(sess)
                     continue
-            frame = self.media.frames[sess.frame_idx % len(self.media.frames)]
-            sess.frame_idx += 1
-            buf = bytearray()
-            last = len(frame) - 1
-            for i, payload in enumerate(frame):
-                hdr = struct.pack("!BBHII", 0x80, 96 | (0x80 if i == last else 0),
-                                  sess.seq & 0xFFFF, sess.ts & 0xFFFFFFFF, sess.ssrc)
-                sess.seq += 1
-                pkt = hdr + payload
-                buf += struct.pack("!BBH", 0x24, sess.channel, len(pkt)) + pkt
-                sess.packets += 1
-                self.stat_packets += 1
-            sess.ts += self.media.ts_step
-            self.stat_bytes += len(buf)
+            ck = (id(sess.media), sess.channel)
+            built = cache.get(ck)
+            if built is None:
+                built = cache[ck] = self.build_frame(sess.media, sess.channel)
+            data, npkt = built
+            sess.packets += npkt
+            self.stat_packets += npkt
+            self.stat_bytes += len(data)
             try:
-                sess.writer.write(bytes(buf))
+                sess.writer.write(data)
             except (ConnectionError, OSError):
                 dead.append(sess)
         for sess in dead:
             self.close_session(sess)
+        # tiến bộ đếm chung sau khi mọi phiên đã nhận frame này
+        self.frame_no += 1
+        for media in {id(self.media): self.media, id(self.sub_media): self.sub_media}.values():
+            frame = media.frames[(self.frame_no - 1) % len(media.frames)]
+            self.seq[id(media)] += len(frame)
+            self.ts[id(media)] += media.ts_step
 
     def close_session(self, sess):
         sess.closed = True
@@ -307,7 +350,7 @@ class Server(object):
         if method == "OPTIONS":
             writer.write((base + "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n").encode())
         elif method == "DESCRIBE":
-            sdp = self.media.sdp("trackID=0")
+            sdp = self.media_for(url).sdp("trackID=0")
             writer.write((base + "Content-Type: application/sdp\r\nContent-Base: %s/\r\n"
                           "Content-Length: %d\r\n\r\n" % (url, len(sdp))).encode() + sdp.encode())
         elif method == "SETUP":
@@ -318,7 +361,7 @@ class Server(object):
                 return
             sid = str(self.next_sid)
             self.next_sid += 1
-            sess = Session(sid, url, writer)
+            sess = Session(sid, url, writer, self.media_for(url))
             channel = 0
             for token in transport.split(";"):
                 if token.strip().startswith("interleaved="):
@@ -336,9 +379,10 @@ class Server(object):
                 sess.playing = True
                 sess.started = time.monotonic()
                 self.stat_plays += 1
+            key = id(sess.media) if sess else id(self.media)
             writer.write((base + "Session: %s\r\nRange: npt=0.000-\r\n"
                           "RTP-Info: url=%s/trackID=0;seq=%d;rtptime=%d\r\n\r\n"
-                          % (sid, url, sess.seq if sess else 0, sess.ts if sess else 0)).encode())
+                          % (sid, url, self.seq[key] & 0xFFFF, self.ts[key] & 0xFFFFFFFF)).encode())
         elif method in ("TEARDOWN", "PAUSE"):
             sid = headers.get("session", "").split(";")[0]
             sess = self.sessions.get(sid)
@@ -354,11 +398,19 @@ class Server(object):
 
     async def stats(self):
         last_p, last_b, last_t = 0, 0, time.time()
+        last_cpu = time.process_time()
         while True:
             await asyncio.sleep(self.args.stats_sec)
             now = time.time()
             dt = max(0.001, now - last_t)
             playing = sum(1 for s in self.sessions.values() if s.playing)
+            cpu = time.process_time()
+            cpu_pct = (cpu - last_cpu) / dt * 100.0
+            last_cpu = cpu
+            late = sorted(self.late)
+            self.late = []
+            late_p99 = late[int(len(late) * 0.99)] if late else 0.0
+            late_max = late[-1] if late else 0.0
             line = ("[rtsp-source] t=%5.0fs sessions=%d playing=%d plays=%d teardowns=%d "
                     "pps=%.0f kbps=%.0f" %
                     (now - self.started, len(self.sessions), playing, self.stat_plays,
@@ -366,14 +418,88 @@ class Server(object):
                      (self.stat_bytes - last_b) * 8 / dt / 1000))
             print(line, flush=True)
             if self.args.state:
-                tmp = self.args.state + ".tmp"
-                with open(tmp, "w") as fh:
-                    json.dump({"sessions": len(self.sessions), "playing": playing,
-                               "plays": self.stat_plays, "teardowns": self.stat_teardowns,
-                               "packets": self.stat_packets, "bytes": self.stat_bytes,
-                               "uptime_sec": now - self.started}, fh)
-                os.replace(tmp, self.args.state)
+                state = {"sessions": len(self.sessions), "playing": playing,
+                         "plays": self.stat_plays, "teardowns": self.stat_teardowns,
+                         "packets": self.stat_packets, "bytes": self.stat_bytes,
+                         "kbps": round((self.stat_bytes - last_b) * 8 / dt / 1000),
+                         "cpu_pct": round(cpu_pct, 1), "tick_late_p99_ms": round(late_p99, 1),
+                         "tick_late_max_ms": round(late_max, 1),
+                         "uptime_sec": now - self.started, "at": now}
+                # Ghi file ngoài event loop: khi server ghi hình dồn đĩa, write/rename có thể
+                # bị chặn vài giây và kéo theo cả vòng phát của mọi phiên.
+                await asyncio.get_event_loop().run_in_executor(None, write_state, self.args.state, state)
             last_p, last_b, last_t = self.stat_packets, self.stat_bytes, now
+
+
+def write_state(path, state):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, path)
+
+
+def merge_states(paths, out, started):
+    """Gộp state của các tiến trình con vào một file cho check_stress.py/check_ccu.py."""
+    total = {"sessions": 0, "playing": 0, "plays": 0, "teardowns": 0, "packets": 0,
+             "bytes": 0, "kbps": 0, "procs": len(paths), "procs_fresh": 0,
+             "cpu_pct_max": 0.0, "tick_late_p99_ms": 0.0, "tick_late_max_ms": 0.0}
+    for p in paths:
+        try:
+            st = json.load(open(p))
+        except (OSError, ValueError):
+            continue
+        if time.time() - st.get("at", 0) < 60:
+            total["procs_fresh"] += 1
+        for k in ("sessions", "playing", "plays", "teardowns", "packets", "bytes", "kbps"):
+            total[k] += st.get(k, 0)
+        total["cpu_pct_max"] = max(total["cpu_pct_max"], st.get("cpu_pct", 0))
+        total["tick_late_p99_ms"] = max(total["tick_late_p99_ms"], st.get("tick_late_p99_ms", 0))
+        total["tick_late_max_ms"] = max(total["tick_late_max_ms"], st.get("tick_late_max_ms", 0))
+    total["uptime_sec"] = time.time() - started
+    tmp = out + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(total, fh)
+    os.replace(tmp, out)
+    return total
+
+
+def supervise(args):
+    """--procs N: chạy N tiến trình con cùng cổng, gộp state, dừng cả nhóm khi bị dừng."""
+    import signal
+    import subprocess
+    started = time.time()
+    state = args.state or "rtsp_state.json"
+    children, paths = [], []
+    for i in range(args.procs):
+        child_state = "%s.%d" % (state, i)
+        paths.append(child_state)
+        cmd = [sys.executable, os.path.abspath(__file__), args.media, "--port", str(args.port),
+               "--host", args.host, "--fps", str(args.fps), "--stats-sec", str(args.stats_sec),
+               "--state", child_state, "--reuse-port"]
+        if args.sub_media:
+            cmd += ["--sub-media", args.sub_media]
+        if args.drop_spec:
+            cmd += ["--drop-spec", args.drop_spec]
+        children.append(subprocess.Popen(cmd))
+
+    def stop(*_):
+        for c in children:
+            if c.poll() is None:
+                c.terminate()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    print("[rtsp-source] %d tiến trình trên cổng %d" % (args.procs, args.port), flush=True)
+    while True:
+        time.sleep(args.stats_sec)
+        t = merge_states(paths, state, started)
+        print("[rtsp-source] tổng: sessions=%d playing=%d kbps=%d cpu_max=%.0f%% late_p99=%.0fms late_max=%.0fms"
+              % (t["sessions"], t["playing"], t["kbps"], t["cpu_pct_max"], t["tick_late_p99_ms"],
+                 t["tick_late_max_ms"]), flush=True)
+        if any(c.poll() is not None for c in children):
+            print("[rtsp-source] một tiến trình con đã chết, dừng cả nhóm", flush=True)
+            stop()
 
 
 async def main():
@@ -385,13 +511,23 @@ async def main():
     ap.add_argument("--stats-sec", type=float, default=10.0)
     ap.add_argument("--drop-spec", default=None)
     ap.add_argument("--state", default=None)
+    ap.add_argument("--sub-media", default=None, help="file cho luồng có path kết thúc bằng -sub")
+    ap.add_argument("--procs", type=int, default=1, help="số tiến trình con cùng cổng")
+    ap.add_argument("--reuse-port", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    if args.procs > 1:
+        supervise(args)
+        return
+
     media = Loop(args.media, args.fps)
-    srv = Server(media, args)
-    print("[rtsp-source] %d frame, %d fps, nghe tại %s:%d"
-          % (len(media.frames), media.fps, args.host, args.port), flush=True)
-    server = await asyncio.start_server(srv.handle, args.host, args.port, backlog=1024)
+    sub = Loop(args.sub_media, args.fps) if args.sub_media else None
+    srv = Server(media, args, sub)
+    print("[rtsp-source] %d frame, %d fps, nghe tại %s:%d%s"
+          % (len(media.frames), media.fps, args.host, args.port,
+             " (luồng -sub: %d frame)" % len(sub.frames) if sub else ""), flush=True)
+    server = await asyncio.start_server(srv.handle, args.host, args.port, backlog=1024,
+                                        reuse_port=args.reuse_port or None)
     asyncio.ensure_future(srv.ticker())
     asyncio.ensure_future(srv.stats())
     async with server:
