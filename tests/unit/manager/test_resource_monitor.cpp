@@ -1,6 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+#include "Thread/WorkThreadPool.h"
+#include "Util/util.h"
 
 #include "Server/HddMonitor.h"
 #include "Server/NetworkMonitor.h"
@@ -119,6 +127,80 @@ TEST(HddMonitorTest, RefreshReplacesMountInventoryAndPreservesLastGoodSnapshotOn
     EXPECT_EQ("/mnt/b", after_failure.partitions[0].mount_point);
     EXPECT_EQ(second.generation, after_failure.generation);
     EXPECT_EQ(3, provider_calls);
+}
+
+TEST(HddMonitorTest, TimerRefreshBlocksAWorkerNotAPoller) {
+    // A statvfs on a hung NFS mount never returns: the timer refresh must hold a plain worker,
+    // not the monitor poller nor a WorkThreadPool poller.
+    struct State {
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool block = false;
+        bool entered = false;
+        bool release = false;
+        std::string refresh_thread;
+        bool refresh_on_poller = true;
+        std::string mount = "/mnt/a";
+    };
+    // Shared, not captured by reference: the timer may still refresh after the test body returns.
+    auto st = std::make_shared<State>();
+    HddMonitor::PartitionProvider provider = [st](std::vector<DiskPartition> &partitions) {
+        std::unique_lock<std::mutex> lck(st->mtx);
+        if (st->block) {
+            st->entered = true;
+            st->refresh_thread = toolkit::getThreadName();
+            st->refresh_on_poller = toolkit::EventPoller::getCurrentPoller() != nullptr;
+            st->cv.notify_all();
+            st->cv.wait(lck, [st]() { return st->release; });
+        }
+        DiskPartition disk;
+        disk.device = "nas";
+        disk.mount_point = st->mount;
+        disk.filesystem_type = "nfs4";
+        partitions.push_back(disk);
+        return true;
+    };
+
+    auto poller = toolkit::EventPollerPool::Instance().getPoller();
+    auto monitor = std::make_shared<HddMonitor>(poller, 0.05F, provider);
+    monitor->start();
+    ASSERT_EQ("/mnt/a", monitor->getSnapshot().partitions.at(0).mount_point);
+
+    {
+        std::unique_lock<std::mutex> lck(st->mtx);
+        st->mount = "/mnt/b";
+        st->block = true;
+        ASSERT_TRUE(st->cv.wait_for(lck, std::chrono::seconds(5), [st]() { return st->entered; }));
+    }
+    EXPECT_FALSE(st->refresh_on_poller) << st->refresh_thread;
+    EXPECT_EQ(0u, st->refresh_thread.find("api worker")) << st->refresh_thread;
+
+    // While the refresh is stuck, the monitor poller and every WorkThreadPool poller still answer.
+    std::vector<toolkit::EventPoller::Ptr> pollers { poller };
+    toolkit::WorkThreadPool::Instance().for_each([&](const toolkit::TaskExecutor::Ptr &executor) {
+        pollers.push_back(std::dynamic_pointer_cast<toolkit::EventPoller>(executor));
+    });
+    for (auto &p : pollers) {
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        p->async([done]() { *done = true; }, false);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!*done && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        EXPECT_TRUE(done->load());
+    }
+
+    {
+        std::lock_guard<std::mutex> lck(st->mtx);
+        st->block = false;
+        st->release = true;
+    }
+    st->cv.notify_all();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (monitor->getSnapshot().partitions.at(0).mount_point != "/mnt/b" && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ("/mnt/b", monitor->getSnapshot().partitions.at(0).mount_point);
 }
 
 TEST(HddMonitorTest, FindsLongestMountUsingPathBoundaryWithoutRefreshing) {

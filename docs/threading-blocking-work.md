@@ -17,7 +17,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 |---|---|---|
 | `EventPollerPool` | `EventPoller` | Socket, session, `MediaSource`/muxer, timer của media |
 | `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, ghi ESC của từng camera, health check của `ClusterManager` |
-| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST |
+| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST; refresh `HddMonitor` (`statvfs` từng mount, mỗi lúc tối đa một lần) |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
 | `BlockingExecutors::storage()` | `ThreadPool` | Chu kỳ bảo trì kho: quét cây thư mục ghi, xoá file hết hạn, dựng lại timefile, dọn thư mục tạm |
@@ -408,6 +408,7 @@ Unit test:
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
+| `unit_storage` `HddMonitorTest.TimerRefreshBlocksAWorkerNotAPoller` | Refresh theo timer bị treo (mount NFS) giữ `api worker`, không giữ poller nào |
 
 ```bash
 cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON -DENABLE_AWS_SDK=ON

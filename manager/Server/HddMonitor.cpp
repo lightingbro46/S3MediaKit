@@ -10,7 +10,7 @@
 #endif
 
 #include "HddMonitor.h"
-#include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 
 using namespace std;
 using namespace toolkit;
@@ -224,7 +224,9 @@ void HddMonitor::dispatchRefresh() {
         return;
     }
     weak_ptr<HddMonitor> weak_self = shared_from_this();
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() {
+    // statvfs on a hung NFS/NAS mount blocks in D state indefinitely, so never on a poller.
+    // _refresh_running bounds a hung mount to one pool thread.
+    BlockingExecutors::api()->async([weak_self]() {
         auto self = weak_self.lock();
         if (!self) {
             return;
