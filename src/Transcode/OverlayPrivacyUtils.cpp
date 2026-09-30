@@ -3,6 +3,7 @@
 #include "Common/config.h"
 #include "Util/File.h"
 #include "Util/NoticeCenter.h"
+#include "Thread/ThreadPool.h"
 #include "Util/base64.h"
 #include "Util/logger.h"
 
@@ -764,6 +765,13 @@ bool OverlayPrivacyUtils::resolveLocalImages(std::vector<OverlayComponent> &comp
 #endif
     }
     return true;
+}
+
+TaskExecutor::Ptr OverlayPrivacyUtils::assetExecutor() {
+    // Intentionally leaked, like the replay open pool: tasks may still be queued at exit.
+    static TaskExecutor::Ptr *pool = new TaskExecutor::Ptr(
+        std::make_shared<ThreadPool>(2, ThreadPool::PRIORITY_NORMAL, true, false, "overlay asset"));
+    return *pool;
 }
 
 std::string OverlayPrivacyUtils::escapeMoviePath(const std::string &path) {

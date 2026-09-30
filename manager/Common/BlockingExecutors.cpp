@@ -23,6 +23,7 @@ const string kEncryptionThreads = "blocking.encryptionThreads";
 const string kRestoreThreads = "blocking.restoreThreads";
 const string kTierThreads = "blocking.tierThreads";
 const string kTierTransferThreads = "blocking.tierTransferThreads";
+const string kGapFillThreads = "blocking.gapFillThreads";
 // Read for backward compatibility only; not registered, so fresh configs do not get it.
 const string kLegacyApiWorkerThreads = "api.workerThreads";
 
@@ -35,6 +36,7 @@ static onceToken token([]() {
     mINI::Instance()[kRestoreThreads] = 5;
     mINI::Instance()[kTierThreads] = 3;
     mINI::Instance()[kTierTransferThreads] = 4;
+    mINI::Instance()[kGapFillThreads] = 2;
 });
 } // namespace Blocking
 
@@ -134,6 +136,14 @@ int BlockingExecutors::tierTransferThreadCount() {
     return s_threads;
 }
 
+int BlockingExecutors::gapFillThreadCount() {
+    static int s_threads = []() {
+        int threads = readInt(Blocking::kGapFillThreads);
+        return threads > 0 ? threads : 2;
+    }();
+    return s_threads;
+}
+
 TaskExecutor::Ptr BlockingExecutors::api() {
     static TaskExecutor::Ptr s_executor = makePool(apiThreadCount(), "api worker");
     return s_executor;
@@ -171,6 +181,11 @@ TaskExecutor::Ptr BlockingExecutors::tier() {
 
 TaskExecutor::Ptr BlockingExecutors::tierTransfer() {
     static TaskExecutor::Ptr s_executor = makePool(tierTransferThreadCount(), "tier xfer");
+    return s_executor;
+}
+
+TaskExecutor::Ptr BlockingExecutors::gapFill() {
+    static TaskExecutor::Ptr s_executor = makePool(gapFillThreadCount(), "gapfill");
     return s_executor;
 }
 

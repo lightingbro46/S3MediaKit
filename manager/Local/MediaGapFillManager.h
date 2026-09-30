@@ -19,6 +19,7 @@
 #include "Storage/MediaGapFillTask.h"
 #include "Storage/MediaGapFillSession.h"
 #include "Poller/Timer.h"
+#include "Common/SerialTaskQueue.h"
 
 namespace managerkit {
 
@@ -146,6 +147,7 @@ private:
     std::map<std::pair<std::string, std::string>, bool> _paused_sessions;
     std::map<std::string, bool> _paused_streams;
     uint64_t _next_generation = 0;
+    SerialTaskQueue::Ptr _state_queue;
     toolkit::Timer::Ptr _progress_timer;
     toolkit::Timer::Ptr _retry_timer;
     uint64_t _retry_wakeup_time = 0;

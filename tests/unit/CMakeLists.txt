@@ -181,6 +181,21 @@ target_include_directories(unit_camera_controller PRIVATE "${PROJECT_SOURCE_DIR}
 add_test(NAME unit.camera_controller_all COMMAND unit_camera_controller)
 set_tests_properties(unit.camera_controller_all PROPERTIES LABELS unit TIMEOUT 30)
 
+# MediaGapFillManager threading (discovery pool, close callback); server/ symbols come from the
+# tier-storage stubs.
+add_s3_unit_test(unit_media_gap_fill_threading
+  manager/test_media_gap_fill_threading.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_media_gap_fill_threading PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_media_gap_fill_threading PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.media_gap_fill_threading_all COMMAND unit_media_gap_fill_threading)
+set_tests_properties(unit.media_gap_fill_threading_all PROPERTIES LABELS unit TIMEOUT 30)
+
 # FFmpegExtractor start/cancel (server/FFmpegSource.cpp compiled directly); remaining server/
 # symbols come from the tier-storage stubs.
 add_s3_unit_test(unit_extract_start

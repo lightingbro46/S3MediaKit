@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include "Local/FileRecorder.h"
 #include "Poller/EventPoller.h"
+#include "Common/SerialTaskQueue.h"
 #include "GenericRtspCamera.h"
 #include "CameraController.h"
 
@@ -208,7 +209,7 @@ private:
     uint64_t _last_sync_time = 0;
     bool _esc_dirty = false;    // config not yet written to ESC (never synced or last write failed)
     bool _esc_removed = false;  // remove() was called; no more ESC writes
-    toolkit::EventPoller::Ptr _esc_poller;
+    SerialTaskQueue::Ptr _esc_queue;
     std::unordered_set<int> _status_history_initialized_streams;
     bool _device_status_history_initialized = false;
 };

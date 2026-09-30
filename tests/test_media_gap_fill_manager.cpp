@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <ctime>
@@ -5,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Common/config.h"
@@ -304,7 +306,12 @@ int main() {
     retry_request.source_type = "retry-test";
     retry_request.retry_limit = 2;
     ok &= expect(manager.enqueue(retry_request), "enqueue retry task");
+    // The close callback is persisted asynchronously, off the player's poller.
     auto retry_task = repository.findById("retry-task");
+    for (int i = 0; i < 300 && (retry_task.empty() || retry_task.front().retry_count != 1); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        retry_task = repository.findById("retry-task");
+    }
     ok &= expect(retry_starts == 1 && !retry_task.empty() &&
                  retry_task.front().state == "Pending" &&
                  retry_task.front().retry_count == 1 &&

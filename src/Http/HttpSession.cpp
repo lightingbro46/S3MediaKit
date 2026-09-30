@@ -474,37 +474,13 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const int transcode_bitrate = transcode_request.bitrate;
         const int transcode_gop = transcode_request.gop;
         const string output_schema = self->_media_info.schema;
-        GET_CONFIG(bool, use_watermark_asset, OverlayPrivacyConfig::kUseWatermarkAsset);
+        GET_CONFIG(bool, use_watermark_asset_cfg, OverlayPrivacyConfig::kUseWatermarkAsset);
+        const bool use_watermark_asset = use_watermark_asset_cfg;
 
-        vector<OverlayComponent> components;
         OverlayBuildOptions overlay_options;
         overlay_options.resolve_dynamic_tokens = true;
         overlay_options.username = policy.username;
         overlay_options.camera_name = policy.camera_name;
-        if (use_watermark && use_watermark_asset) {
-            std::string watermark_asset_error;
-            if (!OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
-                                                            overlay_options.prebuilt_svg_path, watermark_asset_error)) {
-                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(watermark_asset_error));
-                return;
-            }
-        } else if (use_watermark) {
-            if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
-                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Watermark template is invalid"));
-                return;
-            }
-            std::string local_image_error;
-            if (!OverlayPrivacyUtils::resolveLocalImages(components, local_image_error)) {
-                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(local_image_error));
-                return;
-            }
-        }
-        if (use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
-                                                                          overlay_options.privacy_masks,
-                                                                          overlay_options)) {
-            self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("Privacy mask configuration is invalid"));
-            return;
-        }
         const string variant_kind = use_transcode
             ? ((use_watermark || use_privacy_mask) ? "quality-overlay." : "quality.")
             : "overlay.";
@@ -517,9 +493,10 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const string stream_suffix = TRANSCODE_SUFFIX + variant_kind + MD5(transcode_key).hexdigest() + "." +
                                      makeViewOverlayPolicyTag(policy);
         DebugL << "Stream " << self->_media_info.stream << " will be transcoded with suffix: " << stream_suffix;
-        auto start_transcode = [weak_self, source, cb, overlay_options, stream_suffix, output_schema,
+        auto start_transcode = [weak_self, source, cb, stream_suffix, output_schema,
                                 transcode_codec, transcode_width, transcode_height,
-                                transcode_fps, transcode_bitrate, transcode_gop](const vector<OverlayComponent> &prepared_components) {
+                                transcode_fps, transcode_bitrate, transcode_gop](const vector<OverlayComponent> &prepared_components,
+                                                                                 const OverlayBuildOptions &overlay_options) {
             auto self = weak_self.lock();
             if (!self) return;
             TranscodeProcessor::Config cfg;
@@ -577,7 +554,42 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                 MediaSource::findAsync(overlay_info, self, on_overlay_ready);
             });
         };
-        start_transcode(components);
+        // Resolving writes the per-viewer SVG and may run ffmpeg to resize an uncached image: off the
+        // session poller, then back to it to answer or start the transcode.
+        OverlayPrivacyUtils::assetExecutor()->async([weak_self, policy, overlay_options, use_watermark,
+                                                     use_watermark_asset, use_privacy_mask, start_transcode]() mutable {
+            vector<OverlayComponent> components;
+            std::string error;
+            bool ok = true;
+            if (use_watermark && use_watermark_asset) {
+                ok = OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
+                                                                overlay_options.prebuilt_svg_path, error);
+            } else if (use_watermark) {
+                if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
+                    ok = false;
+                    error = "Watermark template is invalid";
+                } else {
+                    ok = OverlayPrivacyUtils::resolveLocalImages(components, error);
+                }
+            }
+            if (ok && use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
+                                                                                   overlay_options.privacy_masks,
+                                                                                   overlay_options)) {
+                ok = false;
+                error = "Privacy mask configuration is invalid";
+            }
+            auto self = weak_self.lock();
+            if (!self) return;
+            self->async([weak_self, ok, error, components, overlay_options, start_transcode]() {
+                auto self = weak_self.lock();
+                if (!self) return;
+                if (!ok) {
+                    self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(error));
+                    return;
+                }
+                start_transcode(components, overlay_options);
+            }, false);
+        });
 #else
         self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
 #endif
