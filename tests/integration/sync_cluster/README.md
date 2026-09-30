@@ -23,6 +23,33 @@ tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
 
 Không đổi `BLACKHOLE_IP` sang dải `10.x`: dưới WSL đó là NAT gateway của host và trả "connection refused" ngay, làm mọi check theo thời gian trở nên flaky.
 
+## Kịch bản failover (camera ghi hình thật)
+```bash
+tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_failover failover
+```
+Cần thêm `ffmpeg`/`ffprobe` và cổng 18554 trống. Script dựng clip H.264 640x360 rồi chạy
+`tests/integration/stress_vms/rtsp_source.py` làm camera `cam-fo-1` (ghi hình liên tục, node chính
+`priMediaServerId=node-a`). Service API được giả lập bằng cách ghi lại `api-config.json`
+(`setup_nodes.py ... fo1|fo2|fo3`); kiểm tra nằm trong `check_failover.py`, mốc thời gian ở
+`failover_state.json`.
+
+| Bước | Diễn biến | Kiểm tra |
+|---|---|---|
+| fo1 `a_live` | Camera chạy và ghi ở node-a | FO-01..04: node-a kéo luồng, ghi hình, có file; nguồn chỉ có 1 server kéo |
+| fo2 `b_failover` | Dừng node-a (SIGINT), service giao camera cho node-b | FO-10..19: node-a offline; node-b kéo + ghi; assignment active duy nhất là node-b/FAILOVER; xem trực tiếp HTTP-FMP4 và RTSP từ node-b (FLV không có vì `enable_rtmp=0`); timeline node-b có dữ liệu node-b; replay VOD từ node-b |
+| fo3 `a_back` | Khởi động lại node-a, service trả camera về node-a và bỏ khỏi node-b | FO-20..29: node-a kéo + ghi lại; node-b ngắt luồng; nguồn chỉ còn 1 server kéo; assignment active trên cả 2 DB là node-a; timeline gọi vào node-a trả dữ liệu `mediaServerId=node-b` cho khoảng failover; thumbnail qua node-a được forward sang node-b; replay từ node-b vẫn chạy; replay qua node-a chỉ là INFO (URL VOD không forward, player chọn node theo `mediaServerId`) |
+| fo4 `retention` | node-b giữ camera ở trạng thái inactive | FO-30..33: file ghi trong lúc failover còn nguyên trước khi hết hạn; `keepArchivedMaxFor` của node-b đúng giá trị; timeline node-a vẫn trả dữ liệu node-b |
+
+`keepArchivedMaxFor` tính theo giờ nguyên (`FO_KEEP_HOURS`, mặc định 1), nên việc chờ dữ liệu hết hạn
+chỉ chạy khi đặt `FO_RETENTION_WAIT=1` (FO-35..37: không file nào bị xoá sớm, hết hạn thì node-b xoá
+file và timeline node-a không còn trả dữ liệu đó). Hạn chót là file mới nhất + `FO_KEEP_HOURS` +
+`FO_RETENTION_GRACE_SEC` (mặc định 5400 s, vì mốc cắt được làm tròn xuống theo
+`storage.tieringSplitGranularitySeconds` và retention chạy theo chu kỳ). Kịch bản này chạy với `manager.failoverActiveDelaySec=1800` (mặc định production) thay vì 5 s
+của phase4: node-b bỏ camera trước khi node-a ghi assignment mới (lệch một chu kỳ reload cấu hình),
+nếu thời gian chờ ngắn hơn khoảng đó thì node-b gỡ camera, xoá `info.txt` và replay dữ liệu failover
+trên node-b trả 403 dù file ghi vẫn còn. `FO_WAIT_SEC` (mặc định 90)
+là thời gian chờ mỗi bước. Mã thoát là số check FAIL.
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|
@@ -43,7 +70,8 @@ Nếu có dòng `CRASH: <node>`, log của node đó có stack trace (`## signal
 `log_count` khác nhau giữa hai node là bình thường: node nhận dữ liệu qua snapshot thì không có bản sao `transaction_log`.
 
 ## File
-- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`/`phase3` đổi cấu hình camera.
+- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`..`phase4`, `fo1`..`fo3` đổi cấu hình camera.
+- `check_failover.py` — các check của kịch bản failover.
 - `mock_api.py` — trả HTTP 200 cho mọi hook.
 - `compare_db.py` — so sánh các bảng đồng bộ giữa hai node.
 - `run_cluster.sh` — chạy trọn kịch bản.

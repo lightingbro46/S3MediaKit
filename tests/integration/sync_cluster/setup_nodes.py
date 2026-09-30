@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
-Usage: setup_nodes.py <repo_root> <cluster_dir>
+Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3]
 """
 import json
 import os
@@ -73,6 +73,32 @@ def camera(enabled, keep_max_hours=24):
     }
 
 
+FO_CAMERA = "cam-fo-1"
+FO_RTSP_PORT = 18554
+
+
+def failover_camera(keep_max_hours):
+    """Recording camera for the failover scenario, fed by rtsp_source.py on FO_RTSP_PORT.
+
+    node-a is the primary server: node-b runs it in failover mode (enableFailover is derived
+    from priMediaServerId != mediaServerId). Recording is always on, every hour of the week.
+    """
+    return {
+        "id": FO_CAMERA, "name": FO_CAMERA, "ip": "127.0.0.1", "httpPort": 80,
+        "manufacturer": "Generic", "model": "RTSP", "username": "", "password": "",
+        "enabled": True, "priMediaServerId": "node-a",
+        "primaryStreamId": FO_CAMERA + "-main",
+        "primaryStreamUrl": "rtsp://127.0.0.1:%d/%s-main" % (FO_RTSP_PORT, FO_CAMERA),
+        "recordingConfig": {
+            "enableRecording": True,
+            "recordingSchedule": [{"dh": "%d,%d" % (d, h), "ty": 3, "fps": 25, "q": "H"}
+                                  for d in range(7) for h in range(24)],
+            "keepArchivedMinForAuto": False, "keepArchivedMinFor": 0,
+            "keepArchivedMaxForAuto": False, "keepArchivedMaxFor": keep_max_hours,
+        },
+    }
+
+
 def api_config(devices):
     return {
         "media_server": {"serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
@@ -122,8 +148,10 @@ def main():
                          "keep_migration_sql_files": 1, "enable_sync_db": 1,
                          "pull_interval_sec": 5, "gossip_fanout": 3},
             # failoverActiveDelaySec: how long an inactive camera is kept after its release (default 1800s).
+            # The failover scenario keeps the production default: a node that just dropped a camera
+            # must still hold it when the primary node takes it back one config reload later.
             "manager": {"serverLocationId": 0, "apiSecret": "", "certSavePath": d + "/www/certs",
-                        "failoverActiveDelaySec": 5,
+                        "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5")),
                         # device/config APIs are exercised without JWT (check_worker_apis.py)
                         "enableAuthorize": 0},
             # check_worker_apis.py blocks every API worker on purpose (pool/testConnection against
@@ -141,6 +169,22 @@ def main():
     write_api_config("node-b", [])
 
 
+def failover_phase(name):
+    """Service API decisions of the failover scenario (run_cluster.sh <dir> failover)."""
+    keep = int(os.environ.get("FO_KEEP_HOURS", "1"))
+    if name == "fo1":
+        # Camera on its primary server.
+        write_api_config("node-a", [failover_camera(keep)])
+        write_api_config("node-b", [])
+    elif name == "fo2":
+        # node-a is offline: the service hands the camera to node-b (FAILOVER assignment).
+        write_api_config("node-b", [failover_camera(keep)])
+    elif name == "fo3":
+        # node-a is back: the camera returns to it and node-b is told to drop it.
+        write_api_config("node-a", [failover_camera(keep)])
+        write_api_config("node-b", [])
+
+
 def phase(n):
     if n == 2:
         # Move camera: node-a drops it (delCamera → release), node-b takes it over (FAILOVER).
@@ -156,7 +200,9 @@ def phase(n):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 3 and sys.argv[3].startswith("phase"):
+    if len(sys.argv) > 3 and sys.argv[3].startswith("fo"):
+        failover_phase(sys.argv[3])
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("phase"):
         phase(int(sys.argv[3][5:]))
     else:
         main()

@@ -8,8 +8,12 @@
 #   run_cluster.sh [work_dir]            # full scenario: phase1 → phase2 → restart → phase3
 #   run_cluster.sh [work_dir] stop       # stop nodes and mock API started from work_dir
 #   run_cluster.sh [work_dir] workerapis # one node: check APIs that run on the API worker pool
+#   run_cluster.sh [work_dir] failover   # recording camera: failover to node-b while node-a is
+#                                        # offline, move back, cross-node timeline, retention
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
+#      failover: FO_WAIT_SEC (default: 90), FO_KEEP_HOURS (default: 1),
+#                FO_RETENTION_WAIT=1 to also wait for the retention expiry (hours)
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,20 +24,27 @@ WAIT_SEC="${WAIT_SEC:-60}"
 NODES="node-a node-b"
 
 # Gracefully stop the MediaServer nodes (SIGINT, then SIGKILL after 30s).
+# Optional arguments name the nodes to stop (default: all).
 stop_nodes() {
-    for pidfile in "$WORK"/node-*/server.pid; do
+    local pidfiles=""
+    if [ $# -gt 0 ]; then
+        for n in "$@"; do pidfiles="$pidfiles $WORK/$n/server.pid"; done
+    else
+        pidfiles="$(echo "$WORK"/node-*/server.pid)"
+    fi
+    for pidfile in $pidfiles; do
         [ -f "$pidfile" ] && kill -INT "$(cat "$pidfile")" 2>/dev/null
     done
     # MediaServer sleeps ~10s during shutdown
     for _ in $(seq 1 30); do
         alive=0
-        for pidfile in "$WORK"/node-*/server.pid; do
+        for pidfile in $pidfiles; do
             [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null && alive=1
         done
         [ "$alive" = 0 ] && break
         sleep 1
     done
-    for pidfile in "$WORK"/node-*/server.pid; do
+    for pidfile in $pidfiles; do
         if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
             echo "WARN: $(dirname "$pidfile") did not stop on SIGINT, killing"
             kill -9 "$(cat "$pidfile")" 2>/dev/null
@@ -44,10 +55,22 @@ stop_nodes() {
 
 stop_all() {
     stop_nodes
-    if [ -f "$WORK/mock_api.pid" ]; then
-        kill "$(cat "$WORK/mock_api.pid")" 2>/dev/null
-        rm -f "$WORK/mock_api.pid"
-    fi
+    for p in mock_api rtsp_source; do
+        if [ -f "$WORK/$p.pid" ]; then
+            kill "$(cat "$WORK/$p.pid")" 2>/dev/null
+            rm -f "$WORK/$p.pid"
+        fi
+    done
+}
+
+wait_healthy() {
+    local port="$1"
+    for _ in $(seq 1 60); do
+        curl -s -m 2 -o /dev/null "http://127.0.0.1:$port/media/mserver/healthcheck" && return 0
+        sleep 1
+    done
+    echo "WARN: node on port $port is not healthy after 60s"
+    return 1
 }
 
 start_node() {
@@ -84,6 +107,8 @@ fi
 [ -x "$BIN_DIR/MediaServer" ] || { echo "MediaServer not found in $BIN_DIR"; exit 1; }
 stop_all
 mkdir -p "$WORK"
+# failover: production default of manager.failoverActiveDelaySec (phase4 needs a short one).
+[ "${2:-}" = "failover" ] && export FAILOVER_ACTIVE_DELAY_SEC=1800
 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" || exit 1
 
 nohup python3 "$HERE/mock_api.py" 18090 > "$WORK/mock_api.log" 2>&1 &
@@ -101,6 +126,47 @@ if [ "${2:-}" = "workerapis" ]; then
     API_SECRET="$(sed -n 's/^secret=//p' "$WORK/node-a/config.ini" | head -1 | tr -d '\r')" \
         python3 "$HERE/check_worker_apis.py" http://127.0.0.1:18081 node-a
     exit $?
+fi
+
+if [ "${2:-}" = "failover" ]; then
+    FO_WAIT_SEC="${FO_WAIT_SEC:-90}"
+    command -v ffmpeg > /dev/null || { echo "ffmpeg is required for the failover scenario"; exit 1; }
+    # 640x360 H.264, GOP 2s: short segments are enough, the checks decode a few seconds.
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=25:duration=10" \
+        -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -keyint_min 50 -sc_threshold 0 \
+        -b:v 400k -bsf:v h264_mp4toannexb -f h264 "$WORK/fo_source.h264" -y || exit 1
+    nohup python3 "$REPO/tests/integration/stress_vms/rtsp_source.py" "$WORK/fo_source.h264" \
+        --port 18554 --fps 25 --stats-sec 5 --state "$WORK/rtsp_state.json" \
+        > "$WORK/rtsp_source.log" 2>&1 &
+    echo $! > "$WORK/rtsp_source.pid"
+    rm -f "$WORK/failover_state.json"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo1
+    fail=0
+    check() { python3 "$HERE/check_failover.py" "$WORK" "$@" || fail=$((fail + $?)); }
+
+    echo "fo1: camera recorded by node-a (primary)"
+    for n in $NODES; do start_node "$n" init; done
+    check mark:t_a_start
+    sleep "$FO_WAIT_SEC"; report fo1_a_live; check a_live
+
+    echo "fo2: node-a goes offline, the service hands the camera to node-b"
+    stop_nodes node-a
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo2
+    check mark:t_b_start
+    sleep "$FO_WAIT_SEC"; check b_failover
+
+    echo "fo3: node-a is back, the camera moves back to it"
+    start_node node-a before_back
+    wait_healthy 18081
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo3
+    check mark:t_back
+    sleep "$FO_WAIT_SEC"; report fo3_a_back; check a_back
+
+    echo "fo4: node-b keeps the failover recordings until the camera retention expires"
+    check retention
+    report fo4_retention
+    echo "failover scenario: $fail check(s) failed"
+    exit "$fail"
 fi
 
 for n in $NODES; do start_node "$n" init; done
