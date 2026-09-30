@@ -74,6 +74,12 @@ TEST(BlockingExecutorsTest, PoolsAreSingletons) {
     EXPECT_NE(BlockingExecutors::tier().get(), BlockingExecutors::storage().get());
     EXPECT_NE(BlockingExecutors::tierTransfer().get(), BlockingExecutors::restore().get());
     EXPECT_NE(BlockingExecutors::tierTransfer().get(), BlockingExecutors::api().get());
+
+    // Every camera searching its SD card after an outage must not take the threads PTZ needs.
+    EXPECT_EQ(BlockingExecutors::gapFill().get(), BlockingExecutors::gapFill().get());
+    EXPECT_NE(BlockingExecutors::gapFill().get(), BlockingExecutors::device().get());
+    EXPECT_NE(BlockingExecutors::gapFill().get(), BlockingExecutors::discovery().get());
+    EXPECT_NE(BlockingExecutors::gapFill().get(), BlockingExecutors::api().get());
 }
 
 TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
@@ -107,6 +113,11 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     auto transfer = runOn(BlockingExecutors::tierTransfer());
     EXPECT_EQ(0u, transfer.thread_name.find("tier xfer ")) << transfer.thread_name;
     EXPECT_FALSE(transfer.on_poller);
+
+    // SD-card gap fill used to search the camera on a WorkThreadPool poller.
+    auto gap_fill = runOn(BlockingExecutors::gapFill());
+    EXPECT_EQ(0u, gap_fill.thread_name.find("gapfill ")) << gap_fill.thread_name;
+    EXPECT_FALSE(gap_fill.on_poller);
 }
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
@@ -122,6 +133,7 @@ TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     EXPECT_EQ(3, BlockingExecutors::tierThreadCount());
     // Matches the storage.tiering_transfer_max_concurrent default.
     EXPECT_EQ(4, BlockingExecutors::tierTransferThreadCount());
+    EXPECT_EQ(2, BlockingExecutors::gapFillThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really
     // runs `threads` tasks at the same time.

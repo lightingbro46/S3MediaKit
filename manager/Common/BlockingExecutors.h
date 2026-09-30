@@ -70,6 +70,13 @@ public:
     // Size: `blocking.tierTransferThreads` (<= 0 means 4).
     static toolkit::TaskExecutor::Ptr tierTransfer();
 
+    // SD-card gap fill: searching the camera's recordings over ONVIF (findVideoSegments,
+    // GetRecordingInformation) plus the SQLite bookkeeping of sessions and tasks. Kept apart from
+    // `device`: after a network outage every camera reconnects and searches its SD card at once,
+    // which would take every device thread and stall PTZ. Threads are named "gapfill N".
+    // Size: `blocking.gapFillThreads` (<= 0 means 2).
+    static toolkit::TaskExecutor::Ptr gapFill();
+
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();
     static int deviceThreadCount();
@@ -80,6 +87,7 @@ public:
     static int restoreThreadCount();
     static int tierThreadCount();
     static int tierTransferThreadCount();
+    static int gapFillThreadCount();
 };
 
 namespace Blocking {
@@ -88,6 +96,7 @@ extern const std::string kDeviceThreads;
 extern const std::string kDiscoveryThreads;
 extern const std::string kStorageThreads;
 extern const std::string kFfmpegThreads;
+extern const std::string kGapFillThreads;
 extern const std::string kLegacyApiWorkerThreads;
 } // namespace Blocking
 

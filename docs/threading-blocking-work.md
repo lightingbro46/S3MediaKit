@@ -26,6 +26,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::restore()` | `ThreadPool` | Restore segment COLD từ object storage: claim job (SQLite) và tải S3/MinIO về restore cache |
 | `BlockingExecutors::tier()` | `ThreadPool` | Chu kỳ tier storage: tiering/bảo trì (quét range, đối soát object LIST/DELETE, dọn cache), backfill, health check pool (statvfs, HEAD/metrics S3) |
 | `BlockingExecutors::tierTransfer()` | `ThreadPool` | Transfer job của tier storage: copy segment sang NAS, upload lên S3/MinIO |
+| `BlockingExecutors::gapFill()` | `ThreadPool` | Gap-fill thẻ nhớ: `fillDevice` (tìm bản ghi trên camera qua ONVIF + SQLite), và hàng đợi `gapfill state` chạy `checkpointProgress`/`schedule`/`onConnectionClosed` mà timer và callback đóng player chỉ xếp vào |
 | `rec close N` (`MP4Recorder::closeExecutorFor`, `src/`) | `ThreadPool` 1 thread × `record.closeThreads` | Đóng segment MP4 (ghi moov, rename) và mọi listener `kBroadcastRecordMP4`: ghi timefile, đăng ký range HOT (SQLite), xếp mã hoá, hook `on_record_mp4`; cả `closeMP4` của bản ghi có thời lượng `/index/api/startRecord` (`MultiMediaSourceMuxer::startRecord`, C API `mk_recorder`). Chọn theo `hash(vhost/app/stream)` nên các segment của một stream đóng đúng thứ tự |
 | `replay open` (`MediaSource.cpp`) | `ThreadPool` 2 | Mở replay gộp và replay per-stream: đọc index timefile, tra tier, đọc header MP4 |
 | `replay next` (`MP4Demuxer.cpp`) | `ThreadPool` 2 | Tra trước batch segment kế tiếp của replay per-stream khi reader vào file cuối của batch |
@@ -46,6 +47,8 @@ Các pool được tách riêng theo nhóm công việc để một việc chậ
   và một lần tải chậm **không** được giữ poller → `restore` tách khỏi `storage`, `encryption` và `WorkThreadPool`.
 - Một đợt upload lớn **không** được làm trễ health check pool (dùng để chặn phát lại khi pool offline)
   → `tierTransfer` tách khỏi `tier`. Timer của `TierStorageManager` vẫn nằm trên `_poller` và chỉ xếp việc.
+- Sau khi mất mạng mọi camera cùng reconnect và cùng tìm thẻ nhớ; việc đó **không** được chiếm thread
+  PTZ cần → `gapFill` tách khỏi `device` (và khỏi `discovery`, để quét dải IP không chặn lẫn nhau).
 
 ## 2. Quy Tắc
 
@@ -355,6 +358,7 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 | `blocking.tierThreads` | 3 | Một thread cho mỗi loại chu kỳ (tiering, backfill, health); mỗi loại có cờ chống chồng lấn |
 | `record.closeThreads` | 2 | Số pool 1 thread đóng segment MP4 (`src/`, đọc một lần ở lần đóng đầu tiên) |
 | `blocking.tierTransferThreads` | 4 | Trần của pool; số transfer đồng thời do `storage.tiering_transfer_max_concurrent` và `..._per_pool` giới hạn |
+| `blocking.gapFillThreads` | 2 | Số camera tìm bản ghi thẻ nhớ đồng thời (thêm một lượt cho hàng đợi `gapfill state`) |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:
 
@@ -408,6 +412,7 @@ Unit test:
 | `unit_api_work_dispatcher` | Việc chạy ngoài poller, response chạy trên owner, ánh xạ lỗi, completion lỗi chỉ báo một lần, bỏ qua khi session đã đóng, nhóm serial chạy tuần tự đúng thứ tự, nhóm serial được miễn deadline hàng đợi chung còn nhóm thường vẫn bị bỏ, poller không bị chặn, giới hạn theo nhóm và giới hạn tổng `global` |
 | `unit_subnet_scan` | Contract blocking của `discovery_device` với mọi dạng address, tiến độ, cancel, bound `max_parallel`, thứ tự IP |
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
+| `unit_media_gap_fill_threading` | Discover gap-fill chạy trên `gapfill N`, poller của `WorkThreadPool`/`EventPollerPool` vẫn trả lời khi camera chậm; callback đóng từ poller vẫn được ghi |
 | `unit_storage` `HddMonitorTest.TimerRefreshBlocksAWorkerNotAPoller` | Refresh theo timer bị treo (mount NFS) giữ `api worker`, không giữ poller nào |
 
 ```bash

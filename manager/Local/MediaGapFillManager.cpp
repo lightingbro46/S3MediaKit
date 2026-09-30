@@ -17,7 +17,7 @@
 #include "Common/StrUtil.h"
 #include "server/WebApi.h"
 #include "Util/NoticeCenter.h"
-#include "Thread/WorkThreadPool.h"
+#include "Common/BlockingExecutors.h"
 
 using namespace mediakit;
 using namespace toolkit;
@@ -227,9 +227,17 @@ std::string relayStream(const std::string &stream_id) {
 INSTANCE_IMP(MediaGapFillManager)
 
 MediaGapFillManager::MediaGapFillManager() {
+    // checkpointProgress/schedule/onConnectionClosed write SQLite while holding _mtx: the timers and
+    // the player close callback only queue them, one at a time, off the network pollers.
+    _state_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::gapFill(), "gapfill state");
     _progress_timer = std::make_shared<Timer>(5.0f, [this]() {
-        checkpointProgress();
-        schedule();
+        // Skip the tick while the previous one still waits (e.g. a locked DB): no backlog.
+        if (_state_queue->pending() == 0) {
+            _state_queue->post([this]() {
+                checkpointProgress();
+                schedule();
+            });
+        }
         return true;
     }, EventPollerPool::Instance().getPoller());
 }
@@ -473,7 +481,8 @@ void MediaGapFillManager::onManager(const std::string &device_id,
         std::lock_guard<std::recursive_mutex> lock(_mtx);
         _device_source_types[device_id] = source_type;
     }
-    WorkThreadPool::Instance().getExecutor()->async([device_id, source_type]() {
+    // fillDevice searches the camera over ONVIF and writes SQLite: never on a poller.
+    BlockingExecutors::gapFill()->async([device_id, source_type]() {
         MediaGapFillManager::Instance().fillDevice(device_id, source_type);
     });
 }
@@ -920,7 +929,7 @@ bool MediaGapFillManager::resetFailedSession(const std::string &device_id,
             auto it = _device_source_types.find(device_id);
             source = it == _device_source_types.end() ? _default_source_type : it->second;
         }
-        WorkThreadPool::Instance().getExecutor()->async([device_id, source]() {
+        BlockingExecutors::gapFill()->async([device_id, source]() {
             MediaGapFillManager::Instance().fillDevice(device_id, source);
         });
     }
@@ -969,7 +978,7 @@ bool MediaGapFillManager::resetFailedSegment(const std::string &device_id,
         auto it = _device_source_types.find(device_id);
         source = it == _device_source_types.end() ? _default_source_type : it->second;
     }
-    WorkThreadPool::Instance().getExecutor()->async([device_id, source]() {
+    BlockingExecutors::gapFill()->async([device_id, source]() {
         MediaGapFillManager::Instance().fillDevice(device_id, source);
     });
     return true;
@@ -1065,7 +1074,7 @@ void MediaGapFillManager::onDeviceStateChanged(const std::string &device_id, boo
         auto it = _device_source_types.find(device_id);
         source = it == _device_source_types.end() ? _default_source_type : it->second;
     }
-    WorkThreadPool::Instance().getExecutor()->async([device_id, source]() {
+    BlockingExecutors::gapFill()->async([device_id, source]() {
         MediaGapFillManager::Instance().fillDevice(device_id, source);
     });
 }
@@ -1155,7 +1164,8 @@ MediaGapFillManager::SourceProvider MediaGapFillManager::makeRtspPlaybackProvide
                     delReplayStreamProxy(tuple.shortUrl());
                     closed(progress.completed, progress.processed_up_to, ex.what());
                 });
-                player->play(play_url);
+                // start() runs on a gap-fill worker; the player belongs to its own poller.
+                player->getPoller()->async([player, play_url]() { player->play(play_url); });
             }, 0);
         return true;
     };
@@ -1189,7 +1199,7 @@ void MediaGapFillManager::armRetryTimer(uint64_t wakeup_time) {
             std::lock_guard<std::recursive_mutex> lock(_mtx);
             _retry_wakeup_time = 0;
         }
-        schedule();
+        _state_queue->post([this]() { schedule(); });
         return false;
     }, EventPollerPool::Instance().getPoller());
 }
@@ -1257,7 +1267,10 @@ void MediaGapFillManager::schedule() {
         const auto generation = state.generation;
         auto closed = [this, connection_id, generation](bool completed, uint64_t processed_up_to,
                                             const std::string &reason) {
-            onConnectionClosed(connection_id, generation, completed, processed_up_to, reason);
+            // Called from the player's poller: persist and reschedule off it.
+            _state_queue->post([this, connection_id, generation, completed, processed_up_to, reason]() {
+                onConnectionClosed(connection_id, generation, completed, processed_up_to, reason);
+            });
         };
         auto start_request = state.request;
         start_request.begin_time = state.attempt_begin;
