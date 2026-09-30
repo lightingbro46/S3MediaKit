@@ -469,7 +469,10 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, uin
     int selected_index = -1;
     Ticker ticker;
     bool is_live_stream = _dur_sec < 0.01;
-    reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, ticker, is_live_stream](const Frame::Ptr &frame) mutable {
+    // closeMP4 writes the moov box, which blocks on disk longer the longer the file: same
+    // per-stream "rec close" pool as the regular recorder, never a poller.
+    auto close_executor = MP4Recorder::closeExecutorFor(_tuple.shortUrl());
+    reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, ticker, is_live_stream, close_executor](const Frame::Ptr &frame) mutable {
         // Circular reference to itself
         if (!now_dts) {
             now_dts = frame->dts();
@@ -478,7 +481,7 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, uin
         // A new catch-all mechanism is added. If the duration of the live recording task exceeds the expected time by 3 seconds, the recording will be forcibly stopped regardless of whether the data timestamp has increased as expected or not.
         if ((frame->getIndex() == selected_index && now_dts + forward_time_ms < frame->dts()) || (is_live_stream && ticker.createdTime() > forward_time_ms + 3000)) {
             InfoL << "stop record: " << path << ", end dts: " << frame->dts();
-            WorkThreadPool::Instance().getPoller()->async([muxer]() { muxer->closeMP4(); });
+            close_executor->async([muxer]() { muxer->closeMP4(); });
             reader = nullptr;
             return;
         }

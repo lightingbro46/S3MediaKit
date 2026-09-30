@@ -26,7 +26,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 | `BlockingExecutors::restore()` | `ThreadPool` | Restore segment COLD từ object storage: claim job (SQLite) và tải S3/MinIO về restore cache |
 | `BlockingExecutors::tier()` | `ThreadPool` | Chu kỳ tier storage: tiering/bảo trì (quét range, đối soát object LIST/DELETE, dọn cache), backfill, health check pool (statvfs, HEAD/metrics S3) |
 | `BlockingExecutors::tierTransfer()` | `ThreadPool` | Transfer job của tier storage: copy segment sang NAS, upload lên S3/MinIO |
-| `rec close N` (`MP4Recorder::closeExecutorFor`, `src/`) | `ThreadPool` 1 thread × `record.closeThreads` | Đóng segment MP4 (ghi moov, rename) và mọi listener `kBroadcastRecordMP4`: ghi timefile, đăng ký range HOT (SQLite), xếp mã hoá, hook `on_record_mp4`. Chọn theo `hash(vhost/app/stream)` nên các segment của một stream đóng đúng thứ tự |
+| `rec close N` (`MP4Recorder::closeExecutorFor`, `src/`) | `ThreadPool` 1 thread × `record.closeThreads` | Đóng segment MP4 (ghi moov, rename) và mọi listener `kBroadcastRecordMP4`: ghi timefile, đăng ký range HOT (SQLite), xếp mã hoá, hook `on_record_mp4`; cả `closeMP4` của bản ghi có thời lượng `/index/api/startRecord` (`MultiMediaSourceMuxer::startRecord`, C API `mk_recorder`). Chọn theo `hash(vhost/app/stream)` nên các segment của một stream đóng đúng thứ tự |
 | `replay open` (`MediaSource.cpp`) | `ThreadPool` 2 | Mở replay gộp và replay per-stream: đọc index timefile, tra tier, đọc header MP4 |
 | `replay next` (`MP4Demuxer.cpp`) | `ThreadPool` 2 | Tra trước batch segment kế tiếp của replay per-stream khi reader vào file cuối của batch |
 
