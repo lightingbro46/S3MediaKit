@@ -183,7 +183,7 @@ start_node() {
     # Đo CCU phải chạy như production: số poller mặc định (= số lõi), không ghim CPU.
     local threads="-t 4 --affinity 0"
     [ "${CCU_PRODUCTION_ARGS:-0}" = 1 ] && threads=""
-    LD_LIBRARY_PATH="$BIN_DIR" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
+    LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
         -s "$PEM" -l 1 $threads --log-dir "$d/log/" \
         > "$d/stdout.log" 2>&1 &
     echo $! > "$d/server.pid"
