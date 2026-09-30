@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "Thread/TaskExecutor.h"
 
 namespace OverlayPrivacyConfig {
 // Whether to enable watermark overlay on the video stream.
@@ -143,6 +144,13 @@ public:
                                            int canvas_width, int canvas_height,
                                            PrivacyMaskRegion::MaskType mask_type,
                                            bool alpha_only);
+
+    /**
+     * Pool for resolving overlay assets of a viewer request (resolveWatermarkAsset writes the resolved
+     * SVG, resolveLocalImages may run ffmpeg to resize an image): disk and process bound, so never
+     * on a session poller. Threads are named "overlay asset N".
+     */
+    static toolkit::TaskExecutor::Ptr assetExecutor();
 
     /** Escape a path for use in an avfilter movie= option (backslash, colon, single-quote). */
     static std::string escapeMoviePath(const std::string &path);
