@@ -86,6 +86,7 @@ const string kBroadcastDeviceChanged = "kBroadcastDeviceChanged";
 const string kBroadcastDeviceCapsChanged = "kBroadcastDeviceCapsChanged";
 const string kBroadcastDeviceStatsChanged = "kBroadcastDeviceStatsChanged";
 const string kBroadcastDeviceAccess = "kBroadcastDeviceAccess";
+const string kBroadcastMediaSessionTransfer = "kBroadcastMediaSessionTransfer";
 const string kBroadcastReloadApiConfig = "kBroadcastReloadApiConfig";
 const string kBroadcastHealthCheckApiService = "kBroadcastHealthCheckApiService";
 const string kBroadcastHealthCheckMediaService = "kBroadcastHealthCheckMediaService";

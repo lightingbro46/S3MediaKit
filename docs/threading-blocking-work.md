@@ -332,6 +332,13 @@ nên phải đóng bất đồng bộ. Ở đây đóng đồng bộ vừa hợp
 một lần đóng bất đồng bộ còn giữ dữ liệu trong buffer trong khi writer mới mở lại cùng file sẽ làm
 `TimeMuxer::setLastOffset()` đọc kích thước file cũ.
 
+### 4.6 Xác thực JWT và phiên người dùng
+
+`UserAuthorManager::getTokenCache()` được gọi trên poller của session/request. Nó verify chữ ký RSA
+**ngoài** `_mtx` toàn cục, và đẩy việc ghi phiên người dùng xuống SQLite
+(`UserSessionCache::saveUserSession()`) sang `BlockingExecutors::api()`. Chi tiết:
+[user-author-manager-flow.md](user-author-manager-flow.md).
+
 ## 5. Cấu Hình
 
 Pool (`manager/Common/BlockingExecutors.cpp`):
