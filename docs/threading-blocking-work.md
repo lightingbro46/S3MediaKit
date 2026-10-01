@@ -17,7 +17,7 @@ Có hai họ executor, khác nhau về bản chất chứ không chỉ về kíc
 |---|---|---|
 | `EventPollerPool` | `EventPoller` | Socket, session, `MediaSource`/muxer, timer của media |
 | `WorkThreadPool` | `EventPoller` | Timer nền và hàng đợi có thứ tự: `SyncManager`, health check của `ClusterManager` |
-| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST; ghi ESC của từng camera (`SerialTaskQueue` `esc <camera>`, giữ thứ tự theo camera); refresh `HddMonitor` (`statvfs` từng mount, mỗi lúc tối đa một lần) |
+| `BlockingExecutors::api()` | `ThreadPool` | Phần blocking của handler REST; ghi ESC của từng camera (`SerialTaskQueue` `esc <camera>`, giữ thứ tự theo camera); refresh `HddMonitor` (`statvfs` từng mount, mỗi lúc tối đa một lần); ghi/dọn mẫu `system_metrics` của `GlobalMonitor` (`SerialTaskQueue` `system metrics`, timer vẫn ở poller và chỉ thu số liệu từ bộ nhớ, bỏ mẫu khi lượt ghi trước còn chờ) |
 | `BlockingExecutors::device()` | `ThreadPool` | SOAP/ONVIF và SDK của thiết bị đã biết (PTZ, speaker) |
 | `BlockingExecutors::discovery()` | `ThreadPool` | Dò thiết bị: ONVIF connect/ffprobe cho từng địa chỉ |
 | `BlockingExecutors::storage()` | `ThreadPool` | Chu kỳ bảo trì kho: quét cây thư mục ghi, xoá file hết hạn, dựng lại timefile, dọn thư mục tạm |
@@ -415,6 +415,8 @@ Unit test:
 | `unit_camera_controller` | Hàng đợi tuần tự theo thiết bị |
 | `unit_media_gap_fill_threading` | Discover gap-fill chạy trên `gapfill N`, poller của `WorkThreadPool`/`EventPollerPool` vẫn trả lời khi camera chậm; callback đóng từ poller vẫn được ghi |
 | `unit_storage` `HddMonitorTest.TimerRefreshBlocksAWorkerNotAPoller` | Refresh theo timer bị treo (mount NFS) giữ `api worker`, không giữ poller nào |
+| `unit_global_monitor_threading` | Khi DB bị khoá, timer metric của `GlobalMonitor` không chặn poller nào; mẫu được ghi sau khi nhả khoá |
+| `unit_media_gap_fill_threading` `LockedDatabaseCostsEachStatusWriteOneBusyTimeout` | Ghi status gap của nhiều camera khi DB bị khoá chờ song song (một `busy_timeout`), không xếp hàng sau một mutex chung |
 
 ```bash
 cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTS=ON -DENABLE_AWS_SDK=ON

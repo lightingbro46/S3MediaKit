@@ -16,6 +16,7 @@ namespace managerkit {
 // Forward declaration to avoid pulling Storage/SystemMetrics.h into src/ units
 // that include GlobalMonitor.h transitively.
 class SystemMetricsImp;
+class SerialTaskQueue;
 
 // ──────────────────────────────────────────────────────────────────
 // Configuration keys for GlobalMonitor metrics collection & storage
@@ -146,6 +147,9 @@ private:
     ReaderMonitor::Ptr _reader_monitor;
     RestartScheduler::Ptr _restart_scheduler;
     std::shared_ptr<SystemMetricsImp> _metrics_store;
+    // SQLite insert/purge of metric samples, on BlockingExecutors::api(): a locked database waits
+    // busy_timeout, which must not stall _poller (a network poller carrying sessions).
+    std::shared_ptr<SerialTaskQueue> _metrics_queue;
 
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _metrics_timer;   // periodic sample collection

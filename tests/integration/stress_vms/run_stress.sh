@@ -104,6 +104,10 @@ stop_nodes() {
         fi
         rm -f "$pidfile"
     done
+    # HLS nằm trên /dev/shm (setup_stress.py hls_dir): xoá để không giữ RAM sau khi dừng
+    for link in "$WORK"/node-*/hls_shm; do
+        [ -L "$link" ] && rm -rf "$(readlink "$link")"
+    done
 }
 
 stop_helpers() {
