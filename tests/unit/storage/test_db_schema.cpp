@@ -38,6 +38,10 @@ TEST(DbSchemaTest, SerializesAndParsesSqlValues) {
     EXPECT_EQ("quoted", parse_sql_value<std::string>("'quoted'", std::string()));
     EXPECT_FALSE(parse_sql_value("NULL", Optional<int>()).has_value());
     EXPECT_EQ(9, parse_sql_value("9", Optional<int>()).value());
+    EXPECT_FALSE(parse_sql_value("", Optional<int>()).has_value());
+    EXPECT_FALSE(parse_sql_value("", Optional<int64_t>()).has_value());
+    EXPECT_EQ(0, parse_sql_value("0", Optional<int64_t>()).value());
+    EXPECT_TRUE(parse_sql_value("", Optional<std::string>()).has_value());
 }
 
 TEST(EntityTraitsTest, ExposesColumnsValuesAndPrimaryKeys) {
