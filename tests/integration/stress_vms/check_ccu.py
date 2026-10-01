@@ -51,6 +51,9 @@ THRESHOLDS = {
     # PSI: tỉ lệ thời gian MỌI tác vụ bị chặn chờ IO (/proc/pressure/io "full"). Ghi hình bitrate
     # thật dồn đĩa có thể làm cả máy khựng theo đợt — luồng kéo camera timeout, ghi hình hở.
     "io_full_ratio": 0.02,
+    # Kernel không có PSI (CentOS 7 / 3.10): dùng tỉ lệ iowait của /proc/stat thay thế. Thô hơn
+    # PSI (CPU rảnh mà có tác vụ chờ IO), nhưng đĩa bão hoà trên db3 cho 40%+ ngay bậc 0.
+    "io_wait_ratio": 0.10,
     # tự kiểm bộ sinh tải — vượt thì bậc không hợp lệ chứ không phải trượt
     "client_cpu_pct": 85.0,
     "client_loop_lag_ms": 200.0,
@@ -226,6 +229,17 @@ def psi_total_us(kind):
     return None
 
 
+def cpu_iowait_ticks():
+    """(tổng tick, tick iowait) toàn máy từ dòng "cpu" của /proc/stat; None nếu không đọc được."""
+    try:
+        with open("/proc/stat") as fh:
+            f = [int(x) for x in fh.readline().split()[1:]]
+        # user nice system idle iowait irq softirq steal; guest đã nằm trong user
+        return sum(f[:8]), f[4]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def mem_total_kb():
     for line in open("/proc/meminfo"):
         if line.startswith("MemTotal:"):
@@ -379,7 +393,8 @@ class Runner(object):
         rx, tx = self.s.nic_bytes()
         return {"t": time.time(), "cpu": self.s.cpu_ticks(), "tasks": self.s.task_ticks(),
                 "rx": rx, "tx": tx, "rss_kb": self.s.rss_kb(), "fds": self.s.fd_count(),
-                "io_full_us": psi_total_us("io"), "mem_full_us": psi_total_us("memory")}
+                "io_full_us": psi_total_us("io"), "mem_full_us": psi_total_us("memory"),
+                "iowait": cpu_iowait_ticks()}
 
     def server_view(self):
         rows, err = self.s.media_rows()
@@ -602,6 +617,14 @@ class Runner(object):
         if row.get("io_full_pct") is not None and row["io_full_pct"] > th["io_full_ratio"] * 100:
             fails.append("đĩa nghẽn: mọi tác vụ chờ IO %.1f%% thời gian" % row["io_full_pct"])
             cat.append("disk")
+        if row.get("io_full_pct") is None and s0.get("iowait") and s1.get("iowait"):
+            total = s1["iowait"][0] - s0["iowait"][0]
+            if total > 0:
+                row["io_wait_pct"] = round((s1["iowait"][1] - s0["iowait"][1]) * 100.0 / total, 1)
+                if row["io_wait_pct"] > th["io_wait_ratio"] * 100:
+                    fails.append("đĩa nghẽn: CPU chờ IO %.1f%% thời gian (iowait, kernel không có PSI)"
+                                 % row["io_wait_pct"])
+                    cat.append("disk")
         tx_mbps = (s1["tx"] - s0["tx"]) * 8 / 1e6 / span
         row["nic_tx_mbps"] = round(tx_mbps, 1)
         speed = self.s.nic_speed_mbps()
@@ -687,7 +710,9 @@ def render_md(rep):
         rec = r.get("record") or {}
         lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["label"], r["level"], r.get("playing"), r.get("client_mbps"), r.get("nic_tx_mbps"),
-            r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("io_full_pct"),
+            r.get("cpu_pct_total"), r.get("poller_load_max"),
+            r.get("io_full_pct") if r.get("io_full_pct") is not None
+            else ("wa %s" % r["io_wait_pct"] if r.get("io_wait_pct") is not None else None),
             r.get("healthcheck_p95_ms"), ttff,
             r.get("stall_pct"), r.get("drift_p95_sec"),
             ("OK" if not (rec.get("gaps") or rec.get("stale")) else "%d hở/%d dừng" % (rec.get("gaps"), rec.get("stale")))

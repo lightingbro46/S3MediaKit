@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Test ngưỡng CCU của MediaServer — bản một file, chạy trên server đích.
+# Test nguong CCU cua MediaServer - ban mot file, chay tren server dich.
 #
-# File này là phần đầu của ccu_test.sh do make_ccu_bundle.sh sinh ra; phía sau dòng
-# __CCU_PAYLOAD__ là tar.gz (base64) chứa harness tests/integration/stress_vms, migration,
-# config.ini, default.pem và clip video dựng sẵn. Không cần repo, không cần ffmpeg.
+# File nay la phan dau cua ccu_test.sh do make_ccu_bundle.sh sinh ra; phia sau dong
+# __CCU_PAYLOAD__ la tar.gz (base64) chua harness tests/integration/stress_vms, migration,
+# config.ini, default.pem va clip video dung san. Khong can repo, khong can ffmpeg.
 #
-# Dùng:
-#   ./ccu_test.sh <MediaServer | thư mục chứa MediaServer> [tuỳ chọn]
+# Dung:
+#   ./ccu_test.sh <MediaServer | thu muc chua MediaServer> [tuy chon]
 #
-# Tuỳ chọn:
-#   --suite quick|standard|full  quick    ~45 phút: bậc tới 600 (hot), storm, admission
-#                                standard ~2,5 giờ: + chia đôi ngưỡng, bậc uniform, churn 30 phút
-#                                full     ~8 giờ : + 5 hỗn hợp thuần + soak 4 giờ
-#                                [mặc định: standard]
-#   --only a,b,...               chỉ chạy các kịch bản này (tên ở cuối --help)
-#   --work DIR                   thư mục làm việc, cần nhiều dung lượng [./ccu_work]
-#   --accept N                   mức nghiệm thu [400]
-#   --profile full|mid|smoke     số camera: 300 / 120 / 30 [full]
-#   --viewer-hosts h1,h2         chạy thêm worker viewer trên máy khác qua ssh (không mật khẩu)
-#   --nic IFACE                  card mạng phục vụ viewer (mặc định lo, hoặc tự dò khi có --viewer-hosts)
-#   --soak-hours H               thời lượng soak [4]
-#   --keep-records               giữ file ghi hình sau mỗi kịch bản (mặc định xoá để đỡ tốn đĩa)
-#   --yes                        không hỏi lại khi cảnh báo dung lượng
+# Tuy chon:
+#   --suite quick|standard|full  quick    ~45 phut: bac toi 600 (hot), storm, admission
+#                                standard ~2,5 gio: + chia doi nguong, bac uniform, churn 30 phut
+#                                full     ~8 gio : + 5 hon hop thuan + soak 4 gio
+#                                [mac dinh: standard]
+#   --only a,b,...               chi chay cac kich ban nay (ten o cuoi --help)
+#   --work DIR                   thu muc lam viec, can nhieu dung luong [./ccu_work]
+#   --accept N                   muc nghiem thu [400]
+#   --profile full|mid|smoke     so camera: 300 / 120 / 30 [full]
+#   --viewer-hosts h1,h2         chay them worker viewer tren may khac qua ssh (khong mat khau)
+#   --nic IFACE                  card mang phuc vu viewer (mac dinh lo, hoac tu do khi co --viewer-hosts)
+#   --soak-hours H               thoi luong soak [4]
+#   --keep-records               giu file ghi hinh sau moi kich ban (mac dinh xoa de do ton dia)
+#   --yes                        khong hoi lai khi canh bao dung luong
 #
-# Kết quả: ccu_result_<máy>_<thời gian>.tar.gz trong thư mục hiện tại. Gửi nguyên file đó.
+# Ket qua: ccu_result_<may>_<thoi gian>.tar.gz trong thu muc hien tai. Gui nguyen file do.
 set -u
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -47,7 +47,7 @@ ALL_SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4
 
 usage() {
     sed -n '2,26p' "$SELF" | sed 's/^# \{0,1\}//'
-    echo "Kịch bản: $ALL_SCENARIOS"
+    echo "Kich ban: $ALL_SCENARIOS"
     exit "${1:-0}"
 }
 
@@ -64,28 +64,28 @@ while [ $# -gt 0 ]; do
         --keep-records) KEEP_RECORDS=1; shift ;;
         --yes|-y) ASSUME_YES=1; shift ;;
         -h|--help) usage 0 ;;
-        -*) echo "Tuỳ chọn lạ: $1"; usage 2 ;;
+        -*) echo "Tuy chon la: $1"; usage 2 ;;
         *) BIN="$1"; shift ;;
     esac
 done
 
 [ -n "$BIN" ] || usage 2
 [ -d "$BIN" ] && BIN="$BIN/MediaServer"
-[ -x "$BIN" ] || { echo "Không thấy MediaServer chạy được: $BIN"; exit 2; }
+[ -x "$BIN" ] || { echo "Khong thay MediaServer chay duoc: $BIN"; exit 2; }
 BIN_DIR="$(cd "$(dirname "$BIN")" && pwd)"
-[ "$(basename "$BIN")" = MediaServer ] || { echo "Binary phải tên MediaServer (harness gọi <thư mục>/MediaServer)"; exit 2; }
-case "$PROFILE" in full|mid|smoke) ;; *) echo "--profile không hợp lệ"; exit 2 ;; esac
+[ "$(basename "$BIN")" = MediaServer ] || { echo "Binary phai ten MediaServer (harness goi <thu muc>/MediaServer)"; exit 2; }
+case "$PROFILE" in full|mid|smoke) ;; *) echo "--profile khong hop le"; exit 2 ;; esac
 case "$PROFILE" in full) CAMERAS=300 ;; mid) CAMERAS=120 ;; smoke) CAMERAS=30 ;; esac
 
 case "$SUITE" in
     quick)    SCENARIOS="step_hot storm admission" ;;
     standard) SCENARIOS="step_hot step_uniform storm churn admission" ;;
     full)     SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak" ;;
-    *) echo "--suite không hợp lệ: $SUITE"; exit 2 ;;
+    *) echo "--suite khong hop le: $SUITE"; exit 2 ;;
 esac
 [ -n "$ONLY" ] && SCENARIOS="${ONLY//,/ }"
 for s in $SCENARIOS; do
-    case " $ALL_SCENARIOS " in *" $s "*) ;; *) echo "Kịch bản lạ: $s"; exit 2 ;; esac
+    case " $ALL_SCENARIOS " in *" $s "*) ;; *) echo "Kich ban la: $s"; exit 2 ;; esac
 done
 
 mkdir -p "$WORK"
@@ -102,28 +102,28 @@ missing=""
 for c in python3 curl ss tar gzip base64 awk sed df ip; do
     command -v "$c" > /dev/null || missing="$missing $c"
 done
-[ -z "$missing" ] || { echo "Thiếu lệnh:$missing"; exit 2; }
+[ -z "$missing" ] || { echo "Thieu lenh:$missing"; exit 2; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' \
-    || { echo "Cần python3 >= 3.6"; exit 2; }
+    || { echo "Can python3 >= 3.6"; exit 2; }
 ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 if [ "$(ulimit -n)" -lt 65536 ]; then
-    say "CẢNH BÁO: ulimit -n = $(ulimit -n) (< 65536). 300 camera + nhiều viewer sẽ hết fd."
-    say "          Chạy bằng root hoặc nâng hard limit (/etc/security/limits.conf)."
+    say "CANH BAO: ulimit -n = $(ulimit -n) (< 65536). 300 camera + nhieu viewer se het fd."
+    say "          Chay bang root hoac nang hard limit (/etc/security/limits.conf)."
 fi
 if grep -aq "api-config.json" "$BIN" 2>/dev/null; then
-    say "CẢNH BÁO: binary có vẻ là bản Debug (đọc api-config.json). Số đo CPU của bản Debug không dùng được."
+    say "CANH BAO: binary co ve la ban Debug (doc api-config.json). So do CPU cua ban Debug khong dung duoc."
     IS_DEBUG=1
 else
     IS_DEBUG=0
 fi
 
 # ------------------------------------------------------------------ giải nén harness
-say "giải nén harness vào $B"
+say "giai nen harness vao $B"
 rm -rf "$B"
 mkdir -p "$B"
 line=$(awk '/^__CCU_PAYLOAD__$/ {print NR + 1; exit}' "$SELF")
-[ -n "$line" ] || { echo "File không có payload — hãy dùng ccu_test.sh do make_ccu_bundle.sh sinh ra"; exit 2; }
-tail -n +"$line" "$SELF" | base64 -d | tar xz -C "$B" || { echo "Giải nén payload lỗi"; exit 2; }
+[ -n "$line" ] || { echo "File khong co payload - hay dung ccu_test.sh do make_ccu_bundle.sh sinh ra"; exit 2; }
+tail -n +"$line" "$SELF" | base64 -d | tar xz -C "$B" || { echo "Giai nen payload loi"; exit 2; }
 H="$B/tests/integration/stress_vms"
 cat "$B/BUNDLE_INFO" 2>/dev/null | sed 's/^/  /'
 
@@ -138,21 +138,22 @@ if [ -n "$VIEWER_HOSTS" ]; then
     CTL_HOST="$SERVER_HOST"
     for h in ${VIEWER_HOSTS//,/ }; do
         ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" python3 -c 'print(1)' > /dev/null 2>&1 \
-            || { echo "Không ssh được (không mật khẩu) tới $h hoặc máy đó thiếu python3"; exit 2; }
+            || { echo "Khong ssh duoc (khong mat khau) toi $h hoac may do thieu python3"; exit 2; }
     done
 fi
 [ -z "$NIC" ] && NIC=lo
 
 # ------------------------------------------------------------------ thông tin máy
 {
-    echo "== thời gian";   date -R
-    echo "== máy";         uname -a
+    echo "== thoi gian";   date -R
+    echo "== may";         uname -a
     echo "== binary";      ls -la "$BIN"; echo "debug_build=$IS_DEBUG"; sha256sum "$BIN" 2>/dev/null
     echo "== cpu";         lscpu 2>/dev/null || nproc
     echo "== ram";         free -m
-    echo "== đĩa (work)";  df -h "$WORK"
+    echo "== dia (work)";  df -h "$WORK"
+    echo "== /dev/shm";    df -h /dev/shm 2>/dev/null
     echo "== block";       lsblk -d -o NAME,ROTA,SIZE,MODEL 2>/dev/null
-    echo "== mạng";        ip -br addr 2>/dev/null
+    echo "== mang";        ip -br addr 2>/dev/null
     for i in $(ls /sys/class/net 2>/dev/null); do
         echo "  $i speed=$(cat /sys/class/net/$i/speed 2>/dev/null || echo ?)Mbps"
     done
@@ -160,7 +161,7 @@ fi
     echo "== python";      python3 --version
     echo "== sysctl";      sysctl vm.dirty_ratio vm.dirty_background_ratio net.core.somaxconn 2>/dev/null
     echo "== PSI";         for k in cpu io memory; do echo "$k: $(tr '\n' ' ' < /proc/pressure/$k 2>/dev/null)"; done
-    echo "== tham số";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE nic=$NIC viewer_hosts=$VIEWER_HOSTS"
+    echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE nic=$NIC viewer_hosts=$VIEWER_HOSTS"
 } > "$OUT/system.txt" 2>&1
 
 # ------------------------------------------------------------------ ước lượng dung lượng
@@ -173,12 +174,25 @@ case " $SCENARIOS " in *" step_hot "*) longest_min=75 ;; esac
 case " $SCENARIOS " in *" soak "*) longest_min=$(( SOAK_HOURS * 60 + 15 )) ;; esac
 need_gb=$(( per_sec_mb * 60 * longest_min / 1024 + 10 ))
 avail_gb=$(df -Pk "$WORK" | awk 'NR==2 {print int($4/1048576)}')
-say "ghi hình ≈ ${per_sec_mb} MB/s; kịch bản dài nhất ~${longest_min} phút cần ≈ ${need_gb} GB; còn trống ${avail_gb} GB"
+say "ghi hinh ~ ${per_sec_mb} MB/s; kich ban dai nhat ~${longest_min} phut can ~ ${need_gb} GB; con trong ${avail_gb} GB"
 if [ "$avail_gb" -lt "$need_gb" ]; then
-    say "CẢNH BÁO: có thể thiếu dung lượng. Server sẽ tự dọn khi đầy (cũng là một phần của test),"
-    say "          nhưng watchdog sẽ dừng kịch bản nếu đĩa còn < 5% hoặc < 10 GB."
+    say "CANH BAO: co the thieu dung luong. Server se tu don khi day (cung la mot phan cua test),"
+    say "          nhung watchdog se dung kich ban neu dia con < 5% hoac < 10 GB."
     if [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
-        read -r -p "Tiếp tục? [y/N] " ans
+        read -r -p "Tiep tuc? [y/N] " ans
+        case "$ans" in y|Y|yes) ;; *) exit 1 ;; esac
+    fi
+fi
+
+# HLS cua node nam tren /dev/shm nhu production (setup_stress.py hls_dir). Moi camera
+# ~15 MB segment (main 4 Mbps + sub); docker mac dinh chi cho /dev/shm 64 MB.
+shm_need_mb=$(( CAMERAS * 15 ))
+shm_avail_mb=$(df -Pk /dev/shm 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
+if [ -n "$shm_avail_mb" ] && [ "$shm_avail_mb" -lt "$shm_need_mb" ]; then
+    say "CANH BAO: /dev/shm con ${shm_avail_mb} MB, HLS cua ${CAMERAS} camera can ~${shm_need_mb} MB."
+    say "          Thieu thi HLS ghi loi va viewer hls truot. Chay docker voi --shm-size=$(( shm_need_mb / 1024 + 2 ))g."
+    if [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
+        read -r -p "Tiep tuc? [y/N] " ans
         case "$ans" in y|Y|yes) ;; *) exit 1 ;; esac
     fi
 fi
@@ -206,7 +220,7 @@ CURRENT_FILE="$WORK/.current_scenario"
         [ -n "$cur" ] || continue
         read -r pct avail <<< "$(df -Pk "$WORK" | awk 'NR==2 {gsub("%","",$5); print 100-$5, int($4/1048576)}')"
         if [ "$pct" -lt 5 ] || [ "$avail" -lt 10 ]; then
-            echo "[watchdog $(date +%H:%M:%S)] đĩa còn ${pct}% (${avail} GB) — dừng kịch bản $cur" | tee -a "$OUT/runner.log"
+            echo "[watchdog $(date +%H:%M:%S)] dia con ${pct}% (${avail} GB) - dung kich ban $cur" | tee -a "$OUT/runner.log"
             touch "$WORK/$cur.disk_abort"
             bash "$H/run_stress.sh" "$WORK/$cur" stop > /dev/null 2>&1
         fi
@@ -220,7 +234,7 @@ cleanup() {
     rm -f "$CURRENT_FILE"
 }
 trap cleanup EXIT
-trap 'say "bị ngắt — đóng gói phần đã có"; finish; exit 130' INT TERM
+trap 'say "bi ngat - dong goi phan da co"; finish; exit 130' INT TERM
 
 # ------------------------------------------------------------------ chạy một kịch bản
 declare -A RC DURATION
@@ -293,7 +307,7 @@ collect() {
             rm -rf "$n/record"
         fi
     done
-    [ -f "$WORK/$s.disk_abort" ] && echo "đã dừng vì hết đĩa" > "$o/DISK_ABORT"
+    [ -f "$WORK/$s.disk_abort" ] && echo "da dung vi het dia" > "$o/DISK_ABORT"
 }
 
 run_one() {
@@ -315,7 +329,7 @@ run_one() {
     RC[$s]=$rc
     DURATION[$s]=$(( ($(date +%s) - t0) / 60 ))
     rm -f "$CURRENT_FILE"
-    say "$s xong sau ${DURATION[$s]} phút, rc=$rc"
+    say "$s xong sau ${DURATION[$s]} phut, rc=$rc"
     grep -E "^\- \*\*|^[0-9]\. |^A2" "$WORK/$s"/ccu*_report.md 2>/dev/null | sed 's/^/    /'
     collect "$s"
 }
@@ -324,15 +338,15 @@ run_one() {
 finish() {
     local sum="$OUT/SUMMARY.md"
     {
-        echo "# Kết quả test CCU — $HOST, $(date '+%Y-%m-%d %H:%M')"
+        echo "# Ket qua test CCU - $HOST, $(date '+%Y-%m-%d %H:%M')"
         echo
         echo "- Binary: \`$BIN\` (debug_build=$IS_DEBUG)"
-        echo "- Suite: $([ -n "$ONLY" ] && echo "--only" || echo "$SUITE") — kịch bản: $SCENARIOS"
-        echo "- Profile: $PROFILE ($CAMERAS camera / $(( CAMERAS * 2 )) luồng, bitrate thật), mức nghiệm thu $ACCEPT"
-        echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "máy này + $VIEWER_HOSTS (NIC $NIC)" || echo "chạy cùng máy (loopback)")"
-        echo "- Tổng thời gian: $(( ($(date +%s) - START_TS) / 60 )) phút"
+        echo "- Suite: $([ -n "$ONLY" ] && echo "--only" || echo "$SUITE") - kich ban: $SCENARIOS"
+        echo "- Profile: $PROFILE ($CAMERAS camera / $(( CAMERAS * 2 )) luong, bitrate that), muc nghiem thu $ACCEPT"
+        echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "may nay + $VIEWER_HOSTS (NIC $NIC)" || echo "chay cung may (loopback)")"
+        echo "- Tong thoi gian: $(( ($(date +%s) - START_TS) / 60 )) phut"
         echo
-        echo "| Kịch bản | rc | phút | Kết luận |"
+        echo "| Kich ban | rc | phut | Ket luan |"
         echo "|---|---|---|---|"
         for s in $SCENARIOS; do
             local line=""
@@ -340,8 +354,8 @@ finish() {
                 line=$(grep -hE "^\- \*\*(CCU đạt|Nghiệm thu|Yếu tố)|^\- \*\*[0-9A]" "$OUT/$s"/ccu*_report.md 2>/dev/null \
                        | sed 's/^- //; s/\*\*//g' | tr '\n' ';' | sed 's/;$//')
             fi
-            [ -f "$OUT/$s/DISK_ABORT" ] && line="DỪNG VÌ HẾT ĐĨA; $line"
-            echo "| $s | ${RC[$s]:--} | ${DURATION[$s]:--} | ${line:-chưa chạy / không có báo cáo} |"
+            [ -f "$OUT/$s/DISK_ABORT" ] && line="DUNG VI HET DIA; $line"
+            echo "| $s | ${RC[$s]:--} | ${DURATION[$s]:--} | ${line:-chua chay / khong co bao cao} |"
         done
         echo
         for s in $SCENARIOS; do
@@ -356,11 +370,11 @@ finish() {
     } > "$sum"
     local tarball="$PWD/ccu_result_${HOST}_${STAMP}.tar.gz"
     tar czf "$tarball" -C "$WORK" "$(basename "$OUT")" 2>/dev/null
-    say "tóm tắt: $sum"
-    say "GỬI LẠI FILE NÀY: $tarball ($(du -h "$tarball" | cut -f1))"
+    say "tom tat: $sum"
+    say "GUI LAI FILE NAY: $tarball ($(du -h "$tarball" | cut -f1))"
 }
 
-say "chạy: $SCENARIOS (profile $PROFILE, nghiệm thu $ACCEPT, viewer NIC $NIC)"
+say "chay: $SCENARIOS (profile $PROFILE, nghiem thu $ACCEPT, viewer NIC $NIC)"
 for s in $SCENARIOS; do
     run_one "$s"
 done

@@ -13,6 +13,7 @@ trạng nguồn stream và độ trễ ONVIF của từng camera. Tỉ lệ coho
 quy mô nên kết quả giữa các lần chạy so sánh được với nhau.
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -243,6 +244,20 @@ def write_json(path, payload):
     os.replace(tmp, path)
 
 
+def hls_dir(d):
+    """Thư mục HLS của node: /dev/shm như default trong code (config.cpp), không phải đĩa.
+
+    HLS chạy hls_demand=0 nên mọi luồng live đều ghi segment liên tục; đặt ra đĩa thì
+    300 camera thêm ~150 MB/s ghi mà production không có (đo trên db3: đĩa bão hoà ngay
+    bậc 0). Tên theo hash của thư mục node để hai lần chạy/hai node không dọn nhầm của
+    nhau (server xoá sạch hls_save_path lúc khởi động).
+    """
+    if not os.path.isdir("/dev/shm"):
+        return d + "/www/live"
+    tag = hashlib.md5(os.path.abspath(d).encode("utf-8")).hexdigest()[:10]
+    return "/dev/shm/stress_vms_%s/live" % tag
+
+
 def node_overrides(node_id, d, ports, args):
     return {
         "general": {"mediaServerId": node_id},
@@ -256,7 +271,7 @@ def node_overrides(node_id, d, ports, args):
         "srt": {"port": 0},
         "shell": {"port": 0},
         "ssdp": {"port": 0},
-        "protocol": {"mp4_save_path": d + "/record", "hls_save_path": d + "/www/live",
+        "protocol": {"mp4_save_path": d + "/record", "hls_save_path": hls_dir(d),
                      # đoạn ngắn để sinh nhiều file index trong thời gian chạy ngắn
                      "mp4_max_second": args.segment_sec},
         # timefileIdleCloseSec thấp hơn hẳn mặc định 600: một phase của harness chỉ dài vài
@@ -374,6 +389,10 @@ def layout(repo, work, args):
         os.makedirs(os.path.join(d, "www"))
         os.makedirs(os.path.join(d, "record"))
         os.makedirs(os.path.join(d, "log"))
+        hls = hls_dir(d)
+        if hls.startswith("/dev/shm/"):
+            # run_stress.sh stop_nodes dọn theo link này để tmpfs không giữ RAM sau khi chạy
+            os.symlink(os.path.dirname(hls), os.path.join(d, "hls_shm"))
         shutil.copytree(os.path.join(repo, "migration/updates"), os.path.join(d, "updates"))
         shutil.copytree(os.path.join(repo, "migration/mserver_updates"),
                         os.path.join(d, "mserver_updates"))

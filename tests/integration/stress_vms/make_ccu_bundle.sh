@@ -25,10 +25,10 @@ cp "$REPO/docs/ccu-capacity-test-design.md" "$TMP/p/docs/"
 
 # Clip giống hệt run_stress.sh (MEDIA_PROFILE=realistic): nhiễu theo thời gian để x264 không
 # nén testsrc2 xuống vài trăm kbps; 10 s = 5 GOP để vòng lặp khớp keyframe.
-command -v ffmpeg > /dev/null || { echo "Cần ffmpeg trên máy đóng gói"; exit 1; }
+command -v ffmpeg > /dev/null || { echo "Can ffmpeg tren may dong goi"; exit 1; }
 for spec in "main_1080p.h264:1920x1080:4000k" "sub_360p.h264:640x360:512k"; do
     f="${spec%%:*}"; rest="${spec#*:}"; size="${rest%%:*}"; rate="${rest#*:}"
-    echo "dựng $f ($size, $rate)..."
+    echo "dung $f ($size, $rate)..."
     ffmpeg -hide_banner -loglevel error -f lavfi \
         -i "testsrc2=size=$size:rate=25:duration=10" -vf "noise=alls=12:allf=t" \
         -c:v libx264 -preset veryfast -profile:v main -pix_fmt yuv420p \
@@ -37,8 +37,8 @@ for spec in "main_1080p.h264:1920x1080:4000k" "sub_360p.h264:640x360:512k"; do
 done
 
 {
-    echo "commit: $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo ?)$(git -C "$REPO" diff --quiet -- tests/integration/stress_vms 2>/dev/null || echo ' (+ thay đổi chưa commit trong stress_vms)')"
-    echo "đóng gói: $(date '+%Y-%m-%d %H:%M')"
+    echo "commit: $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo ?)$(git -C "$REPO" diff --quiet -- tests/integration/stress_vms 2>/dev/null || echo ' (+ thay doi chua commit trong stress_vms)')"
+    echo "dong goi: $(date '+%Y-%m-%d %H:%M')"
 } > "$TMP/p/BUNDLE_INFO"
 
 find "$TMP/p" -name __pycache__ -prune -exec rm -rf {} +
@@ -48,4 +48,4 @@ tar czf "$TMP/payload.tgz" -C "$TMP/p" .
     base64 -w 76 "$TMP/payload.tgz"
 } > "$OUT"
 chmod +x "$OUT"
-echo "đã tạo $OUT ($(du -h "$OUT" | cut -f1))"
+echo "da tao $OUT ($(du -h "$OUT" | cut -f1))"

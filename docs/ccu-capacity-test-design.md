@@ -390,7 +390,15 @@ Những điều học được khi chạy trên máy dev (WSL, 8 lõi, 7,7 GB RA
   camera dừng đúng ở `maxStreamPerCamera`, ngưỡng CPU trả 503 — hai bản sửa 1539590f đúng.
   Các số đo CCU chạy trước thay đổi này (máy dev) dùng cấu hình repo, không so sánh được.
 - RTSP trả `401 Unauthorized` khi server từ chối vì tài nguyên (`ResourceUnavailable`), HTTP trả
-  `503` — chưa sửa, ghi nhận.
+  `503` — chưa sửa, đã thấy lại trên db3 (`rtsp:rtsp401`).
+- **Lần chạy db3 30/09 (quick, 300 camera) không đo được CCU vì đĩa bão hoà ngay bậc 0**: vmstat
+  `wa` ~40%, ~18 tiến trình chờ IO, ghi ~287 MB/s lên RAID đĩa quay; có lúc cả MediaServer im 16 s
+  → 324 luồng kéo timeout, ghi hình hở. Các kết luận "db"/"poller" của lần đó là hệ quả IO. Gần một
+  nửa lượng ghi là do harness đặt `hls_save_path` ra đĩa, trong khi mặc định code là `/dev/shm/live`
+  (`hls_demand=0` nên mọi luồng live ghi HLS liên tục). Đã sửa: HLS của node nằm ở
+  `/dev/shm/stress_vms_<hash>/live`, `stop_nodes` dọn đi; `ccu_test.sh` cảnh báo khi `/dev/shm` thiếu
+  (~15 MB/camera, docker cần `--shm-size`). Kernel 3.10 không có PSI nên `check_ccu.py` dùng iowait
+  của `/proc/stat` thay thế (ngưỡng `io_wait_ratio` 10%, cột "IO full %" hiện `wa N`).
 
 ## 12. Câu hỏi mở
 
