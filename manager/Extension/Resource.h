@@ -261,7 +261,11 @@ private:
     void cleanupExpiredGaps(uint64_t now);
 
 private:
-    std::mutex _mtx;
+    // No lock around the gap writes: each one is a single BEGIN IMMEDIATE transaction (find the open
+    // gap, then add/update it), and the writes of one resource come in order from its camera's ESC
+    // queue. A process-wide mutex held across busy_timeout made every camera's ESC queue -- and the
+    // api() threads running them -- wait behind one locked write. This only guards the cleanup.
+    std::mutex _cleanup_mtx;
     std::shared_ptr<LocalResourceStatusGapImp> _gap_imp;
     uint64_t _last_cleanup_time = 0;
     uint64_t _retention_seconds = 30ULL * 24 * 3600;

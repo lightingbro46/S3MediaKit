@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 
+#include "Extension/Resource.h"
 #include "Local/MediaGapFillManager.h"
 #include "Poller/EventPoller.h"
 #include "Storage/DbStorage.h"
@@ -198,4 +199,34 @@ TEST_F(MediaGapFillThreadingTest, CloseFromPlayerPollerIsPersistedOffIt) {
         return !rows.empty() && rows.front().state == "Success";
     }));
     manager.unregisterSource("close-test");
+}
+
+TEST_F(MediaGapFillThreadingTest, LockedDatabaseCostsEachStatusWriteOneBusyTimeout) {
+    // Status gap writes run on each camera's ESC queue (api() threads). A process-wide mutex held
+    // across the SQLite wait used to chain them: N cameras reconnecting against a locked database
+    // waited N x busy_timeout (3 s) and held N api() threads that long.
+    LocalResourceStatusGapImp repository;
+    auto lock = repository.getExecutor()->beginWriteTxn();
+
+    const int kWriters = 4;
+    std::vector<std::thread> writers;
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kWriters; ++i) {
+        writers.emplace_back([i]() {
+            ResourceStatusManager::Instance().onDisconnected("locked-res-" + std::to_string(i), "test", 1000);
+        });
+    }
+    for (auto &writer : writers) {
+        writer.join();
+    }
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    lock.reset();
+
+    // Concurrent waits end together after one busy_timeout; chained ones would take 4 x 3 s.
+    EXPECT_LT(elapsed_ms, 6000) << "status gap writes waited behind each other";
+
+    // With the database free again the writes go through.
+    EXPECT_TRUE(ResourceStatusManager::Instance().onDisconnected("locked-res-0", "test", 1000));
+    EXPECT_EQ(1u, repository.findByResourceIdAndTimeRange("locked-res-0").size());
 }

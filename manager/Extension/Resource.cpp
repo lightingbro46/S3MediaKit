@@ -99,7 +99,6 @@ ResourceStatusManager::ResourceStatusManager() {
 ResourceStatusManager::~ResourceStatusManager() = default;
 
 bool ResourceStatusManager::onDisconnected(const std::string &resource_id, const std::string &reason, uint64_t disconnect_time) {
-    std::lock_guard<std::mutex> lk(_mtx);
     if (resource_id.empty() || disconnect_time == 0) {
         WarnL << "Invalid parameters for onDisconnected: resource_id=" << resource_id << ", reason=" << reason << ", disconnect_time=" << disconnect_time << ". Ignore";
         return false;
@@ -138,7 +137,6 @@ bool ResourceStatusManager::onDisconnected(const std::string &resource_id, const
 }
 
 bool ResourceStatusManager::onReconnected(const std::string &resource_id, uint64_t reconnect_time) {
-    std::lock_guard<std::mutex> lk(_mtx);
     if (resource_id.empty() || reconnect_time == 0) {
         WarnL << "Invalid parameters for onReconnected: resource_id=" << resource_id << ", reconnect_time=" << reconnect_time << ". Ignore";
         return false;
@@ -180,7 +178,6 @@ std::vector<LocalResourceStatusGap> ResourceStatusManager::getResourceStatusGaps
 }
 
 bool ResourceStatusManager::removeResourceStatusGaps(const std::string &resource_id, uint64_t threshold_time) {
-    std::lock_guard<std::mutex> lk(_mtx);
     if (resource_id.empty() || threshold_time == 0) {
         WarnL << "Invalid parameters for removeResourceStatusGaps: resource_id=" << resource_id << ", threshold_time=" << threshold_time << ". Ignore";
         return false;
@@ -197,6 +194,11 @@ bool ResourceStatusManager::removeResourceStatusGaps(const std::string &resource
 
 void ResourceStatusManager::cleanupExpiredGaps(uint64_t now) {
     static const uint64_t kCleanupInterval = 3600;
+    // Another writer is already cleaning: skip rather than queue behind its transactions.
+    std::unique_lock<std::mutex> lk(_cleanup_mtx, std::try_to_lock);
+    if (!lk.owns_lock()) {
+        return;
+    }
     if (!_retention_seconds || now <= _retention_seconds ||
         (_last_cleanup_time && now - _last_cleanup_time < kCleanupInterval)) {
         return;
