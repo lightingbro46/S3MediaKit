@@ -2040,10 +2040,23 @@ void installWebHook() {
             return;
         }
 
-        auto device = sender.shared_from_this();
         ArgsType body;
-        body["data"].append(makeDeviceStatisticJson(device));
-        
+        body["data"] = Json::arrayValue;
+        for (const auto &device : devices) {
+            auto item = makeDeviceStatisticJson(device);
+            if (item.isNull()) {
+                // Device is being removed
+                continue;
+            }
+            body["data"].append(item);
+        }
+        if (body["data"].empty()) {
+            return;
+        }
+        int online_count = 0, offline_count = 0;
+        countDeviceStatusJson(body["data"], online_count, offline_count);
+        InfoL << "Report device status changes: " << body["data"].size() << " devices, " << online_count << " online, " << offline_count << " offline";
+
         // Execute hook
         do_http_hook(hook_api_url + hook_server_report, body, nullptr);
     });

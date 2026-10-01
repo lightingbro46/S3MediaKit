@@ -1,4 +1,5 @@
 #include "GenericRtspCameraImp.h"
+#include "CameraManager.h"
 #include "server/WebApiErrCode.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
@@ -281,16 +282,8 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
     publishDeviceCapabilities(false);
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
 #ifndef ENABLE_DEBUG
-        // only emit event when stream status changed
-        std::weak_ptr<GenericRtspCameraImp> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getPoller()->async([weak_self]() {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) {
-                return;
-            }
-            auto &src = *strong_self->_src;
-            NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, src);
-        });
+        // only emit event when stream status changed, CameraManager collects the changes into one report
+        CameraManager::Instance().notifyStatusChanged(_src);
 #else
     DebugL << "Sent stream ready event for camera " << _src->getUrl() << " live=" << live << ", status=" << status;
 #endif

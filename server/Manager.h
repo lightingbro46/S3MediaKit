@@ -27,6 +27,8 @@ extern const std::string kServerLocationId;
 extern const std::string kEnableFailover;
 // Delay seconds to active failover mode after detecting camera offline, which may caused by network issue or media server issue, default is 300 seconds (5 minutes)
 extern const std::string kFailoverActiveDelaySec;
+// Seconds to collect camera online/offline changes before reporting them in one API call, 0 reports each change at once
+extern const std::string kDeviceStatusReportDelaySec;
 // Store public key to validate jwt token
 extern const std::string kJwtPublicKey;
 // User session expiration time (6 months)

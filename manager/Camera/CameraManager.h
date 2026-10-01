@@ -28,8 +28,13 @@ public:
 
     bool isReady();
 
+    // Collect an online/offline change, reported with the others after manager.deviceStatusReportDelaySec
+    void notifyStatusChanged(const DeviceSource::Ptr &src);
+
 private:
     CameraManager();
+
+    void flushStatusChanged();
 
     void onManager();
 
@@ -38,6 +43,10 @@ private:
     bool _ready = false; // ready for receive new camera
     toolkit::Timer::Ptr _timer;
     std::unordered_map<std::string, GenericRtspCameraImp::Ptr> _gcImp;
+    // Separate from _mtx: delCamera holds _mtx across blocking ESC calls
+    std::mutex _status_mtx;
+    bool _status_flush_scheduled = false;
+    std::unordered_map<std::string, std::weak_ptr<DeviceSource>> _pending_status;
 };
 
 } // namespace managerkit

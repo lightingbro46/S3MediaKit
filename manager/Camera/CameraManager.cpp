@@ -220,8 +220,67 @@ bool CameraManager::delCamera(const string &key) {
 }
 
 void CameraManager::clear() {
+    {
+        std::lock_guard<std::mutex> lck(_status_mtx);
+        _pending_status.clear();
+    }
     std::lock_guard<std::recursive_mutex> lck(_mtx);
     _gcImp.clear();
+}
+
+void CameraManager::notifyStatusChanged(const DeviceSource::Ptr &src) {
+    if (!src) {
+        return;
+    }
+    GET_CONFIG(int, report_delay_sec, "manager.deviceStatusReportDelaySec");
+    if (report_delay_sec <= 0) {
+        // Report each change at once
+        std::weak_ptr<DeviceSource> weak_src = src;
+        WorkThreadPool::Instance().getPoller()->async([weak_src]() {
+            auto strong_src = weak_src.lock();
+            if (!strong_src) {
+                return;
+            }
+            std::vector<DeviceSource::Ptr> devices { strong_src };
+            NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, devices);
+        });
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lck(_status_mtx);
+        _pending_status[src->getDeviceTuple().shortUrl()] = src;
+        if (_status_flush_scheduled) {
+            return;
+        }
+        _status_flush_scheduled = true;
+    }
+    // The window starts at the first change and is not extended by later ones, so a flapping camera cannot hold the report back
+    WorkThreadPool::Instance().getPoller()->doDelayTask(static_cast<uint64_t>(report_delay_sec) * 1000, []() -> uint64_t {
+        CameraManager::Instance().flushStatusChanged();
+        return 0;
+    });
+}
+
+void CameraManager::flushStatusChanged() {
+    std::unordered_map<std::string, std::weak_ptr<DeviceSource>> pending;
+    {
+        std::lock_guard<std::mutex> lck(_status_mtx);
+        pending.swap(_pending_status);
+        _status_flush_scheduled = false;
+    }
+
+    std::vector<DeviceSource::Ptr> devices;
+    for (const auto &it : pending) {
+        if (auto src = it.second.lock()) {
+            devices.push_back(src);
+        }
+    }
+    if (devices.empty()) {
+        return;
+    }
+    DebugL << "Report status changes of " << devices.size() << " devices";
+    NOTICE_EMIT(BroadcastDeviceStatsChangedArgs, Broadcast::kBroadcastDeviceStatsChanged, devices);
 }
 
 vector<string> CameraManager::getCameraKeys() {
