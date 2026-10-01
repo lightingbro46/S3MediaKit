@@ -287,3 +287,36 @@ TEST(TierTxnLockTest, BackfillClaimAndCommitWaitForConcurrentWriter) {
     ASSERT_EQ(1u, stored.size());
     EXPECT_EQ(base + 60, stored[0].cursor_time);
 }
+
+// beginWriteTxn turns the deferred transaction into an immediate one with "COMMIT; BEGIN IMMEDIATE".
+// When the BEGIN IMMEDIATE times out the transaction must still be one the destructor can roll back,
+// and the error must be the lock, not a follow-up failure.
+TEST(SqliteWriteTxnTest, BeginWriteTxnTimeoutReportsLockAndRecovers) {
+    WriteLockHolder lock(3600);  // longer than busy_timeout (3 s)
+    auto executor = std::make_shared<SqliteQueryExecutor>(Database::kMediaServerDb);
+    std::string error;
+    try {
+        executor->beginWriteTxn();
+    } catch (const std::exception &ex) {
+        error = ex.what();
+    }
+    EXPECT_NE(std::string::npos, error.find("locked")) << error;
+    lock.join();
+
+    auto txn = executor->beginWriteTxn();
+    txn->execScript("INSERT INTO migrationhistory (app_name, migration, applied) VALUES ('after-timeout', 'after-timeout', 'now');");
+    txn->commit();
+}
+
+// A statement that fails to prepare (missing table, bad SQL) used to throw
+// "basic_string::_M_construct null not valid" instead of the SQLite error.
+TEST(SqliteWriteTxnTest, PrepareFailureKeepsSqliteError) {
+    auto executor = std::make_shared<SqliteQueryExecutor>(Database::kMediaServerDb);
+    std::string error;
+    try {
+        executor->executeRaw("SELECT * FROM table_that_does_not_exist");
+    } catch (const std::exception &ex) {
+        error = ex.what();
+    }
+    EXPECT_NE(std::string::npos, error.find("no such table")) << error;
+}

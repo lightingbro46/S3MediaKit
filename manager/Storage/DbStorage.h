@@ -129,7 +129,18 @@ public:
         auto txn = std::make_shared<toolkit::SqliteTransaction>(_helper->pool());
         // SqliteTransaction always opens a deferred transaction; it holds no lock yet, so it can
         // be swapped for an immediate one on the same connection (commit/rollback still apply).
-        txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
+        try {
+            txn->execScript("COMMIT; BEGIN IMMEDIATE TRANSACTION;");
+        } catch (...) {
+            // BEGIN IMMEDIATE timed out after the COMMIT: reopen a deferred transaction (takes no
+            // lock, cannot fail on busy) so the destructor's ROLLBACK has something to end instead
+            // of logging "cannot rollback - no transaction is active" on every locked write.
+            try {
+                txn->execScript("BEGIN TRANSACTION;");
+            } catch (...) {
+            }
+            throw;
+        }
         return txn;
     }
 
