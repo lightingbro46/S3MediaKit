@@ -1,4 +1,5 @@
-﻿#include <sstream>
+﻿#include <cstring>
+#include <sstream>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
@@ -130,7 +131,6 @@ static onceToken token([]() {
     mINI::Instance()[kOnDownloadAudioFile] = "/api/static/audio";
     mINI::Instance()[kOnDownloadOverlayImage] = "/api/media-server/watermark/assets";
     mINI::Instance()[kOnVideoExtractionResult] = "/api/media-server/video-extractions/result";
-    // Same receiver and body as the recording-encryption fork.
     mINI::Instance()[kOnVideoConfigRuleResult] = "/api/media-server/action-callback";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
@@ -1784,6 +1784,87 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastSystemAlertRecovered, [](BroadcastSystemAlertRecoveredArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        string eventCode;
+        switch (static_cast<ResourceType>(type)) {
+            case ResourceType::CPU: eventCode = "CpuRecovered"; break;
+            case ResourceType::MEMORY: eventCode = "RamRecovered"; break;
+            case ResourceType::HDD: eventCode = "DiskRecovered"; break;
+            case ResourceType::NETWORK: eventCode = "NetWorkRecovered"; break;
+            case ResourceType::READER: eventCode = "LiveStreamLimitRecovered"; break;
+            default: eventCode = "Unknown";
+        }
+        ArgsType body;
+        body["eventCode"] = eventCode;
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = sanitize_for_json(usage);
+        body["threshold"] = sanitize_for_json(threshold);
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
+    // Capacity of one mount; same eventCode as the former per-refresh HDD alert, plus where it is.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDiskUsageAlert, [](BroadcastDiskUsageAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = getEventCode(ResourceType::HDD, is_critical);
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = sanitize_for_json(usage);
+        body["threshold"] = sanitize_for_json(threshold);
+        body["mountPoint"] = mount_point;
+        body["device"] = device;
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
+    // Storage IO congestion. mountPoint/device are empty for the host-level iowait/psi signal.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDiskIoAlert, [](BroadcastDiskIoAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = level == 0 ? "DiskIoRecovered" : (level >= 2 ? "DiskIoCritical" : "DiskIoWarning");
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = sanitize_for_json(value);
+        body["threshold"] = sanitize_for_json(threshold);
+        body["mountPoint"] = mount_point;
+        body["device"] = device;
+        body["metric"] = metric;
+        body["isMainStorage"] = is_main_storage;
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
+    // Storage directory stopped (DiskReadOnly / DiskWriteFailed) or resumed (DiskWritable) accepting writes.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDiskWriteAlert, [](BroadcastDiskWriteAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = state == 0 ? "DiskWritable" : (state == 1 ? "DiskReadOnly" : "DiskWriteFailed");
+        body["eventTime"] = time(nullptr);
+        body["path"] = path;
+        body["mountPoint"] = mount_point;
+        body["device"] = device;
+        body["isMainStorage"] = is_main_storage;
+        body["error"] = error ? strerror(error) : "";
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionResult, [](BroadcastVideoExtractionResultArgs) {
         GET_CONFIG(string, hook_video_extraction_result, Hook::kOnVideoExtractionResult);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
@@ -1853,6 +1934,22 @@ void installWebHook() {
         body["threshold"] = threshold;
         body["cameraId"] = camera_id;
         // Execute hook
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastStreamReaderAlertRecovered, [](BroadcastStreamReaderAlertRecoveredArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = "CameraStreamLimitRecovered";
+        body["eventTime"] = std::time(nullptr);
+        body["currentValue"] = usage;
+        body["threshold"] = threshold;
+        body["cameraId"] = camera_id;
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 

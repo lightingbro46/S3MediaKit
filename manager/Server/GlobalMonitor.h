@@ -2,11 +2,13 @@
 #define S3MANAGERKIT_GLOBALMONITOR_H
 
 #include "CpuMonitor.h"
+#include "DiskIoMonitor.h"
 #include "HddMonitor.h"
 #include "MemoryMonitor.h"
 #include "NetworkMonitor.h"
 #include "ReaderMonitor.h"
 #include "RestartScheduler.h"
+#include "StorageWriteMonitor.h"
 #include "osInfo.h"
 
 extern std::string g_ini_file;
@@ -39,7 +41,27 @@ extern const std::string kMemoryWarningThreshold;
 extern const std::string kMemoryCriticalThreshold;
 extern const std::string kHddWarningThreshold;
 extern const std::string kHddCriticalThreshold;
+// CPU/RAM must stay at a new alert level for this many 10 s samples before it is reported (default 3)
+extern const std::string kSystemAlertSustainSamples;
+// CPU/RAM/reader alerts repeat at most this often while still above a threshold (default 300 s)
+extern const std::string kSystemAlertRepeatSec;
+// While a mount stays above a capacity threshold, repeat its alert at most this often (default 300 s)
+extern const std::string kHddAlertRepeatSec;
+// Storage IO congestion (DiskIoMonitor). Only mounts holding recordings, tier pools or the DB are watched.
+extern const std::string kDiskIoSampleIntervalSec;   // default 5
+extern const std::string kDiskIoUtilWarningThreshold;  // % device busy time, default 80
+extern const std::string kDiskIoUtilCriticalThreshold; // default 95 (critical also needs await >= critical)
+extern const std::string kDiskIoAwaitWarningMs;        // average ms per IO, default 50
+extern const std::string kDiskIoAwaitCriticalMs;       // default 200
+extern const std::string kIowaitWarningThreshold;      // host % iowait when the kernel has no PSI, default 20
+extern const std::string kIowaitCriticalThreshold;     // default 40
+extern const std::string kDiskIoPsiFullWarningThreshold;  // host /proc/pressure/io full avg10, default 10
+extern const std::string kDiskIoPsiFullCriticalThreshold; // default 30
+extern const std::string kDiskIoSustainSamples;        // consecutive samples before a level change, default 3
+extern const std::string kDiskIoAlertRepeatSec;        // repeat while still congested, default 300
 } // namespace GlobalMonitorConfig
+
+DiskIoConfig loadDiskIoConfig();
 
 class GlobalMonitor : public std::enable_shared_from_this<GlobalMonitor> {
 public:
@@ -59,6 +81,17 @@ public:
     std::vector<NetInterfaceInfo> getNetUsage();
 
     std::vector<DiskPartition> getHddUsage();
+
+    DiskIoSnapshot getDiskIoSnapshot();
+
+    // Last write probe of every watched storage directory.
+    std::vector<StorageWriteStatus> getStorageWriteStatus();
+
+    /**
+     * Watch the IO and writability of `path` (e.g. a tier pool base path) under `key`.
+     * An empty path stops watching that key. The record path and the DB directory are always watched.
+     */
+    void setIoWatchPath(const std::string &key, const std::string &path);
 
     DiskSnapshot getHddSnapshot(bool refresh_if_stale = false);
 
@@ -138,12 +171,23 @@ public:
 private:
     GlobalMonitor();
 
+    // Directories the server writes: record path (main storage), DB directory, registered tier pools.
+    std::vector<std::pair<std::string, bool> > collectStoragePaths();
+    std::vector<DiskIoTarget> collectDiskIoTargets();
+    std::vector<WriteCheckTarget> collectWriteCheckTargets();
+    // "disks" array: capacity of every mount plus io_* fields for watched storage mounts.
+    static Json::Value makeDisksJson(const std::vector<DiskPartition> &partitions, const DiskIoSnapshot &io);
+
 private:
     OSInfo _info;
     CpuMonitor::Ptr _cpu_monitor;
     MemoryMonitor::Ptr _mem_monitor;
     NetworkMonitor::Ptr _net_monitor;
     HddMonitor::Ptr _hdd_monitor;
+    DiskIoMonitor::Ptr _disk_io_monitor;
+    StorageWriteMonitor::Ptr _write_monitor;
+    std::mutex _io_watch_mtx;
+    std::map<std::string, std::string> _io_watch_paths; // key -> path
     ReaderMonitor::Ptr _reader_monitor;
     RestartScheduler::Ptr _restart_scheduler;
     std::shared_ptr<SystemMetricsImp> _metrics_store;

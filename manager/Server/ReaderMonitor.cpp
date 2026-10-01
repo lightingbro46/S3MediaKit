@@ -119,18 +119,37 @@ void ReaderMonitor::start() {
 }
 
 void ReaderMonitor::emitStreamReaderAlert(const string &camera_id, int usage_count) {
-    if (_stream_reader_warning_threshold < 0 && _stream_reader_critical_threshold < 0) {
-        TraceL << "No stream reader threshold config. Ignore stream reader alert";
+    int threshold = _stream_reader_warning_threshold;
+    lock_guard<mutex> lck(_camera_alert_mtx);
+    auto it = _camera_alerts.find(camera_id);
+    if (it == _camera_alerts.end()) {
+        if (threshold <= 0 || usage_count < threshold) {
+            return;
+        }
+        it = _camera_alerts.emplace(camera_id, AlertLevelTracker()).first;
+    }
+    // Reader counts are events, not samples: report the first crossing immediately.
+    const int observed = (threshold > 0 && usage_count >= threshold) ? 1 : 0;
+    const bool emit = it->second.advance(observed, alertNowMs(), 1, static_cast<int64_t>(alertRepeatSec()) * 1000);
+    const bool recovered = it->second.level == 0;
+    if (recovered) {
+        _camera_alerts.erase(it);
+    }
+    if (!emit) {
         return;
     }
-    if (_stream_reader_warning_threshold > 0 && usage_count >= _stream_reader_warning_threshold) {
-        auto flag = NOTICE_EMIT(BroadcastStreamReaderAlertArgs, mediakit::Broadcast::kBroadcastStreamReaderAlert, camera_id, usage_count, _stream_reader_warning_threshold, true);
-        if (!flag) {
-            TraceL << "No one listen stream reader alert event";
+    if (recovered) {
+        if (!NOTICE_EMIT(BroadcastStreamReaderAlertRecoveredArgs, mediakit::Broadcast::kBroadcastStreamReaderAlertRecovered,
+                         camera_id, usage_count, threshold)) {
+            TraceL << "No one listen stream reader recovered event";
         }
         return;
     }
-    TraceL << "Stream reader " << camera_id << " usage is normal: " << usage_count << "/" << _stream_reader_warning_threshold;
+    bool is_critical = true;
+    if (!NOTICE_EMIT(BroadcastStreamReaderAlertArgs, mediakit::Broadcast::kBroadcastStreamReaderAlert, camera_id,
+                     usage_count, threshold, is_critical)) {
+        TraceL << "No one listen stream reader alert event";
+    }
 }
 
 void ReaderMonitor::setStreamReaderThreshold(int warning_threshold, int critical_threshold) {

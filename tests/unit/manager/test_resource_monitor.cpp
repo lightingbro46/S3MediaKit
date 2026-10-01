@@ -7,7 +7,9 @@
 #include <mutex>
 #include <thread>
 
+#include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/NoticeCenter.h"
 #include "Util/util.h"
 
 #include "Server/HddMonitor.h"
@@ -293,4 +295,160 @@ TEST(ReaderMonitorTest, AppliesGlobalAndPerStreamThresholds) {
     EXPECT_FALSE(monitor.isReaderCountAvailable());
     monitor.setStreamReaderCount("third", "third|live:rtsp", 1);
     EXPECT_TRUE(monitor.isReaderCountLimit("third"));
+}
+
+namespace {
+
+struct SystemAlertEvent {
+    int type;
+    float usage;
+    float threshold;
+    int level; // 0 recovered, 1 warning, 2 critical
+};
+
+// Real listeners: catches Broadcast*Args that would never reach a listener.
+class SystemAlertRecorder {
+public:
+    SystemAlertRecorder() {
+        toolkit::NoticeCenter::Instance().addListener(this, mediakit::Broadcast::kBroadcastSystemAlert,
+                                                      [this](BroadcastSystemAlertArgs) {
+            events.push_back(SystemAlertEvent{type, usage, threshold, is_critical ? 2 : 1});
+        });
+        toolkit::NoticeCenter::Instance().addListener(this, mediakit::Broadcast::kBroadcastSystemAlertRecovered,
+                                                      [this](BroadcastSystemAlertRecoveredArgs) {
+            events.push_back(SystemAlertEvent{type, usage, threshold, 0});
+        });
+        toolkit::NoticeCenter::Instance().addListener(this, mediakit::Broadcast::kBroadcastStreamReaderAlert,
+                                                      [this](BroadcastStreamReaderAlertArgs) {
+            camera_events.push_back(camera_id + ":" + std::to_string(usage) + ":alert");
+        });
+        toolkit::NoticeCenter::Instance().addListener(this, mediakit::Broadcast::kBroadcastStreamReaderAlertRecovered,
+                                                      [this](BroadcastStreamReaderAlertRecoveredArgs) {
+            camera_events.push_back(camera_id + ":" + std::to_string(usage) + ":recovered");
+        });
+    }
+    ~SystemAlertRecorder() {
+        toolkit::NoticeCenter::Instance().delListener(this, mediakit::Broadcast::kBroadcastSystemAlert);
+        toolkit::NoticeCenter::Instance().delListener(this, mediakit::Broadcast::kBroadcastSystemAlertRecovered);
+        toolkit::NoticeCenter::Instance().delListener(this, mediakit::Broadcast::kBroadcastStreamReaderAlert);
+        toolkit::NoticeCenter::Instance().delListener(this, mediakit::Broadcast::kBroadcastStreamReaderAlertRecovered);
+    }
+    std::vector<SystemAlertEvent> events;
+    std::vector<std::string> camera_events;
+};
+
+// CPU/RAM monitors feed emitSystemAlert from a 10 s collector; drive it directly here.
+class SampledMonitor : public ResourceMonitor {
+public:
+    SampledMonitor() : ResourceMonitor(ResourceType::CPU, toolkit::EventPollerPool::Instance().getPoller()) {}
+    void sample(float usage) { emitSystemAlert(usage); }
+
+private:
+    void start() override {}
+};
+
+} // namespace
+
+TEST(SystemAlertPolicyTest, NeedsSustainedLevelRepeatsAndRecovers) {
+    SystemAlertRecorder recorder;
+    SampledMonitor monitor;
+    int64_t now_ms = 0;
+    monitor.setAlertClock([&now_ms]() { return now_ms; });
+    monitor.setThreshold(80.0f, 90.0f);
+    monitor.setAlertPolicy(3, 300);
+
+    auto sample = [&](float usage) {
+        now_ms += 10000;
+        monitor.sample(usage);
+    };
+    sample(95);
+    sample(95);
+    EXPECT_TRUE(recorder.events.empty()) << "two samples are below sustain 3";
+    sample(95);
+    ASSERT_EQ(1U, recorder.events.size());
+    EXPECT_EQ(static_cast<int>(ResourceType::CPU), recorder.events[0].type);
+    EXPECT_EQ(2, recorder.events[0].level);
+    EXPECT_FLOAT_EQ(90.0f, recorder.events[0].threshold);
+
+    for (int i = 0; i < 29; ++i) {
+        sample(95); // up to 290 s after the alert
+    }
+    EXPECT_EQ(1U, recorder.events.size()) << "no re-alert every sample";
+    sample(95);
+    ASSERT_EQ(2U, recorder.events.size()) << "repeat after 300 s";
+    EXPECT_EQ(2, recorder.events[1].level);
+
+    sample(50);
+    sample(50);
+    EXPECT_EQ(2U, recorder.events.size());
+    sample(50);
+    ASSERT_EQ(3U, recorder.events.size());
+    EXPECT_EQ(0, recorder.events[2].level);
+    EXPECT_FLOAT_EQ(90.0f, recorder.events[2].threshold) << "threshold of the alert it closes";
+
+    sample(50);
+    EXPECT_EQ(3U, recorder.events.size()) << "normal is not repeated";
+}
+
+TEST(SystemAlertPolicyTest, ShortSpikeDoesNotAlert) {
+    SystemAlertRecorder recorder;
+    SampledMonitor monitor;
+    int64_t now_ms = 0;
+    monitor.setAlertClock([&now_ms]() { return now_ms += 10000; });
+    monitor.setThreshold(80.0f, 90.0f);
+    monitor.setAlertPolicy(3, 300);
+    for (float usage : {95.0f, 95.0f, 40.0f, 95.0f, 95.0f, 40.0f}) {
+        monitor.sample(usage);
+    }
+    EXPECT_TRUE(recorder.events.empty());
+    // Warning and critical samples mixed: rises to the mildest of them.
+    for (float usage : {95.0f, 85.0f, 95.0f}) {
+        monitor.sample(usage);
+    }
+    ASSERT_EQ(1U, recorder.events.size());
+    EXPECT_EQ(1, recorder.events[0].level);
+}
+
+TEST(SystemAlertPolicyTest, ReaderAlertsOncePerLevelAndRecovers) {
+    SystemAlertRecorder recorder;
+    auto poller = toolkit::EventPollerPool::Instance().getPoller();
+    ReaderMonitor monitor(poller);
+    monitor.setAlertClock([]() { return int64_t(0); });
+    monitor.setThreshold(5, 7);
+    monitor.setAlertPolicy(1, 300);
+
+    monitor.setStreamReaderCount("a", "a|live:rtsp", 5);
+    monitor.setStreamReaderCount("a", "a|live:rtsp", 6);
+    monitor.setStreamReaderCount("b", "b|live:rtsp", 0);
+    ASSERT_EQ(1U, recorder.events.size()) << "count changes at the same level do not re-alert";
+    EXPECT_EQ(1, recorder.events[0].level);
+    EXPECT_EQ(static_cast<int>(ResourceType::READER), recorder.events[0].type);
+
+    monitor.setStreamReaderCount("b", "b|live:rtsp", 2);
+    ASSERT_EQ(2U, recorder.events.size());
+    EXPECT_EQ(2, recorder.events[1].level);
+
+    monitor.setStreamReaderCount("a", "a|live:rtsp", 0);
+    ASSERT_EQ(3U, recorder.events.size());
+    EXPECT_EQ(0, recorder.events[2].level);
+}
+
+TEST(SystemAlertPolicyTest, PerCameraReaderAlertOnceAndRecovers) {
+    SystemAlertRecorder recorder;
+    auto poller = toolkit::EventPollerPool::Instance().getPoller();
+    ReaderMonitor monitor(poller);
+    monitor.setAlertClock([]() { return int64_t(0); });
+    monitor.setStreamReaderThreshold(3, 4);
+
+    monitor.setStreamReaderCount("cam", "cam|live:rtsp", 2);
+    EXPECT_TRUE(recorder.camera_events.empty());
+    monitor.setStreamReaderCount("cam", "cam|live:rtsp", 3);
+    monitor.setStreamReaderCount("cam", "cam|record:fmp4", 1);
+    monitor.setStreamReaderCount("other", "other|live:rtsp", 1);
+    ASSERT_EQ(1U, recorder.camera_events.size());
+    EXPECT_EQ("cam:3:alert", recorder.camera_events[0]);
+
+    monitor.setStreamReaderCount("cam", "cam|live:rtsp", 0);
+    ASSERT_EQ(2U, recorder.camera_events.size());
+    EXPECT_EQ("cam:1:recovered", recorder.camera_events[1]);
 }

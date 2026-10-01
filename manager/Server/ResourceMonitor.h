@@ -2,6 +2,7 @@
 #define SERVER_RESOUCEMONITOR_H
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include "Poller/Timer.h"
@@ -70,9 +71,32 @@ enum class ResourceType : uint8_t {
     NETWORK = 2,
     HDD = 3,
     READER = 4,
+    DISK_IO = 5,
 };
 
 std::string getResourceTypeString(const ResourceType &type);
+
+/**
+ * Turns per-sample levels (0 normal, 1 warning, 2 critical) into alerts. A level change needs
+ * `sustain` consecutive samples on the same side of the current level and settles on the mildest
+ * (rising) or worst (falling) level among them. While above normal the alert repeats every
+ * repeat_ms (<= 0: never). Not thread-safe: the owner serializes calls.
+ */
+struct AlertLevelTracker {
+    int level = 0;
+    int64_t last_emit_ms = 0;
+
+    // True when an alert for `level` must be emitted now; level 0 then means "recovered".
+    bool advance(int observed, int64_t now_ms, int sustain, int64_t repeat_ms);
+
+private:
+    int _up_count = 0;
+    int _up_level = 0;
+    int _down_count = 0;
+    int _down_level = 0;
+};
+
+int64_t steadyNowMs();
 
 class ResourceMonitor {
 public:
@@ -91,11 +115,23 @@ public:
 
     std::pair<float, float> getThreshold();
 
+    // sustain_samples: consecutive samples at a new level before it is reported (CPU/RAM sample every 10 s).
+    // repeat_sec: repeat while above a threshold (<= 0: never).
+    void setAlertPolicy(int sustain_samples, int repeat_sec);
+
+    // Tests replace the steady clock used for repeats.
+    void setAlertClock(const std::function<int64_t()> &now_ms);
+
 private:
     virtual void start() = 0;
 
 protected:
+    // kBroadcastSystemAlert on a sustained level change and on repeat; kBroadcastSystemAlertRecovered
+    // when it returns to normal.
     void emitSystemAlert(float usage);
+
+    int alertRepeatSec() const { return _alert_repeat_sec; }
+    int64_t alertNowMs() const;
 
 protected:
     std::shared_ptr<std::atomic<bool>> _monitor_alive;
@@ -104,6 +140,13 @@ protected:
     toolkit::EventPoller::Ptr _poller;
     float _warning_threshold = -1.0f;
     float _critical_threshold = -1.0f;
+
+private:
+    std::mutex _alert_mtx;
+    AlertLevelTracker _alert;
+    std::atomic<int> _alert_sustain_samples{1};
+    std::atomic<int> _alert_repeat_sec{300};
+    std::function<int64_t()> _alert_clock;
 };
 
 } // namespace managerkit

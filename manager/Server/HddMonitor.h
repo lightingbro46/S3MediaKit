@@ -84,8 +84,12 @@ public:
                                const std::string &path,
                                DiskPartition &out_partition);
 
+    // While a mount stays above a threshold, repeat its alert at most this often (<= 0: never).
+    void setAlertRepeatSec(int sec) { _alert_repeat_sec = sec; }
+
 private:
     void dispatchRefresh();
+    void emitUsageAlerts(const DiskSnapshot &snapshot);
 
 private:
     float _refresh_interval_sec = 10.0f;
@@ -95,6 +99,13 @@ private:
     DiskSnapshot _snapshot;
     std::atomic<bool> _refresh_running{false};
     std::atomic<bool> _stopping{false};
+    std::atomic<int> _alert_repeat_sec{300};
+    struct UsageAlertState {
+        int level = 0;          // 0 normal, 1 warning, 2 critical
+        int64_t last_emit = 0;  // unix seconds
+    };
+    // Guarded by _refresh_mtx: refreshNow() is the only writer.
+    std::unordered_map<std::string, UsageAlertState> _usage_alerts;
 };
 
 } // namespace managerkit

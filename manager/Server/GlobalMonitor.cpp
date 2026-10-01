@@ -6,6 +6,8 @@
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
 #include "Storage/SystemMetrics.h"
+#include "Storage/DbStorage.h"
+#include "Util/File.h"
 #include "Common/BlockingExecutors.h"
 #include "Common/SerialTaskQueue.h"
 #include <algorithm>
@@ -34,6 +36,20 @@ const string kMemoryWarningThreshold   = GM_FIELD "memory_warning_threshold";
 const string kMemoryCriticalThreshold  = GM_FIELD "memory_critical_threshold";
 const string kHddWarningThreshold      = GM_FIELD "hdd_warning_threshold";
 const string kHddCriticalThreshold     = GM_FIELD "hdd_critical_threshold";
+const string kHddAlertRepeatSec        = GM_FIELD "hdd_alert_repeat_sec";
+const string kSystemAlertSustainSamples = GM_FIELD "system_alert_sustain_samples";
+const string kSystemAlertRepeatSec     = GM_FIELD "system_alert_repeat_sec";
+const string kDiskIoSampleIntervalSec  = GM_FIELD "disk_io_sample_interval_sec";
+const string kDiskIoUtilWarningThreshold  = GM_FIELD "disk_io_util_warning_threshold";
+const string kDiskIoUtilCriticalThreshold = GM_FIELD "disk_io_util_critical_threshold";
+const string kDiskIoAwaitWarningMs     = GM_FIELD "disk_io_await_warning_ms";
+const string kDiskIoAwaitCriticalMs    = GM_FIELD "disk_io_await_critical_ms";
+const string kIowaitWarningThreshold   = GM_FIELD "iowait_warning_threshold";
+const string kIowaitCriticalThreshold  = GM_FIELD "iowait_critical_threshold";
+const string kDiskIoPsiFullWarningThreshold  = GM_FIELD "disk_io_psi_full_warning_threshold";
+const string kDiskIoPsiFullCriticalThreshold = GM_FIELD "disk_io_psi_full_critical_threshold";
+const string kDiskIoSustainSamples     = GM_FIELD "disk_io_sustain_samples";
+const string kDiskIoAlertRepeatSec     = GM_FIELD "disk_io_alert_repeat_sec";
 
 static onceToken token([]() {
     mINI::Instance()[kMetricsRetentionDays]     = 30;
@@ -47,9 +63,50 @@ static onceToken token([]() {
     mINI::Instance()[kMemoryCriticalThreshold]  = 90.0;
     mINI::Instance()[kHddWarningThreshold]      = 80.0;
     mINI::Instance()[kHddCriticalThreshold]     = 90.0;
+    mINI::Instance()[kHddAlertRepeatSec]        = 300;
+    mINI::Instance()[kSystemAlertSustainSamples] = 3;
+    mINI::Instance()[kSystemAlertRepeatSec]     = 300;
+    mINI::Instance()[kDiskIoSampleIntervalSec]  = 5;
+    mINI::Instance()[kDiskIoUtilWarningThreshold]  = 80.0;
+    mINI::Instance()[kDiskIoUtilCriticalThreshold] = 95.0;
+    mINI::Instance()[kDiskIoAwaitWarningMs]     = 50.0;
+    mINI::Instance()[kDiskIoAwaitCriticalMs]    = 200.0;
+    mINI::Instance()[kIowaitWarningThreshold]   = 20.0;
+    mINI::Instance()[kIowaitCriticalThreshold]  = 40.0;
+    mINI::Instance()[kDiskIoPsiFullWarningThreshold]  = 10.0;
+    mINI::Instance()[kDiskIoPsiFullCriticalThreshold] = 30.0;
+    mINI::Instance()[kDiskIoSustainSamples]     = 3;
+    mINI::Instance()[kDiskIoAlertRepeatSec]     = 300;
 });
 
 } // namespace GlobalMonitorConfig
+
+DiskIoConfig loadDiskIoConfig() {
+    GET_CONFIG(float, sample_interval_sec, GlobalMonitorConfig::kDiskIoSampleIntervalSec)
+    GET_CONFIG(float, util_warning, GlobalMonitorConfig::kDiskIoUtilWarningThreshold)
+    GET_CONFIG(float, util_critical, GlobalMonitorConfig::kDiskIoUtilCriticalThreshold)
+    GET_CONFIG(float, await_warning_ms, GlobalMonitorConfig::kDiskIoAwaitWarningMs)
+    GET_CONFIG(float, await_critical_ms, GlobalMonitorConfig::kDiskIoAwaitCriticalMs)
+    GET_CONFIG(float, iowait_warning, GlobalMonitorConfig::kIowaitWarningThreshold)
+    GET_CONFIG(float, iowait_critical, GlobalMonitorConfig::kIowaitCriticalThreshold)
+    GET_CONFIG(float, psi_full_warning, GlobalMonitorConfig::kDiskIoPsiFullWarningThreshold)
+    GET_CONFIG(float, psi_full_critical, GlobalMonitorConfig::kDiskIoPsiFullCriticalThreshold)
+    GET_CONFIG(int, sustain_samples, GlobalMonitorConfig::kDiskIoSustainSamples)
+    GET_CONFIG(int, alert_repeat_sec, GlobalMonitorConfig::kDiskIoAlertRepeatSec)
+    DiskIoConfig cfg;
+    cfg.sample_interval_sec = sample_interval_sec;
+    cfg.util_warning = util_warning;
+    cfg.util_critical = util_critical;
+    cfg.await_warning_ms = await_warning_ms;
+    cfg.await_critical_ms = await_critical_ms;
+    cfg.iowait_warning = iowait_warning;
+    cfg.iowait_critical = iowait_critical;
+    cfg.psi_full_warning = psi_full_warning;
+    cfg.psi_full_critical = psi_full_critical;
+    cfg.sustain_samples = sustain_samples;
+    cfg.alert_repeat_sec = alert_repeat_sec;
+    return cfg;
+}
 
 INSTANCE_IMP(GlobalMonitor)
 
@@ -69,7 +126,11 @@ void GlobalMonitor::start() {
         return;
     }
 
+    GET_CONFIG(int, alert_sustain_samples, GlobalMonitorConfig::kSystemAlertSustainSamples)
+    GET_CONFIG(int, alert_repeat_sec, GlobalMonitorConfig::kSystemAlertRepeatSec)
+
     _cpu_monitor = std::make_shared<CpuMonitor>(_poller);
+    _cpu_monitor->setAlertPolicy(alert_sustain_samples, alert_repeat_sec);
     GET_CONFIG(float, default_warning_cpu_threshold, GlobalMonitorConfig::kCpuWarningThreshold)
     GET_CONFIG(float, default_critical_cpu_threshold, GlobalMonitorConfig::kCpuCriticalThreshold)
     _cpu_monitor->setThreshold(default_warning_cpu_threshold, default_critical_cpu_threshold);
@@ -79,6 +140,7 @@ void GlobalMonitor::start() {
     GET_CONFIG(float, default_warning_mem_threshold, GlobalMonitorConfig::kMemoryWarningThreshold)
     GET_CONFIG(float, default_critical_mem_threshold, GlobalMonitorConfig::kMemoryCriticalThreshold)
     _mem_monitor->setThreshold(default_warning_mem_threshold, default_critical_mem_threshold);
+    _mem_monitor->setAlertPolicy(alert_sustain_samples, alert_repeat_sec);
     DebugL << "Start monitoring Memory usage";
 
     _net_monitor = std::make_shared<NetworkMonitor>(_poller);
@@ -94,9 +156,35 @@ void GlobalMonitor::start() {
     GET_CONFIG(float, default_warning_hdd_threshold, GlobalMonitorConfig::kHddWarningThreshold)
     GET_CONFIG(float, default_critical_hdd_threshold, GlobalMonitorConfig::kHddCriticalThreshold)
     _hdd_monitor->setThreshold(default_warning_hdd_threshold, default_critical_hdd_threshold);
+    GET_CONFIG(int, hdd_alert_repeat_sec, GlobalMonitorConfig::kHddAlertRepeatSec)
+    _hdd_monitor->setAlertRepeatSec(hdd_alert_repeat_sec);
     DebugL << "Start monitoring Hdd usage";
 
+    {
+        DiskIoMonitor::Providers providers;
+        providers.config = loadDiskIoConfig;
+        // Singleton: GlobalMonitor outlives its monitors, so no weak_ptr needed.
+        providers.targets = []() { return GlobalMonitor::Instance().collectDiskIoTargets(); };
+        _disk_io_monitor = std::make_shared<DiskIoMonitor>(_poller, providers);
+        _disk_io_monitor->start();
+        DebugL << "Start monitoring storage IO";
+
+        // Write probes follow the mount refresh cadence; repeat alerts like the capacity ones.
+        _write_monitor = std::make_shared<StorageWriteMonitor>(
+            _poller, mount_refresh_interval_sec,
+            []() { return GlobalMonitor::Instance().collectWriteCheckTargets(); },
+            StorageWriteMonitor::Probe(), nullptr,
+            []() {
+                GET_CONFIG(int, repeat_sec, GlobalMonitorConfig::kHddAlertRepeatSec)
+                return repeat_sec;
+            });
+        _write_monitor->start();
+        DebugL << "Start monitoring storage writability";
+    }
+
     _reader_monitor = std::make_shared<ReaderMonitor>(_poller);
+    // Reader counts change on events, not samples: no sustain.
+    _reader_monitor->setAlertPolicy(1, alert_repeat_sec);
     DebugL << "Start monitoring Stream reader usage";
 
     _restart_scheduler = std::make_shared<RestartScheduler>(_poller);
@@ -121,6 +209,7 @@ void GlobalMonitor::start() {
                 auto mem_usage = strong_self->_mem_monitor->getCurrentUsage();
                 auto net_usage = strong_self->_net_monitor->getCurrentUsage();
                 auto hdd_usage = strong_self->_hdd_monitor->getCurrentUsage();
+                auto disk_io = strong_self->getDiskIoSnapshot();
                 auto reader_map = strong_self->_reader_monitor->getCurrentUsage();
 
                 // Build nets JSON
@@ -130,10 +219,7 @@ void GlobalMonitor::start() {
                 }
 
                 // Build disks JSON
-                Json::Value disks_val = Json::arrayValue;
-                for (const auto &d : hdd_usage) {
-                    disks_val.append(d.toJson());
-                }
+                Json::Value disks_val = makeDisksJson(hdd_usage, disk_io);
 
                 int live_count = 0, playback_count = 0;
                 for (const auto &kv : reader_map) {
@@ -470,9 +556,12 @@ Json::Value GlobalMonitor::makeSystemStatisticJson() {
         val["nets"].append(n.toJson());
     }
 
-    val["disks"] = Json::arrayValue;
-    for (const auto &d : getHddUsage()) {
-        val["disks"].append(d.toJson());
+    const auto disk_io = getDiskIoSnapshot();
+    val["disks"] = makeDisksJson(getHddUsage(), disk_io);
+    val["disk_io"] = disk_io.systemJson();
+    val["storage_write"] = Json::arrayValue;
+    for (const auto &w : getStorageWriteStatus()) {
+        val["storage_write"].append(w.toJson());
     }
 
     auto reader_map = getReaderUsage();
@@ -583,15 +672,22 @@ static void appendDerivedMetricFields(Json::Value &v) {
     }
 
     float hdd_usage_pct = 0.0f;
+    // Worst watched storage mount; null fields (no IO sample yet, or rows from before DiskIoMonitor) count as 0.
+    float disk_io_util_pct = 0.0f;
+    float disk_await_ms = 0.0f;
     if (v["disks"].isArray()) {
         for (const auto &d : v["disks"]) {
             hdd_usage_pct = std::max(hdd_usage_pct, jsonValueToFloat(d["used_pct"]));
+            disk_io_util_pct = std::max(disk_io_util_pct, jsonValueToFloat(d["io_util_pct"]));
+            disk_await_ms = std::max(disk_await_ms, jsonValueToFloat(d["await_ms"]));
         }
     }
 
     v["net_rx_mbps"] = net_rx_mbps;
     v["net_tx_mbps"] = net_tx_mbps;
     v["hdd_usage_pct"] = hdd_usage_pct;
+    v["disk_io_util_pct"] = disk_io_util_pct;
+    v["disk_await_ms"] = disk_await_ms;
 }
 
 struct SystemMetricBucket {
@@ -608,6 +704,8 @@ struct SystemMetricBucket {
     double net_rx_mbps = 0;
     double net_tx_mbps = 0;
     double hdd_usage_pct = 0;
+    double disk_io_util_pct = 0;
+    double disk_await_ms = 0;
 };
 
 Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to_ts, int limit, int bucket_sec) {
@@ -654,10 +752,7 @@ Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to
         for (const auto &n : net_usage) {
             v["nets"].append(n.toJson());
         }
-        v["disks"] = Json::arrayValue;
-        for (const auto &d : hdd_usage) {
-            v["disks"].append(d.toJson());
-        }
+        v["disks"] = makeDisksJson(hdd_usage, getDiskIoSnapshot());
         appendDerivedMetricFields(v);
         if (bucket_sec > 0) {
             v["timestamp"] = (Json::Int64)((now / bucket_sec) * bucket_sec);
@@ -713,6 +808,8 @@ Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to
             b.net_rx_mbps += jsonValueToFloat(v["net_rx_mbps"]);
             b.net_tx_mbps += jsonValueToFloat(v["net_tx_mbps"]);
             b.hdd_usage_pct += jsonValueToFloat(v["hdd_usage_pct"]);
+            b.disk_io_util_pct += jsonValueToFloat(v["disk_io_util_pct"]);
+            b.disk_await_ms += jsonValueToFloat(v["disk_await_ms"]);
         }
 
         for (const auto &kv : buckets) {
@@ -734,12 +831,117 @@ Json::Value GlobalMonitor::getSystemStatisticHistory(int64_t from_ts, int64_t to
             v["net_rx_mbps"] = b.net_rx_mbps / b.count;
             v["net_tx_mbps"] = b.net_tx_mbps / b.count;
             v["hdd_usage_pct"] = b.hdd_usage_pct / b.count;
+            v["disk_io_util_pct"] = b.disk_io_util_pct / b.count;
+            v["disk_await_ms"] = b.disk_await_ms / b.count;
             arr.append(v);
         }
     } catch (const std::exception &ex) {
         WarnL << "Failed to query system metrics history: " << ex.what();
     }
     return arr;
+}
+
+DiskIoSnapshot GlobalMonitor::getDiskIoSnapshot() {
+    if (!_disk_io_monitor) {
+        return DiskIoSnapshot();
+    }
+    return _disk_io_monitor->getSnapshot();
+}
+
+void GlobalMonitor::setIoWatchPath(const std::string &key, const std::string &path) {
+    lock_guard<mutex> lck(_io_watch_mtx);
+    if (path.empty()) {
+        _io_watch_paths.erase(key);
+    } else {
+        _io_watch_paths[key] = path;
+    }
+}
+
+std::vector<StorageWriteStatus> GlobalMonitor::getStorageWriteStatus() {
+    if (!_write_monitor) {
+        return std::vector<StorageWriteStatus>();
+    }
+    return _write_monitor->getStatus();
+}
+
+std::vector<std::pair<string, bool> > GlobalMonitor::collectStoragePaths() {
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
+    GET_CONFIG(string, app_name, Record::kAppName);
+    GET_CONFIG(string, db_save_path, Database::kDbSavePath);
+    // path -> holds the record path
+    std::vector<std::pair<string, bool> > paths;
+    paths.emplace_back(File::absolutePath(app_name, mp4_save_path), true);
+    paths.emplace_back(File::absolutePath("", db_save_path), false);
+    {
+        lock_guard<mutex> lck(_io_watch_mtx);
+        for (const auto &kv : _io_watch_paths) {
+            paths.emplace_back(kv.second, false);
+        }
+    }
+    return paths;
+}
+
+std::vector<WriteCheckTarget> GlobalMonitor::collectWriteCheckTargets() {
+    const auto snapshot = getHddSnapshot(false);
+    std::vector<WriteCheckTarget> targets;
+    for (const auto &p : collectStoragePaths()) {
+        if (std::any_of(targets.begin(), targets.end(), [&](const WriteCheckTarget &t) { return t.path == p.first; })) {
+            continue;
+        }
+        WriteCheckTarget target;
+        target.path = p.first;
+        target.is_main_storage = p.second;
+        DiskPartition partition;
+        if (HddMonitor::findMountPoint(snapshot, p.first, partition)) {
+            target.mount_point = partition.mount_point;
+            target.device = partition.device;
+            target.read_only = partition.read_only;
+        }
+        targets.push_back(target);
+    }
+    return targets;
+}
+
+std::vector<DiskIoTarget> GlobalMonitor::collectDiskIoTargets() {
+    const auto paths = collectStoragePaths();
+    // Cached snapshot only: this runs on the poller and must never statvfs.
+    const auto snapshot = getHddSnapshot(false);
+    std::vector<DiskIoTarget> targets;
+    for (const auto &p : paths) {
+        DiskPartition partition;
+        if (!HddMonitor::findMountPoint(snapshot, p.first, partition)) {
+            continue;
+        }
+        // NFS/CIFS have no block device in /proc/diskstats.
+        if (partition.isNetworkFileSystem() || partition.device.compare(0, 5, "/dev/") != 0) {
+            continue;
+        }
+        auto it = std::find_if(targets.begin(), targets.end(), [&](const DiskIoTarget &t) {
+            return t.mount_point == partition.mount_point;
+        });
+        if (it != targets.end()) {
+            it->is_main_storage = it->is_main_storage || p.second;
+            continue;
+        }
+        DiskIoTarget target;
+        target.mount_point = partition.mount_point;
+        target.device = partition.device;
+        target.is_main_storage = p.second;
+        targets.push_back(target);
+    }
+    return targets;
+}
+
+Json::Value GlobalMonitor::makeDisksJson(const std::vector<DiskPartition> &partitions, const DiskIoSnapshot &io) {
+    Json::Value disks = Json::arrayValue;
+    for (const auto &d : partitions) {
+        auto dv = d.toJson();
+        if (const auto *stats = io.findMount(d.mount_point)) {
+            stats->appendJson(dv);
+        }
+        disks.append(dv);
+    }
+    return disks;
 }
 
 string GlobalMonitor::findMountPoint(const string& path) {
