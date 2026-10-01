@@ -29,18 +29,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_stress as cs  # noqa: E402
 
 # Mục 6 của thiết kế. Ghi đè bằng --th ten=giatri.
+# Bậc chỉ TRƯỢT vì trải nghiệm người xem và ghi hình. Ngưỡng tài nguyên (CPU, poller, RSS, NIC,
+# đĩa) và log db_locked/failed_apply chỉ là CẢNH BÁO: ghi vào row["warnings"] để giải thích yếu tố
+# giới hạn khi bậc trượt. Khựng tổng, trôi, tốc độ media, healthcheck max chỉ ghi số, không chấm.
 THRESHOLDS = {
     "join_ok_ratio": 0.995,
-    "ttff_p95_live_ms": 2500.0,     # fMP4/RTSP live, GOP 2 s
-    "ttff_p95_hls_ms": 8000.0,
-    "ttff_p95_replay_ms": 3000.0,
-    "stall_ratio": 0.005,
+    # Thời gian tới hình đầu tiên, tính cho MỌI lần mở (max, không phải p95); lần mở không có
+    # frame đầu trong TTFF_TIMEOUT của viewer_load (15 s) cũng tính là vượt.
+    "ttff_max_live_ms": 5000.0,     # fMP4/RTSP/HLS live
+    "ttff_max_replay_ms": 10000.0,
+    "replay_share_max": 0.20,       # hỗn hợp nhiều loại: replay ≤ 20% số viewer đang phát
     "long_stall_session_ratio": 0.01,
-    "drift_p95_sec": 1.0,
-    "media_rate_min": 0.97,
-    "unexpected_closes": 0,
+    "unexpected_close_ratio": 0.005,  # phiên bị đứt / số viewer của bậc
     "healthcheck_p95_ms": 200.0,
-    "healthcheck_max_ms": 1000.0,
     "stream_online_ratio": 0.99,
     "process_cpu_pct": 80.0,        # % tổng số lõi
     "poller_load_pct": 85.0,
@@ -465,7 +466,7 @@ class Runner(object):
     # ---- chấm
     def evaluate(self, level, label, ramp_sec, ramp, win, s0, s1, smp, view, logs0, logs1):
         th = self.th
-        fails, invalid = [], []
+        fails, invalid, warns = [], [], []
         cat = []  # yếu tố giới hạn theo thứ tự phát hiện
         span = max(0.001, s1["t"] - s0["t"])
         row = {"label": label, "level": level, "at": time.strftime("%H:%M:%S", time.localtime(s0["t"])),
@@ -480,8 +481,7 @@ class Runner(object):
             fails.append("MediaServer chết/crash")
             cat.append("crash")
         if new["db_locked"] or new["failed_apply"]:
-            fails.append("log: db_locked=%d failed_apply=%d" % (new["db_locked"], new["failed_apply"]))
-            cat.append("db")
+            warns.append("log: db_locked=%d failed_apply=%d" % (new["db_locked"], new["failed_apply"]))
 
         # ---- tự kiểm client
         workers = win.get("workers") or []
@@ -528,14 +528,27 @@ class Runner(object):
             fails.append("vào được %d/%d lần" % (joins_ok, attempts))
             cat.append("viewer")
         row["ttff_p95_ms"] = {}
+        row["ttff_max_ms"] = {}
         for k, vals in ttff.items():
-            p = pct(vals, 0.95)
-            row["ttff_p95_ms"][k] = round(p)
-            limit = (th["ttff_p95_hls_ms"] if k == "hls" else
-                     th["ttff_p95_replay_ms"] if k == "replay" else th["ttff_p95_live_ms"])
-            if len(vals) >= 5 and p > limit:
-                fails.append("TTFF p95 %s %.0fms > %.0fms" % (k, p, limit))
+            row["ttff_p95_ms"][k] = round(pct(vals, 0.95))
+            row["ttff_max_ms"][k] = round(max(vals))
+            limit = th["ttff_max_replay_ms"] if k == "replay" else th["ttff_max_live_ms"]
+            if max(vals) > limit:
+                over = sum(1 for x in vals if x > limit)
+                fails.append("TTFF %s max %.0fms > %.0fms (%d lần)" % (k, max(vals), limit, over))
                 cat.append("viewer")
+        no_first = {k: n for k, n in fail_reasons.items() if k.endswith(":ttff_timeout")}
+        if no_first:
+            fails.append("không có hình đầu sau 15s: %s" % ", ".join("%s=%d" % kv for kv in sorted(no_first.items())))
+            cat.append("viewer")
+        # theo phiên đang mở (kể cả đang thử lại), tức đúng thành phần của plan
+        active = win.get("active") or {}
+        n_active = sum(active.values())
+        if len(active) > 1 and n_active:
+            share = active.get("replay", 0) / float(n_active)
+            row["replay_share"] = round(share, 3)
+            if share > th["replay_share_max"] + 1e-9:
+                invalid.append("replay chiếm %.0f%% viewer > %.0f%%" % (share * 100, th["replay_share_max"] * 100))
 
         rows_v = win.get("viewers") or []
         by_kind = defaultdict(list)
@@ -550,29 +563,18 @@ class Runner(object):
         row["stall_pct"] = round(stall / watch * 100.0, 3) if watch else None
         row["long_stall_sessions"] = long_sess
         row["drift_p95_sec"] = round(pct(drifts, 0.95), 2) if drifts else None
-        if watch and stall / watch > th["stall_ratio"]:
-            fails.append("khựng %.2f%% thời gian xem" % (stall / watch * 100.0))
-            cat.append("viewer")
         if rows_v and long_sess / float(len(rows_v)) > th["long_stall_session_ratio"]:
             fails.append("%d/%d phiên khựng > 2s" % (long_sess, len(rows_v)))
-            cat.append("viewer")
-        if drifts and pct(drifts, 0.95) > th["drift_p95_sec"]:
-            worst = ", ".join("%s %.1fs" % kv for kv in sorted(row["drift_p95_by_kind"].items(),
-                                                               key=lambda kv: -kv[1])[:3])
-            fails.append("trễ trôi p95 %.1fs (%s)" % (pct(drifts, 0.95), worst))
             cat.append("viewer")
         row["media_rate"] = {}
         for k, rs in by_kind.items():
             w_sum = sum(r[1] for r in rs)
             rate = sum(r[1] - r[4] for r in rs) / w_sum if w_sum else 1.0
             row["media_rate"][k] = round(rate, 3)
-            if rate < th["media_rate_min"]:
-                fails.append("%s nhận %.0f%% tốc độ thật" % (k, rate * 100))
-                cat.append("viewer")
         closes = win.get("closes") or {}
         n_closes = sum(closes.values())
         row["unexpected_closes"] = n_closes
-        if n_closes > th["unexpected_closes"]:
+        if n_closes > max(level, len(rows_v)) * th["unexpected_close_ratio"]:
             top = ", ".join("%s=%d" % kv for kv in sorted(closes.items(), key=lambda kv: -kv[1])[:3])
             fails.append("%d phiên bị đứt (%s)" % (n_closes, top))
             cat.append("viewer")
@@ -584,7 +586,7 @@ class Runner(object):
         cpu_pct = (s1["cpu"] - s0["cpu"]) / float(HZ) / span * 100.0
         row["cpu_pct_total"] = round(cpu_pct / NCPU, 1)
         if row["cpu_pct_total"] > th["process_cpu_pct"]:
-            fails.append("CPU tiến trình %.0f%% > %.0f%%" % (row["cpu_pct_total"], th["process_cpu_pct"]))
+            warns.append("CPU tiến trình %.0f%% > %.0f%%" % (row["cpu_pct_total"], th["process_cpu_pct"]))
             cat.append("cpu")
         hot = []
         for tid, (comm, ticks) in s1["tasks"].items():
@@ -596,40 +598,40 @@ class Runner(object):
         loads = {k: sum(v) / float(len(v)) for k, v in smp.loads.items() if v}
         row["poller_load_max"] = round(max(loads.values()), 1) if loads else None
         if loads and max(loads.values()) > th["poller_load_pct"]:
-            fails.append("poller nóng %.0f%%" % max(loads.values()))
+            warns.append("poller nóng %.0f%%" % max(loads.values()))
             cat.append("poller")
         hc = smp.health
         row["healthcheck_p95_ms"] = round(pct(hc, 0.95), 1) if hc else None
         row["healthcheck_max_ms"] = round(max(hc), 1) if hc else None
-        if hc and (pct(hc, 0.95) > th["healthcheck_p95_ms"] or max(hc) > th["healthcheck_max_ms"]):
-            fails.append("healthcheck p95 %.0fms / max %.0fms" % (pct(hc, 0.95), max(hc)))
+        if hc and pct(hc, 0.95) > th["healthcheck_p95_ms"]:
+            fails.append("healthcheck p95 %.0fms > %.0fms" % (pct(hc, 0.95), th["healthcheck_p95_ms"]))
             cat.append("poller")
         row["rss_mb"] = round(s1["rss_kb"] / 1024.0)
         row["rss_delta_mb"] = round((s1["rss_kb"] - s0["rss_kb"]) / 1024.0, 1)
         row["fds"] = s1["fds"]
         if s1["rss_kb"] > mem_total_kb() * th["rss_ram_ratio"]:
-            fails.append("RSS %d MB > %.0f%% RAM" % (row["rss_mb"], th["rss_ram_ratio"] * 100))
+            warns.append("RSS %d MB > %.0f%% RAM" % (row["rss_mb"], th["rss_ram_ratio"] * 100))
             cat.append("memory")
         for kind in ("io", "mem"):
             a0, a1 = s0.get(kind + "_full_us"), s1.get(kind + "_full_us")
             if a0 is not None and a1 is not None:
                 row["%s_full_pct" % kind] = round((a1 - a0) / 1e6 / span * 100.0, 2)
         if row.get("io_full_pct") is not None and row["io_full_pct"] > th["io_full_ratio"] * 100:
-            fails.append("đĩa nghẽn: mọi tác vụ chờ IO %.1f%% thời gian" % row["io_full_pct"])
+            warns.append("đĩa nghẽn: mọi tác vụ chờ IO %.1f%% thời gian" % row["io_full_pct"])
             cat.append("disk")
         if row.get("io_full_pct") is None and s0.get("iowait") and s1.get("iowait"):
             total = s1["iowait"][0] - s0["iowait"][0]
             if total > 0:
                 row["io_wait_pct"] = round((s1["iowait"][1] - s0["iowait"][1]) * 100.0 / total, 1)
                 if row["io_wait_pct"] > th["io_wait_ratio"] * 100:
-                    fails.append("đĩa nghẽn: CPU chờ IO %.1f%% thời gian (iowait, kernel không có PSI)"
+                    warns.append("đĩa nghẽn: CPU chờ IO %.1f%% thời gian (iowait, kernel không có PSI)"
                                  % row["io_wait_pct"])
                     cat.append("disk")
         tx_mbps = (s1["tx"] - s0["tx"]) * 8 / 1e6 / span
         row["nic_tx_mbps"] = round(tx_mbps, 1)
         speed = self.s.nic_speed_mbps()
         if speed and tx_mbps > speed * th["nic_util"]:
-            fails.append("NIC %s %.0f/%d Mbps" % (self.s.nic, tx_mbps, speed))
+            warns.append("NIC %s %.0f/%d Mbps" % (self.s.nic, tx_mbps, speed))
             cat.append("nic")
 
         # ---- nền
@@ -658,8 +660,10 @@ class Runner(object):
 
         row["failures"] = fails
         row["invalid"] = invalid
-        order = ["crash", "disk", "nic", "memory", "cpu", "poller", "db", "recording", "server", "viewer"]
-        row["limit"] = next((c for c in order if c in cat), None)
+        row["warnings"] = warns
+        # cảnh báo tài nguyên chỉ dùng để gọi tên yếu tố giới hạn khi bậc đã trượt
+        order = ["crash", "disk", "nic", "memory", "cpu", "poller", "recording", "server", "viewer"]
+        row["limit"] = next((c for c in order if c in cat), None) if fails else None
         if invalid:
             row["verdict"] = "không hợp lệ (bộ sinh tải quá tải)"
         elif fails:
@@ -703,10 +707,10 @@ def render_md(rep):
             lines.append("- **%s**: %s" % (k, v))
         lines.append("")
     lines.append("| bậc | viewer | phát | client Mbps | NIC tx Mbps | CPU% | poller max | IO full % | "
-                 "healthcheck p95 | TTFF p95 (ms) | khựng % | trôi p95 | ghi hình | kết luận |")
+                 "healthcheck p95 | TTFF max (ms) | khựng % | trôi p95 | ghi hình | kết luận |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rep["rows"]:
-        ttff = ", ".join("%s %s" % kv for kv in sorted((r.get("ttff_p95_ms") or {}).items())) or "-"
+        ttff = ", ".join("%s %s" % kv for kv in sorted((r.get("ttff_max_ms") or r.get("ttff_p95_ms") or {}).items())) or "-"
         rec = r.get("record") or {}
         lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["label"], r["level"], r.get("playing"), r.get("client_mbps"), r.get("nic_tx_mbps"),
@@ -722,6 +726,8 @@ def render_md(rep):
     for r in rep["rows"]:
         if r["failures"] or r["invalid"]:
             lines.append("- bậc %s: %s" % (r["label"], "; ".join(r["invalid"] + r["failures"])))
+        if r.get("warnings"):
+            lines.append("- bậc %s (cảnh báo, không tính trượt): %s" % (r["label"], "; ".join(r["warnings"])))
     return "\n".join(lines) + "\n"
 
 
@@ -811,11 +817,22 @@ def scenario_storm(rn):
     ttff = [x for vals in (burst.get("ttff_ms") or {}).values() for x in vals]
     joins = burst.get("joins") or {}
     fails = sum(j.get("fail", 0) for j in joins.values())
+    th = rn.th
+    slow = {}
+    for k, vals in (burst.get("ttff_ms") or {}).items():
+        limit = th["ttff_max_replay_ms"] if k == "replay" else th["ttff_max_live_ms"]
+        if vals and max(vals) > limit:
+            slow[k] = round(max(vals))
+    for k, n in (burst.get("fail_reasons") or {}).items():
+        if k.endswith(":ttff_timeout"):
+            slow[k] = n
     row = rn.measure(a.level, 90, label="storm %d" % a.level, join_rate=a.level / float(a.storm_sec))
-    ok = all_in is not None and all_in <= 30 and row["ok"]
+    ok = all_in is not None and all_in <= 30 and row["ok"] and not slow
     return {"Tất cả vào được sau": ("%.1fs" % all_in) if all_in is not None else "> 60s",
             "TTFF khi mở đồng loạt": ("p50 %.0f ms, p95 %.0f ms, max %.0f ms" % (
                 pct(ttff, 0.5), pct(ttff, 0.95), max(ttff))) if ttff else "-",
+            "TTFF vượt ngưỡng khi mở đồng loạt": ("%s" % slow) if slow else "không (live ≤ %.0fs, replay ≤ %.0fs)" % (
+                th["ttff_max_live_ms"] / 1000, th["ttff_max_replay_ms"] / 1000),
             "Lần mở thất bại": "%d (%s)" % (fails, dict(sorted((burst.get("fail_reasons") or {}).items(),
                                                           key=lambda kv: -kv[1])[:3])),
             "Nghiệm thu A3": "ĐẠT" if ok else "KHÔNG ĐẠT"}

@@ -34,7 +34,7 @@
 #   CCU_PRODUCTION_ARGS 1 = chạy MediaServer không -t 4 --affinity 0     [1 với ccu*]
 #   VIEWER_HOSTS     máy client khác (ssh), mỗi máy VIEWER_WORKERS_PER_HOST worker [4]
 #   CCU_CTL_HOST     địa chỉ controller mà máy client gọi về    [IP đầu của máy này]
-#   CCU_ARGS         tham số thêm cho check_ccu.py (vd "--th stall_ratio=0.01")
+#   CCU_ARGS         tham số thêm cho check_ccu.py (vd "--th long_stall_session_ratio=0.02")
 #   MEDIA_PROFILE    light (176x144 5fps 48kbps, mặc định) | realistic (main 1080p25 4Mbps,
 #                    sub 640x360 25fps 512kbps, GOP 2 s) — đo CCU phải dùng realistic
 #   RTSP_PROCS       số tiến trình nguồn RTSP cùng cổng [1 với light, nproc/2 với realistic]

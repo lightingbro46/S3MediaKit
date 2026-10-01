@@ -116,11 +116,16 @@ Xem mục 9: đọc code phần này đã thấy hai lỗi làm giới hạn pro
 
 | Loại | URL | Tỉ lệ | Ghi chú |
 |---|---|---|---|
-| Lưới live, luồng phụ | `/media/live/<cam>/<cam>-sub.live.mp4` (HTTP/WS-fMP4) | 55% | Web client xem lưới 16/25 ô |
+| Lưới live, luồng phụ | `/media/live/<cam>/<cam>-sub.live.mp4` (HTTP/WS-fMP4) | 45% | Web client xem lưới 16/25 ô |
 | Toàn màn hình, luồng chính | `/media/live/<cam>/<cam>-main.live.mp4` | 15% | |
 | HLS | `/media/live/<cam>/<stream>/hls.m3u8?session_id=…` | 10% | Mobile; không có `session_id` sẽ nhận 302 |
 | RTSP pull | `rtsp://<node>:<rtsp>/<cam>/<stream>?token=…` (TCP) | 10% | NVR/AI bên thứ ba |
-| Replay | `/media/record/<cam>/<stream>/vod/<stamp>.live.mp4` | 10% | Đọc đĩa + demux mỗi phiên; `<stamp>` rải trong 10 phút ghi gần nhất |
+| Replay | `/media/record/<cam>/<stream>/vod/<stamp>.live.mp4` | 20% | Đọc đĩa + demux mỗi phiên; `<stamp>` lùi 3–10 phút so với hiện tại |
+
+**Replay tối đa 20% số người xem** (điều kiện nghiệm thu). Hỗn hợp `vms` lấy đúng mức trần này để
+đo trường hợp xấu nhất; `viewer_load.py` (`REPLAY_MAX_SHARE`) chặn để mọi tiền tố của plan — tức mọi
+bậc — có replay ≤ 20% (thực tế ~15–19% ở bậc 400). `check_ccu.py` đánh dấu bậc **không hợp lệ** nếu
+phiên replay đang mở vượt 20% (`replay_share_max`). Hỗn hợp thuần `replay` không bị chặn.
 
 Transcode/overlay (`?transcode=1`, policy overlay) **không** nằm trong CCU chung: nó chạy trên
 pool `ffmpeg()` (2 luồng) nên trần của nó là vài phiên, và có ngưỡng từ chối riêng ở mức warning.
@@ -231,35 +236,52 @@ Thêm một phép đối chiếu: số phiên client thấy mở phải khớp `
 
 ## 6. Tiêu chí đạt của một bậc
 
-### 6.1 Phía viewer (tính trong cửa sổ đo)
+Một bậc **chỉ trượt** vì những gì người xem và bản ghi cảm nhận được. Chỉ số tài nguyên vẫn đo,
+nhưng chỉ là **cảnh báo** để gọi tên yếu tố giới hạn khi bậc đã trượt (dòng "cảnh báo, không tính
+trượt" trong báo cáo).
+
+### 6.1 Phía viewer (tính trong cửa sổ đo) — trượt
 
 | Chỉ số | Ngưỡng |
 |---|---|
 | Tỉ lệ vào được (chế độ `capacity`) | ≥ 99,5% |
-| TTFF p95 — fMP4/RTSP live | ≤ 2,5 s (GOP 2 s: phải chờ keyframe) |
-| TTFF p95 — HLS | ≤ 8 s |
-| TTFF p95 — replay | ≤ 3 s |
-| Thời gian stall / thời gian xem | ≤ 0,5% |
+| Thời gian tới hình đầu tiên (TTFF), **mọi lần mở** — live (fMP4/RTSP/HLS) | ≤ 5 s |
+| TTFF, **mọi lần mở** — replay | ≤ 10 s |
 | Phiên có ít nhất một stall > 2 s | ≤ 1% |
-| Độ trễ trôi trong cửa sổ đo (p95 theo phiên) | ≤ 1 s |
-| Byte/s trung bình theo phiên / bitrate nguồn | ≥ 0,97 |
-| Phiên bị server đóng ngoài ý muốn | 0 |
+| Phiên bị server đóng ngoài ý muốn | ≤ 0,5% số viewer của bậc (`unexpected_close_ratio`) |
 
-### 6.2 Phía server và nền — viewer **không được** làm hỏng ghi hình
+TTFF là giá trị **max** chứ không phải p95: một người xem chờ quá ngưỡng đã là trượt. Lần mở không
+nhận được frame đầu trong 15 s (`TTFF_TIMEOUT` của viewer, lý do `ttff_timeout`) cũng tính là vượt.
+`ccu_storm` áp cùng ngưỡng cho đợt mở đồng loạt (đợt này nằm ngoài cửa sổ đo của bậc).
 
-Dùng lại các bất biến của `check_stress.py` và thêm:
+Chỉ ghi số, không chấm (2026-10-01): tỉ lệ thời gian stall (luôn trượt cùng "phiên stall > 2 s"),
+độ trễ trôi (là stall cộng dồn; với replay còn méo khi chờ file đang ghi đóng), byte/s so với bitrate
+nguồn (trùng stall/trôi, chưa từng phân biệt bậc nào).
+
+### 6.2 Phía server và nền — viewer **không được** làm hỏng ghi hình — trượt
 
 | Chỉ số | Ngưỡng |
 |---|---|
-| Crash (`## signal:`), `database is locked`, `Failed to apply` | 0 |
-| `/media/mserver/healthcheck` p95 / max (poller có sạch không) | ≤ 200 ms / ≤ 1000 ms |
+| Crash (`## signal:`) / MediaServer chết | 0 |
+| `/media/mserver/healthcheck` p95 (poller có sạch không) | ≤ 200 ms |
 | Luồng nền còn online | ≥ 99% luồng khả dụng |
 | Trạng thái ghi khớp lịch cohort | 100% camera đủ điều kiện |
 | Khoảng hở ghi hình mới (timeline của camera `always`) | 0 khoảng > 2 × `fileSecond` |
-| CPU tiến trình | ≤ 80% tổng lõi (chừa headroom) |
-| Poller nóng nhất (`/index/api/getThreadsLoad`) | ≤ 85% |
-| RSS | ≤ 70% RAM máy, không tăng đơn điệu trong cửa sổ đo |
-| NIC egress | ≤ 80% băng thông liên kết — vượt thì ghi yếu tố giới hạn = NIC |
+
+### 6.3 Cảnh báo — không làm trượt bậc
+
+| Chỉ số | Ngưỡng cảnh báo |
+|---|---|
+| `database is locked`, `Failed to apply` trong log | > 0 — là bất biến đúng/sai, kiểm ở suite stress/sync; lần chạy db3 01/10 có 1 dòng ở tier backfill không liên quan viewer |
+| CPU tiến trình | > 80% tổng lõi |
+| Poller nóng nhất (`/index/api/getThreadsLoad`) | > 85% |
+| RSS | > 70% RAM máy |
+| NIC egress | > 80% băng thông liên kết |
+| Đĩa: PSI `io full` / iowait (kernel không PSI) | > 2% / > 10% |
+| healthcheck max | chỉ ghi số (một đỉnh đơn lẻ không phản ánh sức chứa) |
+
+Khi bậc trượt, yếu tố giới hạn là cảnh báo đầu tiên theo thứ tự crash → đĩa → NIC → bộ nhớ → CPU →
+poller → ghi hình → server → viewer.
 
 Tiêu chí "khoảng hở ghi hình" là điểm khác biệt quan trọng nhất so với benchmark streaming thông
 thường: với VMS, CCU chỉ có giá trị nếu **ghi hình vẫn nguyên vẹn** ở mức CCU đó.

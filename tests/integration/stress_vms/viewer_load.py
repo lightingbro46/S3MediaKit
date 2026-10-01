@@ -52,7 +52,8 @@ LIVE_COHORTS = ("always", "office", "motion_night", "lowres_motion", "retention_
 REPLAY_COHORTS = ("always", "retention_auto", "long_retention")
 
 MIXES = {
-    "vms": {"fmp4-sub": 55, "fmp4-main": 15, "hls": 10, "rtsp": 10, "replay": 10},
+    # replay lấy đúng mức trần REPLAY_MAX_SHARE: trường hợp xấu nhất được phép ở production
+    "vms": {"fmp4-sub": 45, "fmp4-main": 15, "hls": 10, "rtsp": 10, "replay": 20},
     "fmp4-sub": {"fmp4-sub": 100},
     "fmp4-main": {"fmp4-main": 100},
     "rtsp": {"rtsp": 100},
@@ -60,6 +61,9 @@ MIXES = {
     "replay": {"replay": 100},
 }
 KINDS = ("fmp4-sub", "fmp4-main", "hls", "rtsp", "replay")
+# Người xem replay chiếm tối đa 20% số người xem (điều kiện nghiệm thu). Áp cho mọi tiền tố của
+# plan vì bậc N dùng N viewer đầu; hỗn hợp chỉ có replay (khoanh vùng) thì không áp.
+REPLAY_MAX_SHARE = 0.20
 
 TTFF_TIMEOUT = 15.0     # chưa có frame đầu sau chừng này thì tính là mở thất bại
 DATA_TIMEOUT = 10.0     # đang phát mà không nhận gì chừng này thì coi như đứt
@@ -101,8 +105,11 @@ def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera
     pick_live, pick_replay = picker(live), picker(replay)
     weights = MIXES[mix]
     kinds = sorted(weights)
+    capped = [k for k in kinds if k != "replay"]
     total_w = float(sum(weights.values()))
+    capped_w = float(sum(weights[k] for k in capped))
     plan = []
+    n_replay = 0
     for i in range(max_viewers):
         r, acc, kind = rng.random() * total_w, 0.0, kinds[-1]
         for k in kinds:
@@ -110,6 +117,14 @@ def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera
             if r < acc:
                 kind = k
                 break
+        if kind == "replay" and capped_w and n_replay + 1 > REPLAY_MAX_SHARE * (i + 1):
+            r, acc, kind = rng.random() * capped_w, 0.0, capped[-1]
+            for k in capped:
+                acc += weights[k]
+                if r < acc:
+                    kind = k
+                    break
+        n_replay += kind == "replay"
         if kind == "replay":
             cam = pick_replay()
             stream = "main"
