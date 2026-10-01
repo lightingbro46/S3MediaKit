@@ -6,6 +6,8 @@
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
 #include "Storage/SystemMetrics.h"
+#include "Common/BlockingExecutors.h"
+#include "Common/SerialTaskQueue.h"
 #include <algorithm>
 #include <map>
 
@@ -102,6 +104,7 @@ void GlobalMonitor::start() {
     DebugL << "Start periodical restart scheduler";
 
     _metrics_store = std::make_shared<SystemMetricsImp>();
+    _metrics_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "system metrics");
 
     // ── Periodic metrics-recording timer ─────────────────────────
     GET_CONFIG(int, sample_interval_sec, GlobalMonitorConfig::kMetricsSampleIntervalSec);
@@ -138,7 +141,9 @@ void GlobalMonitor::start() {
                     playback_count += kv.second.second;
                 }
 
-                if (strong_self->_metrics_store) {
+                // A previous insert still waiting on a locked database: drop this sample rather
+                // than pile up writes.
+                if (strong_self->_metrics_store && strong_self->_metrics_queue->pending() == 0) {
                     SystemMetric m;
                     m.timestamp            = (int64_t)time(nullptr);
                     m.cpu_usage_pct        = cpu_usage.usagePct;
@@ -153,8 +158,15 @@ void GlobalMonitor::start() {
                     m.nets_json            = nets_val.toStyledString();
                     m.disks_json           = disks_val.toStyledString();
 
-                    strong_self->_metrics_store->insertMetric(m);
-                    DebugL << "System metrics recorded at " << getTimeStr("%Y-%m-%d %H:%M:%S", time(nullptr));
+                    auto store = strong_self->_metrics_store;
+                    strong_self->_metrics_queue->post([store, m]() {
+                        try {
+                            store->insertMetric(m);
+                            DebugL << "System metrics recorded at " << getTimeStr("%Y-%m-%d %H:%M:%S", m.timestamp);
+                        } catch (const std::exception &ex) {
+                            WarnL << "Failed to record system metric: " << ex.what();
+                        }
+                    });
                 }
                 // Update last metrics sample time
                 strong_self->_last_metrics_sample_time = time(nullptr);
@@ -196,15 +208,18 @@ void GlobalMonitor::start() {
             if (!strong_self || !strong_self->_metrics_store) {
                 return false;
             }
-            try {
-                int64_t cutoff = (int64_t)time(nullptr) - (int64_t)retention_days * 86400;
-                strong_self->_metrics_store->deleteOlderThan(cutoff);
-                DebugL << "Purged system_metrics older than " << retention_days << " days, cutoff timestamp: " << getTimeStr("%Y-%m-%d %H:%M:%S", cutoff);
-                // Update last cleanup time
-                strong_self->_last_cleanup_time = time(nullptr);
-            } catch (const std::exception &ex) {
-                WarnL << "Failed to purge old system metrics: " << ex.what();
-            }
+            int64_t cutoff = (int64_t)time(nullptr) - (int64_t)retention_days * 86400;
+            auto store = strong_self->_metrics_store;
+            strong_self->_metrics_queue->post([store, cutoff, retention_days]() {
+                try {
+                    store->deleteOlderThan(cutoff);
+                    DebugL << "Purged system_metrics older than " << retention_days << " days, cutoff timestamp: " << getTimeStr("%Y-%m-%d %H:%M:%S", cutoff);
+                } catch (const std::exception &ex) {
+                    WarnL << "Failed to purge old system metrics: " << ex.what();
+                }
+            });
+            // Update last cleanup time
+            strong_self->_last_cleanup_time = time(nullptr);
             return true;
         },
         _poller);

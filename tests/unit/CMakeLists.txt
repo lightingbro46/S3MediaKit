@@ -196,6 +196,21 @@ target_include_directories(unit_media_gap_fill_threading PRIVATE "${PROJECT_SOUR
 add_test(NAME unit.media_gap_fill_threading_all COMMAND unit_media_gap_fill_threading)
 set_tests_properties(unit.media_gap_fill_threading_all PROPERTIES LABELS unit TIMEOUT 30)
 
+# GlobalMonitor metrics timer: SQLite writes off the network poller; server/ symbols come from the
+# tier-storage stubs.
+add_s3_unit_test(unit_global_monitor_threading
+  manager/test_global_monitor_threading.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_global_monitor_threading PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_global_monitor_threading PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.global_monitor_threading_all COMMAND unit_global_monitor_threading)
+set_tests_properties(unit.global_monitor_threading_all PROPERTIES LABELS unit TIMEOUT 60)
+
 # FFmpegExtractor start/cancel (server/FFmpegSource.cpp compiled directly); remaining server/
 # symbols come from the tier-storage stubs.
 add_s3_unit_test(unit_extract_start
