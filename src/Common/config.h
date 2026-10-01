@@ -230,9 +230,31 @@ extern const std::string kBroadcastRestartServer;
 extern const std::string kBroadcastSystemAlert;
 #define BroadcastSystemAlertArgs uint8_t &type, float &usage, float &threshold, bool &is_critical
 
+// A system alert (CPU, RAM, total readers) returned to normal; threshold is that of the alert it closes.
+extern const std::string kBroadcastSystemAlertRecovered;
+#define BroadcastSystemAlertRecoveredArgs const uint8_t &type, const float &usage, const float &threshold
+
+// Storage IO congestion of one mount (mount_point/device set) or of the whole host (both empty,
+// metric "iowait"/"psi"). level: 0 = recovered, 1 = warning, 2 = critical. metric: "util"|"await"|"iowait"|"psi".
+extern const std::string kBroadcastDiskIoAlert;
+#define BroadcastDiskIoAlertArgs const std::string &mount_point, const std::string &device, const std::string &metric, const float &value, const float &threshold, const int &level, const bool &is_main_storage
+
+// Capacity of one mount crossed a threshold. Emitted on level change and repeated while it stays above.
+extern const std::string kBroadcastDiskUsageAlert;
+#define BroadcastDiskUsageAlertArgs const std::string &mount_point, const std::string &device, const float &usage, const float &threshold, const bool &is_critical
+
+// A storage directory (record path, DB directory, tier pool) stopped or resumed accepting writes.
+// state: 0 = writable again, 1 = read-only (ro mount or EROFS), 2 = write failed; error is the errno.
+extern const std::string kBroadcastDiskWriteAlert;
+#define BroadcastDiskWriteAlertArgs const std::string &path, const std::string &mount_point, const std::string &device, const int &state, const int &error, const bool &is_main_storage
+
 // Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
 extern const std::string kBroadcastStreamReaderAlert;
 #define BroadcastStreamReaderAlertArgs const std::string &camera_id, int &usage, int &threshold, bool &is_critical
+
+// The reader count of one camera dropped back below its threshold.
+extern const std::string kBroadcastStreamReaderAlertRecovered;
+#define BroadcastStreamReaderAlertRecoveredArgs const std::string &camera_id, const int &usage, const int &threshold
 
 // Register or unregister DeviceSource event broadcast
 extern const std::string kBroadcastDeviceChanged;

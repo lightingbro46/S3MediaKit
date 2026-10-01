@@ -2,6 +2,7 @@
 #define LOCAL_DBSCHEMA_H
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace managerkit {
@@ -134,7 +135,8 @@ inline std::string parse_sql_value<std::string>(const std::string& s, std::strin
 
 template<typename T>
 inline Optional<T> parse_sql_value(const std::string& s, Optional<T> mem) {
-    if (s == "NULL") return Optional<T>();
+    // SqliteConnection reads a NULL column as "", so an empty non-string value is NULL.
+    if (s == "NULL" || (s.empty() && !std::is_same<T, std::string>::value)) return Optional<T>();
     return Optional<T>(parse_sql_value<T>(s, T{}));
 }
 

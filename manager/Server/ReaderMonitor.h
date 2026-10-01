@@ -54,6 +54,9 @@ private:
     std::atomic<int> _total_reader {0};
     int _stream_reader_warning_threshold = -1;
     int _stream_reader_critical_threshold = -1;
+    // Per-camera alert state; cameras back at normal are dropped.
+    std::mutex _camera_alert_mtx;
+    std::unordered_map<std::string, AlertLevelTracker> _camera_alerts;
 };
 
 } // namespace managerkit

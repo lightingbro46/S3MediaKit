@@ -14,6 +14,7 @@
 - [Kiểm thử tích hợp Storage Tiering với Codex agent](./tier-storage-integration-testing.md)
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
 - [Rule cấu hình video có thời hạn](./api-video-config-rule.md)
+- [Sự kiện cảnh báo hệ thống (webhook system-event)](./api-system-alert-events.md)
 - [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 - [Plan sửa luồng video config rule](./video-config-rule-fix-plan.md)
 

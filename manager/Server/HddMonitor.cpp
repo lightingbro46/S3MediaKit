@@ -11,6 +11,7 @@
 
 #include "HddMonitor.h"
 #include "Common/BlockingExecutors.h"
+#include "Util/NoticeCenter.h"
 
 using namespace std;
 using namespace toolkit;
@@ -268,11 +269,44 @@ bool HddMonitor::refreshNow() {
         _snapshot = next;
     }
 
-    const auto snapshot = getSnapshot();
-    for (const auto &partition : snapshot.partitions) {
-        emitSystemAlert(partition.usage_pct);
-    }
+    emitUsageAlerts(getSnapshot());
     return true;
+}
+
+void HddMonitor::emitUsageAlerts(const DiskSnapshot &snapshot) {
+    const float warning = _warning_threshold;
+    const float critical = _critical_threshold;
+    const int repeat_sec = _alert_repeat_sec;
+    std::unordered_map<std::string, UsageAlertState> next;
+    for (const auto &partition : snapshot.partitions) {
+        UsageAlertState st;
+        auto it = _usage_alerts.find(partition.mount_point);
+        if (it != _usage_alerts.end()) {
+            st = it->second;
+        }
+        int level = 0;
+        if (critical > 0 && partition.usage_pct >= critical) {
+            level = 2;
+        } else if (warning > 0 && partition.usage_pct >= warning) {
+            level = 1;
+        }
+        // Alert on a level change and, while it stays above a threshold, every repeat_sec.
+        const bool changed = level != st.level;
+        const bool repeat = level > 0 && !changed && repeat_sec > 0 &&
+                            snapshot.refreshed_at - st.last_emit >= repeat_sec;
+        st.level = level;
+        if (level > 0 && (changed || repeat)) {
+            st.last_emit = snapshot.refreshed_at;
+            const bool is_critical = level == 2;
+            const float threshold = is_critical ? critical : warning;
+            if (!NOTICE_EMIT(BroadcastDiskUsageAlertArgs, mediakit::Broadcast::kBroadcastDiskUsageAlert,
+                             partition.mount_point, partition.device, partition.usage_pct, threshold, is_critical)) {
+                TraceL << "No one listen disk usage alert event";
+            }
+        }
+        next[partition.mount_point] = st;
+    }
+    _usage_alerts.swap(next);
 }
 
 DiskSnapshot HddMonitor::getSnapshot() {

@@ -164,13 +164,18 @@ bool TierFileStorageBase::registerPool(const std::string &pool_id,
         std::lock_guard<std::mutex> lk(_mtx);
         _pool_map[pool_id] = entry;
     }
+    // Watch the pool's disk for IO congestion; NFS/CIFS mounts are skipped by the monitor.
+    GlobalMonitor::Instance().setIoWatchPath("tier:" + pool_id, normalized);
     InfoL << storageName() << ": registered pool " << pool_id << " path=" << normalized;
     return true;
 }
 
 void TierFileStorageBase::unregisterPool(const std::string &pool_id) {
-    std::lock_guard<std::mutex> lk(_mtx);
-    _pool_map.erase(pool_id);
+    {
+        std::lock_guard<std::mutex> lk(_mtx);
+        _pool_map.erase(pool_id);
+    }
+    GlobalMonitor::Instance().setIoWatchPath("tier:" + pool_id, "");
 }
 
 bool TierFileStorageBase::isRegistered(const std::string &pool_id) const {
