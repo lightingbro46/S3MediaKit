@@ -6,8 +6,8 @@ Lập 2026-10-01 trên `develop` `e7a72db5`, từ kết quả test CCU trên db3
 
 Tài liệu có hai phần độc lập:
 
-- **Phần A — yêu cầu tính năng (chưa làm):** `GlobalMonitor` theo dõi mức nghẽn IO của ổ lưu trữ và bắn
-  cảnh báo lên API quản lý.
+- **Phần A — yêu cầu tính năng (đã làm 2026-10-01, nhánh `feature/disk-io-monitor`, xem A.6):** `GlobalMonitor`
+  theo dõi mức nghẽn IO của ổ lưu trữ, phát hiện vùng lưu trữ không ghi được (read-only) và bắn cảnh báo lên API quản lý.
 - **Phần B — plan sửa:** các chỗ vi phạm quy tắc thread của repo lộ ra trong log của lần test đó.
 
 ---
@@ -136,6 +136,116 @@ không có tín hiệu gốc. Máy CentOS 7 (kernel 3.10) còn không có PSI.
    - mock API phải nhận `DiskIo*`;
    - harness `check_ccu.py` có thể đọc thẳng các trường này thay cho vmstat.
 6. Tài liệu: `docs/` phần monitor/webhook, mô tả payload mới cho team API.
+
+### A.6 Kết quả thực hiện (2026-10-01, nhánh `feature/disk-io-monitor`)
+
+**Đã chốt:**
+
+| # | Chốt |
+|---|---|
+| D1 | `eventCode` mới `DiskIoWarning` / `DiskIoCritical` / `DiskIoRecovered`, body thêm `mountPoint`, `device`, `metric`, `isMainStorage` |
+| D2 | Chỉ mount lưu trữ: thư mục record (`isMainStorage=true`), thư mục DB, base path của pool tier đã đăng ký |
+| D3 | Có gửi `DiskIoRecovered` |
+| D4 | Ngưỡng **chỉ** lấy từ config `globalmonitor.*`, không đọc `thresholdConfig` của API quản lý |
+| D5 | Không đổi: chỉ cảnh báo, không từ chối replay/xuất video |
+| Bước 4 | Làm: cảnh báo dung lượng chống lặp + thêm `mountPoint`/`device` |
+| Thêm | Yêu cầu bổ sung giữa chừng: cảnh báo vùng lưu trữ không ghi được (read-only filesystem). Phát hiện bằng cờ `ro` của mount **và** ghi thử; `eventCode` `DiskReadOnly` / `DiskWriteFailed` / `DiskWritable` |
+
+**Thành phần:**
+
+- `manager/Server/DiskIoMonitor.{h,cpp}`: timer `disk_io_sample_interval_sec` trên `_poller` của `GlobalMonitor`, đọc
+  `/proc/diskstats`, `/proc/stat`, `/proc/pressure/io`. Nối mount với device: `realpath` (`/dev/mapper/x` → `dm-N`;
+  trong container thiếu node thì dò `/sys/block/dm-*/dm/name`), kernel không có dòng partition thì lùi về đĩa cha.
+  Bộ đếm giảm (quay vòng, device tạo lại) thì bỏ mẫu đó. Mức critical cần `util` **và** `await` cùng vượt.
+  Đổi mức cần `disk_io_sustain_samples` mẫu liên tiếp cùng phía; chốt ở mức nhẹ nhất (đi lên) hoặc nặng nhất (đi xuống)
+  trong chuỗi đó. Mức toàn máy: PSI `full avg10` nếu kernel có, không thì `iowait` của `/proc/stat`.
+- `manager/Server/StorageWriteMonitor.{h,cpp}`: timer theo `mount_refresh_interval_seconds` (10 s) trên poller chỉ để
+  gom danh sách; mỗi lần ghi thử (tạo `.s3mk_write_probe`, `write`, `fsync`, `unlink`) chạy trên
+  `BlockingExecutors::api()`. Một đường dẫn còn lượt ghi thử đang chạy thì bỏ lượt mới, nên NFS treo chỉ giữ một thread.
+  Mount có cờ `ro` thì báo ngay, không ghi. Thư mục record chưa tồn tại thì ghi thử vào thư mục cha gần nhất, không tạo thư mục.
+  Đường dẫn đã ghi được từ đầu thì không báo; hỏng ngay từ đầu thì báo.
+- `HddMonitor`: cảnh báo dung lượng chuyển sang `kBroadcastDiskUsageAlert`, chỉ bắn khi đổi mức và nhắc lại theo
+  `hdd_alert_repeat_sec`; không còn đi qua `kBroadcastSystemAlert`.
+- `TierFileStorageBase::registerPool/unregisterPool` gọi `GlobalMonitor::setIoWatchPath("tier:<pool>", path)`.
+- Broadcast mới (`src/Common/config.h`), tham số đều là `const T &`: `kBroadcastDiskIoAlert`, `kBroadcastDiskUsageAlert`,
+  `kBroadcastDiskWriteAlert`. Listener trong `server/WebHook.cpp`.
+
+**Config mới (`globalmonitor.*`, mặc định đăng ký trong code):**
+
+| Key | Mặc định |
+|---|---|
+| `disk_io_sample_interval_sec` | 5 |
+| `disk_io_util_warning_threshold` / `disk_io_util_critical_threshold` | 80 / 95 |
+| `disk_io_await_warning_ms` / `disk_io_await_critical_ms` | 50 / 200 |
+| `iowait_warning_threshold` / `iowait_critical_threshold` | 20 / 40 |
+| `disk_io_psi_full_warning_threshold` / `disk_io_psi_full_critical_threshold` | 10 / 30 (thêm so với A.3, cho kernel có PSI) |
+| `disk_io_sustain_samples` | 3 |
+| `disk_io_alert_repeat_sec` | 300 |
+| `hdd_alert_repeat_sec` | 300 (nhắc lại cảnh báo dung lượng và cảnh báo không ghi được) |
+| `system_alert_sustain_samples` | 3 (CPU/RAM) |
+| `system_alert_repeat_sec` | 300 (CPU/RAM/người xem) |
+
+**Tài liệu tích hợp cho service API:** [api-system-alert-events.md](api-system-alert-events.md).
+
+**Payload gửi lên API quản lý** (POST `hook.api_url + hook.on_system_alert`, mặc định `/api/event-rule/system-event`):
+
+```jsonc
+// Nghẽn IO một mount
+{"eventCode": "DiskIoWarning" | "DiskIoCritical" | "DiskIoRecovered",
+ "eventTime": 1759300000, "currentValue": "92.40", "threshold": "80.00",
+ "mountPoint": "/data", "device": "/dev/sdb1",
+ "metric": "util" | "await",          // await khi độ trễ vượt ngưỡng, ngược lại util; Recovered dùng metric của cảnh báo nó đóng
+ "isMainStorage": true}
+// Nghẽn IO toàn máy: mountPoint = device = "", metric "psi" | "iowait", isMainStorage false
+
+// Dung lượng (eventCode như cũ, thêm vị trí)
+{"eventCode": "DiskWarning" | "DiskCritical", "eventTime": ..., "currentValue": "91.00", "threshold": "90.00",
+ "mountPoint": "/data", "device": "/dev/sdb1"}
+
+// Không ghi được
+{"eventCode": "DiskReadOnly" | "DiskWriteFailed" | "DiskWritable", "eventTime": ...,
+ "path": "/opt/media/www/record", "mountPoint": "/opt/media", "device": "/dev/sdb1",
+ "isMainStorage": true, "error": "Read-only file system"}   // error rỗng với DiskWritable
+```
+
+**REST `getSystemStatistic`:**
+
+- mỗi phần tử `disks[]` của mount được theo dõi IO thêm `io_util_pct`, `await_ms`, `io_queue_depth`, `read_mbps`,
+  `write_mbps` (null khi chưa đủ hai mẫu), `io_device`, `io_state` (`normal|warning|critical`), `is_main_storage`;
+- `disk_io`: `iowait_pct`, `psi_io_some_pct`, `psi_io_full_pct` (null khi không có nguồn), `state`;
+- `storage_write[]`: `path`, `mount`, `device`, `is_main_storage`, `state` (`writable|read_only|write_failed`), `error`, `checked_at`.
+
+**Lịch sử:** `disks_json` lưu thêm các trường IO, không cần migration. `getSystemStatisticHistory` thêm `disk_io_util_pct`,
+`disk_await_ms` (mức tệ nhất trong các mount, gộp trung bình theo `bucket_sec`). `iowait`/PSI toàn máy **không** lưu vào lịch sử.
+
+**Chống lặp cho CPU, RAM, số người xem (làm thêm cùng đợt, theo yêu cầu):**
+
+Trước đây CPU/RAM bắn lại mỗi 10 s khi còn vượt ngưỡng; tổng người xem và người xem theo camera bắn mỗi lần số người
+xem đổi. Giờ dùng chung `AlertLevelTracker` (`manager/Server/ResourceMonitor.h`, `DiskIoMonitor` cũng dùng):
+
+- chỉ bắn khi đổi mức, nhắc lại theo `globalmonitor.system_alert_repeat_sec` (mặc định 300);
+- CPU/RAM phải ở mức mới `globalmonitor.system_alert_sustain_samples` mẫu liên tiếp (mặc định 3 × 10 s) mới báo;
+  số người xem là sự kiện nên báo ngay (sustain 1);
+- khi về bình thường gửi sự kiện hồi phục (broadcast mới `kBroadcastSystemAlertRecovered`,
+  `kBroadcastStreamReaderAlertRecovered`; chữ ký broadcast cũ giữ nguyên).
+
+| eventCode mới | Body |
+|---|---|
+| `CpuRecovered`, `RamRecovered`, `LiveStreamLimitRecovered` | `eventTime`, `currentValue`, `threshold` (ngưỡng của cảnh báo được đóng) |
+| `CameraStreamLimitRecovered` | như trên + `cameraId` |
+
+**Kiểm thử:** `tests/unit/manager/test_disk_io_monitor.cpp` (trong `unit_storage`): parse procfs, util/await/MB/s, sustain,
+critical cần cả hai, nhắc lại, dm/partition, bộ đếm reset, PSI/iowait, chống lặp dung lượng, read-only/ghi lỗi/hồi phục,
+ghi thử thật trên thư mục tạm, probe treo không chiếm poller và không bị gửi lại. Mutation check: đổi `&&`→`||` ở mức
+critical, bỏ chống lặp dung lượng, bỏ cờ `in_flight` — mỗi cái làm đúng test tương ứng trượt.
+
+**Còn lại:**
+
+- Bước 5 (chạy thật): CCU trên db3 xem `io_util_pct`; kiểm docker map `/dev/sdX` đúng tên trong `/proc/diskstats`;
+  mock API nhận `DiskIo*`/`DiskReadOnly`; thử remount `ro` một mount record.
+- Báo cho team API các `eventCode` và trường mới ở trên trước khi lên production (gồm cả các sự kiện `*Recovered`).
+- NAS qua NFS không có số liệu IO (chỉ có cảnh báo không ghi được).
+- Lưu ý: ghi thử tạo file ẩn `.s3mk_write_probe` trong thư mục record mỗi 10 s rồi xoá ngay.
 
 ---
 
