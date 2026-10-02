@@ -52,7 +52,7 @@ const string kDiskIoSustainSamples     = GM_FIELD "disk_io_sustain_samples";
 const string kDiskIoAlertRepeatSec     = GM_FIELD "disk_io_alert_repeat_sec";
 
 static onceToken token([]() {
-    mINI::Instance()[kMetricsRetentionDays]     = 30;
+    mINI::Instance()[kMetricsRetentionDays]     = 7;
     mINI::Instance()[kMetricsSampleIntervalSec] = 10;
     mINI::Instance()[kMountRefreshIntervalSec] = 10;
     mINI::Instance()[kMountSnapshotStaleAfterSec] = 30;
@@ -296,7 +296,7 @@ void GlobalMonitor::start() {
             }
             int64_t cutoff = (int64_t)time(nullptr) - (int64_t)retention_days * 86400;
             auto store = strong_self->_metrics_store;
-            strong_self->_metrics_queue->post([store, cutoff, retention_days]() {
+            strong_self->_metrics_queue->post([store, cutoff]() {
                 try {
                     store->deleteOlderThan(cutoff);
                     DebugL << "Purged system_metrics older than " << retention_days << " days, cutoff timestamp: " << getTimeStr("%Y-%m-%d %H:%M:%S", cutoff);
