@@ -3,6 +3,7 @@
 
 #include <string>
 #include <mutex>
+#include <unordered_map>
 #include "Storage/VmsResource.h"
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
@@ -255,10 +256,17 @@ public:
 
     bool removeResourceStatusGaps(const std::string &resource_id, uint64_t threshold_time);
 
+    // Retention by recording: closed gaps of each listed resource (camera or stream id) are kept
+    // only from its cutoff on, usually the oldest recording still stored for the camera.
+    // Unlisted resources fall back to database.resource_status_gap_retention_days.
+    // Replaces the previous map and cleans now. Blocking: call from a storage/maintenance thread.
+    void setRetentionCutoffs(std::unordered_map<std::string, uint64_t> cutoffs);
+
 private:
     ResourceStatusManager();
 
-    void cleanupExpiredGaps(uint64_t now);
+    void cleanupExpiredGaps(uint64_t now, bool force = false);
+    size_t removeGaps(const std::string &resource_id, uint64_t threshold);
 
 private:
     // No lock around the gap writes: each one is a single BEGIN IMMEDIATE transaction (find the open
@@ -269,6 +277,8 @@ private:
     std::shared_ptr<LocalResourceStatusGapImp> _gap_imp;
     uint64_t _last_cleanup_time = 0;
     uint64_t _retention_seconds = 30ULL * 24 * 3600;
+    std::mutex _cutoff_mtx;
+    std::unordered_map<std::string, uint64_t> _retention_cutoffs;
 };
 
 } // namespace managerkit

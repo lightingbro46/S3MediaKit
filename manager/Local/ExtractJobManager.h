@@ -84,12 +84,14 @@ private:
                              const std::string &error);
     void finishProcessing(const std::string &file_id, bool delete_output);
     int64_t retryAt(int attempt) const;
+    void pruneFinishedJobsIfDue(int64_t now);
 
 private:
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;
     std::atomic<bool> _running{false};
     int64_t _ready_at = 0;
+    int64_t _last_prune_at = 0;
     std::unordered_map<std::string, ActiveProcessing::Ptr> _active_processing;
     std::unordered_set<std::string> _active_callbacks;
 };

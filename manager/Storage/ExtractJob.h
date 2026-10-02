@@ -433,6 +433,16 @@ public:
                 .where("callback_status = ?", {"SENDING"}));
     }
 
+    // Finished jobs whose callback is no longer pending.
+    void pruneFinishedOlderThan(int64_t updated_at) {
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<ExtractJob>::tableName())
+                .where("status IN (?, ?) AND callback_status IN (?, ?, ?) AND updated_at < ?",
+                       {"SUCCESS", "FAILED", "NONE", "DELIVERED", "DEAD",
+                        std::to_string(updated_at)}));
+    }
+
 private:
     static void buildListFilter(const std::string &camera_id,
                                 int64_t start_time_from,

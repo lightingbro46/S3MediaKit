@@ -410,6 +410,28 @@ public:
         }
     }
 
+    // Only EXPIRED jobs: cleanupRestoreTempFiles has already removed their cache files.
+    void pruneExpiredOlderThan(int64_t updated_at) {
+        const std::string expired_jobs =
+            "job_id IN (SELECT job_id FROM restore_jobs WHERE status = ? AND updated_at < ?)";
+        const std::vector<std::string> params = {"EXPIRED", std::to_string(updated_at)};
+        auto txn = _executor->beginWriteTxn();
+        try {
+            _executor->execDMLWithTxn(txn,
+                toolkit::QueryBuilder()
+                    .deleteFrom(EntityTraits<RestoreJobSegment>::tableName())
+                    .where(expired_jobs, params));
+            _executor->execDMLWithTxn(txn,
+                toolkit::QueryBuilder()
+                    .deleteFrom(EntityTraits<RestoreJob>::tableName())
+                    .where("status = ? AND updated_at < ?", params));
+            txn->commit();
+        } catch (...) {
+            txn->rollback();
+            throw;
+        }
+    }
+
 private:
     static void addCond(std::ostringstream &where,
                         std::vector<std::string> &params,
@@ -722,6 +744,13 @@ public:
                 .update(EntityTraits<StorageAlert>::tableName())
                 .set({{"acknowledged", "1"}})
                 .where("id = ?", {id}));
+    }
+
+    void pruneOlderThan(int64_t created_at) {
+        _executor->execDML(
+            toolkit::QueryBuilder()
+                .deleteFrom(EntityTraits<StorageAlert>::tableName())
+                .where("created_at < ?", {std::to_string(created_at)}));
     }
 };
 

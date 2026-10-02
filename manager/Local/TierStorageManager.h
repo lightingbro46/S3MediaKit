@@ -875,6 +875,11 @@ private:
     // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
     std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
+    // Last recording-based status gap cleanup; maintenance-cycle only.
+    int64_t _last_gap_retention_at = 0;
+    // Last TIER_DELETE_FAILED alert per pool; API and maintenance threads.
+    std::mutex _delete_failed_alert_mtx;
+    std::unordered_map<std::string, int64_t> _delete_failed_alerted_at;
     // Bucket versioning per object pool; touched by API, health and maintenance threads.
     struct PoolVersioningState {
         int64_t checked_at = 0;

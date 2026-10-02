@@ -1557,6 +1557,31 @@ public:
                 .where(where.str(), params));
     }
 
+    // Oldest start_time per (camera_id, stream_id) among ranges that still hold data. Cameras with
+    // an unfinished backfill are left out: their older timefile records have no range yet.
+    std::vector<SegmentTierRange> findOldestStoredStartPerStream() {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"camera_id", "stream_id", "MIN(start_time)"})
+                .from(EntityTraits<SegmentTierRange>::tableName())
+                .where("status NOT IN (?, ?) AND camera_id NOT IN "
+                       "(SELECT camera_id FROM tier_backfill_tasks WHERE status != ?)",
+                       {segmentStatusToString(SegmentStatus::DELETED),
+                        segmentStatusToString(SegmentStatus::MISSING),
+                        "COMPLETED"})
+                .groupBy("camera_id, stream_id"));
+        std::vector<SegmentTierRange> ret;
+        for (const auto &row : rows) {
+            if (row.size() < 3) continue;
+            SegmentTierRange range;
+            range.camera_id = row[0];
+            range.stream_id = row[1];
+            range.start_time = std::stoll(row[2]);
+            ret.push_back(range);
+        }
+        return ret;
+    }
+
     std::vector<std::string> findDistinctAvailableCameras() {
         std::ostringstream where;
         std::vector<std::string> params;

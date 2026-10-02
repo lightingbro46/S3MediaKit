@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <strings.h>
 
+#include "Common/BlockingExecutors.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
@@ -30,6 +31,8 @@ const string kCallbackMaxAttempts = EXTRACT_JOB_FIELD "callback_max_attempts";
 const string kRetryDelaySec = EXTRACT_JOB_FIELD "retry_delay_sec";
 const string kMaxDurationSec = EXTRACT_JOB_FIELD "max_duration_sec";
 const string kAllowedUploadHosts = EXTRACT_JOB_FIELD "allowed_upload_hosts";
+// Days to keep finished jobs; zero keeps them forever.
+const string kJobRetentionDays = EXTRACT_JOB_FIELD "job_retention_days";
 
 static onceToken token([]() {
     mINI::Instance()[kMaxConcurrent] = 1;
@@ -41,6 +44,7 @@ static onceToken token([]() {
     mINI::Instance()[kRetryDelaySec] = 5;
     mINI::Instance()[kMaxDurationSec] = 3600;
     mINI::Instance()[kAllowedUploadHosts] = "";
+    mINI::Instance()[kJobRetentionDays] = 7;
 });
 } // namespace ExtractJobConfig
 
@@ -236,6 +240,7 @@ void ExtractJobManager::dispatch() {
     if (now < _ready_at) {
         return;
     }
+    pruneFinishedJobsIfDue(now);
 
     GET_CONFIG(int, max_concurrent, ExtractJobConfig::kMaxConcurrent);
     const size_t capacity = static_cast<size_t>(std::max(max_concurrent, 1));
@@ -266,6 +271,25 @@ void ExtractJobManager::dispatch() {
         }
         startCallback(job);
     }
+}
+
+void ExtractJobManager::pruneFinishedJobsIfDue(int64_t now) {
+    if (now - _last_prune_at < 3600) {
+        return;
+    }
+    _last_prune_at = now;
+    GET_CONFIG(int64_t, retention_days, ExtractJobConfig::kJobRetentionDays);
+    if (retention_days <= 0) {
+        return;
+    }
+    const int64_t cutoff = now - retention_days * 86400;
+    BlockingExecutors::api()->async([cutoff]() {
+        try {
+            ExtractJobImp().pruneFinishedOlderThan(cutoff);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to prune finished extract jobs: " << ex.what();
+        }
+    });
 }
 
 void ExtractJobManager::updateActiveProgress(int64_t now) {

@@ -3,10 +3,14 @@
 #include <chrono>
 #include <cstdlib>
 #include <future>
+#include <map>
+#include <set>
 #include <thread>
 #include <unistd.h>
 
+#include "Extension/Resource.h"
 #include "Storage/DbStorage.h"
+#include "Storage/ExtractJob.h"
 #include "Storage/MigrationHistory.h"
 #include "Storage/StorageTierExtra.h"
 #include "Storage/TierBackfillTask.h"
@@ -319,4 +323,191 @@ TEST(SqliteWriteTxnTest, PrepareFailureKeepsSqliteError) {
         error = ex.what();
     }
     EXPECT_NE(std::string::npos, error.find("no such table")) << error;
+}
+
+namespace {
+
+RestoreJob makeRestoreJob(const std::string &id, const std::string &status, int64_t updated_at) {
+    RestoreJob job;
+    job.job_id = id;
+    job.camera_id = "cam-restore";
+    job.source_tier = "COLD";
+    job.target_tier = "HOT";
+    job.status = status;
+    job.created_at = updated_at;
+    job.updated_at = updated_at;
+    return job;
+}
+
+RestoreJobSegment makeRestoreSegment(const std::string &job_id) {
+    RestoreJobSegment segment;
+    segment.job_id = job_id;
+    segment.camera_id = "cam-restore";
+    segment.stream_id = "cam-restore-main";
+    segment.range_id = "range-restore";
+    segment.segment_path = "2026-10-02/12/00-00.mp4";
+    segment.source_pool_id = "pool-cold";
+    segment.status = "DONE";
+    return segment;
+}
+
+} // namespace
+
+TEST(RetentionPruneTest, PrunesOnlyOldExpiredRestoreJobsWithTheirSegments) {
+    RestoreJobImp jobs;
+    const int64_t cutoff = now() - 100;
+    ASSERT_TRUE(jobs.addWithSegments(makeRestoreJob("restore-old-expired", "EXPIRED", cutoff - 1),
+                                     {makeRestoreSegment("restore-old-expired")}));
+    ASSERT_TRUE(jobs.addWithSegments(makeRestoreJob("restore-new-expired", "EXPIRED", cutoff + 1),
+                                     {makeRestoreSegment("restore-new-expired")}));
+    ASSERT_TRUE(jobs.addWithSegments(makeRestoreJob("restore-old-done", "DONE", cutoff - 1),
+                                     {makeRestoreSegment("restore-old-done")}));
+
+    jobs.pruneExpiredOlderThan(cutoff);
+
+    RestoreJobSegmentImp segments;
+    EXPECT_TRUE(jobs.findByJobId("restore-old-expired").empty());
+    EXPECT_TRUE(segments.queryByJob("restore-old-expired").empty());
+    EXPECT_EQ(1u, jobs.findByJobId("restore-new-expired").size());
+    EXPECT_EQ(1u, segments.queryByJob("restore-new-expired").size());
+    // DONE jobs may still back a restored cache file.
+    EXPECT_EQ(1u, jobs.findByJobId("restore-old-done").size());
+    EXPECT_EQ(1u, segments.queryByJob("restore-old-done").size());
+}
+
+TEST(RetentionPruneTest, PrunesStorageAlertsOlderThanCutoff) {
+    StorageAlertImp alerts;
+    const int64_t cutoff = now() - 100;
+    StorageAlert alert;
+    alert.level = "ERROR";
+    alert.type = "TIER_DELETE_FAILED";
+    alert.pool_id = "pool-prune";
+    alert.message = "test";
+    alert.id = "alert-old";
+    alert.created_at = cutoff - 1;
+    ASSERT_TRUE(alerts.add(alert));
+    alert.id = "alert-new";
+    alert.created_at = cutoff + 1;
+    ASSERT_TRUE(alerts.add(alert));
+
+    alerts.pruneOlderThan(cutoff);
+
+    auto remaining = alerts.query("", -1, 0, 100);
+    ASSERT_EQ(1u, remaining.size());
+    EXPECT_EQ("alert-new", remaining[0].id);
+}
+
+TEST(RetentionPruneTest, PrunesOnlyOldFinishedExtractJobs) {
+    ExtractJobImp repo;
+    const int64_t cutoff = now() - 100;
+    struct Case {
+        const char *id;
+        const char *status;
+        const char *callback_status;
+        int64_t updated_at;
+        bool kept;
+    };
+    const Case cases[] = {
+        {"extract-success", "SUCCESS", "DELIVERED", cutoff - 1, false},
+        {"extract-failed", "FAILED", "DEAD", cutoff - 1, false},
+        {"extract-no-callback", "SUCCESS", "NONE", cutoff - 1, false},
+        {"extract-recent", "SUCCESS", "DELIVERED", cutoff + 1, true},
+        {"extract-callback-pending", "SUCCESS", "PENDING", cutoff - 1, true},
+        {"extract-uploading", "UPLOADING", "NONE", cutoff - 1, true},
+    };
+    for (const auto &c : cases) {
+        ExtractJob job;
+        job.file_id = c.id;
+        job.request_hash = c.id;
+        job.camera_id = "cam-extract";
+        job.status = c.status;
+        job.callback_status = c.callback_status;
+        job.created_at = c.updated_at;
+        job.updated_at = c.updated_at;
+        ExtractJob stored;
+        ASSERT_EQ(ExtractJobRepository::CreateResult::CREATED, repo.createOrFind(job, stored));
+    }
+
+    repo.pruneFinishedOlderThan(cutoff);
+
+    for (const auto &c : cases)
+        EXPECT_EQ(c.kept, !repo.findByFileId(c.id).empty()) << c.id;
+}
+
+TEST(RetentionPruneTest, OldestStoredStartSkipsDeletedRangesAndUnfinishedBackfill) {
+    Exposed<SegmentTierRangeRepository> repo;
+    auto stored = makeRange("oldest-stored", "cam-oldest", 1000, 2000);
+    ASSERT_TRUE(repo.save(stored, true));
+    auto deleted = makeRange("oldest-deleted", "cam-oldest", 500, 900);
+    deleted.status = "DELETED";
+    ASSERT_TRUE(repo.save(deleted, true));
+    auto sub = makeRange("oldest-sub", "cam-oldest", 1500, 2500);
+    sub.stream_id = "cam-oldest-sub";
+    ASSERT_TRUE(repo.save(sub, true));
+    ASSERT_TRUE(repo.save(makeRange("oldest-backfilling", "cam-oldest-backfill", 100, 200), true));
+
+    TierBackfillTaskRepository backfill;
+    TierBackfillTask task;
+    task.task_id = "oldest-backfill-task";
+    task.camera_id = "cam-oldest-backfill";
+    task.timeline_path = "/tmp/oldest-backfill";
+    task.status = tierBackfillTaskStatusToString(TierBackfillTaskStatus::RUNNING);
+    task.created_at = now();
+    task.updated_at = now();
+    ASSERT_TRUE(backfill.insertTask(task));
+
+    std::map<std::string, int64_t> oldest;
+    for (const auto &r : repo.findOldestStoredStartPerStream()) {
+        EXPECT_NE("cam-oldest-backfill", r.camera_id);
+        if (r.camera_id == "cam-oldest")
+            oldest[r.stream_id] = r.start_time;
+    }
+    ASSERT_EQ(2u, oldest.size());
+    EXPECT_EQ(1000, oldest["cam-oldest-main"]);
+    EXPECT_EQ(1500, oldest["cam-oldest-sub"]);
+}
+
+TEST(RetentionPruneTest, StatusGapsFollowRecordingCutoffElseFallbackRetention) {
+    const uint64_t t = static_cast<uint64_t>(now());
+    const uint64_t day = 24 * 3600;
+    LocalResourceStatusGapImp gaps;
+    auto addGap = [&](const std::string &resource, const std::string &id, uint64_t reconnect) {
+        LocalResourceStatusGap gap;
+        gap.resource_id = resource;
+        gap.gap_id = id;
+        gap.disconnect_time = reconnect - 10;
+        gap.reconnect_time = reconnect;
+        gap.updated_time = reconnect;
+        ASSERT_TRUE(gap.reconnect_time > 0 && gaps.addOrUpdate(gap));
+    };
+    // Covered camera keeping 90 days of recordings: a 40-day-old gap survives.
+    addGap("gap-cam-long", "before-cutoff", t - 95 * day);
+    addGap("gap-cam-long", "inside-retention", t - 40 * day);
+    // Covered camera keeping 2 days: a 5-day-old gap goes.
+    addGap("gap-cam-short", "before-cutoff", t - 5 * day);
+    addGap("gap-cam-short", "inside-retention", t - day);
+    // Uncovered resource: the 30-day fallback applies.
+    addGap("gap-cam-unknown", "old", t - 40 * day);
+    addGap("gap-cam-unknown", "recent", t - 10 * day);
+    // Still offline: never removed.
+    LocalResourceStatusGap open;
+    open.resource_id = "gap-cam-short";
+    open.gap_id = "open";
+    open.disconnect_time = t - 50 * day;
+    ASSERT_TRUE(gaps.addOrUpdate(open));
+
+    std::unordered_map<std::string, uint64_t> cutoffs;
+    cutoffs["gap-cam-long"] = t - 90 * day;
+    cutoffs["gap-cam-short"] = t - 2 * day;
+    ResourceStatusManager::Instance().setRetentionCutoffs(cutoffs);
+
+    auto ids = [&](const std::string &resource) {
+        std::set<std::string> ret;
+        for (const auto &gap : gaps.findByResourceIdAndTimeRange(resource))
+            ret.insert(gap.gap_id);
+        return ret;
+    };
+    EXPECT_EQ(std::set<std::string>({"inside-retention"}), ids("gap-cam-long"));
+    EXPECT_EQ(std::set<std::string>({"inside-retention", "open"}), ids("gap-cam-short"));
+    EXPECT_EQ(std::set<std::string>({"recent"}), ids("gap-cam-unknown"));
 }

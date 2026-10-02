@@ -887,10 +887,12 @@ extern const std::string kTieringSplitGranularitySeconds;
 extern const std::string kTieringTransferMaxConcurrent;
 // Maximum concurrent tier-transfer jobs touching the same storage pool.
 extern const std::string kTieringTransferMaxConcurrentPerPool;
-// Retention for terminal tiering job history. Zero disables pruning.
+// Retention for terminal tiering jobs and EXPIRED restore jobs. Zero disables pruning.
 extern const std::string kTieringJobRetentionDays;
 // Retention for DELETED/EXPIRED compact ranges. Zero disables pruning.
 extern const std::string kTieringTerminalRangeRetentionDays;
+// Retention for storage_alerts rows by created_at. Zero disables pruning.
+extern const std::string kStorageAlertRetentionDays;
 // Enable background Timefile-to-TierRange backfill for historical MP4 records.
 extern const std::string kTierRangeBackfillEnabled;
 // Historical window in days for Timefile-to-TierRange backfill. Default: 180 days.

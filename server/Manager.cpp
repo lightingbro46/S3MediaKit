@@ -65,7 +65,7 @@ static onceToken token([]() {
     mINI::Instance()[kDeviceStatusReportDelaySec] = 30;
     mINI::Instance()[kEnableAuthorize] = true;
     mINI::Instance()[kJwtPublicKey] = "";
-    mINI::Instance()[kSessionExpiryDays] = 180;
+    mINI::Instance()[kSessionExpiryDays] = 7;
     mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
     mINI::Instance()[kBypassAuthRealm] = "";
     mINI::Instance()[kApiSecret] = "";

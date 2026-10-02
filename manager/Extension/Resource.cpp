@@ -82,6 +82,7 @@ void ResourceManager::load() {
 INSTANCE_IMP(ResourceStatusManager)
 
 namespace {
+// Applies to resources without a recording-based cutoff (see setRetentionCutoffs).
 const string kResourceStatusGapRetentionDays = "database.resource_status_gap_retention_days";
 static onceToken s_status_gap_config([]() {
     mINI::Instance()[kResourceStatusGapRetentionDays] = 30;
@@ -192,40 +193,41 @@ bool ResourceStatusManager::removeResourceStatusGaps(const std::string &resource
     }
 }
 
-void ResourceStatusManager::cleanupExpiredGaps(uint64_t now) {
+void ResourceStatusManager::setRetentionCutoffs(std::unordered_map<std::string, uint64_t> cutoffs) {
+    {
+        std::lock_guard<std::mutex> lk(_cutoff_mtx);
+        _retention_cutoffs.swap(cutoffs);
+    }
+    cleanupExpiredGaps(static_cast<uint64_t>(time(nullptr)), true);
+}
+
+void ResourceStatusManager::cleanupExpiredGaps(uint64_t now, bool force) {
     static const uint64_t kCleanupInterval = 3600;
     // Another writer is already cleaning: skip rather than queue behind its transactions.
     std::unique_lock<std::mutex> lk(_cleanup_mtx, std::try_to_lock);
     if (!lk.owns_lock()) {
         return;
     }
-    if (!_retention_seconds || now <= _retention_seconds ||
-        (_last_cleanup_time && now - _last_cleanup_time < kCleanupInterval)) {
+    if (!force && _last_cleanup_time && now - _last_cleanup_time < kCleanupInterval) {
         return;
     }
+    std::unordered_map<std::string, uint64_t> cutoffs;
+    {
+        std::lock_guard<std::mutex> cutoff_lk(_cutoff_mtx);
+        cutoffs = _retention_cutoffs;
+    }
     try {
-        static const size_t kCleanupBatchSize = 100;
-        const uint64_t threshold = now - _retention_seconds;
-        MediaGapFillTaskImpl task_repository;
-        MediaGapFillSessionImpl session_repository;
         size_t removed = 0;
-        while (true) {
-            auto gaps = _gap_imp->findClosedBefore(threshold, kCleanupBatchSize);
-            if (gaps.empty()) break;
-            auto transaction = _gap_imp->getExecutor()->beginWriteTxn();
-            for (const auto &gap : gaps) {
-                // Missing child rows are valid (for short or non-media gaps), so
-                // only deletion of the owning status gap is mandatory.
-                task_repository.removeByDeviceAndGapWithTxn(
-                    gap.resource_id, gap.gap_id, transaction);
-                session_repository.removeByDeviceAndGapWithTxn(
-                    gap.resource_id, gap.gap_id, transaction);
-                if (!_gap_imp->removeWithTxn(gap, transaction))
-                    throw std::runtime_error("failed to delete expired status gap");
+        for (const auto &it : cutoffs) {
+            removed += removeGaps(it.first, it.second);
+        }
+        if (_retention_seconds && now > _retention_seconds) {
+            const uint64_t threshold = now - _retention_seconds;
+            for (const auto &resource_id : _gap_imp->findResourceIdsClosedBefore(threshold)) {
+                if (!cutoffs.count(resource_id)) {
+                    removed += removeGaps(resource_id, threshold);
+                }
             }
-            transaction->commit();
-            removed += gaps.size();
-            if (gaps.size() < kCleanupBatchSize) break;
         }
         _last_cleanup_time = now;
         if (removed != 0)
@@ -233,6 +235,32 @@ void ResourceStatusManager::cleanupExpiredGaps(uint64_t now) {
     } catch (const std::exception &ex) {
         WarnL << "Failed to clean expired resource status gaps: " << ex.what();
     }
+}
+
+size_t ResourceStatusManager::removeGaps(const std::string &resource_id, uint64_t threshold) {
+    static const size_t kCleanupBatchSize = 100;
+    MediaGapFillTaskImpl task_repository;
+    MediaGapFillSessionImpl session_repository;
+    size_t removed = 0;
+    while (true) {
+        auto gaps = _gap_imp->findClosedBeforeForResource(resource_id, threshold, kCleanupBatchSize);
+        if (gaps.empty()) break;
+        auto transaction = _gap_imp->getExecutor()->beginWriteTxn();
+        for (const auto &gap : gaps) {
+            // Missing child rows are valid (for short or non-media gaps), so
+            // only deletion of the owning status gap is mandatory.
+            task_repository.removeByDeviceAndGapWithTxn(
+                gap.resource_id, gap.gap_id, transaction);
+            session_repository.removeByDeviceAndGapWithTxn(
+                gap.resource_id, gap.gap_id, transaction);
+            if (!_gap_imp->removeWithTxn(gap, transaction))
+                throw std::runtime_error("failed to delete expired status gap");
+        }
+        transaction->commit();
+        removed += gaps.size();
+        if (gaps.size() < kCleanupBatchSize) break;
+    }
+    return removed;
 }
 
 } // namespace managerkit

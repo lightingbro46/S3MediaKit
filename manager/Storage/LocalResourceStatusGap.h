@@ -151,6 +151,36 @@ public:
             result.emplace_back(EntityTraits<LocalResourceStatusGap>::fromRow(row));
         return result;
     }
+
+    std::vector<LocalResourceStatusGap> findClosedBeforeForResource(const std::string &resource_id,
+                                                                    uint64_t threshold_time,
+                                                                    size_t limit = 100) {
+        auto query = toolkit::QueryBuilder()
+                         .select(EntityTraits<LocalResourceStatusGap>::getColumns())
+                         .from(EntityTraits<LocalResourceStatusGap>::tableName())
+                         .where("resource_id = ? AND reconnect_time != 0 AND reconnect_time < ?",
+                                {resource_id, std::to_string(threshold_time)})
+                         .orderBy("reconnect_time ASC")
+                         .limit(limit);
+        auto rows = _executor->executeRaw(query);
+        std::vector<LocalResourceStatusGap> result;
+        for (const auto &row : rows)
+            result.emplace_back(EntityTraits<LocalResourceStatusGap>::fromRow(row));
+        return result;
+    }
+
+    std::vector<std::string> findResourceIdsClosedBefore(uint64_t threshold_time) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"DISTINCT resource_id"})
+                .from(EntityTraits<LocalResourceStatusGap>::tableName())
+                .where("reconnect_time != 0 AND reconnect_time < ?",
+                       {std::to_string(threshold_time)}));
+        std::vector<std::string> ids;
+        for (const auto &row : rows)
+            if (!row.empty()) ids.push_back(row[0]);
+        return ids;
+    }
 };
 
 class LocalResourceStatusGapImp : public LocalResourceStatusGapRepository {

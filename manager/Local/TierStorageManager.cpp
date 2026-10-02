@@ -31,6 +31,7 @@
 #include "Common/DeviceSource.h"
 #include "Storage/Bookmark.h"
 #include "Storage/TierBackfillTask.h"
+#include "Extension/Resource.h"
 
 #include "TierStorageManager.h"
 #include "TierStorageBase.h"
@@ -4141,14 +4142,29 @@ bool TierStorageManager::expireRangeBestEffort(const SegmentTierRange &range,
     }
 
     if (!all_deleted) {
-        StorageAlert alert;
-        alert.id = StrUUID::make_guid(8, "alert");
-        alert.level = "ERROR";
-        alert.type = "TIER_DELETE_FAILED";
-        alert.pool_id = range.pool_id;
-        alert.message = "Failed to delete every segment for range " + range.range_id;
-        alert.created_at = static_cast<int64_t>(time(nullptr));
-        StorageAlertImp().add(alert);
+        WarnL << "Failed to delete every segment for range " << range.range_id
+              << " pool=" << range.pool_id;
+        // The range stays AVAILABLE and is retried every cycle: alert once per pool per hour.
+        const int64_t alert_now = static_cast<int64_t>(time(nullptr));
+        bool should_alert = false;
+        {
+            std::lock_guard<std::mutex> lk(_delete_failed_alert_mtx);
+            auto &alerted_at = _delete_failed_alerted_at[range.pool_id];
+            if (alert_now - alerted_at >= 3600) {
+                alerted_at = alert_now;
+                should_alert = true;
+            }
+        }
+        if (should_alert) {
+            StorageAlert alert;
+            alert.id = StrUUID::make_guid(8, "alert");
+            alert.level = "ERROR";
+            alert.type = "TIER_DELETE_FAILED";
+            alert.pool_id = range.pool_id;
+            alert.message = "Failed to delete every segment for range " + range.range_id;
+            alert.created_at = alert_now;
+            StorageAlertImp().add(alert);
+        }
         return false;
     }
 
@@ -7376,7 +7392,14 @@ void TierStorageManager::pruneOldMetrics() {
 
     GET_CONFIG(int64_t, tiering_job_retention_days, Storage::kTieringJobRetentionDays);
     if (tiering_job_retention_days > 0) {
-        TieringJobImp().pruneTerminalOlderThan(static_cast<int64_t>(time(nullptr)) - tiering_job_retention_days * 86400);
+        const int64_t job_cutoff = static_cast<int64_t>(time(nullptr)) - tiering_job_retention_days * 86400;
+        TieringJobImp().pruneTerminalOlderThan(job_cutoff);
+        RestoreJobImp().pruneExpiredOlderThan(job_cutoff);
+    }
+
+    GET_CONFIG(int64_t, alert_retention_days, Storage::kStorageAlertRetentionDays);
+    if (alert_retention_days > 0) {
+        StorageAlertImp().pruneOlderThan(static_cast<int64_t>(time(nullptr)) - alert_retention_days * 86400);
     }
 
     GET_CONFIG(int64_t, terminal_range_retention_days, Storage::kTieringTerminalRangeRetentionDays);
@@ -7384,6 +7407,27 @@ void TierStorageManager::pruneOldMetrics() {
         auto terminal_cutoff = static_cast<int64_t>(time(nullptr)) - terminal_range_retention_days * 86400;
         SegmentTierRangeImp().pruneDeletedOlderThan(terminal_cutoff);
         TierMetadataCleanupJobImp().pruneDoneOlderThan(terminal_cutoff);
+    }
+
+    // Status gaps live as long as the camera's recordings: cut them at its oldest stored range.
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    if (now - _last_gap_retention_at >= 3600) {
+        _last_gap_retention_at = now;
+        std::unordered_map<std::string, uint64_t> camera_oldest;
+        auto oldest_per_stream = SegmentTierRangeImp().findOldestStoredStartPerStream();
+        for (const auto &r : oldest_per_stream) {
+            if (r.start_time <= 0) continue;
+            auto &oldest = camera_oldest[r.camera_id];
+            if (!oldest || oldest > static_cast<uint64_t>(r.start_time))
+                oldest = static_cast<uint64_t>(r.start_time);
+        }
+        std::unordered_map<std::string, uint64_t> cutoffs(camera_oldest);
+        for (const auto &r : oldest_per_stream) {
+            auto it = camera_oldest.find(r.camera_id);
+            if (it != camera_oldest.end() && !r.stream_id.empty())
+                cutoffs[r.stream_id] = it->second;
+        }
+        ResourceStatusManager::Instance().setRetentionCutoffs(std::move(cutoffs));
     }
 }
 

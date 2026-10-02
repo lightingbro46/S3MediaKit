@@ -16,6 +16,7 @@
 #include "server/Manager.h"
 #include "Storage/UserSession.h"
 #include "Storage/Bookmark.h"
+#include "Extension/Resource.h"
 #include "Common/StrUtil.h"
 #include "MotionBlockManager.h"
 #include "StoragePolicy.h"
@@ -403,6 +404,25 @@ static void removeExpiredBookmark(const KeepTimeMap &keep_time_map) {
     InfoL << "Remove expired bookmark. Finished";
 }
 
+// Status gaps follow the camera's recordings: each camera and its streams share the camera's
+// oldest keep threshold.
+static void removeExpiredStatusGap(const KeepTimeMap &keep_time_map) {
+    auto device_time_map = getKeepTimeMapByDevice(keep_time_map);
+    std::unordered_map<std::string, uint64_t> cutoffs;
+    for (const auto &it : keep_time_map) {
+        auto info = split(it.first, "/");
+        if (info.size() < 2)
+            continue;
+        auto device_it = device_time_map.find(info[0]);
+        if (device_it == device_time_map.end() || !device_it->second)
+            continue;
+        cutoffs[info[0]] = device_it->second;
+        cutoffs[info[1]] = device_it->second;
+    }
+    ResourceStatusManager::Instance().setRetentionCutoffs(std::move(cutoffs));
+    InfoL << "Remove expired status gap. Finished";
+}
+
 static void removeExpiredMotionBlock(const KeepTimeMap &keep_time_map) {
     auto device_time_map = getKeepTimeMapByDevice(keep_time_map);
     MotionBlockManager::Instance().removeExpiredMotionBlocks(device_time_map);
@@ -467,6 +487,7 @@ void StorageManager::enforceStoragePolicy() {
 
     // remove expired items associated with media segment
     removeExpiredBookmark(keep_time_map);
+    removeExpiredStatusGap(keep_time_map);
 }
 
 void StorageManager::postMaintenanceCycle(bool full) {
