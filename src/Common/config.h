@@ -805,6 +805,9 @@ extern const std::string kSaveImage;
 extern const std::string kSummaryWindowMS;
 // Default overlap interval between two motion events (s). Default: 5s. If the interval between two motion events is less than this value, they will be merged into one event.
 extern const std::string kOverlapInterval;
+// Maximum number of per-viewer overlay variants (watermark/privacy mask) of one motion MJPEG stream.
+// Each variant costs one overlay pass and one JPEG encode per motion tick. 0 disables overlay variants.
+extern const std::string kMjpegMaxOverlayVariants;
 } // namespace Motion
 
 ////////////////////Storage configuration//////////////////////

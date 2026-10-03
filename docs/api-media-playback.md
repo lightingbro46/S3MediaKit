@@ -14,7 +14,8 @@ chỉ được render ở các output HTTP có derived transcode:
 |---|---|
 | HTTP/WS fMP4, HTTP TS/FLV | Có, khi build với FFmpeg (derived transcode) |
 | HLS MPEG-TS, HLS fMP4 | Có, qua derived output; raw playlist/segment không được phục vụ |
-| RTSP, RTMP, WebRTC, Motion MJPEG | Không render overlay, phát source gốc |
+| Motion MJPEG (`/media/<app>/<stream>.motion.mjpeg`, `/media/<app>.motion.mjpeg`) | Có, MotionProcessor vẽ theo từng tag policy (không qua derived transcode) |
+| RTSP, RTMP, WebRTC | Không render overlay, phát source gốc |
 
 Build không có FFmpeg: output HTTP trả `403` khi camera còn overlay bắt buộc.
 Server vẫn trả `403` (RTSP `403 Forbidden`, RTMP `403 View Overlay Required`) khi
@@ -22,6 +23,22 @@ không xác định được chính sách overlay, ví dụ JWT không hợp l�
 không còn cấu hình. Derived output có tên `<stream>.transcode.<md5 tham số>.<tag policy>`.
 Request HLS tới stream đó chỉ được phục vụ khi source đang đăng ký có origin `transcode`
 **và** tag khớp với policy overlay của chính người xem; không khớp thì trả `403`.
+
+Motion MJPEG: người xem có cùng tag policy dùng chung một biến thể, mỗi biến thể là một lần
+overlay + encode JPEG ở mỗi nhịp motion (`motion.intervalMS`). Biến thể không đăng ký thành
+media source nên chỉ tới được qua policy của người xem; biến thể bị xoá khi người xem cuối rời.
+Số biến thể của một camera giới hạn bởi `motion.mjpegMaxOverlayVariants` (mặc định 8), vượt thì
+trả `503`. `transcode=true` trên URL MJPEG bị từ chối (`403` khi camera tắt reduce quality,
+ngược lại `400`). Frame mà overlay không vẽ được thì bỏ, không gửi bản chưa che. `overlay_motion` /
+`overlay_roi` vẫn là cài đặt chung của source (người gọi sau cùng quyết định).
+
+Watermark theo tên người xem **chưa bật** (quyết định 2026-10-03): listener policy trong
+`server/Manager.cpp` không điền `policy.username`, nên `{{USER_NAME}}` luôn rỗng và tag policy
+chỉ khác nhau theo tổ hợp miễn trừ (cả hai / chỉ watermark / chỉ mask). Có thể bổ sung sau bằng
+`policy.username = token_cache->getUserName()`, nhưng khi đó mỗi user có tag riêng: HTTP/HLS sinh
+một derived transcode cho mỗi user, Motion MJPEG một biến thể cho mỗi user. Đo trên camera giả
+25 fps, mỗi biến thể MJPEG tốn ~1,5% một lõi ở 360p và ~7% ở 1080p; 8 biến thể 1080p chiếm ~60%
+một poller dùng chung.
 
 Quy ước dùng trong tài liệu:
 

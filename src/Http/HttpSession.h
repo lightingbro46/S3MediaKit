@@ -17,6 +17,9 @@
 
 namespace mediakit {
 
+struct OverlayComponent;
+struct OverlayBuildOptions;
+
 class HttpSession: public toolkit::Session,
                    public FlvMuxer,
                    public HttpRequestSplitter,
@@ -113,6 +116,11 @@ private:
     bool checkLiveStreamFMP4ByApp(const std::function<void()> &fmp4_list = nullptr);
     bool checkLiveStreamHlsByApp();
     bool checkLiveMotionStreamByApp();
+#ifdef ENABLE_MOTION
+    // Stream a motion MJPEG source to this session, from the overlay variant
+    // prepared by applyViewOverlayPolicy when the viewer policy requires one.
+    void serveMotionMjpeg(const MotionMjpegMediaSource::Ptr &motion_src, bool overlay_motion, bool overlay_roi);
+#endif // ENABLE_MOTION
     // ONVIF two-way audio: a WebSocket upgrade on /media/<device_id>/backchannel hands the
     // socket over to a BackchannelWsSession.
     bool checkAudioBackchannel(const std::function<void()> &cb = nullptr);
@@ -129,6 +137,13 @@ private:
     void setSocketFlags();
     void applyViewOverlayPolicy(const MediaSource::Ptr &source,
                                 const std::function<void(const MediaSource::Ptr &)> &cb);
+#if defined(ENABLE_FFMPEG)
+    // Resolve the watermark/privacy mask of a viewer policy on the overlay asset executor,
+    // then call on_ready on this session's poller. Answers 403 itself when resolving fails.
+    void prepareViewOverlay(const Broadcast::ViewOverlayPolicy &policy, bool use_watermark, bool use_privacy_mask,
+                            const std::function<void(const std::vector<OverlayComponent> &,
+                                                     const OverlayBuildOptions &)> &on_ready);
+#endif // ENABLE_FFMPEG
 
 protected:
     // Tag of the overlay a viewer policy enforces; the last component of a
@@ -164,6 +179,11 @@ private:
     FMP4MediaSource::RingType::RingReader::Ptr _fmp4_reader;
 #ifdef ENABLE_MOTION
     MotionMjpegMediaSource::RingType::RingReader::Ptr _motion_reader;
+    // View overlay of this motion MJPEG viewer, set by applyViewOverlayPolicy.
+    // An empty tag means the viewer reads the source without overlay.
+    std::string _motion_overlay_tag;
+    std::vector<OverlayComponent> _motion_overlay_components;
+    OverlayBuildOptions _motion_overlay_options;
 #endif // ENABLE_MOTION
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;

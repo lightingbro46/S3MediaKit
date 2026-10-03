@@ -96,8 +96,10 @@ protected:
     void createRing() {
         std::weak_ptr<MjpegMediaSource<FrameType>> weak_self =
             std::static_pointer_cast<MjpegMediaSource<FrameType>>(shared_from_this());
-        _ring = std::make_shared<RingType>(_ring_size, [weak_self](int size) {
-            if (auto s = weak_self.lock()) s->onReaderChanged(size);
+        // Report readerCount() rather than this ring's size: subclasses may serve
+        // readers from additional rings and must count them for demand gating.
+        _ring = std::make_shared<RingType>(_ring_size, [weak_self](int) {
+            if (auto s = weak_self.lock()) s->onReaderChanged(s->readerCount());
         });
         regist();
     }

@@ -41,6 +41,8 @@ $H $W check replay bookmark extract
 
 $H $W camera --overlay 1          # nạp lại cấu hình camera (≤ 10 s), không restart
 $H $W check overlay               # rồi xem ảnh trong $W/evidence/
+$H $W camera --overlay 1 --motion 1
+$H $W check motion-mjpeg          # MJP-01..07, ảnh MJP_*.jpg trong $W/evidence/
 
 # Auto profile: cần dữ liệu RecordLowResAndMotion (Sub ghi liên tục, Main chỉ ghi khi có motion)
 SINCE=$(date +%s)

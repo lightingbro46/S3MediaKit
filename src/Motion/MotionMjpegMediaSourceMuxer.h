@@ -53,6 +53,16 @@ public:
 
     bool overlayMotion() const { return _media_src->overlayMotion(); }
     bool overlayRoi()    const { return _media_src->overlayRoi();    }
+
+    /** Per-viewer overlay variants (watermark/privacy mask) that currently have viewers. */
+    MotionMjpegMediaSource::OverlayVariantMap overlayVariants() const {
+        return _media_src->overlayVariants();
+    }
+
+    /** True when viewers without a view overlay are connected to the base ring. */
+    bool hasBaseReaders() const {
+        return _media_src->getRing() && _media_src->getRing()->readerCount() > 0;
+    }
 };
 
 } // namespace mediakit

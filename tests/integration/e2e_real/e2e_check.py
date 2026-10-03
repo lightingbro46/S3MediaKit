@@ -22,6 +22,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import urllib.parse
 
@@ -1287,12 +1288,138 @@ def g_encrypt_verify(ctx):
     live = ffprobe(ctx.url("/media/live/%s/%s.live.mp4" % (ctx.cam, ctx.main), tok))
     ctx.record("ENC-04", "error" not in live, "live khi bật mã hoá -> %s" % live)
 
+class MjpegReader(object):
+    """Đọc multipart motion MJPEG trong một thread: giữ status, header mỗi part và JPEG đầu tiên."""
+
+    def __init__(self, ctx, path, token, frames=8, timeout=20):
+        self.ctx, self.path, self.token = ctx, path, token
+        self.frames, self.timeout = frames, timeout
+        self.status, self.body, self.parts, self.first_jpeg = None, b"", [], None
+        self.thread = threading.Thread(target=self._run)
+        self.thread.daemon = True
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def join(self):
+        self.thread.join(self.timeout + 5)
+        return self
+
+    def _run(self):
+        conn = http.client.HTTPConnection(self.ctx.host, self.ctx.port["http"], timeout=self.timeout)
+        try:
+            conn.request("GET", self.path + "?" + urllib.parse.urlencode({"token": self.token}))
+            resp = conn.getresponse()
+            self.status = resp.status
+            if resp.status != 200:
+                self.body = resp.read(512)
+                return
+            deadline = time.time() + self.timeout
+            while len(self.parts) < self.frames and time.time() < deadline:
+                line = resp.fp.readline()
+                if not line:
+                    break
+                if not line.startswith(b"--mjpeg_boundary"):
+                    continue
+                hdr = {}
+                while True:
+                    line = resp.fp.readline().strip()
+                    if not line:
+                        break
+                    k, _, v = line.decode("latin-1").partition(":")
+                    hdr[k.strip().lower()] = v.strip()
+                jpeg = resp.fp.read(int(hdr.get("content-length", "0")))
+                if self.first_jpeg is None:
+                    self.first_jpeg = jpeg
+                self.parts.append(hdr)
+        except Exception as ex:  # noqa: BLE001 - báo lỗi vào kết quả
+            self.body = str(ex).encode()
+        finally:
+            conn.close()
+
+    def stamps(self):
+        return [int(p.get("x-timestamp", "0")) for p in self.parts]
+
+    def ok(self):
+        st = self.stamps()
+        return (self.status == 200 and len(self.parts) >= 2 and self.first_jpeg[:3] == b"\xff\xd8\xff"
+                and all(b > a for a, b in zip(st, st[1:])))
+
+    def save(self, dst):
+        if self.first_jpeg:
+            with open(dst, "wb") as fh:
+                fh.write(self.first_jpeg)
+
+    def summary(self):
+        if self.status != 200:
+            return "HTTP %s %s" % (self.status, self.body[:80])
+        st = self.stamps()
+        return "%d frame, stamp tăng dần=%s" % (len(st), all(b > a for a, b in zip(st, st[1:])))
+
+
+def g_motion_mjpeg(ctx):
+    """Watermark + privacy mask trên motion MJPEG. Cần camera nạp với --overlay 1 --motion 1."""
+    # Motion detection chạy trên luồng Sub.
+    cam, sub = ctx.cam, ctx.sub
+    roles = ctx.inv["roles"]
+    viewer = ctx.jwt(user="e2e-viewer", role=roles["viewer"])
+    viewer2 = ctx.jwt(user="e2e-viewer2", role=roles["viewer"])
+    admin = ctx.jwt(user="e2e-admin", role=roles["admin"])
+    wm_only = ctx.jwt(user="e2e-wmonly", role=roles["wm_only"])
+    stream_path = "/media/%s/%s.motion.mjpeg" % (cam, sub)
+    app_path = "/media/%s.motion.mjpeg" % cam
+
+    def motion_readers():
+        return sum(m.get("readerCount") or 0 for m in ctx.media_list()
+                   if m.get("app") == cam and m.get("schema") == "motion.mjpeg")
+
+    # Mỗi role một biến thể; viewer và viewer2 khác tên user nên khác watermark.
+    # 25 frame >= 1 s kể cả khi detector chạy đủ 25 fps: các phiên còn mở lúc đếm reader.
+    readers = {
+        "viewer": MjpegReader(ctx, stream_path, viewer, frames=25),
+        "viewer_again": MjpegReader(ctx, stream_path, viewer, frames=25),
+        "viewer2": MjpegReader(ctx, stream_path, viewer2, frames=25),
+        "admin": MjpegReader(ctx, stream_path, admin, frames=25),
+        "wmonly": MjpegReader(ctx, stream_path, wm_only, frames=25),
+    }
+    for r in readers.values():
+        r.start()
+    time.sleep(0.8)
+    open_readers = motion_readers()
+    for name, r in readers.items():
+        r.join()
+        r.save(os.path.join(ctx.evidence, "MJP_%s.jpg" % name))
+
+    ctx.record("MJP-01", readers["viewer"].ok(),
+               "viewer %s; evidence/MJP_viewer.jpg phải có watermark e2e-viewer + mask"
+               % readers["viewer"].summary())
+    ctx.record("MJP-02", readers["viewer2"].ok() and readers["viewer_again"].ok(),
+               "viewer2 %s, viewer lần 2 %s (policy chưa mang tên user nên cùng role dùng chung một biến thể)"
+               % (readers["viewer2"].summary(), readers["viewer_again"].summary()))
+    ctx.record("MJP-03", readers["admin"].ok(),
+               "admin (miễn overlay) %s; MJP_admin.jpg không watermark, không mask" % readers["admin"].summary())
+    ctx.record("MJP-04", readers["wmonly"].ok(),
+               "wm_only %s; MJP_wmonly.jpg chỉ watermark" % readers["wmonly"].summary())
+    ctx.record("MJP-05", open_readers == len(readers),
+               "readerCount motion.mjpeg gộp mọi biến thể = %s (mong đợi %d)" % (open_readers, len(readers)))
+
+    app_reader = MjpegReader(ctx, app_path, viewer).start().join()
+    app_reader.save(os.path.join(ctx.evidence, "MJP_app_viewer.jpg"))
+    ctx.record("MJP-06", app_reader.ok(),
+               "URL theo app %s %s; MJP_app_viewer.jpg phải có watermark + mask như MJP_viewer.jpg"
+               % (app_path, app_reader.summary()))
+
+    st, _, body = ctx.http("GET", stream_path, {"token": viewer, "transcode": "true"}, raw=True, max_bytes=256)
+    ctx.record("MJP-07", st in (400, 403), "viewer xin reduce-quality trên MJPEG -> HTTP %s %s" % (st, body[:60]))
+
 
 GROUPS = {
     "smoke": g_smoke, "live": g_live, "auth": g_auth, "overlay": g_overlay, "record": g_record,
     "replay": g_replay, "bookmark": g_bookmark, "extract": g_extract, "proxy": g_proxy,
     "auto-profile": g_auto_profile, "tier-setup": g_tier_setup, "tier-verify": g_tier_verify,
     "encrypt-setup": g_encrypt_setup, "encrypt-verify": g_encrypt_verify,
+    "motion-mjpeg": g_motion_mjpeg,
 }
 BASIC = ["smoke", "live", "auth", "replay", "bookmark", "extract"]
 
