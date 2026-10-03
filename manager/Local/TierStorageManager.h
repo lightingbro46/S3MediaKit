@@ -250,6 +250,10 @@ public:
     // Recording rate into the HOT tier and per HOT pool, for systemStatistic. Reads the pool cache
     // only (no SQLite, no statvfs): the route runs on a poller.
     Json::Value makeHotWriteJson();
+    // Server usage report: used bytes, capacity and safety margin above the critical watermark,
+    // summed over enabled pools with a known capacity (logical quota for object storage).
+    // Reads the pool cache only.
+    void getStorageUsage(int64_t &used_bytes, int64_t &total_bytes, int64_t &padding_bytes) const;
 
     // Health gate used by playback. Disabled health checks preserve legacy behavior.
     bool isPoolAvailableForPlayback(const StoragePool &pool,

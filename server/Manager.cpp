@@ -1626,14 +1626,28 @@ void getServerUsageJson(const function<void(Json::Value &data)> &cb) {
         COUNT_ALERT(disk.usage_pct, hdd_threshold.first, hdd_threshold.second)
     }
     
+    data["cpuUsage"] = sanitize_for_json(cpu_usage.usagePct);
+    data["ramUsage"] = sanitize_for_json(mem_usage.usagePct);
+    // paddingStorageUsage: space kept free as a safety margin, above the critical watermark of every
+    // pool with a known capacity, or above the delete threshold of the record directory.
+#ifdef ENABLE_TIER_STORAGE
+    int64_t poolUsedBytes = 0;
+    int64_t poolTotalBytes = 0;
+    int64_t poolPaddingBytes = 0;
+    TierStorageManager::Instance().getStorageUsage(poolUsedBytes, poolTotalBytes, poolPaddingBytes);
+    data["currentStorageUsage"] = static_cast<Json::Int64>(poolUsedBytes);
+    data["maxStorageCapacity"] = static_cast<Json::Int64>(poolTotalBytes);
+    data["paddingStorageUsage"] = static_cast<Json::Int64>(poolPaddingBytes);
+#else
     size_t mainStorageUsedBytes = 0;
     size_t mainStorageTotalBytes = 0;
     StorageManager::Instance().getMainStorageUsage(mainStorageUsedBytes, mainStorageTotalBytes);
-
-    data["cpuUsage"] = sanitize_for_json(cpu_usage.usagePct);
-    data["ramUsage"] = sanitize_for_json(mem_usage.usagePct);
+    GET_CONFIG(int, limit_percent_usage, Storage::kLimitPercentUsage);
+    const int limit_percent = std::min(99, std::max(0, limit_percent_usage));
     data["currentStorageUsage"] = mainStorageUsedBytes;
     data["maxStorageCapacity"] = mainStorageTotalBytes;
+    data["paddingStorageUsage"] = static_cast<Json::UInt64>(mainStorageTotalBytes * (100 - limit_percent) / 100);
+#endif
     data["numCritical"] = numCritical;
     data["numWarning"] = numWarning;
     data["numNormal"] = numNormal;

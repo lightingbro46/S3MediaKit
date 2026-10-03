@@ -7507,6 +7507,38 @@ Json::Value TierStorageManager::makeHotWriteJson() {
     return val;
 }
 
+void TierStorageManager::getStorageUsage(int64_t &used_bytes, int64_t &total_bytes,
+                                         int64_t &padding_bytes) const {
+    used_bytes = 0;
+    total_bytes = 0;
+    padding_bytes = 0;
+    std::vector<StoragePool> pools;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        for (const auto &kv : _pool_cache) {
+            if (kv.second.enabled)
+                pools.push_back(kv.second);
+        }
+    }
+    for (auto &pool : pools) {
+        mergePoolRuntimeStats(pool);
+        int64_t capacity = 0;
+        if (poolTypeIsObjectStorage(pool.type)) {
+            if (pool.capacity_source == kPoolCapacitySourceQuota && pool.capacity_quota_bytes.has_value())
+                capacity = pool.capacity_quota_bytes.value();
+        } else if (pool.capacity_available) {
+            capacity = pool.total_bytes;
+        }
+        if (capacity <= 0)
+            continue;
+        if (pool.capacity_available)
+            used_bytes += pool.used_bytes;
+        total_bytes += capacity;
+        const int critical = std::min(100, std::max(0, pool.critical_watermark_percent));
+        padding_bytes += static_cast<int64_t>(static_cast<double>(capacity) * (100 - critical) / 100.0);
+    }
+}
+
 void TierStorageManager::evaluateRetentionForecast(
         const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies) {
     GET_CONFIG(bool, alert_enabled, Storage::kRetentionForecastAlertEnabled);
