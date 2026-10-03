@@ -810,6 +810,30 @@ extern const std::string kOverlapInterval;
 extern const std::string kMjpegMaxOverlayVariants;
 } // namespace Motion
 
+////////////////////GPU decode/encode configuration//////////////////////
+namespace HwCodec {
+// Whether to use GPU decode/encode for in-process transcode, motion and video stack. 0 = always CPU.
+extern const std::string kEnable;
+// Backends tried in order, comma separated: cuda, vaapi, qsv, videotoolbox, d3d11va, dxva2, amf,
+// mediacodec. Default per platform: Linux "cuda,vaapi,qsv", Windows "cuda,qsv,amf,d3d11va,dxva2",
+// macOS "videotoolbox", Android "mediacodec". qsv/amf/mediacodec only encode, d3d11va/dxva2 only decode.
+extern const std::string kBackends;
+// Device per backend, comma separated "backend:device" (e.g. "cuda:0,vaapi:/dev/dri/renderD129");
+// an entry without "backend:" applies to every backend. Empty = FFmpeg default device.
+extern const std::string kDevice;
+// Whether to use the GPU for decoding / encoding.
+extern const std::string kDecode;
+extern const std::string kEncode;
+// Maximum concurrent GPU decode / encode sessions; above it new sessions use the CPU. 0 = no limit
+// (an encoder that fails to open while others run lowers the limit to the running count for cooldownSec).
+extern const std::string kMaxDecodeSessions;
+extern const std::string kMaxEncodeSessions;
+// Consecutive failures that make one session drop to CPU, and failed sessions that disable a backend
+// for cooldownSec; after it one trial session is allowed again.
+extern const std::string kFailThreshold;
+extern const std::string kCooldownSec;
+} // namespace HwCodec
+
 ////////////////////Storage configuration//////////////////////
 namespace Storage {
 // Limit percentage of disk usage, when the disk usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. The value range is 0~100, and the default value is 90.

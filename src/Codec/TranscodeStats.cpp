@@ -3,6 +3,7 @@
 #if defined(ENABLE_FFMPEG)
 #include "Util/util.h"
 #include "Transcode.h"
+#include "HwCodec.h"
 #include "Transcode/TranscodeProcessor.h"
 #endif
 
@@ -26,11 +27,31 @@ size_t getVideoEncoderCount() {
     return toolkit::ObjectStatistic<FFmpegEncoder>::count();
 }
 
+size_t getHwDecoderCount() {
+    return HwCodecManager::Instance().hwDecoderCount();
+}
+
+size_t getHwEncoderCount() {
+    return HwCodecManager::Instance().hwEncoderCount();
+}
+
+uint64_t getHwFallbackCount() {
+    return HwCodecManager::Instance().fallbackCount();
+}
+
+std::string getHwCodecBackends() {
+    return HwCodecManager::Instance().backends();
+}
+
 #else // ENABLE_FFMPEG
 
 size_t getTranscodeStreamCount() { return 0; }
 size_t getVideoDecoderCount() { return 0; }
 size_t getVideoEncoderCount() { return 0; }
+size_t getHwDecoderCount() { return 0; }
+size_t getHwEncoderCount() { return 0; }
+uint64_t getHwFallbackCount() { return 0; }
+std::string getHwCodecBackends() { return std::string(); }
 
 #endif // ENABLE_FFMPEG
 

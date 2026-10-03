@@ -2,6 +2,8 @@
 #define CODEC_TRANSCODESTATS_H
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
 
 namespace mediakit {
 
@@ -27,6 +29,16 @@ size_t getVideoEncoderCount();
 
 /** Number of live MotionProcessor instances (active motion-detection pipelines). */
 size_t getMotionProcessorCount();
+
+/** Video decoders / encoders currently running on the GPU (subset of the counts above). */
+size_t getHwDecoderCount();
+size_t getHwEncoderCount();
+
+/** Decoders/encoders that started on the GPU and went back to the CPU since startup. */
+uint64_t getHwFallbackCount();
+
+/** Comma separated GPU backends in use ("cuda", "vaapi", "qsv"); empty when everything runs on the CPU. */
+std::string getHwCodecBackends();
 
 } // namespace mediakit
 

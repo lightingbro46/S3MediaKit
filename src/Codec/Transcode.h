@@ -30,6 +30,9 @@ extern "C" {
 
 namespace mediakit {
 
+class HwCodecSession;
+class FFmpegSws;
+
 /** Calculate automatic bitrate from output size, codec and frame rate. */
 int getDefaultTranscodeBitrate(CodecId codec, int width, int height, int fps);
 
@@ -134,12 +137,33 @@ private:
     void onDecode(const FFmpegFrame::Ptr &frame);
     bool inputFrame_l(const Frame::Ptr &frame, bool live, bool enable_merge);
     bool decodeFrame(const char *data, size_t size, uint64_t dts, uint64_t pts, bool live, bool key_frame);
+    void openContext(const AVCodec *codec, const AVCodec *codec_default);
+    // Moves a GPU frame to RAM as YUV420P; software frames pass through. Null on failure.
+    FFmpegFrame::Ptr downloadFrame(const FFmpegFrame::Ptr &frame, int &ret);
+    FFmpegFrame::Ptr toYuv420p(const FFmpegFrame::Ptr &frame, int &ret);
+    // Counts a GPU/wrapper decode error; returns true when the context was rebuilt on the CPU.
+    bool onHwError(const char *what, int ret);
+    // Rebuilds the context on the native CPU decoder and waits for the next keyframe.
+    void switchToCpu(const std::string &reason);
+    static AVPixelFormat getHwFormat(AVCodecContext *ctx, const AVPixelFormat *fmts);
 
 private:
     // default merge frame
     bool _do_merger = true;
+    // Drop packets until a keyframe (after switching to the CPU decoder mid-stream).
+    bool _wait_key = false;
+    int _thread_num = 2;
+    int _hw_errors = 0;
+    // Decoding with a vendor wrapper decoder (nvmpi, mediacodec) that can fall back to _codec_default.
+    bool _wrapper = false;
+    int _wrapper_pending = 0;
+    const AVCodec *_codec_default = nullptr;
+    AVMediaType _codec_type = AVMEDIA_TYPE_UNKNOWN;
     toolkit::Ticker _ticker;
     onDec _cb;
+    Track::Ptr _track;
+    std::shared_ptr<HwCodecSession> _hw;
+    std::shared_ptr<FFmpegSws> _hw_sws;
     std::shared_ptr<AVCodecContext> _context;
     FrameMerger _merger{FrameMerger::h264_prefix};
     toolkit::ResourcePool<FFmpegFrame> _frame_pool;
@@ -247,8 +271,11 @@ public:
 
 private:
     bool openEncoder(const FFmpegFrame::Ptr &frame);
+    bool openHwEncoder();
     bool encodeFrame(AVFrame *frame);
     void onEncode(AVPacket *pkt);
+    // A GPU encoder failed while running: drop it so the next frame reopens on the CPU.
+    void onHwError(const char *what, int ret);
 
 private:
     CodecId _codec;
@@ -259,6 +286,11 @@ private:
     int _gop = 0;
     AVPixelFormat _enc_fmt = AV_PIX_FMT_YUV420P;
     bool _request_idr = false;
+    // Frames go through _context->hw_frames_ctx (vaapi).
+    bool _hw_upload = false;
+    // Set after a GPU encoder failed: this encoder stays on the CPU.
+    bool _force_sw = false;
+    std::shared_ptr<HwCodecSession> _hw;
     int64_t _last_encoded_pts = AV_NOPTS_VALUE;
     onEnc _cb;
     std::shared_ptr<AVCodecContext> _context;
