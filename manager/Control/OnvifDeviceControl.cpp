@@ -40,7 +40,7 @@ static onceToken token([]() {
 namespace managerkit {
 
 OnvifControl::OnvifControl(std::string strDeviceIp, std::string strUsername, std::string strPassword)
-    : DeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
+    : CameraDeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
 
 OnvifControl::~OnvifControl() {
     disconnect();
@@ -284,7 +284,9 @@ bool OnvifControl::connect() {
         _proxyDevice = new DeviceBindingProxy(_m_soap);
     }
 
+    _lastConnectError = ConnectError::OTHER;
     if (!getDeviceInformation()) {
+        _lastConnectError = classifyConnectError(_m_soap->error, _soapErrMsg);
         disconnect();
         return false;
     }
@@ -309,7 +311,32 @@ bool OnvifControl::connect() {
 
     getStorageConfiguration();
 
+    _lastConnectError = ConnectError::NONE;
     return true;
+}
+
+ConnectError OnvifControl::classifyConnectError(int soap_error, const std::string &fault) {
+    switch (soap_error) {
+        case SOAP_OK:
+            return ConnectError::NONE;
+        case SOAP_EOF:
+        case SOAP_TCP_ERROR:
+        case SOAP_SSL_ERROR:
+            return ConnectError::UNREACHABLE;
+        case 401:
+        case 403:
+            return ConnectError::AUTH_FAILED;
+        case 404:
+        case 405:
+        case SOAP_NO_TAG:
+        case SOAP_TAG_MISMATCH:
+        case SOAP_SYNTAX_ERROR:
+            return ConnectError::NOT_THIS_PROTOCOL;
+        default:
+            break;
+    }
+    // A SOAP fault means the device does speak ONVIF.
+    return isAuthOrTimestampFault(fault) ? ConnectError::AUTH_FAILED : ConnectError::OTHER;
 }
 
 bool OnvifControl::probeConnection() {
@@ -1436,7 +1463,15 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
     return true;
 }
 
-tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+PtzMoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+    switch (PTZ_GetMoveStatus(pan, tilt, zoom)) {
+        case tt__MoveStatus__IDLE: return PtzMoveStatus::IDLE;
+        case tt__MoveStatus__MOVING: return PtzMoveStatus::MOVING;
+        default: return PtzMoveStatus::UNKNOWN;
+    }
+}
+
+tt__MoveStatus OnvifControl::PTZ_GetMoveStatus(float &pan, float &tilt, float &zoom) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
@@ -1700,7 +1735,7 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
 
     pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
-    tt__MoveStatus moveStatus = PTZ_GetStatus(pan, tilt, zoom);
+    tt__MoveStatus moveStatus = PTZ_GetMoveStatus(pan, tilt, zoom);
     if (moveStatus == tt__MoveStatus__MOVING) {
         WarnL << "PTZ is moving, can not set preset";
         return false;

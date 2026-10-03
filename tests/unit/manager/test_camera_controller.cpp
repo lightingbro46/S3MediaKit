@@ -25,7 +25,7 @@ namespace managerkit {
 // Test-only access to the media profile sync (declared friend in CameraController.h).
 class CameraControllerTestPeer {
 public:
-    static void syncMediaProfile(CameraController &c, const OnvifControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
+    static void syncMediaProfile(CameraController &c, const CameraDeviceControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
 
     static void onManager(CameraController &c) { c.onManager(); }
 
@@ -156,7 +156,8 @@ public:
         : CameraController(tuple, poller), _fake(std::move(fake)) {}
 
 protected:
-    OnvifControl::Ptr createOnvifControl(const std::string &, const std::string &, const std::string &) override {
+    CameraDeviceControl::Ptr createDeviceControl(ControlProtocol, const std::string &, const std::string &,
+                                                 const std::string &) override {
         return _fake;
     }
 
@@ -567,6 +568,21 @@ TEST(OnvifAuthFaultTest, KeepsTheOffsetOnFaultsThatSayNothingAboutTheClock) {
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("End of file or no input: Operation timed out"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("Connection refused"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("ter:InvalidArgVal ter:NoProfile"));
+}
+
+// AUTO tries PSIA only after NOT_THIS_PROTOCOL: a slow or locked-out ONVIF camera must never land there.
+TEST(OnvifConnectErrorTest, OnlyAClearNonOnvifAnswerIsNotThisProtocol) {
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(404, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(405, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(SOAP_NO_TAG, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(SOAP_TAG_MISMATCH, ""));
+
+    EXPECT_EQ(ConnectError::UNREACHABLE, OnvifControl::classifyConnectError(SOAP_EOF, "Operation timed out"));
+    EXPECT_EQ(ConnectError::UNREACHABLE, OnvifControl::classifyConnectError(SOAP_TCP_ERROR, "Connection refused"));
+    EXPECT_EQ(ConnectError::AUTH_FAILED, OnvifControl::classifyConnectError(401, ""));
+    EXPECT_EQ(ConnectError::AUTH_FAILED, OnvifControl::classifyConnectError(SOAP_FAULT, "ter:NotAuthorized"));
+    EXPECT_EQ(ConnectError::OTHER, OnvifControl::classifyConnectError(SOAP_FAULT, "ter:ActionNotSupported"));
+    EXPECT_EQ(ConnectError::OTHER, OnvifControl::classifyConnectError(500, ""));
 }
 
 // ── V4: the maintenance cycle of a camera that is already up ─────────────────────────────────────

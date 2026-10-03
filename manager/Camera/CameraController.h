@@ -2,6 +2,7 @@
 #define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
+#include "Control/CameraDeviceControl.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Common/SerialTaskQueue.h"
 
@@ -79,9 +80,10 @@ public:
     bool reportRuleFailureIfPending(const std::string &profileToken, const std::string &err_code, const std::string &err_msg);
 
 protected:
-    // Creates the device control for `address`; unit tests override it to return a fake device.
-    virtual OnvifControl::Ptr createOnvifControl(const std::string &address, const std::string &username,
-                                                 const std::string &password);
+    // Creates the device control of `protocol` for `address` (null when the protocol is not
+    // supported); unit tests override it to return a fake device.
+    virtual CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
+                                                         const std::string &username, const std::string &password);
 
 private:
     friend class CameraControllerTestPeer; // unit tests drive the media profile sync directly
@@ -101,8 +103,8 @@ private:
         bool is_rule = false;          // decision came from _ruleConfigMap, not _profileConfigMap
     };
     // Device queue: reads the profiles and hands them to applyMediaProfileSync on _poller.
-    void syncMediaProfile(const OnvifControl::Ptr &onvif_ctr);
-    void applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles);
+    void syncMediaProfile(const CameraDeviceControl::Ptr &device_ctr);
+    void applyMediaProfileSync(const CameraDeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles);
     // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
     // `err_msg` carries the SOAP error of a failed set, reported for rule requests.
     void storeProfileSetResult(const ProfileSetRequest &request, bool ok, const std::string &err_msg = "");
@@ -153,7 +155,7 @@ private:
     uint64_t _last_profile_resync = 0;
     uint64_t _last_clock_sync = 0;
     toolkit::Timer::Ptr _timer_ctr;
-    OnvifControl::Ptr _onvif_ctr;
+    CameraDeviceControl::Ptr _device_ctr;
     std::string _address;
     ControllerOption _ctrl_option;
     int _ptzMode = CameraOption::kPTZModeAuto;
