@@ -596,6 +596,23 @@ static onceToken token([]() {
 });
 } // namespace HwCodec
 
+namespace Mjpeg {
+#define MJPEG_FIELD "mjpeg."
+const string kIngestTranscode = MJPEG_FIELD "ingestTranscode";
+const string kIngestCodec = MJPEG_FIELD "ingestCodec";
+const string kIngestBitrate = MJPEG_FIELD "ingestBitrate";
+const string kIngestGopSec = MJPEG_FIELD "ingestGopSec";
+const string kIngestMaxSessions = MJPEG_FIELD "ingestMaxSessions";
+
+static onceToken token([]() {
+    mINI::Instance()[kIngestTranscode] = 1;
+    mINI::Instance()[kIngestCodec] = "H264";
+    mINI::Instance()[kIngestBitrate] = 0;
+    mINI::Instance()[kIngestGopSec] = 2;
+    mINI::Instance()[kIngestMaxSessions] = 0;
+});
+} // namespace Mjpeg
+
 ////////////////////Storage configuration//////////////////////
 namespace Storage {
 #define STORAGE_FIELD "storage."

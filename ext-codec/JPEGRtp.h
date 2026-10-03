@@ -29,7 +29,7 @@ public:
     /**
      * Input rtp and decode
      * @param rtp rtp data packet
-     * @param key_pos This parameter is internally forced to false, please ignore it
+     * @param key_pos Ignored; returns whether rtp is the first packet of an image
      */
     bool inputRtp(const RtpPacket::Ptr &rtp, bool key_pos = false) override;
 

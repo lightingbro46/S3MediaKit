@@ -27,6 +27,9 @@ size_t getVideoDecoderCount();
 /** Number of live FFmpegEncoder instances (video encoders currently in use). */
 size_t getVideoEncoderCount();
 
+/** Number of camera MJPEG tracks re-encoded at ingest (MjpegIngestTranscoder). */
+size_t getMjpegIngestTranscodeCount();
+
 /** Number of live MotionProcessor instances (active motion-detection pipelines). */
 size_t getMotionProcessorCount();
 

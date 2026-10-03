@@ -26,6 +26,7 @@ public:
      */
     Track(const Track &that) {
         _bit_rate = that._bit_rate;
+        _origin_codec = that._origin_codec;
         setIndex(that.getIndex());
     }
 
@@ -74,8 +75,18 @@ public:
      */
     virtual void setBitRate(int bit_rate) { _bit_rate = bit_rate; }
 
+    /**
+     * Codec the source delivered before it was transcoded into this track
+     * (e.g. JPEG for an MJPEG camera re-encoded to H264); equals getCodecId() otherwise.
+     */
+    CodecId getOriginCodecId() const { return _origin_codec == CodecInvalid ? getCodecId() : _origin_codec; }
+    std::string getOriginCodecName() const { return mediakit::getCodecName(getOriginCodecId()); }
+    bool transcoded() const { return getOriginCodecId() != getCodecId(); }
+    void setOriginCodecId(CodecId codec) { _origin_codec = codec; }
+
 private:
     int _bit_rate = 0;
+    CodecId _origin_codec = CodecInvalid;
 };
 
 /**

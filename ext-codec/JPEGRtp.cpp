@@ -814,16 +814,21 @@ bool JPEGRtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool) {
         // No actual load
         return false;
     }
+    // Every JPEG is a keyframe: the first packet of each image (fragment offset 0) is a key position,
+    // otherwise the RTSP GOP cache is never cut and new players get seconds of old images.
+    const bool key_pos = size >= 4 && payload[1] == 0 && payload[2] == 0 && payload[3] == 0;
 
     uint8_t type;
     if (0 == jpeg_parse_packet(nullptr, &_ctx, &stamp, payload, size, seq, marker ? RTP_FLAG_MARKER : 0, &type)) {
         auto buffer = std::make_shared<toolkit::BufferString>(std::move(_ctx.frame));
-        auto frame = std::make_shared<JPEGFrameImp>(type, std::move(buffer), stamp / 90, 0);
+        // Use the NTP-aligned millisecond stamp like the other codecs: the raw 90 kHz RTP stamp
+        // starts at a random value and wraps every ~13 hours.
+        auto frame = std::make_shared<JPEGFrameImp>(type, std::move(buffer), rtp->getStampMS(), 0);
         _ctx.frame.clear();
         RtpCodec::inputFrame(std::move(frame));
     }
 
-    return false;
+    return key_pos;
 }
 
 ////////////////////////////////////////////////////////////////////////

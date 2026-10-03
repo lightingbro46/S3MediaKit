@@ -31,6 +31,9 @@ struct StreamStatistic {
     int byte_speed = 0;
     bool has_video = false;
     std::string vcodec;
+    // Camera codec before ingest transcoding (e.g. JPEG while vcodec is H264).
+    std::string source_vcodec;
+    bool transcoded = false;
     int width = 0;
     int height = 0;
     int bitrate = 0;

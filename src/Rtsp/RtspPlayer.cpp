@@ -5,6 +5,7 @@
 #include "RtspDemuxer.h"
 #include "RtspMediaSource.h"
 #include "RtspPlayerImp.h"
+#include "Transcode/MjpegIngestTranscoder.h"
 #include "Util/MD5.h"
 #include "Util/base64.h"
 #include <algorithm>
@@ -881,13 +882,23 @@ std::vector<Track::Ptr> RtspPlayerImp::getTracks(bool ready /*= true*/) const {
 }
 
 bool RtspPlayerImp::onCheckSDP(const std::string &sdp) {
-    _rtsp_media_src = std::dynamic_pointer_cast<RtspMediaSource>(_media_src);
-    if (_rtsp_media_src) {
-        _rtsp_media_src->setSdp(sdp);
-    }
     _demuxer = std::make_shared<RtspDemuxer>();
     _demuxer->setTrackListener(this, (*this)[Client::kWaitTrackReady].as<bool>());
     _demuxer->loadSdp(sdp);
+    _rtsp_media_src = std::dynamic_pointer_cast<RtspMediaSource>(_media_src);
+    if (_rtsp_media_src && MjpegIngestTranscoder::enabled()) {
+        for (auto &track : _demuxer->getTracks(false)) {
+            if (track->getCodecId() == CodecJPEG) {
+                // PlayerProxy re-encodes MJPEG before its muxer, which then serves RTSP itself:
+                // never register the direct proxy source carrying the camera JPEG RTP.
+                _rtsp_media_src = nullptr;
+                break;
+            }
+        }
+    }
+    if (_rtsp_media_src) {
+        _rtsp_media_src->setSdp(sdp);
+    }
     return true;
 }
 

@@ -177,6 +177,8 @@ static Json::Value makeStreamStatisticJson(const unordered_map<int, StreamStatis
         ret["byte_speed"] = it_statistic->second.byte_speed;
         ret["has_video"] = it_statistic->second.has_video;
         ret["vcodec"] = it_statistic->second.vcodec;
+        ret["source_vcodec"] = it_statistic->second.source_vcodec;
+        ret["transcoded"] = it_statistic->second.transcoded;
         ret["width"] = it_statistic->second.width;
         ret["height"] = it_statistic->second.height;
         ret["bitrate"] = it_statistic->second.bitrate;
@@ -198,6 +200,8 @@ static StreamStatistic getStreamStatistic(const Json::Value &data) {
     stats.byte_speed = data["byte_speed"].asInt();
     stats.has_video = data["has_video"].asBool();
     stats.vcodec = data["vcodec"].asString();
+    stats.source_vcodec = data.isMember("source_vcodec") ? data["source_vcodec"].asString() : stats.vcodec;
+    stats.transcoded = data["transcoded"].asBool();
     stats.width = data["width"].asInt();
     stats.height = data["height"].asInt();
     stats.bitrate = data["bitrate"].asInt();
@@ -1107,6 +1111,8 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
                     case TrackVideo: 
                         sinfo.has_video = true;
                         sinfo.vcodec = it.codec_name;
+                        sinfo.source_vcodec = it.origin_codec_name;
+                        sinfo.transcoded = it.origin_codec_name != it.codec_name;
                         sinfo.width = it.video_width;
                         sinfo.height = it.video_height;
                         sinfo.bitrate = it.bitrate;
