@@ -1,7 +1,7 @@
 # Giải mã / mã hoá bằng GPU (hwcodec)
 
 MediaServer giải mã video cho motion, transcode, video stack, snapshot trong tiến trình và mã hoá
-lại cho transcode. Từ bản này các bước đó dùng GPU khi máy có, trên Linux, Windows, macOS và Android;
+lại cho transcode; trích xuất video có overlay mã hoá lại bằng tiến trình ffmpeg. Từ bản này các bước đó dùng GPU khi máy có, trên Linux, Windows, macOS và Android;
 không có GPU, GPU lỗi hoặc hết phiên thì chạy CPU như trước, không cần cấu hình gì.
 
 | Nền tảng | Backend (thứ tự mặc định) | Giải mã GPU | Mã hoá GPU |
@@ -348,10 +348,42 @@ curl -s 'http://127.0.0.1/index/api/getStatistic?secret=<secret>' | grep -E 'HwC
 
 Sửa xong driver thì **khởi động lại MediaServer**, vì probe chỉ chạy một lần lúc khởi động.
 
-### ffmpeg ngoài tiến trình
+### Trích xuất video có overlay
 
-`ffmpeg.cmd` / `ffmpeg.snap` chạy tiến trình ffmpeg riêng, không qua `HwCodecManager`. Muốn dùng GPU
-thì sửa template, ví dụ:
+Trích xuất của camera có watermark/privacy mask (`ffmpeg.extract_overlay`) phải giải mã, vẽ overlay rồi
+mã hoá lại. Bước mã hoá dùng GPU: khi template còn nguyên phần `-c:v libx264 -preset veryfast -pix_fmt
+yuv420p` mặc định, `FFmpegExtractor` xin một phiên mã hoá H264 của `HwCodecManager` (tính vào
+`hwcodec.maxEncodeSessions`, giữ đến khi tiến trình ffmpeg xong) và thay phần đó theo backend:
+
+| Backend | Tham số mã hoá |
+|---|---|
+| cuda | `-c:v h264_nvenc -preset fast -rc vbr -cq 23 -b:v 0 -pix_fmt yuv420p` (+ `-gpu N` khi `hwcodec.device` là số) |
+| vaapi | `-init_hw_device vaapi=gpu[:device] -filter_hw_device gpu`, cuối filter `format=nv12,hwupload`, `-c:v h264_vaapi -qp 23` |
+| qsv | `-c:v h264_qsv -preset veryfast -global_quality 23 -pix_fmt nv12` |
+| amf | `-c:v h264_amf -rc cqp -qp_i 23 -qp_p 23 -pix_fmt nv12` |
+| videotoolbox | `-c:v h264_videotoolbox -b:v 6M -pix_fmt nv12` |
+
+Filter overlay và bước giải mã vẫn chạy CPU. Probe kiểm libavcodec liên kết vào MediaServer, còn đây là
+binary `ffmpeg.bin`, có thể không có encoder đó. Nếu tiến trình ffmpeg chạy GPU thoát lỗi (trừ khi bị huỷ
+hoặc quá thời gian), job chạy lại ngay bằng lệnh libx264 (log `GPU encoder ... failed ..., retrying with
+libx264`, tăng `HwCodecFallback`). Backend đó không dùng cho trích xuất trong `hwcodec.cooldownSec`;
+breaker của pipeline trong tiến trình không bị ảnh hưởng. Template `extract_overlay` đã sửa phần encoder
+thì luôn chạy đúng như template.
+
+### ffmpeg ngoài tiến trình khác
+
+`ffmpeg.cmd` / `ffmpeg.snap` / `ffmpeg.snap_overlay` (thumbnail bản ghi) chạy tiến trình ffmpeg riêng,
+không qua `HwCodecManager`.
+
+**Thumbnail cố ý để chạy CPU.** Mỗi lần trích thumbnail là một tiến trình ffmpeg mới chỉ giải mã đến
+frame cần lấy và xuất đúng 1 frame JPEG. Dùng GPU thì mỗi lần phải tạo device context mới (CUDA
+100–500 ms, VAAPI/QSV vài chục ms) và mở decoder GPU. Chi phí đó lớn hơn phần giải mã tiết kiệm được.
+Frame còn phải tải từ GPU về RAM để mã hoá MJPEG và vẽ overlay, và mỗi lần lại chiếm một phiên
+NVDEC/VRAM. Vì vậy `snap`/`snap_overlay` mặc định không có `-hwaccel`.
+Thời gian của thumbnail chủ yếu nằm ở việc tìm và đọc segment (có thể phải restore từ tier), không ở
+giải mã. Ngược lại, trích xuất có overlay mã hoá lại cả đoạn video, nên mới dùng GPU (mục trên).
+
+Muốn thử GPU cho thumbnail thì vẫn có thể sửa template, ví dụ:
 
 ```ini
 [ffmpeg]

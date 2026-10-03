@@ -14,6 +14,7 @@
 #include "Transcode/OverlayPrivacyUtils.h"
 #include "Util/util.h"
 #include <algorithm>
+#include <map>
 #include <iomanip>
 #include <sstream>
 #include "Common/StrUtil.h"
@@ -23,6 +24,9 @@
 #include "Local/TierStorageManager.h"
 #endif
 #include "WebApiErrCode.h"
+#if defined(ENABLE_FFMPEG)
+#include "Codec/HwCodec.h"
+#endif
 
 using namespace std;
 using namespace toolkit;
@@ -1633,6 +1637,65 @@ void FFmpegExtractor::schedulePollRestore() {
     });
 }
 
+#if defined(ENABLE_FFMPEG)
+// Encoder arguments of the default ffmpeg.extract_overlay; a customized template keeps its own encoder.
+static const char kCpuOverlayEncodeArgs[] = "-c:v libx264 -preset veryfast -pix_fmt yuv420p";
+
+// The ffmpeg binary may lack an encoder the in-process probe found working: after a failed GPU run,
+// extracts leave that backend alone for hwcodec.cooldownSec. The in-process breaker is not touched.
+static std::mutex s_hw_extract_mtx;
+static std::map<int, uint64_t> s_hw_extract_off_until;
+
+static bool hwExtractDisabled(HwBackend backend) {
+    lock_guard<mutex> lock(s_hw_extract_mtx);
+    auto it = s_hw_extract_off_until.find((int)backend);
+    return it != s_hw_extract_off_until.end() && getCurrentMillisecond() < it->second;
+}
+
+static void disableHwExtract(HwBackend backend) {
+    GET_CONFIG(int, cooldown_sec, HwCodec::kCooldownSec);
+    lock_guard<mutex> lock(s_hw_extract_mtx);
+    s_hw_extract_off_until[(int)backend] = getCurrentMillisecond() + (uint64_t)std::max(0, cooldown_sec) * 1000;
+}
+
+// Rewrites the overlay command pieces for the GPU encoder of session: the encoder arguments in tmpl,
+// global device options appended to bin, a hwupload at the end of filter. The overlay filters stay on
+// the CPU. Returns false when the backend cannot encode from the ffmpeg command line here or tmpl has
+// no default libx264 arguments.
+static bool makeHwOverlayArgs(const HwCodecSession &session, string &tmpl, string &bin, string &filter) {
+    auto pos = tmpl.find(kCpuOverlayEncodeArgs);
+    if (pos == string::npos) {
+        return false;
+    }
+    const string &device = session.deviceName();
+    string encode;
+    switch (session.backend()) {
+        case HwBackend::Cuda:
+            encode = "-c:v h264_nvenc -preset fast -rc vbr -cq 23 -b:v 0 -pix_fmt yuv420p";
+            if (!device.empty() && device.find_first_not_of("0123456789") == string::npos) {
+                encode += " -gpu " + device;
+            }
+            break;
+        case HwBackend::Vaapi: {
+            static const string kOut = "[v]";
+            if (filter.size() < kOut.size() || filter.compare(filter.size() - kOut.size(), kOut.size(), kOut) != 0) {
+                return false;
+            }
+            bin += " -init_hw_device vaapi=gpu" + (device.empty() ? string() : ":" + device) + " -filter_hw_device gpu";
+            filter = filter.substr(0, filter.size() - kOut.size()) + "[v_sw];[v_sw]format=nv12,hwupload[v]";
+            encode = "-c:v h264_vaapi -qp 23";
+            break;
+        }
+        case HwBackend::Qsv: encode = "-c:v h264_qsv -preset veryfast -global_quality 23 -pix_fmt nv12"; break;
+        case HwBackend::Amf: encode = "-c:v h264_amf -rc cqp -qp_i 23 -qp_p 23 -pix_fmt nv12"; break;
+        case HwBackend::Videotoolbox: encode = "-c:v h264_videotoolbox -b:v 6M -pix_fmt nv12"; break;
+        default: return false;
+    }
+    tmpl.replace(pos, sizeof(kCpuOverlayEncodeArgs) - 1, encode);
+    return true;
+}
+#endif
+
 void FFmpegExtractor::startFfmpeg() {
     updateLifecycleStatus(Stage::EXTRACTING, 0.0f);
     const string &key = _extract_key;
@@ -1707,21 +1770,42 @@ void FFmpegExtractor::startFfmpeg() {
     // the command cuts quoted metadata/output paths and breaks command parsing.
     char cmd[65536] = { 0 };
     int command_length = 0;
+    string hw_cmd;
     if (!filter_complex.empty()) {
         // Camera has an enforced watermark/privacy mask policy: re-encode the video while
         // burning in the overlay instead of stream-copying it.
-        command_length = snprintf(cmd, sizeof(cmd),
-            ffmpeg_extract_overlay.data(),
-            File::absolutePath("", ffmpeg_bin).data(),
-            format_duration_hms(duration_start).data(),
-            _src_path.data(),
-            format_duration_hms(_duration).data(),
-            filter_complex.data(),
-            escape(_options.filename).data(),
-            escape(_options.description + " -- By -- " + _options.username).data(),
-            escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at)).data(),
-            escape(kServerShortName).data(),
-            _save_path.data());
+        const string title = escape(_options.filename);
+        const string comment = escape(_options.description + " -- By -- " + _options.username);
+        const string date = escape(getTimeStr("%Y-%m-%d %H:%M:%S", _created_at));
+        const string artist = escape(kServerShortName);
+        auto format_overlay = [&](char *buf, size_t size, const string &tmpl, const string &bin, const string &filter) {
+            return snprintf(buf, size, tmpl.data(),
+                bin.data(),
+                format_duration_hms(duration_start).data(),
+                _src_path.data(),
+                format_duration_hms(_duration).data(),
+                filter.data(),
+                title.data(), comment.data(), date.data(), artist.data(),
+                _save_path.data());
+        };
+        command_length = format_overlay(cmd, sizeof(cmd), ffmpeg_extract_overlay,
+                                        File::absolutePath("", ffmpeg_bin), filter_complex);
+#if defined(ENABLE_FFMPEG)
+        // The re-encode is the costly part of an extract: use a GPU encoder when one is free. It holds
+        // a session of the hwcodec budget while ffmpeg runs; a failed run is redone with libx264.
+        auto session = HwCodecManager::Instance().acquireEncode(CodecH264);
+        string tmpl = ffmpeg_extract_overlay;
+        string bin = File::absolutePath("", ffmpeg_bin);
+        string filter = filter_complex;
+        if (session && !hwExtractDisabled(session->backend()) && makeHwOverlayArgs(*session, tmpl, bin, filter)) {
+            std::vector<char> buf(sizeof(cmd));
+            auto len = format_overlay(buf.data(), buf.size(), tmpl, bin, filter);
+            if (len > 0 && static_cast<size_t>(len) < buf.size()) {
+                hw_cmd.assign(buf.data(), len);
+                _hw_session = session;
+            }
+        }
+#endif
     } else if (countSubString(ffmpeg_extract, "%s") == 7) {
         // Backward compatibility, if the ffmpeg extract command template does not contain the start time and end time parameters, it will be automatically compatible with the old template
         command_length = snprintf(cmd, sizeof(cmd), ffmpeg_extract.data(), File::absolutePath("", ffmpeg_bin).data(),
@@ -1753,6 +1837,18 @@ void FFmpegExtractor::startFfmpeg() {
     // Each extractor needs its own log. A shared ffmpeg.log makes progress and
     // failure diagnostics race when multiple extracts run concurrently.
     _log_file = ffmpeg_log.empty() ? "" : File::absolutePath(key + ".ffmpeg.log", root_path);
+#if defined(ENABLE_FFMPEG)
+    if (!hw_cmd.empty()) {
+        _cpu_cmd = cmd;
+        InfoL << "Extract video: overlay re-encode on GPU backend " << _hw_session->backendName() << " for " << _tuple.app;
+        runFfmpeg(hw_cmd);
+        return;
+    }
+#endif
+    runFfmpeg(cmd);
+}
+
+void FFmpegExtractor::runFfmpeg(const string &cmd) {
     _process.run(cmd, _log_file);
     _ticker.resetTime();
     _cmd = cmd;
@@ -1774,6 +1870,9 @@ void FFmpegExtractor::startFfmpeg() {
         }
         // ffmpeg process has exited
         bool success = strongSelf->_process.exit_code() == 0;
+        if (!success && strongSelf->retryOnCpu()) {
+            return 0;
+        }
         string err_msg;
         if (!success) {
             err_msg = StrPrinter << "ffmpeg has exited, exit code = " << strongSelf->_process.exit_code();
@@ -1852,6 +1951,7 @@ void FFmpegExtractor::startTimer() {
             // The FFmpeg process is still running, close it if it times out
             auto elapsed_ms = strongSelf->_ticker.elapsedTime();
             if (timeout_ms > 0 && elapsed_ms > timeout_ms) {
+                strongSelf->_timed_out = true;
                 strongSelf->_process.kill(2000);
             }
             // find progress bar
@@ -1861,6 +1961,9 @@ void FFmpegExtractor::startTimer() {
         } else {
             // ffmpeg is not online, check output file and set status
             bool success = strongSelf->_process.exit_code() == 0 && File::fileSize(strongSelf->_save_path);
+            if (!success && strongSelf->retryOnCpu()) {
+                return false;
+            }
             string err_msg = (!success && !strongSelf->_log_file.empty()) ? File::loadFile(strongSelf->_log_file) : "";
             strongSelf->completeOnce(success, err_msg);
             return false;
@@ -1967,6 +2070,15 @@ void FFmpegExtractor::completeOnce(bool success, const string &err_msg, int erro
         size_bytes = success ? File::fileSize(_save_path) : 0;
     }
 
+#if defined(ENABLE_FFMPEG)
+    if (_hw_session) {
+        if (success) {
+            _hw_session->reportSuccess();
+        }
+        _hw_session.reset();
+    }
+#endif
+    _cpu_cmd.clear();
     releaseRestoreCache();
     emitAuditEvent(success, err_msg);
     if (on_complete) {
@@ -1975,6 +2087,31 @@ void FFmpegExtractor::completeOnce(bool success, const string &err_msg, int erro
     if (_auto_cleanup) {
         closeAfterDelaySec();
     }
+}
+
+bool FFmpegExtractor::retryOnCpu() {
+    if (_cpu_cmd.empty() || _timed_out) {
+        return false;
+    }
+    {
+        lock_guard<mutex> lock(_status_mtx);
+        if (_cancelled || _complete_emitted) {
+            return false;
+        }
+    }
+#if defined(ENABLE_FFMPEG)
+    if (_hw_session) {
+        WarnL << "Extract video: GPU encoder " << _hw_session->backendName() << " failed for " << _tuple.app
+              << ", exit code = " << _process.exit_code() << ", retrying with libx264";
+        disableHwExtract(_hw_session->backend());
+        HwCodecManager::Instance().addFallback();
+        _hw_session.reset();
+    }
+#endif
+    string cmd;
+    cmd.swap(_cpu_cmd);
+    runFfmpeg(cmd);
+    return true;
 }
 
 void FFmpegExtractor::closeAfterDelaySec() {
