@@ -1865,6 +1865,28 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    // A storage pool accepts tier transfers slower than the recording rate routed into it, or recovered.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastPoolThroughputAlert, [](BroadcastPoolThroughputAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = is_low ? "PoolThroughputLow" : "PoolThroughputRecovered";
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = sanitize_for_json(capacity_mbps);
+        body["threshold"] = sanitize_for_json(required_mbps);
+        body["demandMbps"] = sanitize_for_json(demand_mbps);
+        body["poolId"] = pool_id;
+        body["poolName"] = pool_name;
+        body["tier"] = tier;
+        body["backlogBytes"] = static_cast<Json::Int64>(backlog_bytes);
+        body["backlogEtaSec"] = static_cast<Json::Int64>(eta_sec);
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionResult, [](BroadcastVideoExtractionResultArgs) {
         GET_CONFIG(string, hook_video_extraction_result, Hook::kOnVideoExtractionResult);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);

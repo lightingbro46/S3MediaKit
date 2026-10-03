@@ -4,6 +4,7 @@
 #ifdef ENABLE_TIER_STORAGE
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 #include <json/json.h>
@@ -316,6 +317,25 @@ public:
         if (rows.empty() || rows[0].empty() || rows[0][0].empty())
             return 0;
         return std::stoll(rows[0][0]);
+    }
+
+    // Bytes of queued or running transfers per target pool.
+    std::map<std::string, int64_t> sumActiveBytesByTargetPool() {
+        std::map<std::string, int64_t> ret;
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select({"target_pool_id", "COALESCE(SUM(bytes_total), 0)"})
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("status IN (?, ?)",
+                       {jobStatusToString(JobStatus::PENDING),
+                        jobStatusToString(JobStatus::RUNNING)})
+                .groupBy("target_pool_id"));
+        for (const auto &row : rows) {
+            if (row.size() < 2 || row[0].empty() || row[1].empty())
+                continue;
+            ret[row[0]] = std::stoll(row[1]);
+        }
+        return ret;
     }
 
     // Newest first. error_prefix is compared literally, not as a LIKE pattern.

@@ -29,6 +29,7 @@
 #include "ObjectReadSource.h"
 #include "TierLocalDiskStorage.h"
 #include "TierNASStorage.h"
+#include "PoolThroughputTracker.h"
 #include "Server/GlobalMonitor.h"
 
 namespace managerkit {
@@ -238,6 +239,9 @@ public:
 
     // Latest in-memory pool health snapshot. Returns false for an unknown pool.
     bool getPoolHealth(const std::string &pool_id, PoolHealthInfo &out_health) const;
+
+    // Tier-transfer throughput of a pool as of the last tiering cycle. False before the first one.
+    bool getPoolThroughput(const std::string &pool_id, PoolThroughputStats &out) const;
 
     // Health gate used by playback. Disabled health checks preserve legacy behavior.
     bool isPoolAvailableForPlayback(const StoragePool &pool,
@@ -719,6 +723,9 @@ private:
 
     // Maintenance
     void pruneOldMetrics();
+    // Compares each pool's transfer speed with the recording rate routed into it and raises
+    // TIER_POOL_THROUGHPUT_LOW / kBroadcastPoolThroughputAlert; maintenance-cycle only.
+    void evaluatePoolThroughput(const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
     void cleanupRestoreTempFiles();
     void cleanupOrphanTemporarySegments();
 
@@ -875,6 +882,10 @@ private:
     // last TIER_DEST_POOL_CRITICAL alert per pool; maintenance-cycle only.
     std::unordered_map<std::string, DestinationPoolCheck> _dest_pool_checks;
     std::unordered_map<std::string, int64_t> _dest_critical_alerted_at;
+    // Transfer speed and recording demand per pool; any thread.
+    PoolThroughputTracker _throughput;
+    // Last TIER_POOL_THROUGHPUT_LOW alert row per pool; maintenance-cycle only.
+    std::unordered_map<std::string, int64_t> _throughput_alerted_at;
     // Last recording-based status gap cleanup; maintenance-cycle only.
     int64_t _last_gap_retention_at = 0;
     // Last TIER_DELETE_FAILED alert per pool; API and maintenance threads.
