@@ -30,6 +30,7 @@
 #include "TierLocalDiskStorage.h"
 #include "TierNASStorage.h"
 #include "PoolThroughputTracker.h"
+#include "RetentionForecast.h"
 #include "Server/GlobalMonitor.h"
 
 namespace managerkit {
@@ -242,6 +243,13 @@ public:
 
     // Tier-transfer throughput of a pool as of the last tiering cycle. False before the first one.
     bool getPoolThroughput(const std::string &pool_id, PoolThroughputStats &out) const;
+    // Recording rate landing on a pool now (HOT pools), computed on the spot; any thread.
+    PoolIngestRates getPoolIngest(const std::string &pool_id);
+    // HOT pool retention forecast as of the last tiering cycle. False before the first one.
+    bool getPoolRetentionForecast(const std::string &pool_id, RetentionForecast &out) const;
+    // Recording rate into the HOT tier and per HOT pool, for systemStatistic. Reads the pool cache
+    // only (no SQLite, no statvfs): the route runs on a poller.
+    Json::Value makeHotWriteJson();
 
     // Health gate used by playback. Disabled health checks preserve legacy behavior.
     bool isPoolAvailableForPlayback(const StoragePool &pool,
@@ -726,6 +734,10 @@ private:
     // Compares each pool's transfer speed with the recording rate routed into it and raises
     // TIER_POOL_THROUGHPUT_LOW / kBroadcastPoolThroughputAlert; maintenance-cycle only.
     void evaluatePoolThroughput(const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
+    // Can each HOT pool hold the HOT retain_until_days of the cameras recording into it, below its
+    // high watermark? Raises TIER_RETENTION_CAPACITY_LOW / kBroadcastRetentionForecastAlert;
+    // maintenance-cycle only.
+    void evaluateRetentionForecast(const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
     void cleanupRestoreTempFiles();
     void cleanupOrphanTemporarySegments();
 
@@ -886,6 +898,10 @@ private:
     PoolThroughputTracker _throughput;
     // Last TIER_POOL_THROUGHPUT_LOW alert row per pool; maintenance-cycle only.
     std::unordered_map<std::string, int64_t> _throughput_alerted_at;
+    // HOT pool retention forecast and its alert state; any thread.
+    RetentionForecastBook _hot_forecast;
+    // Last TIER_RETENTION_CAPACITY_LOW alert row per pool (time, level); maintenance-cycle only.
+    std::unordered_map<std::string, std::pair<int64_t, int>> _retention_alerted_at;
     // Last recording-based status gap cleanup; maintenance-cycle only.
     int64_t _last_gap_retention_at = 0;
     // Last TIER_DELETE_FAILED alert per pool; API and maintenance threads.

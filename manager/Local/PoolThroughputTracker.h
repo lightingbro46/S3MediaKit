@@ -50,6 +50,14 @@ struct PoolThroughputStats {
     Json::Value toJson() const;
 };
 
+// Recording rate landing on one pool (or the tier-off record directory) over the window.
+struct PoolIngestRates {
+    bool valid = false;                        // observed for min(window, 15 min)
+    float mbps = 0.0f;                         // every camera together
+    uint64_t bytes = 0;
+    std::map<std::string, float> camera_mbps;  // cameras that recorded into it in the window
+};
+
 // A pool entered (low = true) or left the low-throughput state, or is still low after the repeat interval.
 struct PoolThroughputAlert {
     PoolThroughputStats stats;
@@ -74,6 +82,8 @@ public:
     // bytes = 0 for a failed transfer: its time still counts, a pool that keeps failing is not fast.
     void endTransfer(const std::string &pool_id, Direction dir, uint64_t bytes, int64_t now_ms);
     void addIngest(const std::string &camera_id, const std::string &hot_pool_id, uint64_t bytes, int64_t now_ms);
+    // Computed on the spot from the ingest meters (also prunes them, so it works without evaluate()).
+    PoolIngestRates ingestRates(const std::string &pool_id, int window_sec, int64_t now_ms);
     // Target pool -> cameras whose policy moves recordings into it; replaces the previous routes.
     void setRoutes(const std::map<std::string, std::set<std::string>> &routes);
 
@@ -106,10 +116,12 @@ private:
         Meter write;
         Meter read;
         Meter ingest;
+        std::map<std::string, Meter> camera_ingest;
         AlertLevelTracker alert;
     };
 
     PoolState &pool(const std::string &pool_id);
+    void pruneCameras(int64_t oldest_ms);
 
 private:
     mutable std::mutex _mtx;

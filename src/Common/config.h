@@ -251,6 +251,12 @@ extern const std::string kBroadcastDiskWriteAlert;
 // A storage pool accepts tier transfers slower than the recording rate routed into it (is_low = true),
 // or recovered. Rates are MiB/s; required = demand * safety factor; eta_sec is -1 when unknown.
 extern const std::string kBroadcastPoolThroughputAlert;
+// The record directory (scope "record_dir", tier storage off) or a HOT pool (scope "hot_pool") cannot
+// hold the configured retention at the current recording rate (level 1 warning, 2 critical), or
+// recovered (level 0). Days are -1 when unknown; ingest is MiB/s.
+extern const std::string kBroadcastRetentionForecastAlert;
+#define BroadcastRetentionForecastAlertArgs const std::string &scope, const std::string &pool_id, const std::string &pool_name, const std::string &path, const std::string &mount_point, const int &level, const double &retention_days, const double &required_days, const float &ingest_mbps, const int64_t &usable_bytes, const int64_t &required_bytes, const int &cameras, const std::string &overflow_action
+
 #define BroadcastPoolThroughputAlertArgs const std::string &pool_id, const std::string &pool_name, const std::string &tier, const float &capacity_mbps, const float &demand_mbps, const float &required_mbps, const int64_t &backlog_bytes, const int64_t &eta_sec, const bool &is_low
 
 // Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
@@ -915,6 +921,16 @@ extern const std::string kPoolThroughputSustainSamples;
 // Webhook repeat interval while a pool stays low (checked once per tiering cycle). Zero never
 // repeats. The storage_alerts row is written at most once an hour per pool.
 extern const std::string kPoolThroughputAlertRepeatSeconds;
+// Retention forecast for the record directory (tier storage off) and HOT pools (on): alert when the
+// recording rate needs more space than the storage holds for the configured retention. 0 keeps the
+// numbers but never alerts. The recording rate uses kPoolThroughputWindowSeconds.
+extern const std::string kRetentionForecastAlertEnabled;
+// Required bytes * factor (>= 1) must fit in the usable bytes.
+extern const std::string kRetentionForecastSafetyFactor;
+// Consecutive evaluations (one per 300 s cycle) at a new state before it is reported.
+extern const std::string kRetentionForecastSustainSamples;
+// Webhook repeat interval while the forecast stays low. Zero never repeats.
+extern const std::string kRetentionForecastAlertRepeatSeconds;
 // Enable background Timefile-to-TierRange backfill for historical MP4 records.
 extern const std::string kTierRangeBackfillEnabled;
 // Historical window in days for Timefile-to-TierRange backfill. Default: 180 days.

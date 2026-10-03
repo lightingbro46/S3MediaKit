@@ -81,7 +81,7 @@ add_s3_unit_test(unit_storage storage/test_db_schema.cpp storage/test_storage_en
 target_sources(unit_storage PRIVATE storage/test_storage_models.cpp manager/test_motion_search.cpp)
 target_sources(unit_storage PRIVATE manager/test_record_policy.cpp manager/test_device_source.cpp manager/test_resource_monitor.cpp manager/test_time_file.cpp)
 target_sources(unit_storage PRIVATE manager/test_storage_policy.cpp manager/test_file_recorder.cpp)
-target_sources(unit_storage PRIVATE manager/test_disk_io_monitor.cpp manager/test_pool_throughput.cpp)
+target_sources(unit_storage PRIVATE manager/test_disk_io_monitor.cpp manager/test_pool_throughput.cpp manager/test_retention_forecast.cpp)
 target_link_libraries(unit_storage PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
 add_test(NAME unit.storage_all COMMAND unit_storage)
 

@@ -10,6 +10,8 @@
 #include "Poller/Timer.h"
 #include "Util/TimeTicker.h"
 #include "json/json.h"
+#include "PoolThroughputTracker.h"
+#include "RetentionForecast.h"
 
 namespace managerkit {
 
@@ -31,6 +33,12 @@ public:
     void getBackUpStorageUsage(size_t &used_bytes, size_t &total_bytes);
 
     Json::Value makeSystemStorageJson();
+
+    // Tier storage off: a recorded segment landed in the record directory (kBroadcastRecordMP4).
+    void addRecordIngest(const std::string &camera_id, uint64_t bytes);
+    // Tier storage off: recording rate and retention forecast of the record directory, for
+    // systemStatistic. Only locks a mutex and reads the cached mount snapshot.
+    Json::Value makeRecordWriteJson();
 
     void rebuildTimeFile(const std::string &camera_id, uint64_t threshold);
 
@@ -55,6 +63,10 @@ private:
 
     void removeExpiredUserSession();
 
+    // Tier storage off, end of enforceStoragePolicy(): can the record directory hold every camera's
+    // minimum retention at the current recording rate?
+    void evaluateRetentionForecast();
+
     std::string getMainStorageMountPoint();
 
 private:
@@ -65,6 +77,9 @@ private:
     std::atomic<bool> _cycle_running { false };
     // Only touched by cleanupTemporaryFiles(), i.e. only on the (single-threaded) storage pool.
     uint64_t _next_cleanup_time = 0;
+    // Tier storage off: segments recorded into the record directory, under one pseudo pool.
+    PoolThroughputTracker _record_ingest;
+    RetentionForecastBook _record_forecast;
 };
 
 } // namespace managerkit

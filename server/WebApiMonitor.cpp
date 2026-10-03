@@ -6,6 +6,9 @@
 #include "Manager.h"
 #include "Server/GlobalMonitor.h"
 #include "Local/StorageManager.h"
+#ifdef ENABLE_TIER_STORAGE
+#include "Local/TierStorageManager.h"
+#endif
 
 using namespace std;
 using namespace toolkit;
@@ -17,6 +20,12 @@ namespace managerkit {
 
 void systemStatistic(Json::Value &val) {
     val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
+    // Recording rate into the record directory, or into the HOT tier when storage tiering is on.
+#ifdef ENABLE_TIER_STORAGE
+    val["data"]["record_write"] = TierStorageManager::Instance().makeHotWriteJson();
+#else
+    val["data"]["record_write"] = StorageManager::Instance().makeRecordWriteJson();
+#endif
 }
 
 void systemStatisticHistory(const ArgsMap &allArgs, Json::Value &val) {

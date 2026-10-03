@@ -907,6 +907,12 @@ void storageDashboardSummary(Json::Value &val) {
         int64_t total = 0;
         int64_t used = 0;
         float write_mbps = 0.0f;
+        float read_mbps = 0.0f;
+        float record_ingest_mbps = 0.0f;
+        // HOT only: the tightest pool, -1 when no pool has a forecast yet.
+        double remaining_days = -1;
+        double retention_days = -1;
+        bool retention_low = false;
         std::string status = "OK";
     };
     struct TierAggCompare {
@@ -932,8 +938,19 @@ void storageDashboardSummary(Json::Value &val) {
         agg.used += p.used_bytes;
         agg.status = TierStorageBase::worstStorageStatus(agg.status, pool_status);
         PoolThroughputStats throughput;
-        if (TierStorageManager::Instance().getPoolThroughput(p.id, throughput))
+        if (TierStorageManager::Instance().getPoolThroughput(p.id, throughput)) {
             agg.write_mbps += throughput.avg_write_mbps;
+            agg.read_mbps += throughput.avg_read_mbps;
+        }
+        agg.record_ingest_mbps += TierStorageManager::Instance().getPoolIngest(p.id).mbps;
+        RetentionForecast forecast;
+        if (p.enabled && TierStorageManager::Instance().getPoolRetentionForecast(p.id, forecast) &&
+            forecast.retention_days_estimate >= 0) {
+            auto tighter = [](double cur, double v) { return cur < 0 || v < cur ? v : cur; };
+            agg.remaining_days = tighter(agg.remaining_days, forecast.estimated_remaining_days);
+            agg.retention_days = tighter(agg.retention_days, forecast.retention_days_estimate);
+            agg.retention_low = agg.retention_low || forecast.level > 0;
+        }
         total_bytes += p.total_bytes;
         used_bytes += p.used_bytes;
         if (p.enabled && !p.capacity_available)
@@ -960,8 +977,14 @@ void storageDashboardSummary(Json::Value &val) {
         t["status"] = agg.status;
         t["total_bytes"] = static_cast<Json::Int64>(agg.total);
         t["used_bytes"] = static_cast<Json::Int64>(agg.used);
-        t["estimated_remaining_days"] = 0.0;
+        // Forecast for the HOT tier only; 0 (and retention_days_estimate null) when unknown.
+        t["estimated_remaining_days"] = agg.remaining_days >= 0 ? std::round(agg.remaining_days * 100.0) / 100.0 : 0.0;
+        t["retention_days_estimate"] = agg.retention_days >= 0 ? Json::Value(std::round(agg.retention_days * 100.0) / 100.0)
+                                                               : Json::Value(Json::nullValue);
+        t["retention_state"] = agg.retention_low ? "low" : "normal";
         t["write_mbps"] = roundMbps(agg.write_mbps);
+        t["read_mbps"] = roundMbps(agg.read_mbps);
+        t["record_ingest_mbps"] = roundMbps(agg.record_ingest_mbps);
         tier_summary.append(t);
     }
 
