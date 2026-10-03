@@ -228,7 +228,7 @@ void StackPlayer::play() {
         if (videoTrack) {
             //If each time is different, you can add a time stamp time(NULL);
             // TODO: Add logic to determine whether to use GPU or CPU decoding
-            auto decoder = std::make_shared<mediakit::FFmpegDecoder>(videoTrack, 0, std::vector<std::string> { "h264", "hevc" });
+            auto decoder = std::make_shared<mediakit::FFmpegDecoder>(videoTrack, 0);
 
             decoder->setOnDecode([weakSelf](const mediakit::FFmpegFrame::Ptr& frame) mutable {
                 auto self = weakSelf.lock();

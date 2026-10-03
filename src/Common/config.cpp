@@ -561,6 +561,41 @@ static onceToken token([]() {
 });
 } // namespace Motion
 
+////////////////////GPU decode/encode configuration//////////////////////
+namespace HwCodec {
+#define HWCODEC_FIELD "hwcodec."
+const string kEnable = HWCODEC_FIELD "enable";
+const string kBackends = HWCODEC_FIELD "backends";
+const string kDevice = HWCODEC_FIELD "device";
+const string kDecode = HWCODEC_FIELD "decode";
+const string kEncode = HWCODEC_FIELD "encode";
+const string kMaxDecodeSessions = HWCODEC_FIELD "maxDecodeSessions";
+const string kMaxEncodeSessions = HWCODEC_FIELD "maxEncodeSessions";
+const string kFailThreshold = HWCODEC_FIELD "failThreshold";
+const string kCooldownSec = HWCODEC_FIELD "cooldownSec";
+
+static onceToken token([]() {
+    mINI::Instance()[kEnable] = 1;
+#if defined(__ANDROID__)
+    mINI::Instance()[kBackends] = "mediacodec";
+#elif defined(__APPLE__)
+    mINI::Instance()[kBackends] = "videotoolbox";
+#elif defined(_WIN32)
+    // cuda/qsv/amf encode (and cuda decodes NVIDIA), d3d11va decodes on any vendor.
+    mINI::Instance()[kBackends] = "cuda,qsv,amf,d3d11va,dxva2";
+#else
+    mINI::Instance()[kBackends] = "cuda,vaapi,qsv";
+#endif
+    mINI::Instance()[kDevice] = "";
+    mINI::Instance()[kDecode] = 1;
+    mINI::Instance()[kEncode] = 1;
+    mINI::Instance()[kMaxDecodeSessions] = 0;
+    mINI::Instance()[kMaxEncodeSessions] = 0;
+    mINI::Instance()[kFailThreshold] = 3;
+    mINI::Instance()[kCooldownSec] = 300;
+});
+} // namespace HwCodec
+
 ////////////////////Storage configuration//////////////////////
 namespace Storage {
 #define STORAGE_FIELD "storage."

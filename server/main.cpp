@@ -38,6 +38,10 @@
 #endif
 
 #include "System.h"
+#include "Common/BlockingExecutors.h"
+#if defined(ENABLE_FFMPEG)
+#include "Codec/HwCodec.h"
+#endif
 
 using namespace std;
 using namespace toolkit;
@@ -269,6 +273,12 @@ int start_main(int argc,char *argv[]) {
 
         // Load configuration file, create one if it doesn't exist
         loadIniConfig(g_ini_file.data());
+
+#if defined(ENABLE_FFMPEG)
+        // Probe GPU decode/encode off the pollers (creating a CUDA context takes up to ~0.5 s);
+        // until it finishes every decoder/encoder opens on the CPU.
+        managerkit::BlockingExecutors::ffmpeg()->async([]() { HwCodecManager::Instance().probe(); });
+#endif
 
         auto &secret = mINI::Instance()[API::kSecret];
         if (secret == "035c73f7-bb6b-4889-a715-d9eb2d1925cc" || secret.empty()) {

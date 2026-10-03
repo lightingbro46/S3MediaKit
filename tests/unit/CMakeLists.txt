@@ -60,7 +60,7 @@ set_tests_properties(unit.replay_all PROPERTIES LABELS unit TIMEOUT 15)
 add_s3_unit_test(unit_http_body http/test_http_body.cpp)
 add_s3_unit_test(unit_http_splitters http/test_http_splitters.cpp http/test_websocket_splitter.cpp)
 add_s3_unit_test(unit_xml onvif/test_pugixml.cpp onvif/test_soap_object.cpp)
-add_s3_unit_test(unit_codec codec/test_h26x.cpp codec/test_audio_codec.cpp)
+add_s3_unit_test(unit_codec codec/test_h26x.cpp codec/test_audio_codec.cpp codec/test_hw_codec.cpp)
 target_link_libraries(unit_codec PRIVATE S3MediaKit::ext-codec)
 # Static codec registration logs during --gtest_list_tests, which prevents
 # CMake 3.22's discovery parser from seeing the cases. Register this binary as

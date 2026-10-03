@@ -91,6 +91,7 @@
 #endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
 #include "HlsPlayback.h"
+#include "Codec/TranscodeStats.h"
 
 using namespace std;
 using namespace Json;
@@ -566,6 +567,13 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
 
     val["RtpPacket"] = (Json::UInt64)(ObjectStatistic<RtpPacket>::count());
     val["RtmpPacket"] = (Json::UInt64)(ObjectStatistic<RtmpPacket>::count());
+
+    val["VideoDecoder"] = (Json::UInt64)getVideoDecoderCount();
+    val["VideoEncoder"] = (Json::UInt64)getVideoEncoderCount();
+    val["HwVideoDecoder"] = (Json::UInt64)getHwDecoderCount();
+    val["HwVideoEncoder"] = (Json::UInt64)getHwEncoderCount();
+    val["HwCodecFallback"] = (Json::UInt64)getHwFallbackCount();
+    val["HwCodecBackends"] = getHwCodecBackends();
 #ifdef ENABLE_MEM_DEBUG
     auto bytes = getTotalMemUsage();
     val["totalMemUsage"] = (Json::UInt64)bytes;

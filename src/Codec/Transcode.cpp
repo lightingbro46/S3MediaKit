@@ -1,10 +1,8 @@
 ﻿#if defined(ENABLE_FFMPEG)
-#if !defined(_WIN32)
-#include <dlfcn.h>
-#endif
 #include "Util/File.h"
 #include "Util/uv_errno.h"
 #include "Transcode.h"
+#include "HwCodec.h"
 #include "Common/config.h"
 #include "Extension/Factory.h"
 
@@ -13,6 +11,8 @@
 #include <cstring>
 
 #define MAX_DELAY_SECOND 3
+// A wrapper decoder (nvmpi, mediacodec) that took this many packets without giving a frame is broken.
+#define MAX_WRAPPER_PACKETS_WITHOUT_FRAME 100
 
 using namespace std;
 using namespace toolkit;
@@ -102,43 +102,6 @@ static bool setupFFmpeg_l() {
 
 static void setupFFmpeg() {
     static auto flag = setupFFmpeg_l();
-}
-
-static bool checkIfSupportedNvidia_l() {
-#if !defined(_WIN32)
-    GET_CONFIG(bool, check_nvidia_dev, General::kCheckNvidiaDev);
-    if (!check_nvidia_dev) {
-        return false;
-    }
-    auto so = dlopen("libnvcuvid.so.1", RTLD_LAZY);
-    if (!so) {
-        WarnL << "libnvcuvid.so.1 failed to load:" << get_uv_errmsg();
-        return false;
-    }
-    dlclose(so);
-
-    bool find_driver = false;
-    File::scanDir("/dev", [&](const string &path, bool is_dir) {
-        if (!is_dir && start_with(path, "/dev/nvidia")) {
-            // Find the Nvidia driver
-            find_driver = true;
-            return false;
-        }
-        return true;
-    }, false);
-
-    if (!find_driver) {
-        WarnL << "Nvidia hardware codec driver file /dev/nvidia*does not exist";
-    }
-    return find_driver;
-#else
-    return false;
-#endif
-}
-
-static bool checkIfSupportedNvidia() {
-    static auto ret = checkIfSupportedNvidia_l();
-    return ret;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -364,11 +327,12 @@ private:
     enum AVCodecID _id;
 };
 
+// Returns the first codec of the list that exists, in list order.
 template <bool decoder = true>
 static inline const AVCodec *getCodec(const std::initializer_list<CodecName> &codec_list) {
     const AVCodec *ret = nullptr;
-    for (int i = codec_list.size(); i >= 1; --i) {
-        ret = codec_list.begin()[i - 1].getCodec<decoder>();
+    for (auto &name : codec_list) {
+        ret = name.getCodec<decoder>();
         if (ret) {
             return ret;
         }
@@ -376,16 +340,48 @@ static inline const AVCodec *getCodec(const std::initializer_list<CodecName> &co
     return ret;
 }
 
+static AVCodecID toAVCodecId(CodecId codec) {
+    switch (codec) {
+        case CodecH264: return AV_CODEC_ID_H264;
+        case CodecH265: return AV_CODEC_ID_HEVC;
+        case CodecAAC: return AV_CODEC_ID_AAC;
+        case CodecG711A: return AV_CODEC_ID_PCM_ALAW;
+        case CodecG711U: return AV_CODEC_ID_PCM_MULAW;
+        case CodecOpus: return AV_CODEC_ID_OPUS;
+        case CodecJPEG: return AV_CODEC_ID_MJPEG;
+        case CodecVP8: return AV_CODEC_ID_VP8;
+        case CodecVP9: return AV_CODEC_ID_VP9;
+        default: return AV_CODEC_ID_NONE;
+    }
+}
+
+// First codec of the list that exists and decodes `id`. Callers pass lists such as {"h264", "hevc"}
+// for every track; without the id check an H265 track got the h264 decoder back.
 template<bool decoder = true>
-static inline const AVCodec *getCodecByName(const std::vector<std::string> &codec_list) {
-    const AVCodec *ret = nullptr;
+static inline const AVCodec *getCodecByName(const std::vector<std::string> &codec_list, AVCodecID id) {
     for (auto &codec : codec_list) {
-        ret = getCodec_l<decoder>(codec.data());
-        if (ret) {
+        auto ret = getCodec_l<decoder>(codec.data());
+        if (ret && (id == AV_CODEC_ID_NONE || ret->id == id)) {
             return ret;
         }
     }
-    return ret;
+    return nullptr;
+}
+
+// Vendor decoders that wrap a platform API instead of FFmpeg's hwaccel: h264_nvmpi/hevc_nvmpi
+// (Jetson FFmpeg builds) and h264_mediacodec/hevc_mediacodec (Android). They are only tried when
+// GPU decoding is enabled, and FFmpegDecoder falls back to the native decoder when one fails.
+static const AVCodec *getWrapperDecoder(CodecId codec) {
+    GET_CONFIG(bool, hw_enable, HwCodec::kEnable);
+    GET_CONFIG(bool, hw_decode, HwCodec::kDecode);
+    if (!hw_enable || !hw_decode) {
+        return nullptr;
+    }
+    switch (codec) {
+        case CodecH264: return getCodec({{"h264_nvmpi"}, {"h264_mediacodec"}});
+        case CodecH265: return getCodec({{"hevc_nvmpi"}, {"hevc_mediacodec"}});
+        default: return nullptr;
+    }
 }
 
 FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std::vector<std::string> &codec_name) {
@@ -394,7 +390,7 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
     const AVCodec *codec = nullptr;
     const AVCodec *codec_default = nullptr;
     if (!codec_name.empty()) {
-        codec = getCodecByName(codec_name);
+        codec = getCodecByName(codec_name, toAVCodecId(track->getCodecId()));
     }
     switch (track->getCodecId()) {
         case CodecH264:
@@ -402,23 +398,18 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
             if (codec && codec->id == AV_CODEC_ID_H264) {
                 break;
             }
-            if (checkIfSupportedNvidia()) {
-                codec = getCodec({{"libopenh264"}, {AV_CODEC_ID_H264}, {"h264_qsv"}, {"h264_videotoolbox"}, {"h264_cuvid"}, {"h264_nvmpi"}});
-            } else {
-                codec = getCodec({{"libopenh264"}, {AV_CODEC_ID_H264}, {"h264_qsv"}, {"h264_videotoolbox"}, {"h264_nvmpi"}});
-            }
+            // GPU decoding through FFmpeg's hwaccel (cuda, vaapi, videotoolbox, d3d11va, dxva2) uses the
+            // native decoder, see HwCodecManager; vendor wrapper decoders come first.
+            codec = getWrapperDecoder(CodecH264);
+            codec = codec ? codec : codec_default;
             break;
         case CodecH265:
             codec_default = getCodec({AV_CODEC_ID_HEVC});
             if (codec && codec->id == AV_CODEC_ID_HEVC) {
                 break;
             }
-            if (checkIfSupportedNvidia()) {
-                codec = getCodec({{AV_CODEC_ID_HEVC}, {"hevc_qsv"}, {"hevc_videotoolbox"}, {"hevc_cuvid"}, {"hevc_nvmpi"}});
-            } else {
-                // codec = getCodec({{AV_CODEC_ID_HEVC}, {"hevc_qsv"}, {"hevc_videotoolbox"}, {"hevc_nvmpi"}});
-                codec = getCodec({{AV_CODEC_ID_HEVC}});
-            }
+            codec = getWrapperDecoder(CodecH265);
+            codec = codec ? codec : codec_default;
             break;
         case CodecAAC:
             if (codec && codec->id == AV_CODEC_ID_AAC) {
@@ -470,6 +461,23 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
         throw std::runtime_error("No decoder found");
     }
 
+    _track = track;
+    _thread_num = thread_num;
+    _codec_type = codec->type;
+    _codec_default = codec_default;
+    if (track->getTrackType() == TrackVideo && (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC)) {
+        if (!strcmp(codec->name, avcodec_get_name(codec->id))) {
+            // Only the native h264/hevc decoders take a hw_device_ctx; null means CPU.
+            _hw = HwCodecManager::Instance().acquireDecode(track->getCodecId());
+        } else {
+            _wrapper = codec_default && codec != codec_default;
+        }
+    }
+    openContext(codec, codec_default);
+}
+
+void FFmpegDecoder::openContext(const AVCodec *codec, const AVCodec *codec_default) {
+    const auto &track = _track;
     while (true) {
         _context.reset(avcodec_alloc_context3(codec), [](AVCodecContext *ctx) {
             avcodec_free_context(&ctx);
@@ -510,10 +518,18 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
                 break;
         }
         AVDictionary *dict = nullptr;
-        if (thread_num <= 0) {
+        if (_hw) {
+            if (_hw->device()) {
+                _context->hw_device_ctx = av_buffer_ref(_hw->device());
+            }
+            _context->opaque = this;
+            _context->get_format = getHwFormat;
+            // The GPU does the decoding; CPU decode threads would only add frames of latency.
+            av_dict_set(&dict, "threads", "1", 0);
+        } else if (_thread_num <= 0) {
             av_dict_set(&dict, "threads", "auto", 0);
         } else {
-            av_dict_set(&dict, "threads", to_string(MIN((unsigned int)thread_num, thread::hardware_concurrency())).data(), 0);
+            av_dict_set(&dict, "threads", to_string(MIN((unsigned int)_thread_num, thread::hardware_concurrency())).data(), 0);
         }
         av_dict_set(&dict, "zerolatency", "1", 0);
         av_dict_set(&dict, "strict", "-2", 0);
@@ -533,11 +549,23 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
         av_dict_free(&dict);
         if (ret >= 0) {
             // Success
-            InfoL << "Open the decoder successfully:" << codec->name;
+            InfoL << "Open the decoder successfully:" << codec->name << (_hw ? string(" on GPU ") + _hw->backendName() : string());
             break;
         }
 
+        if (_hw) {
+            WarnL << "GPU decoder " << _hw->backendName() << " failed to open: " << ffmpeg_err(ret) << ", decoding on the CPU";
+            _hw->reportFailure();
+            _hw = nullptr;
+            HwCodecManager::Instance().addFallback();
+            continue;
+        }
+
         if (codec_default && codec_default != codec) {
+            if (_wrapper) {
+                _wrapper = false;
+                HwCodecManager::Instance().addFallback();
+            }
             // Hardware codec failed to open, try software codec
             WarnL << "Turn on the decoder" << codec->name << "failed because:" << ffmpeg_err(ret) << ", try opening the decoder again" << codec_default->name;
             codec = codec_default;
@@ -570,7 +598,11 @@ void FFmpegDecoder::flush() {
             WarnL << "avcodec_receive_frame failed:" << ffmpeg_err(ret);
             break;
         }
-        onDecode(out_frame);
+        auto frame = downloadFrame(out_frame, ret);
+        if (!frame) {
+            break;
+        }
+        onDecode(frame);
     }
 }
 
@@ -585,11 +617,13 @@ bool FFmpegDecoder::inputFrame_l(const Frame::Ptr &frame, bool live, bool enable
         });
     }
 
-    return decodeFrame(frame->data(), frame->size(), frame->dts(), frame->pts(), live, frame->keyFrame());
+    // An unmerged keyframe often starts with its VPS/SPS/PPS and then reports configFrame() instead of
+    // keyFrame(); both are a valid place to start after switching decoders.
+    return decodeFrame(frame->data(), frame->size(), frame->dts(), frame->pts(), live, frame->keyFrame() || frame->configFrame());
 }
 
 bool FFmpegDecoder::inputFrame(const Frame::Ptr &frame, bool live, bool async, bool enable_merge) {
-    if (async && !TaskManager::isEnabled() && getContext()->codec_type == AVMEDIA_TYPE_VIDEO) {
+    if (async && !TaskManager::isEnabled() && _codec_type == AVMEDIA_TYPE_VIDEO) {
         // Enable asynchronous encoding, and it is video, try to start asynchronous decoding thread
         startThread("decoder thread");
     }
@@ -608,6 +642,12 @@ bool FFmpegDecoder::inputFrame(const Frame::Ptr &frame, bool live, bool async, b
 
 bool FFmpegDecoder::decodeFrame(const char *data, size_t size, uint64_t dts, uint64_t pts, bool live, bool key_frame) {
     TimeTicker2(30, TraceL);
+    if (_wait_key) {
+        if (!key_frame) {
+            return false;
+        }
+        _wait_key = false;
+    }
 
     auto pkt = alloc_av_packet();
     pkt->data = (uint8_t *)data;
@@ -619,9 +659,15 @@ bool FFmpegDecoder::decodeFrame(const char *data, size_t size, uint64_t dts, uin
     }
 
     auto ret = avcodec_send_packet(_context.get(), pkt.get());
+    // Counted whether or not the packet was taken: a wrapper rejecting everything as invalid data is broken too.
+    if (_wrapper && ++_wrapper_pending > MAX_WRAPPER_PACKETS_WITHOUT_FRAME) {
+        switchToCpu(StrPrinter << "gave no frame for " << MAX_WRAPPER_PACKETS_WITHOUT_FRAME << " packets");
+        return false;
+    }
     if (ret < 0) {
         if (ret != AVERROR_INVALIDDATA) {
             WarnL << "avcodec_send_packet failed:" << ffmpeg_err(ret);
+            onHwError("avcodec_send_packet", ret);
         }
         return false;
     }
@@ -634,16 +680,122 @@ bool FFmpegDecoder::decodeFrame(const char *data, size_t size, uint64_t dts, uin
         }
         if (ret < 0) {
             WarnL << "avcodec_receive_frame failed:" << ffmpeg_err(ret);
+            onHwError("avcodec_receive_frame", ret);
             break;
         }
+        _wrapper_pending = 0;
         if (live && pts - out_frame->get()->pts > MAX_DELAY_SECOND * 1000 && _ticker.createdTime() > 10 * 1000) {
             // The following frames are ignored to prevent the Track from being ready
             WarnL << "When decoding, ignore" << MAX_DELAY_SECOND << " data from seconds ago:" << pts << " " << out_frame->get()->pts;
             continue;
         }
-        onDecode(out_frame);
+        auto frame = downloadFrame(out_frame, ret);
+        if (!frame) {
+            if (onHwError("av_hwframe_transfer_data", ret)) {
+                break;
+            }
+            continue;
+        }
+        _hw_errors = 0;
+        if (_hw) {
+            _hw->reportSuccess();
+        }
+        onDecode(frame);
     }
     return true;
+}
+
+AVPixelFormat FFmpegDecoder::getHwFormat(AVCodecContext *ctx, const AVPixelFormat *fmts) {
+    auto self = static_cast<FFmpegDecoder *>(ctx->opaque);
+    auto hw_fmt = self->_hw ? self->_hw->hwPixFmt() : AV_PIX_FMT_NONE;
+    for (auto p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
+        if (*p == hw_fmt) {
+            return *p;
+        }
+    }
+    // The GPU cannot take this stream (profile, size, bit depth): decode it in software.
+    for (auto p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
+        auto desc = av_pix_fmt_desc_get(*p);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            return *p;
+        }
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+FFmpegFrame::Ptr FFmpegDecoder::downloadFrame(const FFmpegFrame::Ptr &frame, int &ret) {
+    ret = 0;
+    auto src = frame->get();
+    auto desc = av_pix_fmt_desc_get((AVPixelFormat)src->format);
+    if (!desc || !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+        if (_hw) {
+            InfoL << "GPU decoder " << _hw->backendName() << " cannot decode this stream, decoding on the CPU";
+            _hw = nullptr;
+            HwCodecManager::Instance().addFallback();
+        }
+        if (_wrapper && src->format != AV_PIX_FMT_YUV420P && src->format != AV_PIX_FMT_YUVJ420P) {
+            // mediacodec gives NV12 or vendor layouts; keep the software decoder's YUV420P.
+            return toYuv420p(frame, ret);
+        }
+        return frame;
+    }
+    // Motion, overlay, JPEG and the encoders all work on RAM frames: download (NV12/P010) and
+    // convert to YUV420P, the format the software decoder gives for 8-bit streams.
+    auto sw = std::make_shared<FFmpegFrame>();
+    ret = av_hwframe_transfer_data(sw->get(), src, 0);
+    if (ret < 0) {
+        return nullptr;
+    }
+    av_frame_copy_props(sw->get(), src);
+    // Pooled frames keep their references until reused; give the GPU surface back to the decoder now.
+    av_frame_unref(src);
+    if (sw->get()->format == AV_PIX_FMT_YUV420P) {
+        return sw;
+    }
+    return toYuv420p(sw, ret);
+}
+
+FFmpegFrame::Ptr FFmpegDecoder::toYuv420p(const FFmpegFrame::Ptr &frame, int &ret) {
+    if (!_hw_sws) {
+        _hw_sws = std::make_shared<FFmpegSws>(AV_PIX_FMT_YUV420P, 0, 0);
+    }
+    auto out = _hw_sws->inputFrame(frame);
+    if (!out) {
+        ret = AVERROR(EINVAL);
+    }
+    return out;
+}
+
+bool FFmpegDecoder::onHwError(const char *what, int ret) {
+    if (!_hw && !_wrapper) {
+        return false;
+    }
+    GET_CONFIG(int, fail_threshold, HwCodec::kFailThreshold);
+    if (++_hw_errors < std::max(1, fail_threshold)) {
+        return false;
+    }
+    switchToCpu(StrPrinter << "failed " << _hw_errors << " times in a row (" << what << ": " << ffmpeg_err(ret) << ")");
+    return true;
+}
+
+void FFmpegDecoder::switchToCpu(const std::string &reason) {
+    // hwaccel: same native decoder without the device; wrapper: the native decoder.
+    auto codec = _hw ? _context->codec : _codec_default;
+    if (_hw) {
+        WarnL << "GPU decoder " << _hw->backendName() << " " << reason << ", switching to the CPU decoder";
+        _hw->reportFailure();
+        _hw = nullptr;
+    } else {
+        WarnL << "Decoder " << _context->codec->name << " " << reason << ", switching to " << codec->name;
+        _wrapper = false;
+    }
+    _hw_sws = nullptr;
+    _hw_errors = 0;
+    _wrapper_pending = 0;
+    HwCodecManager::Instance().addFallback();
+    openContext(codec, nullptr);
+    // The new context has no reference frames.
+    _wait_key = true;
 }
 
 void FFmpegDecoder::setOnDecode(FFmpegDecoder::onDec cb) {
@@ -1304,6 +1456,12 @@ bool FFmpegEncoder::openEncoder(const FFmpegFrame::Ptr &frame) {
     if (_bitrate <= 0) {
         _bitrate = getDefaultTranscodeBitrate(_codec, _width, _height, _fps);
     }
+    // A format change (GPU <-> CPU encoder) needs a new converter.
+    _sws = nullptr;
+    _hw_upload = false;
+    if (!_force_sw && openHwEncoder()) {
+        return true;
+    }
 
     const char *codec_name = (_codec == CodecH264) ? "libx264" : "libx265";
     const AVCodec *encoder = avcodec_find_encoder_by_name(codec_name);
@@ -1355,6 +1513,42 @@ bool FFmpegEncoder::openEncoder(const FFmpegFrame::Ptr &frame) {
     InfoL << "FFmpegEncoder opened: " << codec_name << " " << _width << "x" << _height
           << " @" << _fps << "fps, bitrate=" << _context->bit_rate;
     return true;
+}
+
+bool FFmpegEncoder::openHwEncoder() {
+    _hw = HwCodecManager::Instance().acquireEncode(_codec);
+    if (!_hw) {
+        return false;
+    }
+    string err;
+    AVPixelFormat input_fmt = AV_PIX_FMT_NONE;
+    bool upload = false;
+    auto ctx = mediakit::openHwEncoder(_hw->backend(), _codec, _hw->device(), _width, _height, _fps, _bitrate,
+                                       (_gop > 0) ? _gop : (_fps * 2), input_fmt, upload, err);
+    if (!ctx) {
+        WarnL << "FFmpegEncoder: GPU encoder " << _hw->backendName() << " unavailable (" << err << "), encoding on the CPU";
+        _hw->reportFailure(true);
+        _hw = nullptr;
+        HwCodecManager::Instance().addFallback();
+        return false;
+    }
+    _context = std::move(ctx);
+    _enc_fmt = input_fmt;
+    _hw_upload = upload;
+    InfoL << "FFmpegEncoder opened: " << hwEncoderName(_hw->backend(), _codec) << " (GPU " << _hw->backendName() << ") "
+          << _width << "x" << _height << " @" << _fps << "fps, bitrate=" << _context->bit_rate;
+    return true;
+}
+
+void FFmpegEncoder::onHwError(const char *what, int ret) {
+    WarnL << "FFmpegEncoder: GPU encoder " << _hw->backendName() << " failed (" << what << ": " << ffmpeg_err(ret)
+          << "), switching to the CPU encoder";
+    _hw->reportFailure();
+    _hw = nullptr;
+    HwCodecManager::Instance().addFallback();
+    _force_sw = true;
+    // The next frame opens the CPU encoder, whose first frame is an IDR with SPS/PPS.
+    _context = nullptr;
 }
 
 bool FFmpegEncoder::inputFrame(const FFmpegFrame::Ptr &frame) {
@@ -1420,9 +1614,28 @@ bool FFmpegEncoder::encodeFrame(AVFrame *frame) {
         frame->pict_type = _request_idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
         _request_idr = false;
     }
+    std::shared_ptr<AVFrame> hw_frame;
+    if (frame && _hw_upload) {
+        hw_frame.reset(av_frame_alloc(), [](AVFrame *ptr) { av_frame_free(&ptr); });
+        int ret = av_hwframe_get_buffer(_context->hw_frames_ctx, hw_frame.get(), 0);
+        if (ret >= 0) {
+            ret = av_hwframe_transfer_data(hw_frame.get(), frame, 0);
+        }
+        if (ret >= 0) {
+            ret = av_frame_copy_props(hw_frame.get(), frame);
+        }
+        if (ret < 0) {
+            onHwError("av_hwframe_transfer_data", ret);
+            return false;
+        }
+        frame = hw_frame.get();
+    }
     int ret = avcodec_send_frame(_context.get(), frame);
     if (ret < 0) {
         WarnL << "FFmpegEncoder: avcodec_send_frame failed: " << ffmpeg_err(ret);
+        if (_hw && frame) {
+            onHwError("avcodec_send_frame", ret);
+        }
         return false;
     }
     auto pkt = alloc_av_packet();
@@ -1433,7 +1646,13 @@ bool FFmpegEncoder::encodeFrame(AVFrame *frame) {
         }
         if (ret < 0) {
             WarnL << "FFmpegEncoder: avcodec_receive_packet failed: " << ffmpeg_err(ret);
+            if (_hw && frame) {
+                onHwError("avcodec_receive_packet", ret);
+            }
             return false;
+        }
+        if (_hw) {
+            _hw->reportSuccess();
         }
         onEncode(pkt.get());
         av_packet_unref(pkt.get());

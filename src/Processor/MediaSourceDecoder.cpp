@@ -35,7 +35,8 @@ bool MediaSourceDecoder::addTrack(const Track::Ptr &track) {
 
     if (track->getTrackType() == TrackVideo) {
         auto video_track = dynamic_pointer_cast<VideoTrack>(track);
-        decoder = std::make_shared<FFmpegDecoder>(video_track, 0, std::vector<std::string>{ "h264", "hevc" });
+        // Default decoder list: vendor wrappers (Jetson, Android) with fallback, else native + GPU hwaccel.
+        decoder = std::make_shared<FFmpegDecoder>(video_track, 0);
         // Set decode callback
         decoder->setOnDecode([this](const FFmpegFrame::Ptr &frame) {
             onDecode(frame);
