@@ -260,6 +260,7 @@ TranslationInfo StreamSource::getTranslationInfo() {
             back.bitrate = track->getBitRate();
             back.codec_type = track->getTrackType();
             back.codec_name = track->getCodecName();
+            back.origin_codec_name = track->getOriginCodecName();
             switch (back.codec_type) {
                 case TrackAudio : {
                     auto audio_track = dynamic_pointer_cast<AudioTrack>(track);

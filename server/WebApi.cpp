@@ -476,6 +476,9 @@ Value makeMediaSourceJson(MediaSource &media) {
         auto codec_type = track->getTrackType();
         obj["codec_id"] = track->getCodecId();
         obj["codec_id_name"] = track->getCodecName();
+        obj["origin_codec_id"] = track->getOriginCodecId();
+        obj["origin_codec_id_name"] = track->getOriginCodecName();
+        obj["transcoded"] = track->transcoded();
         obj["ready"] = track->ready();
         obj["codec_type"] = codec_type;
         if (current_thread) {
@@ -574,6 +577,7 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
     val["HwVideoEncoder"] = (Json::UInt64)getHwEncoderCount();
     val["HwCodecFallback"] = (Json::UInt64)getHwFallbackCount();
     val["HwCodecBackends"] = getHwCodecBackends();
+    val["MjpegIngestTranscode"] = (Json::UInt64)getMjpegIngestTranscodeCount();
 #ifdef ENABLE_MEM_DEBUG
     auto bytes = getTotalMemUsage();
     val["totalMemUsage"] = (Json::UInt64)bytes;

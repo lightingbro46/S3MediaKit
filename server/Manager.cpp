@@ -1272,6 +1272,8 @@ static Json::Value makeStreamStatisticJson(CameraStatistic &params, int type) {
     item["errMsg"] = info.status;
     item["hasVideo"] = info.has_video;
     item["vcodec"] = info.vcodec;
+    item["sourceVcodec"] = info.source_vcodec.empty() ? info.vcodec : info.source_vcodec;
+    item["transcoded"] = info.transcoded;
     item["width"] = info.width;
     item["height"] = info.height;
     item["bitrate"] = info.bitrate;

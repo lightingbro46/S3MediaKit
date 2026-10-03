@@ -845,6 +845,21 @@ extern const std::string kFailThreshold;
 extern const std::string kCooldownSec;
 } // namespace HwCodec
 
+////////////////////MJPEG camera ingest configuration//////////////////////
+namespace Mjpeg {
+// Whether an MJPEG video track pulled from a camera is re-encoded once at ingest, so every protocol,
+// recording and processor sees H264/H265. 0 = pass the JPEG track through (RTSP/MP4 only).
+extern const std::string kIngestTranscode;
+// Output codec of the ingest transcode: H264 or H265.
+extern const std::string kIngestCodec;
+// Output bitrate in bits/sec. 0 = picked from the resolution by the encoder.
+extern const std::string kIngestBitrate;
+// Keyframe interval in seconds.
+extern const std::string kIngestGopSec;
+// Maximum concurrently transcoded MJPEG tracks; above it the JPEG track passes through. 0 = no limit.
+extern const std::string kIngestMaxSessions;
+} // namespace Mjpeg
+
 ////////////////////Storage configuration//////////////////////
 namespace Storage {
 // Limit percentage of disk usage, when the disk usage exceeds this percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. The value range is 0~100, and the default value is 90.

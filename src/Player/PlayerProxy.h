@@ -3,6 +3,7 @@
 
 #include "Common/MultiMediaSourceMuxer.h"
 #include "Player/MediaPlayer.h"
+#include "Transcode/MjpegIngestTranscoder.h"
 #include "Util/TimeTicker.h"
 #include <memory>
 
@@ -12,6 +13,8 @@ struct StreamInfo
 {
     TrackType codec_type;
     std::string codec_name;
+    // Codec delivered by the source before ingest transcoding; equals codec_name otherwise.
+    std::string origin_codec_name;
     int bitrate;
     int audio_sample_rate;
     int audio_sample_bit;
@@ -24,6 +27,7 @@ struct StreamInfo
     {
         codec_type = TrackInvalid;
         codec_name = "none";
+        origin_codec_name = "none";
         bitrate = -1;
         audio_sample_rate = -1;
         audio_channel = -1;
@@ -124,6 +128,7 @@ private:
     void onPlaySuccess();
     void setDirectProxy();
     void setTranslationInfo();
+    void releaseIngestTranscoder();
 
 private:
     int _retry_count;
@@ -140,6 +145,10 @@ private:
     std::function<void(const toolkit::SockException &ex)> _on_play;
     TranslationInfo _transtalion_info;
     MultiMediaSourceMuxer::Ptr _muxer;
+    // Whether _muxer was built without its own RTSP output (the RTSP direct proxy serves it instead).
+    bool _muxer_without_rtsp = false;
+    // Re-encodes an MJPEG camera track before the muxer; null for every other codec.
+    MjpegIngestTranscoder::Ptr _ingest_transcoder;
 
     toolkit::Ticker _live_ticker;
     // 0 indicates normal, 1 indicates attempting to stream

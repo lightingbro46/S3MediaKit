@@ -1,4 +1,5 @@
 #include "TranscodeStats.h"
+#include "Transcode/MjpegIngestTranscoder.h"
 
 #if defined(ENABLE_FFMPEG)
 #include "Util/util.h"
@@ -66,5 +67,9 @@ size_t getMotionProcessorCount() {
 size_t getMotionProcessorCount() { return 0; }
 
 #endif // ENABLE_MOTION && ENABLE_FFMPEG
+
+size_t getMjpegIngestTranscodeCount() {
+    return MjpegIngestTranscoder::activeCount();
+}
 
 } // namespace mediakit
