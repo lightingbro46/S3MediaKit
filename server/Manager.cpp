@@ -701,6 +701,10 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             GET_OPTION_PROPERTY(option, keepConfigProfileAndStream, ss, keepConfigProfileAndStream)
         }
 
+        if (adv.isMember("control") && !adv["control"].isNull() && adv["control"]["protocol"].isString()) {
+            option.controlProtocol = controlProtocolSetting(adv["control"]["protocol"].asString());
+        }
+
         if (adv.isMember("onvif") && !adv["onvif"].isNull()) {
             const Json::Value &onvif = adv["onvif"];
             auto parseOnvifProfile = [](const Json::Value &v) {
@@ -1793,6 +1797,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     val["port"]         = option.port;
     val["username"]     = option.username;
     val["password"]     = option.password;
+    val["controlProtocol"] = option.controlProtocol;
 
     // Stream control
     val["disablePrimaryStream"]      = option.disablePrimaryStream;

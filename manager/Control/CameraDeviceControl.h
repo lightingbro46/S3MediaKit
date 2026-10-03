@@ -374,6 +374,10 @@ const char *controlProtocolToString(ControlProtocol protocol);
 // Case-insensitive; anything else is NONE.
 ControlProtocol controlProtocolFromString(const std::string &str);
 const char *connectErrorToString(ConnectError err);
+// Normalizes a controlProtocol option: "ONVIF" or "PSIA" (any case), anything else is "AUTO".
+std::string controlProtocolSetting(const std::string &value);
+// Range "min ... max" in a few steps, as the encoder options report bitrates to the client.
+std::string bitrateRangeToString(int minBitrate, int maxBitrate);
 
 // What CameraController needs from a camera, whatever protocol it speaks. Every call is blocking
 // and runs on the camera's device queue; the getters of cached state may be called from any thread.

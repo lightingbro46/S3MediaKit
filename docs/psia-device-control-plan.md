@@ -373,3 +373,23 @@ discovery rỗng).
 - `CameraController`: `_device_ctr`, `createDeviceControl(ControlProtocol, ...)`, `MediaGapFillManager` nhận
   `dynamic_pointer_cast<OnvifControl>`, `caps->isOnvifDevice` theo `protocol()`. Chưa đổi hành vi (luôn ONVIF).
 - Test: `OnvifConnectErrorTest`; fake trong `test_camera_controller.cpp` đổi hook. `ctest -R unit.` 201/201.
+
+**P2 (2026-10-04) — xong.** Option, lưu trữ và logic chọn/khoá theo mục 4.2:
+- `DeviceOption`/`ControllerOption`/`CameraOption::operator==` có `controlProtocol` (mặc định `AUTO`).
+  `cameraAdvanceConfig.control.protocol` vào qua `fromJson`, giá trị lạ thành `AUTO` (`controlProtocolSetting`);
+  ra ở `makeCameraOptionJson`, JSON option và kv `controlProtocol` của `CameraStatistic`.
+- `DeviceCapabilities::controlProtocol`, lưu trong JSON capabilities. Dữ liệu cũ thiếu field mà
+  `isOnvifDevice=true` được đọc thành `ONVIF`, nên camera đang chạy khoá ngay vào ONVIF sau khi nâng cấp,
+  không dò lại.
+- Config ở `src/Common/config.{h,cpp}`, namespace `CameraControl`: `camera.control_auto_order`,
+  `camera.control_reprobe_failures` (`psia.request_timeout_ms` nằm cạnh `PsiaControl`, như `onvif.*`).
+- `CameraController`: `_configured`, `_last_protocol`, `_auto_locked`, `_probing`, `_not_this_protocol_count`,
+  `_ctrl_generation`. Dò AUTO trong một task (`startProtocolProbe`), controller thua bị huỷ trước khi tạo cái kế
+  tiếp; kết quả về `_poller` qua `onProbeDone`; phần việc sau connect thành công gom vào `publishConnected`.
+  `setLastControlProtocol` gọi từ `GenericRtspCameraImp::setupController`.
+- Khác plan: lỗi rule khi đổi giao thức báo bằng mã chuỗi `DEVICE_PROTOCOL_CHANGED` qua
+  `reportRuleFailureIfPending` (cùng kiểu `SET_CONFIG_FAILED`, `CONFIG_NOT_APPLIED`), không thêm `ApiErrCode`
+  vì không API nào trả mã đó. Phía lưu trữ, `CameraStatisticImp::addDeviceCapabilities` xoá `stream_settings` và
+  preset người dùng khi giao thức trong capabilities đổi.
+- `bitrateRangeToString` chuyển từ `OnvifDeviceControl.cpp` sang `CameraDeviceControl.cpp` để PSIA dùng chung.
+- Test `CameraProtocolTest` (8 case theo mục 5.1) + `ControlProtocolSettingTest`; `ctest -R unit.` 201/201.

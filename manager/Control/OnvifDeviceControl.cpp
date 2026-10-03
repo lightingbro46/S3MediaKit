@@ -95,44 +95,6 @@ static std::string ResRangeToString(const std::vector<std::pair<int, int>>& v)
     return oss.str();
 }
 
-static std::string bitrateRangeToString(int minBitrate, int maxBitrate) {
-    if (minBitrate <= 0 || maxBitrate < minBitrate)
-        return "";
-
-    int steps = (maxBitrate >= 8000) ? 8 : (maxBitrate / 1000);
-    steps = std::max(steps, 2);
-
-    double step = static_cast<double>(maxBitrate - minBitrate) / (steps - 1);
-
-    std::string result;
-
-    for (int i = 0; i < steps; ++i) {
-        int value;
-
-        if (i == 0) {
-            value = minBitrate;
-        } else if (i == steps - 1) {
-            value = maxBitrate;
-        } else {
-            int raw = static_cast<int>(minBitrate + i * step);
-            int rounded = (raw + 128) / 256 * 256;
-
-            value = std::max(minBitrate, std::min(maxBitrate, rounded));
-        }
-
-        if (!result.empty()) {
-            size_t pos = result.find_last_of(' ');
-            int last = (pos == std::string::npos) ? std::stoi(result) : std::stoi(result.substr(pos + 1));
-            if (last == value) continue;
-
-            result += " ";
-        }
-
-        result += std::to_string(value);
-    }
-    return result;
-}
-
 static int parse_timezone_offset_seconds(const std::string& tz) {
     if (tz.empty()) return 0;
 

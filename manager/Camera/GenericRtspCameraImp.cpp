@@ -82,6 +82,8 @@ void GenericRtspCameraImp::setupController() {
             // add user presets after controller constructor
             auto strong_statistic = _statistic.lock();
             auto params = strong_statistic->getParams();
+            // An AUTO camera keeps the protocol it was controlled with instead of probing again.
+            _controller->setLastControlProtocol(params.device_stats.device_caps.controlProtocol);
             if (!params.device_stats.user_presets.empty()) {
                 for (auto &it : params.device_stats.user_presets) {
                     auto p = it.second;

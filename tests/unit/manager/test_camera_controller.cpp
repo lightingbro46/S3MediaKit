@@ -31,6 +31,13 @@ public:
 
     static void setReady(CameraController &c, bool ready) { c._ready = ready; }
 
+    // Lifts the 60 s pacing of the maintenance cycle.
+    static void allowReconnect(CameraController &c) { c._last_reconnect_time = 0; }
+
+    static ControlProtocol deviceProtocol(CameraController &c) {
+        return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
+    }
+
     static bool hasPendingProfileConfig(CameraController &c) { return c.hasPendingProfileConfig(); }
 
     static bool profileConfig(CameraController &c, const std::string &token, VideoEncoderConfig &out) {
@@ -204,6 +211,7 @@ protected:
         option.ip = "127.0.0.1";
         option.port = 1;
         option.ptzMode = CameraOption::kPTZContinousMode;
+        option.controlProtocol = "ONVIF";
         auto controller = _controller;
         _poller->sync([controller, option]() { controller->setupController(option); });
     }
@@ -1223,4 +1231,356 @@ TEST_F(CameraControllerDeferredSetTest, SeedDoesNotOverwriteAConcurrentUserSet) 
     onPoller([&]() { used = controller->seedBaselineIfAbsent(kRuleToken, seed); });
     EXPECT_TRUE(used == userNew());
     EXPECT_TRUE(readBaseline() == userNew());
+}
+
+// ── Control protocol selection: one controller, one protocol per camera ─────────────────────────
+
+namespace {
+
+// What the fake devices of one test did, in order: "create X", "connect X", "destroy X", "ready 0 <status>".
+class ProtocolWorld {
+public:
+    void log(const std::string &event) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _events.push_back(event);
+    }
+    std::vector<std::string> events() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _events;
+    }
+    void clear() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _events.clear();
+    }
+    int count(const std::string &event) {
+        auto all = events();
+        return static_cast<int>(std::count(all.begin(), all.end(), event));
+    }
+    void setResult(ControlProtocol protocol, ConnectError err) {
+        (protocol == ControlProtocol::ONVIF ? _onvif : _psia) = static_cast<int>(err);
+    }
+    ConnectError result(ControlProtocol protocol) const {
+        return static_cast<ConnectError>((protocol == ControlProtocol::ONVIF ? _onvif : _psia).load());
+    }
+
+    std::atomic<int> live{0};
+
+private:
+    std::mutex _mtx;
+    std::vector<std::string> _events;
+    std::atomic<int> _onvif{static_cast<int>(ConnectError::NONE)};
+    std::atomic<int> _psia{static_cast<int>(ConnectError::NONE)};
+};
+
+class FakeProtocolControl : public CameraDeviceControl {
+public:
+    FakeProtocolControl(ControlProtocol protocol, std::shared_ptr<ProtocolWorld> world)
+        : _protocol(protocol), _world(std::move(world)) {
+        ++_world->live;
+        _world->log(std::string("create ") + controlProtocolToString(_protocol));
+    }
+    ~FakeProtocolControl() override {
+        --_world->live;
+        _world->log(std::string("destroy ") + controlProtocolToString(_protocol));
+    }
+
+    bool connect() override {
+        _world->log(std::string("connect ") + controlProtocolToString(_protocol) + " live=" + std::to_string(_world->live.load()));
+        _err = static_cast<int>(_world->result(_protocol));
+        _connected = _err == static_cast<int>(ConnectError::NONE);
+        return _connected;
+    }
+    void disconnect() override {}
+    ControlProtocol protocol() const override { return _protocol; }
+    ConnectError lastConnectError() const override { return static_cast<ConnectError>(_err.load()); }
+    std::string lastError() override { return connectErrorToString(lastConnectError()); }
+    // Every cycle runs a full connect(), so each one reports a connect result.
+    bool probeConnection() override { return false; }
+    bool isConnected() const override { return _connected; }
+    bool isControlled() const override { return false; }
+    void setCameraTimeManual() override {}
+    OnvifDeviceInfo getDeviceInfo() override { return OnvifDeviceInfo(); }
+    OnvifMediaProfileMap getMediaProfilesInfo() override { return OnvifMediaProfileMap(); }
+    bool refreshMediaProfiles() override { return true; }
+    bool getVideoEncoderConfigByToken(const std::string &, VideoEncoderConfig &) override { return false; }
+    bool setVideoEncoderConfigByToken(const std::string &, const VideoEncoderConfig &) override { return false; }
+    OnvifPTZProfile getPTZProfile() override {
+        OnvifPTZProfile profile;
+        profile.isConsMoveEnable = true;
+        return profile;
+    }
+    bool enablePTZ() override { return true; }
+    bool PTZ_ContinuousMove(float, float, float, int) override {
+        _world->log(std::string("ptz ") + controlProtocolToString(_protocol));
+        return true;
+    }
+    bool PTZ_RelativeMove(float, float, float, float, float, float) override { return true; }
+    bool PTZ_AbsoluteMove(float, float, float) override { return true; }
+    bool PTZ_AbsoluteMove(float, float, float, float, float, float) override { return true; }
+    bool PTZ_Stop(bool, bool) override { return true; }
+    bool PTZ_GotoPreset(const std::string &, float, float, float) override { return true; }
+    bool PTZ_GotoHomePosition(float, float, float) override { return true; }
+    bool PTZ_AuxiliaryCommand(const std::string &) override { return true; }
+    PtzMoveStatus PTZ_GetStatus(float &, float &, float &) override { return PtzMoveStatus::IDLE; }
+    OnvifImageProfile getImageProfile() const override { return OnvifImageProfile(); }
+    bool enableFocus() override { return false; }
+    bool enableIris() override { return false; }
+    bool Imaging_FocusMove(float) override { return false; }
+    bool Imaging_FocusStop() override { return false; }
+    std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const override { return {}; }
+    bool enableRelayOutput() override { return false; }
+    bool Relay_SetOutputState(const std::string &, bool) override { return false; }
+
+private:
+    ControlProtocol _protocol;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::atomic<int> _err{static_cast<int>(ConnectError::NONE)};
+    std::atomic<bool> _connected{false};
+};
+
+class ProtocolTestController : public CameraController {
+public:
+    ProtocolTestController(const DeviceTuple &tuple, const EventPoller::Ptr &poller, std::shared_ptr<ProtocolWorld> world)
+        : CameraController(tuple, poller), _world(std::move(world)) {}
+
+protected:
+    CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+                                                 const std::string &) override {
+        return std::make_shared<FakeProtocolControl>(protocol, _world);
+    }
+
+private:
+    std::shared_ptr<ProtocolWorld> _world;
+};
+
+class ReadyRecorder : public DeviceSourceEvent {
+public:
+    ReadyRecorder(std::shared_ptr<ProtocolWorld> world, EventPoller::Ptr poller)
+        : _world(std::move(world)), _poller(std::move(poller)) {}
+    void onControllerReady(DeviceSource &, bool connect, const std::string &status, const Any &) override {
+        _world->log(std::string("ready ") + (connect ? "1 " : "0 ") + status);
+    }
+    EventPoller::Ptr getOwnerPoller(DeviceSource &) override { return _poller; }
+
+private:
+    std::shared_ptr<ProtocolWorld> _world;
+    EventPoller::Ptr _poller;
+};
+
+bool contains(const std::vector<std::string> &events, const std::string &prefix) {
+    for (const auto &e : events) {
+        if (e.compare(0, prefix.size(), prefix) == 0) return true;
+    }
+    return false;
+}
+
+// Index of the first event starting with `prefix`, -1 if none.
+int indexOf(const std::vector<std::string> &events, const std::string &prefix) {
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (events[i].compare(0, prefix.size(), prefix) == 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+} // namespace
+
+class CameraProtocolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        _poller = EventPollerPool::Instance().getPoller();
+        _world = std::make_shared<ProtocolWorld>();
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = "cam-controller-test";
+        _controller = std::make_shared<ProtocolTestController>(tuple, _poller, _world);
+        _listener = std::make_shared<ReadyRecorder>(_world, _poller);
+        _controller->setListener(_listener);
+        _controller->createTimer();
+    }
+
+    void TearDown() override {
+        auto controller = _controller;
+        onPoller([controller]() { controller->stopController(); });
+    }
+
+    void onPoller(const std::function<void()> &task) { _poller->sync(task); }
+
+    void setup(const std::string &protocol, const std::string &last = "") {
+        CameraOption option;
+        option.manufacturer = "ONVIF";
+        option.ip = "127.0.0.1";
+        option.port = 1;
+        option.controlProtocol = protocol;
+        auto controller = _controller;
+        onPoller([controller, option, last]() {
+            if (!last.empty()) controller->setLastControlProtocol(last);
+            controller->setupController(option);
+        });
+    }
+
+    // One maintenance cycle, waited for until the fake devices stop reporting.
+    void cycle() {
+        auto controller = _controller;
+        onPoller([controller]() {
+            CameraControllerTestPeer::allowReconnect(*controller);
+            CameraControllerTestPeer::onManager(*controller);
+        });
+        settle();
+    }
+
+    void settle() {
+        size_t seen = _world->events().size();
+        for (int quiet = 0, i = 0; quiet < 4 && i < 100; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            onPoller([]() {});
+            size_t now = _world->events().size();
+            quiet = now == seen ? quiet + 1 : 0;
+            seen = now;
+        }
+    }
+
+    ControlProtocol current() {
+        ControlProtocol protocol = ControlProtocol::NONE;
+        auto controller = _controller;
+        onPoller([&]() { protocol = CameraControllerTestPeer::deviceProtocol(*controller); });
+        return protocol;
+    }
+
+    EventPoller::Ptr _poller;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::shared_ptr<ProtocolTestController> _controller;
+    std::shared_ptr<ReadyRecorder> _listener;
+};
+
+TEST_F(CameraProtocolTest, FixedOnvifNeverTriesPsia) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("ONVIF");
+    for (int i = 0; i < 7; ++i) cycle();
+    EXPECT_EQ(7, _world->count("connect ONVIF live=1"));
+    EXPECT_FALSE(contains(_world->events(), "create PSIA"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(CameraProtocolTest, FixedPsiaNeverTriesOnvif) {
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    setup("PSIA");
+    for (int i = 0; i < 7; ++i) cycle();
+    EXPECT_EQ(7, _world->count("connect PSIA live=1"));
+    EXPECT_FALSE(contains(_world->events(), "create ONVIF"));
+}
+
+TEST_F(CameraProtocolTest, AutoFallsBackToPsiaOnlyAfterOnvifSaysNotThisProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("AUTO");
+    EXPECT_EQ(ControlProtocol::NONE, current()) << "no controller before the probe";
+    cycle();
+
+    auto events = _world->events();
+    // The ONVIF controller is gone before the PSIA one even exists.
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create PSIA"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+    EXPECT_TRUE(contains(events, "ready 1 connected"));
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    EXPECT_TRUE(_controller->isReady());
+
+    // Locked: later cycles reconnect PSIA only.
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "create"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, AutoDoesNotTryPsiaWhenOnvifIsUnreachableOrRejectsThePassword) {
+    const ConnectError errors[] = {ConnectError::UNREACHABLE, ConnectError::AUTH_FAILED, ConnectError::OTHER};
+    setup("AUTO");
+    for (auto err : errors) {
+        _world->setResult(ControlProtocol::ONVIF, err);
+        cycle();
+    }
+    auto events = _world->events();
+    EXPECT_EQ(3, _world->count("create ONVIF"));
+    EXPECT_FALSE(contains(events, "create PSIA"));
+    EXPECT_EQ(0, _world->live.load());
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    EXPECT_FALSE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, AutoKeepsTheSavedProtocolWithoutProbing) {
+    setup("AUTO", "PSIA");
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    cycle();
+    auto events = _world->events();
+    EXPECT_FALSE(contains(events, "create ONVIF"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, LockedAutoProbesAgainAfterRepeatedNotThisProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("AUTO", "ONVIF");
+    cycle();
+    cycle();
+    // Any other failure resets the count: an unreachable camera says nothing about the protocol.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    cycle();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    for (int i = 0; i < 4; ++i) cycle();
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_FALSE(contains(_world->events(), "create PSIA"));
+
+    cycle(); // fifth in a row: unlock
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    EXPECT_TRUE(contains(_world->events(), "ready 0 Control protocol changed"));
+    cycle(); // probe
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, SwitchingProtocolUnpublishesTheOldControllerAndFailsPendingRules) {
+    RuleResultRecorder recorder;
+    setup("ONVIF");
+    cycle();
+    ASSERT_EQ(ControlProtocol::ONVIF, current());
+    ASSERT_TRUE(_controller->isReady());
+
+    CbProbe probe;
+    auto controller = _controller;
+    auto cb = probe.cb();
+    onPoller([&]() { controller->applyRuleVideoConfigAsync("log-switch", "onvif-token", ruleConfig(), cb); });
+    ASSERT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+    settle();
+
+    _world->clear();
+    setup("PSIA");
+    auto events = _world->events();
+    ASSERT_GE(indexOf(events, "ready 0 Control protocol changed"), 0);
+    EXPECT_LT(indexOf(events, "ready 0 Control protocol changed"), indexOf(events, "destroy ONVIF"));
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create PSIA"));
+    EXPECT_FALSE(_controller->isReady());
+
+    cycle();
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_EQ("log-switch", results[0].log_id);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_EQ("DEVICE_PROTOCOL_CHANGED", results[0].err_code);
+}
+
+TEST_F(CameraProtocolTest, CommandsDuringTheProbeReportTheDeviceOffline) {
+    setup("AUTO");
+    CbProbe probe;
+    auto controller = _controller;
+    auto cb = probe.cb();
+    onPoller([&]() { controller->PTZMove("left", 50, cb); });
+    ASSERT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+    EXPECT_EQ(std::vector<int>{ApiErrCode::CODE_DEVICE_OFFLINE}, probe.get());
+    EXPECT_FALSE(contains(_world->events(), "ptz"));
+}
+
+TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {
+    EXPECT_EQ("ONVIF", controlProtocolSetting("onvif"));
+    EXPECT_EQ("PSIA", controlProtocolSetting("PSIA"));
+    EXPECT_EQ("AUTO", controlProtocolSetting(""));
+    EXPECT_EQ("AUTO", controlProtocolSetting("ISAPI"));
+    EXPECT_EQ("AUTO", controlProtocolSetting("AUTO"));
 }

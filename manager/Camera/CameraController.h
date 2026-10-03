@@ -24,6 +24,10 @@ public:
 
     void setupController(const CameraOption &option);
 
+    // Protocol the camera was controlled with before ("ONVIF", "PSIA", "" = unknown), from the saved
+    // capabilities: an AUTO camera starts locked to it instead of probing. Call before setupController().
+    void setLastControlProtocol(const std::string &protocol);
+
     void stopController();
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -92,6 +96,24 @@ private:
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
+    // ── Control protocol selection (all on _poller unless noted) ──
+    // controlProtocol AUTO: no fixed protocol in the option.
+    bool isAutoProtocol() const;
+    // AUTO without a lock: tries the protocols of camera.control_auto_order in one device task, keeping
+    // at most one controller alive, and hands the first that connects to onProbeDone.
+    void startProtocolProbe();
+    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg);
+    // Result of a connect() of the current controller: locks the protocol, or counts the failures that
+    // say the camera no longer speaks it (AUTO only).
+    void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
+    // A controller connected with `protocol`: drops the profile/rule/preset state of the previous
+    // protocol when it differs, then locks AUTO to it.
+    void onProtocolConnected(ControlProtocol protocol);
+    // Drops the current controller so that the next cycle probes the protocols again.
+    void unlockProtocol(const std::string &reason);
+    // Device queue: the work after a successful connect() — clock, profile sync, capabilities, events.
+    void publishConnected(const CameraDeviceControl::Ptr &device_ctr);
+
     // Media profile sync after (re)connect, in three steps so _profileConfigMap is only touched on
     // _poller: read the camera profiles (device queue) → decide per profile (_poller) → send the
     // needed set commands (device queue) → store the results (_poller).
@@ -155,7 +177,19 @@ private:
     uint64_t _last_profile_resync = 0;
     uint64_t _last_clock_sync = 0;
     toolkit::Timer::Ptr _timer_ctr;
+    // The one controller of this camera, whatever its protocol; only set or reset on _poller.
     CameraDeviceControl::Ptr _device_ctr;
+    // setupController() accepted an address: there is a controller, or an AUTO probe to run.
+    bool _configured = false;
+    // Protocol of the last successful connect (or restored by setLastControlProtocol).
+    ControlProtocol _last_protocol = ControlProtocol::NONE;
+    // AUTO uses _last_protocol directly instead of probing.
+    bool _auto_locked = false;
+    bool _probing = false;
+    // connect() failures of the current controller that said "not this protocol", in a row.
+    int _not_this_protocol_count = 0;
+    // Bumped whenever the controller is replaced, so a probe started for an older one is dropped.
+    std::atomic<uint64_t> _ctrl_generation { 0 };
     std::string _address;
     ControllerOption _ctrl_option;
     int _ptzMode = CameraOption::kPTZModeAuto;

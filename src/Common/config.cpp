@@ -774,6 +774,20 @@ static onceToken token([]() {
 });
 } // namespace Speaker
 
+// //////////Camera control configuration///////////
+namespace CameraControl {
+#define CAMERA_CONTROL_FIELD "camera."
+const string kAutoOrder = CAMERA_CONTROL_FIELD "control_auto_order";
+const string kReprobeFailures = CAMERA_CONTROL_FIELD "control_reprobe_failures";
+
+static onceToken token([]() {
+    // ONVIF first: every camera that worked before keeps working the same way.
+    mINI::Instance()[kAutoOrder] = "onvif,psia";
+    // About 5 minutes at one reconnect per minute; a timeout or a rejected password never counts.
+    mINI::Instance()[kReprobeFailures] = 5;
+});
+} // namespace CameraControl
+
 } // namespace mediakit
 
 #ifdef ENABLE_MEM_DEBUG

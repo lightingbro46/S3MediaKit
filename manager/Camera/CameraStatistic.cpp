@@ -359,6 +359,7 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
 static Json::Value makeDeviceCapabilitiesJson(const DeviceCapabilities &caps) {
     Json::Value ret = Json::objectValue;
     ret["isOnvifDevice"] = caps.isOnvifDevice;
+    ret["controlProtocol"] = caps.controlProtocol;
     ret["onvifProfile"] = makeOnvifProfileJson(caps.onvifProfile);
     return ret;
 }
@@ -508,6 +509,9 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
 static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     DeviceCapabilities stats;
     stats.isOnvifDevice = !data["isOnvifDevice"].empty() ? data["isOnvifDevice"].asBool() : false;
+    // Saved before PSIA existed: a device that was ONVIF stays known as ONVIF.
+    stats.controlProtocol = data["controlProtocol"].isString() ? data["controlProtocol"].asString()
+                          : (stats.isOnvifDevice ? "ONVIF" : "");
     stats.onvifProfile = getOnvifProfile(data["onvifProfile"]);
     return stats;
 }
@@ -651,6 +655,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.ptzMode = ret["ptzMode"].asInt();
     option.ptzSpeed = ret["ptzSpeed"].asFloat();
     option.onvifMainProfile = ret["onvifMainProfile"].asString();
+    option.controlProtocol = controlProtocolSetting(ret["controlProtocol"].asString());
     option.onvifSubProfile = ret["onvifSubProfile"].asString();
     option.enableMotion = ret["enableMotion"].asBool();
     option.roiValue = ret["roiValue"].asString();
@@ -782,6 +787,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["ptzMode"] = stats.option.ptzMode;
     root["ptzSpeed"] = stats.option.ptzSpeed;
     root["onvifMainProfile"] = stats.option.onvifMainProfile;
+    root["controlProtocol"] = stats.option.controlProtocol;
     root["onvifSubProfile"] = stats.option.onvifSubProfile;
     root["enableMotion"] = stats.option.enableMotion;
     root["roiValue"] = stats.option.roiValue;
@@ -1177,6 +1183,15 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
         device_stats.connect = connect;
         device_stats.status = status;
         if (device_caps) {
+            const std::string &old_protocol = device_stats.device_caps.controlProtocol;
+            if (!old_protocol.empty() && !device_caps->controlProtocol.empty() &&
+                old_protocol != device_caps->controlProtocol) {
+                // Profile tokens and PTZ positions of one protocol mean nothing in the other one.
+                WarnL << "Device " << tuple.shortUrl() << " control protocol changed from " << old_protocol << " to "
+                      << device_caps->controlProtocol << ", dropping its stream settings and user presets";
+                device_stats.stream_settings.clear();
+                device_stats.user_presets.clear();
+            }
             device_stats.device_caps = *device_caps;
         }
         device_id = tuple.device_id;
@@ -1381,6 +1396,7 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("ptzMode",                    std::to_string(opt.ptzMode)));
         kvs.push_back(make("ptzSpeed",                   std::to_string(opt.ptzSpeed)));
         kvs.push_back(make("onvifMainProfile",           opt.onvifMainProfile));
+        kvs.push_back(make("controlProtocol",            opt.controlProtocol));
         kvs.push_back(make("onvifSubProfile",            opt.onvifSubProfile));
 
         // ── motion ────────────────────────────────────────────────────────
@@ -1503,6 +1519,8 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.ptzSpeed = std::stof(kv.value);
                 } else if (kv.name == "onvifMainProfile") {
                     stats.option.onvifMainProfile = kv.value;
+                } else if (kv.name == "controlProtocol") {
+                    stats.option.controlProtocol = controlProtocolSetting(kv.value);
                 } else if (kv.name == "onvifSubProfile") {
                     stats.option.onvifSubProfile = kv.value;
                 } else if (kv.name == "enableMotion") {

@@ -1023,6 +1023,15 @@ extern const std::string kMaxAudioFileSizeBytes;
 extern const std::string kOnvifUsername;
 } // namespace Speaker
 
+////////////Camera control configuration///////////
+namespace CameraControl {
+// Protocols a camera with controlProtocol AUTO tries, in order, until one answers: "onvif,psia"
+extern const std::string kAutoOrder;
+// Connect failures of the "device does not speak this protocol" kind, in a row, after which a
+// camera locked by AUTO probes the protocols again
+extern const std::string kReprobeFailures;
+} // namespace CameraControl
+
 } // namespace mediakit
 
 #endif /* COMMON_CONFIG_H */
