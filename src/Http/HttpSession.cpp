@@ -459,13 +459,29 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
             cb(source);
             return;
         }
+#if defined(ENABLE_MOTION) && defined(ENABLE_FFMPEG)
         if (self->_media_info.schema == MOTION_MJPEG_SCHEMA) {
-            // The derived transcode has no MJPEG output. Like RTSP/RTMP/WebRTC,
-            // the motion debug view plays the source without overlay.
-            DebugL << "View overlay is not rendered for motion MJPEG: " << self->_media_info.shortUrl();
-            cb(source);
+            // The derived transcode has no MJPEG output: MotionProcessor renders the
+            // overlay into a per-policy variant of the motion source instead.
+            if (use_transcode) {
+                self->sendResponse(400, true, nullptr, KeyValue(),
+                                   make_shared<HttpStringBody>("Reduce quality is not supported for motion MJPEG"));
+                return;
+            }
+            const string policy_tag = makeViewOverlayPolicyTag(policy);
+            self->prepareViewOverlay(policy, use_watermark, use_privacy_mask,
+                                     [weak_self, source, cb, policy_tag](const vector<OverlayComponent> &components,
+                                                                         const OverlayBuildOptions &overlay_options) {
+                auto self = weak_self.lock();
+                if (!self) return;
+                self->_motion_overlay_tag = policy_tag;
+                self->_motion_overlay_components = components;
+                self->_motion_overlay_options = overlay_options;
+                cb(source);
+            });
             return;
         }
+#endif
 #if defined(ENABLE_FFMPEG)
         const CodecId transcode_codec = transcode_request.codec;
         const int transcode_width = transcode_request.width;
@@ -474,13 +490,6 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         const int transcode_bitrate = transcode_request.bitrate;
         const int transcode_gop = transcode_request.gop;
         const string output_schema = self->_media_info.schema;
-        GET_CONFIG(bool, use_watermark_asset_cfg, OverlayPrivacyConfig::kUseWatermarkAsset);
-        const bool use_watermark_asset = use_watermark_asset_cfg;
-
-        OverlayBuildOptions overlay_options;
-        overlay_options.resolve_dynamic_tokens = true;
-        overlay_options.username = policy.username;
-        overlay_options.camera_name = policy.camera_name;
         const string variant_kind = use_transcode
             ? ((use_watermark || use_privacy_mask) ? "quality-overlay." : "quality.")
             : "overlay.";
@@ -554,42 +563,7 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
                 MediaSource::findAsync(overlay_info, self, on_overlay_ready);
             });
         };
-        // Resolving writes the per-viewer SVG and may run ffmpeg to resize an uncached image: off the
-        // session poller, then back to it to answer or start the transcode.
-        OverlayPrivacyUtils::assetExecutor()->async([weak_self, policy, overlay_options, use_watermark,
-                                                     use_watermark_asset, use_privacy_mask, start_transcode]() mutable {
-            vector<OverlayComponent> components;
-            std::string error;
-            bool ok = true;
-            if (use_watermark && use_watermark_asset) {
-                ok = OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
-                                                                overlay_options.prebuilt_svg_path, error);
-            } else if (use_watermark) {
-                if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
-                    ok = false;
-                    error = "Watermark template is invalid";
-                } else {
-                    ok = OverlayPrivacyUtils::resolveLocalImages(components, error);
-                }
-            }
-            if (ok && use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
-                                                                                   overlay_options.privacy_masks,
-                                                                                   overlay_options)) {
-                ok = false;
-                error = "Privacy mask configuration is invalid";
-            }
-            auto self = weak_self.lock();
-            if (!self) return;
-            self->async([weak_self, ok, error, components, overlay_options, start_transcode]() {
-                auto self = weak_self.lock();
-                if (!self) return;
-                if (!ok) {
-                    self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(error));
-                    return;
-                }
-                start_transcode(components, overlay_options);
-            }, false);
-        });
+        self->prepareViewOverlay(policy, use_watermark, use_privacy_mask, start_transcode);
 #else
         self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>("FFmpeg view overlay support is disabled"));
 #endif
@@ -599,6 +573,57 @@ void HttpSession::applyViewOverlayPolicy(const MediaSource::Ptr &source, const s
         policy_cb(Broadcast::ViewOverlayPolicy());
     }
 }
+
+#if defined(ENABLE_FFMPEG)
+void HttpSession::prepareViewOverlay(const Broadcast::ViewOverlayPolicy &policy, bool use_watermark, bool use_privacy_mask,
+                                     const std::function<void(const std::vector<OverlayComponent> &,
+                                                              const OverlayBuildOptions &)> &on_ready) {
+    GET_CONFIG(bool, use_watermark_asset_cfg, OverlayPrivacyConfig::kUseWatermarkAsset);
+    const bool use_watermark_asset = use_watermark_asset_cfg;
+
+    OverlayBuildOptions overlay_options;
+    overlay_options.resolve_dynamic_tokens = true;
+    overlay_options.username = policy.username;
+    overlay_options.camera_name = policy.camera_name;
+    weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
+    // Resolving writes the per-viewer SVG and may run ffmpeg to resize an uncached image: off the
+    // session poller, then back to it to answer or hand the overlay over.
+    OverlayPrivacyUtils::assetExecutor()->async([weak_self, policy, overlay_options, use_watermark,
+                                                 use_watermark_asset, use_privacy_mask, on_ready]() mutable {
+        vector<OverlayComponent> components;
+        std::string error;
+        bool ok = true;
+        if (use_watermark && use_watermark_asset) {
+            ok = OverlayPrivacyUtils::resolveWatermarkAsset(policy.watermark_template, overlay_options,
+                                                            overlay_options.prebuilt_svg_path, error);
+        } else if (use_watermark) {
+            if (!OverlayPrivacyUtils::parseComponents(policy.watermark_template, components, overlay_options)) {
+                ok = false;
+                error = "Watermark template is invalid";
+            } else {
+                ok = OverlayPrivacyUtils::resolveLocalImages(components, error);
+            }
+        }
+        if (ok && use_privacy_mask && !OverlayPrivacyUtils::parsePrivacyMasks(policy.privacy_mask_regions,
+                                                                               overlay_options.privacy_masks,
+                                                                               overlay_options)) {
+            ok = false;
+            error = "Privacy mask configuration is invalid";
+        }
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->async([weak_self, ok, error, components, overlay_options, on_ready]() {
+            auto self = weak_self.lock();
+            if (!self) return;
+            if (!ok) {
+                self->sendResponse(403, true, nullptr, KeyValue(), make_shared<HttpStringBody>(error));
+                return;
+            }
+            on_ready(components, overlay_options);
+        }, false);
+    });
+}
+#endif // ENABLE_FFMPEG
 
 Broadcast::ViewOverlayPolicy HttpSession::resolveHlsViewOverlayPolicy(
     const std::string &viewer_key, const std::string &jwt_token, uint64_t ttl_ms, uint64_t now_ms,
@@ -1452,6 +1477,7 @@ bool HttpSession::checkLiveMotionStream() {
 #ifdef ENABLE_MOTION
     bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
     bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
+    _motion_overlay_tag.clear();
 
     return checkLiveStream(MOTION_MJPEG_SCHEMA, "/media", ".motion.mjpeg",
         [this, overlay_motion, overlay_roi](const MediaSource::Ptr &src) {
@@ -1460,54 +1486,76 @@ bool HttpSession::checkLiveMotionStream() {
                 sendNotFound(true);
                 return;
             }
-
-            motion_src->setOverlay(overlay_motion, overlay_roi);
-
-            KeyValue header;
-            header["Cache-Control"]               = "no-store";
-            header["Access-Control-Allow-Origin"] = "*";
-            sendResponse(200, false,
-                "multipart/x-mixed-replace; boundary=mjpeg_boundary",
-                header, nullptr, /*no_content_length=*/true);
-
-            setSocketFlags();
-
-            weak_ptr<HttpSession> weak_self =
-                static_pointer_cast<HttpSession>(shared_from_this());
-
-            _motion_reader = motion_src->getRing()->attach(getPoller());
-            _motion_reader->setGetInfoCB([weak_self]() {
-                Any ret;
-                ret.set(static_pointer_cast<Session>(weak_self.lock()));
-                return ret;
-            });
-            _motion_reader->setDetachCB([weak_self]() {
-                auto strong_self = weak_self.lock();
-                if (!strong_self) return;
-                strong_self->shutdown(SockException(Err_shutdown, "motion ring buffer detached"));
-            });
-            _motion_reader->setReadCB([weak_self](const MotionJpegFrame::Ptr &pkt) {
-                auto strong_self = weak_self.lock();
-                if (!strong_self || !pkt || !pkt->jpeg) return;
-
-                const auto &jpeg = pkt->jpeg;
-                string hdr =
-                    "--mjpeg_boundary\r\n"
-                    "Content-Type: image/jpeg\r\n"
-                    "Content-Length: " + to_string(jpeg->size()) + "\r\n"
-                    "X-Motion: "       + string(pkt->motion ? "1" : "0") + "\r\n"
-                    "X-Timestamp: "    + to_string(pkt->stamp_ms) + "\r\n"
-                    "X-Active-Cells: " + to_string(pkt->active_cells) + "\r\n"
-                    "\r\n";
-                strong_self->onWrite(std::make_shared<BufferString>(std::move(hdr)), false);
-                strong_self->onWrite(std::make_shared<MjpegBuffer>(jpeg), false);
-                strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
-            });
+            serveMotionMjpeg(motion_src, overlay_motion, overlay_roi);
         });
 #else
     return false;
 #endif // ENABLE_MOTION
 }
+
+#ifdef ENABLE_MOTION
+void HttpSession::serveMotionMjpeg(const MotionMjpegMediaSource::Ptr &motion_src, bool overlay_motion, bool overlay_roi) {
+    MotionMjpegMediaSource::RingType::RingReader::Ptr reader;
+    if (_motion_overlay_tag.empty()) {
+        reader = motion_src->getRing()->attach(getPoller());
+    } else {
+        GET_CONFIG(int, max_variants, Motion::kMjpegMaxOverlayVariants);
+        reader = motion_src->attachOverlayVariant(_motion_overlay_tag, _motion_overlay_components,
+                                                  _motion_overlay_options, getPoller(),
+                                                  static_cast<size_t>(std::max(0, max_variants)));
+        if (!reader) {
+            WarnL << "Motion MJPEG overlay variants are exhausted (" << max_variants << "): "
+                  << _media_info.shortUrl();
+            sendResponse(503, true, nullptr, KeyValue(),
+                         make_shared<HttpStringBody>("Too many motion MJPEG overlay variants"));
+            return;
+        }
+    }
+
+    motion_src->setOverlay(overlay_motion, overlay_roi);
+
+    KeyValue header;
+    header["Cache-Control"]               = "no-store";
+    header["Access-Control-Allow-Origin"] = "*";
+    sendResponse(200, false,
+        "multipart/x-mixed-replace; boundary=mjpeg_boundary",
+        header, nullptr, /*no_content_length=*/true);
+
+    setSocketFlags();
+
+    weak_ptr<HttpSession> weak_self =
+        static_pointer_cast<HttpSession>(shared_from_this());
+
+    _motion_reader = std::move(reader);
+    _motion_reader->setGetInfoCB([weak_self]() {
+        Any ret;
+        ret.set(static_pointer_cast<Session>(weak_self.lock()));
+        return ret;
+    });
+    _motion_reader->setDetachCB([weak_self]() {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) return;
+        strong_self->shutdown(SockException(Err_shutdown, "motion ring buffer detached"));
+    });
+    _motion_reader->setReadCB([weak_self](const MotionJpegFrame::Ptr &pkt) {
+        auto strong_self = weak_self.lock();
+        if (!strong_self || !pkt || !pkt->jpeg) return;
+
+        const auto &jpeg = pkt->jpeg;
+        string hdr =
+            "--mjpeg_boundary\r\n"
+            "Content-Type: image/jpeg\r\n"
+            "Content-Length: " + to_string(jpeg->size()) + "\r\n"
+            "X-Motion: "       + string(pkt->motion ? "1" : "0") + "\r\n"
+            "X-Timestamp: "    + to_string(pkt->stamp_ms) + "\r\n"
+            "X-Active-Cells: " + to_string(pkt->active_cells) + "\r\n"
+            "\r\n";
+        strong_self->onWrite(std::make_shared<BufferString>(std::move(hdr)), false);
+        strong_self->onWrite(std::make_shared<MjpegBuffer>(jpeg), false);
+        strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
+    });
+}
+#endif // ENABLE_MOTION
 
 // ---------------------------------------------------------------------------
 // API v2
@@ -1610,6 +1658,10 @@ bool HttpSession::checkLiveStreamByApp(const string &schema, const string &url_p
            if (err == "MaxRequest") {
                 // Too many connections
                 strong_self->sendResponse(429, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("429 Too Many Requests"));
+                return;
+            }
+            if (err == "TranscodeDisabled") {
+                strong_self->sendResponse(403, close_flag, nullptr, KeyValue(), std::make_shared<HttpStringBody>("Reduce quality on view is disabled"));
                 return;
             }
             // Playback authentication failed
@@ -1942,6 +1994,7 @@ bool HttpSession::checkLiveMotionStreamByApp() {
 #ifdef ENABLE_MOTION
     bool overlay_motion = !!atoi(_parser.getUrlArgs()["overlay_motion"].data());
     bool overlay_roi    = !!atoi(_parser.getUrlArgs()["overlay_roi"].data());
+    _motion_overlay_tag.clear();
 
     return checkLiveStreamByApp(MOTION_MJPEG_SCHEMA, "/media", ".motion.mjpeg",
         [this, overlay_motion, overlay_roi](const vector<MediaSource::Ptr> &list_src) {
@@ -1957,46 +2010,17 @@ bool HttpSession::checkLiveMotionStreamByApp() {
                 return;
             }
 
-            motion_src->setOverlay(overlay_motion, overlay_roi);
-
-            KeyValue header;
-            header["Cache-Control"]               = "no-store";
-            header["Access-Control-Allow-Origin"] = "*";
-            sendResponse(200, false,
-                "multipart/x-mixed-replace; boundary=mjpeg_boundary",
-                header, nullptr, /*no_content_length=*/true);
-
-            setSocketFlags();
-
+            // Same viewer overlay policy as the per-stream URL.
             weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
-
-            _motion_reader = motion_src->getRing()->attach(getPoller());
-            _motion_reader->setGetInfoCB([weak_self]() {
-                Any ret;
-                ret.set(static_pointer_cast<Session>(weak_self.lock()));
-                return ret;
-            });
-            _motion_reader->setDetachCB([weak_self]() {
+            applyViewOverlayPolicy(motion_src, [weak_self, overlay_motion, overlay_roi](const MediaSource::Ptr &src) {
                 auto strong_self = weak_self.lock();
                 if (!strong_self) return;
-                strong_self->shutdown(SockException(Err_shutdown, "motion ring buffer detached"));
-            });
-            _motion_reader->setReadCB([weak_self](const MotionJpegFrame::Ptr &pkt) {
-                auto strong_self = weak_self.lock();
-                if (!strong_self || !pkt || !pkt->jpeg) return;
-
-                const auto &jpeg = pkt->jpeg;
-                string hdr =
-                    "--mjpeg_boundary\r\n"
-                    "Content-Type: image/jpeg\r\n"
-                    "Content-Length: " + to_string(jpeg->size()) + "\r\n"
-                    "X-Motion: "       + string(pkt->motion ? "1" : "0") + "\r\n"
-                    "X-Timestamp: "    + to_string(pkt->stamp_ms) + "\r\n"
-                    "X-Active-Cells: " + to_string(pkt->active_cells) + "\r\n"
-                    "\r\n";
-                strong_self->onWrite(std::make_shared<BufferString>(std::move(hdr)), false);
-                strong_self->onWrite(std::make_shared<MjpegBuffer>(jpeg), false);
-                strong_self->onWrite(std::make_shared<BufferString>("\r\n"), true);
+                auto motion_src = dynamic_pointer_cast<MotionMjpegMediaSource>(src);
+                if (!motion_src || !motion_src->getRing()) {
+                    strong_self->sendNotFound(true);
+                    return;
+                }
+                strong_self->serveMotionMjpeg(motion_src, overlay_motion, overlay_roi);
             });
         });
 #else

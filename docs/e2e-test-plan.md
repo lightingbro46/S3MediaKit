@@ -250,6 +250,13 @@ Camera được nạp `watermarkTemplateId` trỏ tới một template trong `wa
 | OVL-11 | P1 | A | Xoá cấu hình camera rồi replay | 403 (không xác định được policy) |
 | OVL-12 | P2 | M | Template watermark có IMAGE (asset tải từ `/api/media-server/watermark/assets`) | ảnh hiện đúng vị trí/opacity |
 | OVL-13 | P1 | M | CPU khi 3 viewer khác policy xem cùng camera | ≤ 1 transcode cho mỗi tag policy (không nhân theo viewer) |
+| MJP-01 | P0 | A+M | Motion MJPEG role `viewer` (`check motion-mjpeg`, camera `--overlay 1 --motion 1`) | có watermark + mask; X-Timestamp tăng dần |
+| MJP-02 | P1 | A | Hai user cùng role và cùng user mở hai lần | mỗi phiên đều nhận frame; cùng role dùng chung biến thể (policy chưa mang tên user) |
+| MJP-03 | P0 | A+M | Motion MJPEG role `admin` | không watermark, không mask |
+| MJP-04 | P1 | A+M | Motion MJPEG role `wm-only` | chỉ watermark |
+| MJP-05 | P1 | A | 5 phiên MJPEG khác policy mở cùng lúc | `readerCount` của source `motion.mjpeg` gộp mọi biến thể |
+| MJP-06 | P0 | A+M | URL theo app `/media/<cam>.motion.mjpeg` role `viewer` | overlay giống URL theo stream (trước đây lọt source gốc) |
+| MJP-07 | P1 | A | `transcode=true` trên URL MJPEG | 400/403, không phát |
 
 ### REC — Ghi hình theo chế độ và lịch
 

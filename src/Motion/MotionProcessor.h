@@ -79,6 +79,13 @@ private:
     // Null when motion_demand=false and no muxer was provided.
     std::weak_ptr<MotionMjpegMediaSourceMuxer> _mjpeg_muxer;
 
+    // MJPEG frames are drawn, overlaid and encoded on one fixed poller: frames reach
+    // the rings in order and each viewer overlay is driven from a single thread.
+    toolkit::EventPoller::Ptr _mjpeg_poller;
+    // Per-variant overlay state; only touched on _mjpeg_poller.
+    struct MjpegRenderer;
+    std::shared_ptr<MjpegRenderer> _mjpeg_renderer;
+
     toolkit::ObjectStatistic<MotionProcessor> _statistic;
 };
 

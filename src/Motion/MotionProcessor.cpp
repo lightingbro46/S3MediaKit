@@ -4,6 +4,7 @@
 #include "Common/config.h"
 #include "Processor/MultiMediaSourceProcessor.h"
 #include "Thread/WorkThreadPool.h"
+#include "Transcode/TranscodeOverlay.h"
 
 using namespace std;
 using namespace toolkit;
@@ -13,6 +14,35 @@ namespace toolkit {
 }
 
 namespace mediakit {
+
+// Viewer overlays (watermark/privacy mask) of the motion MJPEG variants, keyed by
+// policy tag. TranscodeOverlay is not thread-safe: only used on _mjpeg_poller.
+struct MotionProcessor::MjpegRenderer {
+    std::map<std::string, TranscodeOverlay::Ptr> overlays;
+
+    // Drop the overlays of variants that lost their last viewer.
+    void prune(const MotionMjpegMediaSource::OverlayVariantMap &variants) {
+        for (auto it = overlays.begin(); it != overlays.end();) {
+            if (variants.find(it->first) == variants.end()) {
+                it = overlays.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    const TranscodeOverlay::Ptr &overlay(const MotionMjpegMediaSource::OverlayVariant &variant) {
+        auto &ref = overlays[variant.tag];
+        if (!ref) {
+            // May write the watermark SVG; the variant was resolved on the asset executor.
+            ref = std::make_shared<TranscodeOverlay>(variant.components, variant.options);
+            if (!ref->valid()) {
+                WarnL << "Motion MJPEG overlay variant " << variant.tag << " is unusable, its viewers get no frame";
+            }
+        }
+        return ref;
+    }
+};
 
 MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask, bool enable_record, const string &record_stream_id, int interval_ms, bool use_y_channel) 
     : _tuple(tuple), _roi_mask(roi_mask), _interval_ms(interval_ms), _use_y_channel(use_y_channel) {
@@ -38,6 +68,9 @@ MotionProcessor::MotionProcessor(const MediaTuple &tuple, const string &roi_mask
 
     GET_CONFIG(int, min_duration, Motion::kMinDurationMS);
     _event_ctr = std::make_shared<MotionEventController>(tuple, min_duration);
+
+    _mjpeg_poller = EventPollerPool::Instance().getPoller(false);
+    _mjpeg_renderer = std::make_shared<MjpegRenderer>();
 
     if (_enable_record) {
         GET_CONFIG(uint64_t, summary_window_ms, Motion::kSummaryWindowMS);
@@ -111,9 +144,11 @@ bool MotionProcessor::inputFrame(const FFmpegFrame::Ptr &frame) {
                 uint64_t pts     = stamp_ms;
                 int cells        = bmp ? bmp->active_cells : 0;
 
-                WorkThreadPool::Instance().getExecutor()->async([
+                auto renderer    = strong_self->_mjpeg_renderer;
+
+                strong_self->_mjpeg_poller->async([
                     last_frame, bmp, roi_mask, grid,
-                    ov_motion, ov_roi, weak_muxer,
+                    ov_motion, ov_roi, weak_muxer, renderer,
                     is_motion, pts, cells
                 ]() {
                     auto mux = weak_muxer.lock();
@@ -134,21 +169,43 @@ bool MotionProcessor::inputFrame(const FFmpegFrame::Ptr &frame) {
                         GridBoundaryHelper::draw_roi_border_yuv420p(avf, *roi_mask, grid, true, true);
                     }
 
-                    auto jpeg         = FFmpegUtils::encodeFrameToBuffer(clone);
-                    auto pkt          = std::make_shared<MotionJpegFrame>();
-                    pkt->motion       = is_motion;
-                    pkt->stamp_ms     = pts;
-                    pkt->active_cells = cells;
-                    pkt->jpeg         = jpeg;
-                    mux->onWrite(pkt);
+                    auto make_packet = [&](const FFmpegFrame::Ptr &image) -> MotionJpegFrame::Ptr {
+                        auto pkt          = std::make_shared<MotionJpegFrame>();
+                        pkt->motion       = is_motion;
+                        pkt->stamp_ms     = pts;
+                        pkt->active_cells = cells;
+                        pkt->jpeg         = FFmpegUtils::encodeFrameToBuffer(image);
+                        return pkt;
+                    };
+
+                    auto variants = mux->overlayVariants();
+                    // Skip the base encode when every viewer reads an overlay variant.
+                    if (variants.empty() || mux->hasBaseReaders()) {
+                        mux->onWrite(make_packet(clone));
+                    }
+
+                    // Watermark/privacy mask go over the grid so a masked area hides it too.
+                    renderer->prune(variants);
+                    for (auto &pr : variants) {
+                        auto &overlay = renderer->overlay(*pr.second);
+                        if (!overlay->valid()) continue;
+                        auto out = overlay->inputFrame(clone);
+                        // TranscodeOverlay hands back its input when it fails: never
+                        // let such a frame reach a viewer that requires an overlay.
+                        if (!out || out == clone) continue;
+                        pr.second->ring->write(make_packet(out), /*key=*/true);
+                    }
                 });
             }
         });
     }
 
     uint64_t pts_ms = ref->pts;
-    // Throttling: Only process frames at the specified interval to reduce CPU usage
-    if (pts_ms - _last_recv_time < static_cast<uint64_t>(_interval_ms)) {
+    // Throttling: Only process frames at the specified interval to reduce CPU usage.
+    // With B-frames the decoder hands pts out of order: measure the distance either way,
+    // an unsigned difference wraps when pts steps back and lets every frame through.
+    uint64_t elapsed = pts_ms >= _last_recv_time ? pts_ms - _last_recv_time : _last_recv_time - pts_ms;
+    if (elapsed < static_cast<uint64_t>(_interval_ms)) {
         return true;
     }
     _last_recv_time = pts_ms;

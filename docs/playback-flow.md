@@ -127,8 +127,8 @@ tương thích giữa các block được chọn sẽ bị tắt cho toàn repla
 Live và replay đều áp dụng overlay privacy của camera, bao gồm watermark và
 privacy mask. Exclusion hiện tại (`overlay=false`, watermark excluded roles,
 privacy-mask excluded roles) được giữ nguyên và đánh giá độc lập. Playback mở
-cho mọi giao thức: HTTP/HLS render overlay qua derived transcode, còn RTSP, RTMP,
-WebRTC và Motion MJPEG phát source gốc. Server chỉ trả `403` khi không xác định được chính
+cho mọi giao thức: HTTP/HLS render overlay qua derived transcode, Motion MJPEG render
+trong MotionProcessor theo từng tag policy, còn RTSP, RTMP và WebRTC phát source gốc. Server chỉ trả `403` khi không xác định được chính
 sách overlay. Stream có `.transcode.` chỉ được tin cậy khi source thực tế có origin
 `transcode` và tag policy ở cuối tên stream khớp với policy overlay của người xem. Overlay được áp dụng sau bước
 merge/chọn MainStream/SubStream nên tiếp tục tồn tại qua lần chuyển auto profile.
