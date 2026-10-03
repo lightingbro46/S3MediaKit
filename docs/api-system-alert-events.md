@@ -51,6 +51,7 @@ Sự kiện hồi phục đóng cảnh báo có cùng khoá.
 | Nghẽn IO ổ | `DiskIoWarning`, `DiskIoCritical` **MỚI** | `DiskIoRecovered` **MỚI** | `mountPoint` (rỗng = toàn máy) | |
 | Không ghi được ổ | `DiskReadOnly`, `DiskWriteFailed` **MỚI** | `DiskWritable` **MỚI** | `path` | |
 | Throughput pool tier | `PoolThroughputLow` **MỚI** | `PoolThroughputRecovered` **MỚI** | `poolId` | Chỉ khi bật tier storage |
+| Dung lượng giữ bản ghi | `RetentionCapacityLow` **MỚI** | `RetentionCapacityRecovered` **MỚI** | `scope` + `poolId` | Thư mục record (tắt tier) hoặc pool HOT (bật tier); mức trong `level` |
 
 Không có sự kiện nào cho mạng (`NetWork*`), vì MediaServer không đặt ngưỡng cho mạng.
 
@@ -75,6 +76,7 @@ Không có sự kiện nào cho mạng (`NetWork*`), vì MediaServer không đ�
 | Dung lượng ổ | 10 s | 1 | ≤ 10 s |
 | Không ghi được ổ | 10 s | 1 | ≤ 10 s |
 | Throughput pool tier | mỗi chu kỳ tiering (300 s) | 3 lần | ~15 phút |
+| Dung lượng giữ bản ghi | 300 s (chu kỳ dọn record hoặc chu kỳ tiering) | 3 lần | ~15 phút, sau ≥ 15 phút đo tốc độ ghi |
 
 Nếu các mẫu liên tiếp lẫn warning và critical (ví dụ CPU 95 %, 85 %, 95 % với ngưỡng 80/90), MediaServer báo
 mức nhẹ hơn là `CpuWarning`.
@@ -269,6 +271,83 @@ nguồn chậm cũng làm giảm `currentValue`. Khi nhận cảnh báo, hướn
 `storage.tiering_transfer_max_concurrent_per_pool`, nâng băng thông/hiệu năng pool đích hoặc giảm số camera
 dùng pool đó.
 
+### Dung lượng giữ bản ghi — MỚI
+
+Với tốc độ ghi hình hiện tại, vùng lưu bản ghi mới (thư mục record khi **tắt** tier storage, từng pool HOT khi
+**bật**) có đủ chỗ cho thời gian lưu đã cấu hình hay không. Không đủ thì bản ghi bị xoá (hoặc chuyển tầng) sớm
+hơn cấu hình.
+
+```json
+{"eventCode": "RetentionCapacityLow", "eventTime": 1759300000, "level": "CRITICAL",
+ "scope": "record_dir", "poolId": "", "poolName": "",
+ "path": "/opt/media/www/record", "mountPoint": "/opt/media",
+ "currentValue": "4.20", "threshold": "7.00", "ingestMbps": "12.50",
+ "usableBytes": 4535485464576, "requiredBytes": 7558557450240, "cameras": 24, "overflowAction": ""}
+
+{"eventCode": "RetentionCapacityLow", "eventTime": 1759300000, "level": "WARNING",
+ "scope": "hot_pool", "poolId": "pool-hot-01", "poolName": "SSD HOT",
+ "path": "/data/hot", "mountPoint": "",
+ "currentValue": "2.10", "threshold": "3.00", "ingestMbps": "40.00",
+ "usableBytes": 7610000000000, "requiredBytes": 10871635968000, "cameras": 120,
+ "overflowAction": "MOVE_TO_NEXT_TIER"}
+```
+
+| Trường | Kiểu | Ý nghĩa |
+|---|---|---|
+| `scope` | string | `record_dir` (tắt tier) hoặc `hot_pool` (bật tier). Khoá nhận diện = `scope` + `poolId` |
+| `level` | string | `WARNING`, `CRITICAL`; `NORMAL` ở sự kiện hồi phục |
+| `poolId`, `poolName` | string | Pool HOT; rỗng khi `scope = record_dir` |
+| `path` | string | Thư mục record, hoặc `mount_path` của pool HOT |
+| `mountPoint` | string | Mount chứa thư mục record; rỗng với pool HOT |
+| `currentValue` | string | Số ngày ghi hình vùng lưu chứa được ở tốc độ hiện tại = dung lượng dùng được ÷ dung lượng ghi mỗi ngày |
+| `threshold` | string | Số ngày cần = `requiredBytes` ÷ dung lượng ghi mỗi ngày |
+| `ingestMbps` | string | Tốc độ ghi hình vào vùng lưu, MiB/s |
+| `usableBytes` | number | Dung lượng dùng được: tổng × `storage.limitPercentUsage` (thư mục record) hoặc × `high_watermark_percent` của pool (HOT) |
+| `requiredBytes` | number | Σ theo camera: tốc độ ghi × thời gian phải giữ |
+| `cameras` | number | Số camera đang ghi có yêu cầu thời gian lưu |
+| `overflowAction` | string | Pool HOT: hành động khi đầy của policy (`MOVE_TO_NEXT_TIER`, `DELETE_OLDEST`, `STOP_RECORDING_AND_ALERT`) |
+
+Báo khi `requiredBytes × storage.retention_forecast_safety_factor` (mặc định 1,1) > `usableBytes`.
+
+- **Thời gian phải giữ:** thư mục record lấy `keepArchivedMinFor` của camera (bỏ camera đặt tối thiểu tự động);
+  pool HOT lấy `retain_until_days` của tầng HOT trong policy hiệu lực của camera (bỏ giá trị 0).
+- **Mức:** thư mục record luôn `CRITICAL` (sẽ xoá xuống dưới thời gian tối thiểu đã cam kết). Pool HOT là
+  `WARNING` khi mọi camera dùng `MOVE_TO_NEXT_TIER` (dữ liệu chuyển tầng sớm, không mất), `CRITICAL` khi có
+  camera dùng hành động xoá/dừng ghi.
+- **Tốc độ ghi** lấy từ dung lượng các segment ghi xong trong cửa sổ `storage.pool_throughput_window_seconds`
+  (mặc định 1 giờ), cần ít nhất 15 phút kể từ khi MediaServer khởi động. Chưa đủ, hoặc không biết dung lượng
+  (pool object không quota, mount không tìm thấy) thì giữ nguyên trạng thái.
+- **Nhắc lại** mỗi `storage.retention_forecast_alert_repeat_seconds` (mặc định 6 giờ), không phải 300 s như các
+  nhóm khác, vì tình trạng này đổi chậm. Phía API **không** được tự đóng cảnh báo nhóm này sau 15 phút không
+  nhận nhắc lại; nên dùng ngưỡng lớn hơn chu kỳ nhắc lại (ví dụ 7 giờ).
+- Pool HOT còn có thêm một dòng `storage_alerts` loại `TIER_RETENTION_CAPACITY_LOW` (tối đa một dòng/giờ/pool cho cùng mức; đổi mức thì ghi ngay).
+
+Số liệu hiện tại đọc qua `GET /media/mserver/systemStatistic` (và `/media/api/systemStatistic`), object
+`data.record_write`:
+
+```jsonc
+// Tắt tier storage: thư mục record
+"record_write": {
+  "mode": "record_dir",
+  "path": "/opt/media/www/record", "mount_point": "/opt/media",
+  "ingest_mbps": "12.50",          // tốc độ ghi hình lúc gọi, MiB/s; null khi chưa đủ 15 phút đo
+  "recording_cameras": 24,         // camera có segment trong cửa sổ đo
+  "cameras": 20,                   // camera có thời gian lưu tối thiểu (tính ở lần đánh giá gần nhất)
+  "usable_bytes": 0, "used_bytes": 0, "required_bytes": 0,
+  "retention_days_estimate": 21.4, "estimated_remaining_days": 3.2, "required_days": 7.0,
+  "state": "normal"                // "low" khi đang có RetentionCapacityLow
+}
+// Bật tier storage: tầng HOT
+"record_write": {
+  "mode": "hot_tier",
+  "ingest_mbps": "40.00", "recording_cameras": 120, "state": "normal",
+  "pools": [{"pool_id": "pool-hot-01", "pool_name": "SSD HOT", "ingest_mbps": "40.00",
+             "recording_cameras": 120, "retention_forecast": { /* như dashboard/detail */ }}]
+}
+```
+
+Các trường ngày/byte là kết quả lần đánh giá gần nhất (mỗi 300 s), `null` khi chưa có; `ingest_mbps` tính lúc gọi.
+
 ## Gợi ý xử lý phía API
 
 - **Trả 2xx cho mọi `eventCode`, kể cả mã không nhận ra.** Mã khác 2xx chỉ khiến MediaServer gửi lại (nếu có
@@ -280,7 +359,8 @@ dùng pool đó.
   - bỏ qua sự kiện có `eventTime` cũ hơn sự kiện mới nhất đã nhận cho cùng khoá (thứ tự đến không đảm bảo).
 - **Tự đóng cảnh báo cũ.** Cảnh báo còn hiệu lực sẽ được nhắc lại mỗi 300 s. Nếu quá khoảng 15 phút không
   nhận được nhắc lại thì có thể coi là đã hết. Cách này bù cho các trường hợp không có sự kiện hồi phục:
-  nhóm dung lượng ổ, MediaServer khởi động lại, hoặc sự kiện bị mất vì không retry.
+  nhóm dung lượng ổ, MediaServer khởi động lại, hoặc sự kiện bị mất vì không retry. Ngoại lệ: nhóm dung lượng
+  giữ bản ghi nhắc lại mỗi 6 giờ, nên ngưỡng tự đóng của nhóm này phải lớn hơn 6 giờ.
 - Với nhóm nghẽn IO, nên coi `mountPoint` rỗng là cảnh báo của cả máy chủ, hiển thị riêng với cảnh báo của
   từng ổ.
 
@@ -308,6 +388,10 @@ Ngưỡng CPU, RAM, dung lượng ổ và giới hạn người xem vẫn lấy 
 | `storage.pool_throughput_min_busy_seconds` | 60 | Thời gian chuyển tối thiểu trong cửa sổ trước khi có số đo |
 | `storage.pool_throughput_sustain_samples` | 3 | Số chu kỳ tiering liên tiếp trước khi báo |
 | `storage.pool_throughput_alert_repeat_seconds` | 300 | Chu kỳ nhắc lại throughput pool (≤ 0: không nhắc) |
+| `storage.retention_forecast_alert_enabled` | 1 | Bật cảnh báo dung lượng giữ bản ghi (0: vẫn tính, không báo) |
+| `storage.retention_forecast_safety_factor` | 1.1 | Dung lượng cần × hệ số này phải ≤ dung lượng dùng được |
+| `storage.retention_forecast_sustain_samples` | 3 | Số lần đánh giá (mỗi 300 s) liên tiếp trước khi báo |
+| `storage.retention_forecast_alert_repeat_seconds` | 21600 | Chu kỳ nhắc lại dung lượng giữ bản ghi (≤ 0: không nhắc) |
 
 ## Thay đổi so với bản trước
 
@@ -320,3 +404,4 @@ Ngưỡng CPU, RAM, dung lượng ổ và giới hạn người xem vẫn lấy 
 | Mã mới: `DiskIoWarning`, `DiskIoCritical`, `DiskIoRecovered` | Nhóm cảnh báo mới |
 | Mã mới: `DiskReadOnly`, `DiskWriteFailed`, `DiskWritable` | Nhóm cảnh báo mới, mức nghiêm trọng cao khi `isMainStorage=true` |
 | Mã mới: `PoolThroughputLow`, `PoolThroughputRecovered` | Nhóm cảnh báo mới, khoá `poolId` |
+| Mã mới: `RetentionCapacityLow`, `RetentionCapacityRecovered` | Nhóm cảnh báo mới, khoá `scope` + `poolId`, nhắc lại mỗi 6 giờ |

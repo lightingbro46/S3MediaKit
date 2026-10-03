@@ -1044,7 +1044,7 @@ Các thông tin cần hiển thị:
 - Expired segments chờ duyệt.
 - Protected/evidence video ranges.
 
-`dashboard/summary` dùng response gọn cho FE. `tier_summary[].write_mbps` là tổng lưu lượng ghi trung bình của các pool trong tier (xem 11.1); `estimated_remaining_days`, `camera_count` hiện là placeholder `0`. `dashboard/detail` trả model raw gồm summary, pools, policies, configured camera assignments, job counts và 20 tiering job gần nhất.
+`dashboard/summary` dùng response gọn cho FE. `tier_summary[].write_mbps`/`read_mbps` là tổng lưu lượng ghi/đọc trung bình của các pool trong tier, `record_ingest_mbps` là tốc độ ghi hình mới (xem 11.1); với HOT, `estimated_remaining_days`/`retention_days_estimate`/`retention_state` lấy từ dự báo của pool HOT chật nhất (xem 11.2), các tier khác `estimated_remaining_days` vẫn là `0`; `camera_count` hiện là placeholder `0`. `dashboard/detail` trả model raw gồm summary, pools, policies, configured camera assignments, job counts và 20 tiering job gần nhất.
 
 ### 11.1 Throughput Theo Pool
 
@@ -1057,6 +1057,18 @@ Các thông tin cần hiển thị:
 Pool đích bị coi là thiếu throughput khi còn backlog, đã đủ 15 phút quan sát và tốc độ chuyển (byte ÷ thời gian có transfer chạy) < nhu cầu (tốc độ ghi hình của camera được route) × `pool_throughput_safety_factor`. Trạng thái phải giữ `pool_throughput_sustain_samples` cycle liên tiếp mới đổi. Còn backlog mà không đo được tốc độ (không transfer nào trong cửa sổ) thì giữ nguyên trạng thái. Khi vào trạng thái thiếu: `WarnL`, dòng `storage_alerts` loại `TIER_POOL_THROUGHPUT_LOW` (tối đa một lần/giờ/pool) và `kBroadcastPoolThroughputAlert`, WebHook gửi `PoolThroughputLow`/`PoolThroughputRecovered` qua `on_system_alert`.
 
 Nhu cầu dựa trên tốc độ ghi hình chứ không dựa trên số job được tạo, vì job được tạo dồn theo `tiering_split_granularity_seconds` và một backlog cũ có thể được queue cùng lúc. Giới hạn: tốc độ chuyển gồm cả đọc từ pool nguồn; dữ liệu bị xoá ở tier nguồn trước khi kịp chuyển vẫn được tính vào nhu cầu.
+
+### 11.2 Dự Báo Dung Lượng Giữ Bản Ghi
+
+Ghi hình `fwrite` đồng bộ trên poller, không có hàng đợi, nên không có cảnh báo "ghi không kịp" cho HOT; nghẽn đĩa do `DiskIoMonitor` báo. Thay vào đó MediaServer dự báo pool HOT có giữ nổi thời gian lưu đã cấu hình hay không.
+
+- Tốc độ ghi lấy từ `registerHotSegmentRange()` (dung lượng segment mới, `kBroadcastRecordMP4`), theo từng (pool HOT, camera), cửa sổ `pool_throughput_window_seconds`; `PoolThroughputTracker::ingestRates()` tính tại chỗ, không chờ tiering cycle.
+- Mỗi tiering cycle, ngay sau `evaluatePoolThroughput()`, `evaluateRetentionForecast()` tính cho từng pool HOT enabled: dùng được = `total_bytes × high_watermark_percent`, cần = Σ tốc độ camera × `retain_until_days` của tầng HOT trong effective policy. Cần × `retention_forecast_safety_factor` > dùng được thì thiếu: `WARNING` nếu mọi camera `MOVE_TO_NEXT_TIER`, `CRITICAL` nếu có camera xoá/dừng ghi. Đổi trạng thái sau `retention_forecast_sustain_samples` cycle; khi thiếu: `WarnL`, `storage_alerts` loại `TIER_RETENTION_CAPACITY_LOW` (tối đa một lần/giờ/pool cho cùng mức, đổi mức thì ghi ngay), `kBroadcastRetentionForecastAlert` → WebHook `RetentionCapacityLow`/`RetentionCapacityRecovered`.
+- Pool không biết dung lượng (`total_bytes = 0`) hoặc chưa đủ 15 phút quan sát thì không có dự báo, giữ nguyên trạng thái.
+- `dashboard/detail`: `pools[]` có `throughput` (như `pool/list`) và, với pool HOT, `retention_forecast`; `summary.tiers.{HOT,WARM,COLD}` có `write_mbps`, `read_mbps`, `record_ingest_mbps`, HOT thêm `estimated_remaining_days`, `retention_days_estimate`.
+- `systemStatistic.record_write` (`mode = hot_tier`): tổng tốc độ ghi vào tầng HOT và từng pool HOT kèm `retention_forecast`.
+
+Khi **tắt** tier storage, `StorageManager` làm việc tương tự cho thư mục record: listener `kBroadcastRecordMP4` riêng, đánh giá ở cuối `enforceStoragePolicy()` (300 s), dùng được = tổng mount × `storage.limitPercentUsage`, cần = Σ tốc độ × `keepArchivedMinFor` (bỏ camera tối thiểu tự động), thiếu luôn là `CRITICAL`; chỉ có webhook (không có bảng `storage_alerts`). `systemStatistic.record_write` có `mode = record_dir`.
 
 ## 12. Cấu Hình Và Luồng Gọi Nội Bộ
 

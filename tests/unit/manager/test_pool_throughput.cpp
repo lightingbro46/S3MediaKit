@@ -184,3 +184,36 @@ TEST(PoolTransferScope, UnfinishedScopeCountsAsFailedTransfer) {
     EXPECT_EQ(5 * kMiB, cold.write_bytes);
     EXPECT_EQ(5 * kMiB, hot.read_bytes);
 }
+
+TEST(PoolThroughputTracker, IngestRatesPerCameraOfOnePool) {
+    PoolThroughputTracker t;
+    feedRecording(t, "cam-a", 0, 1200);
+    for (int64_t s = 0; s < 1200; s += 10) {
+        t.addIngest("cam-b", "hot", 5 * kMiB, s * kSec);
+        t.addIngest("cam-c", "hot-2", 10 * kMiB, s * kSec);
+    }
+
+    auto rates = t.ingestRates("hot", 600, 1200 * kSec);
+    EXPECT_TRUE(rates.valid);
+    EXPECT_NEAR(1.5, rates.mbps, 0.05);
+    ASSERT_EQ(2u, rates.camera_mbps.size());
+    EXPECT_NEAR(1.0, rates.camera_mbps["cam-a"], 0.05);
+    EXPECT_NEAR(0.5, rates.camera_mbps["cam-b"], 0.05);
+
+    EXPECT_FALSE(t.ingestRates("missing", 600, 1200 * kSec).camera_mbps.size());
+}
+
+TEST(PoolThroughputTracker, IngestRatesNeedObservationTimeAndForgetIdleCameras) {
+    PoolThroughputTracker t;
+    feedRecording(t, "cam-a", 0, 300);
+    // Window 3600 s: valid only after min(window, 15 min) of observation.
+    EXPECT_FALSE(t.ingestRates("hot", 3600, 300 * kSec).valid);
+    auto rates = t.ingestRates("hot", 3600, 1000 * kSec);
+    EXPECT_TRUE(rates.valid);
+    EXPECT_NEAR(300.0 / 1000.0, rates.mbps, 0.01);
+
+    // Nothing recorded for longer than the window: the camera drops out.
+    rates = t.ingestRates("hot", 600, 2000 * kSec);
+    EXPECT_TRUE(rates.camera_mbps.empty());
+    EXPECT_EQ(0u, rates.bytes);
+}

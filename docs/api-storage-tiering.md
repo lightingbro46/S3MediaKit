@@ -655,7 +655,17 @@ Response gồm `total_bytes`, `used_bytes`, `free_bytes`, `used_percent`, `statu
 `capacity_complete`, `capacity_unavailable_pool_count`, `tier_summary[]`,
 `active_tiering_jobs`, `failed_tiering_jobs`, `active_restore_jobs`, `alerts[]`.
 
-Trong `tier_summary`, `estimated_remaining_days` và `write_mbps` hiện là `0`.
+Mỗi phần tử `tier_summary[]`:
+
+| Trường | Kiểu | Ý nghĩa |
+|---|---|---|
+| `write_mbps`, `read_mbps` | number | Tổng lưu lượng ghi/đọc trung bình (MiB/s) của các pool trong tier, theo chu kỳ tiering gần nhất |
+| `record_ingest_mbps` | number | Tốc độ ghi hình mới vào tier (MiB/s), tính lúc gọi; chỉ HOT khác `0` |
+| `estimated_remaining_days` | number | HOT: số ngày tới khi pool HOT chật nhất chạm `high_watermark_percent` ở tốc độ ghi hiện tại; `0` khi chưa có dự báo và với WARM/COLD |
+| `retention_days_estimate` | number \| null | HOT: số ngày ghi hình pool HOT chật nhất chứa được dưới watermark; `null` khi chưa có |
+| `retention_state` | string | `low` khi có pool HOT không giữ nổi `retain_until_days` của tầng HOT (xem `RetentionCapacityLow` trong [api-system-alert-events.md](api-system-alert-events.md)), ngược lại `normal` |
+
+Dự báo cần ít nhất 15 phút đo tốc độ ghi và được tính lại mỗi chu kỳ tiering (300 s).
 
 ### 8.2 Detail
 
@@ -681,6 +691,28 @@ Trong `tier_summary`, `estimated_remaining_days` và `write_mbps` hiện là `0`
 ```
 
 Khác với summary gọn, detail dùng `TierStorageManager::getDashboardDetail()` và trả model raw của pool/policy/job.
+
+- `summary.tiers.{HOT,WARM,COLD}` thêm `write_mbps`, `read_mbps`, `record_ingest_mbps` (number, MiB/s); `HOT` thêm
+  `estimated_remaining_days`, `retention_days_estimate` (number hoặc `null` khi chưa có dự báo).
+- Mỗi phần tử `pools[]` thêm `throughput` (cùng object với `pool/list`, `null` trước chu kỳ tiering đầu tiên). Pool
+  HOT thêm `retention_forecast`:
+
+```json
+"retention_forecast": {
+  "ingest_mbps": "12.50",
+  "cameras": 24,
+  "usable_bytes": 7610000000000,
+  "used_bytes": 5120000000000,
+  "required_bytes": 6480000000000,
+  "retention_days_estimate": 6.73,
+  "estimated_remaining_days": 2.2,
+  "required_days": 5.73,
+  "state": "normal"
+}
+```
+
+`ingest_mbps` và các trường ngày là `null` khi chưa đủ 15 phút đo hoặc pool không biết dung lượng; `cameras` và
+`required_bytes` chỉ tính camera có `retain_until_days > 0` ở tầng HOT.
 
 ## 9. Alert
 

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <iterator>
 #include "PoolThroughputTracker.h"
 
 using namespace std;
@@ -133,8 +134,55 @@ void PoolThroughputTracker::addIngest(const std::string &camera_id, const std::s
     }
     _cameras[camera_id].bucketAt(now_ms).bytes += bytes;
     if (!hot_pool_id.empty()) {
-        pool(hot_pool_id).ingest.bucketAt(now_ms).bytes += bytes;
+        auto &st = pool(hot_pool_id);
+        st.ingest.bucketAt(now_ms).bytes += bytes;
+        st.camera_ingest[camera_id].bucketAt(now_ms).bytes += bytes;
     }
+}
+
+void PoolThroughputTracker::pruneCameras(int64_t oldest_ms) {
+    for (auto it = _cameras.begin(); it != _cameras.end();) {
+        it->second.prune(oldest_ms);
+        if (it->second.buckets.empty()) {
+            it = _cameras.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+PoolIngestRates PoolThroughputTracker::ingestRates(const std::string &pool_id, int window_sec, int64_t now_ms) {
+    PoolIngestRates out;
+    const int64_t window_ms = static_cast<int64_t>(std::max(60, window_sec)) * 1000;
+    const int64_t oldest_ms = now_ms - window_ms;
+
+    lock_guard<mutex> lck(_mtx);
+    // Nothing else prunes the camera meters where evaluate() never runs (tier storage off).
+    pruneCameras(oldest_ms);
+    const int64_t observed_ms = _started_ms < 0 ? 0 : std::min(window_ms, now_ms - _started_ms);
+    out.valid = observed_ms >= std::min(window_ms, kMinDemandObserveMs);
+    auto it = _pools.find(pool_id);
+    if (it == _pools.end() || observed_ms <= 0) {
+        return out;
+    }
+    const double observed_sec = observed_ms / 1000.0;
+    auto &st = it->second;
+    int64_t busy = 0;
+    st.ingest.prune(oldest_ms);
+    st.ingest.sum(oldest_ms, out.bytes, busy);
+    out.mbps = static_cast<float>(out.bytes / kMiB / observed_sec);
+    for (auto cam = st.camera_ingest.begin(); cam != st.camera_ingest.end();) {
+        cam->second.prune(oldest_ms);
+        if (cam->second.buckets.empty()) {
+            cam = st.camera_ingest.erase(cam);
+            continue;
+        }
+        uint64_t bytes = 0;
+        cam->second.sum(oldest_ms, bytes, busy);
+        out.camera_mbps[cam->first] = static_cast<float>(bytes / kMiB / observed_sec);
+        ++cam;
+    }
+    return out;
 }
 
 void PoolThroughputTracker::setRoutes(const std::map<std::string, std::set<std::string>> &routes) {
@@ -156,17 +204,12 @@ std::vector<PoolThroughputAlert> PoolThroughputTracker::evaluate(const std::map<
 
     // Recording rate per camera over the window.
     std::map<std::string, double> camera_mbps;
-    for (auto it = _cameras.begin(); it != _cameras.end();) {
-        it->second.prune(oldest_ms);
-        if (it->second.buckets.empty()) {
-            it = _cameras.erase(it);
-            continue;
-        }
+    pruneCameras(oldest_ms);
+    for (const auto &kv : _cameras) {
         uint64_t bytes = 0;
         int64_t busy = 0;
-        it->second.sum(oldest_ms, bytes, busy);
-        camera_mbps[it->first] = observed_sec > 0 ? bytes / kMiB / observed_sec : 0.0;
-        ++it;
+        kv.second.sum(oldest_ms, bytes, busy);
+        camera_mbps[kv.first] = observed_sec > 0 ? bytes / kMiB / observed_sec : 0.0;
     }
 
     std::set<std::string> pool_ids;
@@ -191,6 +234,10 @@ std::vector<PoolThroughputAlert> PoolThroughputTracker::evaluate(const std::map<
         st.write.prune(oldest_ms);
         st.read.prune(oldest_ms);
         st.ingest.prune(oldest_ms);
+        for (auto cam = st.camera_ingest.begin(); cam != st.camera_ingest.end();) {
+            cam->second.prune(oldest_ms);
+            cam = cam->second.buckets.empty() ? st.camera_ingest.erase(cam) : std::next(cam);
+        }
 
         int64_t write_busy = 0, read_busy = 0, ingest_busy = 0;
         uint64_t ingest_bytes = 0;
@@ -261,6 +308,7 @@ std::vector<PoolThroughputAlert> PoolThroughputTracker::evaluate(const std::map<
     for (auto it = _pools.begin(); it != _pools.end();) {
         const auto &st = it->second;
         const bool idle = st.write.buckets.empty() && st.read.buckets.empty() && st.ingest.buckets.empty() &&
+                          st.camera_ingest.empty() &&
                           st.write.active == 0 && st.read.active == 0 && st.alert.level == 0;
         if (idle && !_routes.count(it->first) && !backlog.count(it->first)) {
             stats_map.erase(it->first);

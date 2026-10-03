@@ -8,6 +8,7 @@
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "Common/BlockingExecutors.h"
+#include "Record/Recorder.h"
 #include "TimeRecorderManager.h"
 #include "TimeRebuilder.h"
 #include "Camera/GenericRtspCameraImp.h"
@@ -488,6 +489,122 @@ void StorageManager::enforceStoragePolicy() {
     // remove expired items associated with media segment
     removeExpiredBookmark(keep_time_map);
     removeExpiredStatusGap(keep_time_map);
+
+    evaluateRetentionForecast();
+}
+
+static const char kRecordDirKey[] = "record_dir";
+
+static string recordDirPath() {
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
+    GET_CONFIG(string, app_name, Record::kAppName);
+    return File::absolutePath(app_name, mp4_save_path);
+}
+
+void StorageManager::addRecordIngest(const std::string &camera_id, uint64_t bytes) {
+    _record_ingest.addIngest(camera_id, kRecordDirKey, bytes, steadyNowMs());
+}
+
+// Minimum retention per camera in seconds; cameras on automatic minimum have none.
+static unordered_map<string, int64_t> cameraMinRetention() {
+    unordered_map<string, int64_t> out;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(src->getListener().lock());
+        if (!impl) {
+            return;
+        }
+        auto option = impl->getCameraOption();
+        if (!option.keepArchivedMinForAuto && option.keepArchivedMinFor > 0) {
+            out[src->getDeviceTuple().device_id] = static_cast<int64_t>(option.keepArchivedMinFor);
+        }
+    });
+    return out;
+}
+
+void StorageManager::evaluateRetentionForecast() {
+    GET_CONFIG(bool, alert_enabled, Storage::kRetentionForecastAlertEnabled);
+    GET_CONFIG(float, safety_factor, Storage::kRetentionForecastSafetyFactor);
+    GET_CONFIG(int, sustain_samples, Storage::kRetentionForecastSustainSamples);
+    GET_CONFIG(int, repeat_sec, Storage::kRetentionForecastAlertRepeatSeconds);
+    GET_CONFIG(int, window_sec, Storage::kPoolThroughputWindowSeconds);
+    GET_CONFIG(int, limit_percent_usage, Storage::kLimitPercentUsage);
+
+    const string record_path = recordDirPath();
+    DiskPartition partition;
+    const bool mounted = GlobalMonitor::Instance().findMountPointInfo(record_path, partition, false);
+    const int64_t now_ms = steadyNowMs();
+    auto rates = _record_ingest.ingestRates(kRecordDirKey, window_sec, now_ms);
+    auto min_retention = cameraMinRetention();
+
+    RetentionForecastInput in;
+    in.ingest_valid = rates.valid && mounted;
+    in.ingest_mbps = rates.mbps;
+    in.total_bytes = static_cast<int64_t>(partition.total_bytes);
+    in.used_bytes = static_cast<int64_t>(partition.used_bytes);
+    // Same clamp as estimateSpaceToReclaim(): deletion starts above this usage.
+    in.usable_percent = std::min(99, std::max(0, limit_percent_usage));
+    // Short of the minimum retention means enforceStoragePolicy() deletes below it: data loss.
+    in.short_level = 2;
+    for (const auto &cam : rates.camera_mbps) {
+        RetentionCameraDemand demand;
+        demand.camera_id = cam.first;
+        demand.mbps = cam.second;
+        auto it = min_retention.find(cam.first);
+        demand.required_sec = it == min_retention.end() ? 0 : it->second;
+        in.cameras.push_back(demand);
+    }
+
+    auto forecast = computeRetentionForecast(in, safety_factor);
+    const bool emit = _record_forecast.update(kRecordDirKey, forecast, sustain_samples,
+                                              static_cast<int64_t>(repeat_sec) * 1000, now_ms);
+    if (!emit || !alert_enabled) {
+        return;
+    }
+    if (forecast.level > 0) {
+        WarnL << "Record directory " << record_path << " holds " << forecast.retention_days_estimate
+              << " day(s) at " << forecast.ingest_mbps << " MiB/s, below the " << forecast.required_days
+              << " day(s) of minimum retention of " << forecast.cameras << " camera(s)";
+    } else {
+        InfoL << "Record directory " << record_path << " holds the minimum retention again ("
+              << forecast.retention_days_estimate << " day(s))";
+    }
+    const string scope = kRecordDirKey;
+    const string empty;
+    const int level = forecast.level;
+    const double retention_days = forecast.retention_days_estimate;
+    const double required_days = forecast.required_days;
+    const float ingest_mbps = forecast.ingest_mbps;
+    const int64_t usable_bytes = forecast.usable_bytes;
+    const int64_t required_bytes = forecast.required_bytes;
+    const int cameras = forecast.cameras;
+    if (!NOTICE_EMIT(BroadcastRetentionForecastAlertArgs, Broadcast::kBroadcastRetentionForecastAlert, scope, empty,
+                     empty, record_path, partition.mount_point, level, retention_days, required_days, ingest_mbps,
+                     usable_bytes, required_bytes, cameras, empty)) {
+        TraceL << "No one listen retention forecast alert event";
+    }
+}
+
+Json::Value StorageManager::makeRecordWriteJson() {
+    GET_CONFIG(int, window_sec, Storage::kPoolThroughputWindowSeconds);
+    const string record_path = recordDirPath();
+    DiskPartition partition;
+    GlobalMonitor::Instance().findMountPointInfo(record_path, partition, false);
+    auto rates = _record_ingest.ingestRates(kRecordDirKey, window_sec, steadyNowMs());
+
+    Json::Value val;
+    RetentionForecast forecast;
+    if (_record_forecast.get(kRecordDirKey, forecast)) {
+        // Days and requirement as of the last maintenance cycle, the rate as of now.
+        val = forecast.toJson();
+    } else {
+        val = RetentionForecast().toJson();
+    }
+    val["mode"] = kRecordDirKey;
+    val["path"] = record_path;
+    val["mount_point"] = partition.mount_point;
+    val["ingest_mbps"] = rates.valid ? Json::Value(sanitize_for_json(rates.mbps)) : Json::Value(Json::nullValue);
+    val["recording_cameras"] = static_cast<int>(rates.camera_mbps.size());
+    return val;
 }
 
 void StorageManager::postMaintenanceCycle(bool full) {
@@ -630,9 +747,22 @@ static onceToken g_token(
             StorageManager::Instance().rebuildTimeFile(device_id, threshold);
         }, false);
     });
+#if !defined(ENABLE_TIER_STORAGE) && defined(ENABLE_MP4)
+    // Recording rate of the record directory (tier storage counts HOT pools in TierStorageManager).
+    // Only locks a mutex: it must not throw or block the listeners after it (encryption, motion).
+    NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastRecordMP4, [](BroadcastRecordMP4Args) {
+        const string record_path = recordDirPath() + "/";
+        if (info.file_path.compare(0, record_path.size(), record_path) == 0) {
+            StorageManager::Instance().addRecordIngest(info.app, info.file_size);
+        }
+    });
+#endif
 }, 
 []() {
     NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastRebuildTimeFile);
+#if !defined(ENABLE_TIER_STORAGE) && defined(ENABLE_MP4)
+    NoticeCenter::Instance().delListener(&s_tag, Broadcast::kBroadcastRecordMP4);
+#endif
 });
 
 } // namespace managerkit

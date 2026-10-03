@@ -2743,6 +2743,7 @@ bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_cou
     unregisterPoolObjStorage(pool_id);
     unregisterPoolFileStorage(pool_id);
     _throughput.removePool(pool_id);
+    _hot_forecast.remove(pool_id);
     return true;
 }
 
@@ -3461,6 +3462,11 @@ void TierStorageManager::runTieringCycle() {
             self->evaluatePoolThroughput(camera_policies);
         } catch (const std::exception &e) {
             WarnL << "Error evaluating pool throughput: " << e.what();
+        }
+        try {
+            self->evaluateRetentionForecast(camera_policies);
+        } catch (const std::exception &e) {
+            WarnL << "Error evaluating retention forecast: " << e.what();
         }
 
         // Early moves are balanced across cameras, so plan them per pool first.
@@ -7294,6 +7300,11 @@ Json::Value TierStorageManager::getDashboardSummary() {
         tiers_summary[tier_name]["total_bytes"] = 0;
         tiers_summary[tier_name]["pool_count"]  = 0;
     }
+    // Average traffic (last tiering cycle) and recording rate (now) per tier, MiB/s.
+    std::map<std::string, float> tier_write, tier_read, tier_ingest;
+    // HOT only: the tightest pool forecast.
+    double hot_remaining_days = -1;
+    double hot_retention_days = -1;
 
     for (const auto &p : pools) {
         if (!p.enabled) continue;
@@ -7306,6 +7317,19 @@ Json::Value TierStorageManager::getDashboardSummary() {
             tiers_summary[p.tier]["total_bytes"] = static_cast<Json::Int64>(
                 tiers_summary[p.tier]["total_bytes"].asInt64() + p.total_bytes);
             tiers_summary[p.tier]["pool_count"]  = tiers_summary[p.tier]["pool_count"].asInt() + 1;
+        }
+        PoolThroughputStats throughput;
+        if (getPoolThroughput(p.id, throughput)) {
+            tier_write[p.tier] += throughput.avg_write_mbps;
+            tier_read[p.tier] += throughput.avg_read_mbps;
+        }
+        tier_ingest[p.tier] += getPoolIngest(p.id).mbps;
+        RetentionForecast forecast;
+        if (getPoolRetentionForecast(p.id, forecast) && forecast.retention_days_estimate >= 0) {
+            if (hot_remaining_days < 0 || forecast.estimated_remaining_days < hot_remaining_days)
+                hot_remaining_days = forecast.estimated_remaining_days;
+            if (hot_retention_days < 0 || forecast.retention_days_estimate < hot_retention_days)
+                hot_retention_days = forecast.retention_days_estimate;
         }
 
         // Escalate overall health
@@ -7324,6 +7348,16 @@ Json::Value TierStorageManager::getDashboardSummary() {
     v["usage_pct"]         = (total_cap > 0) ? (100.0f * static_cast<float>(total_used) / static_cast<float>(total_cap)) : 0.0f;
     v["overall_health"]    = worst_status;
     v["pool_count"]        = static_cast<int>(pools.size());
+    auto round2 = [](double x) { return std::round(x * 100.0) / 100.0; };
+    for (const auto &tier_name : std::vector<std::string>{"HOT", "WARM", "COLD"}) {
+        tiers_summary[tier_name]["write_mbps"] = round2(tier_write[tier_name]);
+        tiers_summary[tier_name]["read_mbps"] = round2(tier_read[tier_name]);
+        tiers_summary[tier_name]["record_ingest_mbps"] = round2(tier_ingest[tier_name]);
+    }
+    tiers_summary["HOT"]["estimated_remaining_days"] =
+        hot_remaining_days >= 0 ? Json::Value(round2(hot_remaining_days)) : Json::Value(Json::nullValue);
+    tiers_summary["HOT"]["retention_days_estimate"] =
+        hot_retention_days >= 0 ? Json::Value(round2(hot_retention_days)) : Json::Value(Json::nullValue);
     v["tiers"]             = tiers_summary;
 
     TieringJobImp job_imp;
@@ -7340,7 +7374,16 @@ Json::Value TierStorageManager::getDashboardDetail() {
     auto pools = listPools();
     Json::Value pools_arr(Json::arrayValue);
     for (const auto &p : pools) {
-        pools_arr.append(p.toJson());
+        auto pv = p.toJson();
+        // Same object as pool/list and pool/detail; null before the first tiering cycle.
+        PoolThroughputStats throughput;
+        pv["throughput"] = getPoolThroughput(p.id, throughput) ? throughput.toJson() : Json::Value(Json::nullValue);
+        if (p.tier == tierTypeToString(HotTier)) {
+            RetentionForecast forecast;
+            pv["retention_forecast"] = getPoolRetentionForecast(p.id, forecast) ? forecast.toJson()
+                                                                               : Json::Value(Json::nullValue);
+        }
+        pools_arr.append(pv);
     }
     data["pools"] = pools_arr;
 
@@ -7405,6 +7448,168 @@ Json::Value TierStorageManager::getDashboardDetail() {
 // ===================================================================
 bool TierStorageManager::getPoolThroughput(const std::string &pool_id, PoolThroughputStats &out) const {
     return _throughput.getStats(pool_id, out);
+}
+
+PoolIngestRates TierStorageManager::getPoolIngest(const std::string &pool_id) {
+    GET_CONFIG(int, window_sec, Storage::kPoolThroughputWindowSeconds);
+    return _throughput.ingestRates(pool_id, window_sec, steadyNowMs());
+}
+
+bool TierStorageManager::getPoolRetentionForecast(const std::string &pool_id, RetentionForecast &out) const {
+    return _hot_forecast.get(pool_id, out);
+}
+
+Json::Value TierStorageManager::makeHotWriteJson() {
+    std::vector<StoragePool> hot_pools;
+    {
+        std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+        for (const auto &kv : _pool_cache) {
+            if (kv.second.enabled && kv.second.tier == tierTypeToString(HotTier))
+                hot_pools.push_back(kv.second);
+        }
+    }
+    std::sort(hot_pools.begin(), hot_pools.end(), [](const StoragePool &a, const StoragePool &b) {
+        return a.name < b.name;
+    });
+
+    Json::Value pools(Json::arrayValue);
+    std::set<std::string> cameras;
+    float total_mbps = 0.0f;
+    bool valid = false;
+    bool low = false;
+    for (const auto &pool : hot_pools) {
+        auto rates = getPoolIngest(pool.id);
+        Json::Value item;
+        item["pool_id"] = pool.id;
+        item["pool_name"] = pool.name;
+        item["ingest_mbps"] = rates.valid ? Json::Value(sanitize_for_json(rates.mbps)) : Json::Value(Json::nullValue);
+        item["recording_cameras"] = static_cast<int>(rates.camera_mbps.size());
+        RetentionForecast forecast;
+        if (getPoolRetentionForecast(pool.id, forecast)) {
+            item["retention_forecast"] = forecast.toJson();
+            low = low || forecast.level > 0;
+        } else {
+            item["retention_forecast"] = Json::nullValue;
+        }
+        pools.append(item);
+        valid = valid || rates.valid;
+        total_mbps += rates.mbps;
+        for (const auto &cam : rates.camera_mbps)
+            cameras.insert(cam.first);
+    }
+
+    Json::Value val;
+    val["mode"] = "hot_tier";
+    val["ingest_mbps"] = valid ? Json::Value(sanitize_for_json(total_mbps)) : Json::Value(Json::nullValue);
+    val["recording_cameras"] = static_cast<int>(cameras.size());
+    val["state"] = low ? "low" : "normal";
+    val["pools"] = pools;
+    return val;
+}
+
+void TierStorageManager::evaluateRetentionForecast(
+        const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies) {
+    GET_CONFIG(bool, alert_enabled, Storage::kRetentionForecastAlertEnabled);
+    GET_CONFIG(float, safety_factor, Storage::kRetentionForecastSafetyFactor);
+    GET_CONFIG(int, sustain_samples, Storage::kRetentionForecastSustainSamples);
+    GET_CONFIG(int, repeat_sec, Storage::kRetentionForecastAlertRepeatSeconds);
+
+    // HOT tier of each camera's effective policy.
+    std::unordered_map<std::string, PolicyTierConfig> hot_tiers;
+    for (const auto &item : camera_policies) {
+        if (item.second.enabled == 0)
+            continue;
+        for (const auto &t : item.second.parsedTiers()) {
+            if (t.enabled && t.tier == tierTypeToString(HotTier)) {
+                hot_tiers[item.first] = t;
+                break;
+            }
+        }
+    }
+
+    const std::string move_action = overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER);
+    for (const auto &pool : listPools(tierTypeToString(HotTier))) {
+        if (!pool.enabled)
+            continue;
+        const int64_t now_ms = steadyNowMs();
+        auto rates = getPoolIngest(pool.id);
+
+        RetentionForecastInput in;
+        // Unknown capacity (object storage without a quota, unreachable mount) gives no forecast.
+        in.ingest_valid = rates.valid && pool.total_bytes > 0;
+        in.ingest_mbps = rates.mbps;
+        in.total_bytes = pool.total_bytes;
+        in.used_bytes = pool.used_bytes;
+        in.usable_percent = pool.high_watermark_percent;
+        // Moved early to the next tier is a warning; deleted early loses recordings.
+        in.short_level = 1;
+        std::string overflow_action = move_action;
+        for (const auto &cam : rates.camera_mbps) {
+            RetentionCameraDemand demand;
+            demand.camera_id = cam.first;
+            demand.mbps = cam.second;
+            auto it = hot_tiers.find(cam.first);
+            if (it != hot_tiers.end() && it->second.retain_until_days > 0) {
+                demand.required_sec = static_cast<int64_t>(it->second.retain_until_days) * 86400;
+                if (it->second.overflow_action != move_action) {
+                    in.short_level = 2;
+                    overflow_action = it->second.overflow_action;
+                }
+            }
+            in.cameras.push_back(demand);
+        }
+
+        auto forecast = computeRetentionForecast(in, safety_factor);
+        const bool emit = _hot_forecast.update(pool.id, forecast, sustain_samples,
+                                               static_cast<int64_t>(repeat_sec) * 1000, now_ms);
+        if (!emit || !alert_enabled)
+            continue;
+
+        if (forecast.level == 0) {
+            _retention_alerted_at.erase(pool.id);
+            InfoL << "HOT pool " << pool.id << " holds the configured retention again ("
+                  << format_float_2f(static_cast<float>(forecast.retention_days_estimate)) << " day(s))";
+        } else {
+            const std::string message = StrPrinter
+                << "At " << format_float_2f(forecast.ingest_mbps) << " MiB/s the pool holds "
+                << format_float_2f(static_cast<float>(forecast.retention_days_estimate))
+                << " day(s) below its high watermark, short of the "
+                << format_float_2f(static_cast<float>(forecast.required_days))
+                << " day(s) the HOT retention of " << forecast.cameras << " camera(s) needs ("
+                << forecast.required_bytes << " of " << forecast.usable_bytes << " bytes); overflow action "
+                << overflow_action;
+            WarnL << "HOT pool " << pool.id << ": " << message;
+            const int64_t now = static_cast<int64_t>(time(nullptr));
+            // One row an hour per pool and level: a move to another level is always recorded.
+            auto &alerted = _retention_alerted_at[pool.id];
+            if (alerted.second != forecast.level || now - alerted.first >= 3600) {
+                alerted = std::make_pair(now, forecast.level);
+                StorageAlert item;
+                item.id = StrUUID::make_guid(8, "alert");
+                item.level = forecast.level > 1 ? "CRITICAL" : "WARNING";
+                item.type = "TIER_RETENTION_CAPACITY_LOW";
+                item.pool_id = pool.id;
+                item.message = message;
+                item.created_at = now;
+                StorageAlertImp().add(item);
+            }
+        }
+        const std::string scope = "hot_pool";
+        const std::string path = pool.mount_path.value_or("");
+        const std::string mount_point;
+        const int level = forecast.level;
+        const double retention_days = forecast.retention_days_estimate;
+        const double required_days = forecast.required_days;
+        const float ingest_mbps = forecast.ingest_mbps;
+        const int64_t usable_bytes = forecast.usable_bytes;
+        const int64_t required_bytes = forecast.required_bytes;
+        const int cameras = forecast.cameras;
+        if (!NOTICE_EMIT(BroadcastRetentionForecastAlertArgs, Broadcast::kBroadcastRetentionForecastAlert, scope,
+                         pool.id, pool.name, path, mount_point, level, retention_days, required_days, ingest_mbps,
+                         usable_bytes, required_bytes, cameras, overflow_action)) {
+            TraceL << "No one listen retention forecast alert event";
+        }
+    }
 }
 
 void TierStorageManager::evaluatePoolThroughput(

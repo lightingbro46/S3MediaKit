@@ -1887,6 +1887,35 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    // The record directory or a HOT pool cannot hold the configured retention at the current
+    // recording rate, or holds it again.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastRetentionForecastAlert, [](BroadcastRetentionForecastAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        auto days = [](double d) { return d < 0 ? string() : sanitize_for_json(d); };
+        ArgsType body;
+        body["eventCode"] = level > 0 ? "RetentionCapacityLow" : "RetentionCapacityRecovered";
+        body["eventTime"] = time(nullptr);
+        body["level"] = level > 1 ? "CRITICAL" : (level > 0 ? "WARNING" : "NORMAL");
+        body["scope"] = scope;
+        body["poolId"] = pool_id;
+        body["poolName"] = pool_name;
+        body["path"] = path;
+        body["mountPoint"] = mount_point;
+        body["currentValue"] = days(retention_days);
+        body["threshold"] = days(required_days);
+        body["ingestMbps"] = sanitize_for_json(ingest_mbps);
+        body["usableBytes"] = static_cast<Json::Int64>(usable_bytes);
+        body["requiredBytes"] = static_cast<Json::Int64>(required_bytes);
+        body["cameras"] = cameras;
+        body["overflowAction"] = overflow_action;
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionResult, [](BroadcastVideoExtractionResultArgs) {
         GET_CONFIG(string, hook_video_extraction_result, Hook::kOnVideoExtractionResult);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
