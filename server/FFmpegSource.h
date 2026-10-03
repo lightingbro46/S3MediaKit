@@ -15,6 +15,7 @@
 
 namespace mediakit {
 struct PrivacyMaskRegion;
+class HwCodecSession;
 }
 
 namespace FFmpeg {
@@ -329,6 +330,10 @@ private:
     bool pollRestore();
     void schedulePollRestore();
     void startFfmpeg();
+    // Runs cmd and watches the ffmpeg process until the extract completes.
+    void runFfmpeg(const std::string &cmd);
+    // The GPU encoder run failed: runs _cpu_cmd instead. Returns false when there is nothing to retry.
+    bool retryOnCpu();
     void updateLifecycleStatus(Stage stage, float stage_progress);
     void notifyStartOnce(const toolkit::SockException &ex);
     bool retainRestoreCache();
@@ -355,6 +360,10 @@ private:
     std::vector<TimeBlock> _time_blocks;
     std::string _log_file;
     std::string _cmd;
+    // Set while the overlay re-encode runs on a GPU encoder: the libx264 command to rerun if it fails.
+    std::string _cpu_cmd;
+    std::shared_ptr<mediakit::HwCodecSession> _hw_session;
+    bool _timed_out = false;
     OnClose _onClose;
     OnComplete _onComplete;
     onExtract _onStart;

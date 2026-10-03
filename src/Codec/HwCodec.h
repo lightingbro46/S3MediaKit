@@ -72,6 +72,8 @@ public:
     const char *backendName() const;
     // Shared device context, borrowed: av_buffer_ref() it to keep it. May be null in tests.
     AVBufferRef *device() const;
+    // Device of hwcodec.device used for this backend ("" = FFmpeg default), for an ffmpeg command line.
+    const std::string &deviceName() const;
     AVPixelFormat hwPixFmt() const;
 
     // The session produced output: resets the backend's failure count and closes a half-open breaker.

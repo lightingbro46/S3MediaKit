@@ -41,6 +41,7 @@ struct HwBackendState {
     HwBackend backend = HwBackend::None;
     HwBackendCaps caps;
     AVBufferRef *device = nullptr;
+    std::string device_name;
     size_t decode_sessions = 0;
     size_t encode_sessions = 0;
     // Encoder session limit learned from an open failure, valid until encode_cap_until.
@@ -183,6 +184,10 @@ const char *HwCodecSession::backendName() const {
 
 AVBufferRef *HwCodecSession::device() const {
     return _state->device;
+}
+
+const string &HwCodecSession::deviceName() const {
+    return _state->device_name;
 }
 
 AVPixelFormat HwCodecSession::hwPixFmt() const {
@@ -978,8 +983,10 @@ static bool ffmpegProbe(HwBackend backend, const string &device, HwBackendCaps &
 }
 
 HwCodecManager &HwCodecManager::Instance() {
-    static HwCodecManager instance;
-    return instance;
+    // Never destroyed: releasing the device contexts during static destruction calls into GPU drivers
+    // that may already be torn down (Mesa d3d12 segfaults in vaTerminate). The OS frees them at exit.
+    static HwCodecManager *instance = new HwCodecManager();
+    return *instance;
 }
 
 HwCodecManager::HwCodecManager() = default;
@@ -997,7 +1004,8 @@ void HwCodecManager::probe(const ProbeFunc &func) {
         for (auto backend : configuredBackends()) {
             auto state = std::make_shared<HwBackendState>();
             state->backend = backend;
-            if (!func(backend, deviceFor(backend, device_cfg), state->caps, state->device)) {
+            state->device_name = deviceFor(backend, device_cfg);
+            if (!func(backend, state->device_name, state->caps, state->device)) {
                 continue;
             }
             auto &caps = state->caps;
