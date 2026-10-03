@@ -17,6 +17,7 @@
 - [Sự kiện cảnh báo hệ thống (webhook system-event)](./api-system-alert-events.md)
 - [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 - [Camera RTSP MJPEG (transcode sang H264 lúc kéo luồng)](./mjpeg-camera.md)
+- [Điều khiển camera bằng ONVIF hoặc PSIA](./camera-control-protocol.md)
 - [Plan sửa luồng video config rule](./video-config-rule-fix-plan.md)
 
 ## Mục lục

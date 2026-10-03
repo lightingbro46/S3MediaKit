@@ -419,3 +419,30 @@ discovery rỗng).
   `PSIA_MOCK_ADDR`, `PSIA_NOT_PSIA_ADDR`). Đã chạy với `psia_mock.py` Digest, `psia_mock.py --basic` và
   `python3 -m http.server` (NOT_THIS_PROTOCOL): đạt; state của mock khớp (encoder kênh 102, PTZ absolute, preset,
   home, relay high, giờ manual khi lệch 120 s). `ctest -R unit.` 216/216 (2 case mock tự skip).
+
+**P5 (2026-10-04) — xong.** `server/Manager.cpp`: nhánh thông tin thiết bị + `onvifProfiles`,
+`enableOnvifProfileConfig` và video config rule (`onvifGetPrimaryConfigProfiles`) xét `controlProtocol` khác rỗng;
+`onvifDevice`, `supportsSdCardPlayback` giữ nghĩa ONVIF; thêm `controlProtocol`, `controlProtocolSetting`.
+`CameraStatisticImp::addUserPresets` nhận camera có controller bất kỳ. Docs `docs/camera-control-protocol.md`
+(link ở `docs/README.md`), `conf/config.ini` mục `[camera]`, `[psia]`. Harness `tests/integration/e2e_real`
+nhận `E2E_CAMERA_IP/HTTP_PORT/USER/PASS`, `E2E_CONTROL_PROTOCOL`, `E2E_CAMERA_PTZ` (không đặt thì như cũ).
+
+Chạy thật MediaServer Debug (harness e2e_real) + `psia_mock.py` (Digest) + `rtsp_source.py`, luồng cấu hình
+`rtsp://127.0.0.1:18554/PSIA/Streaming/channels/101|102`:
+- `AUTO`: ONVIF trả `NOT_THIS_PROTOCOL` (404) → PSIA connect, khoá PSIA; capabilities `controlProtocol=PSIA`.
+- API qua PSIA đều `code 0`: `ptz_control` left/zoomIn (absolute)/home, `get_presets` (2 preset của camera),
+  `goto_preset`, `set_preset` + `goto` preset người dùng, `imageMoveControl` focusIn/irisOut,
+  `relayOutputControl`, `onvifGetConfigProfiles`, `onvifGetPrimaryConfigProfiles` (độ phân giải/fps/bitrate từ
+  capabilities), `onvifSetVideoConfigs` kênh 102, `onvifApplyVideoConfigRule` 60 s → `SUCCESS` rồi rollback. State
+  của mock khớp từng lệnh; giờ camera lệch 300 s được đặt lại `manual`.
+- Restart: `AUTO` dùng ngay PSIA, không dò ONVIF.
+- Đổi sang `ONVIF` cố định khi đang chạy: báo `Control protocol changed`, ONVIF lỗi `NOT_THIS_PROTOCOL` mỗi phút,
+  không bao giờ thử PSIA, PTZ trả `905002`.
+- Hồi quy ONVIF: trỏ camera `AUTO` sang `onvif_mock.py` → dò ra ONVIF, log R2 ở controller và statistic
+  (xoá profile config, rule, preset, stream_settings). Trỏ lại mock PSIA → ONVIF 404 → PSIA.
+- Webhook `on_device_caps_changed` (bắt qua proxy ghi body): camera PSIA có `controlProtocol=PSIA`,
+  `controlProtocolSetting=AUTO`, `onvifDevice=false`, `enableOnvifProfileConfig=true`, thông tin thiết bị và 2
+  profile, `isPTZ=true`.
+
+**P6 — chưa làm (cần thiết bị thật):** camera ONVIF thật (hồi quy), camera bật PSIA thật ở `PSIA`, camera tắt ONVIF
+ở `AUTO`, kiểm R3 (URL luồng do camera thật cấu hình có khớp URL PSIA sinh ra không).

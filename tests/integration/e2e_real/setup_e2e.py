@@ -112,17 +112,26 @@ def watermark_template():
 
 
 def camera_entry(env, state):
+    # Thiết bị điều khiển (ONVIF/PSIA, mock hoặc camera thật). Không đặt thì camera là RTSP thuần như trước.
+    ctl = {
+        "ip": os.environ.get("E2E_CAMERA_IP", ""),
+        "port": int(os.environ.get("E2E_CAMERA_HTTP_PORT", "80")),
+        "user": os.environ.get("E2E_CAMERA_USER", ""),
+        "password": os.environ.get("E2E_CAMERA_PASS", ""),
+        "protocol": os.environ.get("E2E_CONTROL_PROTOCOL", "AUTO"),
+        "ptz": os.environ.get("E2E_CAMERA_PTZ", "0") == "1",
+    }
     entry = {
         "id": CAMERA_ID,
         "name": "E2E camera",
-        "ip": "127.0.0.1",
-        "httpPort": 80,
+        "ip": ctl["ip"] or "127.0.0.1",
+        "httpPort": ctl["port"],
         "manufacturer": "Generic",
         "model": "RTSP",
-        "username": "",
-        "password": "",
+        "username": ctl["user"],
+        "password": ctl["password"],
         "enabled": True,
-        "enablePtzControl": False,
+        "enablePtzControl": ctl["ptz"],
         "priMediaServerId": NODE_ID,
         "primaryStreamId": MAIN_ID,
         "primaryStreamUrl": env["main"],
@@ -148,8 +157,9 @@ def camera_entry(env, state):
             },
             "mediaStreaming": {"rtpTransport": state["rtp_transport"], "useDefaultMediaPort": True},
             "webPage": {"useDefaultWebPort": True},
-            "ptzSetting": {"enablePTZControl": False},
+            "ptzSetting": {"enablePTZControl": ctl["ptz"]},
             "onvif": {"mainStream": "AUTO", "subStream": "AUTO"},
+            "control": {"protocol": ctl["protocol"]},
         },
         "motionDetectConfig": {
             "clientEnabled": state["motion"],

@@ -1503,8 +1503,12 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 auto params = stats_imp->getParams();
                 auto option = params.option;
                 data["deviceId"] = device->getDeviceTuple().device_id;
-                if (caps->isOnvifDevice) {
-                    data["onvifDevice"] = true;
+                // Protocol the camera is controlled with now ("" until a controller connected), and the setting.
+                data["controlProtocol"] = caps->controlProtocol;
+                data["controlProtocolSetting"] = controlProtocolSetting(option.controlProtocol);
+                // A PSIA camera reports its device info and profiles in the same (ONVIF-named) fields.
+                if (!caps->controlProtocol.empty()) {
+                    data["onvifDevice"] = caps->isOnvifDevice;
                     auto deviceInfo = caps->onvifProfile.deviceInfo;
                     data["manufacturer"] = deviceInfo.manufacturer;
                     data["model"] = deviceInfo.model;
@@ -1548,7 +1552,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 GET_CONFIG(bool, enableAutoProfile, General::kEnableAutoProfile);
                 data["enableAutoProfile"] = enableAutoProfile ? true : false;
                 // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
-                data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
+                data["enableOnvifProfileConfig"] = !caps->controlProtocol.empty();
                 data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
                 data["supportsAudioBackchannel"] = false;
                 data["supportsAudioVolumeControl"] = caps->supportsAudioVolumeControl;
@@ -2069,7 +2073,7 @@ Json::Value makePrimaryMediaProfileJson(const managerkit::DeviceSource::Ptr &dev
                 if (option.enableFailover && !impl->isEnabled()) {
                     return item;
                 }
-                if (!params.device_stats.device_caps.isOnvifDevice) {
+                if (params.device_stats.device_caps.controlProtocol.empty()) {
                     return item;
                 }
 

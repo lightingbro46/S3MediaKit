@@ -1198,6 +1198,7 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
         device_url = tuple.shortUrl();
         DebugL << "Device " << device_url << " capabilities: Connected=" << device_stats.connect << ", Status=" << device_stats.status
                << ", isOnvifDevice=" << device_stats.device_caps.isOnvifDevice
+               << ", controlProtocol=" << device_stats.device_caps.controlProtocol
                << ", onvifProfile.mediaProfiles.size=" << device_stats.device_caps.onvifProfile.mediaProfiles.size();
         save();
     }
@@ -1208,8 +1209,8 @@ void CameraStatisticImp::addDeviceCapabilities(bool connect, string status, cons
 
 void CameraStatisticImp::addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add) {
     std::lock_guard<std::mutex> lck(_mtx);
-    if (!device_stats.device_caps.isOnvifDevice) {
-        WarnL << "Camera " << tuple.shortUrl() << " is not an ONVIF device. Ignore add user preset.";
+    if (device_stats.device_caps.controlProtocol.empty()) {
+        WarnL << "Camera " << tuple.shortUrl() << " has no device controller. Ignore add user preset.";
         return;
     }
     auto &ptzProfile = device_stats.device_caps.onvifProfile.ptzProfile;
