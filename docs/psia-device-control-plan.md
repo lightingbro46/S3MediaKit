@@ -393,3 +393,29 @@ discovery rỗng).
   preset người dùng khi giao thức trong capabilities đổi.
 - `bitrateRangeToString` chuyển từ `OnvifDeviceControl.cpp` sang `CameraDeviceControl.cpp` để PSIA dùng chung.
 - Test `CameraProtocolTest` (8 case theo mục 5.1) + `ControlProtocolSettingTest`; `ctest -R unit.` 201/201.
+
+**P3–P4 (2026-10-04) — xong, gộp một commit vì cùng một file.** `manager/Control/PsiaDeviceControl.{h,cpp}`:
+- HTTP qua gSOAP như P0: một `struct soap` mỗi controller, mỗi request một kết nối, Digest qua `http_da`
+  (lưu challenge, gửi lại một lần khi 401), Basic qua `soap->userid/passwd`. Timeout `psia.request_timeout_ms`.
+  Body lỗi 400/500 được đọc để lấy `statusString`/`subStatusCode` vào `lastError()`.
+- Hai khoá: `_soap_mtx` cho request, `_state_mtx` giữ rất ngắn cho cache. Getter mà `_poller` gọi
+  (`getPTZProfile`, …) không phải chờ một request 5 s đang chạy.
+- Phần parse/quy đổi là hàm tự do trong `psia_detail`; XML đọc theo tên local nên chịu được namespace có hoặc
+  không có prefix.
+- Khác plan:
+  - Focus/iris đi `PUT /PSIA/System/Video/inputs/channels/<ch>/focus|iris` (đường của Hikvision ở cả PSIA lẫn
+    ISAPI), không đi `/PSIA/PTZ/...`. PSIA không có cờ năng lực cho ống kính nên focus/iris bật khi camera có kênh
+    PTZ; camera từ chối thì lỗi trả về lúc gửi lệnh.
+  - `PTZ_AuxiliaryCommand` nhận đúng hai lệnh iris mà `CameraController` gửi (`tt:Iris|open/close`) và đổi thành
+    iris ±50 trong 500 ms rồi dừng; lệnh auxiliary khác trả "not supported".
+  - Kênh PTZ là kênh bật đầu tiên của `GET /PSIA/PTZ/channels` (không suy từ `id/100`).
+  - URL luồng luôn ghi port: `rtsp://<ip>:<rtspPortNo>/PSIA/Streaming/channels/<id>`. Chưa đọc URL tuyệt đối
+    trong `ControlProtocolList` (chưa thấy camera nào khai), để P6 xem lại theo R3.
+  - `PTZ_GetStatus` trả `IDLE` khi đọc được vị trí: PSIA không báo trạng thái đang chạy.
+  - Toạ độ PTZ: controller vẫn làm việc trong không gian chuẩn hoá của ONVIF (pan/tilt [-1, 1], zoom [0, 1]),
+    `PsiaControl` đổi sang đơn vị camera đọc từ capabilities; preset người dùng của camera PSIA lưu theo không gian
+    chuẩn hoá đó.
+- Test `tests/unit/manager/test_psia_control.cpp`: 11 case parse/quy đổi + 3 case `PsiaMockTest` (chạy khi đặt
+  `PSIA_MOCK_ADDR`, `PSIA_NOT_PSIA_ADDR`). Đã chạy với `psia_mock.py` Digest, `psia_mock.py --basic` và
+  `python3 -m http.server` (NOT_THIS_PROTOCOL): đạt; state của mock khớp (encoder kênh 102, PTZ absolute, preset,
+  home, relay high, giờ manual khi lệch 120 s). `ctest -R unit.` 216/216 (2 case mock tự skip).

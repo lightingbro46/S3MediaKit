@@ -2,6 +2,7 @@
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
 #include "Local/MediaGapFillManager.h"
+#include "Control/PsiaDeviceControl.h"
 #include "Util/onceToken.h"
 #include "Util/util.h"
 #include "Common/config.h"
@@ -24,6 +25,7 @@ CameraDeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol p
                                                                const std::string &username, const std::string &password) {
     switch (protocol) {
         case ControlProtocol::ONVIF: return std::make_shared<OnvifControl>(address, username, password);
+        case ControlProtocol::PSIA: return std::make_shared<PsiaControl>(address, username, password);
         default: return nullptr;
     }
 }

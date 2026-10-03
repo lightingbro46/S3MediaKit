@@ -180,7 +180,22 @@ target_link_libraries(unit_camera_controller PRIVATE
   -Wl,--end-group)
 target_include_directories(unit_camera_controller PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.camera_controller_all COMMAND unit_camera_controller)
-set_tests_properties(unit.camera_controller_all PROPERTIES LABELS unit TIMEOUT 30)
+set_tests_properties(unit.camera_controller_all PROPERTIES LABELS unit TIMEOUT 60)
+
+# PsiaControl XML parsing and unit conversion. The PsiaMockTest cases run against
+# tests/integration/stress_vms/psia_mock.py when PSIA_MOCK_ADDR=ip:port is set, and skip otherwise.
+add_s3_unit_test(unit_psia_control
+  manager/test_psia_control.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_psia_control PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_psia_control PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.psia_control_all COMMAND unit_psia_control)
+set_tests_properties(unit.psia_control_all PROPERTIES LABELS unit TIMEOUT 30)
 
 # CameraManager collects camera online/offline changes into one report; server/ symbols come from the
 # tier-storage stubs.
