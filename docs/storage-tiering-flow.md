@@ -1044,7 +1044,19 @@ Các thông tin cần hiển thị:
 - Expired segments chờ duyệt.
 - Protected/evidence video ranges.
 
-`dashboard/summary` dùng response gọn cho FE. Các field `write_mbps`, `estimated_remaining_days`, `camera_count` hiện là placeholder `0`. `dashboard/detail` trả model raw gồm summary, pools, policies, configured camera assignments, job counts và 20 tiering job gần nhất.
+`dashboard/summary` dùng response gọn cho FE. `tier_summary[].write_mbps` là tổng lưu lượng ghi trung bình của các pool trong tier (xem 11.1); `estimated_remaining_days`, `camera_count` hiện là placeholder `0`. `dashboard/detail` trả model raw gồm summary, pools, policies, configured camera assignments, job counts và 20 tiering job gần nhất.
+
+### 11.1 Throughput Theo Pool
+
+`TierStorageManager` giữ một `PoolThroughputTracker` (`manager/Local/PoolThroughputTracker.{h,cpp}`), số liệu chỉ nằm trong bộ nhớ:
+
+- Mỗi lần copy/upload một segment (`executeLocalTierMove`, `executeObjectStorageUpload`) được bọc bằng `PoolTransferScope`: chiều ghi tính cho pool đích, chiều đọc cho pool nguồn. Restore tính chiều đọc cho pool object nguồn. Lượt lỗi tính thời gian, không tính byte.
+- `registerHotSegmentRange()` cộng dung lượng segment mới vào camera và vào pool HOT.
+- Mỗi tiering cycle, ngay sau khi nạp effective policy và **trước** khi queue job mới, `evaluatePoolThroughput()` dựng route từ effective policy: tier enabled có `overflow_action = MOVE_TO_NEXT_TIER` chuyển camera sang pool của tier enabled kế tiếp, nên chuỗi HOT → WARM → COLD tính camera cho cả WARM và COLD. Backlog lấy bằng một truy vấn `SUM(bytes_total)` theo `target_pool_id` của job `PENDING/RUNNING`; vì chạy trước khi queue nên đó là phần chu kỳ trước để lại.
+
+Pool đích bị coi là thiếu throughput khi còn backlog, đã đủ 15 phút quan sát và tốc độ chuyển (byte ÷ thời gian có transfer chạy) < nhu cầu (tốc độ ghi hình của camera được route) × `pool_throughput_safety_factor`. Trạng thái phải giữ `pool_throughput_sustain_samples` cycle liên tiếp mới đổi. Còn backlog mà không đo được tốc độ (không transfer nào trong cửa sổ) thì giữ nguyên trạng thái. Khi vào trạng thái thiếu: `WarnL`, dòng `storage_alerts` loại `TIER_POOL_THROUGHPUT_LOW` (tối đa một lần/giờ/pool) và `kBroadcastPoolThroughputAlert`, WebHook gửi `PoolThroughputLow`/`PoolThroughputRecovered` qua `on_system_alert`.
+
+Nhu cầu dựa trên tốc độ ghi hình chứ không dựa trên số job được tạo, vì job được tạo dồn theo `tiering_split_granularity_seconds` và một backlog cũ có thể được queue cùng lúc. Giới hạn: tốc độ chuyển gồm cả đọc từ pool nguồn; dữ liệu bị xoá ở tier nguồn trước khi kịp chuyển vẫn được tính vào nhu cầu.
 
 ## 12. Cấu Hình Và Luồng Gọi Nội Bộ
 
@@ -1084,6 +1096,12 @@ storage.tier_object_orphan_sweep_interval_seconds=86400
 storage.tiering_split_granularity_seconds=3600
 storage.tiering_transfer_max_concurrent=4
 storage.tiering_transfer_max_concurrent_per_pool=2
+storage.pool_throughput_alert_enabled=1
+storage.pool_throughput_window_seconds=3600
+storage.pool_throughput_safety_factor=1.2
+storage.pool_throughput_min_busy_seconds=60
+storage.pool_throughput_sustain_samples=3
+storage.pool_throughput_alert_repeat_seconds=300
 storage.tiering_job_retention_days=30
 storage.tiering_terminal_range_retention_days=30
 storage.tier_range_backfill_enabled=1
@@ -1134,6 +1152,12 @@ globalmonitor.mount_snapshot_stale_after_seconds=30
 | `tiering_split_granularity_seconds` | Move theo tuổi, retention theo tuổi | Độ mịn làm tròn mốc; `<= 1` tắt làm tròn |
 | `tiering_transfer_max_concurrent` | Transfer dispatcher | Giới hạn tổng job copy/upload chạy đồng thời |
 | `tiering_transfer_max_concurrent_per_pool` | Transfer dispatcher | Giới hạn job đồng thời cùng chạm một source/target pool |
+| `pool_throughput_alert_enabled` | `evaluatePoolThroughput()` | `0` vẫn đo và trả số liệu, không cảnh báo |
+| `pool_throughput_window_seconds` | `PoolThroughputTracker` | Cửa sổ trượt cho tốc độ chuyển, thời gian bận và nhu cầu |
+| `pool_throughput_safety_factor` | `evaluatePoolThroughput()` | Tốc độ chuyển phải ≥ nhu cầu × hệ số (tối thiểu 1) |
+| `pool_throughput_min_busy_seconds` | `PoolThroughputTracker` | Thời gian chuyển tối thiểu trong cửa sổ trước khi có số đo |
+| `pool_throughput_sustain_samples` | `evaluatePoolThroughput()` | Số tiering cycle liên tiếp trước khi đổi trạng thái |
+| `pool_throughput_alert_repeat_seconds` | `evaluatePoolThroughput()` | Chu kỳ nhắc lại webhook khi còn thiếu (≤ 0: không nhắc); dòng `storage_alerts` tối đa 1 lần/giờ/pool |
 | `tiering_job_retention_days` | `pruneOldMetrics()` | Xóa lịch sử job `DONE`/`FAILED`/`CANCELLED` cũ |
 | `tiering_terminal_range_retention_days` | `pruneOldMetrics()` | Xóa range `DELETED`/`MISSING` cũ (không xóa `EXPIRED`) |
 | `tier_range_backfill_enabled` | Backfill dispatcher | Bật/tắt durable backfill |

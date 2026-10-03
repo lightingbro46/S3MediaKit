@@ -248,6 +248,11 @@ extern const std::string kBroadcastDiskUsageAlert;
 extern const std::string kBroadcastDiskWriteAlert;
 #define BroadcastDiskWriteAlertArgs const std::string &path, const std::string &mount_point, const std::string &device, const int &state, const int &error, const bool &is_main_storage
 
+// A storage pool accepts tier transfers slower than the recording rate routed into it (is_low = true),
+// or recovered. Rates are MiB/s; required = demand * safety factor; eta_sec is -1 when unknown.
+extern const std::string kBroadcastPoolThroughputAlert;
+#define BroadcastPoolThroughputAlertArgs const std::string &pool_id, const std::string &pool_name, const std::string &tier, const float &capacity_mbps, const float &demand_mbps, const float &required_mbps, const int64_t &backlog_bytes, const int64_t &eta_sec, const bool &is_low
+
 // Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
 extern const std::string kBroadcastStreamReaderAlert;
 #define BroadcastStreamReaderAlertArgs const std::string &camera_id, int &usage, int &threshold, bool &is_critical
@@ -896,6 +901,20 @@ extern const std::string kTieringJobRetentionDays;
 extern const std::string kTieringTerminalRangeRetentionDays;
 // Retention for storage_alerts rows by created_at. Zero disables pruning.
 extern const std::string kStorageAlertRetentionDays;
+// Tier-transfer throughput check: alert when a pool accepts transfers slower than the
+// recording rate of the cameras routed into it. 0 keeps the numbers but never alerts.
+extern const std::string kPoolThroughputAlertEnabled;
+// Sliding window for transfer speed, busy time and recording demand.
+extern const std::string kPoolThroughputWindowSeconds;
+// The measured speed must stay above demand * factor (>= 1).
+extern const std::string kPoolThroughputSafetyFactor;
+// Transfers into a pool must have run this long in the window before its speed counts.
+extern const std::string kPoolThroughputMinBusySeconds;
+// Consecutive tiering cycles at a new state before it is reported.
+extern const std::string kPoolThroughputSustainSamples;
+// Webhook repeat interval while a pool stays low (checked once per tiering cycle). Zero never
+// repeats. The storage_alerts row is written at most once an hour per pool.
+extern const std::string kPoolThroughputAlertRepeatSeconds;
 // Enable background Timefile-to-TierRange backfill for historical MP4 records.
 extern const std::string kTierRangeBackfillEnabled;
 // Historical window in days for Timefile-to-TierRange backfill. Default: 180 days.

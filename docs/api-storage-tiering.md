@@ -130,19 +130,53 @@ Params optional: `tier`, `type`, `status`, `keyword`.
     "used_bytes": 400000000,
     "free_bytes": 600000000,
     "used_percent": 40,
-    "write_mbps": 0,
-    "read_mbps": 0,
+    "write_mbps": 1.25,
+    "read_mbps": 0.4,
     "camera_count": 0,
     "enabled": true,
     "last_health_check": 1787562000,
     "capacity_available": true,
     "capacity_status": "AVAILABLE",
-    "capacity_message": ""
+    "capacity_message": "",
+    "throughput": {
+      "write_mbps": "21.30",
+      "write_busy_pct": "6.10",
+      "write_bytes": 1638400000,
+      "read_mbps": "35.00",
+      "read_busy_pct": "1.20",
+      "read_bytes": 524288000,
+      "record_ingest_mbps": "0.80",
+      "avg_write_mbps": "1.25",
+      "avg_read_mbps": "0.40",
+      "demand_mbps": "1.10",
+      "demand_cameras": 12,
+      "backlog_bytes": 0,
+      "backlog_eta_sec": 0,
+      "state": "normal"
+    }
   }]
 }
 ```
 
-`write_mbps`, `read_mbps` và `camera_count` hiện là `0`.
+`write_mbps`/`read_mbps` (số, MiB/s) là lưu lượng trung bình trong cửa sổ `storage.pool_throughput_window_seconds`
+(mặc định 1 giờ), tính cả lúc rảnh: ghi = segment ghi hình mới + dữ liệu chuyển tầng vào pool, đọc = chuyển
+tầng ra khỏi pool + restore tải từ pool. Hai field là `0` và `throughput` là `null` cho tới khi chu kỳ tiering
+đầu tiên chạy xong. `camera_count` hiện là `0`.
+
+`throughput` (cũng có trong `pool/detail`), các tốc độ là chuỗi MiB/s giống API tài nguyên hệ thống:
+
+| Field | Ý nghĩa |
+|---|---|
+| `write_mbps` | Tốc độ chuyển tầng vào pool, tính trên thời gian có ít nhất một lượt copy/upload vào pool đang chạy; `null` khi chưa đủ `storage.pool_throughput_min_busy_seconds` |
+| `write_busy_pct`, `write_bytes` | Phần trăm thời gian cửa sổ có chuyển vào pool, và số byte đã chuyển |
+| `read_mbps`, `read_busy_pct`, `read_bytes` | Như trên cho chiều đọc (chuyển ra, restore) |
+| `record_ingest_mbps` | Tốc độ segment ghi hình mới vào pool (chỉ pool HOT) |
+| `avg_write_mbps`, `avg_read_mbps` | Giá trị của `write_mbps`/`read_mbps` cấp pool, dạng chuỗi |
+| `demand_mbps` | Tổng tốc độ ghi hình của `demand_cameras` camera có policy chuyển dữ liệu vào pool; `null` trong 15 phút đầu |
+| `backlog_bytes`, `backlog_eta_sec` | Byte job chuyển tầng chờ/đang chạy vào pool và ước lượng thời gian chuyển hết (`null` khi chưa đo được tốc độ) |
+| `state` | `low` khi đang có cảnh báo `PoolThroughputLow`, ngược lại `normal` |
+
+Cách tính và điều kiện cảnh báo: xem `docs/api-system-alert-events.md`, mục "Throughput pool tier".
 
 Với object storage, trạng thái kết nối và trạng thái dung lượng là độc lập.
 `capacity_status` nhận `AVAILABLE`, `UNAVAILABLE` hoặc `UNSUPPORTED`. Khi MinIO

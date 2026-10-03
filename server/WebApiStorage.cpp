@@ -16,6 +16,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <unordered_map>
 
@@ -199,6 +200,23 @@ Json::Value failedIdsToJson(const std::vector<std::string> &unknown,
 
 // --- Section 1: storage pools -------------------------------------------------------------
 
+static double roundMbps(float mbps) {
+    return std::round(static_cast<double>(mbps) * 100.0) / 100.0;
+}
+
+// Average write/read traffic and the tier-transfer throughput as of the last tiering cycle;
+// write_mbps/read_mbps stay 0 and throughput null before the first one.
+static void fillPoolThroughput(const std::string &pool_id, Json::Value &item) {
+    PoolThroughputStats stats;
+    if (!TierStorageManager::Instance().getPoolThroughput(pool_id, stats)) {
+        item["throughput"] = Json::nullValue;
+        return;
+    }
+    item["write_mbps"] = roundMbps(stats.avg_write_mbps);
+    item["read_mbps"] = roundMbps(stats.avg_read_mbps);
+    item["throughput"] = stats.toJson();
+}
+
 void storagePoolList(const ArgsMap &allArgs, Json::Value &val) {
     string tier    = allArgs["tier"];
     string type    = allArgs["type"];
@@ -211,7 +229,9 @@ void storagePoolList(const ArgsMap &allArgs, Json::Value &val) {
         const std::string pool_status = p.health_status.empty() ? "OK" : p.health_status;
         if (!status.empty() && pool_status != status)
             continue;
-        data.append(TierStorageBase::poolSummaryToJson(p));
+        Json::Value item = TierStorageBase::poolSummaryToJson(p);
+        fillPoolThroughput(p.id, item);
+        data.append(item);
     }
     val["data"] = data;
 }
@@ -225,6 +245,7 @@ void storagePoolDetail(const ArgsMap &allArgs, Json::Value &val) {
     auto pool = pools.front();
     TierStorageManager::Instance().fillPoolEncryptionUsage(pool);
     val["data"] = TierStorageBase::poolDetailToJson(pool);
+    fillPoolThroughput(pool.id, val["data"]);
 }
 
 void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
@@ -885,6 +906,7 @@ void storageDashboardSummary(Json::Value &val) {
     struct TierAgg {
         int64_t total = 0;
         int64_t used = 0;
+        float write_mbps = 0.0f;
         std::string status = "OK";
     };
     struct TierAggCompare {
@@ -909,6 +931,9 @@ void storageDashboardSummary(Json::Value &val) {
         agg.total += p.total_bytes;
         agg.used += p.used_bytes;
         agg.status = TierStorageBase::worstStorageStatus(agg.status, pool_status);
+        PoolThroughputStats throughput;
+        if (TierStorageManager::Instance().getPoolThroughput(p.id, throughput))
+            agg.write_mbps += throughput.avg_write_mbps;
         total_bytes += p.total_bytes;
         used_bytes += p.used_bytes;
         if (p.enabled && !p.capacity_available)
@@ -936,7 +961,7 @@ void storageDashboardSummary(Json::Value &val) {
         t["total_bytes"] = static_cast<Json::Int64>(agg.total);
         t["used_bytes"] = static_cast<Json::Int64>(agg.used);
         t["estimated_remaining_days"] = 0.0;
-        t["write_mbps"] = 0;
+        t["write_mbps"] = roundMbps(agg.write_mbps);
         tier_summary.append(t);
     }
 

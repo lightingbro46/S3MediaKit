@@ -50,6 +50,7 @@ Sự kiện hồi phục đóng cảnh báo có cùng khoá.
 | Dung lượng ổ | `DiskWarning`, `DiskCritical` (**ĐỔI**) | — (không có) | `mountPoint` | |
 | Nghẽn IO ổ | `DiskIoWarning`, `DiskIoCritical` **MỚI** | `DiskIoRecovered` **MỚI** | `mountPoint` (rỗng = toàn máy) | |
 | Không ghi được ổ | `DiskReadOnly`, `DiskWriteFailed` **MỚI** | `DiskWritable` **MỚI** | `path` | |
+| Throughput pool tier | `PoolThroughputLow` **MỚI** | `PoolThroughputRecovered` **MỚI** | `poolId` | Chỉ khi bật tier storage |
 
 Không có sự kiện nào cho mạng (`NetWork*`), vì MediaServer không đặt ngưỡng cho mạng.
 
@@ -73,6 +74,7 @@ Không có sự kiện nào cho mạng (`NetWork*`), vì MediaServer không đ�
 | Người xem (tổng, theo camera) | theo sự kiện mở/đóng player | 1 | ngay |
 | Dung lượng ổ | 10 s | 1 | ≤ 10 s |
 | Không ghi được ổ | 10 s | 1 | ≤ 10 s |
+| Throughput pool tier | mỗi chu kỳ tiering (300 s) | 3 lần | ~15 phút |
 
 Nếu các mẫu liên tiếp lẫn warning và critical (ví dụ CPU 95 %, 85 %, 95 % với ngưỡng 80/90), MediaServer báo
 mức nhẹ hơn là `CpuWarning`.
@@ -221,6 +223,52 @@ khởi động thì được báo.
 `DiskReadOnly` hoặc `DiskWriteFailed` với `isMainStorage=true` nghĩa là MediaServer **đang không ghi được hình**.
 Nên xếp vào mức nghiêm trọng cao nhất.
 
+### Throughput pool tier — MỚI
+
+So tốc độ MediaServer chuyển bản ghi vào một pool tier với tốc độ dữ liệu phải chảy vào pool đó. Nếu chuyển
+chậm hơn thì hàng đợi chuyển tầng lớn dần, pool nguồn (thường là HOT) đầy lên và cuối cùng phải xoá bản ghi
+hoặc dừng ghi hình.
+
+```json
+{"eventCode": "PoolThroughputLow", "eventTime": 1759300000, "currentValue": "8.40", "threshold": "14.40",
+ "demandMbps": "12.00", "poolId": "pool-warm-01", "poolName": "NAS WARM", "tier": "WARM",
+ "backlogBytes": 52428800000, "backlogEtaSec": 5952}
+
+{"eventCode": "PoolThroughputRecovered", "eventTime": 1759304500, "currentValue": "21.30", "threshold": "14.40",
+ "demandMbps": "12.00", "poolId": "pool-warm-01", "poolName": "NAS WARM", "tier": "WARM",
+ "backlogBytes": 0, "backlogEtaSec": 0}
+```
+
+| Trường | Kiểu | Ý nghĩa |
+|---|---|---|
+| `poolId` | string | Pool đích của việc chuyển tầng (khoá nhận diện) |
+| `poolName`, `tier` | string | Tên và tầng (`WARM`/`COLD`) của pool |
+| `currentValue` | string | Tốc độ chuyển vào pool đo được, MiB/s |
+| `threshold` | string | Tốc độ cần có = `demandMbps` × hệ số an toàn (mặc định 1,2), MiB/s |
+| `demandMbps` | string | Tổng tốc độ ghi hình của các camera có policy chuyển dữ liệu vào pool, MiB/s |
+| `backlogBytes` | number | Byte của các job chuyển tầng vào pool còn chờ/đang chạy từ chu kỳ trước (đo trước khi chu kỳ này queue thêm) |
+| `backlogEtaSec` | number | Ước lượng số giây để chuyển hết `backlogBytes` với tốc độ hiện tại; `-1` nếu chưa đo được |
+
+Cách đo (cửa sổ trượt 1 giờ):
+
+- **Tốc độ chuyển** = byte đã copy/upload vào pool ÷ thời gian có ít nhất một lượt copy/upload vào pool đang
+  chạy. Nhiều job chạy song song chỉ tính thời gian một lần; lúc pool rảnh không làm giảm tốc độ. Lượt chuyển
+  lỗi vẫn tính thời gian nhưng không tính byte. Cần ít nhất 60 s chuyển trong cửa sổ mới có số đo.
+- **Nhu cầu** lấy từ dung lượng segment mới ghi của từng camera, cộng cho mọi pool mà policy của camera chuyển
+  dữ liệu tới (chuỗi HOT → WARM → COLD tính camera cho cả WARM và COLD). Cần ít nhất 15 phút kể từ khi
+  MediaServer khởi động.
+- Chỉ báo `PoolThroughputLow` khi việc của chu kỳ trước (5 phút) vẫn chưa chuyển xong. Pool chậm nhưng đã
+  chuyển hết việc được giao là bình thường.
+
+Khi pool còn backlog nhưng không có lượt chuyển nào trong cửa sổ (pool offline, tạm dừng vì gần đầy...) thì
+MediaServer không kết luận được, nên giữ nguyên trạng thái và **không nhắc lại**. Trường hợp đó đã có các
+cảnh báo pool khác.
+
+Áp dụng cho mọi loại pool đích (LOCAL_DISK, NAS, MinIO). Tốc độ đo được gồm cả đọc từ pool nguồn, nên pool
+nguồn chậm cũng làm giảm `currentValue`. Khi nhận cảnh báo, hướng xử lý thường là tăng
+`storage.tiering_transfer_max_concurrent_per_pool`, nâng băng thông/hiệu năng pool đích hoặc giảm số camera
+dùng pool đó.
+
 ## Gợi ý xử lý phía API
 
 - **Trả 2xx cho mọi `eventCode`, kể cả mã không nhận ra.** Mã khác 2xx chỉ khiến MediaServer gửi lại (nếu có
@@ -254,6 +302,12 @@ Ngưỡng CPU, RAM, dung lượng ổ và giới hạn người xem vẫn lấy 
 | `globalmonitor.disk_io_sustain_samples` | 3 | Số mẫu IO liên tiếp trước khi báo |
 | `globalmonitor.disk_io_alert_repeat_sec` | 300 | Chu kỳ nhắc lại nghẽn IO |
 | `globalmonitor.mount_refresh_interval_seconds` | 10 | Chu kỳ đo dung lượng ổ và kiểm tra ghi |
+| `storage.pool_throughput_alert_enabled` | 1 | Bật cảnh báo throughput pool tier (0: vẫn đo, không báo) |
+| `storage.pool_throughput_window_seconds` | 3600 | Cửa sổ đo tốc độ chuyển và nhu cầu |
+| `storage.pool_throughput_safety_factor` | 1.2 | Tốc độ chuyển phải ≥ nhu cầu × hệ số này |
+| `storage.pool_throughput_min_busy_seconds` | 60 | Thời gian chuyển tối thiểu trong cửa sổ trước khi có số đo |
+| `storage.pool_throughput_sustain_samples` | 3 | Số chu kỳ tiering liên tiếp trước khi báo |
+| `storage.pool_throughput_alert_repeat_seconds` | 300 | Chu kỳ nhắc lại throughput pool (≤ 0: không nhắc) |
 
 ## Thay đổi so với bản trước
 
@@ -265,3 +319,4 @@ Ngưỡng CPU, RAM, dung lượng ổ và giới hạn người xem vẫn lấy 
 | Mã mới: `CpuRecovered`, `RamRecovered`, `LiveStreamLimitRecovered`, `CameraStreamLimitRecovered` | Cần nhận để đóng cảnh báo |
 | Mã mới: `DiskIoWarning`, `DiskIoCritical`, `DiskIoRecovered` | Nhóm cảnh báo mới |
 | Mã mới: `DiskReadOnly`, `DiskWriteFailed`, `DiskWritable` | Nhóm cảnh báo mới, mức nghiêm trọng cao khi `isMainStorage=true` |
+| Mã mới: `PoolThroughputLow`, `PoolThroughputRecovered` | Nhóm cảnh báo mới, khoá `poolId` |

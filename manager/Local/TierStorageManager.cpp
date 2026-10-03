@@ -1189,6 +1189,8 @@ bool TierStorageManager::registerHotSegmentRange(const std::string &camera_id,
     if (file_size <= 0) {
         file_size = static_cast<int64_t>(File::fileSize(file_path));
     }
+    if (file_size > 0)
+        _throughput.addIngest(camera_id, hot_pool.id, static_cast<uint64_t>(file_size), steadyNowMs());
 
     SegmentTierRangeImp range_imp;
     std::string hot_tier = tierTypeToString(HotTier);
@@ -2740,6 +2742,7 @@ bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_cou
     }
     unregisterPoolObjStorage(pool_id);
     unregisterPoolFileStorage(pool_id);
+    _throughput.removePool(pool_id);
     return true;
 }
 
@@ -3451,6 +3454,13 @@ void TierStorageManager::runTieringCycle() {
             } catch (const std::exception &e) {
                 WarnL << "Error loading policy of camera " << cam_id << ": " << e.what();
             }
+        }
+
+        // Before this cycle queues new moves, so the backlog is what the last cycle left behind.
+        try {
+            self->evaluatePoolThroughput(camera_policies);
+        } catch (const std::exception &e) {
+            WarnL << "Error evaluating pool throughput: " << e.what();
         }
 
         // Early moves are balanced across cameras, so plan them per pool first.
@@ -6079,6 +6089,7 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             return false;
         }
 
+        PoolTransferScope transfer(_throughput, dst_pool.id, src_pool.id);
         if (!dst_storage->uploadSegment(dst_pool.id, seg.full_path, seg.storage_key)) {
             WarnL << "File storage upload failed for " << seg.full_path
                   << " -> " << dst_path
@@ -6086,6 +6097,7 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             rollback("upload failure");
             return false;
         }
+        transfer.finish(static_cast<uint64_t>(src_st.st_size));
 
         copied[i] = 1;
         moved += src_st.st_size;
@@ -6216,11 +6228,13 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
             return false;
         }
 
+        PoolTransferScope transfer(_throughput, dst_pool.id, src_pool.id);
         if (!_obj_storage.uploadSegment(dst_pool.id, seg.full_path, keys[i])) {
             WarnL << "executeObjectStorageUpload: upload failed for " << seg.full_path;
             rollback();
             return false;
         }
+        transfer.finish(static_cast<uint64_t>(st.st_size));
 
         bytes_moved += static_cast<int64_t>(st.st_size);
         uploaded[i] = 1;
@@ -6664,12 +6678,17 @@ void TierStorageManager::executeRestoreSegment(const RestoreJobSegment &segment)
     const std::string enc_s3_key = s3_key + RecordEncryptionUtils::encryptedFileSuffix();
     bool encrypted = false;
     bool ok = false;
-    if (s_encryption_active.load(std::memory_order_relaxed)) {
-        ok = _obj_storage.downloadSegment(source_pool.id, enc_s3_key, tmp_path);
-        encrypted = ok;
+    {
+        PoolTransferScope transfer(_throughput, "", source_pool.id);
+        if (s_encryption_active.load(std::memory_order_relaxed)) {
+            ok = _obj_storage.downloadSegment(source_pool.id, enc_s3_key, tmp_path);
+            encrypted = ok;
+        }
+        if (!ok)
+            ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
+        if (ok)
+            transfer.finish(static_cast<uint64_t>(File::fileSize(tmp_path)));
     }
-    if (!ok)
-        ok = _obj_storage.downloadSegment(source_pool.id, s3_key, tmp_path);
 
     // The restored copy keeps the spelling of the object it came from, so playback
     // knows it still has to be decrypted.
@@ -7384,6 +7403,102 @@ Json::Value TierStorageManager::getDashboardDetail() {
 // ===================================================================
 // Helpers
 // ===================================================================
+bool TierStorageManager::getPoolThroughput(const std::string &pool_id, PoolThroughputStats &out) const {
+    return _throughput.getStats(pool_id, out);
+}
+
+void TierStorageManager::evaluatePoolThroughput(
+        const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies) {
+    // Every tier that moves data on to the next enabled tier routes the camera's recordings
+    // into that tier's pool, so a HOT -> WARM -> COLD chain counts the camera on both targets.
+    std::map<std::string, std::set<std::string>> routes;
+    for (const auto &item : camera_policies) {
+        const auto &policy = item.second;
+        if (policy.enabled == 0)
+            continue;
+        auto tiers = policy.parsedTiers();
+        std::sort(tiers.begin(), tiers.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+            return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+        });
+        for (size_t i = 0; i < tiers.size(); ++i) {
+            if (!tiers[i].enabled || tiers[i].pool_id.empty() ||
+                tiers[i].overflow_action != overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER))
+                continue;
+            for (size_t j = i + 1; j < tiers.size(); ++j) {
+                if (!tiers[j].enabled)
+                    continue;
+                if (!tiers[j].pool_id.empty() && tiers[j].pool_id != tiers[i].pool_id)
+                    routes[tiers[j].pool_id].insert(item.first);
+                break;
+            }
+        }
+    }
+    _throughput.setRoutes(routes);
+
+    GET_CONFIG(bool, alert_enabled, Storage::kPoolThroughputAlertEnabled);
+    GET_CONFIG(int, window_sec, Storage::kPoolThroughputWindowSeconds);
+    GET_CONFIG(float, safety_factor, Storage::kPoolThroughputSafetyFactor);
+    GET_CONFIG(int, min_busy_sec, Storage::kPoolThroughputMinBusySeconds);
+    GET_CONFIG(int, sustain_samples, Storage::kPoolThroughputSustainSamples);
+    GET_CONFIG(int, repeat_sec, Storage::kPoolThroughputAlertRepeatSeconds);
+    PoolThroughputConfig cfg;
+    cfg.window_sec = window_sec > 0 ? window_sec : 3600;
+    cfg.safety_factor = safety_factor >= 1.0f ? safety_factor : 1.0f;
+    cfg.min_busy_sec = min_busy_sec > 0 ? min_busy_sec : 60;
+    cfg.sustain_samples = sustain_samples > 0 ? sustain_samples : 1;
+    cfg.alert_repeat_sec = repeat_sec;
+
+    const auto backlog = TieringJobImp().sumActiveBytesByTargetPool();
+    const auto alerts = _throughput.evaluate(backlog, cfg, steadyNowMs());
+    if (!alert_enabled)
+        return;
+
+    for (const auto &alert : alerts) {
+        const auto &st = alert.stats;
+        StoragePool pool;
+        if (!getPoolById(st.pool_id, pool))
+            continue;
+        if (!st.low) {
+            _throughput_alerted_at.erase(st.pool_id);
+            InfoL << "Pool " << st.pool_id << " transfer throughput recovered: "
+                  << format_float_2f(st.write_mbps) << " MiB/s, demand "
+                  << format_float_2f(st.demand_mbps) << " MiB/s";
+        } else {
+            const std::string message = StrPrinter
+                << "Tier transfers into the pool run at " << format_float_2f(st.write_mbps)
+                << " MiB/s, below the " << format_float_2f(alert.required_mbps)
+                << " MiB/s needed for the recording rate of " << st.demand_cameras
+                << " camera(s) (" << format_float_2f(st.demand_mbps) << " MiB/s); backlog "
+                << st.backlog_bytes << " bytes"
+                << (st.backlog_eta_sec >= 0 ? ", about " + std::to_string(st.backlog_eta_sec) + " s to drain" : "");
+            WarnL << "Pool " << st.pool_id << ": " << message;
+            const int64_t now = static_cast<int64_t>(time(nullptr));
+            auto &alerted_at = _throughput_alerted_at[st.pool_id];
+            if (now - alerted_at >= 3600) {
+                alerted_at = now;
+                StorageAlert item;
+                item.id = StrUUID::make_guid(8, "alert");
+                item.level = "WARNING";
+                item.type = "TIER_POOL_THROUGHPUT_LOW";
+                item.pool_id = st.pool_id;
+                item.message = message;
+                item.created_at = now;
+                StorageAlertImp().add(item);
+            }
+        }
+        const float capacity = st.write_mbps;
+        const float demand = st.demand_mbps;
+        const float required = alert.required_mbps;
+        const int64_t backlog_bytes = st.backlog_bytes;
+        const int64_t eta_sec = st.backlog_eta_sec;
+        const bool is_low = st.low;
+        if (!NOTICE_EMIT(BroadcastPoolThroughputAlertArgs, Broadcast::kBroadcastPoolThroughputAlert, pool.id,
+                         pool.name, pool.tier, capacity, demand, required, backlog_bytes, eta_sec, is_low)) {
+            TraceL << "No one listen pool throughput alert event";
+        }
+    }
+}
+
 void TierStorageManager::pruneOldMetrics() {
     // Keep 30 days of metrics
     int64_t cutoff = static_cast<int64_t>(time(nullptr)) - 30LL * 86400;
