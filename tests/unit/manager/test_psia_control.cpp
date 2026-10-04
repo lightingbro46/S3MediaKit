@@ -469,6 +469,26 @@ TEST(IsapiParseTest, TwoWayAudioChannel) {
 
 namespace {
 
+std::string readFile(const std::string &path) {
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Number / boolean field of the JSON --state file the mocks write.
+long long stateNumber(const std::string &json, const std::string &key) {
+    std::smatch m;
+    if (std::regex_search(json, m, std::regex("\"" + key + "\":\\s*(\\d+)"))) {
+        return atoll(m[1].str().c_str());
+    }
+    return 0;
+}
+
+bool stateTrue(const std::string &json, const std::string &key) {
+    return std::regex_search(json, std::regex("\"" + key + "\":\\s*true"));
+}
+
 // audio_bytes / two_way_open from the --state file of psia_mock.py.
 struct MockAudioState {
     long long audio_bytes = 0;
@@ -476,17 +496,38 @@ struct MockAudioState {
 };
 
 MockAudioState readMockAudioState(const std::string &path) {
+    const std::string json = readFile(path);
     MockAudioState state;
-    std::ifstream in(path);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    const std::string json = ss.str();
-    std::smatch m;
-    if (std::regex_search(json, m, std::regex("\"audio_bytes\":\\s*(\\d+)"))) {
-        state.audio_bytes = atoll(m[1].str().c_str());
-    }
-    state.two_way_open = std::regex_search(json, std::regex("\"two_way_open\":\\s*true"));
+    state.audio_bytes = stateNumber(json, "audio_bytes");
+    state.two_way_open = stateTrue(json, "two_way_open");
     return state;
+}
+
+// 8 kHz mono 16-bit WAV of `samples` samples, the same 16-sample pattern as the live tests.
+std::string writeTestWav(const std::string &name, uint32_t samples) {
+    const std::string path = "/tmp/" + name + ".wav";
+    std::ofstream out(path, std::ios::binary);
+    auto u32 = [&out](uint32_t v) { out.write(reinterpret_cast<const char *>(&v), 4); };
+    auto u16 = [&out](uint16_t v) { out.write(reinterpret_cast<const char *>(&v), 2); };
+    out.write("RIFF", 4); u32(36 + samples * 2); out.write("WAVE", 4);
+    out.write("fmt ", 4); u32(16); u16(1); u16(1); u32(8000); u32(16000); u16(2); u16(16);
+    out.write("data", 4); u32(samples * 2);
+    for (uint32_t k = 0; k < samples; ++k) {
+        u16((uint16_t)(int16_t)((k % 16) * 1000 - 8000));
+    }
+    return path;
+}
+
+// 1 s of PCM (50 frames of 20 ms at 8 kHz) into a live session, paced like a client.
+void pushOneSecondLive(const std::string &device_id) {
+    std::vector<int16_t> frame(160);
+    for (size_t k = 0; k < frame.size(); ++k) {
+        frame[k] = (int16_t)((k % 16) * 1000 - 8000);
+    }
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(mediakit::BackchannelManager::Instance().pushAudioFrame(device_id, frame.data(), frame.size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 }
 
 template <typename Pred>
@@ -544,14 +585,7 @@ TEST(IsapiMockTest, TwoWayAudioSendsG711AndCloses) {
 
     // Give the audioData request time to be accepted (the ring reader attaches then), then 1 s of audio.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    std::vector<int16_t> frame(160);
-    for (int i = 0; i < 50; ++i) {
-        for (size_t k = 0; k < frame.size(); ++k) {
-            frame[k] = (int16_t)((k % 16) * 1000 - 8000);
-        }
-        ASSERT_TRUE(manager.pushAudioFrame(device_id, frame.data(), frame.size()));
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    pushOneSecondLive(device_id);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     manager.stopSession(device_id);
     manager.unregisterDevice(device_id);
@@ -560,6 +594,109 @@ TEST(IsapiMockTest, TwoWayAudioSendsG711AndCloses) {
     // G.711: one byte per 8 kHz sample.
     EXPECT_TRUE(waitFor([&] { return readMockAudioState(state_path).audio_bytes - bytes_before == 8000; }))
         << "mock got " << readMockAudioState(state_path).audio_bytes - bytes_before << " bytes";
+}
+
+// BackchannelManager::playFile → IsapiTwoWayAudioPusher: the file plays to its end and close follows on its own.
+TEST(IsapiMockTest, TwoWayAudioPlaysWholeFile) {
+    const char *addr = getenv("ISAPI_MOCK_ADDR");
+    const char *state_path = getenv("ISAPI_MOCK_STATE");
+    if (!addr || !*addr || !state_path || !*state_path) {
+        GTEST_SKIP() << "ISAPI_MOCK_ADDR / ISAPI_MOCK_STATE not set";
+    }
+    using namespace mediakit;
+    AudioBackchannelInfo info;
+    info.transport = AudioBackchannelInfo::HTTP_ISAPI;
+    info.url = std::string("http://") + addr + "/ISAPI/System/TwoWayAudio/channels/1";
+    info.username = "admin";
+    info.password = "admin123";
+    info.codec = "PCMU";
+    ASSERT_FALSE(readMockAudioState(state_path).two_way_open) << "another two-way session is open on the mock";
+    const long long bytes_before = readMockAudioState(state_path).audio_bytes;
+
+    const std::string device_id = "isapi_two_way_file_test";
+    auto &manager = BackchannelManager::Instance();
+    manager.registerDevice(device_id, info);
+    ASSERT_TRUE(manager.playFile(device_id, writeTestWav(device_id, 8000))) << manager.getErrorMsg();
+    ASSERT_TRUE(waitFor([&] { return readMockAudioState(state_path).two_way_open; })) << "open never reached the mock";
+    // 1 s of audio, then FileAudioSource finishes and the session closes by itself.
+    ASSERT_TRUE(waitFor([&] { return !readMockAudioState(state_path).two_way_open; }, 8000)) << "close never reached the mock";
+    manager.unregisterDevice(device_id);
+    const long long got = readMockAudioState(state_path).audio_bytes - bytes_before;
+    // Frames produced before the device accepted audioData are dropped, as with the RTSP pusher.
+    EXPECT_GE(got, 7000) << "mock got " << got << " bytes";
+    EXPECT_LE(got, 8000) << "mock got " << got << " bytes";
+}
+
+// BackchannelManager → BackchannelPusher (ONVIF RTSP backchannel) → rtsp_backchannel_mock.py --state PATH.
+// Skipped unless RTSP_BC_MOCK_ADDR=ip:port and RTSP_BC_MOCK_STATE=PATH are set.
+class RtspBackchannelMockTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        const char *addr = getenv("RTSP_BC_MOCK_ADDR");
+        const char *state = getenv("RTSP_BC_MOCK_STATE");
+        if (!addr || !*addr || !state || !*state) {
+            GTEST_SKIP() << "RTSP_BC_MOCK_ADDR / RTSP_BC_MOCK_STATE not set";
+        }
+        url = std::string("rtsp://admin:admin123@") + addr + "/onvif/backchannel";
+        state_path = state;
+        ASSERT_FALSE(stateTrue(readFile(state_path), "session_open")) << "another session is open on the mock";
+        before = readFile(state_path);
+    }
+
+    long long delta(const std::string &key) const {
+        return stateNumber(readFile(state_path), key) - stateNumber(before, key);
+    }
+    bool sessionOpen() const { return stateTrue(readFile(state_path), "session_open"); }
+
+    std::string url;
+    std::string state_path;
+    std::string before;
+};
+
+TEST_F(RtspBackchannelMockTest, LiveSendsG711AndTearsDown) {
+    using namespace mediakit;
+    const std::string device_id = "rtsp_backchannel_live_test";
+    auto &manager = BackchannelManager::Instance();
+    // The AudioBackchannelInfo form SpeakerController registers since S4.
+    AudioBackchannelInfo info;
+    info.transport = AudioBackchannelInfo::RTSP_ONVIF;
+    info.url = url;
+    manager.registerDevice(device_id, info);
+    ASSERT_EQ(StartResult::Started, manager.startLiveSession(device_id, 8000, 1));
+    ASSERT_TRUE(waitFor([&] { return sessionOpen(); })) << "PLAY never reached the mock";
+    // A second live session on the same device while the first holds it: the ownership check refuses it.
+    EXPECT_EQ(StartResult::DeviceBusy, manager.startLiveSession(device_id, 8000, 1));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    pushOneSecondLive(device_id);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    manager.stopSession(device_id);
+    manager.unregisterDevice(device_id);
+
+    ASSERT_TRUE(waitFor([&] { return !sessionOpen() && delta("teardowns") == 1; })) << "TEARDOWN never reached the mock";
+    // One RTP packet of 160 G.711 bytes per 20 ms frame, sequence numbers without gaps.
+    EXPECT_EQ(50, delta("rtp_packets"));
+    EXPECT_EQ(8000, delta("rtp_bytes"));
+    EXPECT_EQ(0, delta("seq_gaps"));
+    EXPECT_NE(std::string::npos, readFile(state_path).find("\"payload_types\": [\n  0\n ]"));
+}
+
+TEST_F(RtspBackchannelMockTest, PlayFileSendsWholeFile) {
+    using namespace mediakit;
+    const std::string device_id = "rtsp_backchannel_file_test";
+    auto &manager = BackchannelManager::Instance();
+    // The plain-URL form used before S4.
+    manager.registerDevice(device_id, url);
+    ASSERT_TRUE(manager.playFile(device_id, writeTestWav(device_id, 8000))) << manager.getErrorMsg();
+    ASSERT_TRUE(waitFor([&] { return sessionOpen(); })) << "PLAY never reached the mock";
+    // The file ends after 1 s and the session tears down by itself.
+    ASSERT_TRUE(waitFor([&] { return !sessionOpen() && delta("teardowns") == 1; }, 8000)) << "TEARDOWN never reached the mock";
+    manager.unregisterDevice(device_id);
+    const long long got = delta("rtp_bytes");
+    EXPECT_GE(got, 7000) << "mock got " << got << " bytes";
+    EXPECT_LE(got, 8000) << "mock got " << got << " bytes";
+    EXPECT_EQ(0, got % 160);
+    EXPECT_EQ(0, delta("seq_gaps"));
 }
 
 // A web server that is not PSIA (here: nothing under /PSIA) is NOT_THIS_PROTOCOL, so AUTO moves on.

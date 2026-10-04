@@ -360,9 +360,17 @@ thêm `ProtocolLockTest`, `ProtocolOrderTest`.
   `stopSession`. Mock nhận đúng 8000 byte và khớp từng byte với μ-law của tín hiệu gửi; `open` thứ hai trong lúc
   đang phát nhận `kDeviceBusyCode` và không làm đóng phiên đầu; trình tự trên mock `open → audioData → open(403) →
   close`, `two_way_open` về `false`.
-- Chưa chạy: loa ISAPI đi qua `SpeakerController` trong MediaServer (cần dựng loa + file âm thanh qua API), hồi quy
-  RTSP backchannel ONVIF (không có mock RTSP backchannel; `BackchannelPusher` chỉ đổi lớp cha), thiết bị Hikvision
-  thật. Cần kiểm trên thiết bị: `audioData` cùng kết nối với `open` có được không (pusher tự nối lại nếu thiết bị
+- `IsapiMockTest.TwoWayAudioPlaysWholeFile`: `playFile` WAV 1 s → mock nhận đủ 8000 byte, khớp từng byte, `close`
+  tự gửi khi file hết.
+- **Hồi quy RTSP backchannel ONVIF** với mock mới `tests/integration/stress_vms/rtsp_backchannel_mock.py` (Digest,
+  `Require` backchannel, SETUP `/audioback`, RTP/TCP interleaved). `RtspBackchannelMockTest` (cần
+  `RTSP_BC_MOCK_ADDR` + `RTSP_BC_MOCK_STATE`):
+  - live qua `registerDevice(id, AudioBackchannelInfo)` (dạng `SpeakerController` dùng từ S4): DESCRIBE 401 →
+    DESCRIBE/SETUP/PLAY có Digest → 50 gói RTP PT 0, 8000 byte khớp từng byte μ-law, seq liên tục, RTCP SR + BYE,
+    TEARDOWN; phiên live thứ hai cùng thiết bị trả `StartResult::DeviceBusy`;
+  - `playFile` qua `registerDevice(id, url)` (dạng cũ): đủ 8000 byte, file hết thì TEARDOWN tự gửi.
+- Chưa chạy: loa ISAPI/ONVIF đi qua `SpeakerController` trong MediaServer (loa và file âm thanh đến từ đồng bộ ESC),
+  `OnvifControl::setupAudioBackchannel` với thiết bị (logic SOAP không đổi), thiết bị Hikvision thật. Cần kiểm trên thiết bị: `audioData` cùng kết nối với `open` có được không (pusher tự nối lại nếu thiết bị
   trả `Connection: close`), có cần `?sessionId=` không, nhịp gửi 20 ms có đủ mượt.
 
 **E — chưa làm:** camera Hikvision tắt ONVIF ở `AUTO` (đo R1), Hikvision ở `ISAPI` (PTZ relative), camera ONVIF

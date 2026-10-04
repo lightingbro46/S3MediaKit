@@ -180,7 +180,9 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 
 - Unit test: `unit.camera_controller_all` (`CameraProtocolTest`, `ProtocolLockTest`, `SpeakerProtocolTest`),
   `unit.psia_control_all` (`PsiaParseTest`, `IsapiParseTest`, ...; `IsapiMockTest.TwoWayAudioSendsG711AndCloses` chạy
-  với `psia_mock.py --dialect isapi --state PATH` khi đặt `ISAPI_MOCK_ADDR` và `ISAPI_MOCK_STATE`).
+  với `psia_mock.py --dialect isapi --state PATH` khi đặt `ISAPI_MOCK_ADDR` và `ISAPI_MOCK_STATE`;
+  `RtspBackchannelMockTest` chạy với `rtsp_backchannel_mock.py --state PATH` khi đặt `RTSP_BC_MOCK_ADDR` và
+  `RTSP_BC_MOCK_STATE`).
 - Camera PSIA giả: `tests/integration/stress_vms/psia_mock.py --port 18680` (Digest, `admin`/`admin123`;
   `--basic` cho Basic). Camera ISAPI giả: thêm `--dialect isapi --rtsp-port 8554`; `--onvif-401` cho
   `/onvif/device_service` trả 401 như Hikvision tắt ONVIF.
